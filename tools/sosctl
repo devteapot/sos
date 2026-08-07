@@ -1,0 +1,252 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+SOS_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+GPUI_REPOSITORY="https://github.com/itsbalamurali/gpui-mobile.git"
+GPUI_COMMIT="1d3ec2a1d14a63b74d1f4269340441d4eeada27a"
+GPUI_SHORT_COMMIT="${GPUI_COMMIT:0:12}"
+NDK_VERSION="29.0.14206865"
+ANDROID_PACKAGE="dev.gpui.mobile.example"
+ANDROID_ACTIVITY="dev.gpui.mobile.GpuiActivity"
+CACHE_ROOT="$SOS_ROOT/.cache"
+UPSTREAM_DIR="$CACHE_ROOT/gpui-mobile-$GPUI_SHORT_COMMIT"
+ARTIFACT_DIR="$SOS_ROOT/artifacts"
+APK_PATH="$ARTIFACT_DIR/gpui-mobile-m0-$GPUI_SHORT_COMMIT.apk"
+
+info() {
+  printf '==> %s\n' "$*"
+}
+
+fail() {
+  printf 'error: %s\n' "$*" >&2
+  exit 1
+}
+
+resolve_android_environment() {
+  local sdk_candidate="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-}}"
+  if [[ -z "$sdk_candidate" && -d "${HOME}/Library/Android/sdk" ]]; then
+    sdk_candidate="${HOME}/Library/Android/sdk"
+  fi
+  [[ -n "$sdk_candidate" && -d "$sdk_candidate" ]] || fail "Android SDK not found; set ANDROID_SDK_ROOT"
+
+  local java_candidate="${JAVA_HOME:-}"
+  if [[ -z "$java_candidate" || ! -x "$java_candidate/bin/java" ]]; then
+    java_candidate="/Applications/Android Studio.app/Contents/jbr/Contents/Home"
+  fi
+  [[ -x "$java_candidate/bin/java" ]] || fail "Java not found; set JAVA_HOME or install Android Studio"
+
+  local ndk_candidate="${ANDROID_NDK_ROOT:-${ANDROID_NDK_HOME:-}}"
+  if [[ -z "$ndk_candidate" ]]; then
+    ndk_candidate="$sdk_candidate/ndk/$NDK_VERSION"
+  fi
+  [[ -d "$ndk_candidate/toolchains/llvm" ]] || fail "Android NDK $NDK_VERSION not found at $ndk_candidate"
+
+  export ANDROID_HOME="$sdk_candidate"
+  export ANDROID_SDK_ROOT="$sdk_candidate"
+  export ANDROID_NDK_HOME="$ndk_candidate"
+  export ANDROID_NDK_ROOT="$ndk_candidate"
+  export JAVA_HOME="$java_candidate"
+  export PATH="$JAVA_HOME/bin:$ANDROID_HOME/platform-tools:$ANDROID_HOME/cmdline-tools/latest/bin:${HOME}/.cargo/bin:$PATH"
+}
+
+require_command() {
+  command -v "$1" >/dev/null 2>&1 || fail "required command not found: $1"
+}
+
+select_device() {
+  if [[ -n "${ADB_SERIAL:-}" ]]; then
+    export ANDROID_SERIAL="$ADB_SERIAL"
+  fi
+
+  local device_count
+  device_count="$(adb devices | awk 'NR > 1 && $2 == "device" { count += 1 } END { print count + 0 }')"
+  [[ "$device_count" -gt 0 ]] || fail "no authorized Android device is connected"
+  if [[ "$device_count" -gt 1 && -z "${ANDROID_SERIAL:-}" ]]; then
+    fail "multiple Android devices are connected; set ADB_SERIAL"
+  fi
+}
+
+doctor() {
+  resolve_android_environment
+  for command_name in git cargo rustup cargo-ndk adb; do
+    require_command "$command_name"
+  done
+  select_device
+
+  local target_sdk target_abis target_model
+  target_sdk="$(adb shell getprop ro.build.version.sdk | tr -d '\r')"
+  target_abis="$(adb shell getprop ro.product.cpu.abilist | tr -d '\r')"
+  target_model="$(adb shell getprop ro.product.model | tr -d '\r')"
+
+  [[ "$target_sdk" =~ ^[0-9]+$ && "$target_sdk" -ge 26 ]] || fail "device API level must be at least 26 (found $target_sdk)"
+  [[ "$target_abis" == *"arm64-v8a"* ]] || fail "device must support arm64-v8a (found $target_abis)"
+  [[ -d "$ANDROID_HOME/platforms/android-34" ]] || fail "Android platform 34 is not installed"
+  [[ -d "$ANDROID_HOME/build-tools/34.0.0" ]] || fail "Android build tools 34.0.0 are not installed"
+  rustup target list --installed | grep -qx 'aarch64-linux-android' || fail "Rust target aarch64-linux-android is not installed"
+
+  info "host toolchain is ready"
+  printf '    Rust:       %s\n' "$(rustc --version)"
+  printf '    cargo-ndk:  %s\n' "$(cargo ndk --version)"
+  printf '    SDK:        %s\n' "$ANDROID_HOME"
+  printf '    NDK:        %s\n' "$ANDROID_NDK_HOME"
+  printf '    Java:       %s\n' "$JAVA_HOME"
+  printf '    Device:     %s (API %s; %s)\n' "$target_model" "$target_sdk" "$target_abis"
+}
+
+sync_upstream() {
+  require_command git
+  mkdir -p "$CACHE_ROOT"
+
+  if [[ ! -d "$UPSTREAM_DIR/.git" ]]; then
+    [[ ! -e "$UPSTREAM_DIR" ]] || fail "$UPSTREAM_DIR exists but is not a Git checkout"
+    info "cloning GPUI Mobile"
+    git clone --filter=blob:none --no-checkout "$GPUI_REPOSITORY" "$UPSTREAM_DIR"
+    git -C "$UPSTREAM_DIR" fetch --depth 1 origin "$GPUI_COMMIT"
+    git -C "$UPSTREAM_DIR" switch --detach "$GPUI_COMMIT"
+  fi
+
+  local actual_commit
+  actual_commit="$(git -C "$UPSTREAM_DIR" rev-parse HEAD)"
+  [[ "$actual_commit" == "$GPUI_COMMIT" ]] || fail "cached checkout is at $actual_commit, expected $GPUI_COMMIT"
+  [[ -z "$(git -C "$UPSTREAM_DIR" status --short --untracked-files=no)" ]] || fail "cached upstream checkout has tracked modifications"
+  info "using unmodified GPUI Mobile $GPUI_SHORT_COMMIT"
+}
+
+build_apk() {
+  resolve_android_environment
+  for command_name in git cargo rustup cargo-ndk adb; do
+    require_command "$command_name"
+  done
+  sync_upstream
+
+  local example_dir="$UPSTREAM_DIR/example"
+  local gradle_dir="$example_dir/android/gradle"
+  local jni_abi_dir="$gradle_dir/app/src/main/jniLibs/arm64-v8a"
+  local upstream_apk="$gradle_dir/app/build/outputs/apk/debug/app-debug.apk"
+
+  mkdir -p "$jni_abi_dir" "$ARTIFACT_DIR"
+  # This directory contains only generated cargo-ndk outputs in the pinned cache.
+  # Removing them prevents stale debug and release dependency libraries from
+  # being packaged together.
+  find "$jni_abi_dir" -maxdepth 1 -type f -name '*.so' -delete
+
+  info "building optimized ARM64 Rust libraries"
+  (
+    cd "$example_dir"
+    cargo ndk \
+      -t arm64-v8a \
+      -P 31 \
+      -o android/gradle/app/src/main/jniLibs \
+      build --release
+  )
+
+  info "packaging a debug-signed APK"
+  (
+    cd "$gradle_dir"
+    ./gradlew clean assembleDebug
+  )
+
+  [[ -f "$upstream_apk" ]] || fail "Gradle did not produce $upstream_apk"
+  cp "$upstream_apk" "$APK_PATH"
+  info "artifact: $APK_PATH ($(du -h "$APK_PATH" | awk '{ print $1 }'))"
+}
+
+install_apk() {
+  resolve_android_environment
+  require_command adb
+  select_device
+  [[ -f "$APK_PATH" ]] || fail "APK not found; run ./tools/sosctl build first"
+  info "installing $ANDROID_PACKAGE"
+  adb install -r "$APK_PATH"
+}
+
+launch_app() {
+  resolve_android_environment
+  require_command adb
+  select_device
+  info "launching $ANDROID_PACKAGE"
+  adb shell am start -W -n "$ANDROID_PACKAGE/$ANDROID_ACTIVITY"
+}
+
+follow_logs() {
+  resolve_android_environment
+  require_command adb
+  select_device
+
+  local app_pid=""
+  for _ in {1..50}; do
+    app_pid="$(adb shell pidof "$ANDROID_PACKAGE" | tr -d '\r')"
+    [[ -n "$app_pid" ]] && break
+    sleep 0.1
+  done
+  [[ -n "$app_pid" ]] || fail "could not find the running $ANDROID_PACKAGE process"
+
+  info "following PID $app_pid logs; press Ctrl-C to stop"
+  adb logcat --pid="$app_pid" -v color
+}
+
+usage() {
+  cat <<'USAGE'
+Usage: ./tools/sosctl <command>
+
+Commands:
+  doctor              Validate the host toolchain and connected ARM64 device.
+  sync                Fetch the exact unmodified GPUI Mobile revision.
+  build               Build an optimized native library and debug-signed APK.
+  install             Install the existing APK with adb install -r.
+  launch              Launch the installed example app.
+  logs                Follow logs from the running example process.
+  run [--no-follow]   Doctor, build, install, launch, and follow logs.
+  help                 Show this message.
+
+Set ADB_SERIAL when more than one Android device is connected.
+USAGE
+}
+
+command_name="${1:-help}"
+shift || true
+
+case "$command_name" in
+  doctor)
+    doctor
+    ;;
+  sync)
+    sync_upstream
+    ;;
+  build)
+    doctor
+    build_apk
+    ;;
+  install)
+    install_apk
+    ;;
+  launch)
+    launch_app
+    ;;
+  logs)
+    follow_logs
+    ;;
+  run)
+    no_follow=false
+    if [[ "${1:-}" == "--no-follow" ]]; then
+      no_follow=true
+      shift
+    fi
+    [[ "$#" -eq 0 ]] || fail "unexpected run argument: $1"
+    doctor
+    build_apk
+    install_apk
+    launch_app
+    if ! $no_follow; then
+      follow_logs
+    fi
+    ;;
+  help|-h|--help)
+    usage
+    ;;
+  *)
+    usage >&2
+    fail "unknown command: $command_name"
+    ;;
+esac
