@@ -267,3 +267,34 @@ documenting viewport constraints; diagnose the 127.746 ms visible p95; build a
 real candidate-process/surface supervisor with forced-crash rollback; remove
 the linked provider fallback, externalize persistent state, implement schema
 migrations and fault injection; then run a longer thermal/memory soak.
+
+## 2026-08-08 — Freeze the raw single-shot evaluation protocol
+
+**Goal:** Establish a reproducible lower-bound measurement for Luna medium
+generation before adding a tailored prompt, skill, curated retrieval, repair
+loop, stronger model, or fine-tuning.
+
+**Changed:** Added six fixed requests spanning composition, conditional state,
+custom geometry, safe phone hit regions, and a reachable provider effect. Added
+a headless runner and deterministic Luau grader, documented in
+[`raw-agent-evaluation.md`](raw-agent-evaluation.md). Raw generations and Codex
+transcripts remain ignored artifacts; source hashes, token use, latency, and
+scores are the durable evidence.
+
+**Evidence:** `cargo check --locked -p runtime-luau --example eval_grade`,
+`cargo fmt --all -- --check`, and `bash -n tools/eval-single-shot` pass. The
+runner requires a clean tracked worktree and stops if the single-shot agent
+touches tracked files. The frozen manifest is
+`evals/raw-single-shot/cases.json`; no model outputs were inspected while
+defining its checks.
+
+**Decision:** Treat this as an intentionally weak baseline, not a forecast of
+the mature agent. A valid compile alone is not success, and the deterministic
+grader is necessary but not a substitute for selected physical-device visual
+and interaction checks.
+
+**Open risks / next gate:** Run all six cases, record the ignored suite artifact
+hashes and summary, and audit representative results on hardware. Later compare
+prompt/skill/retrieval and model variants against the unchanged suite. Consider
+fine-tuning only after there is a useful accepted/rejected corpus and after
+confirming support for the intended base model.
