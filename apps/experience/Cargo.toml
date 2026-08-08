@@ -5,20 +5,30 @@ edition.workspace = true
 license.workspace = true
 publish = false
 
+[features]
+default = ["offline-fallback"]
+offline-fallback = ["dep:providers-fake"]
+gate-strict = []
+
 [lib]
 name = "sos_experience"
 crate-type = ["cdylib", "staticlib", "lib"]
 
 [target.'cfg(target_os = "android")'.dependencies]
+anyhow = "1"
 android-activity = { version = "0.6", features = ["native-activity"] }
 android_logger = "0.15"
+async-channel.workspace = true
 experience-ir.workspace = true
 gpui = { git = "https://github.com/zed-industries/zed", rev = "5688167d224b5eca54875d49afb8bfd73a07915a", package = "gpui", default-features = false }
 gpui-mobile = { git = "https://github.com/itsbalamurali/gpui-mobile.git", rev = "1d3ec2a1d14a63b74d1f4269340441d4eeada27a", default-features = false, features = ["deeplink"] }
 log.workspace = true
-providers-fake.workspace = true
+jni = "0.22"
+providers-fake = { workspace = true, optional = true }
 runtime-luau.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
+unicode-segmentation = "1.12"
 
 [target.'cfg(not(target_os = "android"))'.dependencies]
 experience-ir.workspace = true

@@ -6,6 +6,13 @@ Use **Luau embedded in the permanent GPUI host** for the first vertical slice.
 Keep the experience boundary runtime-neutral so Rhai remains a useful control.
 Do not use Flutter Engine as a scripting layer for GPUI.
 
+This is a tactical latency decision, not a redefinition of the project. SOS's
+[north star](vision.md) permits the agent to invent component types, layout,
+geometry, hit testing, navigation, and native behavior without a closed catalog.
+The bounded tree below is the immediate tier used to learn quickly; it must
+eventually gain low-level script-defined component capabilities or coexist with
+agent-generated GPUI Rust revisions.
+
 The intended boundary is:
 
 ```text
@@ -69,6 +76,11 @@ The slice is confirmed when:
 Initial targets are source-to-visible-frame p95 below 100 ms, update execution
 below 5 ms, no crash across 1,000 swaps, and no leak trend across 20 lifecycle
 cycles. These are product gates, not claims about the underlying projects.
+
+Passing these gates proves that Luau is a viable mutation path. It does not
+prove the central generative claim. The next expressiveness gate is a component
+whose geometry, hit testing, interaction state, and provider operation are
+implemented by the agent and were not already representable as a host node.
 
 ## Primary references
 

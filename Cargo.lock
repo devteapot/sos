@@ -3581,6 +3581,7 @@ name = "providers-fake"
 version = "0.1.0"
 dependencies = [
  "experience-ir",
+ "serde_json",
 ]
 
 [[package]]
@@ -3952,8 +3953,11 @@ checksum = "6c20b6793b5c2fa6553b250154b78d6d0db37e72700ae35fad9387a46f487c97"
 name = "runtime-luau"
 version = "0.1.0"
 dependencies = [
+ "async-channel 2.5.0",
  "experience-ir",
  "mlua",
+ "providers-fake",
+ "serde",
  "serde_json",
  "thiserror 2.0.19",
 ]
@@ -4434,13 +4438,18 @@ version = "0.1.0"
 dependencies = [
  "android-activity",
  "android_logger",
+ "anyhow",
+ "async-channel 2.5.0",
  "experience-ir",
  "gpui",
  "gpui-mobile",
+ "jni",
  "log",
  "providers-fake",
  "runtime-luau",
  "serde_json",
+ "sha2 0.10.9",
+ "unicode-segmentation",
 ]
 
 [[package]]

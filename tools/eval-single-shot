@@ -1,0 +1,91 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+SOS_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+MANIFEST="$SOS_ROOT/evals/raw-single-shot/cases.json"
+SUITE_ID="${1:-$(date -u +%Y%m%dT%H%M%SZ)-luna-medium-raw}"
+OUTPUT_DIR="$SOS_ROOT/artifacts/evals/$SUITE_ID"
+
+command -v codex >/dev/null 2>&1 || { printf 'codex is required\n' >&2; exit 1; }
+command -v jq >/dev/null 2>&1 || { printf 'jq is required\n' >&2; exit 1; }
+command -v perl >/dev/null 2>&1 || { printf 'perl is required\n' >&2; exit 1; }
+if ! git -C "$SOS_ROOT" diff --quiet || ! git -C "$SOS_ROOT" diff --cached --quiet; then
+  printf 'tracked worktree must be clean before running the suite\n' >&2
+  exit 1
+fi
+mkdir -p "$OUTPUT_DIR"
+
+jq -c '.[]' "$MANIFEST" | while IFS= read -r case_json; do
+  case_id="$(jq -r '.id' <<<"$case_json")"
+  request="$(jq -r '.prompt' <<<"$case_json")"
+  source="$OUTPUT_DIR/$case_id.luau"
+  transcript="$OUTPUT_DIR/$case_id.codex.jsonl"
+  final_message="$OUTPUT_DIR/$case_id.final.txt"
+  started_ms="$(perl -MTime::HiRes=time -e 'printf "%d", time * 1000')"
+  prompt="Read docs/experience-api.md and the checked-in experiences, then implement this request: $request
+
+Create only artifacts/evals/$SUITE_ID/$case_id.luau. Do not edit any tracked file or any other artifact. Produce a complete Luau experience module for the documented API. This is a single attempt: do not run validation, tests, screenshots, or a repair pass."
+
+  printf '==> %s\n' "$case_id"
+  set +e
+  (
+    cd "$SOS_ROOT"
+    codex exec \
+      --model gpt-5.6-luna \
+      -c 'model_reasoning_effort="medium"' \
+      --sandbox workspace-write \
+      --ephemeral \
+      --json \
+      --output-last-message "$final_message" \
+      "$prompt" </dev/null >"$transcript"
+  )
+  codex_status=$?
+  set -e
+  finished_ms="$(perl -MTime::HiRes=time -e 'printf "%d", time * 1000')"
+  elapsed_ms=$((finished_ms - started_ms))
+
+  if ! git -C "$SOS_ROOT" diff --quiet || ! git -C "$SOS_ROOT" diff --cached --quiet; then
+    printf 'agent modified tracked files during case %s; stopping without reverting them\n' "$case_id" >&2
+    exit 1
+  fi
+
+  if [[ -f "$source" ]]; then
+    set +e
+    grade="$(cd "$SOS_ROOT" && cargo run --quiet --locked -p runtime-luau --example eval_grade -- "$MANIFEST" "$case_id" "$source")"
+    grade_status=$?
+    set -e
+    source_sha="$(shasum -a 256 "$source" | awk '{print $1}')"
+  else
+    grade='{"compiled":false,"score":0,"possible":0,"checks":[],"error":"agent did not create source"}'
+    grade_status=1
+    source_sha=""
+  fi
+  usage="$(jq -s '[.[] | select(.type == "turn.completed") | .usage][0] // {}' "$transcript")"
+  jq -cn \
+    --arg suite_id "$SUITE_ID" \
+    --arg case_id "$case_id" \
+    --arg source_sha256 "$source_sha" \
+    --argjson elapsed_ms "$elapsed_ms" \
+    --argjson codex_status "$codex_status" \
+    --argjson grade_status "$grade_status" \
+    --argjson usage "$usage" \
+    --argjson grade "$grade" \
+    '{suite_id:$suite_id,case_id:$case_id,elapsed_ms:$elapsed_ms,codex_status:$codex_status,grade_status:$grade_status,source_sha256:$source_sha256,usage:$usage,grade:$grade}' \
+    >>"$OUTPUT_DIR/results.jsonl"
+done
+
+jq -s '{
+  suite_id: .[0].suite_id,
+  cases: length,
+  compiled: map(select(.grade.compiled)) | length,
+  total_score: map(.grade.score) | add,
+  total_possible: map(.grade.possible) | add,
+  elapsed_ms: map(.elapsed_ms) | add,
+  input_tokens: map(.usage.input_tokens // 0) | add,
+  cached_input_tokens: map(.usage.cached_input_tokens // 0) | add,
+  output_tokens: map(.usage.output_tokens // 0) | add,
+  results: .
+}' "$OUTPUT_DIR/results.jsonl" >"$OUTPUT_DIR/summary.json"
+
+cat "$OUTPUT_DIR/summary.json"

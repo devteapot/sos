@@ -214,7 +214,7 @@ build_experience_apk() {
       -t arm64-v8a \
       -P 31 \
       -o apps/experience/android/gradle/app/src/main/jniLibs \
-      build -p sos-experience --release --locked
+      build -p sos-experience --release --locked --no-default-features --features gate-strict
   )
 
   info "packaging a debug-signed SOS APK"
@@ -279,6 +279,103 @@ install_script() {
   info "candidate delivered; use ./tools/sosctl m1-logs to inspect acceptance"
 }
 
+validate_script() {
+  local source_path="${1:-}"
+  [[ -n "$source_path" ]] || fail "usage: ./tools/sosctl validate <experience.luau>"
+  [[ -f "$source_path" ]] || fail "script not found: $source_path"
+  (
+    cd "$SOS_ROOT"
+    cargo run --quiet --locked -p runtime-luau --example validate -- "$source_path"
+  )
+}
+
+agent_generate_script() {
+  local request="${1:-}"
+  [[ -n "$request" ]] || fail "usage: ./tools/sosctl agent-generate <request>"
+  require_command codex
+  mkdir -p "$ARTIFACT_DIR"
+
+  local run_id target transcript final_message prompt
+  run_id="$(date -u +%Y%m%dT%H%M%SZ)-luna-medium"
+  target="$SOS_ROOT/experiences/android-exit-agent.luau"
+  transcript="$ARTIFACT_DIR/agent-$run_id.jsonl"
+  final_message="$ARTIFACT_DIR/agent-$run_id-final.txt"
+  prompt="You are performing a single-shot SOS experience mutation. Read docs/experience-api.md and the existing experiences. Implement this request: $request
+
+Create or replace only experiences/android-exit-agent.luau. Do not edit any other file. The file must be a complete Luau module satisfying the documented API. Calculate custom spatial geometry and drag/drop behavior in Luau; do not emulate the request with ordinary cards. Do not run validation or edit again after creating the file; the outer harness performs the single authoritative validation attempt."
+
+  info "running headless Codex with gpt-5.6-luna / medium reasoning"
+  (
+    cd "$SOS_ROOT"
+    codex exec \
+      --model gpt-5.6-luna \
+      -c 'model_reasoning_effort="medium"' \
+      --sandbox workspace-write \
+      --ephemeral \
+      --json \
+      --output-last-message "$final_message" \
+      "$prompt" | tee "$transcript"
+  )
+  [[ -f "$target" ]] || fail "agent did not create $target"
+  validate_script "$target"
+  info "generated source: $target"
+  info "agent transcript: $transcript"
+}
+
+agent_apply_script() {
+  local source_path="${1:-}"
+  [[ -n "$source_path" ]] || fail "usage: ./tools/sosctl agent-apply <experience.luau>"
+  validate_script "$source_path"
+
+  resolve_android_environment
+  require_command adb
+  select_device
+  local app_pid before_results result=""
+  app_pid="$(adb shell pidof "$M1_ANDROID_PACKAGE" | tr -d '\r')"
+  [[ -n "$app_pid" ]] || fail "$M1_ANDROID_PACKAGE is not running; use ./tools/sosctl m1-launch"
+  before_results="$(adb logcat -d --pid="$app_pid" -v brief | grep -Ec 'script_(visible|rejected)' || true)"
+  install_script "$source_path"
+  for _ in {1..100}; do
+    result="$(adb logcat -d --pid="$app_pid" -v brief | grep -E 'script_(visible|rejected)' | tail -n +$((before_results + 1)) | tail -n 1 || true)"
+    [[ -n "$result" ]] && break
+    sleep 0.1
+  done
+  [[ -n "$result" ]] || fail "candidate produced no acceptance result"
+  printf '%s\n' "$result"
+  [[ "$result" == *"script_visible"* ]] || fail "candidate was rejected"
+
+  mkdir -p "$ARTIFACT_DIR"
+  local screenshot="$ARTIFACT_DIR/sos-agent-latest.png"
+  adb exec-out screencap -p > "$screenshot"
+  local active_hash
+  active_hash="$(adb shell run-as "$M1_ANDROID_PACKAGE" sha256sum files/experience.active.luau | awk '{ print $1 }')"
+  info "candidate accepted; active source SHA-256: $active_hash"
+  info "inspection screenshot: $screenshot"
+  info "keep this revision or run ./tools/sosctl rollback"
+}
+
+restart_runtime_worker() {
+  resolve_android_environment
+  require_command adb
+  select_device
+  local app_pid before_ready result=""
+  app_pid="$(adb shell pidof "$M1_ANDROID_PACKAGE" | tr -d '\r')"
+  [[ -n "$app_pid" ]] || fail "$M1_ANDROID_PACKAGE is not running; use ./tools/sosctl m1-launch"
+  before_ready="$(adb logcat -d --pid="$app_pid" -v brief | grep -c 'runtime_worker_ready' || true)"
+  adb shell am start \
+    -W \
+    -a android.intent.action.VIEW \
+    -d 'sos://worker-restart' \
+    -n "$M1_ANDROID_PACKAGE/$ANDROID_ACTIVITY" >/dev/null
+  for _ in {1..100}; do
+    result="$(adb logcat -d --pid="$app_pid" -v brief | grep 'runtime_worker_ready' | tail -n +$((before_ready + 1)) | tail -n 1 || true)"
+    [[ -n "$result" ]] && break
+    sleep 0.1
+  done
+  [[ -n "$result" ]] || fail "runtime worker did not become ready after restart"
+  printf '%s\n' "$result"
+}
+
 rollback_script() {
   resolve_android_environment
   require_command adb
@@ -289,6 +386,90 @@ rollback_script() {
     cp files/experience.previous.luau files/experience.candidate.luau
   trigger_script_reload
   info "previous accepted Luau revision submitted"
+}
+
+stress_experience() {
+  local count="${1:-1000}"
+  [[ "$count" =~ ^[0-9]+$ ]] || fail "stress count must be an integer"
+  [[ "$count" -ge 1 && "$count" -le 10000 ]] || fail "stress count must be between 1 and 10000"
+
+  resolve_android_environment
+  require_command adb
+  select_device
+  adb shell pm path "$M1_ANDROID_PACKAGE" >/dev/null 2>&1 || fail "$M1_ANDROID_PACKAGE is not installed"
+
+  local app_pid
+  app_pid="$(adb shell pidof "$M1_ANDROID_PACKAGE" | tr -d '\r')"
+  [[ -n "$app_pid" ]] || fail "$M1_ANDROID_PACKAGE is not running; use ./tools/sosctl m1-launch"
+
+  local run_id
+  run_id="$(date +%s)-$$-$count"
+  info "starting $count transactional swaps; each swap waits for a GPUI frame"
+  adb shell am start \
+    -W \
+    -a android.intent.action.VIEW \
+    -d "sos://stress?count=$count\\&run_id=$run_id" \
+    -n "$M1_ANDROID_PACKAGE/$ANDROID_ACTIVITY" >/dev/null
+
+  local attempts=$((count / 5 + 120))
+  local result=""
+  for ((attempt = 0; attempt < attempts; attempt += 1)); do
+    app_pid="$(adb shell pidof "$M1_ANDROID_PACKAGE" | tr -d '\r')"
+    [[ -n "$app_pid" ]] || fail "app process exited during stress run $run_id"
+    result="$(adb logcat -d --pid="$app_pid" -v brief | grep -E "stress_(complete|failed) run_id=$run_id" | tail -n 1 || true)"
+    if [[ -n "$result" ]]; then
+      printf '%s\n' "$result"
+      [[ "$result" == *"stress_complete"* ]] || fail "stress run $run_id failed"
+      return
+    fi
+    sleep 1
+  done
+  fail "stress run $run_id did not finish within $attempts seconds"
+}
+
+candidate_process_probe() {
+  local mode="${1:-crash-after}"
+  [[ "$mode" == "crash-before" || "$mode" == "crash-after" ]] || \
+    fail "candidate probe mode must be crash-before or crash-after"
+
+  resolve_android_environment
+  require_command adb
+  select_device
+  local main_pid revision
+  main_pid="$(adb shell pidof "$M1_ANDROID_PACKAGE" | tr -d '\r')"
+  [[ -n "$main_pid" ]] || fail "$M1_ANDROID_PACKAGE is not running; use ./tools/sosctl m1-launch"
+  revision="probe-$(date +%s)"
+
+  info "launching disposable candidate process ($mode); accepted PID is $main_pid"
+  adb shell am start \
+    -a android.intent.action.VIEW \
+    -d "sos://candidate?revision=$revision\&mode=$mode" \
+    -n "$M1_ANDROID_PACKAGE/$ANDROID_ACTIVITY" >/dev/null || true
+
+  local result="" candidate_pid=""
+  for _ in {1..200}; do
+    candidate_pid="$(adb shell pidof "$M1_ANDROID_PACKAGE:candidate" 2>/dev/null | tr -d '\r' || true)"
+    result="$(adb logcat -d -v brief | grep "$revision" || true)"
+    if [[ -z "$candidate_pid" && "$result" == *"candidate_native_crash"* && "$result" == *"accepted_surface_restored"* ]]; then
+      break
+    fi
+    sleep 0.05
+  done
+
+  local main_pid_after resumed
+  main_pid_after="$(adb shell pidof "$M1_ANDROID_PACKAGE" | tr -d '\r')"
+  [[ "$main_pid_after" == "$main_pid" ]] || fail "accepted process changed: $main_pid -> $main_pid_after"
+  [[ "$result" == *"candidate_native_crash"* ]] || fail "candidate did not reach native crash"
+  [[ "$result" == *"accepted_surface_restored"* ]] || fail "watchdog did not restore the accepted surface"
+  if [[ "$mode" == "crash-after" ]]; then
+    [[ "$result" == *"candidate_gpui_first_frame"* ]] || fail "candidate crashed without reporting a GPUI frame"
+  else
+    [[ "$result" != *"candidate_gpui_first_frame"* ]] || fail "crash-before candidate unexpectedly presented"
+  fi
+  resumed="$(adb shell dumpsys activity top | grep 'ACTIVITY' | tail -n 1 || true)"
+  [[ "$resumed" == *"$M1_ANDROID_PACKAGE/$ANDROID_ACTIVITY"* ]] || fail "accepted activity did not resume: $resumed"
+  printf '%s\n' "$result"
+  info "candidate process died; accepted PID $main_pid and surface resumed"
 }
 
 usage() {
@@ -310,7 +491,15 @@ Commands:
   m1-run [--no-follow]
                       Build, install, launch, and follow logs.
   script <file>       Transactionally load Luau source; no APK or restart.
+  validate <file>     Compile, evaluate, decode, and validate Luau locally.
+  agent-apply <file>  Validate, install, await frame, and capture screenshot.
+  agent-generate <request>
+                      One-shot headless Codex generation (Luna, medium).
   rollback            Submit the prior accepted Luau source as a candidate.
+  stress [count]      Run frame-paced transactional swaps (default: 1000).
+  candidate-probe [crash-before|crash-after]
+                      Crash a disposable revision process and verify return.
+  worker-restart      Recreate the Luau worker without replacing the APK.
   help                 Show this message.
 
 Set ADB_SERIAL when more than one Android device is connected.
@@ -356,8 +545,32 @@ case "$command_name" in
   script)
     install_script "${1:-}"
     ;;
+  validate)
+    [[ "$#" -eq 1 ]] || fail "usage: ./tools/sosctl validate <experience.luau>"
+    validate_script "$1"
+    ;;
+  agent-apply)
+    [[ "$#" -eq 1 ]] || fail "usage: ./tools/sosctl agent-apply <experience.luau>"
+    agent_apply_script "$1"
+    ;;
+  agent-generate)
+    [[ "$#" -eq 1 ]] || fail "usage: ./tools/sosctl agent-generate <request>"
+    agent_generate_script "$1"
+    ;;
   rollback)
     rollback_script
+    ;;
+  stress)
+    [[ "$#" -le 1 ]] || fail "usage: ./tools/sosctl stress [count]"
+    stress_experience "${1:-1000}"
+    ;;
+  candidate-probe)
+    [[ "$#" -le 1 ]] || fail "usage: ./tools/sosctl candidate-probe [crash-before|crash-after]"
+    candidate_process_probe "${1:-crash-after}"
+    ;;
+  worker-restart)
+    [[ "$#" -eq 0 ]] || fail "usage: ./tools/sosctl worker-restart"
+    restart_runtime_worker
     ;;
   m1-run)
     no_follow=false

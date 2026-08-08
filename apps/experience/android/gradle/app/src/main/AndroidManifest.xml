@@ -21,6 +21,8 @@
 -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
+    <uses-permission android:name="android.permission.INTERNET" />
+
     <!-- Vulkan feature declaration.
          `required="false"` allows the app to fall back to OpenGL ES on
          devices without Vulkan support. -->
@@ -96,6 +98,25 @@
                 <category android:name="android.intent.category.BROWSABLE" />
                 <data android:scheme="sos" />
             </intent-filter>
+        </activity>
+
+        <!-- Disposable revision surface. It intentionally runs outside the
+             permanent GPUI host process so a candidate crash cannot destroy
+             the accepted experience. This Java surface is a supervisor
+             mechanism probe; a later gate must replace it with GPUI. -->
+        <activity
+            android:name="dev.sos.experience.CandidateGpuiActivity"
+            android:excludeFromRecents="true"
+            android:exported="false"
+            android:launchMode="singleTask"
+            android:process=":candidate"
+            android:taskAffinity="dev.sos.experience.candidate"
+            android:theme="@style/GpuiSplashTheme"
+        >
+            <meta-data
+                android:name="android.app.lib_name"
+                android:value="${nativeLibraryName}"
+            />
         </activity>
         <!-- Transparent helper Activity for file/image picker results. -->
         <activity

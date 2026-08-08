@@ -1,168 +1,261 @@
 package dev.gpui.mobile;
 
+import android.app.ActivityManager;
 import android.app.NativeActivity;
+import android.content.BroadcastReceiver;
+import android.content.Context;
 import android.content.Intent;
+import android.content.IntentFilter;
 import android.content.pm.ActivityInfo;
 import android.content.pm.PackageManager;
 import android.media.AudioManager;
 import android.net.Uri;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
+import android.os.SystemClock;
 import android.util.Log;
 import android.view.KeyEvent;
 
+import androidx.core.content.ContextCompat;
 import androidx.core.splashscreen.SplashScreen;
 
-/**
- * Custom Activity extending NativeActivity that integrates with the
- * AndroidX SplashScreen API.
- *
- * On API 31+ the system splash screen is displayed automatically via theme
- * attributes. On API 26-30 the AndroidX compat library emulates the same
- * behavior using the theme's windowBackground drawable.
- *
- * The splash screen is held visible until the Rust native library signals
- * that initialization is complete by setting NATIVE_INITIALIZED to true
- * (see src/android/jni.rs). This prevents the user from seeing an empty
- * or partially-rendered surface during startup.
- *
- * Also handles:
- * - Deep link intents (onNewIntent)
- * - Volume key routing to the MUSIC audio stream
- * - Media button events via MediaSessionCompat
- */
-public class GpuiActivity extends NativeActivity {
+import dev.sos.experience.CandidateGpuiActivity;
 
-    /** Whether the native .so has been loaded via System.loadLibrary. */
+/** NativeActivity host plus the accepted-process candidate watchdog. */
+public class GpuiActivity extends NativeActivity {
+    private static final String CANDIDATE_FIRST_FRAME =
+            "dev.sos.experience.CANDIDATE_FIRST_FRAME";
     private static volatile boolean sNativeLibLoaded = false;
+    private BroadcastReceiver candidateReceiver;
+    private volatile long candidateLaunchAtMs;
+    private volatile int intentionallyStoppedCandidatePid = -1;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
-        // Install the splash screen BEFORE calling super.onCreate().
-        // This is required by the AndroidX SplashScreen API.
         SplashScreen splash = SplashScreen.installSplashScreen(this);
-
-        // NativeActivity loads the .so via dlopen (loadNativeCode), which does
-        // NOT register JNI symbols with the classloader. We must call
-        // System.loadLibrary() ourselves so that JNI can resolve our native
-        // methods. Reading the library name from the manifest meta-data ensures
-        // we stay in sync with the nativeLibraryName placeholder.
         if (!sNativeLibLoaded) {
             try {
-                ActivityInfo ai = getPackageManager().getActivityInfo(
+                ActivityInfo info = getPackageManager().getActivityInfo(
                         getComponentName(), PackageManager.GET_META_DATA);
-                String libName = ai.metaData.getString("android.app.lib_name");
-                if (libName != null) {
-                    System.loadLibrary(libName);
+                String library = info.metaData.getString("android.app.lib_name");
+                if (library != null) {
+                    System.loadLibrary(library);
                     sNativeLibLoaded = true;
                 }
-            } catch (PackageManager.NameNotFoundException e) {
-                // Shouldn't happen — we're querying our own activity.
-            } catch (UnsatisfiedLinkError e) {
-                // Library may already be loaded by NativeActivity; that's fine.
+            } catch (PackageManager.NameNotFoundException ignored) {
+                Log.e("GpuiActivity", "activity metadata unavailable");
+            } catch (UnsatisfiedLinkError ignored) {
                 sNativeLibLoaded = true;
             }
         }
-
-        // Keep the splash screen visible until the native side signals readiness.
         splash.setKeepOnScreenCondition(() -> !isNativeReady());
-
-        // Route volume keys to the MUSIC stream so they control media volume
-        // rather than the ringer/notification volume.
         setVolumeControlStream(AudioManager.STREAM_MUSIC);
-
         super.onCreate(savedInstanceState);
+
+        if (getClass() == GpuiActivity.class) {
+            candidateReceiver = new BroadcastReceiver() {
+                @Override
+                public void onReceive(Context context, Intent intent) {
+                    String revision = intent.getStringExtra("revision");
+                    Log.i("sos-supervisor", "candidate_gpui_first_frame revision="
+                            + revision + " pid="
+                            + intent.getIntExtra("pid", -1)
+                            + " launch_to_first_frame_ms="
+                            + (SystemClock.elapsedRealtime() - candidateLaunchAtMs));
+                    try {
+                        nativeOnDeepLink("sos://candidate-presented?revision=" + revision);
+                    } catch (UnsatisfiedLinkError ignored) {
+                        Log.e("sos-supervisor", "candidate presentation JNI unavailable");
+                    }
+                }
+            };
+            ContextCompat.registerReceiver(
+                    this,
+                    candidateReceiver,
+                    new IntentFilter(CANDIDATE_FIRST_FRAME),
+                    ContextCompat.RECEIVER_NOT_EXPORTED);
+        }
     }
 
-    /**
-     * Check if the native library is fully initialized.
-     * Returns false if the .so hasn't been loaded yet or if
-     * NATIVE_INITIALIZED hasn't been set to true.
-     */
     private boolean isNativeReady() {
-        if (!sNativeLibLoaded) {
-            return false;
-        }
+        if (!sNativeLibLoaded) return false;
         try {
             return nativeIsInitialized();
-        } catch (UnsatisfiedLinkError e) {
+        } catch (UnsatisfiedLinkError ignored) {
             return false;
         }
     }
 
-    /**
-     * Intercept key events to handle volume and media buttons.
-     *
-     * NativeActivity normally forwards ALL key events to the native side,
-     * which means volume keys would be consumed by the Rust event loop
-     * without actually adjusting the system volume. We intercept them here
-     * and let the system handle them instead.
-     */
     @Override
     public boolean dispatchKeyEvent(KeyEvent event) {
-        int keyCode = event.getKeyCode();
-        switch (keyCode) {
-            case KeyEvent.KEYCODE_VOLUME_UP:
-            case KeyEvent.KEYCODE_VOLUME_DOWN:
-            case KeyEvent.KEYCODE_VOLUME_MUTE:
-                // Let the system handle volume keys (adjusts STREAM_MUSIC).
-                // Don't pass to NativeActivity's native input handler.
-                return super.dispatchKeyEvent(event);
-
-            case KeyEvent.KEYCODE_MEDIA_PLAY:
-            case KeyEvent.KEYCODE_MEDIA_PAUSE:
-            case KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE:
-            case KeyEvent.KEYCODE_MEDIA_NEXT:
-            case KeyEvent.KEYCODE_MEDIA_PREVIOUS:
-            case KeyEvent.KEYCODE_MEDIA_STOP:
-            case KeyEvent.KEYCODE_HEADSETHOOK:
-                // Route media buttons through the MediaSession.
-                // MediaButtonReceiver will dispatch to our session callback.
-                return super.dispatchKeyEvent(event);
-
-            default:
-                return super.dispatchKeyEvent(event);
-        }
+        return super.dispatchKeyEvent(event);
     }
 
     @Override
     protected void onDestroy() {
-        // Release media session when activity is destroyed.
+        if (candidateReceiver != null) {
+            unregisterReceiver(candidateReceiver);
+            candidateReceiver = null;
+        }
         GpuiMediaSession.release();
         super.onDestroy();
     }
 
-    /**
-     * Handle new intents delivered to this singleTask activity.
-     *
-     * When the app is already running and a deeplink is opened
-     * (e.g. `adb shell am start -d gpui://video_player`), this method
-     * receives the new intent. We update the activity's intent and
-     * notify the Rust side via JNI.
-     */
     @Override
     protected void onNewIntent(Intent intent) {
         super.onNewIntent(intent);
         setIntent(intent);
-
         Uri data = intent.getData();
-        if (data != null) {
-            String url = data.toString();
-            Log.i("GpuiActivity", "onNewIntent deeplink: " + url);
-            try {
-                nativeOnDeepLink(url);
-            } catch (UnsatisfiedLinkError e) {
-                Log.w("GpuiActivity", "nativeOnDeepLink not available yet");
-            }
+        if (data == null) return;
+        String url = data.toString();
+        Log.i("GpuiActivity", "onNewIntent deeplink: " + url);
+        if (getClass() == GpuiActivity.class
+                && "sos".equals(data.getScheme())
+                && "candidate".equals(data.getHost())) {
+            launchCandidate(data);
+        }
+        try {
+            nativeOnDeepLink(url);
+        } catch (UnsatisfiedLinkError ignored) {
+            Log.w("GpuiActivity", "nativeOnDeepLink not available yet");
         }
     }
 
-    /**
-     * JNI bridge to check if the Rust NATIVE_INITIALIZED flag is set.
-     */
-    private static native boolean nativeIsInitialized();
+    private void launchCandidate(Uri data) {
+        String revision = valueOr(data.getQueryParameter("revision"), "unknown");
+        String mode = valueOr(data.getQueryParameter("mode"), "ready");
+        launchCandidate(revision, mode, "0", "0");
+    }
 
-    /**
-     * JNI bridge to notify Rust of an incoming deeplink URL.
-     */
+    /** Called by the accepted Rust host after worker validation and state staging. */
+    public void launchNativeCandidate(
+            String revision, String stageId, String expectedRevision) {
+        launchCandidate(revision, "ready", stageId, expectedRevision);
+    }
+
+    /** Test-only crash injection selected by an explicit source marker. */
+    public void launchNativeCandidateMode(
+            String revision, String stageId, String expectedRevision, String mode) {
+        launchCandidate(revision, mode, stageId, expectedRevision);
+    }
+
+    private void launchCandidate(
+            String revision, String mode, String stageId, String expectedRevision) {
+        Intent candidate = new Intent(this, CandidateGpuiActivity.class);
+        candidate.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK);
+        candidate.putExtra("sos_process_role", "candidate");
+        candidate.putExtra("revision", revision);
+        candidate.putExtra("mode", mode);
+        candidate.putExtra("stage_id", stageId);
+        candidate.putExtra("expected_revision", expectedRevision);
+        Context application = getApplicationContext();
+        new Thread(() -> {
+            stopExistingCandidate();
+            new Handler(Looper.getMainLooper()).post(() -> {
+                candidateLaunchAtMs = SystemClock.elapsedRealtime();
+                startActivity(candidate);
+                watchCandidate(revision);
+                Log.i("sos-supervisor", "candidate_fresh_process_requested revision=" + revision);
+            });
+        }, "sos-candidate-replacer").start();
+    }
+
+    private static String valueOr(String value, String fallback) {
+        return value == null || value.isEmpty() ? fallback : value;
+    }
+
+    private void watchCandidate(String revision) {
+        Context application = getApplicationContext();
+        String candidateProcess = getPackageName() + ":candidate";
+        new Thread(() -> {
+            int watchedPid = -1;
+            for (int attempt = 0; attempt < 1200; attempt++) {
+                ActivityManager manager =
+                        (ActivityManager) application.getSystemService(Context.ACTIVITY_SERVICE);
+                boolean alive = false;
+                if (manager != null && manager.getRunningAppProcesses() != null) {
+                    for (ActivityManager.RunningAppProcessInfo process
+                            : manager.getRunningAppProcesses()) {
+                        if (candidateProcess.equals(process.processName)) {
+                            if (watchedPid < 0) watchedPid = process.pid;
+                            alive = process.pid == watchedPid;
+                            break;
+                        }
+                    }
+                }
+                if (alive) {
+                    // Keep watching the exact process that rendered this revision.
+                } else if (watchedPid >= 0) {
+                    if (watchedPid == intentionallyStoppedCandidatePid) {
+                        Log.i("sos-supervisor", "candidate_process_replaced revision=" + revision
+                                + " pid=" + watchedPid);
+                        return;
+                    }
+                    Log.w("sos-supervisor", "candidate_process_died revision=" + revision);
+                    new Handler(Looper.getMainLooper()).post(() -> {
+                        Intent accepted = new Intent(application, GpuiActivity.class);
+                        accepted.setData(Uri.parse(
+                                "sos://candidate-died?revision=" + revision));
+                        accepted.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK
+                                | Intent.FLAG_ACTIVITY_REORDER_TO_FRONT
+                                | Intent.FLAG_ACTIVITY_SINGLE_TOP);
+                        application.startActivity(accepted);
+                        Log.i("sos-supervisor", "accepted_surface_restored revision=" + revision);
+                    });
+                    return;
+                }
+                try {
+                    Thread.sleep(50L);
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    return;
+                }
+            }
+            Log.w("sos-supervisor", "candidate_watch_timeout revision=" + revision);
+        }, "sos-candidate-watchdog").start();
+    }
+
+    private void stopExistingCandidate() {
+        String candidateProcess = getPackageName() + ":candidate";
+        ActivityManager manager =
+                (ActivityManager) getSystemService(Context.ACTIVITY_SERVICE);
+        for (int attempt = 0; attempt < 40; attempt++) {
+            int pid = -1;
+            if (manager != null && manager.getRunningAppProcesses() != null) {
+                for (ActivityManager.RunningAppProcessInfo process
+                        : manager.getRunningAppProcesses()) {
+                    if (candidateProcess.equals(process.processName)) {
+                        pid = process.pid;
+                        break;
+                    }
+                }
+            }
+            if (pid < 0) return;
+            if (attempt == 0) {
+                Log.i("sos-supervisor", "candidate_cached_process_terminated pid=" + pid);
+                intentionallyStoppedCandidatePid = pid;
+                android.os.Process.killProcess(pid);
+            }
+            try {
+                Thread.sleep(25L);
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                return;
+            }
+        }
+        Log.w("sos-supervisor", "candidate_cached_process_exit_timeout");
+    }
+
+    /** Called by Rust after the candidate GPUI post-render callback. */
+    public void onNativeCandidateFirstFrame(String revision) {
+        Intent firstFrame = new Intent(CANDIDATE_FIRST_FRAME);
+        firstFrame.setPackage(getPackageName());
+        firstFrame.putExtra("revision", revision);
+        firstFrame.putExtra("pid", android.os.Process.myPid());
+        sendBroadcast(firstFrame);
+    }
+
+    private static native boolean nativeIsInitialized();
     private static native void nativeOnDeepLink(String url);
 }

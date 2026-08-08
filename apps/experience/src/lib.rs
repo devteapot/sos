@@ -3,6 +3,9 @@ mod android;
 
 pub const DEFAULT_EXPERIENCE: &str = include_str!("../../../experiences/default.luau");
 pub const TIMEFLOW_EXPERIENCE: &str = include_str!("../../../experiences/timeflow.luau");
+pub const DAILY_FLOW_EXPERIENCE: &str = include_str!("../../../experiences/daily-flow.luau");
+pub const DAILY_FLOW_AGENT_EXPERIENCE: &str =
+    include_str!("../../../experiences/daily-flow-agent.luau");
 
 #[cfg(not(target_os = "android"))]
 pub fn validate_embedded_experience() -> Result<usize, String> {
@@ -39,5 +42,17 @@ mod tests {
             .unwrap();
         assert!(experience_ir::validate_tree(&timeflow_tree).unwrap() > 15);
         assert!(contains_action(&timeflow_tree, "toggle_music"));
+
+        for source in [
+            super::DAILY_FLOW_EXPERIENCE,
+            super::DAILY_FLOW_AGENT_EXPERIENCE,
+        ] {
+            let runtime = runtime_luau::LuauRuntime::compile(source).unwrap();
+            let tree = runtime
+                .render(&providers_fake::snapshot(), &runtime.initial_state())
+                .unwrap();
+            assert!(experience_ir::validate_tree(&tree).unwrap() > 15);
+            assert!(contains_action(&tree, "toggle_music"));
+        }
     }
 }

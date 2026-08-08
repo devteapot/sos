@@ -1,0 +1,62 @@
+[
+  {
+    "id": "next_focus",
+    "prompt": "Replace the current experience with a calm view centered on the next appointment. Show weather as ambient context, preserve both notes, and show music controls only while music is playing.",
+    "required_text": ["Design review", "Interface thought", "Tonight"],
+    "conditional_music": true,
+    "require_canvas": false,
+    "min_paths": 0,
+    "min_quads": 0,
+    "require_drag_effect": false
+  },
+  {
+    "id": "cardless_river",
+    "prompt": "Remove every card. Invent a continuous spatial river for the day: appointments should pull the river sideways according to how much travel their detail implies. Keep the next appointment legible and render the geometry yourself.",
+    "required_text": ["Design review"],
+    "conditional_music": false,
+    "require_canvas": true,
+    "min_paths": 3,
+    "min_quads": 3,
+    "require_drag_effect": false
+  },
+  {
+    "id": "drag_attach",
+    "prompt": "Build a card-free bent time field. Let me drag the first note onto Design review. Compute drawing, source and destination geometry, hit testing, drag state, and drop validation in Luau. A valid drop must show attached state and emit notes.attach_to_event.",
+    "required_text": ["Design review", "Interface thought"],
+    "conditional_music": false,
+    "require_canvas": true,
+    "min_paths": 2,
+    "min_quads": 2,
+    "require_drag_effect": true
+  },
+  {
+    "id": "weather_orbit",
+    "prompt": "Invent a radial weather-and-schedule instrument rather than a dashboard. Temperature should be the center of gravity; the three appointments orbit it at positions derived in Luau, with clear text outside the drawing.",
+    "required_text": ["28", "Design review", "Lunch with Marta", "Evening run"],
+    "conditional_music": false,
+    "require_canvas": true,
+    "min_paths": 3,
+    "min_quads": 3,
+    "require_drag_effect": false
+  },
+  {
+    "id": "quiet_until_lunch",
+    "prompt": "Create a quiet focus space that foregrounds only Design review and the Interface thought note until lunch. The remaining schedule must still be discoverable below, and music controls must disappear when playback is paused.",
+    "required_text": ["Design review", "Interface thought", "Lunch with Marta"],
+    "conditional_music": true,
+    "require_canvas": false,
+    "min_paths": 0,
+    "min_quads": 0,
+    "require_drag_effect": false
+  },
+  {
+    "id": "tension_map",
+    "prompt": "Create a card-free tension map of the day. Draw connections between appointments and notes, with line weight or position derived from their content. Make the result visually nontrivial and keep all interactive geometry inside the phone canvas.",
+    "required_text": ["Design review", "Interface thought"],
+    "conditional_music": false,
+    "require_canvas": true,
+    "min_paths": 4,
+    "min_quads": 3,
+    "require_drag_effect": false
+  }
+]

@@ -1,9 +1,15 @@
 # SOS
 
-SOS is a research prototype for an agent-generated native mobile experience.
-The project starts with a kill-or-confirm spike for the community GPUI Mobile
-Android port. No agent, provider protocol, or operating-system architecture is
-part of Milestone 0.
+SOS is a research prototype for an agent-native operating experience: the user
+directs an agent that continuously writes and installs the native interface,
+while separately installed providers remain authoritative over data and
+actions. It is not intended to become a scriptable Android application or a
+fixed catalog of generated widgets. The authoritative end goal and the meaning
+of “moving off Android” are defined in [`docs/vision.md`](docs/vision.md).
+
+The project begins inside Android only as a hardware and interaction laboratory.
+Milestone 0 intentionally contains no agent, provider protocol, or operating-
+system architecture.
 
 **Status:** Milestone 0 is confirmed on a physical Samsung SM-A336B. Milestone
 1 is now a GPUI host with a sandboxed Luau experience layer. See the hardware
@@ -11,8 +17,21 @@ checks in [`docs/experiment.md`](docs/experiment.md) and the runtime decision in
 [`docs/runtime-evaluation.md`](docs/runtime-evaluation.md).
 The verified end-to-end results are in
 [`docs/vertical-slice.md`](docs/vertical-slice.md).
+The worker-thread and 1,000-swap latency gate is in
+[`docs/worker-stress-gate.md`](docs/worker-stress-gate.md).
+The stateful generated-experience gate, including native input and the
+10,000-swap device soak, is in
+[`docs/stateful-experience-gate.md`](docs/stateful-experience-gate.md).
+The current five-assumption Android-exit audit is in
+[`docs/android-exit-gate.md`](docs/android-exit-gate.md).
 Ongoing experiments, failures, measurements, and decisions are indexed in the
 living [`docs/progress.md`](docs/progress.md) ledger.
+
+The current bounded Luau UI IR now includes custom canvas geometry and drag hit
+testing, but the first Android-exit audit remains incomplete. Before moving to
+a privileged AOSP shell, SOS must prove reliable single-shot task completion,
+crash-safe whole-revision promotion, provider/state independence with
+migrations, and sustained sub-100-ms presentation on the deeper experience.
 
 ## Milestone 0
 
@@ -60,7 +79,11 @@ Replace only the experience source while the same process and APK stay alive:
 
 ```sh
 ./tools/sosctl script experiences/timeflow.luau
+./tools/sosctl validate experiences/daily-flow-agent.luau
+./tools/sosctl agent-apply experiences/daily-flow-agent.luau
 ./tools/sosctl rollback
+./tools/sosctl worker-restart
+./tools/sosctl stress 10000
 ```
 
 A candidate must compile, finish within its time budget, decode to the bounded
