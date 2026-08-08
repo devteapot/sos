@@ -1,0 +1,4 @@
+[env]
+# Android has no system fontconfig package. The pinned GPUI WGPU renderer uses
+# font-kit, whose sys crate must defer discovery until runtime when cross-built.
+RUST_FONTCONFIG_DLOPEN = "on"

@@ -5,9 +5,12 @@ The project starts with a kill-or-confirm spike for the community GPUI Mobile
 Android port. No agent, provider protocol, or operating-system architecture is
 part of Milestone 0.
 
-**Status:** Milestone 0 is confirmed on a physical Samsung SM-A336B. See the
-recorded hardware checks and limitations in
-[`docs/experiment.md`](docs/experiment.md).
+**Status:** Milestone 0 is confirmed on a physical Samsung SM-A336B. Milestone
+1 is now a GPUI host with a sandboxed Luau experience layer. See the hardware
+checks in [`docs/experiment.md`](docs/experiment.md) and the runtime decision in
+[`docs/runtime-evaluation.md`](docs/runtime-evaluation.md).
+The verified end-to-end results are in
+[`docs/vertical-slice.md`](docs/vertical-slice.md).
 
 ## Milestone 0
 
@@ -37,3 +40,27 @@ tracked.
 
 The experiment contract and current device results are recorded in
 [`docs/experiment.md`](docs/experiment.md).
+
+## Milestone 1 vertical slice
+
+The first end-to-end experience contains synthetic calendar, notes, music, and
+weather data. Rust owns GPUI, fake providers, persistence, validation, and
+rollback. [`experiences/default.luau`](experiences/default.luau) owns the screen
+composition and local behavior.
+
+Build, install, and launch the ARM64 APK:
+
+```sh
+./tools/sosctl m1-run
+```
+
+Replace only the experience source while the same process and APK stay alive:
+
+```sh
+./tools/sosctl script experiences/timeflow.luau
+./tools/sosctl rollback
+```
+
+A candidate must compile, finish within its time budget, decode to the bounded
+UI IR, and render against the current model and state before it replaces the
+accepted revision. A rejected candidate leaves the current experience live.

@@ -1,0 +1,35 @@
+[workspace]
+members = [
+    "apps/experience",
+    "crates/experience-ir",
+    "crates/providers-fake",
+    "crates/runtime-luau",
+]
+resolver = "2"
+
+[workspace.package]
+edition = "2021"
+license = "MIT OR Apache-2.0"
+version = "0.1.0"
+
+[workspace.dependencies]
+experience-ir = { path = "crates/experience-ir" }
+providers-fake = { path = "crates/providers-fake" }
+runtime-luau = { path = "crates/runtime-luau" }
+log = "0.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+
+[patch.crates-io]
+async-task = { git = "https://github.com/smol-rs/async-task.git", rev = "b4486cd71e4e94fbda54ce6302444de14f4d190e" }
+
+[profile.release]
+opt-level = "z"
+lto = "fat"
+codegen-units = 1
+strip = true
+# Luau reports VM errors through C++ exceptions which are caught inside its
+# protected-call boundary. Android must retain unwind tables for that path;
+# panic=abort caused a timed-out candidate to terminate the process.
+panic = "unwind"

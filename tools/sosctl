@@ -7,12 +7,18 @@ GPUI_REPOSITORY="https://github.com/itsbalamurali/gpui-mobile.git"
 GPUI_COMMIT="1d3ec2a1d14a63b74d1f4269340441d4eeada27a"
 GPUI_SHORT_COMMIT="${GPUI_COMMIT:0:12}"
 NDK_VERSION="29.0.14206865"
-ANDROID_PACKAGE="dev.gpui.mobile.example"
+M0_ANDROID_PACKAGE="dev.gpui.mobile.example"
+M1_ANDROID_PACKAGE="dev.sos.experience"
 ANDROID_ACTIVITY="dev.gpui.mobile.GpuiActivity"
 CACHE_ROOT="$SOS_ROOT/.cache"
 UPSTREAM_DIR="$CACHE_ROOT/gpui-mobile-$GPUI_SHORT_COMMIT"
 ARTIFACT_DIR="$SOS_ROOT/artifacts"
-APK_PATH="$ARTIFACT_DIR/gpui-mobile-m0-$GPUI_SHORT_COMMIT.apk"
+M0_APK_PATH="$ARTIFACT_DIR/gpui-mobile-m0-$GPUI_SHORT_COMMIT.apk"
+M1_GRADLE_DIR="$SOS_ROOT/apps/experience/android/gradle"
+M1_JNI_DIR="$M1_GRADLE_DIR/app/src/main/jniLibs/arm64-v8a"
+M1_GRADLE_APK="$M1_GRADLE_DIR/app/build/outputs/apk/debug/app-debug.apk"
+M1_APK_PATH="$ARTIFACT_DIR/sos-experience.apk"
+M1_DEVICE_STAGING="/data/local/tmp/dev.sos.experience.candidate.luau"
 
 info() {
   printf '==> %s\n' "$*"
@@ -148,42 +154,141 @@ build_apk() {
   )
 
   [[ -f "$upstream_apk" ]] || fail "Gradle did not produce $upstream_apk"
-  cp "$upstream_apk" "$APK_PATH"
-  info "artifact: $APK_PATH ($(du -h "$APK_PATH" | awk '{ print $1 }'))"
+  cp "$upstream_apk" "$M0_APK_PATH"
+  info "artifact: $M0_APK_PATH ($(du -h "$M0_APK_PATH" | awk '{ print $1 }'))"
 }
 
 install_apk() {
   resolve_android_environment
   require_command adb
   select_device
-  [[ -f "$APK_PATH" ]] || fail "APK not found; run ./tools/sosctl build first"
-  info "installing $ANDROID_PACKAGE"
-  adb install -r "$APK_PATH"
+  [[ -f "$M0_APK_PATH" ]] || fail "APK not found; run ./tools/sosctl build first"
+  info "installing $M0_ANDROID_PACKAGE"
+  adb install -r "$M0_APK_PATH"
 }
 
 launch_app() {
   resolve_android_environment
   require_command adb
   select_device
-  info "launching $ANDROID_PACKAGE"
-  adb shell am start -W -n "$ANDROID_PACKAGE/$ANDROID_ACTIVITY"
+  info "launching $M0_ANDROID_PACKAGE"
+  adb shell am start -W -n "$M0_ANDROID_PACKAGE/$ANDROID_ACTIVITY"
 }
 
-follow_logs() {
+follow_package_logs() {
+  local package_name="$1"
   resolve_android_environment
   require_command adb
   select_device
 
   local app_pid=""
   for _ in {1..50}; do
-    app_pid="$(adb shell pidof "$ANDROID_PACKAGE" | tr -d '\r')"
+    app_pid="$(adb shell pidof "$package_name" | tr -d '\r')"
     [[ -n "$app_pid" ]] && break
     sleep 0.1
   done
-  [[ -n "$app_pid" ]] || fail "could not find the running $ANDROID_PACKAGE process"
+  [[ -n "$app_pid" ]] || fail "could not find the running $package_name process"
 
   info "following PID $app_pid logs; press Ctrl-C to stop"
   adb logcat --pid="$app_pid" -v color
+}
+
+follow_logs() {
+  follow_package_logs "$M0_ANDROID_PACKAGE"
+}
+
+build_experience_apk() {
+  resolve_android_environment
+  for command_name in git cargo rustup cargo-ndk adb; do
+    require_command "$command_name"
+  done
+
+  mkdir -p "$M1_JNI_DIR" "$ARTIFACT_DIR"
+  find "$M1_JNI_DIR" -maxdepth 1 -type f -name '*.so' -delete
+
+  info "building the SOS GPUI host and embedded Luau runtime for ARM64"
+  (
+    cd "$SOS_ROOT"
+    cargo ndk \
+      --link-libcxx-shared \
+      -t arm64-v8a \
+      -P 31 \
+      -o apps/experience/android/gradle/app/src/main/jniLibs \
+      build -p sos-experience --release --locked
+  )
+
+  info "packaging a debug-signed SOS APK"
+  (
+    cd "$M1_GRADLE_DIR"
+    ./gradlew clean assembleDebug
+  )
+
+  [[ -f "$M1_GRADLE_APK" ]] || fail "Gradle did not produce $M1_GRADLE_APK"
+  cp "$M1_GRADLE_APK" "$M1_APK_PATH"
+  local revision
+  revision="$(git -C "$SOS_ROOT" rev-parse --short=12 HEAD)"
+  if [[ -n "$(git -C "$SOS_ROOT" status --porcelain)" ]]; then
+    revision="$revision-dirty"
+  fi
+  cp "$M1_GRADLE_APK" "$ARTIFACT_DIR/sos-experience-$revision.apk"
+  info "artifact: $M1_APK_PATH ($(du -h "$M1_APK_PATH" | awk '{ print $1 }'))"
+  info "revision artifact: $ARTIFACT_DIR/sos-experience-$revision.apk"
+}
+
+install_experience_apk() {
+  resolve_android_environment
+  require_command adb
+  select_device
+  [[ -f "$M1_APK_PATH" ]] || fail "APK not found; run ./tools/sosctl m1-build first"
+  info "installing $M1_ANDROID_PACKAGE while preserving its data"
+  adb install -r "$M1_APK_PATH"
+}
+
+launch_experience() {
+  resolve_android_environment
+  require_command adb
+  select_device
+  info "launching $M1_ANDROID_PACKAGE"
+  adb shell am start -W -n "$M1_ANDROID_PACKAGE/$ANDROID_ACTIVITY"
+}
+
+trigger_script_reload() {
+  adb shell am start \
+    -W \
+    -a android.intent.action.VIEW \
+    -d 'sos://reload' \
+    -n "$M1_ANDROID_PACKAGE/$ANDROID_ACTIVITY" >/dev/null
+}
+
+install_script() {
+  local source_path="${1:-}"
+  [[ -n "$source_path" ]] || fail "usage: ./tools/sosctl script <experience.luau>"
+  [[ -f "$source_path" ]] || fail "script not found: $source_path"
+
+  resolve_android_environment
+  require_command adb
+  select_device
+  adb shell pm path "$M1_ANDROID_PACKAGE" >/dev/null 2>&1 || fail "$M1_ANDROID_PACKAGE is not installed"
+
+  info "copying Luau candidate without rebuilding or restarting the app"
+  adb push "$source_path" "$M1_DEVICE_STAGING" >/dev/null
+  adb shell run-as "$M1_ANDROID_PACKAGE" \
+    cp "$M1_DEVICE_STAGING" files/experience.candidate.luau
+  adb shell rm -f "$M1_DEVICE_STAGING"
+  trigger_script_reload
+  info "candidate delivered; use ./tools/sosctl m1-logs to inspect acceptance"
+}
+
+rollback_script() {
+  resolve_android_environment
+  require_command adb
+  select_device
+  adb shell run-as "$M1_ANDROID_PACKAGE" \
+    test -f files/experience.previous.luau || fail "no accepted previous revision is available"
+  adb shell run-as "$M1_ANDROID_PACKAGE" \
+    cp files/experience.previous.luau files/experience.candidate.luau
+  trigger_script_reload
+  info "previous accepted Luau revision submitted"
 }
 
 usage() {
@@ -198,6 +303,14 @@ Commands:
   launch              Launch the installed example app.
   logs                Follow logs from the running example process.
   run [--no-follow]   Doctor, build, install, launch, and follow logs.
+  m1-build            Build the SOS GPUI + Luau ARM64 APK.
+  m1-install          Install it with adb install -r (preserves app data).
+  m1-launch           Launch the installed SOS experience.
+  m1-logs             Follow logs from the SOS experience process.
+  m1-run [--no-follow]
+                      Build, install, launch, and follow logs.
+  script <file>       Transactionally load Luau source; no APK or restart.
+  rollback            Submit the prior accepted Luau source as a candidate.
   help                 Show this message.
 
 Set ADB_SERIAL when more than one Android device is connected.
@@ -226,6 +339,40 @@ case "$command_name" in
     ;;
   logs)
     follow_logs
+    ;;
+  m1-build)
+    doctor
+    build_experience_apk
+    ;;
+  m1-install)
+    install_experience_apk
+    ;;
+  m1-launch)
+    launch_experience
+    ;;
+  m1-logs)
+    follow_package_logs "$M1_ANDROID_PACKAGE"
+    ;;
+  script)
+    install_script "${1:-}"
+    ;;
+  rollback)
+    rollback_script
+    ;;
+  m1-run)
+    no_follow=false
+    if [[ "${1:-}" == "--no-follow" ]]; then
+      no_follow=true
+      shift
+    fi
+    [[ "$#" -eq 0 ]] || fail "unexpected m1-run argument: $1"
+    doctor
+    build_experience_apk
+    install_experience_apk
+    launch_experience
+    if ! $no_follow; then
+      follow_package_logs "$M1_ANDROID_PACKAGE"
+    fi
     ;;
   run)
     no_follow=false

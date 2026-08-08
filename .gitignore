@@ -2,4 +2,7 @@
 .cache/
 artifacts/
 *.log
-
+target/
+**/.gradle/
+**/build/
+**/jniLibs/
