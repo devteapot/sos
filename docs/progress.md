@@ -723,3 +723,169 @@ automatically migrating the legacy local state file, and retains the known
 coarse TalkBack and incomplete marked-text bridges. Track the 9,792 KB RSS delta
 in a longer thermal/leak soak, add signing and real-data isolation, and deepen
 the Luau layout/paint/hit-test/gesture/semantics/asset API.
+
+## 2026-08-08 — Break the widget catalog into Scene ABI v2
+
+**Goal:** Make Luau the durable experience language without preserving the
+closed `UiNode` catalog as either a compatibility constraint or a disguised
+promotion trigger. Prove that the permanent Rust/GPUI layer can consume one
+orthogonal retained-scene contract on the connected phone.
+
+**Changed:** `experience-ir` now exposes `Scene`/`SceneNode` with independent
+layout, content, paint, interaction, animation, and semantics facets.
+`runtime-luau` requires `api_version = 2`, decodes those facets, and rejects
+missing/version-1 modules; there is deliberately no catalog adapter. The GPUI
+host now renders scene facets, and the former `native_canvas` implementation is
+the generic `scene_surface`: paths/quads and hit regions may coexist on any
+node. All five bundled experiences, hostile fixtures, validators, grading
+tools, and current API/architecture documentation moved to v2. Source-local
+Luau helpers still provide composition conventions without becoming host node
+types.
+
+**Evidence:** `cargo test --workspace --all-targets` passed 57 tests, including
+the new explicit version-1 rejection and combined-facet validation;
+`cargo clippy --workspace --all-targets -- -D warnings` passed. Every bundled
+source passed the local validator. The `drag_attach` evaluator scored the
+v2 spatial source 8/8: one low-level paint node, five paths, four quads, four
+bounded hit regions, and a reachable typed provider effect. A strict ARM64
+Android build completed through `ANDROID_SDK_ROOT=/usr/lib/android-sdk`, NDK 29,
+Java 17, and `./tools/sosctl m1-build`.
+
+The dirty `636295f714b8` APK
+`artifacts/sos-experience-636295f714b8-dirty.apk` is 36,652,189 bytes with
+SHA-256 `e6aab623ffc3c34bf3b51c8e191cbcd596ed8ede07c2b5d32197f9673237095d`.
+It installed on the Samsung SM-A336B/API 35. The existing version-1 cached
+source was rejected rather than translated, the embedded v2 source kept startup
+usable, and applying `experiences/android-exit-agent.luau` committed v2 source
+SHA-256 `edb83a0bd823f91ff676bde108e260a5af260ea6aa91f1dc4b3401ae4da42061`
+in the same PID in 54.217 ms. The physical screenshot
+`artifacts/sos-agent-latest.png` is 123,695 bytes with SHA-256
+`eed26e00a10e3c4c58a5a0a6e87ea007cc3cb7d96ebf7cded76a3e040cc63be2`.
+A 100-swap frame-paced smoke run accepted 100/100 with visible p50/p95/max
+23.684/91.701/93.684 ms and worker p95 6.451 ms. A cold permanent-host restart
+changed PID 534 to 1199, recovered authority revision 47 and the exact v2 source
+hash, and published four semantic entries without a startup rejection.
+
+**Failures and fixes:** A bare Android `cargo check` could not find the C
+cross-compiler on the native ARM64 workstation; the repository's standard
+`m1-build` path selected the native-Clang NDK wrapper and completed. The first
+v2 launch found the intentionally incompatible cached v1 source. Existing
+startup containment rejected it and selected the embedded v2 source; a normal
+same-process v2 activation then advanced the authoritative source hash, so the
+following cold launch recovered directly. No compatibility decoder or package
+data deletion was added.
+
+**Decision:** Scene ABI v2 is the only active experience contract. It is valid
+to break this prototype ABI while the integration layer is still being
+designed. Add expressiveness by extending orthogonal retained facets and typed
+revision assets in the permanent host, not by adding widget types and not by
+promoting individual experiences to Rust.
+
+**Open risks / next gate:** Version 2 establishes the shape but still exposes
+only GPUI flex/overlay layout, fill/path/quad paint, rectangular hit regions,
+two animations, coarse window accessibility, and incomplete marked-text input.
+Next add clips/transforms/layers and glyph runs, followed by retained custom
+measure/arrange programs, richer gestures/pointer capture, real Android
+accessibility nodes, and immutable revision-scoped assets. Keep VM, scene,
+effect, and authority caps; tune them from device evidence rather than removing
+the sandbox boundary.
+
+## 2026-08-08 — Deepen Scene ABI v2 instead of adding native experience promotion
+
+**Goal:** Test the hypothesis that the permanent Luau↔Rust↔GPUI integration
+layer can absorb the next expressiveness gaps—layered paint, glyph shaping,
+retained custom placement, richer gestures, accessibility, and assets—without
+creating an experience-native Rust tier or rebuilding the APK for mutations.
+
+**Changed:** `experience-ir` and `runtime-luau` now decode and recursively
+validate clipped/opacity paint layers, affine translation/scale/rotation,
+host-shaped multi-style glyph runs, layout min/max/aspect constraints, absolute
+retained placement, clip bounds, tap/double-tap/long-press/swipe actions, and
+phase/delta/velocity event fields. Paint depth is capped at 16 and glyph runs at
+256. The Android `scene_surface` prepares text through GPUI's text system and
+executes the retained display list through GPUI content masks, paint layers,
+paths, quads, and glyphs. Luau stays out of frame-critical paint and layout.
+
+Luau modules may declare up to 64 SVG assets of 256 KiB each. The runtime
+rejects active/external SVG features, hashes accepted bytes, substitutes a
+content-addressed host path, and transfers the asset set only when the worker
+commits. The Android registry replaces the prior revision set atomically. This
+is revision-scoped execution today because asset bytes live inside the hashed
+Luau source; individually hashed supervisor sidecars remain a later manifest
+format.
+
+The host now builds a platform-neutral semantic tree from stable scene IDs,
+roles, labels, values, hints, actions, editability, hierarchy, and GPUI-measured
+bounds. `GpuiPlatformView` adapts it through an Android
+`AccessibilityNodeProvider`, exposing virtual text, image, button, status, and
+editable nodes with focus/click/set-text actions. JNI queues actions back to the
+GPUI thread. Android is deliberately an adapter over SOS semantics, not the
+durable abstraction. The bundled daily experiences gained stable semantic IDs,
+and `android-exit-agent.luau` now exercises every new paint/layout/gesture/asset
+facet.
+
+**Evidence:** `cargo test --workspace --all-targets` passed 59 tests, including
+new combined-facet, content-addressed asset, and active-SVG rejection cases;
+`cargo clippy --workspace --all-targets -- -D warnings` passed. All five bundled
+Luau experiences passed the local validator. The updated recursive paint grader
+scored `drag_attach` 8/8 with five paths, five quads, four bounded regions, and
+a reachable typed provider effect. A strict ARM64 build completed
+with NDK 29 and Java 17, including Rust and Java conditional Android code.
+
+On the Samsung SM-A336B/API 35, the expanded 12,350-byte spatial source
+(SHA-256 `72097b1f05ac31931605948a77ea371907ab5f348ce4f0e19be7ff8a484efe9e`)
+activated in the same PID in 74.872 ms during the final native-code cycle. GPUI drew
+the nested clipped/transformed layer, naturally shaped complete calendar glyph
+runs, the absolute ABI badge, and the revision-owned SVG badge. Two physical
+taps on the same generated event region emitted `event_tap` followed by
+`event_zoom`; the second worker transition completed in 4.602 ms. A separate
+daily-flow activation exposed six virtual nodes including a real
+`android.widget.EditText`. The final `uiautomator` dump exposed a full-screen
+enabled host container and four independent descendants with distinct Android
+classes, labels, clickability, and measured screen bounds; it carried no coarse
+window description.
+
+The final dirty APK
+`artifacts/sos-experience-636295f714b8-dirty.apk` is 36,736,445 bytes with
+SHA-256 `577bb4a00d71b659c40d6dde399c9bf0e2068e87b4841854171fac7e62714c85`.
+The final screenshot `artifacts/sos-scene-abi-expanded-final.png` is 135,326
+bytes with SHA-256
+`a7bbce547f3c1470037ef8dd382c04fefe7cae17bb75b64391f698c2795d398a`.
+The accessibility artifact `artifacts/sos-accessibility-tree.xml` is 1,868
+bytes with SHA-256
+`fc2dc7ecf1730d3151008b865606ed37ab037b6c3e45fd8eacebd4c0292a2650`.
+Cold recovery preserved authority revision 61 and the exact expanded source in
+PID 5867; no startup rejection, panic, or Android runtime crash was logged.
+
+**Failures and fixes:** Requiring stable IDs for semantic nodes deliberately
+rejected the previously cached v2 source on the first upgraded launch; startup
+containment used the embedded scene, and a normal source-only activation
+installed the migrated revision. The first device render spread glyphs across
+the declared `max_width`: GPUI's `shape_line` fourth argument is fixed advance
+per glyph, not a width constraint. Shaping with natural advances and applying
+`max_width` as a content mask fixed the complete text on the phone. Android's
+native click count remained one across two injected taps, so the host now
+tracks a bounded 400 ms per-region tap history; the device then emitted the
+double-tap action. The first virtual host node had a zero rectangle and repeated
+the legacy summary; explicit decor bounds and a summary only when the semantic
+tree is empty fixed both issues.
+
+**Decision:** Keep native experience promotion removed. The durable contract is
+a bounded retained scene plus a host-owned semantic tree and typed effects.
+Android accessibility nodes are necessary while Android supplies system
+accessibility, switch/voice input, focus, and automation, but they are not an
+APK-compatibility commitment: a future native SOS environment replaces the
+Android adapter and retains the semantic source of truth.
+
+**Open risks / next gate:** Absolute retained placement lets Luau calculate
+custom layouts now, but responsive algorithms still lack validated
+host-executed measure/arrange programs over available size and child intrinsic
+measurements. Add those before claiming arbitrary responsive layout. Physical
+double-tap passed; long-press and swipe code paths need a real-touch gate because
+ADB stationary-swipe synthesis resolved as taps on this input stack. Add
+explicit capture policy and multi-pointer recognition. Accessibility still
+needs scroll actions/visibility clipping, selection ranges, live-region event
+coalescing, and real TalkBack/switch/Voice Access action testing. Finish marked
+text/IME, upgrade the supervisor manifest for sidecar fonts/images/shaders, and
+replace lexical SVG screening with a production asset compiler. The VM remains
+prototype isolation, not a credential trust boundary.

@@ -9,21 +9,31 @@ local dim = 0x9EAAA3
 local amber = 0xF0A83B
 
 local function text(value, size, color)
-    return { type = "text", text = tostring(value), style = { text_size = size, color = color or cream } }
+    return { content = { kind = "text", value = tostring(value), size = size, color = color or cream } }
+end
+
+local function group(flow, layout, children, background, radius, id, tap_action)
+    layout = layout or {}
+    layout.flow = flow
+    return {
+        id = id,
+        layout = layout,
+        paint = background and {{ kind = "fill_bounds", color = background, radius = radius or 0 }} or nil,
+        interaction = tap_action and { tap_action = tap_action } or nil,
+        children = children,
+    }
 end
 
 local function timeline_item(time, title, detail, last)
-    return {
-        type = "row", style = { gap = 16 }, children = {
-            { type = "column", style = { width = 58, align = "center" }, children = {
-                text(time, 13, amber),
-                { type = "box", style = { width = 2, height = last and 22 or 86, background = 0x426052 } },
-            } },
-            { type = "column", style = { gap = 4, padding = 2, grow = true }, children = {
-                text(title, 20, cream), text(detail, 13, dim),
-            } },
-        }
-    }
+    return group("row", { gap = 16 }, {
+        group("column", { width = 58, align = "center" }, {
+            text(time, 13, amber),
+            group("overlay", { width = 2, height = last and 22 or 86 }, nil, 0x426052),
+        }),
+        group("column", { gap = 4, padding = 2, grow = true }, {
+            text(title, 20, cream), text(detail, 13, dim),
+        }),
+    })
 end
 
 local function render(model, state)
@@ -31,28 +41,24 @@ local function render(model, state)
     if playing == nil then playing = model.music.playing end
 
     local children = {
-        { type = "row", style = { align = "end", justify = "between" }, children = {
-            { type = "column", style = { gap = 3 }, children = {
+        group("row", { align = "end", justify = "between" }, {
+            group("column", { gap = 3 }, {
                 text(model.greeting, 25, cream), text(model.date, 13, dim),
-            } },
-            { type = "column", style = { align = "end" }, children = {
+            }),
+            group("column", { align = "end" }, {
                 text(model.weather.temperature_c .. "°", 34, sage), text(model.weather.summary, 11, dim),
-            } },
-        } },
+            }),
+        }),
     }
 
     if playing then
-        table.insert(children, {
-            type = "row", action = "toggle_music", style = {
-                gap = 11, padding = 13, align = "center", background = 0x213129, radius = 14,
-            }, children = {
-                text("Ⅱ", 22, amber),
-                { type = "column", style = { gap = 1, grow = true }, children = {
-                    text(model.music.title, 16, cream), text(model.music.artist, 12, dim),
-                } },
-                text("Tap to pause", 11, sage),
-            }
-        })
+        table.insert(children, group("row", { gap = 11, padding = 13, align = "center" }, {
+            text("Ⅱ", 22, amber),
+            group("column", { gap = 1, grow = true }, {
+                text(model.music.title, 16, cream), text(model.music.artist, 12, dim),
+            }),
+            text("Tap to pause", 11, sage),
+        }, 0x213129, 14, "music-playing", "toggle_music"))
     end
 
     table.insert(children, text("YOUR DAY, AS A FLOW", 11, sage))
@@ -61,18 +67,14 @@ local function render(model, state)
     end
     table.insert(children, text("NOTES ALONG THE WAY", 11, sage))
     for _, note in ipairs(model.notes) do
-        table.insert(children, {
-            type = "column", style = { gap = 3, padding = 4 }, children = {
-                text(note.title, 17, cream), text(note.preview, 13, dim),
-            }
-        })
+        table.insert(children, group("column", { gap = 3, padding = 4 }, {
+            text(note.title, 17, cream), text(note.preview, 13, dim),
+        }))
     end
 
-    return {
-        type = "scroll", id = "timeflow-root", style = { background = night }, children = {
-            { type = "column", style = { padding = 22, gap = 18 }, children = children }
-        }
-    }
+    return group("column", { scroll_y = true }, {
+        group("column", { padding = 22, gap = 18 }, children),
+    }, night, 0, "timeflow-root")
 end
 
 local function update(_, state, event)
@@ -80,4 +82,4 @@ local function update(_, state, event)
     return state
 end
 
-return { render = render, update = update }
+return { api_version = 2, render = render, update = update }

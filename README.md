@@ -33,11 +33,15 @@ Their supervisor-owned activation journal is in
 Ongoing experiments, failures, measurements, and decisions are indexed in the
 living [`docs/progress.md`](docs/progress.md) ledger.
 
-The bounded Luau UI IR includes custom canvas geometry and drag hit testing, and
-the original Android-exit audit passed at prototype scope. SOS has since removed
+Scene ABI v2 lets any retained node combine layout, content, nested
+clips/transforms/layers, host-shaped glyph runs, custom hit regions and rich
+gestures, animation, and semantics without selecting a widget type. Android
+now adapts the host semantic tree to real per-element accessibility nodes, and
+accepted Luau revisions can carry bounded content-addressed SVG assets.
+The original Android-exit audit passed at prototype scope. SOS has also removed
 native experience binaries from the revision format: one permanent Rust/GPUI
-host now prepares and activates Luau scenes. The stable-host change has both
-Linux protocol evidence and a 10,000-swap physical-device gate; see
+host prepares and activates Luau scenes. The stable-host change has both Linux
+protocol evidence and a 10,000-swap physical-device gate; see
 [`docs/stable-host-device-gate.md`](docs/stable-host-device-gate.md).
 
 ## Milestone 0
@@ -93,6 +97,6 @@ Replace only the experience source while the same process and APK stay alive:
 ./tools/sosctl stress 10000
 ```
 
-A candidate must compile, finish within its time budget, decode to the bounded
-UI IR, and render against the current model and state before it replaces the
+A candidate must declare Scene ABI v2, compile, finish within its time budget,
+decode to a bounded scene, and render against the current model and state before it replaces the
 accepted revision. A rejected candidate leaves the current experience live.

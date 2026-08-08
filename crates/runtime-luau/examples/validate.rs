@@ -1,6 +1,6 @@
 use std::{env, fs, process};
 
-use experience_ir::{NodeKind, UiNode};
+use experience_ir::{Content, PaintOp, Scene, SceneNode};
 use runtime_luau::LuauRuntime;
 use serde_json::json;
 
@@ -25,15 +25,15 @@ fn main() {
         )
     });
     match result {
-        Ok(tree) => {
-            let (nodes, inputs, images, canvases, animations, semantics) = statistics(&tree);
+        Ok(scene) => {
+            let (nodes, inputs, images, paint_nodes, animations, semantics) = statistics(&scene);
             println!(
-                "valid source_bytes={} nodes={} inputs={} images={} canvases={} animations={} semantics={}",
+                "valid source_bytes={} nodes={} inputs={} images={} paint_nodes={} animations={} semantics={}",
                 source.len(),
                 nodes,
                 inputs,
                 images,
-                canvases,
+                paint_nodes,
                 animations,
                 semantics
             );
@@ -45,19 +45,23 @@ fn main() {
     }
 }
 
-fn statistics(root: &UiNode) -> (usize, usize, usize, usize, usize, usize) {
-    fn visit(node: &UiNode, totals: &mut (usize, usize, usize, usize, usize, usize)) {
+fn statistics(scene: &Scene) -> (usize, usize, usize, usize, usize, usize) {
+    fn visit(node: &SceneNode, totals: &mut (usize, usize, usize, usize, usize, usize)) {
         totals.0 += 1;
-        totals.1 += usize::from(matches!(node.kind, NodeKind::TextInput(_)));
-        totals.2 += usize::from(matches!(node.kind, NodeKind::Image(_)));
-        totals.3 += usize::from(matches!(node.kind, NodeKind::Canvas(_)));
+        totals.1 += usize::from(matches!(node.content, Some(Content::TextSession(_))));
+        totals.2 += usize::from(matches!(node.content, Some(Content::Image(_))));
+        totals.3 += usize::from(
+            node.paint
+                .iter()
+                .any(|op| !matches!(op, PaintOp::FillBounds { .. })),
+        );
         totals.4 += usize::from(node.animation.is_some());
-        totals.5 += usize::from(node.accessibility.is_some());
+        totals.5 += usize::from(node.semantics.is_some());
         for child in &node.children {
             visit(child, totals);
         }
     }
     let mut totals = (0, 0, 0, 0, 0, 0);
-    visit(root, &mut totals);
+    visit(&scene.root, &mut totals);
     totals
 }

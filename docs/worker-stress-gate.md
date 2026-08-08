@@ -4,8 +4,8 @@
 
 The gate is **confirmed on the Samsung SM-A336B**. Luau compilation,
 evaluation, update handling, and runtime destruction now happen on one dedicated
-worker thread. GPUI receives only owned Rust model, event, state, and `UiNode`
-values. A frame-paced run completed 1,000 transactional swaps in the same
+worker thread. GPUI receives only owned Rust model, event, state, and retained
+scene values. A frame-paced run completed 1,000 transactional swaps in the same
 process without a rejection, crash, or positive end-to-start RSS delta.
 
 This confirms that interpreted experience mutation can stay comfortably within
@@ -19,10 +19,10 @@ leak freedom.
 GPUI thread                              sos-luau-runtime thread
 -----------                              -------------------------
 source + model + state ── prepare ─────→ compile, evaluate, decode
-                         ← prepared ───── candidate UiNode + timings
+                         ← prepared ───── candidate Scene + timings
 persist accepted source ── commit ─────→ atomically replace active VM
-                         ← committed ─── active UiNode
-render new tree
+                         ← committed ─── active Scene
+render new scene
 GPUI post-render callback ──────────────→ record source-to-visible upper bound
 ```
 
@@ -31,9 +31,9 @@ Messages cross unbounded `async-channel` queues as owned Rust data. Candidate
 replacement is a two-phase prepare/commit protocol: the old VM stays active
 until the candidate has compiled, rendered, decoded, validated, and—during a
 normal source load—its accepted source has been persisted. Actions use the same
-worker and return a new JSON-like state plus a validated tree.
+worker and return a new JSON-like state plus a validated scene.
 
-Startup still waits for the worker's initial tree before opening the experience.
+Startup still waits for the worker's initial scene before opening the experience.
 No Luau executes on the GPUI thread, but eliminating that cold-start wait is a
 separate lifecycle optimization.
 
@@ -43,7 +43,7 @@ For each candidate the app records:
 
 - queue time, from GPUI submission until the worker begins;
 - compile time, including text-only Luau module loading;
-- render time, including Luau evaluation, bounded table decoding, and IR
+- render time, including Luau evaluation, bounded scene decoding, and ABI
   validation;
 - worker total; and
 - source-to-visible, from GPUI submission until GPUI's `on_next_frame`

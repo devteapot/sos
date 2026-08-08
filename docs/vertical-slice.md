@@ -1,5 +1,10 @@
 # Milestone 1: Luau → IR → GPUI vertical slice
 
+> Historical gate: this report describes the original catalog-shaped UI IR.
+> The active contract is the breaking, node-type-free
+> [Scene ABI v2](experience-api.md); the measurements below remain historical
+> evidence for the mutation loop.
+
 ## Result
 
 The first vertical slice is **confirmed on the Samsung SM-A336B**, with a

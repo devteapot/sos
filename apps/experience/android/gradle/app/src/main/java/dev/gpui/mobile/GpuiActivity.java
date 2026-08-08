@@ -49,6 +49,17 @@ public class GpuiActivity extends NativeActivity {
         }
     }
 
+    static void dispatchAccessibilityAction(String action, String target, String value) {
+        if (!sNativeLibLoaded) return;
+        try {
+            nativeOnAccessibilityAction(action, target, value);
+            // The GPUI Android loop drains the queued action on its next frame.
+            nativeOnDeepLink("sos://accessibility");
+        } catch (UnsatisfiedLinkError ignored) {
+            Log.w("GpuiActivity", "native accessibility bridge unavailable");
+        }
+    }
+
     @Override
     public boolean dispatchKeyEvent(KeyEvent event) {
         return super.dispatchKeyEvent(event);
@@ -77,4 +88,6 @@ public class GpuiActivity extends NativeActivity {
 
     private static native boolean nativeIsInitialized();
     private static native void nativeOnDeepLink(String url);
+    private static native void nativeOnAccessibilityAction(
+            String action, String target, String value);
 }

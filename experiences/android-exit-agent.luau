@@ -1,6 +1,7 @@
 --!strict
 -- A hand-authored spatial day: the spine bends toward appointments as travel
--- time accumulates. Canvas owns the geometry and the source-region drag loop.
+-- time accumulates. One node combines low-level paint and the source-region
+-- drag loop without becoming a catalog-specific canvas widget.
 
 local ink = 0x10151D
 local paper = 0x171E29
@@ -19,12 +20,38 @@ local EVENT_H = 58
 local NOTE_W = 142
 local NOTE_H = 62
 
-local function text(value, size, color, accessibility)
+local assets = {
+    ["thread-mark"] = {
+        kind = "svg",
+        data = [[<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 96">
+          <rect width="96" height="96" rx="24" fill="#20313a"/>
+          <path d="M18 66C34 20 61 18 78 54" fill="none" stroke="#7fe1d2" stroke-width="9" stroke-linecap="round"/>
+          <circle cx="25" cy="64" r="8" fill="#ff9a75"/><circle cx="74" cy="55" r="8" fill="#a995ff"/>
+        </svg>]],
+    },
+}
+
+local function text(value, size, color, semantics, id)
     return {
-        type = "text",
-        text = tostring(value),
-        style = { text_size = size, color = color or mist },
-        accessibility = accessibility,
+        id = id,
+        content = { kind = "text", value = tostring(value), size = size, color = color or mist },
+        semantics = semantics,
+    }
+end
+
+local function group(flow, layout, children, options)
+    options = options or {}
+    layout = layout or {}
+    layout.flow = flow
+    return {
+        id = options.id,
+        layout = layout,
+        paint = options.background and {{
+            kind = "fill_bounds", color = options.background, radius = options.radius or 0,
+        }} or nil,
+        interaction = options.tap_action and { tap_action = options.tap_action } or nil,
+        semantics = options.semantics,
+        children = children,
     }
 end
 
@@ -99,6 +126,14 @@ local function draw_spine(model, state)
             width = EVENT_W, height = EVENT_H, radius = 18,
             color = index == 1 and 0x3E2D35 or 0x273342,
         })
+        table.insert(commands, {
+            kind = "glyphs", x = geometry.x + 14, y = geometry.y + 15,
+            size = 12, line_height = 16, max_width = EVENT_W - 28,
+            runs = {
+                { text = calendar_event.time .. "  ", color = index == 1 and coral or violet, weight = 650 },
+                { text = calendar_event.title, color = mist, weight = 500 },
+            },
+        })
         previous = { x = geometry.center_x, y = geometry.center_y }
     end
 
@@ -129,6 +164,8 @@ local function draw_spine(model, state)
         table.insert(regions, {
             id = "event-" .. tostring(index), x = geometry.x - 10,
             y = geometry.y - 10, width = EVENT_W + 20, height = EVENT_H + 20,
+            tap_action = "event_tap", double_tap_action = "event_zoom",
+            long_press_action = "event_pin", swipe_action = "event_swipe",
         })
     end
 
@@ -141,55 +178,100 @@ local function render(model, state)
     local commands, regions = draw_spine(model, state)
     local design = target_rect(model)
     local attached_label = state.attached and "Attached to Design review" or "Drag the first note onto Design review"
+    if state.last_gesture ~= nil then attached_label = state.last_gesture end
 
+    table.insert(commands, 1, { kind = "fill_bounds", color = paper, radius = 0 })
+    table.insert(commands, {
+        kind = "layer",
+        clip = { x = 12, y = 12, width = CANVAS_WIDTH - 24, height = 66 },
+        transform = {
+            translate_x = 5, translate_y = 1, scale_x = 0.98, scale_y = 0.98,
+            rotation_degrees = -1.5,
+        },
+        opacity = 0.92,
+        paint = {
+            { kind = "quad", x = 16, y = 18, width = 160, height = 44, radius = 18, color = 0x22343F },
+            { kind = "glyphs", x = 30, y = 31, size = 12, line_height = 16, max_width = 130, runs = {
+                { text = "LIVE SCENE ABI", color = cyan, weight = 700 },
+            } },
+        },
+    })
     local flow = {
-        type = "canvas", id = "bent-time-field",
-        style = { width = CANVAS_WIDTH, height = CANVAS_HEIGHT, background = paper },
-        commands = commands, hit_regions = regions,
-        accessibility = {
+        id = "bent-time-field",
+        layout = {
+            width = CANVAS_WIDTH, height = CANVAS_HEIGHT,
+            min_width = 320, max_width = CANVAS_WIDTH,
+            aspect_ratio = CANVAS_WIDTH / CANVAS_HEIGHT, clip_bounds = true,
+        },
+        paint = commands,
+        interaction = { hit_regions = regions },
+        semantics = {
             role = "image", label = "Bent time flow with travel-shaped event path",
+        },
+        children = {
+            {
+                id = "layout-badge",
+                layout = {
+                    position = { x = 306, y = 20 }, width = 38, height = 22,
+                    padding = 4, clip_bounds = true,
+                },
+                paint = {{ kind = "fill_bounds", color = 0x334B58, radius = 8 }},
+                content = { kind = "text", value = "ABI", size = 9, color = cyan },
+            },
+            {
+                id = "revision-asset-badge",
+                layout = {
+                    position = { x = 306, y = 50 }, width = 38, height = 38,
+                    min_width = 30, max_width = 44, aspect_ratio = 1, clip_bounds = true,
+                },
+                content = { kind = "image", asset = "thread-mark" },
+            },
         },
     }
 
     local children = {
-        { type = "column", style = { padding = 22, gap = 5 }, children = {
+        group("column", { padding = 22, gap = 5 }, {
             text("WHAT IS NEXT", 11, cyan),
             text(model.calendar[1] and model.calendar[1].title or "Open time", 31, mist, {
                 role = "header", label = "What is next",
-            }),
+            }, "next-header"),
             text(model.calendar[1] and model.calendar[1].detail or "No appointment ahead", 13, quiet),
-        } },
+        }),
         flow,
-        { type = "column", style = { padding = 22, gap = 5 }, children = {
+        group("column", { padding = 22, gap = 5 }, {
             text("INTERFACE THOUGHT", 10, violet),
             text(model.notes[1] and model.notes[1].title or "First note", 17, mist),
             text(model.notes[1] and model.notes[1].preview or "", 12, quiet),
             text(attached_label, 12, state.attached and cyan or coral, {
                 role = "status", label = "Note attachment", value = attached_label,
-            }),
-        } },
+            }, "attachment-status"),
+        }),
     }
 
     if playing then
-        table.insert(children, {
-            type = "row", id = "music-playing", action = "toggle_music",
-            style = { padding = 15, gap = 12, background = 0x263D42, radius = 24, align = "center" },
-            accessibility = { role = "button", label = "Pause music", value = "Playing" },
-            children = {
-                { type = "image", id = "playing-art", asset = "album-orbit",
-                    style = { width = 42, height = 42, radius = 21 } },
-                { type = "column", style = { gap = 2, grow = true }, children = {
+        table.insert(children, group("row", { padding = 15, gap = 12, align = "center" }, {
+                {
+                    id = "playing-art",
+                    layout = { width = 42, height = 42 },
+                    content = { kind = "image", asset = "thread-mark" },
+                    paint = {{ kind = "fill_bounds", color = 0x263D42, radius = 21 }},
+                },
+                group("column", { gap = 2, grow = true }, {
                     text(model.music.title, 15, mist), text(model.music.artist, 12, quiet),
-                } },
+                }),
                 text("Ⅱ", 20, cyan),
-            },
-        })
+            }, {
+                id = "music-playing",
+                tap_action = "toggle_music",
+                background = 0x263D42,
+                radius = 24,
+                semantics = { role = "button", label = "Pause music", value = "Playing" },
+            }))
     end
 
-    return {
-        type = "scroll", id = "android-exit-spatial-root", style = { background = ink },
-        children = children,
-    }
+    return group("column", { scroll_y = true }, children, {
+        id = "android-exit-spatial-root", background = ink,
+    })
 end
 
 local function update(model, state, event)
@@ -220,8 +302,17 @@ local function update(model, state, event)
                 }},
             }
         end
+    elseif event.action == "event_tap" then
+        state.last_gesture = "Selected " .. tostring(event.target)
+    elseif event.action == "event_zoom" then
+        state.last_gesture = "Double tap on " .. tostring(event.target)
+    elseif event.action == "event_pin" then
+        state.last_gesture = "Long press pinned " .. tostring(event.target)
+    elseif event.action == "event_swipe" then
+        local direction = (event.delta_x or 0) >= 0 and "right" or "left"
+        state.last_gesture = "Swiped " .. direction .. " on " .. tostring(event.target)
     end
     return state
 end
 
-return { render = render, update = update }
+return { api_version = 2, assets = assets, render = render, update = update }

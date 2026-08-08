@@ -9,22 +9,27 @@ Do not use Flutter Engine as a scripting layer for GPUI.
 This is a tactical latency decision, not a redefinition of the project. SOS's
 [north star](vision.md) permits the agent to invent component types, layout,
 geometry, hit testing, navigation, and native behavior without a closed catalog.
-The bounded tree below is the initial contract used to learn quickly; it must
-gain low-level script-defined component capabilities. Agent-generated GPUI Rust
-is no longer an experience tier; Rust/GPUI changes belong to the permanent host
-update path.
+The original bounded widget tree was the initial contract used to learn
+quickly. It has now been replaced by Scene ABI v2, whose layout, content,
+paint, interaction, animation, and semantics facets can be combined without a
+node-type catalog. The executor now also supports nested paint layers,
+clips/transforms, glyph runs, retained placement constraints, richer gestures,
+virtual Android accessibility nodes, and revision SVG assets; it must still
+gain deeper low-level capabilities.
+Agent-generated GPUI Rust is no longer an experience tier; Rust/GPUI changes
+belong to the permanent host update path.
 
 The intended boundary is:
 
 ```text
-Luau source → sandboxed evaluation → bounded UiNode tree + typed actions
+Luau source → sandboxed evaluation → bounded retained scene + typed effects
                                       ↓
-                           stable Rust GPUI renderer
+                           permanent Rust/GPUI executor
 ```
 
 Luau never receives a GPUI `Context`, raw pointer, filesystem, network socket,
 or provider object. A candidate revision runs in a fresh VM and replaces the
-active tree only after compilation, bounded evaluation, decoding, validation,
+active scene only after compilation, bounded evaluation, decoding, validation,
 and a successful first render. Persistent provider data remains Rust-owned.
 
 ## Measurements on the target phone
@@ -46,7 +51,8 @@ rare permanent-host updates, not the conversational experience loop.
 
 - Accept source only, force text compilation, and never accept remote bytecode.
 - Start each candidate in a fresh VM with a 16 MiB memory limit.
-- Cap source, tree depth, node count, child count, text, and numeric values.
+- Cap source, scene depth, node count, child count, text, paint/hit data, and
+  numeric values.
 - Interrupt render/update work at fixed deadlines. Rust callbacks must remain
   bounded because a VM interrupt cannot cancel blocking native code.
 - Keep the Android Rust release profile at `panic = "unwind"`. Luau's protected
@@ -69,7 +75,7 @@ The slice is confirmed when:
 1. One APK renders weather, calendar, notes, and music from fake Rust providers.
 2. A Luau-only revision visibly changes composition and interaction without an
    APK rebuild or process restart.
-3. Invalid syntax, runaway execution, or an invalid tree leaves the accepted UI
+3. Invalid syntax, runaway execution, or an invalid scene leaves the accepted UI
    running.
 4. Rollback restores the prior accepted experience.
 5. Touch, scrolling, state preservation, and suspend/resume still work.

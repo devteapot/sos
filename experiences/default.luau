@@ -11,19 +11,29 @@ local mint = 0xDCE8D8
 local sun = 0xE9A23B
 
 local function text(value, size, color)
-    return { type = "text", text = tostring(value), style = { text_size = size, color = color or ink } }
+    return { content = { kind = "text", value = tostring(value), size = size, color = color or ink } }
+end
+
+local function group(flow, layout, children, background, radius, id, tap_action)
+    layout = layout or {}
+    layout.flow = flow
+    return {
+        id = id,
+        layout = layout,
+        paint = background and {{ kind = "fill_bounds", color = background, radius = radius or 0 }} or nil,
+        interaction = tap_action and { tap_action = tap_action } or nil,
+        children = children,
+    }
 end
 
 local function event_row(event)
-    return {
-        type = "row", style = { gap = 16, padding = 14, background = white, radius = 18 }, children = {
-            text(event.time, 14, moss),
-            { type = "column", style = { gap = 3, grow = true }, children = {
-                text(event.title, 17, ink),
-                text(event.detail, 13, muted),
-            } },
-        }
-    }
+    return group("row", { gap = 16, padding = 14 }, {
+        text(event.time, 14, moss),
+        group("column", { gap = 3, grow = true }, {
+            text(event.title, 17, ink),
+            text(event.detail, 13, muted),
+        }),
+    }, white, 18)
 end
 
 local function render(model, state)
@@ -35,55 +45,45 @@ local function render(model, state)
 
     local notes = {}
     for _, note in ipairs(model.notes) do
-        table.insert(notes, {
-            type = "column", style = { gap = 4, padding = 14, background = 0xECE9DC, radius = 16 }, children = {
-                text(note.title, 16, ink), text(note.preview, 13, muted),
-            }
-        })
+        table.insert(notes, group("column", { gap = 4, padding = 14 }, {
+            text(note.title, 16, ink), text(note.preview, 13, muted),
+        }, 0xECE9DC, 16))
     end
 
     local sections = {
-        { type = "column", style = { gap = 4 }, children = {
+        group("column", { gap = 4 }, {
             text(model.greeting, 27, ink), text(model.date, 14, muted),
-        } },
-        { type = "row", style = { padding = 18, gap = 14, background = mint, radius = 22, align = "center" }, children = {
+        }),
+        group("row", { padding = 18, gap = 14, align = "center" }, {
             text(tostring(model.weather.temperature_c) .. "°", 42, moss),
-            { type = "column", style = { gap = 3 }, children = {
+            group("column", { gap = 3 }, {
                 text(model.weather.summary, 16, ink),
                 text("High " .. model.weather.high_c .. "°  ·  Low " .. model.weather.low_c .. "°", 13, muted),
-            } },
-        } },
+            }),
+        }, mint, 22),
         text("TODAY", 12, moss),
-        { type = "column", style = { gap = 9 }, children = agenda },
+        group("column", { gap = 9 }, agenda),
         text("NOTES", 12, moss),
-        { type = "column", style = { gap = 9 }, children = notes },
+        group("column", { gap = 9 }, notes),
     }
 
     if playing then
-        table.insert(sections, {
-            type = "row", action = "toggle_music", style = {
-                padding = 16, gap = 12, background = ink, radius = 22, align = "center",
-            }, children = {
-                { type = "box", style = { width = 42, height = 42, background = sun, radius = 21 } },
-                { type = "column", style = { gap = 2, grow = true }, children = {
-                    text(model.music.title, 16, white), text(model.music.artist, 13, 0xB8C1BA),
-                } },
-                text("PAUSE", 11, white),
-            }
-        })
+        table.insert(sections, group("row", { padding = 16, gap = 12, align = "center" }, {
+            group("overlay", { width = 42, height = 42 }, nil, sun, 21),
+            group("column", { gap = 2, grow = true }, {
+                text(model.music.title, 16, white), text(model.music.artist, 13, 0xB8C1BA),
+            }),
+            text("PAUSE", 11, white),
+        }, ink, 22, "music-playing", "toggle_music"))
     else
-        table.insert(sections, {
-            type = "row", action = "toggle_music", style = {
-                padding = 13, background = 0xE5E2D6, radius = 18, justify = "center",
-            }, children = { text("Resume music", 14, ink) }
-        })
+        table.insert(sections, group("row", { padding = 13, justify = "center" }, {
+            text("Resume music", 14, ink),
+        }, 0xE5E2D6, 18, "music-paused", "toggle_music"))
     end
 
-    return {
-        type = "scroll", id = "experience-root", style = { background = paper }, children = {
-            { type = "column", style = { padding = 22, gap = 18 }, children = sections }
-        }
-    }
+    return group("column", { scroll_y = true }, {
+        group("column", { padding = 22, gap = 18 }, sections),
+    }, paper, 0, "experience-root")
 end
 
 local function update(_, state, event)
@@ -93,4 +93,4 @@ local function update(_, state, event)
     return state
 end
 
-return { render = render, update = update }
+return { api_version = 2, render = render, update = update }

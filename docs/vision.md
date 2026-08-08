@@ -111,9 +111,20 @@ export its implementation without exporting private provider data.
 
 ## One experience language, not a permanent IR ceiling
 
-The current GPUI host interprets Luau into a bounded `UiNode` tree. This is a
-successful latency experiment and a useful execution path; it is not the
-full thesis and must not quietly become a fixed widget schema.
+The current GPUI host interprets Luau into the bounded Scene ABI v2. Scene
+nodes have orthogonal layout, content, paint, interaction, animation, and
+semantics facets instead of a catalog-defining node `type`. This is the base of
+the long-lived execution path, not the full thesis; each facet must continue to
+grow toward low-level capabilities rather than quietly becoming a renamed
+widget schema.
+
+The current integration already executes nested clips, affine transforms,
+opacity layers, host-shaped glyph runs, retained placement constraints, rich
+single-pointer gestures, and content-addressed revision SVGs. Its semantic tree
+is host-owned: Android exposes it as virtual accessibility nodes today, while a
+future native SOS screen reader, switch controller, voice layer, focus engine,
+or automation service can consume the same roles, actions, hierarchy, and
+bounds without preserving an APK or Android UI toolkit.
 
 SOS uses one generated-experience path:
 
@@ -215,10 +226,11 @@ synthetic data:
    action.
 
 The third request is the decisive one. The original `UiNode` catalog could not
-express it; the prototype now has bounded low-level canvas geometry and hit
-regions, but the first agent trial still required an operator layout correction
-on the physical phone. Passing requires an untouched agent output to complete
-the interaction through the low-level Luau capability API.
+express it. Scene ABI v2 now lets generated paint operations and hit regions
+coexist on an ordinary retained node, but the first agent trial still required
+an operator layout correction on the physical phone. Passing requires an
+untouched agent output to complete the interaction through the low-level Luau
+capability API.
 
 ### B. A genuine single-shot agent loop
 

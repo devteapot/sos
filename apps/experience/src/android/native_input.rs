@@ -170,6 +170,15 @@ impl NativeTextInput {
         }
     }
 
+    pub fn replace_from_accessibility(&mut self, value: String, cx: &mut Context<Self>) {
+        self.content = value.into();
+        let cursor = self.content.len();
+        self.selected_range = cursor..cursor;
+        self.selection_reversed = false;
+        self.marked_range = None;
+        cx.notify();
+    }
+
     fn notify_change(&self, cx: &mut Context<Self>) {
         let node_id = self.node_id.clone();
         let state_key = self.state_key.clone();

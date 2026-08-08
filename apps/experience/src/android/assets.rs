@@ -1,6 +1,11 @@
-use std::borrow::Cow;
+use std::{
+    borrow::Cow,
+    collections::HashMap,
+    sync::{OnceLock, RwLock},
+};
 
 use gpui::{AssetSource, SharedString};
+use runtime_luau::RevisionAsset;
 
 pub const ALBUM_ASSET: &str = "sos/album-orbit.svg";
 
@@ -20,19 +25,43 @@ const ALBUM_ORBIT: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0
 
 pub struct SosAssets;
 
+static REVISION_ASSETS: OnceLock<RwLock<HashMap<String, Vec<u8>>>> = OnceLock::new();
+
+pub fn install(assets: &[RevisionAsset]) {
+    let registry = REVISION_ASSETS.get_or_init(|| RwLock::new(HashMap::new()));
+    let mut registry = registry.write().expect("revision asset registry");
+    registry.clear();
+    for asset in assets {
+        registry.insert(asset.path.clone(), asset.bytes.clone());
+    }
+}
+
 impl AssetSource for SosAssets {
     fn load(&self, path: &str) -> anyhow::Result<Option<Cow<'static, [u8]>>> {
-        Ok(match path {
-            ALBUM_ASSET => Some(Cow::Borrowed(ALBUM_ORBIT.as_bytes())),
-            _ => None,
-        })
+        if path == ALBUM_ASSET {
+            return Ok(Some(Cow::Borrowed(ALBUM_ORBIT.as_bytes())));
+        }
+        Ok(REVISION_ASSETS
+            .get()
+            .and_then(|assets| assets.read().ok()?.get(path).cloned())
+            .map(Cow::Owned))
     }
 
     fn list(&self, path: &str) -> anyhow::Result<Vec<SharedString>> {
-        Ok(if path == "sos" {
+        let mut listed = if path == "sos" {
             vec![SharedString::from(ALBUM_ASSET)]
         } else {
             Vec::new()
-        })
+        };
+        if let Some(assets) = REVISION_ASSETS.get().and_then(|assets| assets.read().ok()) {
+            listed.extend(
+                assets
+                    .keys()
+                    .filter(|asset| asset.starts_with(path))
+                    .cloned()
+                    .map(SharedString::from),
+            );
+        }
+        Ok(listed)
     }
 }

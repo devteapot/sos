@@ -1,6 +1,6 @@
 use std::{env, fs, process};
 
-use experience_ir::{Canvas, CanvasCommand, NodeKind, UiEvent, UiNode};
+use experience_ir::{Content, HitRegion, PaintOp, Scene, SceneEvent, SceneNode};
 use runtime_luau::LuauRuntime;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -10,7 +10,7 @@ struct Case {
     id: String,
     required_text: Vec<String>,
     conditional_music: bool,
-    require_canvas: bool,
+    require_paint: bool,
     min_paths: usize,
     min_quads: usize,
     require_drag_effect: bool,
@@ -77,8 +77,8 @@ fn grade(case: &Case, source: &str) -> Grade {
     };
     let model = providers_fake::snapshot();
     let initial_state = json!({});
-    let tree = match runtime.render(&model, &initial_state) {
-        Ok(tree) => tree,
+    let scene = match runtime.render(&model, &initial_state) {
+        Ok(scene) => scene,
         Err(error) => {
             return Grade {
                 case_id: case.id.clone(),
@@ -95,9 +95,9 @@ fn grade(case: &Case, source: &str) -> Grade {
     let mut checks = vec![Check {
         name: "compile_render_validate".into(),
         passed: true,
-        detail: "source compiled and produced a bounded tree".into(),
+        detail: "source compiled and produced a bounded scene".into(),
     }];
-    let all_text = collect_text(&tree);
+    let all_text = collect_text(&scene);
     for required in &case.required_text {
         let passed = all_text.contains(&required.to_lowercase());
         checks.push(Check {
@@ -111,34 +111,32 @@ fn grade(case: &Case, source: &str) -> Grade {
         });
     }
 
-    let canvases = collect_canvases(&tree);
-    if case.require_canvas {
+    let paint_nodes = collect_paint_nodes(&scene);
+    if case.require_paint {
         checks.push(Check {
-            name: "low_level_canvas".into(),
-            passed: !canvases.is_empty(),
-            detail: format!("decoded {} canvas node(s)", canvases.len()),
+            name: "low_level_paint".into(),
+            passed: !paint_nodes.is_empty(),
+            detail: format!("decoded {} low-level paint node(s)", paint_nodes.len()),
         });
-        let path_count = canvases
+        let path_count: usize = paint_nodes
             .iter()
-            .flat_map(|(_, canvas)| &canvas.commands)
-            .filter(|command| matches!(command, CanvasCommand::Path { .. }))
-            .count();
+            .map(|node| count_paint(&node.paint, |op| matches!(op, PaintOp::Path { .. })))
+            .sum();
         checks.push(Check {
             name: "generated_paths".into(),
             passed: path_count >= case.min_paths,
             detail: format!("{path_count} paths; minimum {}", case.min_paths),
         });
-        let quad_count = canvases
+        let quad_count: usize = paint_nodes
             .iter()
-            .flat_map(|(_, canvas)| &canvas.commands)
-            .filter(|command| matches!(command, CanvasCommand::Quad { .. }))
-            .count();
+            .map(|node| count_paint(&node.paint, |op| matches!(op, PaintOp::Quad { .. })))
+            .sum();
         checks.push(Check {
             name: "generated_quads".into(),
             passed: quad_count >= case.min_quads,
             detail: format!("{quad_count} quads; minimum {}", case.min_quads),
         });
-        let (passed, detail) = interactive_bounds(&canvases);
+        let (passed, detail) = interactive_bounds(&paint_nodes);
         checks.push(Check {
             name: "phone_safe_hit_bounds".into(),
             passed,
@@ -150,8 +148,8 @@ fn grade(case: &Case, source: &str) -> Grade {
         let paused = runtime.render(&model, &json!({ "playing": false }));
         let passed = paused
             .as_ref()
-            .map(|tree| {
-                let text = collect_text(tree);
+            .map(|scene| {
+                let text = collect_text(scene);
                 !text.contains(&model.music.title.to_lowercase())
                     && !text.contains(&model.music.artist.to_lowercase())
             })
@@ -168,7 +166,7 @@ fn grade(case: &Case, source: &str) -> Grade {
     }
 
     if case.require_drag_effect {
-        let passed = find_drag_effect(&runtime, &model, &tree);
+        let passed = find_drag_effect(&runtime, &model, &scene);
         checks.push(Check {
             name: "reachable_drag_provider_effect".into(),
             passed,
@@ -194,15 +192,15 @@ fn grade(case: &Case, source: &str) -> Grade {
 
 fn expected_checks(case: &Case) -> usize {
     1 + case.required_text.len()
-        + usize::from(case.require_canvas) * 4
+        + usize::from(case.require_paint) * 4
         + usize::from(case.conditional_music)
         + usize::from(case.require_drag_effect)
 }
 
-fn collect_text(root: &UiNode) -> String {
-    fn visit(node: &UiNode, output: &mut String) {
-        if let NodeKind::Text(text) = &node.kind {
-            output.push_str(text);
+fn collect_text(scene: &Scene) -> String {
+    fn visit(node: &SceneNode, output: &mut String) {
+        if let Some(Content::Text(text)) = &node.content {
+            output.push_str(&text.value);
             output.push('\n');
         }
         for child in &node.children {
@@ -210,34 +208,51 @@ fn collect_text(root: &UiNode) -> String {
         }
     }
     let mut output = String::new();
-    visit(root, &mut output);
+    visit(&scene.root, &mut output);
     output.to_lowercase()
 }
 
-fn collect_canvases(root: &UiNode) -> Vec<(&UiNode, &Canvas)> {
-    fn visit<'a>(node: &'a UiNode, output: &mut Vec<(&'a UiNode, &'a Canvas)>) {
-        if let NodeKind::Canvas(canvas) = &node.kind {
-            output.push((node, canvas));
+fn collect_paint_nodes(scene: &Scene) -> Vec<&SceneNode> {
+    fn visit<'a>(node: &'a SceneNode, output: &mut Vec<&'a SceneNode>) {
+        if node
+            .paint
+            .iter()
+            .any(|op| !matches!(op, PaintOp::FillBounds { .. }))
+        {
+            output.push(node);
         }
         for child in &node.children {
             visit(child, output);
         }
     }
     let mut output = Vec::new();
-    visit(root, &mut output);
+    visit(&scene.root, &mut output);
     output
 }
 
-fn interactive_bounds(canvases: &[(&UiNode, &Canvas)]) -> (bool, String) {
+fn count_paint(operations: &[PaintOp], predicate: impl Fn(&PaintOp) -> bool + Copy) -> usize {
+    operations
+        .iter()
+        .map(|operation| {
+            usize::from(predicate(operation))
+                + match operation {
+                    PaintOp::Layer { operations, .. } => count_paint(operations, predicate),
+                    _ => 0,
+                }
+        })
+        .sum()
+}
+
+fn interactive_bounds(paint_nodes: &[&SceneNode]) -> (bool, String) {
     let mut regions = 0usize;
-    for (node, canvas) in canvases {
-        let Some(width) = node.style.width else {
-            return (false, "canvas width is not explicit".into());
+    for node in paint_nodes {
+        let Some(width) = node.layout.width else {
+            return (false, "paint surface width is not explicit".into());
         };
-        let Some(height) = node.style.height else {
-            return (false, "canvas height is not explicit".into());
+        let Some(height) = node.layout.height else {
+            return (false, "paint surface height is not explicit".into());
         };
-        for region in &canvas.hit_regions {
+        for region in &node.interaction.hit_regions {
             regions += 1;
             if region.x < 0.0
                 || region.y < 0.0
@@ -248,7 +263,7 @@ fn interactive_bounds(canvases: &[(&UiNode, &Canvas)]) -> (bool, String) {
                 return (
                     false,
                     format!(
-                        "region {} is outside canvas or the y<=400 interactive safe area",
+                        "region {} is outside its paint surface or the y<=400 interactive safe area",
                         region.id
                     ),
                 );
@@ -264,21 +279,23 @@ fn interactive_bounds(canvases: &[(&UiNode, &Canvas)]) -> (bool, String) {
 fn find_drag_effect(
     runtime: &LuauRuntime,
     model: &experience_ir::ExperienceModel,
-    tree: &UiNode,
+    scene: &Scene,
 ) -> bool {
-    for (node, canvas) in collect_canvases(tree) {
-        let Some(width) = node.style.width else {
+    for node in collect_paint_nodes(scene) {
+        let Some(width) = node.layout.width else {
             continue;
         };
-        let Some(height) = node.style.height else {
+        let Some(height) = node.layout.height else {
             continue;
         };
-        for source in canvas
+        for source in node
+            .interaction
             .hit_regions
             .iter()
             .filter(|region| region.drop_action.is_some())
         {
-            let mut targets = canvas
+            let mut targets = node
+                .interaction
                 .hit_regions
                 .iter()
                 .map(|region| {
@@ -339,8 +356,8 @@ fn find_drag_effect(
     false
 }
 
-fn event(action: &str, source: &experience_ir::HitRegion, x: f32, y: f32) -> UiEvent {
-    UiEvent {
+fn event(action: &str, source: &HitRegion, x: f32, y: f32) -> SceneEvent {
+    SceneEvent {
         action: action.into(),
         target: Some(source.id.clone()),
         x: Some(x),

@@ -42,6 +42,13 @@ directory, changes its files to read-only, renames it into `revisions/`, and
 `fsync`s the parent. `current` is replaced with an atomic relative-symlink
 rename followed by a directory `fsync`.
 
+Scene ABI v2 revisions may currently declare bounded SVG bytes inside
+`source.luau`. Those bytes therefore participate in the verified source hash;
+the Luau runtime separately validates and content-addresses them before the
+candidate can commit. A future manifest format must move larger fonts/images
+and validated shader modules into individually hashed sidecar files. The
+supervisor does not claim that sidecar format yet.
+
 ## Permanent host protocol
 
 The supervisor is configured once with `--host-executable`; this executable is
@@ -78,7 +85,7 @@ SUPERVISOR=target/debug/sos-revision-supervisor
 ROOT=/tmp/sos-revisions
 
 $SUPERVISOR install --root "$ROOT" --source experience.luau \
-  --state state.json --schema 1 --api 1
+  --state state.json --schema 1 --api 2
 $SUPERVISOR bootstrap --root "$ROOT" --revision <initial-revision-id>
 $SUPERVISOR serve --root "$ROOT" --host-executable /usr/libexec/sos-experience-host
 $SUPERVISOR activate --root "$ROOT" --revision <candidate-revision-id>
@@ -111,6 +118,9 @@ still needs to join that real GPUI host to this external supervisor protocol.
   probe. The AOSP GPUI shell still needs to implement this transport around its
   real Luau worker and compositor frame callback.
 - The manifest and journal remain unsigned.
+- Revision assets are executable today only as bounded declarations inside the
+  hashed Luau source; individually hashed sidecar asset files are not yet part
+  of format 2.
 - Host process descendants are not yet in a cgroup or capability sandbox.
 - An actual compositor-present fence must replace the prototype host's
   `presented` assertion.

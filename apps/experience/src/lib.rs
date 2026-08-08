@@ -11,10 +11,10 @@ pub const DAILY_FLOW_AGENT_EXPERIENCE: &str =
 pub fn validate_embedded_experience() -> Result<usize, String> {
     let runtime = runtime_luau::LuauRuntime::compile(DEFAULT_EXPERIENCE)
         .map_err(|error| error.to_string())?;
-    let tree = runtime
+    let scene = runtime
         .render(&providers_fake::snapshot(), &runtime.initial_state())
         .map_err(|error| error.to_string())?;
-    experience_ir::validate_tree(&tree).map_err(|error| error.to_string())
+    experience_ir::validate_scene(&scene).map_err(|error| error.to_string())
 }
 
 #[cfg(test)]
@@ -24,35 +24,35 @@ mod tests {
         assert!(super::validate_embedded_experience().unwrap() > 20);
 
         let runtime = runtime_luau::LuauRuntime::compile(super::DEFAULT_EXPERIENCE).unwrap();
-        let tree = runtime
+        let scene = runtime
             .render(&providers_fake::snapshot(), &runtime.initial_state())
             .unwrap();
-        fn contains_action(node: &experience_ir::UiNode, action: &str) -> bool {
-            node.action.as_deref() == Some(action)
+        fn contains_action(node: &experience_ir::SceneNode, action: &str) -> bool {
+            node.interaction.tap_action.as_deref() == Some(action)
                 || node
                     .children
                     .iter()
                     .any(|child| contains_action(child, action))
         }
-        assert!(contains_action(&tree, "toggle_music"));
+        assert!(contains_action(&scene.root, "toggle_music"));
 
         let timeflow = runtime_luau::LuauRuntime::compile(super::TIMEFLOW_EXPERIENCE).unwrap();
-        let timeflow_tree = timeflow
+        let timeflow_scene = timeflow
             .render(&providers_fake::snapshot(), &timeflow.initial_state())
             .unwrap();
-        assert!(experience_ir::validate_tree(&timeflow_tree).unwrap() > 15);
-        assert!(contains_action(&timeflow_tree, "toggle_music"));
+        assert!(experience_ir::validate_scene(&timeflow_scene).unwrap() > 15);
+        assert!(contains_action(&timeflow_scene.root, "toggle_music"));
 
         for source in [
             super::DAILY_FLOW_EXPERIENCE,
             super::DAILY_FLOW_AGENT_EXPERIENCE,
         ] {
             let runtime = runtime_luau::LuauRuntime::compile(source).unwrap();
-            let tree = runtime
+            let scene = runtime
                 .render(&providers_fake::snapshot(), &runtime.initial_state())
                 .unwrap();
-            assert!(experience_ir::validate_tree(&tree).unwrap() > 15);
-            assert!(contains_action(&tree, "toggle_music"));
+            assert!(experience_ir::validate_scene(&scene).unwrap() > 15);
+            assert!(contains_action(&scene.root, "toggle_music"));
         }
     }
 }

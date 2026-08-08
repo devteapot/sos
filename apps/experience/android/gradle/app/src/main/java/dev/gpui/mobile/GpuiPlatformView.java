@@ -1,18 +1,28 @@
 package dev.gpui.mobile;
 
 import android.app.Activity;
+import android.graphics.Rect;
+import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.util.Log;
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.accessibility.AccessibilityEvent;
+import android.view.accessibility.AccessibilityNodeInfo;
+import android.view.accessibility.AccessibilityNodeProvider;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
 import android.webkit.WebChromeClient;
 import android.widget.FrameLayout;
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
+import org.json.JSONArray;
+import org.json.JSONObject;
 
 /**
  * Helper class for managing native platform views embedded in the GPUI render tree.
@@ -37,22 +47,247 @@ public class GpuiPlatformView {
 
     /** The root FrameLayout that hosts all platform views */
     private static FrameLayout rootContainer;
+    private static AccessibilityBridge accessibilityBridge;
 
-    /**
-     * Publish the current GPUI semantic summary to Android accessibility.
-     *
-     * GPUI Mobile does not yet expose per-element accessibility nodes, so SOS
-     * deliberately provides one coarse, system-visible description rather
-     * than pretending that each painted node is independently navigable.
-     */
-    public static void updateAccessibilitySummary(Activity activity, String summary) {
+    /** Publish the host-owned SOS semantic tree as Android virtual nodes. */
+    public static void updateAccessibilityTree(Activity activity, String payload) {
         mainHandler.post(() -> {
             View decor = activity.getWindow().getDecorView();
             decor.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_YES);
-            decor.setContentDescription(summary);
-            decor.sendAccessibilityEvent(android.view.accessibility.AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED);
-            Log.i(TAG, "Accessibility summary updated: " + summary);
+            if (accessibilityBridge == null || accessibilityBridge.host != decor) {
+                accessibilityBridge = new AccessibilityBridge(decor);
+                AccessibilityBridge bridge = accessibilityBridge;
+                decor.setAccessibilityDelegate(new View.AccessibilityDelegate() {
+                    @Override
+                    public AccessibilityNodeProvider getAccessibilityNodeProvider(View host) {
+                        return bridge;
+                    }
+                });
+            }
+            accessibilityBridge.update(payload);
         });
+    }
+
+    private static final class SemanticNode {
+        String id;
+        String parent;
+        String role;
+        String label;
+        String value;
+        String hint;
+        String clickAction;
+        boolean editable;
+        float x;
+        float y;
+        float width;
+        float height;
+        int virtualId;
+    }
+
+    /** Android is one adapter over the platform-neutral SOS semantic tree. */
+    private static final class AccessibilityBridge extends AccessibilityNodeProvider {
+        final View host;
+        final Map<String, Integer> ids = new HashMap<>();
+        final Map<Integer, SemanticNode> nodes = new LinkedHashMap<>();
+        int nextId = 1;
+        int accessibilityFocus = View.NO_ID;
+        String summary = "";
+
+        AccessibilityBridge(View host) {
+            this.host = host;
+        }
+
+        void update(String payload) {
+            try {
+                JSONObject root = new JSONObject(payload);
+                summary = root.optString("summary", "");
+                JSONArray incoming = root.optJSONArray("nodes");
+                Map<Integer, SemanticNode> next = new LinkedHashMap<>();
+                if (incoming != null) {
+                    for (int index = 0; index < incoming.length(); index++) {
+                        JSONObject value = incoming.getJSONObject(index);
+                        SemanticNode node = new SemanticNode();
+                        node.id = value.getString("id");
+                        node.parent = value.isNull("parent") ? null : value.optString("parent", null);
+                        node.role = value.optString("role", "status");
+                        node.label = value.optString("label", "");
+                        node.value = value.isNull("value") ? null : value.optString("value", null);
+                        node.hint = value.isNull("hint") ? null : value.optString("hint", null);
+                        node.clickAction = value.isNull("click_action")
+                                ? null : value.optString("click_action", null);
+                        node.editable = value.optBoolean("editable", false);
+                        JSONArray bounds = value.optJSONArray("bounds");
+                        if (bounds != null && bounds.length() == 4) {
+                            node.x = (float)bounds.optDouble(0, 0);
+                            node.y = (float)bounds.optDouble(1, 0);
+                            node.width = (float)bounds.optDouble(2, 0);
+                            node.height = (float)bounds.optDouble(3, 0);
+                        }
+                        Integer existing = ids.get(node.id);
+                        if (existing == null) {
+                            existing = nextId++;
+                            ids.put(node.id, existing);
+                        }
+                        node.virtualId = existing;
+                        next.put(existing, node);
+                    }
+                }
+                nodes.clear();
+                nodes.putAll(next);
+                ids.entrySet().removeIf(entry -> !nodes.containsKey(entry.getValue()));
+                if (!nodes.containsKey(accessibilityFocus)) accessibilityFocus = View.NO_ID;
+                host.setContentDescription(nodes.isEmpty() ? summary : null);
+                host.sendAccessibilityEvent(AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED);
+                Log.i(TAG, "Accessibility tree updated: nodes=" + nodes.size());
+            } catch (Exception error) {
+                Log.e(TAG, "Invalid accessibility tree", error);
+            }
+        }
+
+        @Override
+        public AccessibilityNodeInfo createAccessibilityNodeInfo(int virtualViewId) {
+            if (virtualViewId == AccessibilityNodeProvider.HOST_VIEW_ID) {
+                AccessibilityNodeInfo info = AccessibilityNodeInfo.obtain(host);
+                info.setPackageName(host.getContext().getPackageName());
+                info.setClassName("android.view.ViewGroup");
+                info.setSource(host);
+                info.setContentDescription(nodes.isEmpty() ? summary : null);
+                info.setEnabled(true);
+                info.setVisibleToUser(host.isShown());
+                info.setBoundsInParent(new Rect(0, 0, host.getWidth(), host.getHeight()));
+                int[] location = new int[2];
+                host.getLocationOnScreen(location);
+                info.setBoundsInScreen(new Rect(
+                        location[0], location[1],
+                        location[0] + host.getWidth(), location[1] + host.getHeight()));
+                for (SemanticNode node : nodes.values()) {
+                    if (node.parent == null) info.addChild(host, node.virtualId);
+                }
+                return info;
+            }
+            SemanticNode node = nodes.get(virtualViewId);
+            if (node == null) return null;
+
+            AccessibilityNodeInfo info = AccessibilityNodeInfo.obtain();
+            info.setPackageName(host.getContext().getPackageName());
+            info.setClassName(className(node));
+            info.setSource(host, node.virtualId);
+            Integer parentId = node.parent == null ? null : ids.get(node.parent);
+            if (parentId == null) info.setParent(host);
+            else info.setParent(host, parentId);
+            for (SemanticNode child : nodes.values()) {
+                if (node.id.equals(child.parent)) info.addChild(host, child.virtualId);
+            }
+            info.setContentDescription(node.label);
+            info.setText(node.value == null || node.value.isEmpty() ? node.label : node.value);
+            if (node.hint != null) info.setHintText(node.hint);
+            info.setEnabled(true);
+            info.setVisibleToUser(node.width > 0 && node.height > 0 && host.isShown());
+            info.setFocusable(true);
+            info.setAccessibilityFocused(accessibilityFocus == node.virtualId);
+            if ("header".equals(node.role) && android.os.Build.VERSION.SDK_INT >= 28) {
+                info.setHeading(true);
+            }
+            if ("status".equals(node.role)) {
+                info.setLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);
+            }
+            if (node.clickAction != null && !node.clickAction.isEmpty()) {
+                info.setClickable(true);
+                info.addAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_CLICK);
+            }
+            if (node.editable) {
+                info.setEditable(true);
+                info.addAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_SET_TEXT);
+                info.addAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_FOCUS);
+            }
+            info.addAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_ACCESSIBILITY_FOCUS);
+            info.addAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_CLEAR_ACCESSIBILITY_FOCUS);
+            setBounds(info, node, parentId == null ? null : nodes.get(parentId));
+            return info;
+        }
+
+        @Override
+        public List<AccessibilityNodeInfo> findAccessibilityNodeInfosByText(
+                String searched, int virtualViewId) {
+            List<AccessibilityNodeInfo> result = new ArrayList<>();
+            String needle = searched == null ? "" : searched.toLowerCase();
+            for (SemanticNode node : nodes.values()) {
+                String haystack = (node.label + " " + (node.value == null ? "" : node.value)).toLowerCase();
+                if (haystack.contains(needle)) result.add(createAccessibilityNodeInfo(node.virtualId));
+            }
+            return result;
+        }
+
+        @Override
+        public boolean performAction(int virtualViewId, int action, Bundle arguments) {
+            SemanticNode node = nodes.get(virtualViewId);
+            if (node == null) return false;
+            if (action == AccessibilityNodeInfo.ACTION_ACCESSIBILITY_FOCUS) {
+                accessibilityFocus = virtualViewId;
+                sendEvent(node, AccessibilityEvent.TYPE_VIEW_ACCESSIBILITY_FOCUSED);
+                GpuiActivity.dispatchAccessibilityAction("focus", node.id, "");
+                return true;
+            }
+            if (action == AccessibilityNodeInfo.ACTION_CLEAR_ACCESSIBILITY_FOCUS) {
+                if (accessibilityFocus == virtualViewId) accessibilityFocus = View.NO_ID;
+                sendEvent(node, AccessibilityEvent.TYPE_VIEW_ACCESSIBILITY_FOCUS_CLEARED);
+                return true;
+            }
+            if (action == AccessibilityNodeInfo.ACTION_FOCUS && node.editable) {
+                GpuiActivity.dispatchAccessibilityAction("focus", node.id, "");
+                return true;
+            }
+            if (action == AccessibilityNodeInfo.ACTION_CLICK && node.clickAction != null) {
+                GpuiActivity.dispatchAccessibilityAction("click", node.id, node.clickAction);
+                sendEvent(node, AccessibilityEvent.TYPE_VIEW_CLICKED);
+                return true;
+            }
+            if (action == AccessibilityNodeInfo.ACTION_SET_TEXT && node.editable && arguments != null) {
+                CharSequence replacement = arguments.getCharSequence(
+                        AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE);
+                if (replacement == null) return false;
+                node.value = replacement.toString();
+                GpuiActivity.dispatchAccessibilityAction("set_text", node.id, node.value);
+                sendEvent(node, AccessibilityEvent.TYPE_VIEW_TEXT_CHANGED);
+                return true;
+            }
+            return false;
+        }
+
+        private void setBounds(AccessibilityNodeInfo info, SemanticNode node, SemanticNode parent) {
+            float density = host.getResources().getDisplayMetrics().density;
+            int left = Math.round(node.x * density);
+            int top = Math.round(node.y * density);
+            int right = Math.round((node.x + node.width) * density);
+            int bottom = Math.round((node.y + node.height) * density);
+            int parentLeft = parent == null ? 0 : Math.round(parent.x * density);
+            int parentTop = parent == null ? 0 : Math.round(parent.y * density);
+            info.setBoundsInParent(new Rect(
+                    left - parentLeft, top - parentTop, right - parentLeft, bottom - parentTop));
+            int[] location = new int[2];
+            host.getLocationOnScreen(location);
+            info.setBoundsInScreen(new Rect(
+                    location[0] + left, location[1] + top,
+                    location[0] + right, location[1] + bottom));
+        }
+
+        private void sendEvent(SemanticNode node, int type) {
+            AccessibilityEvent event = AccessibilityEvent.obtain(type);
+            event.setPackageName(host.getContext().getPackageName());
+            event.setClassName(className(node));
+            event.setSource(host, node.virtualId);
+            event.getText().add(node.value == null ? node.label : node.value);
+            if (host.getParent() != null) host.getParent().requestSendAccessibilityEvent(host, event);
+        }
+
+        private String className(SemanticNode node) {
+            switch (node.role) {
+                case "button": return "android.widget.Button";
+                case "image": return "android.widget.ImageView";
+                case "text_field": return "android.widget.EditText";
+                default: return "android.widget.TextView";
+            }
+        }
     }
 
     /**

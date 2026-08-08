@@ -1,22 +1,26 @@
 use std::{
     cell::Cell,
+    collections::HashMap,
     rc::Rc,
     thread,
     time::{Duration, Instant},
 };
 
 use experience_ir::{
-    validate_tree, Accessibility, AccessibilityRole, Align, Animation, AnimationKind, Canvas,
-    CanvasCommand, CanvasPoint, ExperienceModel, HitRegion, Image, Justify, NodeKind,
-    ProviderEffect, Style, TextInput, UiEvent, UiNode, MAX_CANVAS_COMMANDS, MAX_CANVAS_POINTS,
-    MAX_CHILDREN, MAX_EFFECTS, MAX_EFFECT_PAYLOAD_BYTES, MAX_HIT_REGIONS, MAX_STATE_BYTES,
-    MAX_TEXT_BYTES, MAX_TREE_DEPTH, MAX_TREE_NODES,
+    validate_scene, Align, Animation, AnimationKind, ClipRect, Content, ExperienceModel, Flow,
+    GlyphRun, HitRegion, ImageContent, Interaction, Justify, Layout, LayoutPosition, PaintOp,
+    PaintPoint, ProviderEffect, Scene, SceneEvent, SceneNode, SemanticRole, Semantics, TextContent,
+    TextSession, Transform2D, EXPERIENCE_API_VERSION, MAX_CHILDREN, MAX_EFFECTS,
+    MAX_EFFECT_PAYLOAD_BYTES, MAX_GLYPH_RUNS, MAX_HIT_REGIONS, MAX_PAINT_DEPTH, MAX_PAINT_OPS,
+    MAX_PAINT_POINTS, MAX_REVISION_ASSETS, MAX_REVISION_ASSET_BYTES, MAX_SCENE_DEPTH,
+    MAX_SCENE_NODES, MAX_STATE_BYTES, MAX_TEXT_BYTES,
 };
 use mlua::{
     chunk::{ChunkMode, Compiler},
     Error as LuaError, Function, Lua, LuaSerdeExt, RegistryKey, Table, Value, VmState,
 };
 use serde_json::{json, Value as JsonValue};
+use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 pub const MAX_SOURCE_BYTES: usize = 256 * 1024;
@@ -39,6 +43,17 @@ pub struct LuauRuntime {
     lua: Lua,
     module: RegistryKey,
     deadline: Rc<Cell<Option<Instant>>>,
+    assets: Vec<RevisionAsset>,
+    asset_paths: HashMap<String, String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RevisionAsset {
+    pub id: String,
+    pub path: String,
+    pub kind: String,
+    pub bytes: Vec<u8>,
+    pub sha256: String,
 }
 
 #[derive(Clone, Debug)]
@@ -52,11 +67,12 @@ pub struct CandidateTimings {
 
 #[derive(Clone, Debug)]
 pub struct WorkerReady {
-    pub tree: UiNode,
+    pub scene: Scene,
     pub state: JsonValue,
     pub state_schema_version: u64,
     pub worker_thread: String,
     pub initialize_us: u64,
+    pub assets: Vec<RevisionAsset>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -70,10 +86,11 @@ pub enum WorkerResult {
     CandidatePrepared {
         request_id: u64,
         source: String,
-        tree: UiNode,
+        scene: Scene,
         state: JsonValue,
         state_schema_version: u64,
         timings: CandidateTimings,
+        assets: Vec<RevisionAsset>,
     },
     CandidateRejected {
         request_id: u64,
@@ -84,15 +101,16 @@ pub enum WorkerResult {
     CandidateCommitted {
         request_id: u64,
         source: String,
-        tree: UiNode,
+        scene: Scene,
         state: JsonValue,
         state_schema_version: u64,
         timings: CandidateTimings,
+        assets: Vec<RevisionAsset>,
     },
     ActionCompleted {
         request_id: u64,
         state: JsonValue,
-        tree: UiNode,
+        scene: Scene,
         effects: Vec<ProviderEffect>,
         worker_us: u64,
     },
@@ -122,7 +140,7 @@ enum WorkerCommand {
         request_id: u64,
         model: ExperienceModel,
         state: JsonValue,
-        event: UiEvent,
+        event: SceneEvent,
     },
     Shutdown,
 }
@@ -131,7 +149,7 @@ struct PreparedCandidate {
     request_id: u64,
     source: String,
     runtime: LuauRuntime,
-    tree: UiNode,
+    scene: Scene,
     state: JsonValue,
     state_schema_version: u64,
     timings: CandidateTimings,
@@ -161,10 +179,10 @@ impl RuntimeWorker {
                 let initialized = LuauRuntime::compile(&source).and_then(|runtime| {
                     let state = runtime.migrate_state(state_schema_version, &state)?;
                     let state_schema_version = runtime.state_schema_version()?;
-                    let tree = runtime.render(&model, &state)?;
-                    Ok((runtime, tree, state, state_schema_version))
+                    let scene = runtime.render(&model, &state)?;
+                    Ok((runtime, scene, state, state_schema_version))
                 });
-                let (mut active_runtime, tree, active_state, active_state_schema_version) =
+                let (mut active_runtime, scene, active_state, active_state_schema_version) =
                     match initialized {
                         Ok(initialized) => initialized,
                         Err(error) => {
@@ -173,11 +191,12 @@ impl RuntimeWorker {
                         }
                     };
                 let ready = WorkerReady {
-                    tree,
+                    scene,
                     state: active_state,
                     state_schema_version: active_state_schema_version,
                     worker_thread: format!("{:?}", thread::current().id()),
                     initialize_us: micros(started.elapsed()),
+                    assets: active_runtime.assets().to_vec(),
                 };
                 if ready_tx.send_blocking(Ok(ready)).is_err() {
                     return;
@@ -280,8 +299,8 @@ impl RuntimeWorker {
                                 }
                             };
                             let render_started = Instant::now();
-                            let tree = match candidate_runtime.render(&model, &state) {
-                                Ok(tree) => tree,
+                            let scene = match candidate_runtime.render(&model, &state) {
+                                Ok(scene) => scene,
                                 Err(error) => {
                                     let timings = CandidateTimings {
                                         submitted_at,
@@ -307,11 +326,12 @@ impl RuntimeWorker {
                                 render_us: micros(render_started.elapsed()),
                                 worker_total_us: micros(worker_started.elapsed()),
                             };
+                            let assets = candidate_runtime.assets().to_vec();
                             prepared = Some(PreparedCandidate {
                                 request_id,
                                 source: source.clone(),
                                 runtime: candidate_runtime,
-                                tree: tree.clone(),
+                                scene: scene.clone(),
                                 state: state.clone(),
                                 state_schema_version,
                                 timings: timings.clone(),
@@ -319,10 +339,11 @@ impl RuntimeWorker {
                             let _ = results_tx.send_blocking(WorkerResult::CandidatePrepared {
                                 request_id,
                                 source,
-                                tree,
+                                scene,
                                 state,
                                 state_schema_version,
                                 timings,
+                                assets,
                             });
                         }
                         WorkerCommand::CommitCandidate { request_id } => {
@@ -334,13 +355,15 @@ impl RuntimeWorker {
                                 continue;
                             }
                             active_runtime = candidate.runtime;
+                            let assets = active_runtime.assets().to_vec();
                             let _ = results_tx.send_blocking(WorkerResult::CandidateCommitted {
                                 request_id,
                                 source: candidate.source,
-                                tree: candidate.tree,
+                                scene: candidate.scene,
                                 state: candidate.state,
                                 state_schema_version: candidate.state_schema_version,
                                 timings: candidate.timings,
+                                assets,
                             });
                         }
                         WorkerCommand::DiscardCandidate { request_id } => {
@@ -360,15 +383,15 @@ impl RuntimeWorker {
                             let result = active_runtime
                                 .update_with_effects(&model, &state, &event)
                                 .and_then(|outcome| {
-                                    let tree = active_runtime.render(&model, &outcome.state)?;
-                                    Ok((outcome, tree))
+                                    let scene = active_runtime.render(&model, &outcome.state)?;
+                                    Ok((outcome, scene))
                                 });
                             let worker_us = micros(started.elapsed());
                             let result = match result {
-                                Ok((outcome, tree)) => WorkerResult::ActionCompleted {
+                                Ok((outcome, scene)) => WorkerResult::ActionCompleted {
                                     request_id,
                                     state: outcome.state,
-                                    tree,
+                                    scene,
                                     effects: outcome.effects,
                                     worker_us,
                                 },
@@ -452,7 +475,7 @@ impl RuntimeWorker {
         request_id: u64,
         model: ExperienceModel,
         state: JsonValue,
-        event: UiEvent,
+        event: SceneEvent,
     ) -> Result<(), String> {
         self.commands
             .send_blocking(WorkerCommand::Action {
@@ -511,7 +534,7 @@ impl LuauRuntime {
             Ok(VmState::Continue)
         });
 
-        let module = {
+        let (module, assets, asset_paths) = {
             let result = run_bounded(&deadline, RENDER_BUDGET, || {
                 lua.load(source)
                     .set_name("experience")
@@ -521,14 +544,30 @@ impl LuauRuntime {
             let _: Function = result.get("render").map_err(|_| {
                 RuntimeError::Invalid("module must export render(model, state)".into())
             })?;
-            lua.create_registry_value(result)?
+            let api_version = result
+                .get::<Option<u32>>("api_version")?
+                .ok_or_else(|| RuntimeError::Invalid("module must export api_version".into()))?;
+            if api_version != EXPERIENCE_API_VERSION {
+                return Err(RuntimeError::Invalid(format!(
+                    "experience API {api_version} is unsupported; host requires {EXPERIENCE_API_VERSION}"
+                )));
+            }
+            let (assets, asset_paths) =
+                decode_revision_assets(result.get::<Option<Table>>("assets")?)?;
+            (lua.create_registry_value(result)?, assets, asset_paths)
         };
 
         Ok(Self {
             lua,
             module,
             deadline,
+            assets,
+            asset_paths,
         })
+    }
+
+    pub fn assets(&self) -> &[RevisionAsset] {
+        &self.assets
     }
 
     pub fn initial_state(&self) -> JsonValue {
@@ -586,7 +625,7 @@ impl LuauRuntime {
         &self,
         model: &ExperienceModel,
         state: &JsonValue,
-    ) -> Result<UiNode, RuntimeError> {
+    ) -> Result<Scene, RuntimeError> {
         let module: Table = self.lua.registry_value(&self.module)?;
         let render: Function = module.get("render")?;
         let model = self.lua.to_value(model)?;
@@ -594,16 +633,22 @@ impl LuauRuntime {
         let value = run_bounded(&self.deadline, RENDER_BUDGET, || {
             render.call::<Value>((model, state))
         })?;
-        let root = Decoder::default().node(value, 1)?;
-        validate_tree(&root).map_err(|error| RuntimeError::Invalid(error.to_string()))?;
-        Ok(root)
+        let scene = Scene {
+            root: Decoder {
+                nodes: 0,
+                asset_paths: &self.asset_paths,
+            }
+            .node(value, 1)?,
+        };
+        validate_scene(&scene).map_err(|error| RuntimeError::Invalid(error.to_string()))?;
+        Ok(scene)
     }
 
     pub fn update(
         &self,
         model: &ExperienceModel,
         state: &JsonValue,
-        event: &UiEvent,
+        event: &SceneEvent,
     ) -> Result<JsonValue, RuntimeError> {
         Ok(self.update_with_effects(model, state, event)?.state)
     }
@@ -612,7 +657,7 @@ impl LuauRuntime {
         &self,
         model: &ExperienceModel,
         state: &JsonValue,
-        event: &UiEvent,
+        event: &SceneEvent,
     ) -> Result<UpdateOutcome, RuntimeError> {
         let module: Table = self.lua.registry_value(&self.module)?;
         let update: Option<Function> = module.get("update")?;
@@ -641,6 +686,82 @@ impl LuauRuntime {
             effects: Vec::new(),
         })
     }
+}
+
+fn decode_revision_assets(
+    table: Option<Table>,
+) -> Result<(Vec<RevisionAsset>, HashMap<String, String>), RuntimeError> {
+    let Some(table) = table else {
+        return Ok((Vec::new(), HashMap::new()));
+    };
+    let mut assets = Vec::new();
+    let mut paths = HashMap::new();
+    for pair in table.pairs::<String, Table>() {
+        if assets.len() >= MAX_REVISION_ASSETS {
+            return Err(RuntimeError::Invalid(
+                "revision declares too many assets".into(),
+            ));
+        }
+        let (id, asset) = pair?;
+        if id.is_empty()
+            || id.len() > 128
+            || !id
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+            || id == "album-orbit"
+            || paths.contains_key(&id)
+        {
+            return Err(RuntimeError::Invalid(format!(
+                "invalid or duplicate revision asset id: {id}"
+            )));
+        }
+        let kind = required_bounded_string(&asset, "kind", 32)?;
+        if kind != "svg" {
+            return Err(RuntimeError::Invalid(format!(
+                "unsupported revision asset kind: {kind}"
+            )));
+        }
+        let data = required_bounded_string(&asset, "data", MAX_REVISION_ASSET_BYTES)?;
+        validate_svg_asset(&data)?;
+        let bytes = data.into_bytes();
+        let sha256 = format!("{:x}", Sha256::digest(&bytes));
+        let path = format!("sos/revisions/{sha256}.svg");
+        paths.insert(id.clone(), path.clone());
+        assets.push(RevisionAsset {
+            id,
+            path,
+            kind,
+            bytes,
+            sha256,
+        });
+    }
+    Ok((assets, paths))
+}
+
+fn validate_svg_asset(data: &str) -> Result<(), RuntimeError> {
+    let normalized = data.to_ascii_lowercase();
+    if data.len() > MAX_REVISION_ASSET_BYTES
+        || !normalized.contains("<svg")
+        || !normalized.contains("</svg>")
+        || [
+            "<script",
+            "javascript:",
+            "<!doctype",
+            "<!entity",
+            "<foreignobject",
+            "xlink:href",
+            "href=\"http",
+            "href='http",
+            "url(http",
+        ]
+        .iter()
+        .any(|needle| normalized.contains(needle))
+    {
+        return Err(RuntimeError::Invalid(
+            "revision SVG is malformed or uses an external/active feature".into(),
+        ));
+    }
+    Ok(())
 }
 
 fn decode_effects(table: Option<Table>, lua: &Lua) -> Result<Vec<ProviderEffect>, RuntimeError> {
@@ -693,63 +814,24 @@ fn run_bounded<T>(
     result.map_err(RuntimeError::from)
 }
 
-#[derive(Default)]
-struct Decoder {
+struct Decoder<'a> {
     nodes: usize,
+    asset_paths: &'a HashMap<String, String>,
 }
 
-impl Decoder {
-    fn node(&mut self, value: Value, depth: usize) -> Result<UiNode, RuntimeError> {
-        if depth > MAX_TREE_DEPTH {
-            return Err(RuntimeError::Invalid("tree is too deep".into()));
+impl Decoder<'_> {
+    fn node(&mut self, value: Value, depth: usize) -> Result<SceneNode, RuntimeError> {
+        if depth > MAX_SCENE_DEPTH {
+            return Err(RuntimeError::Invalid("scene is too deep".into()));
         }
         self.nodes += 1;
-        if self.nodes > MAX_TREE_NODES {
-            return Err(RuntimeError::Invalid("tree has too many nodes".into()));
+        if self.nodes > MAX_SCENE_NODES {
+            return Err(RuntimeError::Invalid("scene has too many nodes".into()));
         }
 
         let table = value
             .as_table()
-            .ok_or_else(|| RuntimeError::Invalid("each UI node must be a table".into()))?;
-        let kind_name: String = table.get("type")?;
-        let kind = match kind_name.as_str() {
-            "box" => NodeKind::Box,
-            "column" => NodeKind::Column,
-            "row" => NodeKind::Row,
-            "scroll" => NodeKind::Scroll,
-            "spacer" => NodeKind::Spacer,
-            "text" => {
-                let text: String = table.get("text")?;
-                if text.len() > MAX_TEXT_BYTES {
-                    return Err(RuntimeError::Invalid("text is too long".into()));
-                }
-                NodeKind::Text(text)
-            }
-            "text_input" => NodeKind::TextInput(TextInput {
-                state_key: required_bounded_string(table, "state_key", 256)?,
-                value: required_bounded_string(table, "value", MAX_TEXT_BYTES)?,
-                placeholder: bounded_optional_string(table, "placeholder", MAX_TEXT_BYTES)?
-                    .unwrap_or_default(),
-                submit_action: bounded_optional_string(table, "submit_action", 256)?,
-                autofocus: table.get::<Option<bool>>("autofocus")?.unwrap_or(false),
-            }),
-            "image" => {
-                let asset = required_bounded_string(table, "asset", 256)?;
-                if asset != "album-orbit" {
-                    return Err(RuntimeError::Invalid(format!(
-                        "image asset is not allowed: {asset}"
-                    )));
-                }
-                NodeKind::Image(Image { asset })
-            }
-            "canvas" => NodeKind::Canvas(decode_canvas(table)?),
-            other => return Err(RuntimeError::Invalid(format!("unknown node type: {other}"))),
-        };
-
-        let style = match table.get::<Option<Table>>("style")? {
-            Some(style) => decode_style(&style)?,
-            None => Style::default(),
-        };
+            .ok_or_else(|| RuntimeError::Invalid("each scene node must be a table".into()))?;
         let mut children = Vec::new();
         if let Some(child_table) = table.get::<Option<Table>>("children")? {
             for child in child_table.sequence_values::<Value>() {
@@ -760,107 +842,304 @@ impl Decoder {
             }
         }
 
-        Ok(UiNode {
+        Ok(SceneNode {
             id: bounded_optional_string(table, "id", 256)?,
-            kind,
-            style,
-            action: bounded_optional_string(table, "action", 256)?,
+            layout: decode_layout(table.get::<Option<Table>>("layout")?)?,
+            content: decode_content(table.get::<Option<Table>>("content")?, self.asset_paths)?,
+            paint: decode_paint(table.get::<Option<Table>>("paint")?)?,
+            interaction: decode_interaction(table.get::<Option<Table>>("interaction")?)?,
             animation: decode_animation(table.get::<Option<Table>>("animation")?)?,
-            accessibility: decode_accessibility(table.get::<Option<Table>>("accessibility")?)?,
+            semantics: decode_semantics(table.get::<Option<Table>>("semantics")?)?,
             children,
         })
     }
 }
 
-fn decode_canvas(table: &Table) -> Result<Canvas, RuntimeError> {
-    let mut commands = Vec::new();
-    let mut point_count = 0usize;
-    if let Some(command_table) = table.get::<Option<Table>>("commands")? {
-        for command in command_table.sequence_values::<Table>() {
-            if commands.len() >= MAX_CANVAS_COMMANDS {
-                return Err(RuntimeError::Invalid("canvas has too many commands".into()));
-            }
-            let command = command?;
-            let kind = required_bounded_string(&command, "kind", 32)?;
-            commands.push(match kind.as_str() {
-                "path" => {
-                    let points_table: Table = command.get("points")?;
-                    let mut points = Vec::new();
-                    for point in points_table.sequence_values::<Table>() {
-                        point_count += 1;
-                        if point_count > MAX_CANVAS_POINTS {
-                            return Err(RuntimeError::Invalid("canvas has too many points".into()));
-                        }
-                        let point = point?;
-                        points.push(CanvasPoint {
-                            x: canvas_number(&point, "x")?,
-                            y: canvas_number(&point, "y")?,
-                        });
-                    }
-                    CanvasCommand::Path {
-                        points,
-                        color: command.get("color")?,
-                        width: optional_canvas_number(&command, "width")?,
-                        closed: command.get::<Option<bool>>("closed")?.unwrap_or(false),
-                    }
-                }
-                "quad" => CanvasCommand::Quad {
-                    x: canvas_number(&command, "x")?,
-                    y: canvas_number(&command, "y")?,
-                    width: canvas_number(&command, "width")?,
-                    height: canvas_number(&command, "height")?,
-                    radius: optional_canvas_number(&command, "radius")?.unwrap_or_default(),
-                    color: command.get("color")?,
-                },
-                other => {
-                    return Err(RuntimeError::Invalid(format!(
-                        "unknown canvas command: {other}"
-                    )))
-                }
-            });
+fn decode_layout(table: Option<Table>) -> Result<Layout, RuntimeError> {
+    let Some(table) = table else {
+        return Ok(Layout::default());
+    };
+    Ok(Layout {
+        flow: match table.get::<Option<String>>("flow")?.as_deref() {
+            None | Some("overlay") => Flow::Overlay,
+            Some("column") => Flow::Column,
+            Some("row") => Flow::Row,
+            Some(value) => return Err(RuntimeError::Invalid(format!("invalid flow: {value}"))),
+        },
+        scroll_y: table.get::<Option<bool>>("scroll_y")?.unwrap_or(false),
+        padding: finite_dimension(&table, "padding")?,
+        gap: finite_dimension(&table, "gap")?,
+        width: finite_dimension(&table, "width")?,
+        height: finite_dimension(&table, "height")?,
+        min_width: finite_dimension(&table, "min_width")?,
+        min_height: finite_dimension(&table, "min_height")?,
+        max_width: finite_dimension(&table, "max_width")?,
+        max_height: finite_dimension(&table, "max_height")?,
+        aspect_ratio: finite_dimension(&table, "aspect_ratio")?,
+        position: table
+            .get::<Option<Table>>("position")?
+            .map(|position| -> Result<LayoutPosition, RuntimeError> {
+                Ok(LayoutPosition {
+                    x: scene_number(&position, "x")?,
+                    y: scene_number(&position, "y")?,
+                })
+            })
+            .transpose()?,
+        clip_bounds: table.get::<Option<bool>>("clip_bounds")?.unwrap_or(false),
+        grow: table.get::<Option<bool>>("grow")?.unwrap_or(false),
+        align: match table.get::<Option<String>>("align")?.as_deref() {
+            None => None,
+            Some("start") => Some(Align::Start),
+            Some("center") => Some(Align::Center),
+            Some("end") => Some(Align::End),
+            Some(value) => return Err(RuntimeError::Invalid(format!("invalid align: {value}"))),
+        },
+        justify: match table.get::<Option<String>>("justify")?.as_deref() {
+            None => None,
+            Some("start") => Some(Justify::Start),
+            Some("center") => Some(Justify::Center),
+            Some("end") => Some(Justify::End),
+            Some("between") => Some(Justify::Between),
+            Some(value) => return Err(RuntimeError::Invalid(format!("invalid justify: {value}"))),
+        },
+    })
+}
+
+fn decode_content(
+    table: Option<Table>,
+    asset_paths: &HashMap<String, String>,
+) -> Result<Option<Content>, RuntimeError> {
+    let Some(table) = table else {
+        return Ok(None);
+    };
+    let kind = required_bounded_string(&table, "kind", 32)?;
+    let content = match kind.as_str() {
+        "text" => Content::Text(TextContent {
+            value: required_bounded_string(&table, "value", MAX_TEXT_BYTES)?,
+            size: required_dimension(&table, "size")?,
+            color: table.get("color")?,
+        }),
+        "text_session" => Content::TextSession(TextSession {
+            state_key: required_bounded_string(&table, "state_key", 256)?,
+            value: required_bounded_string(&table, "value", MAX_TEXT_BYTES)?,
+            placeholder: bounded_optional_string(&table, "placeholder", MAX_TEXT_BYTES)?
+                .unwrap_or_default(),
+            submit_action: bounded_optional_string(&table, "submit_action", 256)?,
+            autofocus: table.get::<Option<bool>>("autofocus")?.unwrap_or(false),
+        }),
+        "image" => {
+            let asset_id = required_bounded_string(&table, "asset", 256)?;
+            let asset = if asset_id == "album-orbit" {
+                asset_id
+            } else if let Some(path) = asset_paths.get(&asset_id) {
+                path.clone()
+            } else {
+                return Err(RuntimeError::Invalid(format!(
+                    "image asset is not declared by this revision: {asset_id}"
+                )));
+            };
+            Content::Image(ImageContent { asset })
         }
+        other => {
+            return Err(RuntimeError::Invalid(format!(
+                "unknown content kind: {other}"
+            )))
+        }
+    };
+    Ok(Some(content))
+}
+
+fn decode_paint(table: Option<Table>) -> Result<Vec<PaintOp>, RuntimeError> {
+    let Some(table) = table else {
+        return Ok(Vec::new());
+    };
+    PaintDecoder::default().operations(table, 1)
+}
+
+#[derive(Default)]
+struct PaintDecoder {
+    operations: usize,
+    points: usize,
+    glyph_runs: usize,
+}
+
+impl PaintDecoder {
+    fn operations(&mut self, table: Table, depth: usize) -> Result<Vec<PaintOp>, RuntimeError> {
+        if depth > MAX_PAINT_DEPTH {
+            return Err(RuntimeError::Invalid("paint list is too deep".into()));
+        }
+        let mut decoded = Vec::new();
+        for operation in table.sequence_values::<Table>() {
+            self.operations += 1;
+            if self.operations > MAX_PAINT_OPS {
+                return Err(RuntimeError::Invalid(
+                    "scene node has too many paint operations".into(),
+                ));
+            }
+            decoded.push(self.operation(operation?, depth)?);
+        }
+        Ok(decoded)
     }
 
+    fn operation(&mut self, operation: Table, depth: usize) -> Result<PaintOp, RuntimeError> {
+        let kind = required_bounded_string(&operation, "kind", 32)?;
+        Ok(match kind.as_str() {
+            "fill_bounds" => PaintOp::FillBounds {
+                color: operation.get("color")?,
+                radius: optional_scene_number(&operation, "radius")?.unwrap_or_default(),
+            },
+            "path" => {
+                let points_table: Table = operation.get("points")?;
+                let mut points = Vec::new();
+                for point in points_table.sequence_values::<Table>() {
+                    self.points += 1;
+                    if self.points > MAX_PAINT_POINTS {
+                        return Err(RuntimeError::Invalid(
+                            "scene node has too many paint points".into(),
+                        ));
+                    }
+                    let point = point?;
+                    points.push(PaintPoint {
+                        x: scene_number(&point, "x")?,
+                        y: scene_number(&point, "y")?,
+                    });
+                }
+                PaintOp::Path {
+                    points,
+                    color: operation.get("color")?,
+                    width: optional_scene_number(&operation, "width")?,
+                    closed: operation.get::<Option<bool>>("closed")?.unwrap_or(false),
+                }
+            }
+            "quad" => PaintOp::Quad {
+                x: scene_number(&operation, "x")?,
+                y: scene_number(&operation, "y")?,
+                width: scene_number(&operation, "width")?,
+                height: scene_number(&operation, "height")?,
+                radius: optional_scene_number(&operation, "radius")?.unwrap_or_default(),
+                color: operation.get("color")?,
+            },
+            "glyphs" => {
+                let run_table: Table = operation.get("runs")?;
+                let mut runs = Vec::new();
+                for run in run_table.sequence_values::<Table>() {
+                    self.glyph_runs += 1;
+                    if self.glyph_runs > MAX_GLYPH_RUNS {
+                        return Err(RuntimeError::Invalid(
+                            "scene node has too many glyph runs".into(),
+                        ));
+                    }
+                    let run = run?;
+                    runs.push(GlyphRun {
+                        text: required_bounded_string(&run, "text", MAX_TEXT_BYTES)?,
+                        color: run.get("color")?,
+                        font_family: bounded_optional_string(&run, "font_family", 256)?,
+                        weight: run.get::<Option<u16>>("weight")?.unwrap_or(400),
+                        italic: run.get::<Option<bool>>("italic")?.unwrap_or(false),
+                    });
+                }
+                PaintOp::Glyphs {
+                    x: scene_number(&operation, "x")?,
+                    y: scene_number(&operation, "y")?,
+                    size: required_dimension(&operation, "size")?,
+                    line_height: optional_scene_number(&operation, "line_height")?,
+                    max_width: optional_scene_number(&operation, "max_width")?,
+                    runs,
+                }
+            }
+            "layer" => {
+                let transform = operation
+                    .get::<Option<Table>>("transform")?
+                    .map(|transform| decode_transform(&transform))
+                    .transpose()?
+                    .unwrap_or_default();
+                let clip = operation
+                    .get::<Option<Table>>("clip")?
+                    .map(|clip| -> Result<ClipRect, RuntimeError> {
+                        Ok(ClipRect {
+                            x: scene_number(&clip, "x")?,
+                            y: scene_number(&clip, "y")?,
+                            width: scene_number(&clip, "width")?,
+                            height: scene_number(&clip, "height")?,
+                        })
+                    })
+                    .transpose()?;
+                PaintOp::Layer {
+                    clip,
+                    transform,
+                    opacity: operation.get::<Option<f32>>("opacity")?.unwrap_or(1.0),
+                    operations: self.operations(operation.get("paint")?, depth + 1)?,
+                }
+            }
+            other => {
+                return Err(RuntimeError::Invalid(format!(
+                    "unknown paint operation: {other}"
+                )))
+            }
+        })
+    }
+}
+
+fn decode_transform(table: &Table) -> Result<Transform2D, RuntimeError> {
+    Ok(Transform2D {
+        translate_x: optional_scene_number(table, "translate_x")?.unwrap_or(0.0),
+        translate_y: optional_scene_number(table, "translate_y")?.unwrap_or(0.0),
+        scale_x: optional_scene_number(table, "scale_x")?.unwrap_or(1.0),
+        scale_y: optional_scene_number(table, "scale_y")?.unwrap_or(1.0),
+        rotation_degrees: optional_scene_number(table, "rotation_degrees")?.unwrap_or(0.0),
+    })
+}
+
+fn decode_interaction(table: Option<Table>) -> Result<Interaction, RuntimeError> {
+    let Some(table) = table else {
+        return Ok(Interaction::default());
+    };
     let mut hit_regions = Vec::new();
     if let Some(region_table) = table.get::<Option<Table>>("hit_regions")? {
         for region in region_table.sequence_values::<Table>() {
             if hit_regions.len() >= MAX_HIT_REGIONS {
                 return Err(RuntimeError::Invalid(
-                    "canvas has too many hit regions".into(),
+                    "scene node has too many hit regions".into(),
                 ));
             }
             let region = region?;
             hit_regions.push(HitRegion {
                 id: required_bounded_string(&region, "id", 256)?,
-                x: canvas_number(&region, "x")?,
-                y: canvas_number(&region, "y")?,
-                width: canvas_number(&region, "width")?,
-                height: canvas_number(&region, "height")?,
+                x: scene_number(&region, "x")?,
+                y: scene_number(&region, "y")?,
+                width: scene_number(&region, "width")?,
+                height: scene_number(&region, "height")?,
                 press_action: bounded_optional_string(&region, "press_action", 256)?,
                 drag_action: bounded_optional_string(&region, "drag_action", 256)?,
                 drop_action: bounded_optional_string(&region, "drop_action", 256)?,
+                tap_action: bounded_optional_string(&region, "tap_action", 256)?,
+                double_tap_action: bounded_optional_string(&region, "double_tap_action", 256)?,
+                long_press_action: bounded_optional_string(&region, "long_press_action", 256)?,
+                swipe_action: bounded_optional_string(&region, "swipe_action", 256)?,
             });
         }
     }
-
-    Ok(Canvas {
-        commands,
+    Ok(Interaction {
+        tap_action: bounded_optional_string(&table, "tap_action", 256)?,
+        double_tap_action: bounded_optional_string(&table, "double_tap_action", 256)?,
+        long_press_action: bounded_optional_string(&table, "long_press_action", 256)?,
+        swipe_action: bounded_optional_string(&table, "swipe_action", 256)?,
         hit_regions,
     })
 }
 
-fn canvas_number(table: &Table, key: &'static str) -> Result<f32, RuntimeError> {
+fn scene_number(table: &Table, key: &'static str) -> Result<f32, RuntimeError> {
     let value: f32 = table.get(key)?;
     if !value.is_finite() || !(-10_000.0..=10_000.0).contains(&value) {
-        return Err(RuntimeError::Invalid(format!("invalid canvas {key}")));
+        return Err(RuntimeError::Invalid(format!("invalid scene {key}")));
     }
     Ok(value)
 }
 
-fn optional_canvas_number(table: &Table, key: &'static str) -> Result<Option<f32>, RuntimeError> {
+fn optional_scene_number(table: &Table, key: &'static str) -> Result<Option<f32>, RuntimeError> {
     let value = table.get::<Option<f32>>(key)?;
     if value.is_some_and(|value| !value.is_finite() || !(-10_000.0..=10_000.0).contains(&value)) {
-        return Err(RuntimeError::Invalid(format!("invalid canvas {key}")));
+        return Err(RuntimeError::Invalid(format!("invalid scene {key}")));
     }
     Ok(value)
 }
@@ -889,23 +1168,23 @@ fn decode_animation(table: Option<Table>) -> Result<Option<Animation>, RuntimeEr
     }))
 }
 
-fn decode_accessibility(table: Option<Table>) -> Result<Option<Accessibility>, RuntimeError> {
+fn decode_semantics(table: Option<Table>) -> Result<Option<Semantics>, RuntimeError> {
     let Some(table) = table else {
         return Ok(None);
     };
     let role = match required_bounded_string(&table, "role", 32)?.as_str() {
-        "button" => AccessibilityRole::Button,
-        "image" => AccessibilityRole::Image,
-        "text_field" => AccessibilityRole::TextField,
-        "header" => AccessibilityRole::Header,
-        "status" => AccessibilityRole::Status,
+        "button" => SemanticRole::Button,
+        "image" => SemanticRole::Image,
+        "text_field" => SemanticRole::TextField,
+        "header" => SemanticRole::Header,
+        "status" => SemanticRole::Status,
         value => {
             return Err(RuntimeError::Invalid(format!(
-                "invalid accessibility role: {value}"
+                "invalid semantic role: {value}"
             )))
         }
     };
-    Ok(Some(Accessibility {
+    Ok(Some(Semantics {
         role,
         label: required_bounded_string(&table, "label", MAX_TEXT_BYTES)?,
         value: bounded_optional_string(&table, "value", MAX_TEXT_BYTES)?,
@@ -913,38 +1192,17 @@ fn decode_accessibility(table: Option<Table>) -> Result<Option<Accessibility>, R
     }))
 }
 
-fn decode_style(table: &Table) -> Result<Style, RuntimeError> {
-    Ok(Style {
-        background: table.get("background")?,
-        color: table.get("color")?,
-        padding: finite_dimension(table, "padding")?,
-        gap: finite_dimension(table, "gap")?,
-        radius: finite_dimension(table, "radius")?,
-        text_size: finite_dimension(table, "text_size")?,
-        width: finite_dimension(table, "width")?,
-        height: finite_dimension(table, "height")?,
-        grow: table.get::<Option<bool>>("grow")?.unwrap_or(false),
-        align: match table.get::<Option<String>>("align")?.as_deref() {
-            None => None,
-            Some("start") => Some(Align::Start),
-            Some("center") => Some(Align::Center),
-            Some("end") => Some(Align::End),
-            Some(value) => return Err(RuntimeError::Invalid(format!("invalid align: {value}"))),
-        },
-        justify: match table.get::<Option<String>>("justify")?.as_deref() {
-            None => None,
-            Some("start") => Some(Justify::Start),
-            Some("center") => Some(Justify::Center),
-            Some("end") => Some(Justify::End),
-            Some("between") => Some(Justify::Between),
-            Some(value) => return Err(RuntimeError::Invalid(format!("invalid justify: {value}"))),
-        },
-    })
-}
-
 fn finite_dimension(table: &Table, key: &'static str) -> Result<Option<f32>, RuntimeError> {
     let value = table.get::<Option<f32>>(key)?;
     if value.is_some_and(|value| !(0.0..=10_000.0).contains(&value)) {
+        return Err(RuntimeError::Invalid(format!("invalid {key}")));
+    }
+    Ok(value)
+}
+
+fn required_dimension(table: &Table, key: &'static str) -> Result<f32, RuntimeError> {
+    let value = table.get::<f32>(key)?;
+    if !value.is_finite() || !(0.0..=10_000.0).contains(&value) || value == 0.0 {
         return Err(RuntimeError::Invalid(format!("invalid {key}")));
     }
     Ok(value)
@@ -977,11 +1235,16 @@ mod tests {
 
     const SCRIPT: &str = r#"
         return {
+            api_version = 2,
             render = function(model, state)
                 return {
-                    type = "column", id = "root", style = { gap = 8 }, children = {
-                        { type = "text", text = model.weather.summary },
-                        { type = "text", text = state.on and "on" or "off", action = "toggle" },
+                    id = "root", layout = { flow = "column", gap = 8 }, children = {
+                        { content = { kind = "text", value = model.weather.summary, size = 16, color = 0xffffff } },
+                        {
+                            id = "toggle",
+                            content = { kind = "text", value = state.on and "on" or "off", size = 16, color = 0xffffff },
+                            interaction = { tap_action = "toggle" },
+                        },
                     }
                 }
             end,
@@ -993,17 +1256,17 @@ mod tests {
     "#;
 
     #[test]
-    fn renders_and_updates_a_typed_tree() {
+    fn renders_and_updates_a_typed_scene() {
         let runtime = LuauRuntime::compile(SCRIPT).unwrap();
         let model = providers_fake_for_test();
         let mut state = runtime.initial_state();
-        let tree = runtime.render(&model, &state).unwrap();
-        assert_eq!(tree.children.len(), 2);
+        let scene = runtime.render(&model, &state).unwrap();
+        assert_eq!(scene.root.children.len(), 2);
         state = runtime
             .update(
                 &model,
                 &state,
-                &UiEvent {
+                &SceneEvent {
                     action: "toggle".into(),
                     ..Default::default()
                 },
@@ -1013,9 +1276,28 @@ mod tests {
     }
 
     #[test]
+    fn rejects_catalog_abi_sources_instead_of_adapting_them() {
+        let missing = LuauRuntime::compile("return { render = function() return {} end }")
+            .err()
+            .unwrap()
+            .to_string();
+        assert!(missing.contains("module must export api_version"));
+
+        let version_one = LuauRuntime::compile(
+            "return { api_version = 1, render = function() return { type = 'box' } end }",
+        )
+        .err()
+        .unwrap()
+        .to_string();
+        assert!(version_one.contains("host requires 2"));
+    }
+
+    #[test]
     fn interrupts_an_infinite_render() {
-        let runtime =
-            LuauRuntime::compile("return { render = function() while true do end end }").unwrap();
+        let runtime = LuauRuntime::compile(
+            "return { api_version = 2, render = function() while true do end end }",
+        )
+        .unwrap();
         let error = runtime
             .render(&providers_fake_for_test(), &json!({}))
             .unwrap_err();
@@ -1023,16 +1305,16 @@ mod tests {
     }
 
     #[test]
-    fn rejects_unknown_nodes() {
+    fn rejects_unknown_content() {
         let runtime = LuauRuntime::compile(
-            "return { render = function() return { type = 'native_surface' } end }",
+            "return { api_version = 2, render = function() return { content = { kind = 'native_surface' } } end }",
         )
         .unwrap();
         assert!(runtime
             .render(&providers_fake_for_test(), &json!({}))
             .unwrap_err()
             .to_string()
-            .contains("unknown node type"));
+            .contains("unknown content kind"));
     }
 
     #[test]
@@ -1040,19 +1322,23 @@ mod tests {
         let runtime = LuauRuntime::compile(
             r#"
                 return {
+                    api_version = 2,
                     render = function()
                         return {
-                            type = "column", id = "root", children = {
+                            id = "root", layout = { flow = "column" }, children = {
                                 {
-                                    type = "image", id = "art", asset = "album-orbit",
+                                    id = "art", content = { kind = "image", asset = "album-orbit" },
                                     animation = { kind = "pulse", duration_ms = 1200, loop = true },
-                                    accessibility = { role = "image", label = "Album art" },
+                                    semantics = { role = "image", label = "Album art" },
                                 },
                                 {
-                                    type = "text_input", id = "draft", state_key = "draft",
-                                    value = "Caffè ☕️ – 明日のデザイン", autofocus = true,
-                                    submit_action = "save_note",
-                                    accessibility = {
+                                    id = "draft",
+                                    content = {
+                                        kind = "text_session", state_key = "draft",
+                                        value = "Caffè ☕️ – 明日のデザイン", autofocus = true,
+                                        submit_action = "save_note",
+                                    },
+                                    semantics = {
                                         role = "text_field", label = "Note draft",
                                         value = "Caffè ☕️ – 明日のデザイン",
                                     },
@@ -1064,48 +1350,122 @@ mod tests {
             "#,
         )
         .unwrap();
-        let tree = runtime
+        let scene = runtime
             .render(&providers_fake_for_test(), &json!({}))
             .unwrap();
-        assert_eq!(tree.children.len(), 2);
-        assert!(matches!(tree.children[0].kind, NodeKind::Image(_)));
-        assert!(tree.children[0].animation.is_some());
-        assert!(matches!(tree.children[1].kind, NodeKind::TextInput(_)));
-        assert!(tree.children[1].accessibility.is_some());
+        assert_eq!(scene.root.children.len(), 2);
+        assert!(matches!(
+            scene.root.children[0].content,
+            Some(Content::Image(_))
+        ));
+        assert!(scene.root.children[0].animation.is_some());
+        assert!(matches!(
+            scene.root.children[1].content,
+            Some(Content::TextSession(_))
+        ));
+        assert!(scene.root.children[1].semantics.is_some());
     }
 
     #[test]
-    fn rejects_non_allowlisted_image_assets() {
+    fn rejects_undeclared_image_assets() {
         let runtime = LuauRuntime::compile(
-            "return { render = function() return { type = 'image', id = 'x', asset = 'https://example.com/x.png' } end }",
+            "return { api_version = 2, render = function() return { id = 'x', content = { kind = 'image', asset = 'https://example.com/x.png' } } end }",
         )
         .unwrap();
         assert!(runtime
             .render(&providers_fake_for_test(), &json!({}))
             .unwrap_err()
             .to_string()
-            .contains("image asset is not allowed"));
+            .contains("image asset is not declared by this revision"));
     }
 
     #[test]
-    fn decodes_canvas_geometry_hit_regions_and_pointer_events() {
+    fn decodes_retained_layout_layers_glyphs_gestures_and_revision_assets() {
+        let runtime = LuauRuntime::compile(
+            r##"
+                return {
+                    api_version = 2,
+                    assets = {
+                        mark = { kind = "svg", data = [[<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="#fff"/></svg>]] },
+                    },
+                    render = function()
+                        return {
+                            id = "surface",
+                            layout = {
+                                width = 320, height = 480, min_width = 280, max_width = 360,
+                                aspect_ratio = 0.6666667, clip_bounds = true,
+                                position = { x = 4, y = 8 },
+                            },
+                            paint = {{
+                                kind = "layer", opacity = 0.8,
+                                clip = { x = 0, y = 0, width = 200, height = 100 },
+                                transform = { translate_x = 2, scale_x = 1.1, scale_y = 1.1, rotation_degrees = 3 },
+                                paint = {{ kind = "glyphs", x = 8, y = 12, size = 16, runs = {
+                                    { text = "SOS", color = 0xffffff, weight = 700, italic = true },
+                                } }},
+                            }},
+                            interaction = {
+                                tap_action = "tap", double_tap_action = "zoom",
+                                long_press_action = "pin", swipe_action = "swipe",
+                            },
+                            children = {{ id = "mark", content = { kind = "image", asset = "mark" } }},
+                        }
+                    end,
+                }
+            "##,
+        )
+        .unwrap();
+        assert_eq!(runtime.assets().len(), 1);
+        assert_eq!(runtime.assets()[0].id, "mark");
+        assert!(runtime.assets()[0].path.starts_with("sos/revisions/"));
+        let scene = runtime
+            .render(&providers_fake_for_test(), &json!({}))
+            .unwrap();
+        assert_eq!(scene.root.layout.position.unwrap().x, 4.0);
+        assert!(scene.root.layout.clip_bounds);
+        assert!(matches!(scene.root.paint[0], PaintOp::Layer { .. }));
+        assert_eq!(
+            scene.root.interaction.double_tap_action.as_deref(),
+            Some("zoom")
+        );
+        let Some(Content::Image(image)) = &scene.root.children[0].content else {
+            panic!("expected revision image")
+        };
+        assert_eq!(image.asset, runtime.assets()[0].path);
+    }
+
+    #[test]
+    fn rejects_active_content_in_revision_svg_assets() {
+        let error = match LuauRuntime::compile(
+            r#"return { api_version = 2, assets = { bad = { kind = "svg", data = "<svg><script>bad()</script></svg>" } }, render = function() return { id = "root" } end }"#,
+        ) {
+            Ok(_) => panic!("active SVG content should be rejected"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("external/active feature"));
+    }
+
+    #[test]
+    fn decodes_paint_geometry_hit_regions_and_pointer_events() {
         let runtime = LuauRuntime::compile(
             r#"
                 return {
+                    api_version = 2,
                     render = function(_, state)
                         return {
-                            type = "canvas", id = "time-space",
-                            style = { width = 320, height = 480 },
-                            commands = {
+                            id = "time-space",
+                            layout = { width = 320, height = 480 },
+                            paint = {
                                 { kind = "path", color = 0x77AAFF, width = 4,
                                   points = {{x = 24, y = 20}, {x = 92, y = 180}, {x = 40, y = 420}} },
                                 { kind = "quad", x = state.x or 40, y = 300,
                                   width = 100, height = 48, radius = 12, color = 0x223355 },
                             },
-                            hit_regions = {{
-                                id = "note-1", x = state.x or 40, y = 300, width = 100, height = 48,
-                                press_action = "note_press", drag_action = "note_drag", drop_action = "note_drop",
-                            }},
+                            interaction = { hit_regions = {{
+                                    id = "note-1", x = state.x or 40, y = 300, width = 100, height = 48,
+                                    press_action = "note_press", drag_action = "note_drag", drop_action = "note_drop",
+                                }}
+                            },
                         }
                     end,
                     update = function(_, state, event)
@@ -1117,20 +1477,17 @@ mod tests {
         )
         .unwrap();
         let model = providers_fake_for_test();
-        let tree = runtime.render(&model, &json!({})).unwrap();
-        let NodeKind::Canvas(canvas) = tree.kind else {
-            panic!("expected canvas")
-        };
-        assert_eq!(canvas.commands.len(), 2);
+        let scene = runtime.render(&model, &json!({})).unwrap();
+        assert_eq!(scene.root.paint.len(), 2);
         assert_eq!(
-            canvas.hit_regions[0].drop_action.as_deref(),
+            scene.root.interaction.hit_regions[0].drop_action.as_deref(),
             Some("note_drop")
         );
         let state = runtime
             .update(
                 &model,
                 &json!({}),
-                &UiEvent {
+                &SceneEvent {
                     action: "note_drag".into(),
                     x: Some(180.0),
                     y: Some(300.0),
@@ -1146,7 +1503,8 @@ mod tests {
         let runtime = LuauRuntime::compile(
             r#"
                 return {
-                    render = function() return { type = "box", id = "root" } end,
+                    api_version = 2,
+                    render = function() return { id = "root" } end,
                     update = function(_, state)
                         state.attached = true
                         return {
@@ -1165,7 +1523,7 @@ mod tests {
             .update_with_effects(
                 &providers_fake_for_test(),
                 &json!({}),
-                &UiEvent {
+                &SceneEvent {
                     action: "drop".into(),
                     ..Default::default()
                 },
@@ -1181,12 +1539,13 @@ mod tests {
         let runtime = LuauRuntime::compile(
             r#"
                 return {
+                    api_version = 2,
                     state_version = 2,
                     migrate = function(from_version, state)
                         if from_version ~= 1 then error("unexpected source schema") end
                         return { playing = state.playing, migrated_from = from_version }
                     end,
-                    render = function() return { type = "box" } end,
+                    render = function() return {} end,
                 }
             "#,
         )
@@ -1204,7 +1563,7 @@ mod tests {
     #[test]
     fn rejects_a_schema_change_without_a_migration() {
         let runtime = LuauRuntime::compile(
-            r#"return { state_version = 2, render = function() return { type = "box" } end }"#,
+            r#"return { api_version = 2, state_version = 2, render = function() return {} end }"#,
         )
         .unwrap();
         assert!(runtime.migrate_state(1, &json!({})).is_err());
@@ -1220,11 +1579,12 @@ mod tests {
         let runtime = LuauRuntime::compile(
             r#"
                 return {
+                    api_version = 2,
                     render = function()
                         if io ~= nil or package ~= nil or (os ~= nil and os.execute ~= nil) then
                             error("privileged library exposed")
                         end
-                        return { type = "box" }
+                        return {}
                     end,
                 }
             "#,
@@ -1240,6 +1600,7 @@ mod tests {
         let runtime = LuauRuntime::compile(
             r#"
                 return {
+                    api_version = 2,
                     render = function()
                         local values = {}
                         while true do
@@ -1264,7 +1625,7 @@ mod tests {
         let (worker, ready) =
             RuntimeWorker::start(SCRIPT.into(), model.clone(), json!({}), 1).unwrap();
         assert_ne!(ready.worker_thread, caller_thread);
-        assert_eq!(ready.tree.children.len(), 2);
+        assert_eq!(ready.scene.root.children.len(), 2);
 
         let results = worker.results();
         worker
@@ -1290,7 +1651,7 @@ mod tests {
         worker
             .prepare_candidate(
                 2,
-                "return { render = function() while true do end end }".into(),
+                "return { api_version = 2, render = function() while true do end end }".into(),
                 model.clone(),
                 json!({}),
                 1,
@@ -1307,7 +1668,7 @@ mod tests {
                 3,
                 model,
                 json!({}),
-                UiEvent {
+                SceneEvent {
                     action: "toggle".into(),
                     ..Default::default()
                 },
@@ -1330,7 +1691,7 @@ mod tests {
         for _ in 0..25 {
             let (worker, ready) =
                 RuntimeWorker::start(SCRIPT.into(), model.clone(), json!({}), 1).unwrap();
-            assert_eq!(ready.tree.children.len(), 2);
+            assert_eq!(ready.scene.root.children.len(), 2);
             worker.shutdown().unwrap();
         }
     }

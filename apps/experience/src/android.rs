@@ -1,8 +1,8 @@
 mod accessibility;
 mod assets;
-mod native_canvas;
 mod native_input;
 mod provider_client;
+mod scene_surface;
 
 use std::{
     collections::HashMap,
@@ -17,12 +17,13 @@ use std::{
 };
 
 use experience_ir::{
-    Align, AnimationKind, Canvas, ExperienceModel, HitRegion, Justify, NodeKind, StateEnvelope,
-    UiEvent, UiNode,
+    Align, AnimationKind, Content, ExperienceModel, Flow, HitRegion, Interaction, Justify, PaintOp,
+    Scene, SceneEvent, SceneNode, StateEnvelope, TextContent,
 };
 use gpui::{
-    div, img, prelude::*, px, rgb, Animation as GpuiAnimation, AnimationExt as _, AnyElement, App,
-    Application, Context, Entity, MouseButton, Render, SharedString, Window, WindowOptions,
+    canvas, div, img, prelude::*, px, rgb, Animation as GpuiAnimation, AnimationExt as _,
+    AnyElement, App, Application, Context, Entity, MouseButton, Render, SharedString, Window,
+    WindowOptions,
 };
 use gpui_mobile::{android::jni, packages::deeplink};
 use runtime_luau::{CandidateTimings, RuntimeWorker, WorkerReady, WorkerResult};
@@ -89,6 +90,18 @@ struct StressRun {
     rss_samples: Vec<(usize, u64)>,
 }
 
+struct GestureSession {
+    region: HitRegion,
+    started_at: Instant,
+    start_x: f32,
+    start_y: f32,
+    last_x: f32,
+    last_y: f32,
+    last_at: Instant,
+    click_count: usize,
+    moved: bool,
+}
+
 #[no_mangle]
 fn android_main(app: android_activity::AndroidApp) {
     android_logger::init_once(
@@ -150,7 +163,7 @@ fn android_main(app: android_activity::AndroidApp) {
 struct ExperienceHost {
     model: ExperienceModel,
     worker: RuntimeWorker,
-    tree: UiNode,
+    scene: Scene,
     state: JsonValue,
     remote_state_revision: Option<u64>,
     state_schema_version: u64,
@@ -159,14 +172,16 @@ struct ExperienceHost {
     next_request_id: u64,
     candidates: HashMap<u64, CandidatePurpose>,
     action_in_flight: bool,
-    pending_input_event: Option<UiEvent>,
+    pending_input_event: Option<SceneEvent>,
     input_state_shadow: HashMap<String, String>,
     inputs: HashMap<String, Entity<NativeTextInput>>,
-    canvas_drags: HashMap<String, String>,
+    surface_gestures: HashMap<String, GestureSession>,
+    surface_taps: HashMap<String, (String, Instant)>,
     pending_focus_restore: Option<String>,
     pending_frame: Option<PendingFrame>,
     stress: Option<StressRun>,
     pending_reconciled_state: Option<StateEnvelope>,
+    accessibility_dirty: bool,
 }
 
 impl ExperienceHost {
@@ -229,7 +244,7 @@ impl ExperienceHost {
         Self {
             model,
             worker,
-            tree: loading_tree(),
+            scene: loading_scene(),
             state,
             remote_state_revision,
             state_schema_version,
@@ -241,11 +256,13 @@ impl ExperienceHost {
             pending_input_event: None,
             input_state_shadow: HashMap::new(),
             inputs: HashMap::new(),
-            canvas_drags: HashMap::new(),
+            surface_gestures: HashMap::new(),
+            surface_taps: HashMap::new(),
             pending_focus_restore: None,
             pending_frame: None,
             stress: None,
             pending_reconciled_state: None,
+            accessibility_dirty: true,
         }
     }
 
@@ -282,11 +299,12 @@ impl ExperienceHost {
     fn handle_worker_ready(&mut self, result: Result<WorkerReady, String>, cx: &mut Context<Self>) {
         match result {
             Ok(ready) => {
-                self.tree = ready.tree;
+                assets::install(&ready.assets);
+                self.scene = ready.scene;
                 self.state = ready.state;
                 self.state_schema_version = ready.state_schema_version;
                 self.status = None;
-                self.publish_accessibility();
+                self.accessibility_dirty = true;
                 log::info!(
                     "runtime_worker_ready ui_thread={:?} worker_thread={} initialize_us={}",
                     thread::current().id(),
@@ -359,7 +377,7 @@ impl ExperienceHost {
 
     fn dispatch(&mut self, action: String, cx: &mut Context<Self>) {
         self.dispatch_event(
-            UiEvent {
+            SceneEvent {
                 action,
                 ..Default::default()
             },
@@ -367,7 +385,7 @@ impl ExperienceHost {
         );
     }
 
-    fn dispatch_event(&mut self, event: UiEvent, cx: &mut Context<Self>) {
+    fn dispatch_event(&mut self, event: SceneEvent, cx: &mut Context<Self>) {
         let revision_activation_pending = self
             .candidates
             .values()
@@ -417,7 +435,7 @@ impl ExperienceHost {
             value.len()
         );
         self.queue_input_event(
-            UiEvent {
+            SceneEvent {
                 action: "text_changed".into(),
                 target: Some(node_id),
                 value: Some(value),
@@ -436,7 +454,7 @@ impl ExperienceHost {
     ) {
         log::info!("native_text_focus node_id={node_id} focused={focused}");
         self.queue_input_event(
-            UiEvent {
+            SceneEvent {
                 action: "focus_changed".into(),
                 target: Some(node_id),
                 value: None,
@@ -455,7 +473,7 @@ impl ExperienceHost {
         cx: &mut Context<Self>,
     ) {
         self.queue_input_event(
-            UiEvent {
+            SceneEvent {
                 action,
                 target: Some(node_id),
                 value: Some(value),
@@ -466,29 +484,62 @@ impl ExperienceHost {
         );
     }
 
-    pub(super) fn native_canvas_down(
+    pub(super) fn scene_surface_down(
         &mut self,
-        canvas_id: String,
+        surface_id: String,
         region: HitRegion,
         x: f32,
         y: f32,
+        platform_click_count: usize,
         cx: &mut Context<Self>,
     ) {
-        self.canvas_drags.insert(canvas_id, region.id.clone());
-        if let Some(action) = region.press_action {
-            self.queue_input_event(native_canvas::event(action, region.id, x, y), cx);
+        let now = Instant::now();
+        let press = region.press_action.clone();
+        let target = region.id.clone();
+        let click_count =
+            if self
+                .surface_taps
+                .get(&surface_id)
+                .is_some_and(|(last_target, last_at)| {
+                    last_target == &target
+                        && now.duration_since(*last_at) <= Duration::from_millis(400)
+                })
+            {
+                2
+            } else {
+                platform_click_count.max(1)
+            };
+        self.surface_gestures.insert(
+            surface_id,
+            GestureSession {
+                region,
+                started_at: now,
+                start_x: x,
+                start_y: y,
+                last_x: x,
+                last_y: y,
+                last_at: now,
+                click_count,
+                moved: false,
+            },
+        );
+        if let Some(action) = press {
+            self.queue_input_event(
+                scene_surface::event(action, target, x, y, "start", 0.0, 0.0, 0.0, 0.0),
+                cx,
+            );
         }
     }
 
-    pub(super) fn native_canvas_move(
+    pub(super) fn scene_surface_move(
         &mut self,
-        canvas_id: String,
-        specification: &Canvas,
+        surface_id: String,
+        specification: &Interaction,
         x: f32,
         y: f32,
         cx: &mut Context<Self>,
     ) {
-        if !self.canvas_drags.contains_key(&canvas_id) {
+        if !self.surface_gestures.contains_key(&surface_id) {
             let Some(region) = specification.hit_regions.iter().rev().find(|region| {
                 region.drag_action.is_some()
                     && x >= region.x
@@ -498,61 +549,122 @@ impl ExperienceHost {
             }) else {
                 return;
             };
-            self.canvas_drags
-                .insert(canvas_id.clone(), region.id.clone());
+            let now = Instant::now();
+            self.surface_gestures.insert(
+                surface_id.clone(),
+                GestureSession {
+                    region: region.clone(),
+                    started_at: now,
+                    start_x: x,
+                    start_y: y,
+                    last_x: x,
+                    last_y: y,
+                    last_at: now,
+                    click_count: 1,
+                    moved: false,
+                },
+            );
             if let Some(action) = &region.press_action {
                 self.queue_input_event(
-                    native_canvas::event(action.clone(), region.id.clone(), x, y),
+                    scene_surface::event(
+                        action.clone(),
+                        region.id.clone(),
+                        x,
+                        y,
+                        "start",
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                    ),
                     cx,
                 );
                 return;
             }
         }
-        let Some(region_id) = self.canvas_drags.get(&canvas_id) else {
+        let now = Instant::now();
+        let Some(session) = self.surface_gestures.get_mut(&surface_id) else {
             return;
         };
-        let Some(region) = specification
-            .hit_regions
-            .iter()
-            .find(|region| &region.id == region_id)
-        else {
-            return;
-        };
-        if let Some(action) = &region.drag_action {
+        let delta_x = x - session.start_x;
+        let delta_y = y - session.start_y;
+        let sample_seconds = now.duration_since(session.last_at).as_secs_f32().max(0.001);
+        let velocity_x = (x - session.last_x) / sample_seconds;
+        let velocity_y = (y - session.last_y) / sample_seconds;
+        session.moved |= delta_x.hypot(delta_y) >= 8.0;
+        session.last_x = x;
+        session.last_y = y;
+        session.last_at = now;
+        let action = session.region.drag_action.clone();
+        let target = session.region.id.clone();
+        if let Some(action) = action {
             self.queue_input_event(
-                native_canvas::event(action.clone(), region.id.clone(), x, y),
+                scene_surface::event(
+                    action, target, x, y, "update", delta_x, delta_y, velocity_x, velocity_y,
+                ),
                 cx,
             );
         }
     }
 
-    pub(super) fn native_canvas_up(
+    pub(super) fn scene_surface_up(
         &mut self,
-        canvas_id: String,
-        specification: &Canvas,
+        surface_id: String,
+        _specification: &Interaction,
         x: f32,
         y: f32,
         cx: &mut Context<Self>,
     ) {
-        let Some(region_id) = self.canvas_drags.remove(&canvas_id) else {
+        let Some(session) = self.surface_gestures.remove(&surface_id) else {
             return;
         };
-        let Some(region) = specification
-            .hit_regions
-            .iter()
-            .find(|region| region.id == region_id)
-        else {
-            return;
+        let elapsed = session.started_at.elapsed();
+        let seconds = elapsed.as_secs_f32().max(0.001);
+        let delta_x = x - session.start_x;
+        let delta_y = y - session.start_y;
+        let velocity_x = delta_x / seconds;
+        let velocity_y = delta_y / seconds;
+        let region = session.region;
+        let action = if let Some(action) = &region.drop_action {
+            Some(action.clone())
+        } else if session.click_count >= 2 {
+            region
+                .double_tap_action
+                .clone()
+                .or_else(|| region.tap_action.clone())
+        } else if delta_x.hypot(delta_y) >= 56.0 && elapsed <= Duration::from_millis(900) {
+            region.swipe_action.clone()
+        } else if !session.moved && elapsed >= Duration::from_millis(500) {
+            region
+                .long_press_action
+                .clone()
+                .or_else(|| region.tap_action.clone())
+        } else if !session.moved {
+            region.tap_action.clone()
+        } else {
+            None
         };
-        if let Some(action) = &region.drop_action {
+        if region.drop_action.is_none() && !session.moved && elapsed < Duration::from_millis(500) {
+            if session.click_count >= 2 {
+                self.surface_taps.remove(&surface_id);
+            } else {
+                self.surface_taps
+                    .insert(surface_id, (region.id.clone(), Instant::now()));
+            }
+        } else {
+            self.surface_taps.remove(&surface_id);
+        }
+        if let Some(action) = action {
             self.queue_input_event(
-                native_canvas::event(action.clone(), region.id.clone(), x, y),
+                scene_surface::event(
+                    action, region.id, x, y, "end", delta_x, delta_y, velocity_x, velocity_y,
+                ),
                 cx,
             );
         }
     }
 
-    fn queue_input_event(&mut self, event: UiEvent, cx: &mut Context<Self>) {
+    fn queue_input_event(&mut self, event: SceneEvent, cx: &mut Context<Self>) {
         if self.action_in_flight || self.stress.is_some() {
             self.pending_input_event = Some(event);
         } else {
@@ -841,17 +953,19 @@ impl ExperienceHost {
             WorkerResult::CandidateCommitted {
                 request_id,
                 source,
-                tree,
+                scene,
                 state,
                 state_schema_version,
                 timings,
+                assets,
             } => {
                 let Some(purpose) = self.candidates.remove(&request_id) else {
                     return;
                 };
                 self.pending_focus_restore = native_input::active_input_id();
+                assets::install(&assets);
                 self.source = source;
-                self.tree = tree;
+                self.scene = scene;
                 self.state = state;
                 self.state_schema_version = state_schema_version;
                 if let Some(envelope) = self.pending_reconciled_state.take() {
@@ -859,7 +973,7 @@ impl ExperienceHost {
                     self.state_schema_version = envelope.schema_version;
                     self.remote_state_revision = Some(envelope.revision);
                 }
-                self.publish_accessibility();
+                self.accessibility_dirty = true;
                 if purpose == CandidatePurpose::Regular {
                     if read_file(CANDIDATE_FILE).is_some_and(|candidate| {
                         source_sha256(&candidate) == source_sha256(&self.source)
@@ -886,7 +1000,7 @@ impl ExperienceHost {
             WorkerResult::ActionCompleted {
                 request_id,
                 mut state,
-                tree,
+                scene,
                 effects,
                 worker_us,
             } => {
@@ -936,8 +1050,8 @@ impl ExperienceHost {
                     }
                 }
                 self.state = state;
-                self.tree = tree;
-                self.publish_accessibility();
+                self.scene = scene;
+                self.accessibility_dirty = true;
                 persist_state(&self.state);
                 self.status = None;
                 log::info!(
@@ -961,12 +1075,11 @@ impl ExperienceHost {
     }
 
     fn publish_accessibility(&self) {
-        let summary = accessibility::summary(&self.tree);
-        match accessibility::publish(&summary) {
-            Ok(()) => log::info!(
+        match accessibility::publish(&self.scene) {
+            Ok(bytes) => log::info!(
                 "accessibility_published bytes={} semantics={}",
-                summary.len(),
-                count_semantics(&self.tree)
+                bytes,
+                count_semantics(&self.scene)
             ),
             Err(error) => log::warn!("accessibility_publish_failed error={error}"),
         }
@@ -1125,73 +1238,91 @@ impl ExperienceHost {
 
     fn render_node(
         &mut self,
-        node: &UiNode,
+        node: &SceneNode,
         path: SharedString,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let element_id = node.id.clone().unwrap_or_else(|| path.to_string());
         let mut element = div();
-        match &node.kind {
-            NodeKind::Column => element = element.flex().flex_col(),
-            NodeKind::Row => element = element.flex().flex_row(),
-            NodeKind::Scroll => element = element.flex().flex_col().size_full(),
-            NodeKind::Box
-            | NodeKind::Spacer
-            | NodeKind::Text(_)
-            | NodeKind::TextInput(_)
-            | NodeKind::Image(_)
-            | NodeKind::Canvas(_) => {}
+        match node.layout.flow {
+            Flow::Overlay => {}
+            Flow::Column => element = element.flex().flex_col(),
+            Flow::Row => element = element.flex().flex_row(),
+        }
+        if node.layout.scroll_y {
+            element = element.size_full();
         }
 
-        if let Some(background) = node.style.background {
-            element = element.bg(rgb(background));
+        for operation in &node.paint {
+            if let PaintOp::FillBounds { color, radius } = operation {
+                element = element.bg(rgb(*color)).rounded(px(*radius));
+            }
         }
-        if let Some(color) = node.style.color {
-            element = element.text_color(rgb(color));
-        }
-        if let Some(padding) = node.style.padding {
+        if let Some(padding) = node.layout.padding {
             element = element.p(px(padding));
         }
-        if let Some(gap) = node.style.gap {
+        if let Some(gap) = node.layout.gap {
             element = element.gap(px(gap));
         }
-        if let Some(radius) = node.style.radius {
-            element = element.rounded(px(radius));
-        }
-        if let Some(text_size) = node.style.text_size {
-            element = element.text_size(px(text_size));
-        }
-        if let Some(width) = node.style.width {
+        if let Some(width) = node.layout.width {
             element = element.w(px(width));
         }
-        if let Some(height) = node.style.height {
+        if let Some(height) = node.layout.height {
             element = element.h(px(height));
         }
-        if node.style.grow {
+        if let Some(width) = node.layout.min_width {
+            element = element.min_w(px(width));
+        }
+        if let Some(height) = node.layout.min_height {
+            element = element.min_h(px(height));
+        }
+        if let Some(width) = node.layout.max_width {
+            element = element.max_w(px(width));
+        }
+        if let Some(height) = node.layout.max_height {
+            element = element.max_h(px(height));
+        }
+        if let Some(ratio) = node.layout.aspect_ratio {
+            element = element.aspect_ratio(ratio);
+        }
+        if let Some(position) = node.layout.position {
+            element = element.absolute().left(px(position.x)).top(px(position.y));
+        }
+        if node.layout.clip_bounds {
+            element = element.overflow_hidden();
+        }
+        if node.layout.grow {
             element = element.flex_1();
         }
-        element = match node.style.align {
+        element = match node.layout.align {
             Some(Align::Start) => element.items_start(),
             Some(Align::Center) => element.items_center(),
             Some(Align::End) => element.items_end(),
             None => element,
         };
-        element = match node.style.justify {
+        element = match node.layout.justify {
             Some(Justify::Start) => element.justify_start(),
             Some(Justify::Center) => element.justify_center(),
             Some(Justify::End) => element.justify_end(),
             Some(Justify::Between) => element.justify_between(),
             None => element,
         };
-        if let NodeKind::Text(text) = &node.kind {
-            element = element.child(SharedString::from(text.clone()));
+        if let Some(Content::Text(text)) = &node.content {
+            element = element
+                .text_color(rgb(text.color))
+                .text_size(px(text.size))
+                .child(SharedString::from(text.value.clone()));
         }
-        if let NodeKind::Image(image) = &node.kind {
-            debug_assert_eq!(image.asset, "album-orbit");
-            element = element.child(img(ALBUM_ASSET).size_full());
+        if let Some(Content::Image(image)) = &node.content {
+            let path = if image.asset == "album-orbit" {
+                ALBUM_ASSET.to_owned()
+            } else {
+                image.asset.clone()
+            };
+            element = element.child(img(path).size_full());
         }
-        if let NodeKind::TextInput(input) = &node.kind {
+        if let Some(Content::TextSession(input)) = &node.content {
             self.input_state_shadow
                 .entry(input.state_key.clone())
                 .or_insert_with(|| input.value.clone());
@@ -1236,10 +1367,30 @@ impl ExperienceHost {
             }
             element = element.child(native);
         }
-        if let NodeKind::Canvas(canvas) = &node.kind {
-            element = element.child(native_canvas::render(
+        if node.semantics.is_some() {
+            let semantic_id = element_id.clone();
+            element = element.child(
+                canvas(
+                    move |bounds, _, _| accessibility::record_bounds(&semantic_id, bounds),
+                    |_, _, _, _| {},
+                )
+                .absolute()
+                .size_full(),
+            );
+        }
+        let uses_surface = node
+            .paint
+            .iter()
+            .any(|operation| !matches!(operation, PaintOp::FillBounds { .. }))
+            || !node.interaction.hit_regions.is_empty()
+            || node.interaction.double_tap_action.is_some()
+            || node.interaction.long_press_action.is_some()
+            || node.interaction.swipe_action.is_some();
+        if uses_surface {
+            element = element.child(scene_surface::render(
                 element_id.clone(),
-                canvas.clone(),
+                node.paint.clone(),
+                node.interaction.clone(),
                 cx.weak_entity(),
                 cx,
             ));
@@ -1248,7 +1399,13 @@ impl ExperienceHost {
             let child_path = SharedString::from(format!("{path}-{index}"));
             element = element.child(self.render_node(child, child_path, window, cx));
         }
-        let mut rendered = if let Some(action) = &node.action {
+        let surface_owns_tap = uses_surface && node.interaction.tap_action.is_some();
+        let mut rendered = if let Some(action) = node
+            .interaction
+            .tap_action
+            .as_ref()
+            .filter(|_| !surface_owns_tap)
+        {
             let action = action.clone();
             element
                 .id(SharedString::from(element_id.clone()))
@@ -1257,7 +1414,7 @@ impl ExperienceHost {
                     cx.listener(move |this, _, _, cx| this.dispatch(action.clone(), cx)),
                 )
                 .into_any_element()
-        } else if matches!(node.kind, NodeKind::Scroll) {
+        } else if node.layout.scroll_y {
             element
                 .id(SharedString::from(element_id.clone()))
                 .overflow_y_scroll()
@@ -1294,6 +1451,37 @@ impl ExperienceHost {
 
 impl Render for ExperienceHost {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        while let Some(action) = accessibility::take_action() {
+            match action.kind.as_str() {
+                "click" if !action.value.is_empty() => self.dispatch_event(
+                    SceneEvent {
+                        action: action.value,
+                        target: Some(action.target),
+                        ..Default::default()
+                    },
+                    cx,
+                ),
+                "focus" => {
+                    if let Some(input) = self.inputs.get(&action.target).cloned() {
+                        input.update(cx, |input, input_cx| input.activate(window, input_cx));
+                    }
+                }
+                "set_text" => {
+                    let state_key = find_text_session(&self.scene.root, &action.target)
+                        .map(|input| input.state_key.clone());
+                    if let Some(state_key) = state_key {
+                        if let Some(input) = self.inputs.get(&action.target).cloned() {
+                            let replacement = action.value.clone();
+                            input.update(cx, |input, input_cx| {
+                                input.replace_from_accessibility(replacement, input_cx)
+                            });
+                        }
+                        self.native_input_changed(action.target, state_key, action.value, cx);
+                    }
+                }
+                _ => log::warn!("unsupported accessibility action kind={}", action.kind),
+            }
+        }
         if RELOAD_REQUESTED.swap(false, Ordering::AcqRel) {
             let revision_busy = self
                 .candidates
@@ -1326,8 +1514,8 @@ impl Render for ExperienceHost {
         let mut pending_frame = self.pending_frame.take();
         let render_started_at = Instant::now();
 
-        let tree = self.tree.clone();
-        let content = self.render_node(&tree, SharedString::from("root"), window, cx);
+        let scene = self.scene.clone();
+        let content = self.render_node(&scene.root, SharedString::from("root"), window, cx);
         let mut root = div()
             .flex()
             .flex_col()
@@ -1360,41 +1548,60 @@ impl Render for ExperienceHost {
                 this.frame_presented(frame, cx);
             });
         }
+        if self.accessibility_dirty || accessibility::take_bounds_changed() {
+            self.accessibility_dirty = false;
+            cx.on_next_frame(window, |this, _, _| this.publish_accessibility());
+        }
         root
     }
+}
+
+fn find_text_session<'a>(node: &'a SceneNode, id: &str) -> Option<&'a experience_ir::TextSession> {
+    if node.id.as_deref() == Some(id) {
+        if let Some(Content::TextSession(input)) = &node.content {
+            return Some(input);
+        }
+    }
+    node.children
+        .iter()
+        .find_map(|child| find_text_session(child, id))
 }
 
 fn stress_request_slot() -> &'static Mutex<Option<StressRequest>> {
     STRESS_REQUEST.get_or_init(|| Mutex::new(None))
 }
 
-fn loading_tree() -> UiNode {
-    let mut root = UiNode {
-        id: Some("startup-root".into()),
-        kind: NodeKind::Column,
-        ..Default::default()
-    };
-    root.style.padding = Some(24.);
-    root.style.gap = Some(10.);
-    root.children.push(UiNode {
-        kind: NodeKind::Text("SOS is ready".into()),
-        style: experience_ir::Style {
-            text_size: Some(28.),
-            color: Some(0x17211B),
+fn loading_scene() -> Scene {
+    Scene {
+        root: SceneNode {
+            id: Some("startup-root".into()),
+            layout: experience_ir::Layout {
+                flow: Flow::Column,
+                padding: Some(24.),
+                gap: Some(10.),
+                ..Default::default()
+            },
+            children: vec![
+                SceneNode {
+                    content: Some(Content::Text(TextContent {
+                        value: "SOS is ready".into(),
+                        size: 28.,
+                        color: 0x17211B,
+                    })),
+                    ..Default::default()
+                },
+                SceneNode {
+                    content: Some(Content::Text(TextContent {
+                        value: "Starting the experience runtime…".into(),
+                        size: 14.,
+                        color: 0x637069,
+                    })),
+                    ..Default::default()
+                },
+            ],
             ..Default::default()
         },
-        ..Default::default()
-    });
-    root.children.push(UiNode {
-        kind: NodeKind::Text("Starting the experience runtime…".into()),
-        style: experience_ir::Style {
-            text_size: Some(14.),
-            color: Some(0x637069),
-            ..Default::default()
-        },
-        ..Default::default()
-    });
-    root
+    }
 }
 
 fn parse_stress_request(url: &str) -> Option<StressRequest> {
@@ -1499,9 +1706,11 @@ fn current_rss_kb() -> Option<u64> {
     line.split_whitespace().nth(1)?.parse().ok()
 }
 
-fn count_semantics(root: &UiNode) -> usize {
-    usize::from(root.accessibility.is_some())
-        + root.children.iter().map(count_semantics).sum::<usize>()
+fn count_semantics(scene: &Scene) -> usize {
+    fn visit(root: &SceneNode) -> usize {
+        usize::from(root.semantics.is_some()) + root.children.iter().map(visit).sum::<usize>()
+    }
+    visit(&scene.root)
 }
 
 fn percentile(values: &[u64], percent: usize) -> u64 {
