@@ -1034,3 +1034,159 @@ lifecycle are still duplicated or platform-local; extract them only where the
 Android and Linux contracts are demonstrably identical. Rebase the Linux branch
 onto this commit and verify its remaining diff is platform-scoped before using
 this split for future Scene ABI work.
+
+## 2026-08-08 — Run the stable host as a real Linux Wayland client
+
+**Goal:** Use the Linux track while AOSP work is blocked to replace the
+supervisor's protocol-only child with a real permanent GPUI/Luau presentation
+host. Keep rebasing that work onto the active Scene ABI—now v3—rather than
+preserving a forked presentation or revision contract. Prove boot, same-PID
+scene activation, bounded rejection, host recovery, sidecar isolation, and the
+typed provider/state boundary before beginning a custom compositor or
+distribution.
+
+**Changed:** Uses the small, platform-neutral `experience-host-protocol`
+workspace crate for the supervisor's newline-JSON request/event ABI. Added the
+feature-gated `sos-experience-host` Linux executable: it re-verifies immutable
+revision manifests and files, starts the existing Luau runtime worker, renders
+the bounded Scene ABI v3 through one GPUI Wayland surface,
+implements `boot/prepare/present/confirm/discard/shutdown`, keeps protocol stdout
+separate from diagnostics, and reports presentation from GPUI's next-frame
+callback. Interaction effects use a background Unix-socket transaction, allow
+only typed `notes.attach_to_event`, reconcile ambiguous promotion, and update
+the visible scene only after authoritative state matches. Activation is rejected
+while an interaction/state commit is active.
+
+Rebasing onto `origin/main` `1ea2d963` required a semantic adaptation even
+though Git found no code conflict: the Linux host now consumes `Scene`,
+`SceneNode`, and `SceneEvent`, requires experience API 2, installs candidate
+revision assets, and supports the new layout/content/paint/interaction/
+animation facets. The Android asset registry and retained scene-surface painter
+were lifted into shared modules, so both adapters use the same nested
+clip/transform/layer, shaped-glyph, custom-hit-region, and rich-gesture code.
+Platform lifecycle, layout/content rendering, Android accessibility/native text
+input, and Linux host protocol integration remain thin platform-specific code.
+
+The second rebase onto `origin/main` `d2844f23` integrated bounded responsive
+layout programs, manifest-format-3 image/font/shader sidecars, the shared font
+loader, and the new pointer event fields. The shared scene surface now exposes a
+platform hook: Android registers prepaint bounds with its raw NDK multi-pointer
+router, while Linux keeps that router out of its build and maps conventional
+GPUI mouse input to the v3 single-pointer event shape. Linux candidate input now
+uses the same bounded/coalescing 64-event queue policy as Android. The runtime
+worker gained candidate-specific sidecar submission; it no longer reuses the
+boot revision's captured asset set for later candidates. A focused fixture
+[`sidecar-image.luau`](../tests/fixtures/sidecar-image.luau) exercises the real
+supervisor-directory-to-Linux-host boundary.
+
+The shared extraction was then isolated as mainline commit `b25accf`: protocol
+ownership, revision assets/fonts, retained paint/gesture plumbing, the host
+adapter hooks, and candidate-specific sidecars now precede this branch. After
+rebasing, the shared Android adapter, protocol crate, runtime worker,
+supervisor host, asset registry, and scene surface are byte-for-byte identical
+to `main`. The Linux commit now contains only target dependencies and feature
+wiring, the Linux host/binary, Linux fixtures and tools, and Linux-specific
+documentation. Its synthetic pointer-event construction moved into `linux.rs`
+and opts into the shared fallback hook, so the feature no longer patches the
+shared renderer.
+
+Added `linux-run`, `linux-script`, `linux-status`, and `linux-stop` to
+`tools/sosctl`, an empty-state fixture, a real socket/service-restart effect
+test, and the focused [`linux-stable-host.md`](linux-stable-host.md) report. The
+default v3 developer store is ignored under `.cache/linux-revisions-v3`; the
+incompatible v2 store is left untouched rather than rewritten or deleted. No
+raw run artifact was retained or added to Git. The local ARM64 Ubuntu 24.04
+environment gained Weston 13.0.0, Xvfb 21.1.12, and XKB development packages
+1.6.0 so an actual executable could be linked and a nested Wayland seat
+supplied.
+
+**Evidence:**
+`cargo test --workspace --all-targets --features sos-experience/linux-host`
+passes all 98 tests with `--locked`, including 26 vendored GPUI Mobile tests, 25
+supervisor/coordinator cases, 19 runtime tests, the shared wire format, and five
+Linux-specific host tests. The provider test starts a real Unix daemon, commits
+state plus one notes attachment, stops and restarts the service, and reads the
+attachment back through its socket. `git diff --name-status main...HEAD` leaves
+12 Linux-facing paths; explicit byte comparisons confirm the Android adapter,
+shared assets and scene surface, protocol crate, runtime worker, and supervisor
+host are identical to `main`. Strict workspace clippy with the same feature,
+`cargo fmt --all -- --check`, `git diff --check`, and `bash -n tools/sosctl`
+pass. The real binaries link with Rust 1.95.0 on ARM64 Linux 6.17. The existing
+NDK 29/native-Clang command also passes the strict Android `cargo check` for
+`aarch64-linux-android`, guarding the shared asset and scene-surface extraction
+after the Cargo target split. The runtime validator also accepts all five
+checked-in API-v3 experiences after the rebase.
+
+In the earlier v2 run under Weston 13's X11 backend nested in Xvfb,
+`./tools/sosctl linux-run --windowed` booted API-v2 revision `ff63f61d…` and
+created the control socket in PID 1527912.
+`linux-script experiences/daily-flow.luau` prepared revision `bc81479e…` with
+116 us queue, 1,194 us compile, 646 us render, and 1,848 us worker total, then
+reported the GPUI frame and supervisor confirmation in that same PID. Activating
+`experiences/android-exit-agent.luau` as revision `99ba2162…` exercised nested
+layers, shaped glyphs, gestures, and a revision SVG in the same process with
+26 us queue, 1,936 us compile, 665 us render, and 2,608 us total. Infinite-render
+revision `628cb7a7…` was interrupted and rejected while accepted revision
+`99ba2162…` and PID 1527912 remained active. Sending `SIGKILL` to the host caused
+the supervisor to boot the exact committed revision and report `HostRestarted`
+in PID 1528477.
+
+The v3 nested rerun booted revision `f174e726…` in PID 1606742 and activated
+sidecar-backed revision `728f905e…` in that same process with 119 us queue,
+874 us compile, 157 us render, and 1,039 us worker total. The installed inputs
+were the 986-byte `tests/fixtures/sidecar-image.luau` at SHA-256
+`3ec9aa6d0ff487b180dba62fa1dd91e9abeb7a87195e98e8d96a0a9a46342fef`
+and the 4,021-byte checked-in `mipmap-mdpi/ic_launcher.png` sidecar at SHA-256
+`11ddafaa7f09836b0576794c78ea208ebec67cd6b412578efabcfdea0c6a6183`.
+Infinite-render revision `632ce86e…` was rejected while `728f905e…` and PID
+1606742 stayed accepted. Killing the host restarted that exact sidecar-backed
+revision in PID 1607073 with 1,089 us initialization and a new GPUI frame. The
+disposable runtime and revision directories were removed after shutdown.
+
+**Failures and fixes:** `cargo check` initially hid missing native linker names;
+the executable build failed on `-lxkbcommon` and `-lxkbcommon-x11`, fixed by
+installing their development packages. Weston's headless backend and an RDP
+backend without a connected peer advertise no `wl_seat`; the pinned GPUI client
+unwraps that global and panicked after Luau initialization. Xvfb plus Weston's
+X11 backend supplied the required seat and became the nested automation setup.
+The user lacked access to `/dev/dri/renderD128`, so Mesa rejected the hardware
+driver and GPUI used a software path; the frame still completed. A first
+standalone activation supplied `--transaction` and was correctly rejected
+because transaction IDs belong to coordinated mode; retrying the standalone
+request without it succeeded. The rebase itself conflicted only in this
+chronological ledger, but main's ABI replacement made the auto-merged Linux code
+fail conceptually until its old `UiNode`/canvas renderer was replaced. Strict
+clippy then exposed an oversized shared glyph-paint enum; boxing the shaped line
+kept the representation bounded without changing paint behavior. The first
+Android cross-check exposed one missing shared-module import, which was added
+before the target passed again. On the v3 rebase, textual conflicts appeared in
+the Cargo feature/dependency split, shared scene-surface move, lockfile, and
+progress ledger. More importantly, upstream's worker captured boot sidecars for
+all future candidates; adding candidate-specific sidecars to the worker command
+prevented cross-revision asset inheritance. The Android raw pointer registration
+also could not remain a direct dependency of the shared surface, so a static
+platform hook preserved Android routing without pulling GPUI Mobile into Linux.
+Strict clippy exposed the shared font-registry type and expanded down-event
+signature; a type alias and grouped position kept the common boundary warning
+free.
+
+**Decision:** Adopt the existing-session Wayland client as the first Linux
+stable-host gate. Keep Wayland beneath GPUI and the generated IR, with all
+platform handles in Rust. The Linux VM remains the primary next environment;
+Raspberry Pi or other small hardware is a later portability/performance gate,
+not a prerequisite. Do not begin a custom distro before the session and graphics
+dependencies stabilize.
+
+**Open risks / next gate:** This desktop/nested result is not a hardware,
+latency, GPU, touch, direct-DRM, or boot-to-SOS pass. GPUI next-frame is not
+compositor-owned presentation evidence; Linux text input is display-only; Linux
+semantics are not yet exposed through a native accessibility adapter; and Linux
+has only a synthetic single-pointer mouse bridge, not Wayland touch,
+multi-pointer transforms, pressure, or explicit capture. The model is still
+fake, and standalone developer startup does not orchestrate provider authority
+bootstrap. Next, run this slice in a reproducible Debian Wayland VM, finish
+native text input and coordinated service startup, then build a minimal nested
+Smithay compositor that authenticates the shell, owns focus/surface ordering,
+quiesces input across activation, places one compatibility client, and
+acknowledges the exact presented shell buffer. Only after that should the same
+compositor take over a VM DRM/input session.

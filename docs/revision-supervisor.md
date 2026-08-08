@@ -111,19 +111,24 @@ rejection, preparation timeout, failures before and immediately after
 presentation, same-PID activation, host restart on the committed revision, and
 the external daemon. Ten
 coordinator tests retain state/source/schema binding and crash-journal cases.
+The protocol probe remains the deterministic supervisor integration-test child,
+but it is no longer the only external host. `sos-experience-host` is a real
+GPUI/Wayland client that loads the immutable Luau revision, implements every
+request in the table above, activates within one native process, and restarts on
+the committed pointer. Its scoped evidence and known presentation/input gaps
+are in [`linux-stable-host.md`](linux-stable-host.md).
 
-This is Linux process/filesystem evidence. The corresponding Android harness
-uses one GPUI process and in-process worker activation. Its physical-device
-activation, rejection, recovery, platform regression, typed-effect, and
-10,000-swap measurements are recorded in
+This is Linux process/filesystem and nested-Wayland evidence. The corresponding
+Android harness uses one GPUI process and in-process worker activation. Its
+physical-device activation, rejection, recovery, platform regression,
+typed-effect, and 10,000-swap measurements are recorded in
 [`stable-host-device-gate.md`](stable-host-device-gate.md). The AOSP adapter
 still needs to join that real GPUI host to this external supervisor protocol.
 
 ## Remaining boundaries
 
-- The current external host binary used by integration tests is a protocol
-  probe. The AOSP GPUI shell still needs to implement this transport around its
-  real Luau worker and compositor frame callback.
+- The Android GPUI shell still needs to implement this external transport; its
+  confirmed stable-host lifecycle is currently in-process.
 - The manifest and journal remain unsigned.
 - The Android harness consumes the same runtime asset set, but the AOSP adapter
   must still carry the supervisor-provided revision directory through its

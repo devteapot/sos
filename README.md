@@ -26,6 +26,9 @@ The current five-assumption Android-exit audit is in
 [`docs/android-exit-gate.md`](docs/android-exit-gate.md).
 The stable-host Linux revision supervisor and its Luau activation ABI are in
 [`docs/revision-supervisor.md`](docs/revision-supervisor.md).
+The real GPUI/Wayland host, same-PID activation evidence, developer commands,
+and remaining compositor boundaries are in
+[`docs/linux-stable-host.md`](docs/linux-stable-host.md).
 The durable typed provider/state Unix-socket protocol and authority are in
 [`docs/provider-state-service.md`](docs/provider-state-service.md).
 Their supervisor-owned activation journal is in
@@ -75,6 +78,33 @@ tracked.
 
 The experiment contract and current device results are recorded in
 [`docs/experiment.md`](docs/experiment.md).
+
+## Linux stable host
+
+On Linux, SOS can now run the same generated Scene ABI v3 Luau experience in
+one permanent native GPUI process inside an existing Wayland session. Android
+and Linux share the retained paint/gesture surface, bounded layout-program
+mapping, and revision image/font registry:
+
+```sh
+./tools/sosctl linux-run --windowed
+```
+
+In a second terminal, activate another content-addressed source revision
+without replacing the process or native window:
+
+```sh
+./tools/sosctl linux-script experiences/daily-flow.luau
+./tools/sosctl linux-status
+./tools/sosctl linux-stop
+```
+
+This is the client-host gate, not yet a complete SOS session. Presentation is
+acknowledged by GPUI's next-frame callback; native Linux text editing, provider
+session orchestration, compositor-owned presentation evidence, compatibility
+surfaces, boot-to-SOS, and direct hardware remain subsequent gates. See
+[`docs/linux-stable-host.md`](docs/linux-stable-host.md) for the exact evidence
+and limitations.
 
 ## Milestone 1 vertical slice
 

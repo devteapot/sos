@@ -1,13 +1,24 @@
 #[cfg(target_os = "android")]
 mod android;
-#[cfg(target_os = "android")]
+#[cfg(any(
+    target_os = "android",
+    all(target_os = "linux", feature = "linux-host")
+))]
 mod assets;
+#[cfg(all(target_os = "linux", feature = "linux-host"))]
+mod linux;
 #[cfg(all(test, not(target_os = "android")))]
 #[allow(dead_code)]
 #[path = "android/pointer_input.rs"]
 mod pointer_input;
-#[cfg(target_os = "android")]
+#[cfg(any(
+    target_os = "android",
+    all(target_os = "linux", feature = "linux-host")
+))]
 mod scene_surface;
+
+#[cfg(all(target_os = "linux", feature = "linux-host"))]
+pub use linux::run as run_linux_host;
 
 pub const DEFAULT_EXPERIENCE: &str = include_str!("../../../experiences/default.luau");
 pub const TIMEFLOW_EXPERIENCE: &str = include_str!("../../../experiences/timeflow.luau");

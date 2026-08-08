@@ -19,6 +19,9 @@ M1_JNI_DIR="$M1_GRADLE_DIR/app/src/main/jniLibs/arm64-v8a"
 M1_GRADLE_APK="$M1_GRADLE_DIR/app/build/outputs/apk/debug/app-debug.apk"
 M1_APK_PATH="$ARTIFACT_DIR/sos-experience.apk"
 M1_DEVICE_STAGING="/data/local/tmp/dev.sos.experience.candidate.luau"
+LINUX_REVISION_ROOT="${SOS_LINUX_REVISION_ROOT:-$CACHE_ROOT/linux-revisions-v3}"
+LINUX_SUPERVISOR="$SOS_ROOT/target/debug/sos-revision-supervisor"
+LINUX_HOST="$SOS_ROOT/target/debug/sos-experience-host"
 
 info() {
   printf '==> %s\n' "$*"
@@ -484,6 +487,97 @@ stress_experience() {
   fail "stress run $run_id did not finish within $attempts seconds"
 }
 
+build_linux_host() {
+  [[ "$(uname -s)" == "Linux" ]] || fail "the Wayland host currently requires Linux"
+  require_command cargo
+  info "building the Linux GPUI host and revision supervisor"
+  (
+    cd "$SOS_ROOT"
+    cargo build --locked \
+      -p sos-experience --features linux-host --bin sos-experience-host \
+      -p revision-supervisor --bin sos-revision-supervisor
+  )
+}
+
+require_wayland_session() {
+  local runtime_directory="${XDG_RUNTIME_DIR:-}"
+  local display_name="${WAYLAND_DISPLAY:-wayland-0}"
+  [[ -n "$runtime_directory" ]] || fail "XDG_RUNTIME_DIR is not set"
+  [[ -S "$runtime_directory/$display_name" ]] || \
+    fail "Wayland socket not found: $runtime_directory/$display_name"
+}
+
+linux_run() {
+  local windowed=false
+  if [[ "${1:-}" == "--windowed" ]]; then
+    windowed=true
+    shift
+  fi
+  [[ "$#" -eq 0 ]] || fail "usage: ./tools/sosctl linux-run [--windowed]"
+  require_wayland_session
+  build_linux_host
+  mkdir -p "$LINUX_REVISION_ROOT"
+
+  local current_revision
+  current_revision="$($LINUX_SUPERVISOR status --root "$LINUX_REVISION_ROOT")"
+  if [[ "$current_revision" == "none" ]]; then
+    info "installing the initial content-addressed Luau revision"
+    current_revision="$($LINUX_SUPERVISOR install \
+      --root "$LINUX_REVISION_ROOT" \
+      --source "$SOS_ROOT/experiences/default.luau" \
+      --state "$SOS_ROOT/tests/fixtures/empty-state.json" \
+      --schema 1 \
+      --api 3)"
+    "$LINUX_SUPERVISOR" bootstrap \
+      --root "$LINUX_REVISION_ROOT" \
+      --revision "$current_revision" >/dev/null
+  fi
+
+  info "starting permanent Linux host at revision $current_revision"
+  local arguments=(
+    serve
+    --root "$LINUX_REVISION_ROOT"
+    --host-executable "$LINUX_HOST"
+  )
+  if $windowed; then
+    arguments+=(--host-arg --windowed)
+  fi
+  exec "$LINUX_SUPERVISOR" "${arguments[@]}"
+}
+
+linux_script() {
+  [[ "$#" -ge 1 && "$#" -le 2 ]] || \
+    fail "usage: ./tools/sosctl linux-script <experience.luau> [state.json]"
+  local source_file="$1"
+  local state_file="${2:-$SOS_ROOT/tests/fixtures/empty-state.json}"
+  [[ -f "$source_file" ]] || fail "experience source not found: $source_file"
+  [[ -f "$state_file" ]] || fail "experience state not found: $state_file"
+  [[ -S "$LINUX_REVISION_ROOT/run/supervisor.sock" ]] || \
+    fail "Linux supervisor is not running; start ./tools/sosctl linux-run"
+
+  local revision_id
+  revision_id="$($LINUX_SUPERVISOR install \
+    --root "$LINUX_REVISION_ROOT" \
+    --source "$source_file" \
+    --state "$state_file" \
+    --schema 1 \
+    --api 3)"
+  info "activating Luau revision $revision_id"
+  "$LINUX_SUPERVISOR" activate \
+    --root "$LINUX_REVISION_ROOT" \
+    --revision "$revision_id"
+}
+
+linux_status() {
+  [[ "$#" -eq 0 ]] || fail "usage: ./tools/sosctl linux-status"
+  "$LINUX_SUPERVISOR" daemon-status --root "$LINUX_REVISION_ROOT"
+}
+
+linux_stop() {
+  [[ "$#" -eq 0 ]] || fail "usage: ./tools/sosctl linux-stop"
+  "$LINUX_SUPERVISOR" shutdown --root "$LINUX_REVISION_ROOT"
+}
+
 usage() {
   cat <<'USAGE'
 Usage: ./tools/sosctl <command>
@@ -510,6 +604,12 @@ Commands:
   rollback            Submit the prior accepted Luau source as a candidate.
   stress [count]      Run frame-paced transactional swaps (default: 1000).
   worker-restart      Recreate the Luau worker without replacing the APK.
+  linux-run [--windowed]
+                      Build and run the permanent GPUI host in this Wayland session.
+  linux-script <file> [state.json]
+                      Install and activate Luau in the running Linux host.
+  linux-status        Report the active Linux revision and permanent host PID.
+  linux-stop          Shut down the Linux revision supervisor and host.
   help                 Show this message.
 
 Set ADB_SERIAL when more than one Android device is connected.
@@ -577,6 +677,18 @@ case "$command_name" in
   worker-restart)
     [[ "$#" -eq 0 ]] || fail "usage: ./tools/sosctl worker-restart"
     restart_runtime_worker
+    ;;
+  linux-run)
+    linux_run "$@"
+    ;;
+  linux-script)
+    linux_script "$@"
+    ;;
+  linux-status)
+    linux_status "$@"
+    ;;
+  linux-stop)
+    linux_stop "$@"
     ;;
   m1-run)
     no_follow=false

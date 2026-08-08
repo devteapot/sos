@@ -9,6 +9,7 @@ publish = false
 default = ["offline-fallback"]
 offline-fallback = ["dep:providers-fake"]
 gate-strict = []
+linux-host = []
 
 [lib]
 name = "sos_experience"
@@ -35,7 +36,26 @@ experience-ir.workspace = true
 providers-fake.workspace = true
 runtime-luau.workspace = true
 
+[target.'cfg(target_os = "linux")'.dependencies]
+anyhow = "1"
+async-channel.workspace = true
+experience-host-protocol.workspace = true
+gpui = { git = "https://github.com/zed-industries/zed", rev = "5688167d224b5eca54875d49afb8bfd73a07915a", package = "gpui", default-features = false }
+gpui-platform = { git = "https://github.com/zed-industries/zed", rev = "5688167d224b5eca54875d49afb8bfd73a07915a", package = "gpui_platform", default-features = false, features = ["wayland"] }
+log.workspace = true
+provider-state-service.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+service-protocol.workspace = true
+sha2.workspace = true
+
 [dev-dependencies]
 gpui = { git = "https://github.com/zed-industries/zed", rev = "5688167d224b5eca54875d49afb8bfd73a07915a", package = "gpui", default-features = false }
 gpui-mobile = { path = "../../vendor/gpui-mobile", default-features = false, features = ["deeplink"] }
 log.workspace = true
+tempfile = "3"
+
+[[bin]]
+name = "sos-experience-host"
+path = "src/bin/sos-experience-host.rs"
+required-features = ["linux-host"]
