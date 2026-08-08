@@ -96,3 +96,39 @@ architecture. The result proves source-only mutation, not a production sandbox.
 measure source-to-visible-frame p50/p95; run 1,000 swaps and 20 lifecycle cycles
 with memory telemetry; reduce the roughly 7 MB APK delta; then extend the IR
 only for concrete needs such as text input, images, animation, and accessibility.
+
+## 2026-08-08 — Luau worker and 1,000-swap latency gate
+
+**Goal:** Remove Luau compilation/evaluation from the GPUI thread and determine
+whether repeated source mutation remains stable and conversationally fast on a
+physical phone.
+
+**Changed:** Added a dedicated worker that exclusively owns each Luau VM,
+two-phase candidate prepare/commit messaging, asynchronous action handling,
+per-stage timings, GPUI post-render confirmation, RSS sampling, and a
+frame-paced `./tools/sosctl stress [count]` device harness.
+
+**Evidence:** Android logs showed GPUI on `ThreadId(2)` and Luau on
+`ThreadId(11)`. On the Samsung SM-A336B, 1,000/1,000 swaps completed in 18.150 s
+with visible-frame p50/p95/p99 of 17.073/20.618/20.815 ms, a 29.803 ms maximum,
+and 2.936 ms worker p95. RSS started at 274,016 KB, peaked at 274,080 KB, and
+ended at 259,180 KB. A later infinite loop was rejected in the same PID without
+changing the active-source hash, and 20 home/resume cycles kept that PID alive.
+Seven runtime tests passed. Full definitions, commands, caveats, and the
+development artifact identity are in
+[`worker-stress-gate.md`](worker-stress-gate.md).
+
+The first stress launch failed because an unescaped `&` in the deep-link URI was
+interpreted by Android's remote shell. Escaping it produced a passing 10-swap
+shakedown and then the full run.
+
+**Decision:** Confirm the worker-owned Luau path. Source mutation no longer
+executes Luau on GPUI's event-loop thread, and measured latency is below the
+100 ms prototype threshold with substantial headroom.
+
+**Open risks / next gate:** The visible signal is GPUI's post-render callback,
+not an Android compositor timestamp; the 18-second RSS run cannot rule out slow
+leaks; startup still waits for the initial worker tree. Extend the IR through
+real text-input/IME, image, animation, focus, and accessibility experiences,
+add longer soaks, and review process isolation before accepting untrusted
+remote source.

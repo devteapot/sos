@@ -1,6 +1,7 @@
 use std::{
     cell::Cell,
     rc::Rc,
+    thread,
     time::{Duration, Instant},
 };
 
@@ -34,6 +35,345 @@ pub struct LuauRuntime {
     lua: Lua,
     module: RegistryKey,
     deadline: Rc<Cell<Option<Instant>>>,
+}
+
+#[derive(Clone, Debug)]
+pub struct CandidateTimings {
+    pub submitted_at: Instant,
+    pub queue_us: u64,
+    pub compile_us: u64,
+    pub render_us: u64,
+    pub worker_total_us: u64,
+}
+
+#[derive(Clone, Debug)]
+pub struct WorkerReady {
+    pub tree: UiNode,
+    pub worker_thread: String,
+    pub initialize_us: u64,
+}
+
+#[derive(Clone, Debug)]
+pub enum WorkerResult {
+    CandidatePrepared {
+        request_id: u64,
+        source: String,
+        tree: UiNode,
+        timings: CandidateTimings,
+    },
+    CandidateRejected {
+        request_id: u64,
+        source: String,
+        error: String,
+        timings: CandidateTimings,
+    },
+    CandidateCommitted {
+        request_id: u64,
+        source: String,
+        tree: UiNode,
+        timings: CandidateTimings,
+    },
+    ActionCompleted {
+        request_id: u64,
+        state: JsonValue,
+        tree: UiNode,
+        worker_us: u64,
+    },
+    ActionRejected {
+        request_id: u64,
+        error: String,
+        worker_us: u64,
+    },
+}
+
+enum WorkerCommand {
+    PrepareCandidate {
+        request_id: u64,
+        source: String,
+        model: ExperienceModel,
+        state: JsonValue,
+        submitted_at: Instant,
+    },
+    CommitCandidate {
+        request_id: u64,
+    },
+    DiscardCandidate {
+        request_id: u64,
+    },
+    Action {
+        request_id: u64,
+        model: ExperienceModel,
+        state: JsonValue,
+        event: UiEvent,
+    },
+}
+
+struct PreparedCandidate {
+    request_id: u64,
+    source: String,
+    runtime: LuauRuntime,
+    tree: UiNode,
+    timings: CandidateTimings,
+}
+
+pub struct RuntimeWorker {
+    commands: async_channel::Sender<WorkerCommand>,
+    results: async_channel::Receiver<WorkerResult>,
+}
+
+impl RuntimeWorker {
+    pub fn start(
+        source: String,
+        model: ExperienceModel,
+        state: JsonValue,
+    ) -> Result<(Self, WorkerReady), RuntimeError> {
+        let (commands_tx, commands_rx) = async_channel::unbounded();
+        let (results_tx, results_rx) = async_channel::unbounded();
+        let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel::<Result<WorkerReady, String>>(1);
+
+        thread::Builder::new()
+            .name("sos-luau-runtime".into())
+            .spawn(move || {
+                let started = Instant::now();
+                let initialized = LuauRuntime::compile(&source).and_then(|runtime| {
+                    let tree = runtime.render(&model, &state)?;
+                    Ok((runtime, tree))
+                });
+                let (mut active_runtime, tree) = match initialized {
+                    Ok(initialized) => initialized,
+                    Err(error) => {
+                        let _ = ready_tx.send(Err(error.to_string()));
+                        return;
+                    }
+                };
+                let ready = WorkerReady {
+                    tree,
+                    worker_thread: format!("{:?}", thread::current().id()),
+                    initialize_us: micros(started.elapsed()),
+                };
+                if ready_tx.send(Ok(ready)).is_err() {
+                    return;
+                }
+
+                let mut prepared: Option<PreparedCandidate> = None;
+                while let Ok(command) = commands_rx.recv_blocking() {
+                    match command {
+                        WorkerCommand::PrepareCandidate {
+                            request_id,
+                            source,
+                            model,
+                            state,
+                            submitted_at,
+                        } => {
+                            if prepared.is_some() {
+                                let timings = CandidateTimings {
+                                    submitted_at,
+                                    queue_us: micros(submitted_at.elapsed()),
+                                    compile_us: 0,
+                                    render_us: 0,
+                                    worker_total_us: micros(submitted_at.elapsed()),
+                                };
+                                let _ = results_tx.send_blocking(WorkerResult::CandidateRejected {
+                                    request_id,
+                                    source,
+                                    error: "another candidate is awaiting commit".into(),
+                                    timings,
+                                });
+                                continue;
+                            }
+
+                            let worker_started = Instant::now();
+                            let queue_us = micros(worker_started.duration_since(submitted_at));
+                            let compile_started = Instant::now();
+                            let candidate_runtime = match LuauRuntime::compile(&source) {
+                                Ok(runtime) => runtime,
+                                Err(error) => {
+                                    let timings = CandidateTimings {
+                                        submitted_at,
+                                        queue_us,
+                                        compile_us: micros(compile_started.elapsed()),
+                                        render_us: 0,
+                                        worker_total_us: micros(worker_started.elapsed()),
+                                    };
+                                    let _ =
+                                        results_tx.send_blocking(WorkerResult::CandidateRejected {
+                                            request_id,
+                                            source,
+                                            error: error.to_string(),
+                                            timings,
+                                        });
+                                    continue;
+                                }
+                            };
+                            let compile_us = micros(compile_started.elapsed());
+                            let render_started = Instant::now();
+                            let tree = match candidate_runtime.render(&model, &state) {
+                                Ok(tree) => tree,
+                                Err(error) => {
+                                    let timings = CandidateTimings {
+                                        submitted_at,
+                                        queue_us,
+                                        compile_us,
+                                        render_us: micros(render_started.elapsed()),
+                                        worker_total_us: micros(worker_started.elapsed()),
+                                    };
+                                    let _ =
+                                        results_tx.send_blocking(WorkerResult::CandidateRejected {
+                                            request_id,
+                                            source,
+                                            error: error.to_string(),
+                                            timings,
+                                        });
+                                    continue;
+                                }
+                            };
+                            let timings = CandidateTimings {
+                                submitted_at,
+                                queue_us,
+                                compile_us,
+                                render_us: micros(render_started.elapsed()),
+                                worker_total_us: micros(worker_started.elapsed()),
+                            };
+                            prepared = Some(PreparedCandidate {
+                                request_id,
+                                source: source.clone(),
+                                runtime: candidate_runtime,
+                                tree: tree.clone(),
+                                timings: timings.clone(),
+                            });
+                            let _ = results_tx.send_blocking(WorkerResult::CandidatePrepared {
+                                request_id,
+                                source,
+                                tree,
+                                timings,
+                            });
+                        }
+                        WorkerCommand::CommitCandidate { request_id } => {
+                            let Some(candidate) = prepared.take() else {
+                                continue;
+                            };
+                            if candidate.request_id != request_id {
+                                prepared = Some(candidate);
+                                continue;
+                            }
+                            active_runtime = candidate.runtime;
+                            let _ = results_tx.send_blocking(WorkerResult::CandidateCommitted {
+                                request_id,
+                                source: candidate.source,
+                                tree: candidate.tree,
+                                timings: candidate.timings,
+                            });
+                        }
+                        WorkerCommand::DiscardCandidate { request_id } => {
+                            if prepared.as_ref().map(|candidate| candidate.request_id)
+                                == Some(request_id)
+                            {
+                                prepared = None;
+                            }
+                        }
+                        WorkerCommand::Action {
+                            request_id,
+                            model,
+                            state,
+                            event,
+                        } => {
+                            let started = Instant::now();
+                            let result =
+                                active_runtime
+                                    .update(&model, &state, &event)
+                                    .and_then(|state| {
+                                        let tree = active_runtime.render(&model, &state)?;
+                                        Ok((state, tree))
+                                    });
+                            let worker_us = micros(started.elapsed());
+                            let result = match result {
+                                Ok((state, tree)) => WorkerResult::ActionCompleted {
+                                    request_id,
+                                    state,
+                                    tree,
+                                    worker_us,
+                                },
+                                Err(error) => WorkerResult::ActionRejected {
+                                    request_id,
+                                    error: error.to_string(),
+                                    worker_us,
+                                },
+                            };
+                            let _ = results_tx.send_blocking(result);
+                        }
+                    }
+                }
+            })
+            .map_err(|error| RuntimeError::Invalid(format!("could not start worker: {error}")))?;
+
+        let ready = ready_rx
+            .recv()
+            .map_err(|_| RuntimeError::Invalid("runtime worker stopped during startup".into()))?
+            .map_err(RuntimeError::Invalid)?;
+        Ok((
+            Self {
+                commands: commands_tx,
+                results: results_rx,
+            },
+            ready,
+        ))
+    }
+
+    pub fn results(&self) -> async_channel::Receiver<WorkerResult> {
+        self.results.clone()
+    }
+
+    pub fn prepare_candidate(
+        &self,
+        request_id: u64,
+        source: String,
+        model: ExperienceModel,
+        state: JsonValue,
+        submitted_at: Instant,
+    ) -> Result<(), String> {
+        self.commands
+            .send_blocking(WorkerCommand::PrepareCandidate {
+                request_id,
+                source,
+                model,
+                state,
+                submitted_at,
+            })
+            .map_err(|_| "runtime worker is unavailable".into())
+    }
+
+    pub fn commit_candidate(&self, request_id: u64) -> Result<(), String> {
+        self.commands
+            .send_blocking(WorkerCommand::CommitCandidate { request_id })
+            .map_err(|_| "runtime worker is unavailable".into())
+    }
+
+    pub fn discard_candidate(&self, request_id: u64) -> Result<(), String> {
+        self.commands
+            .send_blocking(WorkerCommand::DiscardCandidate { request_id })
+            .map_err(|_| "runtime worker is unavailable".into())
+    }
+
+    pub fn action(
+        &self,
+        request_id: u64,
+        model: ExperienceModel,
+        state: JsonValue,
+        event: UiEvent,
+    ) -> Result<(), String> {
+        self.commands
+            .send_blocking(WorkerCommand::Action {
+                request_id,
+                model,
+                state,
+                event,
+            })
+            .map_err(|_| "runtime worker is unavailable".into())
+    }
+}
+
+fn micros(duration: Duration) -> u64 {
+    duration.as_micros().min(u128::from(u64::MAX)) as u64
 }
 
 impl LuauRuntime {
@@ -350,6 +690,70 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(error.contains("memory") || error.contains("time budget"));
+    }
+
+    #[test]
+    fn worker_owns_the_vm_and_commits_transactionally() {
+        let caller_thread = format!("{:?}", thread::current().id());
+        let model = providers_fake_for_test();
+        let (worker, ready) =
+            RuntimeWorker::start(SCRIPT.into(), model.clone(), json!({})).unwrap();
+        assert_ne!(ready.worker_thread, caller_thread);
+        assert_eq!(ready.tree.children.len(), 2);
+
+        let results = worker.results();
+        worker
+            .prepare_candidate(
+                1,
+                format!("{SCRIPT}\n-- revision 1"),
+                model.clone(),
+                json!({}),
+                Instant::now(),
+            )
+            .unwrap();
+        assert!(matches!(
+            results.recv_blocking().unwrap(),
+            WorkerResult::CandidatePrepared { request_id: 1, .. }
+        ));
+        worker.commit_candidate(1).unwrap();
+        assert!(matches!(
+            results.recv_blocking().unwrap(),
+            WorkerResult::CandidateCommitted { request_id: 1, .. }
+        ));
+
+        worker
+            .prepare_candidate(
+                2,
+                "return { render = function() while true do end end }".into(),
+                model.clone(),
+                json!({}),
+                Instant::now(),
+            )
+            .unwrap();
+        assert!(matches!(
+            results.recv_blocking().unwrap(),
+            WorkerResult::CandidateRejected { request_id: 2, .. }
+        ));
+
+        worker
+            .action(
+                3,
+                model,
+                json!({}),
+                UiEvent {
+                    action: "toggle".into(),
+                },
+            )
+            .unwrap();
+        match results.recv_blocking().unwrap() {
+            WorkerResult::ActionCompleted {
+                request_id, state, ..
+            } => {
+                assert_eq!(request_id, 3);
+                assert_eq!(state["on"], true);
+            }
+            result => panic!("unexpected result: {result:?}"),
+        }
     }
 
     fn providers_fake_for_test() -> ExperienceModel {

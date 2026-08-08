@@ -291,6 +291,44 @@ rollback_script() {
   info "previous accepted Luau revision submitted"
 }
 
+stress_experience() {
+  local count="${1:-1000}"
+  [[ "$count" =~ ^[0-9]+$ ]] || fail "stress count must be an integer"
+  [[ "$count" -ge 1 && "$count" -le 10000 ]] || fail "stress count must be between 1 and 10000"
+
+  resolve_android_environment
+  require_command adb
+  select_device
+  adb shell pm path "$M1_ANDROID_PACKAGE" >/dev/null 2>&1 || fail "$M1_ANDROID_PACKAGE is not installed"
+
+  local app_pid
+  app_pid="$(adb shell pidof "$M1_ANDROID_PACKAGE" | tr -d '\r')"
+  [[ -n "$app_pid" ]] || fail "$M1_ANDROID_PACKAGE is not running; use ./tools/sosctl m1-launch"
+
+  local run_id="$(date +%s)-$$-$count"
+  info "starting $count transactional swaps; each swap waits for a GPUI frame"
+  adb shell am start \
+    -W \
+    -a android.intent.action.VIEW \
+    -d "sos://stress?count=$count\\&run_id=$run_id" \
+    -n "$M1_ANDROID_PACKAGE/$ANDROID_ACTIVITY" >/dev/null
+
+  local attempts=$((count / 5 + 120))
+  local result=""
+  for ((attempt = 0; attempt < attempts; attempt += 1)); do
+    app_pid="$(adb shell pidof "$M1_ANDROID_PACKAGE" | tr -d '\r')"
+    [[ -n "$app_pid" ]] || fail "app process exited during stress run $run_id"
+    result="$(adb logcat -d --pid="$app_pid" -v brief | grep -E "stress_(complete|failed) run_id=$run_id" | tail -n 1 || true)"
+    if [[ -n "$result" ]]; then
+      printf '%s\n' "$result"
+      [[ "$result" == *"stress_complete"* ]] || fail "stress run $run_id failed"
+      return
+    fi
+    sleep 1
+  done
+  fail "stress run $run_id did not finish within $attempts seconds"
+}
+
 usage() {
   cat <<'USAGE'
 Usage: ./tools/sosctl <command>
@@ -311,6 +349,7 @@ Commands:
                       Build, install, launch, and follow logs.
   script <file>       Transactionally load Luau source; no APK or restart.
   rollback            Submit the prior accepted Luau source as a candidate.
+  stress [count]      Run frame-paced transactional swaps (default: 1000).
   help                 Show this message.
 
 Set ADB_SERIAL when more than one Android device is connected.
@@ -358,6 +397,10 @@ case "$command_name" in
     ;;
   rollback)
     rollback_script
+    ;;
+  stress)
+    [[ "$#" -le 1 ]] || fail "usage: ./tools/sosctl stress [count]"
+    stress_experience "${1:-1000}"
     ;;
   m1-run)
     no_follow=false

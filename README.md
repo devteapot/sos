@@ -11,6 +11,8 @@ checks in [`docs/experiment.md`](docs/experiment.md) and the runtime decision in
 [`docs/runtime-evaluation.md`](docs/runtime-evaluation.md).
 The verified end-to-end results are in
 [`docs/vertical-slice.md`](docs/vertical-slice.md).
+The worker-thread and 1,000-swap latency gate is in
+[`docs/worker-stress-gate.md`](docs/worker-stress-gate.md).
 Ongoing experiments, failures, measurements, and decisions are indexed in the
 living [`docs/progress.md`](docs/progress.md) ledger.
 
@@ -61,6 +63,7 @@ Replace only the experience source while the same process and APK stay alive:
 ```sh
 ./tools/sosctl script experiences/timeflow.luau
 ./tools/sosctl rollback
+./tools/sosctl stress 1000
 ```
 
 A candidate must compile, finish within its time budget, decode to the bounded

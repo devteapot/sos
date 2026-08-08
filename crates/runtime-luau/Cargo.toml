@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+async-channel.workspace = true
 experience-ir.workspace = true
 mlua = { version = "=0.12.0", default-features = false, features = ["luau", "serde"] }
 serde_json.workspace = true
