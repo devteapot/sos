@@ -3,6 +3,7 @@ members = [
     "apps/experience",
     "crates/experience-ir",
     "crates/providers-fake",
+    "crates/revision-supervisor",
     "crates/runtime-luau",
 ]
 resolver = "2"

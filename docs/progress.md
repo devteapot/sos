@@ -432,3 +432,48 @@ canonical drag, crash probes, strict dependency check, back-to-back PID test,
 and 10,000-swap run as regressions. A multi-hour attributed heap soak, drag
 coalescing, arbitrary native/shader revisions, and production security remain
 future gates.
+
+## 2026-08-08 — Standalone Linux revision supervisor
+
+**Goal:** Remove revision and crash authority from the accepted experience
+process, while defining a filesystem and candidate ABI that can be developed
+before the AOSP environment is ready.
+
+**Changed:** Added the `revision-supervisor` crate and long-lived
+`sos-revision-supervisor` daemon. It installs read-only content-addressed
+revision directories, verifies source/state/schema/executable identity, launches
+direct child candidates, accepts a token-bound first-frame event over a Unix
+socket, atomically replaces the relative `current` symlink, monitors the
+accepted child, and rolls back plus relaunches the preceding revision after
+exit. The typed local control protocol supports promote, status, and shutdown.
+The complete contract and usage are in
+[`revision-supervisor.md`](revision-supervisor.md).
+
+**Evidence:** `cargo test -p revision-supervisor --all-targets` passed nine
+tests in 17.96 seconds on the Linux development host. Tests use real child
+executables and Unix sockets. They cover immutable/content-addressed install,
+state/source/schema drift rejection, directory-ID recomputation, 50 atomic
+pointer swaps under a concurrent reader, pre-frame crash preservation,
+first-frame timeout, accepted boot-process relaunch, post-frame crash rollback
+with predecessor relaunch, and a separate daemon that remains alive and answers
+a control request after the candidate dies. The initial 500-swap
+atomic-pointer test was rejected because rehashing the copied debug executable
+on every verified pointer write made it exceed 60 seconds; 50 swaps retain the
+atomic-reader assertion without pretending this is a throughput benchmark. A
+CLI helper initially failed compilation because its request/response types were
+one-way serde types; removing the unused helper, then restoring it with explicit
+bidirectional derives when control commands were added, fixed the boundary.
+
+**Decision:** Keep this process/filesystem contract as the standalone revision
+authority prototype. It directly closes the architectural coupling in which the
+accepted Android process supervised its candidate, but it does not complete the
+AOSP surface/input or production security gates.
+
+**Open risks / next gate:** Bind first-frame readiness to compositor-owned
+surface presentation; sign manifests; put revision processes in namespaces and
+cgroups; add process-tree/resource enforcement and multi-level recovery. Next,
+move provider/state authority behind a durable Unix-socket transaction protocol
+whose transaction ID is committed consistently with this revision pointer, and
+inject failures before, during, and after promotion. Repeat crash/promotion
+evidence on the AOSP target; this desktop test does not complete a hardware or
+latency gate.

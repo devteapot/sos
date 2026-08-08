@@ -24,6 +24,8 @@ The stateful generated-experience gate, including native input and the
 [`docs/stateful-experience-gate.md`](docs/stateful-experience-gate.md).
 The current five-assumption Android-exit audit is in
 [`docs/android-exit-gate.md`](docs/android-exit-gate.md).
+The first standalone Linux revision supervisor and its candidate ABI are in
+[`docs/revision-supervisor.md`](docs/revision-supervisor.md).
 Ongoing experiments, failures, measurements, and decisions are indexed in the
 living [`docs/progress.md`](docs/progress.md) ledger.
 
