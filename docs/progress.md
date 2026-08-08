@@ -163,7 +163,10 @@ restored it on all others. Infinite-loop and memory-bomb candidates were
 rejected without changing the accepted hash. `uiautomator` saw all six semantic
 records in one window description. Fifteen workspace tests, formatting, clippy,
 ARM64 packaging, install, launch, touch, submit, scroll, and native animation
-checks passed. Full commands and caveats are in
+checks passed. The clean 37,036,955-byte APK from implementation commit
+`8687339234c5` has SHA-256
+`c57255a3f3f42c320726cf4361c1ffffed131b3295f5e24333764fb69e31a372`.
+Full commands and caveats are in
 [`stateful-experience-gate.md`](stateful-experience-gate.md).
 
 Three failures materially shaped the result. GPUI Mobile bypassed the generic

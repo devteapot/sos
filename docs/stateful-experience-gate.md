@@ -178,6 +178,14 @@ rewrite, rollback, worker restart, hostile candidates, and the stress/lifecycle
 matrix were all run against the physical phone; no hardware or latency claim is
 inferred from desktop tests.
 
+The clean revision artifact is
+`artifacts/sos-experience-8687339234c5.apk`, built from implementation commit
+`8687339234c5`, 37,036,955 bytes, SHA-256
+`c57255a3f3f42c320726cf4361c1ffffed131b3295f5e24333764fb69e31a372`.
+It is 2,358,504 bytes larger than the prior worker-gate APK; the delta includes
+the embedded image/input bridge and Android/JNI support. Generated APKs and
+screenshots remain outside Git.
+
 ## Failures and fixes
 
 - The first native input implementation only registered GPUI's
