@@ -289,6 +289,39 @@ validate_script() {
   )
 }
 
+agent_generate_script() {
+  local request="${1:-}"
+  [[ -n "$request" ]] || fail "usage: ./tools/sosctl agent-generate <request>"
+  require_command codex
+  mkdir -p "$ARTIFACT_DIR"
+
+  local run_id target transcript final_message prompt
+  run_id="$(date -u +%Y%m%dT%H%M%SZ)-luna-medium"
+  target="$SOS_ROOT/experiences/android-exit-agent.luau"
+  transcript="$ARTIFACT_DIR/agent-$run_id.jsonl"
+  final_message="$ARTIFACT_DIR/agent-$run_id-final.txt"
+  prompt="You are performing a single-shot SOS experience mutation. Read docs/experience-api.md and the existing experiences. Implement this request: $request
+
+Create or replace only experiences/android-exit-agent.luau. Do not edit any other file. The file must be a complete Luau module satisfying the documented API. Calculate custom spatial geometry and drag/drop behavior in Luau; do not emulate the request with ordinary cards. Do not run validation or edit again after creating the file; the outer harness performs the single authoritative validation attempt."
+
+  info "running headless Codex with gpt-5.6-luna / medium reasoning"
+  (
+    cd "$SOS_ROOT"
+    codex exec \
+      --model gpt-5.6-luna \
+      -c 'model_reasoning_effort="medium"' \
+      --sandbox workspace-write \
+      --ephemeral \
+      --json \
+      --output-last-message "$final_message" \
+      "$prompt" | tee "$transcript"
+  )
+  [[ -f "$target" ]] || fail "agent did not create $target"
+  validate_script "$target"
+  info "generated source: $target"
+  info "agent transcript: $transcript"
+}
+
 agent_apply_script() {
   local source_path="${1:-}"
   [[ -n "$source_path" ]] || fail "usage: ./tools/sosctl agent-apply <experience.luau>"
@@ -415,6 +448,8 @@ Commands:
   script <file>       Transactionally load Luau source; no APK or restart.
   validate <file>     Compile, evaluate, decode, and validate Luau locally.
   agent-apply <file>  Validate, install, await frame, and capture screenshot.
+  agent-generate <request>
+                      One-shot headless Codex generation (Luna, medium).
   rollback            Submit the prior accepted Luau source as a candidate.
   stress [count]      Run frame-paced transactional swaps (default: 1000).
   worker-restart      Recreate the Luau worker without replacing the APK.
@@ -470,6 +505,10 @@ case "$command_name" in
   agent-apply)
     [[ "$#" -eq 1 ]] || fail "usage: ./tools/sosctl agent-apply <experience.luau>"
     agent_apply_script "$1"
+    ;;
+  agent-generate)
+    [[ "$#" -eq 1 ]] || fail "usage: ./tools/sosctl agent-generate <request>"
+    agent_generate_script "$1"
     ;;
   rollback)
     rollback_script

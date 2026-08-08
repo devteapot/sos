@@ -22,13 +22,16 @@ The worker-thread and 1,000-swap latency gate is in
 The stateful generated-experience gate, including native input and the
 10,000-swap device soak, is in
 [`docs/stateful-experience-gate.md`](docs/stateful-experience-gate.md).
+The current five-assumption Android-exit audit is in
+[`docs/android-exit-gate.md`](docs/android-exit-gate.md).
 Ongoing experiments, failures, measurements, and decisions are indexed in the
 living [`docs/progress.md`](docs/progress.md) ledger.
 
-The current bounded Luau UI IR is a proven sub-20-ms rapid-execution tier, not
-the final expressive ceiling. Before moving to a privileged AOSP shell, SOS must
-prove an autonomous request-to-revision loop, custom geometry/hit testing beyond
-the catalog, crash-safe whole-revision promotion, and provider/state independence.
+The current bounded Luau UI IR now includes custom canvas geometry and drag hit
+testing, but the first Android-exit audit remains incomplete. Before moving to
+a privileged AOSP shell, SOS must prove reliable single-shot task completion,
+crash-safe whole-revision promotion, provider/state independence with
+migrations, and sustained sub-100-ms presentation on the deeper experience.
 
 ## Milestone 0
 

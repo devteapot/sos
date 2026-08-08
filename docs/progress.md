@@ -224,3 +224,46 @@ interaction, `agent-apply` is still manually orchestrated, fake providers are
 linked rather than reached through IPC, and swaps replace an in-process tree
 rather than promote a complete candidate process/surface. Prove those four
 properties with synthetic data before starting the privileged AOSP shell phase.
+
+## 2026-08-08 — First Android-exit gate audit
+
+**Goal:** Verify the five assumptions in the Android-exit gate using a reduced
+single-shot agent requirement. Autonomous screenshot diagnosis and repair are
+explicitly deferred.
+
+**Changed:** Added bounded canvas path/quad commands, hit regions, pointer
+coordinates, Android drag routing, typed provider effects, a JSON/TCP fake
+provider daemon, and a reproducible headless `gpt-5.6-luna` medium command.
+Added [`experience-api.md`](experience-api.md) and the full audit in
+[`android-exit-gate.md`](android-exit-gate.md).
+
+**Evidence:** The 12-test runtime suite and ARM64 build passed. A one-shot Luna
+revision validated and appeared on the Samsung SM-A336B in 43.976 ms, but its
+note was mostly outside the canvas hit bounds, so task-level first-pass success
+failed. After one clearly attributed operator geometry correction and a mobile
+touch-semantics bridge fix, a real drag emitted 29 updates, persisted attached
+state, and caused a separate Mac `providerd` process to receive
+`notes.attach_to_event`. A deeper 1,000-swap run accepted 1,000/1,000 in
+64.441 s with 38.765/127.746/128.782 ms visible p50/p95/p99, 7.740 ms worker
+p95, and +3,588 KB RSS. Twenty lifecycle cycles retained PID, source, state,
+and provider receipt. The 37,242,259-byte dirty APK
+`sos-experience-ed7669d9f777-dirty.apk` has SHA-256
+`e74bb671f91b4597d1cfe095e25a3a43396e25516a44740191d5411a412f6c43`.
+
+Two failures shaped the result. The first agent/harness contract accidentally
+validated the same unchanged source twice; the wrapper now owns the sole
+validation attempt. More importantly, GPUI Mobile deliberately withholds
+`MouseDown` for scrolling gestures, so a desktop-style drag state machine never
+started. Acquiring the source on the first `MouseMove` and suppressing canvas
+scroll propagation fixed real-device drag handling.
+
+**Decision:** Continue with Luau + GPUI, but do not leave the Android APK
+laboratory. Gate A is partial, B and C fail, and D and E are partial. The
+experiment confirmed the execution substrate while rejecting the claim that
+the complete five-assumption exit condition has been met.
+
+**Open risks / next gate:** Run a fresh untouched single-shot suite after
+documenting viewport constraints; diagnose the 127.746 ms visible p95; build a
+real candidate-process/surface supervisor with forced-crash rollback; remove
+the linked provider fallback, externalize persistent state, implement schema
+migrations and fault injection; then run a longer thermal/memory soak.

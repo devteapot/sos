@@ -7,6 +7,11 @@ pub const MAX_TREE_DEPTH: usize = 32;
 pub const MAX_TREE_NODES: usize = 2_048;
 pub const MAX_CHILDREN: usize = 256;
 pub const MAX_TEXT_BYTES: usize = 16 * 1024;
+pub const MAX_CANVAS_COMMANDS: usize = 4_096;
+pub const MAX_CANVAS_POINTS: usize = 8_192;
+pub const MAX_HIT_REGIONS: usize = 256;
+pub const MAX_EFFECTS: usize = 16;
+pub const MAX_EFFECT_PAYLOAD_BYTES: usize = 16 * 1024;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct ExperienceModel {
@@ -55,6 +60,52 @@ pub struct UiEvent {
     pub value: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub focused: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub x: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub y: Option<f32>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct ProviderEffect {
+    pub provider: String,
+    pub action: String,
+    #[serde(default)]
+    pub payload: serde_json::Value,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ProviderRequest {
+    Snapshot {
+        request_id: u64,
+    },
+    Action {
+        request_id: u64,
+        provider: String,
+        action: String,
+        payload: serde_json::Value,
+    },
+}
+
+impl ProviderRequest {
+    pub fn request_id(&self) -> u64 {
+        match self {
+            Self::Snapshot { request_id } | Self::Action { request_id, .. } => *request_id,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct ProviderResponse {
+    pub request_id: u64,
+    pub ok: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<ExperienceModel>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -78,6 +129,7 @@ pub enum NodeKind {
     Text(String),
     TextInput(TextInput),
     Image(Image),
+    Canvas(Canvas),
     Spacer,
 }
 
@@ -93,6 +145,48 @@ pub struct TextInput {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Image {
     pub asset: String,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Canvas {
+    pub commands: Vec<CanvasCommand>,
+    pub hit_regions: Vec<HitRegion>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum CanvasCommand {
+    Path {
+        points: Vec<CanvasPoint>,
+        color: u32,
+        width: Option<f32>,
+        closed: bool,
+    },
+    Quad {
+        x: f32,
+        y: f32,
+        width: f32,
+        height: f32,
+        radius: f32,
+        color: u32,
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CanvasPoint {
+    pub x: f32,
+    pub y: f32,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct HitRegion {
+    pub id: String,
+    pub x: f32,
+    pub y: f32,
+    pub width: f32,
+    pub height: f32,
+    pub press_action: Option<String>,
+    pub drag_action: Option<String>,
+    pub drop_action: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -175,6 +269,12 @@ pub enum ValidationError {
     SemanticTextTooLong,
     #[error("animation duration must be between 16 and 60000 ms")]
     InvalidAnimationDuration,
+    #[error("canvas exceeds maximum command count of {MAX_CANVAS_COMMANDS}")]
+    TooManyCanvasCommands,
+    #[error("canvas exceeds maximum point count of {MAX_CANVAS_POINTS}")]
+    TooManyCanvasPoints,
+    #[error("canvas exceeds maximum hit-region count of {MAX_HIT_REGIONS}")]
+    TooManyHitRegions,
 }
 
 pub fn validate_tree(root: &UiNode) -> Result<usize, ValidationError> {
@@ -209,7 +309,7 @@ pub fn validate_tree(root: &UiNode) -> Result<usize, ValidationError> {
                     return Err(ValidationError::SemanticTextTooLong);
                 }
             }
-            NodeKind::Image(_) if node.id.is_none() => {
+            NodeKind::Image(_) | NodeKind::Canvas(_) if node.id.is_none() => {
                 return Err(ValidationError::MissingInteractiveId);
             }
             _ => {}
@@ -239,6 +339,69 @@ pub fn validate_tree(root: &UiNode) -> Result<usize, ValidationError> {
                 return Err(ValidationError::InvalidAnimationDuration);
             }
         }
+        if let NodeKind::Canvas(canvas) = &node.kind {
+            if canvas.commands.len() > MAX_CANVAS_COMMANDS {
+                return Err(ValidationError::TooManyCanvasCommands);
+            }
+            if canvas.hit_regions.len() > MAX_HIT_REGIONS {
+                return Err(ValidationError::TooManyHitRegions);
+            }
+            let point_count = canvas
+                .commands
+                .iter()
+                .map(|command| match command {
+                    CanvasCommand::Path { points, .. } => points.len(),
+                    CanvasCommand::Quad { .. } => 0,
+                })
+                .sum::<usize>();
+            if point_count > MAX_CANVAS_POINTS {
+                return Err(ValidationError::TooManyCanvasPoints);
+            }
+            for command in &canvas.commands {
+                match command {
+                    CanvasCommand::Path { points, width, .. } => {
+                        if points.len() < 2
+                            || points.iter().any(|point| {
+                                !valid_canvas_number(point.x) || !valid_canvas_number(point.y)
+                            })
+                            || width
+                                .is_some_and(|width| !valid_canvas_number(width) || width <= 0.0)
+                        {
+                            return Err(ValidationError::InvalidDimension("canvas path"));
+                        }
+                    }
+                    CanvasCommand::Quad {
+                        x,
+                        y,
+                        width,
+                        height,
+                        radius,
+                        ..
+                    } => {
+                        if [*x, *y, *width, *height, *radius]
+                            .into_iter()
+                            .any(|value| !valid_canvas_number(value))
+                            || *width <= 0.0
+                            || *height <= 0.0
+                            || *radius < 0.0
+                        {
+                            return Err(ValidationError::InvalidDimension("canvas quad"));
+                        }
+                    }
+                }
+            }
+            for region in &canvas.hit_regions {
+                if region.id.is_empty()
+                    || [region.x, region.y, region.width, region.height]
+                        .into_iter()
+                        .any(|value| !valid_canvas_number(value))
+                    || region.width <= 0.0
+                    || region.height <= 0.0
+                {
+                    return Err(ValidationError::InvalidDimension("canvas hit region"));
+                }
+            }
+        }
         if let Some(accessibility) = &node.accessibility {
             if accessibility.label.len() > MAX_TEXT_BYTES
                 || accessibility
@@ -259,6 +422,10 @@ pub fn validate_tree(root: &UiNode) -> Result<usize, ValidationError> {
     let mut count = 0;
     visit(root, 1, &mut count, &mut HashSet::new())?;
     Ok(count)
+}
+
+fn valid_canvas_number(value: f32) -> bool {
+    value.is_finite() && (-10_000.0..=10_000.0).contains(&value)
 }
 
 #[cfg(test)]

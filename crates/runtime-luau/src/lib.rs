@@ -6,9 +6,11 @@ use std::{
 };
 
 use experience_ir::{
-    validate_tree, Accessibility, AccessibilityRole, Align, Animation, AnimationKind,
-    ExperienceModel, Image, Justify, NodeKind, Style, TextInput, UiEvent, UiNode, MAX_CHILDREN,
-    MAX_TEXT_BYTES, MAX_TREE_DEPTH, MAX_TREE_NODES,
+    validate_tree, Accessibility, AccessibilityRole, Align, Animation, AnimationKind, Canvas,
+    CanvasCommand, CanvasPoint, ExperienceModel, HitRegion, Image, Justify, NodeKind,
+    ProviderEffect, Style, TextInput, UiEvent, UiNode, MAX_CANVAS_COMMANDS, MAX_CANVAS_POINTS,
+    MAX_CHILDREN, MAX_EFFECTS, MAX_EFFECT_PAYLOAD_BYTES, MAX_HIT_REGIONS, MAX_TEXT_BYTES,
+    MAX_TREE_DEPTH, MAX_TREE_NODES,
 };
 use mlua::{
     chunk::{ChunkMode, Compiler},
@@ -54,6 +56,12 @@ pub struct WorkerReady {
     pub initialize_us: u64,
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub struct UpdateOutcome {
+    pub state: JsonValue,
+    pub effects: Vec<ProviderEffect>,
+}
+
 #[derive(Clone, Debug)]
 pub enum WorkerResult {
     CandidatePrepared {
@@ -78,6 +86,7 @@ pub enum WorkerResult {
         request_id: u64,
         state: JsonValue,
         tree: UiNode,
+        effects: Vec<ProviderEffect>,
         worker_us: u64,
     },
     ActionRejected {
@@ -281,19 +290,19 @@ impl RuntimeWorker {
                             event,
                         } => {
                             let started = Instant::now();
-                            let result =
-                                active_runtime
-                                    .update(&model, &state, &event)
-                                    .and_then(|state| {
-                                        let tree = active_runtime.render(&model, &state)?;
-                                        Ok((state, tree))
-                                    });
+                            let result = active_runtime
+                                .update_with_effects(&model, &state, &event)
+                                .and_then(|outcome| {
+                                    let tree = active_runtime.render(&model, &outcome.state)?;
+                                    Ok((outcome, tree))
+                                });
                             let worker_us = micros(started.elapsed());
                             let result = match result {
-                                Ok((state, tree)) => WorkerResult::ActionCompleted {
+                                Ok((outcome, tree)) => WorkerResult::ActionCompleted {
                                     request_id,
-                                    state,
+                                    state: outcome.state,
                                     tree,
+                                    effects: outcome.effects,
                                     worker_us,
                                 },
                                 Err(error) => WorkerResult::ActionRejected {
@@ -479,10 +488,22 @@ impl LuauRuntime {
         state: &JsonValue,
         event: &UiEvent,
     ) -> Result<JsonValue, RuntimeError> {
+        Ok(self.update_with_effects(model, state, event)?.state)
+    }
+
+    pub fn update_with_effects(
+        &self,
+        model: &ExperienceModel,
+        state: &JsonValue,
+        event: &UiEvent,
+    ) -> Result<UpdateOutcome, RuntimeError> {
         let module: Table = self.lua.registry_value(&self.module)?;
         let update: Option<Function> = module.get("update")?;
         let Some(update) = update else {
-            return Ok(state.clone());
+            return Ok(UpdateOutcome {
+                state: state.clone(),
+                effects: Vec::new(),
+            });
         };
         let model = self.lua.to_value(model)?;
         let state = self.lua.to_value(state)?;
@@ -490,8 +511,58 @@ impl LuauRuntime {
         let value = run_bounded(&self.deadline, UPDATE_BUDGET, || {
             update.call::<Value>((model, state, event))
         })?;
-        self.lua.from_value(value).map_err(RuntimeError::from)
+        if let Value::Table(table) = &value {
+            let envelope_state = table.get::<Option<Value>>("state")?;
+            if let Some(envelope_state) = envelope_state {
+                let state = self.lua.from_value(envelope_state)?;
+                let effects = decode_effects(table.get::<Option<Table>>("effects")?, &self.lua)?;
+                return Ok(UpdateOutcome { state, effects });
+            }
+        }
+        Ok(UpdateOutcome {
+            state: self.lua.from_value(value)?,
+            effects: Vec::new(),
+        })
     }
+}
+
+fn decode_effects(table: Option<Table>, lua: &Lua) -> Result<Vec<ProviderEffect>, RuntimeError> {
+    let Some(table) = table else {
+        return Ok(Vec::new());
+    };
+    let mut effects = Vec::new();
+    for effect in table.sequence_values::<Table>() {
+        if effects.len() >= MAX_EFFECTS {
+            return Err(RuntimeError::Invalid("too many provider effects".into()));
+        }
+        let effect = effect?;
+        let provider = required_bounded_string(&effect, "provider", 128)?;
+        let action = required_bounded_string(&effect, "action", 128)?;
+        if (provider.as_str(), action.as_str()) != ("notes", "attach_to_event") {
+            return Err(RuntimeError::Invalid(format!(
+                "provider action is not allowed: {provider}.{action}"
+            )));
+        }
+        let payload = match effect.get::<Option<Value>>("payload")? {
+            Some(value) => lua.from_value(value)?,
+            None => JsonValue::Null,
+        };
+        if serde_json::to_vec(&payload)
+            .map_err(|error| RuntimeError::Invalid(error.to_string()))?
+            .len()
+            > MAX_EFFECT_PAYLOAD_BYTES
+        {
+            return Err(RuntimeError::Invalid(
+                "provider effect payload is too large".into(),
+            ));
+        }
+        effects.push(ProviderEffect {
+            provider,
+            action,
+            payload,
+        });
+    }
+    Ok(effects)
 }
 
 fn run_bounded<T>(
@@ -554,6 +625,7 @@ impl Decoder {
                 }
                 NodeKind::Image(Image { asset })
             }
+            "canvas" => NodeKind::Canvas(decode_canvas(table)?),
             other => return Err(RuntimeError::Invalid(format!("unknown node type: {other}"))),
         };
 
@@ -581,6 +653,99 @@ impl Decoder {
             children,
         })
     }
+}
+
+fn decode_canvas(table: &Table) -> Result<Canvas, RuntimeError> {
+    let mut commands = Vec::new();
+    let mut point_count = 0usize;
+    if let Some(command_table) = table.get::<Option<Table>>("commands")? {
+        for command in command_table.sequence_values::<Table>() {
+            if commands.len() >= MAX_CANVAS_COMMANDS {
+                return Err(RuntimeError::Invalid("canvas has too many commands".into()));
+            }
+            let command = command?;
+            let kind = required_bounded_string(&command, "kind", 32)?;
+            commands.push(match kind.as_str() {
+                "path" => {
+                    let points_table: Table = command.get("points")?;
+                    let mut points = Vec::new();
+                    for point in points_table.sequence_values::<Table>() {
+                        point_count += 1;
+                        if point_count > MAX_CANVAS_POINTS {
+                            return Err(RuntimeError::Invalid("canvas has too many points".into()));
+                        }
+                        let point = point?;
+                        points.push(CanvasPoint {
+                            x: canvas_number(&point, "x")?,
+                            y: canvas_number(&point, "y")?,
+                        });
+                    }
+                    CanvasCommand::Path {
+                        points,
+                        color: command.get("color")?,
+                        width: optional_canvas_number(&command, "width")?,
+                        closed: command.get::<Option<bool>>("closed")?.unwrap_or(false),
+                    }
+                }
+                "quad" => CanvasCommand::Quad {
+                    x: canvas_number(&command, "x")?,
+                    y: canvas_number(&command, "y")?,
+                    width: canvas_number(&command, "width")?,
+                    height: canvas_number(&command, "height")?,
+                    radius: optional_canvas_number(&command, "radius")?.unwrap_or_default(),
+                    color: command.get("color")?,
+                },
+                other => {
+                    return Err(RuntimeError::Invalid(format!(
+                        "unknown canvas command: {other}"
+                    )))
+                }
+            });
+        }
+    }
+
+    let mut hit_regions = Vec::new();
+    if let Some(region_table) = table.get::<Option<Table>>("hit_regions")? {
+        for region in region_table.sequence_values::<Table>() {
+            if hit_regions.len() >= MAX_HIT_REGIONS {
+                return Err(RuntimeError::Invalid(
+                    "canvas has too many hit regions".into(),
+                ));
+            }
+            let region = region?;
+            hit_regions.push(HitRegion {
+                id: required_bounded_string(&region, "id", 256)?,
+                x: canvas_number(&region, "x")?,
+                y: canvas_number(&region, "y")?,
+                width: canvas_number(&region, "width")?,
+                height: canvas_number(&region, "height")?,
+                press_action: bounded_optional_string(&region, "press_action", 256)?,
+                drag_action: bounded_optional_string(&region, "drag_action", 256)?,
+                drop_action: bounded_optional_string(&region, "drop_action", 256)?,
+            });
+        }
+    }
+
+    Ok(Canvas {
+        commands,
+        hit_regions,
+    })
+}
+
+fn canvas_number(table: &Table, key: &'static str) -> Result<f32, RuntimeError> {
+    let value: f32 = table.get(key)?;
+    if !value.is_finite() || !(-10_000.0..=10_000.0).contains(&value) {
+        return Err(RuntimeError::Invalid(format!("invalid canvas {key}")));
+    }
+    Ok(value)
+}
+
+fn optional_canvas_number(table: &Table, key: &'static str) -> Result<Option<f32>, RuntimeError> {
+    let value = table.get::<Option<f32>>(key)?;
+    if value.is_some_and(|value| !value.is_finite() || !(-10_000.0..=10_000.0).contains(&value)) {
+        return Err(RuntimeError::Invalid(format!("invalid canvas {key}")));
+    }
+    Ok(value)
 }
 
 fn decode_animation(table: Option<Table>) -> Result<Option<Animation>, RuntimeError> {
@@ -803,6 +968,95 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("image asset is not allowed"));
+    }
+
+    #[test]
+    fn decodes_canvas_geometry_hit_regions_and_pointer_events() {
+        let runtime = LuauRuntime::compile(
+            r#"
+                return {
+                    render = function(_, state)
+                        return {
+                            type = "canvas", id = "time-space",
+                            style = { width = 320, height = 480 },
+                            commands = {
+                                { kind = "path", color = 0x77AAFF, width = 4,
+                                  points = {{x = 24, y = 20}, {x = 92, y = 180}, {x = 40, y = 420}} },
+                                { kind = "quad", x = state.x or 40, y = 300,
+                                  width = 100, height = 48, radius = 12, color = 0x223355 },
+                            },
+                            hit_regions = {{
+                                id = "note-1", x = state.x or 40, y = 300, width = 100, height = 48,
+                                press_action = "note_press", drag_action = "note_drag", drop_action = "note_drop",
+                            }},
+                        }
+                    end,
+                    update = function(_, state, event)
+                        if event.action == "note_drag" then state.x = event.x - 50 end
+                        return state
+                    end,
+                }
+            "#,
+        )
+        .unwrap();
+        let model = providers_fake_for_test();
+        let tree = runtime.render(&model, &json!({})).unwrap();
+        let NodeKind::Canvas(canvas) = tree.kind else {
+            panic!("expected canvas")
+        };
+        assert_eq!(canvas.commands.len(), 2);
+        assert_eq!(
+            canvas.hit_regions[0].drop_action.as_deref(),
+            Some("note_drop")
+        );
+        let state = runtime
+            .update(
+                &model,
+                &json!({}),
+                &UiEvent {
+                    action: "note_drag".into(),
+                    x: Some(180.0),
+                    y: Some(300.0),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(state["x"], 130.0);
+    }
+
+    #[test]
+    fn returns_a_bounded_typed_provider_effect() {
+        let runtime = LuauRuntime::compile(
+            r#"
+                return {
+                    render = function() return { type = "box", id = "root" } end,
+                    update = function(_, state)
+                        state.attached = true
+                        return {
+                            state = state,
+                            effects = {{
+                                provider = "notes", action = "attach_to_event",
+                                payload = { note_id = "note-1", event_title = "Design review" },
+                            }},
+                        }
+                    end,
+                }
+            "#,
+        )
+        .unwrap();
+        let outcome = runtime
+            .update_with_effects(
+                &providers_fake_for_test(),
+                &json!({}),
+                &UiEvent {
+                    action: "drop".into(),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(outcome.state["attached"], true);
+        assert_eq!(outcome.effects.len(), 1);
+        assert_eq!(outcome.effects[0].provider, "notes");
     }
 
     #[test]

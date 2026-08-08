@@ -3581,6 +3581,7 @@ name = "providers-fake"
 version = "0.1.0"
 dependencies = [
  "experience-ir",
+ "serde_json",
 ]
 
 [[package]]

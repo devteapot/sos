@@ -1,6 +1,8 @@
 mod accessibility;
 mod assets;
+mod native_canvas;
 mod native_input;
+mod provider_client;
 
 use std::{
     collections::HashMap,
@@ -14,7 +16,9 @@ use std::{
     time::{Duration, Instant},
 };
 
-use experience_ir::{Align, AnimationKind, ExperienceModel, Justify, NodeKind, UiEvent, UiNode};
+use experience_ir::{
+    Align, AnimationKind, Canvas, ExperienceModel, HitRegion, Justify, NodeKind, UiEvent, UiNode,
+};
 use gpui::{
     div, img, prelude::*, px, rgb, Animation as GpuiAnimation, AnimationExt as _, AnyElement, App,
     Application, Context, Entity, MouseButton, Render, SharedString, Window, WindowOptions,
@@ -143,6 +147,7 @@ struct ExperienceHost {
     pending_input_event: Option<UiEvent>,
     input_state_shadow: HashMap<String, String>,
     inputs: HashMap<String, Entity<NativeTextInput>>,
+    canvas_drags: HashMap<String, String>,
     pending_focus_restore: Option<String>,
     pending_frame: Option<PendingFrame>,
     stress: Option<StressRun>,
@@ -150,7 +155,16 @@ struct ExperienceHost {
 
 impl ExperienceHost {
     fn new(cx: &mut Context<Self>) -> Self {
-        let model = providers_fake::snapshot();
+        let model = match provider_client::snapshot() {
+            Ok(model) => {
+                log::info!("provider_snapshot_remote transport=tcp");
+                model
+            }
+            Err(error) => {
+                log::warn!("provider_snapshot_fallback error={error}");
+                providers_fake::snapshot()
+            }
+        };
         let state = load_state();
         let source = read_file(ACTIVE_FILE).unwrap_or_else(|| DEFAULT_EXPERIENCE.to_owned());
         let (worker, ready) = RuntimeWorker::spawn(source.clone(), model.clone(), state.clone())
@@ -175,6 +189,7 @@ impl ExperienceHost {
             pending_input_event: None,
             input_state_shadow: HashMap::new(),
             inputs: HashMap::new(),
+            canvas_drags: HashMap::new(),
             pending_focus_restore: None,
             pending_frame: None,
             stress: None,
@@ -338,6 +353,7 @@ impl ExperienceHost {
                 target: Some(node_id),
                 value: Some(value),
                 focused: None,
+                ..Default::default()
             },
             cx,
         );
@@ -356,6 +372,7 @@ impl ExperienceHost {
                 target: Some(node_id),
                 value: None,
                 focused: Some(focused),
+                ..Default::default()
             },
             cx,
         );
@@ -374,9 +391,96 @@ impl ExperienceHost {
                 target: Some(node_id),
                 value: Some(value),
                 focused: Some(true),
+                ..Default::default()
             },
             cx,
         );
+    }
+
+    pub(super) fn native_canvas_down(
+        &mut self,
+        canvas_id: String,
+        region: HitRegion,
+        x: f32,
+        y: f32,
+        cx: &mut Context<Self>,
+    ) {
+        self.canvas_drags.insert(canvas_id, region.id.clone());
+        if let Some(action) = region.press_action {
+            self.queue_input_event(native_canvas::event(action, region.id, x, y), cx);
+        }
+    }
+
+    pub(super) fn native_canvas_move(
+        &mut self,
+        canvas_id: String,
+        specification: &Canvas,
+        x: f32,
+        y: f32,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.canvas_drags.contains_key(&canvas_id) {
+            let Some(region) = specification.hit_regions.iter().rev().find(|region| {
+                region.drag_action.is_some()
+                    && x >= region.x
+                    && x <= region.x + region.width
+                    && y >= region.y
+                    && y <= region.y + region.height
+            }) else {
+                return;
+            };
+            self.canvas_drags
+                .insert(canvas_id.clone(), region.id.clone());
+            if let Some(action) = &region.press_action {
+                self.queue_input_event(
+                    native_canvas::event(action.clone(), region.id.clone(), x, y),
+                    cx,
+                );
+                return;
+            }
+        }
+        let Some(region_id) = self.canvas_drags.get(&canvas_id) else {
+            return;
+        };
+        let Some(region) = specification
+            .hit_regions
+            .iter()
+            .find(|region| &region.id == region_id)
+        else {
+            return;
+        };
+        if let Some(action) = &region.drag_action {
+            self.queue_input_event(
+                native_canvas::event(action.clone(), region.id.clone(), x, y),
+                cx,
+            );
+        }
+    }
+
+    pub(super) fn native_canvas_up(
+        &mut self,
+        canvas_id: String,
+        specification: &Canvas,
+        x: f32,
+        y: f32,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(region_id) = self.canvas_drags.remove(&canvas_id) else {
+            return;
+        };
+        let Some(region) = specification
+            .hit_regions
+            .iter()
+            .find(|region| region.id == region_id)
+        else {
+            return;
+        };
+        if let Some(action) = &region.drop_action {
+            self.queue_input_event(
+                native_canvas::event(action.clone(), region.id.clone(), x, y),
+                cx,
+            );
+        }
     }
 
     fn queue_input_event(&mut self, event: UiEvent, cx: &mut Context<Self>) {
@@ -591,9 +695,38 @@ impl ExperienceHost {
                 request_id,
                 mut state,
                 tree,
+                effects,
                 worker_us,
             } => {
                 self.action_in_flight = false;
+                for effect in effects {
+                    match provider_client::execute(&effect) {
+                        Ok(result) => {
+                            if !state.is_object() {
+                                state = json!({});
+                            }
+                            if let Some(object) = state.as_object_mut() {
+                                object.insert("provider_receipt".into(), result);
+                            }
+                            log::info!(
+                                "provider_effect_completed provider={} action={}",
+                                effect.provider,
+                                effect.action
+                            );
+                        }
+                        Err(error) => {
+                            self.status = Some((format!("Provider action failed: {error}"), false));
+                            log::warn!(
+                                "provider_effect_rejected provider={} action={} error={}",
+                                effect.provider,
+                                effect.action,
+                                error
+                            );
+                            self.dispatch_pending_input_event(cx);
+                            return;
+                        }
+                    }
+                }
                 self.merge_native_input_state(&mut state);
                 self.state = state;
                 self.tree = tree;
@@ -772,7 +905,8 @@ impl ExperienceHost {
             | NodeKind::Spacer
             | NodeKind::Text(_)
             | NodeKind::TextInput(_)
-            | NodeKind::Image(_) => {}
+            | NodeKind::Image(_)
+            | NodeKind::Canvas(_) => {}
         }
 
         if let Some(background) = node.style.background {
@@ -866,6 +1000,14 @@ impl ExperienceHost {
                 self.pending_focus_restore = None;
             }
             element = element.child(native);
+        }
+        if let NodeKind::Canvas(canvas) = &node.kind {
+            element = element.child(native_canvas::render(
+                element_id.clone(),
+                canvas.clone(),
+                cx.weak_entity(),
+                cx,
+            ));
         }
         for (index, child) in node.children.iter().enumerate() {
             let child_path = SharedString::from(format!("{path}-{index}"));

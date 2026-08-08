@@ -209,24 +209,29 @@ synthetic data:
    an appointment using new geometry, hit testing, state, and a typed provider
    action.
 
-The third request is the decisive one. Today's `UiNode` catalog cannot express
-it. Passing requires a low-level Luau component API, generated GPUI Rust, or a
+The third request is the decisive one. The original `UiNode` catalog could not
+express it; the prototype now has bounded low-level canvas geometry and hit
+regions, but the first agent trial still required an operator layout correction
+on the physical phone. Passing requires an untouched agent output to complete
+the interaction through this low-level Luau API, generated GPUI Rust, or a
 combination of both.
 
-### B. A genuine autonomous agent loop
+### B. A genuine single-shot agent loop
 
-The phone-side request must drive:
+For the Android exit decision, a request may be submitted from the development
+Mac and must drive one unattended generation attempt:
 
 ```text
 request → inspect current source/state/provider schemas
         → patch → validate/check → run candidate
-        → inspect screenshot/logs/traces → self-correct
         → present diff → accept or rollback
 ```
 
-Run a suite of nontrivial requests and record first-pass success, correction
-turns, failed builds/evaluations, time to visible candidate, and rollback. A
-human manually invoking `agent-apply` is useful scaffolding, not completion.
+Use headless Codex with `gpt-5.6-luna` at medium reasoning for the initial cheap
+model test. Record first-pass success, failed evaluations, time to visible
+candidate, and rollback. Screenshot/log inspection and autonomous
+self-correction remain important future work, but are deliberately not part of
+this gate. A human manually writing the candidate is not completion.
 
 ### C. Complete revision replacement and recovery
 
@@ -260,8 +265,8 @@ worth building.
 ## Exit condition in one paragraph
 
 We are ready to begin the privileged AOSP/system-services phase when a user can
-make the three increasingly unconventional requests above; an agent autonomously
-implements and debugs them; the phone promotes each working revision without
+make the three increasingly unconventional requests above; an agent implements
+them in an unattended single shot; the phone promotes each working revision without
 freezing or losing state; the old revision survives every failed candidate; and
 the final drag operation crosses a typed provider boundary. At that point SOS
 has demonstrated that the interface is genuinely being programmed around the

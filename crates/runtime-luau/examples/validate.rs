@@ -26,13 +26,14 @@ fn main() {
     });
     match result {
         Ok(tree) => {
-            let (nodes, inputs, images, animations, semantics) = statistics(&tree);
+            let (nodes, inputs, images, canvases, animations, semantics) = statistics(&tree);
             println!(
-                "valid source_bytes={} nodes={} inputs={} images={} animations={} semantics={}",
+                "valid source_bytes={} nodes={} inputs={} images={} canvases={} animations={} semantics={}",
                 source.len(),
                 nodes,
                 inputs,
                 images,
+                canvases,
                 animations,
                 semantics
             );
@@ -44,18 +45,19 @@ fn main() {
     }
 }
 
-fn statistics(root: &UiNode) -> (usize, usize, usize, usize, usize) {
-    fn visit(node: &UiNode, totals: &mut (usize, usize, usize, usize, usize)) {
+fn statistics(root: &UiNode) -> (usize, usize, usize, usize, usize, usize) {
+    fn visit(node: &UiNode, totals: &mut (usize, usize, usize, usize, usize, usize)) {
         totals.0 += 1;
         totals.1 += usize::from(matches!(node.kind, NodeKind::TextInput(_)));
         totals.2 += usize::from(matches!(node.kind, NodeKind::Image(_)));
-        totals.3 += usize::from(node.animation.is_some());
-        totals.4 += usize::from(node.accessibility.is_some());
+        totals.3 += usize::from(matches!(node.kind, NodeKind::Canvas(_)));
+        totals.4 += usize::from(node.animation.is_some());
+        totals.5 += usize::from(node.accessibility.is_some());
         for child in &node.children {
             visit(child, totals);
         }
     }
-    let mut totals = (0, 0, 0, 0, 0);
+    let mut totals = (0, 0, 0, 0, 0, 0);
     visit(root, &mut totals);
     totals
 }
