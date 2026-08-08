@@ -79,3 +79,22 @@ This baseline supports the user's expectation: the failures are largely
 contract/context errors, while the hard drag case already generated the typed
 effect. The next comparison should add a small schema-aware authoring skill and
 curated examples while leaving these prompts and graders unchanged.
+
+## One curated drag comparison
+
+A single follow-up used the same `drag_attach` case and Luna medium, adding only
+the compact checked-in authoring context in
+[`drag-attach-guide.md`](../evals/curated-single-shot/drag-attach-guide.md) and
+two relevant experience examples. There was no validation or repair turn inside
+the agent run. The untouched 8,834-byte output compiled and scored 8/8, fixing
+both raw misses: it generated four quads and kept all hit regions phone-safe.
+Its SHA-256 is
+`597c42a1ae99002ff9ba5cf5f2e6cf0876f53832a7d5b5d9ad07040aebf881ec`.
+It consumed 71,595 input tokens (57,344 cached) and 3,822 output tokens.
+
+The output also passed the real SM-A336B drag: the drop promoted a transaction
+with one `notes.attach_to_event` effect. The result supports better contract
+context, but this one-case comparison is intentionally the last prompt-quality
+optimization before the low-level AOSP work. The agent also wrote to the wrong
+output directory despite an explicit path, so orchestration adherence remains
+imperfect.

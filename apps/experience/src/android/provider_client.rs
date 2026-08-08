@@ -23,16 +23,6 @@ pub(super) fn snapshot() -> Result<ExperienceModel, String> {
         .ok_or_else(|| "provider snapshot response omitted the model".into())
 }
 
-pub(super) fn execute(effect: &ProviderEffect) -> Result<JsonValue, String> {
-    let response = request(ProviderRequest::Action {
-        request_id: allocate_request_id(),
-        provider: effect.provider.clone(),
-        action: effect.action.clone(),
-        payload: effect.payload.clone(),
-    })?;
-    Ok(response.result.unwrap_or(JsonValue::Null))
-}
-
 pub(super) fn load_state() -> Result<StateEnvelope, String> {
     request(ProviderRequest::LoadState {
         request_id: allocate_request_id(),
@@ -45,16 +35,45 @@ pub(super) fn commit_state(
     expected_revision: u64,
     schema_version: u64,
     state: &JsonValue,
+    source_sha256: &str,
+    effects: &[ProviderEffect],
 ) -> Result<StateEnvelope, String> {
+    let stage_id = stage_state(
+        expected_revision,
+        schema_version,
+        state,
+        source_sha256,
+        effects,
+    )?;
+    promote_state(stage_id, expected_revision, schema_version, source_sha256)
+}
+
+pub(super) fn stage_state(
+    expected_revision: u64,
+    schema_version: u64,
+    state: &JsonValue,
+    source_sha256: &str,
+    effects: &[ProviderEffect],
+) -> Result<u64, String> {
     let stage = request(ProviderRequest::StageState {
         request_id: allocate_request_id(),
         expected_revision,
         schema_version,
         state: state.clone(),
+        source_sha256: source_sha256.into(),
+        effects: effects.to_vec(),
     })?;
-    let stage_id = stage
+    stage
         .stage_id
-        .ok_or_else(|| "state stage response omitted its id".to_owned())?;
+        .ok_or_else(|| "state stage response omitted its id".to_owned())
+}
+
+pub(super) fn promote_state(
+    stage_id: u64,
+    expected_revision: u64,
+    schema_version: u64,
+    source_sha256: &str,
+) -> Result<StateEnvelope, String> {
     match request(ProviderRequest::PromoteState {
         request_id: allocate_request_id(),
         stage_id,
@@ -66,7 +85,7 @@ pub(super) fn commit_state(
             let current = load_state()?;
             if current.revision == expected_revision.saturating_add(1)
                 && current.schema_version == schema_version
-                && current.state == *state
+                && (source_sha256.is_empty() || current.source_sha256 == source_sha256)
             {
                 Ok(current)
             } else {
@@ -74,6 +93,14 @@ pub(super) fn commit_state(
             }
         }
     }
+}
+
+pub(super) fn abort_state(stage_id: u64) -> Result<(), String> {
+    request(ProviderRequest::AbortState {
+        request_id: allocate_request_id(),
+        stage_id,
+    })?;
+    Ok(())
 }
 
 #[allow(dead_code)]

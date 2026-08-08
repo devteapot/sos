@@ -214,7 +214,7 @@ build_experience_apk() {
       -t arm64-v8a \
       -P 31 \
       -o apps/experience/android/gradle/app/src/main/jniLibs \
-      build -p sos-experience --release --locked
+      build -p sos-experience --release --locked --no-default-features --features gate-strict
   )
 
   info "packaging a debug-signed SOS APK"
@@ -435,24 +435,22 @@ candidate_process_probe() {
   resolve_android_environment
   require_command adb
   select_device
-  local main_pid before_logs revision
+  local main_pid revision
   main_pid="$(adb shell pidof "$M1_ANDROID_PACKAGE" | tr -d '\r')"
   [[ -n "$main_pid" ]] || fail "$M1_ANDROID_PACKAGE is not running; use ./tools/sosctl m1-launch"
-  before_logs="$(adb logcat -d -v brief -s sos-supervisor:I '*:S' | wc -l | tr -d ' ')"
   revision="probe-$(date +%s)"
 
   info "launching disposable candidate process ($mode); accepted PID is $main_pid"
   adb shell am start \
-    -W \
     -a android.intent.action.VIEW \
     -d "sos://candidate?revision=$revision\&mode=$mode" \
     -n "$M1_ANDROID_PACKAGE/$ANDROID_ACTIVITY" >/dev/null || true
 
   local result="" candidate_pid=""
-  for _ in {1..100}; do
+  for _ in {1..200}; do
     candidate_pid="$(adb shell pidof "$M1_ANDROID_PACKAGE:candidate" 2>/dev/null | tr -d '\r' || true)"
-    result="$(adb logcat -d -v brief -s sos-supervisor:I '*:S' | tail -n +$((before_logs + 1)))"
-    if [[ -z "$candidate_pid" && "$result" == *"candidate_forced_crash"* ]]; then
+    result="$(adb logcat -d -v brief | grep "$revision" || true)"
+    if [[ -z "$candidate_pid" && "$result" == *"candidate_native_crash"* && "$result" == *"accepted_surface_restored"* ]]; then
       break
     fi
     sleep 0.05
@@ -461,11 +459,12 @@ candidate_process_probe() {
   local main_pid_after resumed
   main_pid_after="$(adb shell pidof "$M1_ANDROID_PACKAGE" | tr -d '\r')"
   [[ "$main_pid_after" == "$main_pid" ]] || fail "accepted process changed: $main_pid -> $main_pid_after"
-  [[ "$result" == *"candidate_forced_crash"* ]] || fail "candidate did not reach forced crash"
+  [[ "$result" == *"candidate_native_crash"* ]] || fail "candidate did not reach native crash"
+  [[ "$result" == *"accepted_surface_restored"* ]] || fail "watchdog did not restore the accepted surface"
   if [[ "$mode" == "crash-after" ]]; then
-    [[ "$result" == *"candidate_first_frame"* ]] || fail "candidate crashed without reporting a first frame"
+    [[ "$result" == *"candidate_gpui_first_frame"* ]] || fail "candidate crashed without reporting a GPUI frame"
   else
-    [[ "$result" != *"candidate_first_frame"* ]] || fail "crash-before candidate unexpectedly presented"
+    [[ "$result" != *"candidate_gpui_first_frame"* ]] || fail "crash-before candidate unexpectedly presented"
   fi
   resumed="$(adb shell dumpsys activity top | grep 'ACTIVITY' | tail -n 1 || true)"
   [[ "$resumed" == *"$M1_ANDROID_PACKAGE/$ANDROID_ACTIVITY"* ]] || fail "accepted activity did not resume: $resumed"

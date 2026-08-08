@@ -53,6 +53,8 @@ pub struct CandidateTimings {
 #[derive(Clone, Debug)]
 pub struct WorkerReady {
     pub tree: UiNode,
+    pub state: JsonValue,
+    pub state_schema_version: u64,
     pub worker_thread: String,
     pub initialize_us: u64,
 }
@@ -69,6 +71,8 @@ pub enum WorkerResult {
         request_id: u64,
         source: String,
         tree: UiNode,
+        state: JsonValue,
+        state_schema_version: u64,
         timings: CandidateTimings,
     },
     CandidateRejected {
@@ -81,6 +85,8 @@ pub enum WorkerResult {
         request_id: u64,
         source: String,
         tree: UiNode,
+        state: JsonValue,
+        state_schema_version: u64,
         timings: CandidateTimings,
     },
     ActionCompleted {
@@ -103,6 +109,7 @@ enum WorkerCommand {
         source: String,
         model: ExperienceModel,
         state: JsonValue,
+        state_schema_version: u64,
         submitted_at: Instant,
     },
     CommitCandidate {
@@ -125,6 +132,8 @@ struct PreparedCandidate {
     source: String,
     runtime: LuauRuntime,
     tree: UiNode,
+    state: JsonValue,
+    state_schema_version: u64,
     timings: CandidateTimings,
 }
 
@@ -139,6 +148,7 @@ impl RuntimeWorker {
         source: String,
         model: ExperienceModel,
         state: JsonValue,
+        state_schema_version: u64,
     ) -> Result<(Self, async_channel::Receiver<Result<WorkerReady, String>>), RuntimeError> {
         let (commands_tx, commands_rx) = async_channel::unbounded();
         let (results_tx, results_rx) = async_channel::unbounded();
@@ -149,18 +159,23 @@ impl RuntimeWorker {
             .spawn(move || {
                 let started = Instant::now();
                 let initialized = LuauRuntime::compile(&source).and_then(|runtime| {
+                    let state = runtime.migrate_state(state_schema_version, &state)?;
+                    let state_schema_version = runtime.state_schema_version()?;
                     let tree = runtime.render(&model, &state)?;
-                    Ok((runtime, tree))
+                    Ok((runtime, tree, state, state_schema_version))
                 });
-                let (mut active_runtime, tree) = match initialized {
-                    Ok(initialized) => initialized,
-                    Err(error) => {
-                        let _ = ready_tx.send_blocking(Err(error.to_string()));
-                        return;
-                    }
-                };
+                let (mut active_runtime, tree, active_state, active_state_schema_version) =
+                    match initialized {
+                        Ok(initialized) => initialized,
+                        Err(error) => {
+                            let _ = ready_tx.send_blocking(Err(error.to_string()));
+                            return;
+                        }
+                    };
                 let ready = WorkerReady {
                     tree,
+                    state: active_state,
+                    state_schema_version: active_state_schema_version,
                     worker_thread: format!("{:?}", thread::current().id()),
                     initialize_us: micros(started.elapsed()),
                 };
@@ -176,6 +191,7 @@ impl RuntimeWorker {
                             source,
                             model,
                             state,
+                            state_schema_version,
                             submitted_at,
                         } => {
                             if prepared.is_some() {
@@ -219,6 +235,50 @@ impl RuntimeWorker {
                                 }
                             };
                             let compile_us = micros(compile_started.elapsed());
+                            let state = match candidate_runtime
+                                .migrate_state(state_schema_version, &state)
+                            {
+                                Ok(state) => state,
+                                Err(error) => {
+                                    let timings = CandidateTimings {
+                                        submitted_at,
+                                        queue_us,
+                                        compile_us,
+                                        render_us: 0,
+                                        worker_total_us: micros(worker_started.elapsed()),
+                                    };
+                                    let _ =
+                                        results_tx.send_blocking(WorkerResult::CandidateRejected {
+                                            request_id,
+                                            source,
+                                            error: error.to_string(),
+                                            timings,
+                                        });
+                                    continue;
+                                }
+                            };
+                            let state_schema_version = match candidate_runtime
+                                .state_schema_version()
+                            {
+                                Ok(version) => version,
+                                Err(error) => {
+                                    let timings = CandidateTimings {
+                                        submitted_at,
+                                        queue_us,
+                                        compile_us,
+                                        render_us: 0,
+                                        worker_total_us: micros(worker_started.elapsed()),
+                                    };
+                                    let _ =
+                                        results_tx.send_blocking(WorkerResult::CandidateRejected {
+                                            request_id,
+                                            source,
+                                            error: error.to_string(),
+                                            timings,
+                                        });
+                                    continue;
+                                }
+                            };
                             let render_started = Instant::now();
                             let tree = match candidate_runtime.render(&model, &state) {
                                 Ok(tree) => tree,
@@ -252,12 +312,16 @@ impl RuntimeWorker {
                                 source: source.clone(),
                                 runtime: candidate_runtime,
                                 tree: tree.clone(),
+                                state: state.clone(),
+                                state_schema_version,
                                 timings: timings.clone(),
                             });
                             let _ = results_tx.send_blocking(WorkerResult::CandidatePrepared {
                                 request_id,
                                 source,
                                 tree,
+                                state,
+                                state_schema_version,
                                 timings,
                             });
                         }
@@ -274,6 +338,8 @@ impl RuntimeWorker {
                                 request_id,
                                 source: candidate.source,
                                 tree: candidate.tree,
+                                state: candidate.state,
+                                state_schema_version: candidate.state_schema_version,
                                 timings: candidate.timings,
                             });
                         }
@@ -334,8 +400,9 @@ impl RuntimeWorker {
         source: String,
         model: ExperienceModel,
         state: JsonValue,
+        state_schema_version: u64,
     ) -> Result<(Self, WorkerReady), RuntimeError> {
-        let (worker, ready_rx) = Self::spawn(source, model, state)?;
+        let (worker, ready_rx) = Self::spawn(source, model, state, state_schema_version)?;
         let ready = ready_rx
             .recv_blocking()
             .map_err(|_| RuntimeError::Invalid("runtime worker stopped during startup".into()))?
@@ -353,6 +420,7 @@ impl RuntimeWorker {
         source: String,
         model: ExperienceModel,
         state: JsonValue,
+        state_schema_version: u64,
         submitted_at: Instant,
     ) -> Result<(), String> {
         self.commands
@@ -361,6 +429,7 @@ impl RuntimeWorker {
                 source,
                 model,
                 state,
+                state_schema_version,
                 submitted_at,
             })
             .map_err(|_| "runtime worker is unavailable".into())
@@ -1193,7 +1262,7 @@ mod tests {
         let caller_thread = format!("{:?}", thread::current().id());
         let model = providers_fake_for_test();
         let (worker, ready) =
-            RuntimeWorker::start(SCRIPT.into(), model.clone(), json!({})).unwrap();
+            RuntimeWorker::start(SCRIPT.into(), model.clone(), json!({}), 1).unwrap();
         assert_ne!(ready.worker_thread, caller_thread);
         assert_eq!(ready.tree.children.len(), 2);
 
@@ -1204,6 +1273,7 @@ mod tests {
                 format!("{SCRIPT}\n-- revision 1"),
                 model.clone(),
                 json!({}),
+                1,
                 Instant::now(),
             )
             .unwrap();
@@ -1223,6 +1293,7 @@ mod tests {
                 "return { render = function() while true do end end }".into(),
                 model.clone(),
                 json!({}),
+                1,
                 Instant::now(),
             )
             .unwrap();
@@ -1258,7 +1329,7 @@ mod tests {
         let model = providers_fake_for_test();
         for _ in 0..25 {
             let (worker, ready) =
-                RuntimeWorker::start(SCRIPT.into(), model.clone(), json!({})).unwrap();
+                RuntimeWorker::start(SCRIPT.into(), model.clone(), json!({}), 1).unwrap();
             assert_eq!(ready.tree.children.len(), 2);
             worker.shutdown().unwrap();
         }

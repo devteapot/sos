@@ -16,6 +16,7 @@ impl Default for StateService {
         Self::new(StateEnvelope {
             revision: 0,
             schema_version: 1,
+            source_sha256: String::new(),
             state: json!({}),
         })
     }
@@ -44,6 +45,7 @@ impl StateService {
         expected_revision: u64,
         schema_version: u64,
         state: serde_json::Value,
+        source_sha256: String,
     ) -> Result<u64, String> {
         self.inject(StateFaultPoint::BeforeStage)?;
         if expected_revision != self.current.revision {
@@ -62,6 +64,15 @@ impl StateService {
         {
             return Err("state is larger than the service limit".into());
         }
+        let source_sha256 = if source_sha256.is_empty() {
+            self.current.source_sha256.clone()
+        } else if source_sha256.len() == 64
+            && source_sha256.bytes().all(|byte| byte.is_ascii_hexdigit())
+        {
+            source_sha256
+        } else {
+            return Err("source SHA-256 must be 64 hexadecimal characters".into());
+        };
         let stage_id = self.next_stage_id;
         self.next_stage_id = self.next_stage_id.saturating_add(1);
         self.staged.insert(
@@ -69,6 +80,7 @@ impl StateService {
             StateEnvelope {
                 revision: self.current.revision.saturating_add(1),
                 schema_version,
+                source_sha256,
                 state,
             },
         );
@@ -111,31 +123,41 @@ mod tests {
     #[test]
     fn stages_promotes_and_rejects_stale_writers() {
         let mut service = StateService::default();
-        let stage = service.stage(0, 2, json!({ "migrated": true })).unwrap();
+        let stage = service
+            .stage(0, 2, json!({ "migrated": true }), "a".repeat(64))
+            .unwrap();
         assert_eq!(service.load().revision, 0);
         let promoted = service.promote(stage).unwrap();
         assert_eq!(promoted.revision, 1);
         assert_eq!(promoted.schema_version, 2);
-        assert!(service.stage(0, 2, json!({})).is_err());
+        assert!(service.stage(0, 2, json!({}), "b".repeat(64)).is_err());
     }
 
     #[test]
     fn faults_preserve_or_expose_the_expected_transaction_phase() {
         let mut service = StateService::default();
         service.configure_fault(Some(StateFaultPoint::BeforeStage));
-        assert!(service.stage(0, 1, json!({ "value": 1 })).is_err());
+        assert!(service
+            .stage(0, 1, json!({ "value": 1 }), "a".repeat(64))
+            .is_err());
         assert_eq!(service.load().revision, 0);
 
         service.configure_fault(Some(StateFaultPoint::AfterStage));
-        assert!(service.stage(0, 1, json!({ "value": 2 })).is_err());
+        assert!(service
+            .stage(0, 1, json!({ "value": 2 }), "a".repeat(64))
+            .is_err());
         assert_eq!(service.load().revision, 0);
 
-        let stage = service.stage(0, 1, json!({ "value": 3 })).unwrap();
+        let stage = service
+            .stage(0, 1, json!({ "value": 3 }), "a".repeat(64))
+            .unwrap();
         service.configure_fault(Some(StateFaultPoint::BeforePromote));
         assert!(service.promote(stage).is_err());
         assert_eq!(service.load().revision, 0);
 
-        let stage = service.stage(0, 1, json!({ "value": 4 })).unwrap();
+        let stage = service
+            .stage(0, 1, json!({ "value": 4 }), "a".repeat(64))
+            .unwrap();
         service.configure_fault(Some(StateFaultPoint::AfterPromote));
         assert!(service.promote(stage).is_err());
         assert_eq!(service.load().revision, 1);

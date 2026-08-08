@@ -80,6 +80,8 @@ pub struct StateEnvelope {
     pub revision: u64,
     pub schema_version: u64,
     #[serde(default)]
+    pub source_sha256: String,
+    #[serde(default)]
     pub state: serde_json::Value,
 }
 
@@ -112,6 +114,10 @@ pub enum ProviderRequest {
         expected_revision: u64,
         schema_version: u64,
         state: serde_json::Value,
+        #[serde(default)]
+        source_sha256: String,
+        #[serde(default)]
+        effects: Vec<ProviderEffect>,
     },
     PromoteState {
         request_id: u64,

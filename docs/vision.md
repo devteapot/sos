@@ -273,6 +273,23 @@ has demonstrated that the interface is genuinely being programmed around the
 user rather than configured from a catalog. Remaining inside a normal APK would
 then constrain the research more than it de-risks it.
 
+## Current phase decision
+
+The 2026-08-08 Android laboratory gate now passes at prototype scope. A curated
+single-shot Luna revision completed the canonical low-level drag/provider
+interaction on the phone; isolated GPUI candidate processes survived
+pre/post-frame native crash probes and back-to-back replacement; source, state,
+schema and effects share promotion authority; and 10,000 swaps completed with
+20.7 ms visible p95 and no rejection. The evidence and important limitations
+are recorded in [`android-exit-verdict.md`](android-exit-verdict.md).
+
+The project should therefore begin the privileged AOSP/system-services phase.
+This does not mean Android has already been removed: the current supervisor is
+inside the accepted Android process, surface promotion uses Activity tasks, and
+the provider daemon remains workstation-hosted. Those three ownership
+boundaries are now the primary research work. The APK remains a regression
+harness while that work proceeds.
+
 ## Explicit non-goals for the current phase
 
 - Rebuilding the Linux kernel or vendor hardware stack.

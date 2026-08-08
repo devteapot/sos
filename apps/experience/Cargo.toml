@@ -5,6 +5,11 @@ edition.workspace = true
 license.workspace = true
 publish = false
 
+[features]
+default = ["offline-fallback"]
+offline-fallback = ["dep:providers-fake"]
+gate-strict = []
+
 [lib]
 name = "sos_experience"
 crate-type = ["cdylib", "staticlib", "lib"]
@@ -19,9 +24,10 @@ gpui = { git = "https://github.com/zed-industries/zed", rev = "5688167d224b5eca5
 gpui-mobile = { git = "https://github.com/itsbalamurali/gpui-mobile.git", rev = "1d3ec2a1d14a63b74d1f4269340441d4eeada27a", default-features = false, features = ["deeplink"] }
 log.workspace = true
 jni = "0.22"
-providers-fake.workspace = true
+providers-fake = { workspace = true, optional = true }
 runtime-luau.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
 unicode-segmentation = "1.12"
 
 [target.'cfg(not(target_os = "android"))'.dependencies]

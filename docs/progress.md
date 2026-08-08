@@ -354,3 +354,81 @@ handle native process death from a fixed supervisor; remove the linked/local
 fallback in the gate build; atomically bind migration, source, state, provider
 effects, and surface promotion; coalesce drag state; then run the longer
 thermal/memory soak.
+
+## 2026-08-08 — Pass the Android laboratory gate at prototype scope
+
+**Goal:** Complete the five Android-exit follow-up steps: run the real GPUI/Luau
+candidate in isolation, recover native process death, preserve the accepted
+experience until first-frame promotion, bind source/migration/state/effects to
+one authority transition, remove the linked gate fallback, stress the device,
+and make one small curated single-shot comparison before shifting focus to the
+low-level AOSP work.
+
+**Changed:** Replaced the Java candidate drawing Activity with a second complete
+GPUI/Luau NativeActivity in `:candidate`. The accepted Java process now watches
+exact candidate PIDs, restores its surface after native abort, kills cached
+candidate processes before replacement, and distinguishes intentional
+replacement from failure. The Luau worker now runs bounded state migration
+during startup and candidate preparation. `StateEnvelope` carries the source
+SHA-256; the external service stages state and allowlisted effects together and
+executes effects only after promotion. The candidate promotes that envelope at
+its first GPUI frame. The Android gate build uses `gate-strict`, and its target
+dependency tree omits `providers-fake`. Added the focused evidence and decision
+in [`android-exit-verdict.md`](android-exit-verdict.md), updated the north star,
+and added one compact curated authoring guide.
+
+**Evidence:** `cargo test --workspace` passes 23 tests, including bounded
+migration/worker ownership and exact-once effect behavior under an ambiguous
+post-promotion fault. `cargo tree -p sos-experience --target
+aarch64-linux-android --no-default-features --features gate-strict` contains no
+`providers-fake`. Multiple ARM64 builds, `adb install -r`, and strict remote
+boots passed on the SM-A336B. Final crash probes retained accepted PID `31437`:
+candidate PID `31533` aborted before a frame and PID `31656` aborted after a
+real GPUI frame; both restored the accepted surface. Back-to-back promotions
+used fresh PIDs `32676` then `393`, with state authority and active source both
+ending at hash `597c42a1…`.
+
+One curated Luna-medium `drag_attach` attempt produced an untouched 8,834-byte
+source (SHA-256 `597c42a1ae99002ff9ba5cf5f2e6cf0876f53832a7d5b5d9ad07040aebf881ec`)
+that scored 8/8 versus the raw 6/8. It used 71,595 input tokens (57,344 cached)
+and 3,822 output tokens. On the phone, a real swipe produced 33 drag updates and
+one drop; external revision 102 promoted with one effect and `providerd` logged
+`notes.attach_to_event` exactly once. The ignored before/after screenshots are
+102,430/107,303 bytes with SHA-256 `ce4b1122…`/`91fb6839…`.
+
+The physical 10,000-swap run accepted 10,000/10,000 in 185.146 s, with visible
+p50/p95/p99 18.679/20.703/21.452 ms, worker p95 3.213 ms, maximum 40.092 ms,
+and `/proc` RSS +5,520 KB. Android total RSS moved +12,572 KB and battery
+temperature was 36.3→36.2 °C while USB powered. The final dirty APK
+`sos-experience-bbfaa87c303f-dirty.apk` is 37,297,301 bytes with SHA-256
+`38130723201745591a9e954122f5133148336c987ac1604fcde4708f96c13fbd`.
+
+**Failures and fixes:** A persisted schema-2 probe envelope correctly rejected
+all schema-1 experiences; the synthetic envelope was reset to schema 1 without
+discarding its state. Post-promotion recovery initially required exactly
+`expected + 1` and rolled back after a candidate interaction advanced farther;
+it now accepts a later exact-source revision and reloads authoritative state.
+Focus events from either process could race the staged promotion; both sides
+now queue actions during handoff. Direct probe stage ID `0` was mistakenly
+treated as a real stage and now parses as absent. Reusing a cached candidate
+process exposed GPUI global-runtime reuse, so every candidate is fresh. Finally,
+back-to-back source delivery exposed deletion/overwrite races; reloads now stay
+pending while busy, cleanup and reconciliation are hash-conditional, and a
+deferred render is explicitly requested. The curated agent also ignored the
+artifact directory; the unchanged source was moved before the sole grade.
+
+**Decision:** Gates A–E pass strongly enough to begin the privileged
+AOSP/system-services phase. Stop optimizing agent prompting for now and keep
+the APK as a regression harness. This is not a claim of Android independence:
+the supervisor still dies with the accepted process, Android owns composition
+and input, and the provider service is reached from the Mac through `adb
+reverse`.
+
+**Open risks / next gate:** Build a privileged shell/supervisor outside every
+experience process, own candidate/accepted surface and input-focus promotion,
+move revision/state/provider authority onto the device, and define signed
+immutable revision directories plus an atomic current pointer. Retain the
+canonical drag, crash probes, strict dependency check, back-to-back PID test,
+and 10,000-swap run as regressions. A multi-hour attributed heap soak, drag
+coalescing, arbitrary native/shader revisions, and production security remain
+future gates.

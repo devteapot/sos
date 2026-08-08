@@ -65,12 +65,4 @@
         <item name="postSplashScreenTheme">@style/GpuiTheme</item>
     </style>
 
-    <style name="CandidateTheme" parent="@android:style/Theme.NoTitleBar">
-        <item name="android:windowBackground">@color/gpui_surface</item>
-        <item name="android:windowIsTranslucent">false</item>
-        <item name="android:windowAnimationStyle">@null</item>
-        <item name="android:hardwareAccelerated">true</item>
-        <item name="android:windowNoTitle">true</item>
-    </style>
-
 </resources>
