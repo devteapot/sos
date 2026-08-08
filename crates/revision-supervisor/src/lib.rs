@@ -8,7 +8,8 @@ pub use coordinator::{
     ActivationJournal, CoordinatedSupervisor, CoordinationError, CoordinationEvent,
     CoordinatorFaultPoint, JournalPhase,
 };
-pub use host::{ExperienceHost, HostCommand, HostEvent, HostRequest};
+pub use experience_host_protocol::{HostEvent, HostRequest};
+pub use host::{ExperienceHost, HostCommand};
 pub use store::{
     AssetIdentity, DurableState, FileIdentity, RevisionAssetInput, RevisionInput, RevisionManifest,
     RevisionStore, VerifiedRevision, MAX_REVISION_ASSETS, MAX_REVISION_ASSET_BYTES,

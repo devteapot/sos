@@ -8,7 +8,46 @@ use gpui::{
     TextRun,
 };
 
-use super::{pointer_input, ExperienceHost};
+pub(crate) trait SceneSurfaceHost: Sized + 'static {
+    fn enables_pointer_fallback() -> bool {
+        false
+    }
+
+    fn record_scene_surface(
+        _surface_id: &str,
+        _bounds: Bounds<Pixels>,
+        _interaction: &Interaction,
+    ) {
+    }
+
+    fn scene_surface_down(
+        &mut self,
+        surface_id: String,
+        region: HitRegion,
+        specification: &Interaction,
+        position: (f32, f32),
+        platform_click_count: usize,
+        cx: &mut Context<Self>,
+    );
+
+    fn scene_surface_move(
+        &mut self,
+        surface_id: String,
+        specification: &Interaction,
+        x: f32,
+        y: f32,
+        cx: &mut Context<Self>,
+    );
+
+    fn scene_surface_up(
+        &mut self,
+        surface_id: String,
+        specification: &Interaction,
+        x: f32,
+        y: f32,
+        cx: &mut Context<Self>,
+    );
+}
 
 enum PreparedPaint {
     FillBounds {
@@ -35,7 +74,7 @@ enum PreparedPaint {
         size: f32,
         line_height: Option<f32>,
         max_width: Option<f32>,
-        line: ShapedLine,
+        line: Box<ShapedLine>,
     },
     Layer {
         clip: Option<ClipRect>,
@@ -107,12 +146,12 @@ impl Affine {
     }
 }
 
-pub(super) fn render(
+pub(crate) fn render<H: SceneSurfaceHost>(
     node_id: String,
     operations: Vec<PaintOp>,
     interaction: Interaction,
-    host: gpui::WeakEntity<ExperienceHost>,
-    _cx: &mut Context<ExperienceHost>,
+    host: gpui::WeakEntity<H>,
+    _cx: &mut Context<H>,
 ) -> AnyElement {
     let bounds = Rc::new(RefCell::new(None::<Bounds<Pixels>>));
     let prepaint_bounds = bounds.clone();
@@ -121,7 +160,7 @@ pub(super) fn render(
     let prepared = canvas(
         move |canvas_bounds, window, _| {
             *prepaint_bounds.borrow_mut() = Some(canvas_bounds);
-            pointer_input::record_surface(&prepaint_id, canvas_bounds, &prepaint_interaction);
+            H::record_scene_surface(&prepaint_id, canvas_bounds, &prepaint_interaction);
             prepare(operations, window, Affine::identity(), 1.0)
         },
         move |canvas_bounds, operations, window, cx| {
@@ -142,6 +181,7 @@ pub(super) fn render(
     let down_spec = interaction.clone();
     let down_bounds = bounds.clone();
     let down_host = host.clone();
+    let pointer_fallback = H::enables_pointer_fallback();
     let move_id = node_id.clone();
     let move_spec = interaction.clone();
     let move_bounds = bounds.clone();
@@ -160,13 +200,26 @@ pub(super) fn render(
                 let Some(bounds) = down_bounds.borrow().as_ref().copied() else {
                     return;
                 };
-                let Some((region, x, y)) = hit(&down_spec, &down_id, bounds, event.position) else {
+                let Some((region, x, y)) = hit(
+                    &down_spec,
+                    &down_id,
+                    bounds,
+                    event.position,
+                    pointer_fallback,
+                ) else {
                     return;
                 };
                 window.prevent_default();
                 app.stop_propagation();
                 let _ = down_host.update(app, |host, cx| {
-                    host.scene_surface_down(down_id.clone(), region, x, y, event.click_count, cx)
+                    host.scene_surface_down(
+                        down_id.clone(),
+                        region,
+                        &down_spec,
+                        (x, y),
+                        event.click_count,
+                        cx,
+                    )
                 });
             },
         )
@@ -286,7 +339,7 @@ fn prepare(
                     size: size * scale,
                     line_height: line_height.map(|height| height * scale),
                     max_width: max_width.map(|width| width * scale),
-                    line,
+                    line: Box::new(line),
                 }
             }
             PaintOp::Layer {
@@ -544,6 +597,7 @@ fn hit(
     node_id: &str,
     bounds: Bounds<Pixels>,
     point: gpui::Point<Pixels>,
+    pointer_fallback: bool,
 ) -> Option<(HitRegion, f32, f32)> {
     let (x, y) = local_point(bounds, point);
     if let Some(region) = interaction.hit_regions.iter().rev().find(|region| {
@@ -558,6 +612,8 @@ fn hit(
         && interaction.double_tap_action.is_none()
         && interaction.long_press_action.is_none()
         && interaction.swipe_action.is_none()
+        && (!pointer_fallback
+            || (interaction.pointer_action.is_none() && interaction.multi_pointer_action.is_none()))
     {
         return None;
     }

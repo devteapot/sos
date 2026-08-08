@@ -26,7 +26,8 @@ const ALBUM_ORBIT: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0
 pub struct SosAssets;
 
 static REVISION_ASSETS: OnceLock<RwLock<HashMap<String, Vec<u8>>>> = OnceLock::new();
-static REVISION_FONTS: OnceLock<RwLock<Vec<(String, Vec<u8>)>>> = OnceLock::new();
+type RevisionFont = (String, Vec<u8>);
+static REVISION_FONTS: OnceLock<RwLock<Vec<RevisionFont>>> = OnceLock::new();
 static LOADED_FONTS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
 
 pub fn install(assets: &[RevisionAsset]) {

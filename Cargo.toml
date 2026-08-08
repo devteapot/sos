@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "apps/experience",
+    "crates/experience-host-protocol",
     "crates/experience-ir",
     "crates/providers-fake",
     "crates/provider-state-service",
@@ -17,6 +18,7 @@ version = "0.1.0"
 
 [workspace.dependencies]
 async-channel = "2.5"
+experience-host-protocol = { path = "crates/experience-host-protocol" }
 experience-ir = { path = "crates/experience-ir" }
 providers-fake = { path = "crates/providers-fake" }
 runtime-luau = { path = "crates/runtime-luau" }

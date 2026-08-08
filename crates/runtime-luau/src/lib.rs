@@ -232,6 +232,7 @@ enum WorkerCommand {
     PrepareCandidate {
         request_id: u64,
         source: String,
+        sidecars: Vec<RevisionAssetInput>,
         model: ExperienceModel,
         state: JsonValue,
         state_schema_version: u64,
@@ -293,8 +294,8 @@ impl RuntimeWorker {
             .name("sos-luau-runtime".into())
             .spawn(move || {
                 let started = Instant::now();
-                let initialized = LuauRuntime::compile_with_assets(&source, sidecars.clone())
-                    .and_then(|runtime| {
+                let initialized =
+                    LuauRuntime::compile_with_assets(&source, sidecars).and_then(|runtime| {
                         let state = runtime.migrate_state(state_schema_version, &state)?;
                         let state_schema_version = runtime.state_schema_version()?;
                         let scene = runtime.render(&model, &state)?;
@@ -326,6 +327,7 @@ impl RuntimeWorker {
                         WorkerCommand::PrepareCandidate {
                             request_id,
                             source,
+                            sidecars,
                             model,
                             state,
                             state_schema_version,
@@ -352,7 +354,7 @@ impl RuntimeWorker {
                             let queue_us = micros(worker_started.duration_since(submitted_at));
                             let compile_started = Instant::now();
                             let candidate_runtime =
-                                match LuauRuntime::compile_with_assets(&source, sidecars.clone()) {
+                                match LuauRuntime::compile_with_assets(&source, sidecars) {
                                     Ok(runtime) => runtime,
                                     Err(error) => {
                                         let timings = CandidateTimings {
@@ -545,7 +547,18 @@ impl RuntimeWorker {
         state: JsonValue,
         state_schema_version: u64,
     ) -> Result<(Self, WorkerReady), RuntimeError> {
-        let (worker, ready_rx) = Self::spawn(source, model, state, state_schema_version)?;
+        Self::start_with_assets(source, model, state, state_schema_version, Vec::new())
+    }
+
+    pub fn start_with_assets(
+        source: String,
+        model: ExperienceModel,
+        state: JsonValue,
+        state_schema_version: u64,
+        sidecars: Vec<RevisionAssetInput>,
+    ) -> Result<(Self, WorkerReady), RuntimeError> {
+        let (worker, ready_rx) =
+            Self::spawn_with_assets(source, model, state, state_schema_version, sidecars)?;
         let ready = ready_rx
             .recv_blocking()
             .map_err(|_| RuntimeError::Invalid("runtime worker stopped during startup".into()))?
@@ -566,10 +579,33 @@ impl RuntimeWorker {
         state_schema_version: u64,
         submitted_at: Instant,
     ) -> Result<(), String> {
+        self.prepare_candidate_with_assets(
+            request_id,
+            source,
+            Vec::new(),
+            model,
+            state,
+            state_schema_version,
+            submitted_at,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn prepare_candidate_with_assets(
+        &self,
+        request_id: u64,
+        source: String,
+        sidecars: Vec<RevisionAssetInput>,
+        model: ExperienceModel,
+        state: JsonValue,
+        state_schema_version: u64,
+        submitted_at: Instant,
+    ) -> Result<(), String> {
         self.commands
             .send_blocking(WorkerCommand::PrepareCandidate {
                 request_id,
                 source,
+                sidecars,
                 model,
                 state,
                 state_schema_version,
@@ -1983,6 +2019,68 @@ mod tests {
             }
             result => panic!("unexpected result: {result:?}"),
         }
+    }
+
+    #[test]
+    fn worker_prepares_each_candidate_with_its_own_sidecars() {
+        fn source(asset: &str) -> String {
+            format!(
+                r#"return {{
+                    api_version = 3,
+                    render = function()
+                        return {{ id = "root", content = {{ kind = "image", asset = "{asset}" }} }}
+                    end,
+                }}"#
+            )
+        }
+
+        fn image(id: &str) -> RevisionAssetInput {
+            RevisionAssetInput {
+                id: id.into(),
+                kind: "png".into(),
+                bytes: b"\x89PNG\r\n\x1a\nfixture".to_vec(),
+            }
+        }
+
+        let model = providers_fake_for_test();
+        let (worker, ready) = RuntimeWorker::start_with_assets(
+            source("boot-image"),
+            model.clone(),
+            json!({}),
+            1,
+            vec![image("boot-image")],
+        )
+        .unwrap();
+        assert_eq!(ready.assets[0].id, "boot-image");
+
+        let results = worker.results();
+        worker
+            .prepare_candidate_with_assets(
+                1,
+                source("candidate-image"),
+                vec![image("candidate-image")],
+                model.clone(),
+                json!({}),
+                1,
+                Instant::now(),
+            )
+            .unwrap();
+        match results.recv_blocking().unwrap() {
+            WorkerResult::CandidatePrepared { assets, .. } => {
+                assert_eq!(assets.len(), 1);
+                assert_eq!(assets[0].id, "candidate-image");
+            }
+            result => panic!("unexpected result: {result:?}"),
+        }
+        worker.discard_candidate(1).unwrap();
+
+        worker
+            .prepare_candidate(2, source("boot-image"), model, json!({}), 1, Instant::now())
+            .unwrap();
+        assert!(matches!(
+            results.recv_blocking().unwrap(),
+            WorkerResult::CandidateRejected { request_id: 2, .. }
+        ));
     }
 
     #[test]

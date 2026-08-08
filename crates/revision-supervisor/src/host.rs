@@ -7,7 +7,7 @@ use std::{
     time::Duration,
 };
 
-use serde::{Deserialize, Serialize};
+use experience_host_protocol::{HostEvent, HostRequest};
 
 use crate::{Error, Result, VerifiedRevision};
 
@@ -29,93 +29,6 @@ impl HostCommand {
         Self {
             executable: executable.into(),
             args,
-        }
-    }
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(tag = "action", rename_all = "snake_case")]
-pub enum HostRequest {
-    Boot {
-        request_id: u64,
-        revision_id: String,
-        revision_path: PathBuf,
-        experience_api_version: u32,
-    },
-    Prepare {
-        request_id: u64,
-        revision_id: String,
-        revision_path: PathBuf,
-        experience_api_version: u32,
-    },
-    Present {
-        request_id: u64,
-        revision_id: String,
-    },
-    Confirm {
-        request_id: u64,
-        revision_id: String,
-    },
-    Discard {
-        request_id: u64,
-        revision_id: String,
-    },
-    Shutdown {
-        request_id: u64,
-    },
-}
-
-impl HostRequest {
-    fn request_id(&self) -> u64 {
-        match self {
-            Self::Boot { request_id, .. }
-            | Self::Prepare { request_id, .. }
-            | Self::Present { request_id, .. }
-            | Self::Confirm { request_id, .. }
-            | Self::Discard { request_id, .. }
-            | Self::Shutdown { request_id } => *request_id,
-        }
-    }
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(tag = "event", rename_all = "snake_case")]
-pub enum HostEvent {
-    Prepared {
-        request_id: u64,
-        revision_id: String,
-    },
-    Presented {
-        request_id: u64,
-        revision_id: String,
-    },
-    Confirmed {
-        request_id: u64,
-        revision_id: String,
-    },
-    Discarded {
-        request_id: u64,
-        revision_id: String,
-    },
-    Rejected {
-        request_id: u64,
-        revision_id: String,
-        error: String,
-    },
-    Shutdown {
-        request_id: u64,
-    },
-}
-
-impl HostEvent {
-    fn request_id(&self) -> u64 {
-        match self {
-            Self::Prepared { request_id, .. }
-            | Self::Presented { request_id, .. }
-            | Self::Confirmed { request_id, .. }
-            | Self::Discarded { request_id, .. }
-            | Self::Rejected { request_id, .. }
-            | Self::Shutdown { request_id } => *request_id,
         }
     }
 }

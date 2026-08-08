@@ -988,3 +988,49 @@ and carry the supervisor revision directory through the eventual AOSP host IPC.
 Layout v3 is responsive to containing-block size and composes with intrinsic
 GPUI layout; add bounded child-intrinsic query/opcode forms only when an actual
 agent layout cannot be expressed with the current retained constraints.
+
+## 2026-08-08 — Isolate the platform-neutral host modules before Linux integration
+
+**Goal:** Move the reusable host structure onto `main` before carrying the
+Wayland client forward, so Android and future platform branches extend stable
+shared boundaries instead of repeatedly moving Android-local files during
+rebases.
+
+**Changed:** Moved the revision image/font registry and retained paint/gesture
+surface out of `android/` into shared experience modules. `SceneSurfaceHost`
+owns the small adapter contract; Android implements it and registers prepaint
+bounds with its raw-pointer router through a platform hook. Android behavior,
+IME, accessibility, and pointer routing remain platform-specific. Moved the
+supervisor request/event wire types into the platform-neutral
+`experience-host-protocol` crate while preserving their serialized ABI and the
+supervisor's public re-exports. Extended the runtime worker with explicit boot
+and candidate sidecar entry points. Every prepared candidate now owns its asset
+set instead of retaining or inheriting the boot revision's sidecars.
+
+**Evidence:** `cargo test --workspace --all-targets --locked` passes all 93 main
+tests: the existing 91 plus the extracted protocol wire-format test and a worker
+test that prepares a candidate with a distinct image sidecar, discards it, and
+then proves a source-only candidate cannot see the boot asset. Strict workspace
+clippy, formatting, diff checks, and the NDK 29 AArch64 Android `cargo check`
+pass. No Linux target dependency, host binary, command, fixture, or milestone
+document is part of this commit.
+
+**Failures and fixes:** The first locked test correctly refused to proceed after
+adding a workspace member because `Cargo.lock` did not yet identify the new
+crate; one unlocked workspace test regenerated the lock, after which the locked
+suite passed. Generalizing the large glyph paint enum would have made every
+variant carry the shaped-line payload size, so the shared representation boxes
+that payload. Grouping the down-event position keeps the adapter trait within
+the strict argument-count lint.
+
+**Decision:** Treat protocol ownership, retained paint/gesture plumbing,
+revision asset/font loading, and candidate asset isolation as permanent-host
+infrastructure on `main`. Keep Wayland startup, Linux GPUI dependencies, the
+Linux service adapter, synthetic pointer fallback, Linux tools, and nested
+session evidence on the Linux feature branch.
+
+**Open risks / next gate:** Shared layout/content rendering and full host
+lifecycle are still duplicated or platform-local; extract them only where the
+Android and Linux contracts are demonstrably identical. Rebase the Linux branch
+onto this commit and verify its remaining diff is platform-scoped before using
+this split for future Scene ABI work.

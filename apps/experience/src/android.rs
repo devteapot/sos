@@ -1,9 +1,7 @@
 mod accessibility;
-mod assets;
 mod native_input;
 mod pointer_input;
 mod provider_client;
-mod scene_surface;
 
 use std::{
     collections::{HashMap, VecDeque},
@@ -31,10 +29,11 @@ use runtime_luau::{CandidateTimings, RuntimeWorker, WorkerReady, WorkerResult};
 use serde_json::{json, Value as JsonValue};
 use sha2::{Digest, Sha256};
 
+use crate::assets::{self, SosAssets, ALBUM_ASSET};
+use crate::scene_surface;
 use crate::{
     DAILY_FLOW_AGENT_EXPERIENCE, DAILY_FLOW_EXPERIENCE, DEFAULT_EXPERIENCE, TIMEFLOW_EXPERIENCE,
 };
-use assets::{SosAssets, ALBUM_ASSET};
 use native_input::NativeTextInput;
 
 static FILES_DIR: OnceLock<PathBuf> = OnceLock::new();
@@ -1617,6 +1616,59 @@ impl ExperienceHost {
                 .into_any_element();
         }
         rendered
+    }
+}
+
+impl scene_surface::SceneSurfaceHost for ExperienceHost {
+    fn record_scene_surface(
+        surface_id: &str,
+        bounds: gpui::Bounds<gpui::Pixels>,
+        interaction: &Interaction,
+    ) {
+        pointer_input::record_surface(surface_id, bounds, interaction);
+    }
+
+    fn scene_surface_down(
+        &mut self,
+        surface_id: String,
+        region: HitRegion,
+        _specification: &Interaction,
+        position: (f32, f32),
+        platform_click_count: usize,
+        cx: &mut Context<Self>,
+    ) {
+        let (x, y) = position;
+        ExperienceHost::scene_surface_down(
+            self,
+            surface_id,
+            region,
+            x,
+            y,
+            platform_click_count,
+            cx,
+        );
+    }
+
+    fn scene_surface_move(
+        &mut self,
+        surface_id: String,
+        specification: &Interaction,
+        x: f32,
+        y: f32,
+        cx: &mut Context<Self>,
+    ) {
+        ExperienceHost::scene_surface_move(self, surface_id, specification, x, y, cx);
+    }
+
+    fn scene_surface_up(
+        &mut self,
+        surface_id: String,
+        specification: &Interaction,
+        x: f32,
+        y: f32,
+        cx: &mut Context<Self>,
+    ) {
+        ExperienceHost::scene_surface_up(self, surface_id, specification, x, y, cx);
     }
 }
 

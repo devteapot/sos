@@ -1324,6 +1324,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "experience-host-protocol"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "experience-ir"
 version = "0.1.0"
 dependencies = [
@@ -3949,6 +3957,7 @@ dependencies = [
 name = "revision-supervisor"
 version = "0.1.0"
 dependencies = [
+ "experience-host-protocol",
  "experience-ir",
  "provider-state-service",
  "providers-fake",

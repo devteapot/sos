@@ -58,7 +58,9 @@ host exposes a separate safe paint operation.
 The supervisor is configured once with `--host-executable`; this executable is
 not copied into or identified by an experience revision. It remains alive while
 many revisions are activated. The current Linux adapter uses newline-delimited
-JSON over the child's stdin/stdout:
+JSON over the child's stdin/stdout. The wire types live in the small
+platform-neutral `experience-host-protocol` crate so host adapters do not depend
+on the supervisor implementation:
 
 | Supervisor request | Required host behavior |
 | --- | --- |

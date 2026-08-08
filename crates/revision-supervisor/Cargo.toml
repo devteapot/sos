@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+experience-host-protocol.workspace = true
 provider-state-service.workspace = true
 serde.workspace = true
 serde_json.workspace = true

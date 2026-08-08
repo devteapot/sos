@@ -1,9 +1,13 @@
 #[cfg(target_os = "android")]
 mod android;
+#[cfg(target_os = "android")]
+mod assets;
 #[cfg(all(test, not(target_os = "android")))]
 #[allow(dead_code)]
 #[path = "android/pointer_input.rs"]
 mod pointer_input;
+#[cfg(target_os = "android")]
+mod scene_surface;
 
 pub const DEFAULT_EXPERIENCE: &str = include_str!("../../../experiences/default.luau");
 pub const TIMEFLOW_EXPERIENCE: &str = include_str!("../../../experiences/timeflow.luau");
