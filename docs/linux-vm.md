@@ -73,10 +73,11 @@ ssh -p 2222 sos@127.0.0.1 '~/sos/tools/linux-vm/provision-debian'
 ```
 
 `provision-debian` refuses non-Debian-13 guests, installs the pinned GPUI/Zed
-Linux development libraries plus Weston/Xvfb/Mesa, installs Rust 1.95.0 through
-Debian's `rustup` package, fetches the locked dependency graph, and links the
-four session binaries plus `sos-compositor`. Log out and back in if it adds
-render/input group membership.
+Linux development libraries plus Weston/Xvfb/Mesa and the direct
+GBM/libinput/libseat/udev/seatd stack, installs Rust 1.95.0 with rustfmt and
+Clippy through Debian's `rustup` package, fetches the locked dependency graph,
+and links the four session binaries plus both compositor backends. Log out and
+back in if it adds render/input group membership.
 
 ## Automated acceptance gate
 
@@ -123,6 +124,18 @@ client. Its `evidence=nested_backend_submit` is compositor-owned submission to
 the outer session, not proof of a physical KMS page flip. The full contract is
 in [`linux-compositor.md`](linux-compositor.md).
 
+Finally, run the direct session gate from SSH. It deliberately stops and later
+restores GDM inside the disposable VM:
+
+```sh
+ssh -p 2222 sos@127.0.0.1 '~/sos/tools/linux-vm/verify-direct-session'
+```
+
+The verifier refuses bare metal, acquires the VirtIO KMS device and `seat0`
+through libseat/seatd, proves the recovery view before shell startup, and binds
+boot, activation, and recovered boot to DRM VBlank evidence. Keep the VNC
+console available while developing this path.
+
 ## Current status
 
 The gate passes in a KVM-accelerated ARM64 Debian 13.6 guest on kernel
@@ -142,8 +155,11 @@ passes in this guest: revision `552f0696…` activated in unchanged PID 11310,
 then the killed host recovered the same committed revision in PID 11514; boot,
 activation, and recovery each produced compositor-owned nested-backend submit
 evidence, and the compatibility client mapped at `(280, 140)`. This result does
-not change any physical-hardware or latency claim. The next compositor gate is
-direct DRM/libinput session ownership in the VM.
+not change any physical-hardware or latency claim. The direct gate now passes
+as well: revision `552f0696…` activated in unchanged PID 59723 and recovered in
+PID 59849, with three `drm_page_flip` fences, a compositor recovery frame, and
+monotonic KMS event timestamps. The next gate is packaging the direct path as
+the VM's systemd/logind boot session.
 
 References: [Debian Cloud images](https://wiki.debian.org/Cloud),
 [Debian cloud image comparison](https://wiki.debian.org/Cloud/SystemsComparison),

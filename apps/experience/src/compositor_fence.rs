@@ -10,7 +10,8 @@ use std::{
 
 use anyhow::{bail, Context as _, Result};
 use compositor_control_protocol::{
-    CompositorEvent, CompositorRequest, MAX_CONTROL_LINE_BYTES, MAX_SHELL_TOKEN_BYTES,
+    CompositorEvent, CompositorRequest, PresentationEvidence, MAX_CONTROL_LINE_BYTES,
+    MAX_SHELL_TOKEN_BYTES,
 };
 
 const CONTROL_SOCKET_ENV: &str = "SOS_COMPOSITOR_CONTROL";
@@ -24,6 +25,7 @@ pub struct Presented {
     pub revision_id: String,
     pub commit_sequence: u64,
     pub submit_sequence: u64,
+    pub evidence: PresentationEvidence,
 }
 
 #[derive(Clone, Debug)]
@@ -184,12 +186,14 @@ fn run_io(
                         revision_id,
                         commit_sequence,
                         submit_sequence,
+                        evidence,
                     } => {
                         events.send_blocking(FenceEvent::Presented(Presented {
                             request_id,
                             revision_id,
                             commit_sequence,
                             submit_sequence,
+                            evidence,
                         }))?;
                     }
                     event => bail!("unexpected compositor arm event: {event:?}"),
@@ -205,11 +209,13 @@ fn run_io(
                 revision_id,
                 commit_sequence,
                 submit_sequence,
+                evidence,
             })) => events.send_blocking(FenceEvent::Presented(Presented {
                 request_id,
                 revision_id,
                 commit_sequence,
                 submit_sequence,
+                evidence,
             }))?,
             Ok(Some(event)) => bail!("unexpected asynchronous compositor event: {event:?}"),
             Ok(None) => bail!("compositor control connection closed"),
@@ -298,6 +304,7 @@ mod tests {
                     revision_id,
                     commit_sequence: 6,
                     submit_sequence: 9,
+                    evidence: PresentationEvidence::NestedBackendSubmit,
                 },
             );
         });
@@ -314,6 +321,7 @@ mod tests {
         assert_eq!(presented.revision_id, revision);
         assert_eq!(presented.commit_sequence, 6);
         assert_eq!(presented.submit_sequence, 9);
+        assert_eq!(presented.evidence.name(), "nested_backend_submit");
         server.join().unwrap();
     }
 

@@ -171,10 +171,10 @@ gate, not a GPU, compositor-presentation, or latency gate.
 ## Honest boundaries and next gate
 
 - An ordinary `linux-run` still uses GPUI's next-frame callback. The nested
-  `sos-compositor` path now owns stronger shell-commit/backend-submit evidence,
-  but its outer compositor can still delay or discard that nested buffer. Only
-  direct DRM/KMS page-flip evidence can complete the physical presentation
-  boundary.
+  `sos-compositor` path owns shell-commit/backend-submit evidence but its outer
+  compositor can still delay or discard that buffer. The direct Debian VM path
+  now waits for the matching DRM VBlank; only physical hardware can turn that
+  into a device timing claim.
 - The Linux text-input node is display-only. Native editing, selection, marked
   text, clipboard, and Wayland input-method integration remain open.
 - Scene semantics remain the source of truth, but Linux does not yet adapt them
@@ -190,15 +190,15 @@ gate, not a GPU, compositor-presentation, or latency gate.
   mapping, validation rules, and activation semantics. Platform lifecycle,
   layout/content details, raw pointer collection, text editing, and
   accessibility remain separate adapters.
-- The nested compositor quiesces forwarded input from arming through successful
-  shell submit. Direct libinput/touch routing and the appliance session boundary
-  remain unimplemented.
-- This is a nested desktop result. It does not prove boot-to-SOS, direct
-  DRM/KMS, virtual-terminal ownership, touch, GPU performance, thermals,
-  suspend/resume, or any hardware/latency gate.
+- Both compositor backends quiesce forwarded input from arming through their
+  evidence boundary. Direct libinput is wired to the shared router, but cursor,
+  touch/multi-pointer policy and injected input evidence remain open.
+- The direct path is an SSH-launched seatd session in a VM. It does not prove
+  boot-to-SOS, logind/virtual-terminal handoff, physical touch, GPU performance,
+  thermals, suspend/resume, or any hardware/latency gate.
 
-The nested Smithay slice is complete. The next architectural slice moves the
-same policy to a direct session backend in the Debian VM: logind ownership,
-DRM/GBM output, libinput, a compositor-owned recovery view, and page-flip-backed
-presentation evidence. Physical hardware comes only after that VM session is
-stable.
+The nested and direct Smithay functional slices are complete. The next
+architectural slice packages the direct backend as the Debian VM's boot session:
+systemd/logind active-VT ownership, ordered services, protected credential
+delivery, and recovery without SSH. Physical hardware comes only after that
+session is stable.

@@ -31,8 +31,8 @@ and remaining compositor boundaries are in
 [`docs/linux-stable-host.md`](docs/linux-stable-host.md).
 The passing reproducible Debian 13 VM gate and acceptance command are in
 [`docs/linux-vm.md`](docs/linux-vm.md).
-The authenticated nested Smithay compositor, compatibility-surface policy, and
-compositor-owned activation fence are in
+The authenticated Smithay compositor, nested and direct-DRM gates,
+compatibility-surface policy, and compositor-owned activation fence are in
 [`docs/linux-compositor.md`](docs/linux-compositor.md).
 The durable typed provider/state Unix-socket protocol and authority are in
 [`docs/provider-state-service.md`](docs/provider-state-service.md).
@@ -105,17 +105,23 @@ without replacing the process or native window:
 ```
 
 This command remains the ordinary Wayland client-host gate and uses GPUI's
-next-frame callback. The next slice now also passes through SOS's own nested
-Smithay compositor, where a peer-credential-authenticated shell gets
-compositor-owned submit evidence and one separately owned compatibility client:
+next-frame callback. SOS's own compositor has both a nested development backend
+and a direct Debian-VM backend. The nested gate is safe to run on a workstation:
 
 ```sh
 ./tools/linux-compositor/verify-nested
 ```
 
-That nested result is not yet a direct SOS session. Native Linux text editing,
-accessibility, direct DRM/KMS and libinput ownership, boot-to-SOS, and physical
-hardware remain subsequent gates. See
+Inside the disposable reference VM, the direct gate temporarily releases GDM,
+owns the VirtIO DRM output and libinput seat through libseat/seatd, and accepts
+revisions only after the matching KMS page-flip event:
+
+```sh
+./tools/linux-vm/verify-direct-session
+```
+
+Native Linux text editing, accessibility, boot-to-SOS service packaging,
+physical input injection, and physical hardware remain subsequent gates. See
 [`docs/linux-stable-host.md`](docs/linux-stable-host.md) and
 [`docs/linux-compositor.md`](docs/linux-compositor.md) for the exact evidence
 and limitations.

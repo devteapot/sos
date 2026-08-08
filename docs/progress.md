@@ -1430,3 +1430,105 @@ placement capability. Its successful submit can still be delayed or discarded
 by the outer compositor. Next, carry the same policy into a direct Debian VM
 session and bind acceptance to KMS/page-flip evidence. Only after that VM gate
 should SOS attempt boot-to-session packaging or physical-device performance.
+
+## 2026-08-09 — Present the SOS shell through direct DRM in the Debian VM
+
+**Goal:** Carry the proven compositor policy into a direct session without
+changing Luau, the Scene ABI, the permanent-host protocol, or Android. Acquire
+the reference VM's real VirtIO DRM and input devices, keep a compositor-owned
+recovery view alive independently of GPUI, and release each activation fence
+only after the exact queued shell frame generates a DRM VBlank/page-flip event.
+Do not infer physical-device timing or input behavior from the VM.
+
+**Changed:** `sos-compositor` now selects `--backend nested|drm`; the nested
+feature remains the default, while `direct-backend` opts into Smithay 0.7.0's
+udev, libseat, libinput, DRM, GBM, EGL/GLES, and system-library features plus
+`smithay-drm-extras` 0.1.0. The first direct slice intentionally accepts one
+seat, one DRM device, and one connected output. It opens devices through
+libseat, scans the output through udev/DRM, allocates scanout buffers through
+GBM, composites Wayland surfaces with GLES, routes libinput through the shared
+input policy, and continually owns a dark recovery clear even when no shell is
+alive. Device removal stops the compositor; hot-add, multiple outputs, and a
+rendered cursor are not silently approximated.
+
+The activation policy now separates a successful queue from a presentation.
+It attaches the request/revision/commit/submit identity to the DRM frame, keeps
+input quiesced while that frame is outstanding, calls `frame_submitted` only
+from the matching VBlank callback, and only then publishes the event and
+releases input. The bounded control ABI now distinguishes
+`nested_backend_submit` from `drm_page_flip`; direct evidence includes the
+kernel output sequence, timestamp, and monotonic/realtime clock domain. Wayland
+`wp_presentation` feedback is completed from that same callback. Realtime
+drivers receive only the honest VSync feedback flag; monotonic DRM events also
+carry hardware-clock/completion flags.
+
+Added `tools/linux-vm/verify-direct-session`. It refuses bare metal and
+non-Debian-13 guests, remembers GDM state, stops GDM, acquires `seat0` through
+seatd, restores GDM on every exit path, and deletes only its exact disposable
+store. Before starting GPUI it requires a direct KMS recovery page flip. It then
+boots the coordinated session, activates `daily-flow.luau` without changing the
+host PID, kills that exact PID, verifies supervisor recovery of the committed
+revision, maps `weston-simple-shm` as the compatibility client, and rejects both
+GPUI-next-frame and nested-submit evidence. The Debian provisioner now installs
+GBM/libinput/libseat/udev development packages and seatd, enables the direct
+compositor build, and installs rustfmt/Clippy for the pinned Rust 1.95.0 toolchain.
+
+**Evidence:** `./tools/linux-vm/verify-direct-session` passes in the retained
+ARM64 KVM guest on Debian 13.6/kernel `6.12.100+deb13-arm64`. Revision
+`552f06968bbc5c69de3db581454f60d4303289f304eaaf47a6e9dc3200297cdb`
+activated in unchanged PID 59723, and an exact `SIGKILL` recovered the committed
+revision in PID 59849 without replacing the compositor. Boot, activation, and
+recovered boot returned commit/submit pairs 1/3, 14/11, and 20/17. All three
+events came from DRM VBlank callbacks with monotonic kernel timestamps. The
+VirtIO driver reported output sequence zero, which is retained as driver
+metadata rather than replaced by a synthetic value. Recovery frames were
+observed before initial boot and between dead/restarted hosts; the compatibility
+surface mapped at `(280, 140)`, and durable authority matched the supervisor
+pointer.
+
+The nested regression still passes on the ARM64 Ubuntu host:
+`linux_nested_compositor_passed` activated in PID 1816195, recovered in PID
+1816390, and produced `nested_backend_submit` pairs 1/983, 13/992, and 18/1020.
+In the Debian VM,
+`cargo test --workspace --all-features --lib --bins --tests --locked` passes all
+105 non-documentation tests and strict all-feature/all-target workspace Clippy
+passes with warnings denied. The NDK 29 native-Clang
+`aarch64-linux-android` release check with `gate-strict` passes. Formatting,
+ShellCheck, `git diff --check`, and locked direct/nested builds pass. No raw VM,
+render, or log artifact was added to Git.
+
+**Failures and fixes:** The first full verifier expired while `linux-run` was
+still rebuilding GPUI; increasing only that bounded startup wait fixed the
+harness. The next boot armed successfully but GPUI sent only registry/sync
+requests and timed out: direct mode flushed Wayland clients only after a
+damaged render, so the static recovery frame stranded protocol replies.
+Flushing at the backend-independent event-loop boundary fixed initialization.
+Boot then presented, but the first revision swap timed out after arming because
+no-damage compositor cycles withheld Wayland frame callbacks and GPUI could not
+schedule its next commit. Sending frame callbacks on those paced no-damage
+cycles fixed activation without weakening the fence; acceptance still waits
+for a later damaged frame's VBlank.
+
+The VM software stack reports no `EGL_WL_bind_wayland_display`; the compositor
+records that warning and continues through its advertised SHM path, which the
+real GPUI host successfully uses. An attempted verifier assertion for early
+QEMU keyboard/tablet `DeviceAdded` log messages was rejected: the backend and
+seat initialize, but those callbacks were not emitted before the recovery
+frame, and this gate injects no physical input. The code retains device logging,
+while actual libinput event delivery remains an explicit later gate rather than
+being inferred.
+
+**Decision:** The direct Debian VM functional presentation gate is complete.
+`drm_page_flip` is valid compositor-owned VM evidence and is materially stronger
+than nested submission, but it is not a physical latency claim. Keep the direct
+dependencies feature-gated so ordinary Linux/Android builds do not acquire
+system seat/DRM requirements. Keep seat, KMS, and platform handles entirely in
+trusted Rust; Luau continues to see only Scene and provider capabilities.
+
+**Open risks / next gate:** Package this path as the Debian VM's boot session:
+systemd ordering for compositor/provider/supervisor, logind active-VT ownership,
+system-managed shell credentials, and recovery without an SSH-launched seatd
+session. Add deterministic cursor rendering and injected keyboard/pointer/touch
+evidence there. Native text editing/IME, clipboard, accessibility, hotplug,
+multiple outputs, XWayland, suspend/resume, and physical-device performance
+remain open; no VM result completes those gates.

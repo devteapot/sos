@@ -1,8 +1,11 @@
 mod control;
+#[cfg(feature = "direct-backend")]
+mod direct;
 mod handlers;
 mod input;
 pub mod policy;
 mod state;
+#[cfg(feature = "nested-backend")]
 mod winit;
 
 use std::{collections::BTreeMap, env, path::PathBuf};
@@ -18,6 +21,8 @@ pub struct CompositorData {
     state: SosCompositor,
     display_handle: DisplayHandle,
     loop_signal: LoopSignal,
+    #[cfg(feature = "direct-backend")]
+    direct: Option<direct::DirectBackend>,
 }
 
 pub fn run() -> Result<()> {
@@ -29,7 +34,12 @@ pub fn run() -> Result<()> {
     }
     let control_socket = PathBuf::from(options.required("--control-socket")?);
     let shell_token = options.required("--shell-token")?.to_owned();
-    options.ensure_only(&["--socket", "--control-socket", "--shell-token"])?;
+    let backend = options
+        .0
+        .get("--backend")
+        .map(String::as_str)
+        .unwrap_or("nested");
+    options.ensure_only(&["--socket", "--control-socket", "--shell-token", "--backend"])?;
 
     let mut event_loop: EventLoop<CompositorData> = EventLoop::try_new()?;
     let display: Display<SosCompositor> = Display::new()?;
@@ -40,16 +50,42 @@ pub fn run() -> Result<()> {
         state,
         display_handle,
         loop_signal,
+        #[cfg(feature = "direct-backend")]
+        direct: None,
     };
     let _control_guard = control::init_control(&mut event_loop, &control_socket, shell_token)?;
-    winit::init_winit(&mut event_loop, &mut data)?;
+    let evidence: &'static str = match backend {
+        #[cfg(feature = "nested-backend")]
+        "nested" => {
+            winit::init_winit(&mut event_loop, &mut data)?;
+            "nested_backend_submit"
+        }
+        #[cfg(feature = "direct-backend")]
+        "drm" => {
+            direct::init_direct(&mut event_loop, &mut data)?;
+            "drm_page_flip"
+        }
+        #[cfg(not(feature = "nested-backend"))]
+        "nested" => bail!("nested backend was not compiled in"),
+        #[cfg(not(feature = "direct-backend"))]
+        "drm" => bail!("DRM backend was not compiled in; enable direct-backend"),
+        other => bail!("unsupported compositor backend: {other}"),
+    };
 
     println!(
-        "sos_compositor_ready wayland_display={} control_socket={} evidence=nested_backend_submit",
+        "sos_compositor_ready wayland_display={} control_socket={} backend={} evidence={}",
         data.state.socket_name.to_string_lossy(),
-        control_socket.display()
+        control_socket.display(),
+        backend,
+        evidence,
     );
-    event_loop.run(None, &mut data, |_| {})?;
+    event_loop.run(None, &mut data, |data| {
+        data.state.space.refresh();
+        data.state.popups.cleanup();
+        if let Err(error) = data.display_handle.flush_clients() {
+            tracing::warn!(%error, "could not flush Wayland clients");
+        }
+    })?;
     Ok(())
 }
 
@@ -103,5 +139,5 @@ impl Options {
 }
 
 fn usage() -> &'static str {
-    "usage: sos-compositor --socket NAME --control-socket PATH --shell-token TOKEN"
+    "usage: sos-compositor --socket NAME --control-socket PATH --shell-token TOKEN [--backend nested|drm]"
 }

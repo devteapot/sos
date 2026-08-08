@@ -11,12 +11,27 @@ compositor-control-protocol.workspace = true
 nix = { version = "0.31", features = ["socket"] }
 serde_json.workspace = true
 smithay = { version = "=0.7.0", default-features = false, features = [
-    "backend_winit",
     "desktop",
     "wayland_frontend",
 ] }
+smithay-drm-extras = { version = "=0.1.0", default-features = false, optional = true }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[features]
+default = ["nested-backend"]
+direct-backend = [
+    "dep:smithay-drm-extras",
+    "smithay/backend_drm",
+    "smithay/backend_egl",
+    "smithay/backend_gbm",
+    "smithay/backend_libinput",
+    "smithay/backend_session_libseat",
+    "smithay/backend_udev",
+    "smithay/renderer_gl",
+    "smithay/use_system_lib",
+]
+nested-backend = ["smithay/backend_winit"]
 
 [[bin]]
 name = "sos-compositor"

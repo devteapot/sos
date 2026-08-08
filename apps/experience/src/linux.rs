@@ -398,8 +398,9 @@ impl LinuxExperienceHost {
                 self.last_presented_revision = Some(presented.revision_id.clone());
                 self.status = None;
                 eprintln!(
-                    "sos_revision_frame revision_id={} evidence=nested_backend_submit commit_sequence={} submit_sequence={}",
+                    "sos_revision_frame revision_id={} evidence={} commit_sequence={} submit_sequence={}",
                     presented.revision_id,
+                    presented.evidence.name(),
                     presented.commit_sequence,
                     presented.submit_sequence
                 );

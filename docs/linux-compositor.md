@@ -1,13 +1,13 @@
-# Nested SOS compositor gate
+# SOS compositor gates
 
 Date: 2026-08-09
 
-SOS now has a minimal Smithay compositor that runs nested inside an existing
-Wayland session. It is a policy and activation-fence prototype, not yet a
-direct DRM/KMS session compositor. The slice proves that Wayland can remain
-beneath the generated presentation layer while SOS owns client identity,
-surface ordering, focus, input quiescing, and the evidence used to accept a
-revision.
+SOS now has a minimal Smithay compositor with a nested development backend and
+a direct DRM/GBM/libinput backend. Both keep Wayland beneath the generated
+presentation layer while SOS owns client identity, surface ordering, focus,
+input quiescing, and revision evidence. The direct backend has passed in the
+reference Debian VM; it is not yet boot-session packaging or physical-hardware
+evidence.
 
 ## Boundary
 
@@ -25,9 +25,9 @@ authenticated shell wl_surface
     |
 sos-compositor (Smithay 0.7.0)
     | one shell + one fixed compatibility toplevel
-    | focus/input policy + nested-backend submit fence
-    v
-outer development Wayland compositor
+    | shared focus/input/activation policy
+    +-- nested winit submit -> outer development compositor
+    `-- libseat + udev + DRM/GBM + libinput -> KMS output
 ```
 
 Luau still sees only the versioned Scene and provider capabilities. It never
@@ -62,9 +62,10 @@ event thread:
 3. Request the new GPUI frame.
 4. Let the compositor tag the first later root shell commit.
 5. Keep compositor input quiesced until that shell commit participates in a
-   successful nested backend render and submit.
-6. Return the request ID, revision ID, shell-commit sequence, and backend-submit
-   sequence to the host.
+   successful nested submit, or until the exact queued direct frame produces a
+   DRM VBlank/page-flip event.
+6. Return the request ID, revision ID, shell-commit sequence, backend-submit
+   sequence, and typed evidence to the host.
 7. Only then emit the supervisor's `presented`; `confirm` still proves the host
    loop responds before `current` advances.
 
@@ -76,14 +77,14 @@ active VM is unavailable. If arming then fails, the host exits so the supervisor
 recovers the durable committed revision instead of continuing with divergent
 runtime and visible state.
 
-The compositor also advertises `wp_presentation` and completes client feedback
-at the same nested submit boundary. The SOS control event is stronger than the
-old GPUI next-frame callback because the compositor saw the shell buffer in its
-render-element state and successfully submitted the nested output. It is still
-weaker than physical presentation: the outer compositor may later discard or
-delay the nested compositor's buffer. The direct DRM backend must bind this
-same event to KMS page-flip/presentation feedback before any hardware timing
-claim.
+The compositor also advertises `wp_presentation`. In nested mode it completes
+client feedback and the SOS event after a successful winit-backend submit. That
+is stronger than GPUI's next-frame callback but the outer compositor may still
+discard or delay the buffer. In direct mode, queueing a DRM frame only records
+the candidate; `frame_submitted` on the matching VBlank completes Wayland
+feedback and emits `drm_page_flip` with the kernel sequence, timestamp, and
+clock domain. Only that event releases input and lets the host tell the
+supervisor `presented`.
 
 If the permanent host dies, its control disconnect drops an armed fence and
 releases input. The supervisor starts the committed revision in a new PID; the
@@ -134,6 +135,47 @@ The compatibility client mapped at `(280, 140)`. Mesa software rendering is
 acceptable for this functional gate and makes no GPU, latency, or physical
 display claim.
 
+## Direct Debian VM gate
+
+Run this only inside the disposable reference VM:
+
+```sh
+./tools/linux-vm/verify-direct-session
+```
+
+The verifier refuses a non-virtualized or non-Debian-13 environment. It builds
+the direct feature, records whether GDM was active, stops GDM, acquires `seat0`
+through libseat's seatd backend, and restores GDM on every exit path. It
+requires the compositor's dark recovery view to page flip before starting the
+SOS shell. It then repeats the nested gate's activation, exact host kill and
+recovery, authority agreement, and compatibility-client checks, while rejecting
+both `gpui_next_frame` and `nested_backend_submit` evidence.
+
+The ARM64 Debian 13.6/KVM run passed with revision
+`552f06968bbc5c69de3db581454f60d4303289f304eaaf47a6e9dc3200297cdb` in
+unchanged PID 59723 and recovered the committed revision in PID 59849. The
+three shell fences were:
+
+```text
+boot:      commit_sequence=1  submit_sequence=3
+activate:  commit_sequence=14 submit_sequence=11
+recovery:  commit_sequence=20 submit_sequence=17
+```
+
+All were emitted from DRM VBlank callbacks with monotonic kernel timestamps.
+The VirtIO driver reported output sequence `0`; this remains exact driver
+metadata, not a fabricated counter. The compositor presented its recovery view
+both before boot and between the killed/restarted hosts, and the separate
+compatibility client mapped at `(280, 140)`.
+
+The current direct backend is intentionally one seat, one DRM device, and one
+connected output. Its recovery view is a compositor-owned solid color. Hotplug
+requires restart; cursor rendering and injected input evidence are still open.
+The VM's software GBM/EGL stack lacks `EGL_WL_bind_wayland_display`, so the
+compositor uses its advertised `wl_shm` path for clients. None of this run is a
+physical display, latency, touch, GPU-performance, suspend/resume, or thermal
+claim.
+
 ## Source pin and remaining gate
 
 The crate pins `smithay = 0.7.0`. Its state, input, and nested-winit setup were
@@ -143,10 +185,9 @@ in `crates/sos-compositor/SMITHAY-LICENSE.txt`. See the
 [Smithay repository](https://github.com/Smithay/smithay/tree/v0.7.0) and
 [backend documentation](https://smithay.github.io/smithay/smithay/backend/index.html).
 
-The next compositor gate is the same policy on the Debian VM's direct session
-backend: logind/session ownership, DRM/GBM output, libinput seats, a permanent
-recovery view independent of GPUI, and page-flip-backed presentation evidence.
-Native Linux text editing/IME, clipboard, accessibility, touch/multi-pointer
-policy, secure session credential delivery, XWayland, and boot-to-SOS service
-packaging remain open. No nested result completes those gates or any physical
-hardware/latency gate.
+The next gate is boot-to-SOS packaging in the same VM: systemd/logind active-VT
+ownership, ordered provider/supervisor/compositor startup, system-managed shell
+credentials, and a recovery target that does not rely on an SSH-launched seatd
+session. Native Linux text editing/IME, clipboard, accessibility,
+touch/multi-pointer and cursor policy, hotplug/multiple outputs, XWayland, and
+physical-device performance remain open.

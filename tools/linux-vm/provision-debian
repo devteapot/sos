@@ -22,10 +22,14 @@ vm_dependencies=(
   jq
   libasound2-dev
   libfontconfig-dev
+  libgbm-dev
   libgit2-dev
   libglib2.0-dev
+  libinput-dev
+  libseat-dev
   libsqlite3-dev
   libssl-dev
+  libudev-dev
   libva-dev
   libvulkan1
   libwayland-dev
@@ -41,6 +45,7 @@ vm_dependencies=(
   pipewire
   pkgconf
   rustup
+  seatd
   weston
   xdg-desktop-portal
   xvfb
@@ -57,10 +62,12 @@ done
 rustup set profile minimal
 rustup toolchain install 1.95.0
 rustup default 1.95.0
+rustup component add clippy rustfmt
 cd "$vm_repo_root"
 cargo fetch --locked
 cargo build --locked \
-  -p sos-compositor --bin sos-compositor \
+  -p sos-compositor --features direct-backend --bin sos-compositor
+cargo build --locked \
   -p sos-experience --features linux-host --bin sos-experience-host \
   -p revision-supervisor --bin sos-revision-supervisor \
   -p provider-state-service --bin sos-provider-state-service \

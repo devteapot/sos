@@ -3,7 +3,7 @@
 
 use std::{collections::HashMap, ffi::OsString, sync::Arc};
 
-use compositor_control_protocol::CompositorEvent;
+use compositor_control_protocol::{CompositorEvent, PresentationEvidence};
 use nix::sys::socket::{getsockopt, sockopt::PeerCredentials};
 use smithay::{
     backend::renderer::element::RenderElementStates,
@@ -210,11 +210,20 @@ impl SosCompositor {
         let Some(presented) = self.policy.record_successful_submit(shell_rendered) else {
             return;
         };
+        self.publish_presentation(presented, PresentationEvidence::NestedBackendSubmit);
+    }
+
+    pub fn publish_presentation(
+        &mut self,
+        presented: crate::policy::QueuedRevision,
+        evidence: PresentationEvidence,
+    ) {
         let event = CompositorEvent::Presented {
             request_id: presented.request_id,
             revision_id: presented.revision_id.clone(),
             commit_sequence: presented.commit_sequence,
             submit_sequence: presented.submit_sequence,
+            evidence: evidence.clone(),
         };
         if let Some((_, events)) = &self.shell_events {
             if events.send(event).is_ok() {
@@ -223,7 +232,7 @@ impl SosCompositor {
                     revision_id = presented.revision_id,
                     commit_sequence = presented.commit_sequence,
                     submit_sequence = presented.submit_sequence,
-                    evidence = "nested_backend_submit",
+                    evidence = evidence.name(),
                     "presented armed shell revision"
                 );
             }

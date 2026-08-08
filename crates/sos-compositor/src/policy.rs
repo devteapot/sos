@@ -12,10 +12,11 @@ pub struct ArmedPresentation {
     pub revision_id: String,
     pub after_commit_sequence: u64,
     target_commit_sequence: Option<u64>,
+    queued_submit_sequence: Option<u64>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct PresentedRevision {
+pub struct QueuedRevision {
     pub request_id: u64,
     pub revision_id: String,
     pub commit_sequence: u64,
@@ -104,6 +105,7 @@ impl SurfacePolicy {
             revision_id,
             after_commit_sequence,
             target_commit_sequence: None,
+            queued_submit_sequence: None,
         });
         self.input_quiesced = true;
         Ok(after_commit_sequence)
@@ -121,27 +123,67 @@ impl SurfacePolicy {
         self.shell_commit_sequence
     }
 
-    pub fn record_successful_submit(&mut self, shell_rendered: bool) -> Option<PresentedRevision> {
-        self.submit_sequence = self.submit_sequence.saturating_add(1);
+    pub fn queued_revision(&self, shell_rendered: bool) -> Option<QueuedRevision> {
         if !shell_rendered {
             return None;
         }
-        let target_commit_sequence = self.pending.as_ref()?.target_commit_sequence?;
+        let pending = self.pending.as_ref()?;
+        if pending.queued_submit_sequence.is_some() {
+            return None;
+        }
+        Some(QueuedRevision {
+            request_id: pending.request_id,
+            revision_id: pending.revision_id.clone(),
+            commit_sequence: pending.target_commit_sequence?,
+            submit_sequence: self.submit_sequence.saturating_add(1),
+        })
+    }
+
+    pub fn record_frame_queued(&mut self, queued: Option<&QueuedRevision>) {
+        self.submit_sequence = self.submit_sequence.saturating_add(1);
+        let Some(queued) = queued else {
+            return;
+        };
+        if let Some(pending) = &mut self.pending {
+            if pending.request_id == queued.request_id
+                && pending.revision_id == queued.revision_id
+                && pending.target_commit_sequence == Some(queued.commit_sequence)
+            {
+                pending.queued_submit_sequence = Some(queued.submit_sequence);
+            }
+        }
+    }
+
+    pub fn record_presented(&mut self, queued: QueuedRevision) -> Option<QueuedRevision> {
+        let pending = self.pending.as_ref()?;
+        if pending.request_id != queued.request_id
+            || pending.revision_id != queued.revision_id
+            || pending.target_commit_sequence != Some(queued.commit_sequence)
+            || pending.queued_submit_sequence != Some(queued.submit_sequence)
+        {
+            return None;
+        }
         let pending = self
             .pending
             .take()
             .expect("pending presentation was checked");
         self.input_quiesced = false;
-        Some(PresentedRevision {
-            request_id: pending.request_id,
-            revision_id: pending.revision_id,
-            commit_sequence: target_commit_sequence,
-            submit_sequence: self.submit_sequence,
-        })
+        debug_assert_eq!(pending.revision_id, queued.revision_id);
+        Some(queued)
+    }
+
+    pub fn record_successful_submit(&mut self, shell_rendered: bool) -> Option<QueuedRevision> {
+        let queued = self.queued_revision(shell_rendered);
+        self.record_frame_queued(queued.as_ref());
+        queued.and_then(|queued| self.record_presented(queued))
     }
 
     pub fn input_quiesced(&self) -> bool {
         self.input_quiesced
+    }
+
+    pub fn shell_mapped(&self) -> bool {
+        self.shell_mapped
     }
 }
 
@@ -182,6 +224,26 @@ mod tests {
         assert_eq!(presented.revision_id, REVISION);
         assert_eq!(presented.commit_sequence, 1);
         assert_eq!(presented.submit_sequence, 3);
+        assert!(!policy.input_quiesced());
+    }
+
+    #[test]
+    fn direct_queue_does_not_release_input_until_matching_presentation() {
+        let mut policy = SurfacePolicy::default();
+        policy.register_shell(41).unwrap();
+        policy.arm(41, 7, REVISION.into()).unwrap();
+        policy.record_shell_commit();
+
+        let queued = policy.queued_revision(true).unwrap();
+        policy.record_frame_queued(Some(&queued));
+        assert!(policy.input_quiesced());
+        assert!(policy.queued_revision(true).is_none());
+        let mut wrong_frame = queued.clone();
+        wrong_frame.submit_sequence += 1;
+        assert!(policy.record_presented(wrong_frame).is_none());
+        assert!(policy.input_quiesced());
+
+        assert_eq!(policy.record_presented(queued).unwrap().request_id, 7);
         assert!(!policy.input_quiesced());
     }
 
