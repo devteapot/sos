@@ -12,7 +12,7 @@ separate system-software operation, not an experience mutation tier.
 The `revision-supervisor` crate now owns these operations:
 
 - install a content-addressed revision containing Luau source, durable state,
-  state schema, and required experience-API version;
+  state schema, required experience-API version, and bounded sidecar assets;
 - verify every file's byte length and SHA-256 before activation;
 - keep the active host process independent from revision contents;
 - ask that stable host to prepare a candidate while the accepted scene remains
@@ -31,23 +31,27 @@ ROOT/
     manifest.json
     source.luau
     state.json
+    assets/
+      <sha256>.svg|png|jpg|webp|font|wgsl
   run/
     supervisor.sock
 ```
 
 There is deliberately no `experience` executable or per-revision argument list.
-Format version 2 hashes the state schema, experience-API version, source
-identity, and state identity. Installation writes and `fsync`s a private staging
+Format version 3 hashes the state schema, experience-API version, source,
+state, and sorted asset ID/kind/file identities. Installation writes and `fsync`s a private staging
 directory, changes its files to read-only, renames it into `revisions/`, and
 `fsync`s the parent. `current` is replaced with an atomic relative-symlink
 rename followed by a directory `fsync`.
 
-Scene ABI v2 revisions may currently declare bounded SVG bytes inside
-`source.luau`. Those bytes therefore participate in the verified source hash;
-the Luau runtime separately validates and content-addresses them before the
-candidate can commit. A future manifest format must move larger fonts/images
-and validated shader modules into individually hashed sidecar files. The
-supervisor does not claim that sidecar format yet.
+Scene ABI v3 revisions may retain small SVG declarations inside `source.luau`
+or use individually hashed `svg`, `png`, `jpeg`, `webp`, `font`, and WGSL
+`shader` sidecars. Installation enforces 64 assets, 4 MiB per asset, and 16 MiB
+total; rejects active/external SVG content and malformed file signatures; and
+makes the files and asset directory read-only. The runtime re-verifies the
+manifest hashes and formats before a fresh candidate VM can reference an image
+or load a font. Shader bytes do not acquire GPU authority until the permanent
+host exposes a separate safe paint operation.
 
 ## Permanent host protocol
 
@@ -85,7 +89,8 @@ SUPERVISOR=target/debug/sos-revision-supervisor
 ROOT=/tmp/sos-revisions
 
 $SUPERVISOR install --root "$ROOT" --source experience.luau \
-  --state state.json --schema 1 --api 2
+  --state state.json --schema 1 --api 3 \
+  --asset hero:png:hero.png --asset display:font:Display.otf
 $SUPERVISOR bootstrap --root "$ROOT" --revision <initial-revision-id>
 $SUPERVISOR serve --root "$ROOT" --host-executable /usr/libexec/sos-experience-host
 $SUPERVISOR activate --root "$ROOT" --revision <candidate-revision-id>
@@ -97,8 +102,8 @@ ID; see [`coordinated-activation.md`](coordinated-activation.md).
 
 ## Evidence
 
-`cargo test -p revision-supervisor --all-targets` passes 22 integration tests.
-Twelve supervisor tests cover executable-free revision identity, API-version
+`cargo test -p revision-supervisor --all-targets` runs the supervisor and
+coordinator integration suites. Supervisor tests cover executable-free revision identity, API-version
 binding, read-only storage, concurrent atomic pointer reads, candidate
 rejection, preparation timeout, failures before and immediately after
 presentation, same-PID activation, host restart on the committed revision, and
@@ -118,9 +123,9 @@ still needs to join that real GPUI host to this external supervisor protocol.
   probe. The AOSP GPUI shell still needs to implement this transport around its
   real Luau worker and compositor frame callback.
 - The manifest and journal remain unsigned.
-- Revision assets are executable today only as bounded declarations inside the
-  hashed Luau source; individually hashed sidecar asset files are not yet part
-  of format 2.
+- The Android harness consumes the same runtime asset set, but the AOSP adapter
+  must still carry the supervisor-provided revision directory through its
+  production IPC instead of the current in-process activation harness.
 - Host process descendants are not yet in a cgroup or capability sandbox.
 - An actual compositor-present fence must replace the prototype host's
   `presented` assertion.

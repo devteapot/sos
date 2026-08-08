@@ -5,10 +5,11 @@ long-lived experience language; Rust/GPUI is the permanent execution substrate.
 An experience revision contains source, state migrations, and eventually typed
 assets, but never a native executable.
 
-The prototype deliberately broke the original `UiNode` catalog. API version 2
+The prototype deliberately broke the original `UiNode` catalog. API version 3
 uses orthogonal scene facets so an agent can combine layout, content, paint,
 interaction, animation, and semantics on the same retained node. There is no
-version-1 compatibility decoder. Host upgrades remain separate system updates.
+compatibility decoder for the catalog ABI or Scene ABI v2. Host upgrades remain
+separate system updates while the contract is intentionally fluid.
 
 ## Module contract
 
@@ -16,7 +17,7 @@ Every module declares the exact scene API it emits:
 
 ```luau
 return {
-    api_version = 2,
+    api_version = 3,
     state_version = 1, -- optional; defaults to 1
     assets = { -- optional immutable, revision-scoped assets
         mark = { kind = "svg", data = "<svg ...>...</svg>" },
@@ -86,6 +87,12 @@ layout = {
     max_height = 320,
     aspect_ratio = 1.777,
     position = { x = 24, y = 40 }, -- retained absolute placement
+    program = { -- fractions of the containing block, executed by the host
+        measure_width = 0.75,
+        measure_height = 0.4,
+        arrange_x = 0.125,
+        arrange_y = 0.1,
+    },
     clip_bounds = true,
     grow = true,
     align = "start" | "center" | "end",
@@ -96,8 +103,10 @@ layout = {
 Layout is host-owned and runs in GPUI. Luau supplies retained constraints and
 placements; it is not called once per primitive during a frame. `position`
 removes a node from its parent's flow while preserving a host-owned retained
-element. This is the first custom-layout escape below row/column composition;
-validated measure/arrange programs remain future work.
+element. `program` is a bounded responsive measure/arrange program: finite
+fractions in `[-4, 4]` are retained and evaluated by GPUI/Taffy against the
+current containing block. It composes with min/max and aspect constraints
+without a high-frequency Luau callback.
 
 ### Content
 
@@ -119,14 +128,18 @@ content = {
 ```
 
 `text_session` is a host-owned editing session and requires a stable node ID.
-`album-orbit` remains a built-in test asset. A module may also declare up to 64
-SVG assets of 256 KiB each. The runtime validates them, rejects scripts,
+`album-orbit` remains a built-in test asset. A module may also declare bounded
+inline SVG assets. The runtime validates them, rejects scripts,
 external references, doctypes/entities, and foreign objects, hashes their
 bytes, and exposes only a content-addressed host path after candidate commit.
-Old revision assets are removed from the active registry. Arbitrary paths and
-URLs remain rejected. Sidecar asset files in the supervisor bundle are not yet
-wired to the Android worker; the current executable asset form is inline in the
-Luau source revision.
+Supervisor manifest format 3 additionally packages `svg`, `png`, `jpeg`,
+`webp`, `font`, and validated WGSL `shader` sidecars with stable IDs and
+individual byte-length/SHA-256 identities. The runtime re-verifies them and
+admits them to the same candidate asset set; images enter the host asset source
+and fonts enter GPUI's text system. A glyph run selects a loaded font with
+`font_family`. Shader files are accepted revision resources, not executable
+paint operations yet. Old revision assets are removed from the active registry.
+Arbitrary paths and URLs remain rejected.
 
 ### Paint and interaction
 
@@ -158,6 +171,9 @@ Paint and hit testing are facets of any node, not a `canvas` escape-hatch type:
     },
     interaction = {
         tap_action = "select_flow", -- optional whole-node action
+        pointer_action = "pointer_sample",
+        multi_pointer_action = "transform_gesture",
+        capture = "none" | "pointer" | "surface",
         hit_regions = {{
             id = "note-1", x = 32, y = 330, width = 130, height = 54,
             press_action = "note_press",
@@ -175,11 +191,15 @@ Paint and hit testing are facets of any node, not a `canvas` escape-hatch type:
 Coordinates are node-local logical pixels. Paths are filled when `width` is
 omitted and stroked otherwise. Layers recursively compose bounded paint with a
 rectangular clip, affine transform, and opacity; GPUI shapes glyph runs in the
-host rather than in Luau. Pointer/gesture events carry `action`, `target`, `x`,
-`y`, `delta_x`, `delta_y`, `velocity_x`, `velocity_y`, and
-`phase = "start" | "update" | "end"`. The revision owns geometry, regions,
-drag state, and gesture meaning. The host owns capture and bounded gesture
-recognition. Multi-pointer gestures are not implemented yet.
+host rather than in Luau. Compatibility gesture events carry `action`,
+`target`, coordinates, deltas, velocities, and `phase = "start" | "update" |
+"end"`. `pointer_action` exposes the Android pointer stream before GPUI maps it
+to mouse/scroll: `phase = "down" | "move" | "up" | "cancel"` plus
+`pointer_id`, `pointer_count`, and pressure. `multi_pointer_action` adds a
+host-derived centroid, scale, and rotation for the first two captured pointers.
+`pointer` capture follows one pointer outside the node; `surface` also assigns
+subsequent pointers to that surface. The revision owns geometry and gesture
+meaning while the host owns bounded routing and capture lifetime.
 
 For the SM-A336B audit, keep a low-level paint node's complete initial draggable
 region at local `y <= 400`. This is a measured viewport constraint, not a
@@ -191,7 +211,7 @@ permanent layout rule.
 animation = { kind = "pulse" | "fade_in", duration_ms = 1200, loop = true }
 
 semantics = {
-    role = "button" | "image" | "text_field" | "header" | "status",
+    role = "button" | "image" | "text_field" | "header" | "status" | "scroll_area",
     label = "Pause music",
     value = "Playing", -- optional
     hint = "Double tap to change playback", -- optional
@@ -200,18 +220,26 @@ semantics = {
 
 Every semantic node requires a stable `id`. The host flattens these facets into
 a platform-neutral semantic tree containing role, label, value, hint, bounds,
-hierarchy, editability, and actions. Android currently adapts that tree to real
-virtual `AccessibilityNodeInfo` descendants with accessibility focus, click,
-editable focus, and set-text actions. A future native SOS environment keeps the
-same semantic tree and replaces only this Android adapter. Scroll semantics,
-selection ranges, and complete marked-text/IME behavior still need host work;
-none are reasons to move an experience to Rust.
+hierarchy, editability, and actions. Android adapts that tree to real virtual
+`AccessibilityNodeInfo` descendants with accessibility focus, click, editable
+focus, set-text, UTF-16 selection, copy/cut/paste, and forward/backward scroll
+actions. A `scroll_y` node automatically publishes its offset, range, viewport,
+and moving descendant bounds to TalkBack.
+
+`text_session` uses a host-owned Android `InputConnection`. Commit,
+set-composing-text/region, finish-composition, deletion, selection, printable
+key events, and editor submission carry the complete text, UTF-16 selection,
+and marked range into the keyed GPUI editor. JNI updates wake a host frame, and
+the containing scroll area receives the IME inset so the focused field can be
+revealed. A future native SOS environment keeps this semantic/editing contract
+and replaces the Android adapter only if it also replaces Android's TalkBack
+and input-method services.
 
 ## Validation and authority boundary
 
 Before presentation the host enforces, among other checks:
 
-- exact module `api_version = 2`;
+- exact module `api_version = 3`;
 - 2,048 scene nodes, depth 32, and 256 children per node;
 - 4,096 recursively counted paint operations, depth 16, 8,192 path points,
   256 glyph runs, and 256 hit regions per node;
@@ -220,6 +248,8 @@ Before presentation the host enforces, among other checks:
 - unique IDs and stable IDs for interactive, animated, semantic, and
   text-session nodes;
 - a 16 MiB VM limit and fixed render/update time budgets.
+- at most 64 revision assets, 4 MiB each and 16 MiB total, with checks repeated
+  by the supervisor and runtime.
 
 Luau receives model/state values and emits scene/effect values. It never
 receives a GPUI context, raw pointer, filesystem, network socket, provider
@@ -228,14 +258,14 @@ even as scene expressiveness grows.
 
 ## Next integration work
 
-Version 2 now includes bounded clips/transforms/layers, host-shaped glyph runs,
-retained min/max/aspect/absolute placement, drag/tap/double-tap/long-press/swipe
-events, real Android virtual accessibility nodes, and revision-scoped SVGs.
-The next depth is richer path/clip primitives, validated host-executed
-measure/arrange programs, explicit pointer-capture policy and multi-pointer
-gestures, declarative animation timelines, accessible scrolling/selection,
-complete composition/marked-text input, and supervisor-packaged sidecar fonts,
-images, and later validated shader modules.
+Version 3 includes bounded clips/transforms/layers, host-shaped glyph runs and
+revision fonts, retained responsive layout programs, raw multi-pointer routing
+with capture policy, accessible scrolling/selection, complete Android marked
+text transport, and supervisor-packaged sidecars. Further depth should focus on
+richer path/clip primitives, declarative animation timelines, more than the
+current two-pointer transform recognizer, platform conformance across IME and
+accessibility implementations, and a safe shader paint operation for already
+validated shader assets.
 
 The key execution rule is retained: Luau builds or updates bounded structures;
 Rust/GPUI performs frame-critical layout, paint, animation, text, and input.

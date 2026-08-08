@@ -2,7 +2,7 @@
 
 > Historical gate: this report describes the original catalog-shaped UI IR.
 > The active contract is the breaking, node-type-free
-> [Scene ABI v2](experience-api.md); the measurements below remain historical
+> [Scene ABI v3](experience-api.md); the measurements below remain historical
 > evidence for the mutation loop.
 
 ## Result

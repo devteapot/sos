@@ -889,3 +889,102 @@ coalescing, and real TalkBack/switch/Voice Access action testing. Finish marked
 text/IME, upgrade the supervisor manifest for sidecar fonts/images/shaders, and
 replace lexical SVG screening with a production asset compiler. The VM remains
 prototype isolation, not a credential trust boundary.
+
+## 2026-08-08 — Integrate Scene ABI v3 layout, pointer, platform, and asset depth
+
+**Goal:** Close the remaining integration gaps without restoring native
+experience promotion: responsive host-executed layout, explicit multi-pointer
+capture, actionable scroll/edit semantics, complete Android composition, and
+supervisor-owned image/font/shader sidecars.
+
+**Changed:** Scene ABI v3 adds a bounded retained layout program whose measure
+and arrange fractions are evaluated by GPUI/Taffy against the containing block;
+Luau does not run during frame layout. Pointer events now carry stable Android
+pointer IDs, count, pressure, phase, and per-pointer velocity. The Rust router
+implements `none`, per-pointer, and whole-surface capture plus a bounded
+two-pointer centroid/scale/rotation event. Because `NativeActivity` bypasses
+Java `dispatchTouchEvent`, the repository now vendors GPUI Mobile commit
+`1d3ec2a1d14a63b74d1f4269340441d4eeada27a` and observes the NDK stream before
+its legacy mouse/scroll mapping. The host input queue is bounded and coalesces
+only replaceable move/update samples.
+
+Android semantics now publish scroll areas, offsets/ranges/viewports, moving
+descendant bounds, UTF-16 selection and marked ranges. Virtual nodes implement
+selection, set-text, copy/cut/paste, and forward/backward scroll actions. A
+host-owned `InputConnection` implements committed and composing text/regions,
+finish, deletion, selection, printable key events, editor submission, and
+bounded complete-state delivery to the keyed GPUI editor. JNI queues explicitly
+wake the host. IME insets extend the scroll content and focused editors are
+revealed above the keyboard.
+
+Supervisor manifest format 3 stores sorted asset ID/kind/file identities inside
+the revision digest and content-addresses read-only SVG/PNG/JPEG/WebP/font/WGSL
+sidecars. Limits are 64 assets, 4 MiB each, and 16 MiB total. Both supervisor
+and runtime validate formats and SHA-256; the fresh candidate VM receives the
+verified set, Android exposes images through its asset source, and GPUI loads
+revision fonts for `font_family` glyph runs. WGSL remains inert data until a
+separate safe shader paint operation exists. The API, vision, runtime,
+supervisor, README, bundled Luau sources, fixtures, and evaluator guidance now
+name v3. Both readers reject non-regular files and oversized metadata before
+allocating sidecar bytes.
+
+**Evidence:** `cargo test --workspace --all-targets --locked` passed the full
+workspace suite; after adding a host-buildable router test, 91 tests pass,
+including 26 vendored GPUI Mobile tests, the two-pointer 90-degree transform/
+capture lifecycle, 15 supervisor tests, and an end-to-end supervisor-directory
+to runtime image-sidecar test. `cargo clippy --workspace --all-targets --locked
+-- -D warnings` passed. The 14,031-byte Android-exit source validates as 22
+nodes, one text session, two images, one paint node, and six semantics. The
+strict NDK 29/Java 17 `./tools/sosctl m1-build` and Gradle package completed.
+
+The final installed APK
+`artifacts/sos-experience-1ea2d963f8b7-dirty.apk` is 36,848,749 bytes with
+SHA-256 `15d31d9a2025dd511b68fa6a7cdef61585146554d78e2916c5a1e196b2a4bd40`.
+It cold-launched on the Samsung SM-A336B/API 35 in 1.467 seconds as PID 10742;
+the Luau worker initialized in 15.059 ms and published five semantic nodes.
+A physical tap on the revision asset emitted raw pointer down/up with ID 0,
+count 1, and pressure 1.0/0.0, then committed both ordered events and left
+`last_gesture = "Pointer up · id 0 · 1 active"`. The deterministic router test
+supplies the two-pointer coverage that ADB cannot synthesize.
+
+The final Samsung keyboard action emitted `kind=compose selection=16:16
+marked=15:16`; the host persisted the changed multilingual draft immediately at
+authority revision 93 with source SHA-256
+`0763d941db8f90a0e262b65a2fa424de674b9bfb65743ae33f188b279526d82d`.
+`dumpsys input_method` identified `GpuiImeBridge$BridgeConnection` as the served
+connection. `uiautomator` exposed a real `android.widget.ScrollView` and the
+focused editor at `[79,1262][1069,1408]`, above the IME after a measured 358.4
+logical-pixel inset. The untracked capture `/tmp/sos-scene-abi-v3-ime.png` is
+169,151 bytes with SHA-256
+`e84d1314247b10b1ee882591225e867e2558b35d9be66ea66f431821c0141bdb`.
+
+**Failures and fixes:** Java activity touch interception saw no native motion
+because Android delivers this app's input through the NDK queue; a narrow
+vendored pre-compatibility hook replaced that rejected approach. A scroll-wheel
+handler on generic scene surfaces prevented the GPUI ancestor from scrolling;
+removing its `prevent_default` restored physical scroll. Semantic bounds were
+initially adjusted twice even though GPUI prepaint had already applied the
+scroll transform; using measured child bounds directly fixed the tree. Samsung
+printable keys and composition states reached JNI but remained queued until
+another input; explicit main-thread frame requests fixed delivery. Finally, a
+focus timer ran before the IME inset and the editor stayed obscured; observing
+decor IME insets, adding a host spacer, subtracting the obscured viewport, and
+retrying after layout produced the visible field.
+
+**Decision:** Scene ABI v3 is the only active experience contract. These
+capabilities belong to the versioned permanent host boundary; they do not
+justify per-experience Rust promotion. Android accessibility nodes and its
+`InputConnection` remain necessary while Android provides TalkBack, switch/
+voice access, automation, and keyboards. A future native SOS system may replace
+those adapters only by supplying equivalent system services, while keeping the
+platform-neutral semantics and edit-session contracts.
+
+**Open risks / next gate:** Run real TalkBack, Switch Access, and Voice Access
+action conformance rather than relying only on the virtual-node tree and routed
+actions. Exercise two physical fingers and more OEM IMEs in addition to the
+deterministic router and Samsung composition gates. Replace lexical media/SVG/
+WGSL admission with production decoders/compilers, sign manifests and journals,
+and carry the supervisor revision directory through the eventual AOSP host IPC.
+Layout v3 is responsive to containing-block size and composes with intrinsic
+GPUI layout; add bounded child-intrinsic query/opcode forms only when an actual
+agent layout cannot be expressed with the current retained constraints.

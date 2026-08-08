@@ -10,12 +10,13 @@ This is a tactical latency decision, not a redefinition of the project. SOS's
 [north star](vision.md) permits the agent to invent component types, layout,
 geometry, hit testing, navigation, and native behavior without a closed catalog.
 The original bounded widget tree was the initial contract used to learn
-quickly. It has now been replaced by Scene ABI v2, whose layout, content,
+quickly. It has now been replaced by Scene ABI v3, whose layout, content,
 paint, interaction, animation, and semantics facets can be combined without a
 node-type catalog. The executor now also supports nested paint layers,
-clips/transforms, glyph runs, retained placement constraints, richer gestures,
-virtual Android accessibility nodes, and revision SVG assets; it must still
-gain deeper low-level capabilities.
+clips/transforms, glyph runs, responsive layout programs, multi-pointer capture,
+virtual Android accessibility nodes, composing IME sessions, and supervisor
+sidecar assets; it can continue gaining low-level capabilities without a native
+experience tier.
 Agent-generated GPUI Rust is no longer an experience tier; Rust/GPUI changes
 belong to the permanent host update path.
 

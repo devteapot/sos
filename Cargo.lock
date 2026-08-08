@@ -1931,7 +1931,6 @@ dependencies = [
 [[package]]
 name = "gpui-mobile"
 version = "0.1.0"
-source = "git+https://github.com/itsbalamurali/gpui-mobile.git?rev=1d3ec2a1d14a63b74d1f4269340441d4eeada27a#1d3ec2a1d14a63b74d1f4269340441d4eeada27a"
 dependencies = [
  "android-activity",
  "android_logger",
@@ -3950,7 +3949,10 @@ dependencies = [
 name = "revision-supervisor"
 version = "0.1.0"
 dependencies = [
+ "experience-ir",
  "provider-state-service",
+ "providers-fake",
+ "runtime-luau",
  "serde",
  "serde_json",
  "service-protocol",

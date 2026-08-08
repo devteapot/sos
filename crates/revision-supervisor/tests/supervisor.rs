@@ -13,8 +13,10 @@ use std::{
 };
 
 use revision_supervisor::{
-    Error, HostCommand, RevisionInput, RevisionStore, RevisionSupervisor, SupervisorEvent,
+    Error, HostCommand, RevisionAssetInput, RevisionInput, RevisionStore, RevisionSupervisor,
+    SupervisorEvent,
 };
+use runtime_luau::{load_revision_assets, LuauRuntime};
 use serde_json::json;
 use tempfile::TempDir;
 
@@ -41,6 +43,7 @@ fn install_api(store: &RevisionStore, source: &str, experience_api_version: u32)
             state: json!({"source": source}),
             schema_version: 1,
             experience_api_version,
+            assets: Vec::new(),
         })
         .unwrap()
         .manifest
@@ -79,6 +82,103 @@ fn installs_verified_read_only_luau_revisions_without_native_payloads() {
     assert!(!revision.directory.join("experience").exists());
     let duplicate = install(&store, "return { render = true }");
     assert_eq!(duplicate, revision_id);
+}
+
+#[test]
+fn installs_content_addressed_revision_sidecars_and_rejects_drift() {
+    let directory = TempDir::new().unwrap();
+    let store = RevisionStore::open(directory.path()).unwrap();
+    let revision = store
+        .install(RevisionInput {
+            source: b"return { api_version = 3 }".to_vec(),
+            state: json!({}),
+            schema_version: 1,
+            experience_api_version: 3,
+            assets: vec![
+                RevisionAssetInput {
+                    id: "hero".into(),
+                    kind: "svg".into(),
+                    bytes: br#"<svg xmlns="http://www.w3.org/2000/svg"><path d="M0 0"/></svg>"#
+                        .to_vec(),
+                },
+                RevisionAssetInput {
+                    id: "tone".into(),
+                    kind: "shader".into(),
+                    bytes: b"@fragment fn fragment_main() {}".to_vec(),
+                },
+            ],
+        })
+        .unwrap();
+    assert_eq!(revision.manifest.assets.len(), 2);
+    assert_eq!(revision.manifest.assets[0].id, "hero");
+    let asset = revision
+        .directory
+        .join(&revision.manifest.assets[0].file.path);
+    assert_eq!(
+        fs::metadata(&asset).unwrap().permissions().mode() & 0o777,
+        0o444
+    );
+
+    fs::set_permissions(&asset, fs::Permissions::from_mode(0o644)).unwrap();
+    fs::write(&asset, b"changed").unwrap();
+    assert!(matches!(
+        store.verify(&revision.manifest.revision_id),
+        Err(Error::InvalidRevision(_))
+    ));
+}
+
+#[test]
+fn supervisor_sidecar_package_enters_the_runtime_candidate_asset_set() {
+    let directory = TempDir::new().unwrap();
+    let store = RevisionStore::open(directory.path()).unwrap();
+    let source = br#"return {
+        api_version = 3,
+        render = function()
+            return { id = "hero", content = { kind = "image", asset = "hero" } }
+        end,
+    }"#;
+    let revision = store
+        .install(RevisionInput {
+            source: source.to_vec(),
+            state: json!({}),
+            schema_version: 1,
+            experience_api_version: 3,
+            assets: vec![RevisionAssetInput {
+                id: "hero".into(),
+                kind: "png".into(),
+                bytes: b"\x89PNG\r\n\x1a\nfixture".to_vec(),
+            }],
+        })
+        .unwrap();
+    let sidecars = load_revision_assets(&revision.directory).unwrap();
+    let runtime =
+        LuauRuntime::compile_with_assets(std::str::from_utf8(source).unwrap(), sidecars).unwrap();
+    let scene = runtime
+        .render(&providers_fake::snapshot(), &json!({}))
+        .unwrap();
+    let experience_ir::Content::Image(image) = scene.root.content.unwrap() else {
+        panic!("expected sidecar-backed image")
+    };
+    assert!(image.asset.starts_with("sos/revisions/"));
+    assert!(image.asset.ends_with(".png"));
+}
+
+#[test]
+fn rejects_executable_or_remote_sidecar_content() {
+    let directory = TempDir::new().unwrap();
+    let store = RevisionStore::open(directory.path()).unwrap();
+    let result = store.install(RevisionInput {
+        source: b"return { api_version = 3 }".to_vec(),
+        state: json!({}),
+        schema_version: 1,
+        experience_api_version: 3,
+        assets: vec![RevisionAssetInput {
+            id: "bad".into(),
+            kind: "svg".into(),
+            bytes: br#"<svg><script>fetch('https://example.com')</script></svg>"#.to_vec(),
+        }],
+    });
+    assert!(matches!(result, Err(Error::InvalidRevision(_))));
 }
 
 #[test]

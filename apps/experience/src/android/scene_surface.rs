@@ -8,7 +8,7 @@ use gpui::{
     TextRun,
 };
 
-use super::ExperienceHost;
+use super::{pointer_input, ExperienceHost};
 
 enum PreparedPaint {
     FillBounds {
@@ -116,9 +116,12 @@ pub(super) fn render(
 ) -> AnyElement {
     let bounds = Rc::new(RefCell::new(None::<Bounds<Pixels>>));
     let prepaint_bounds = bounds.clone();
+    let prepaint_id = node_id.clone();
+    let prepaint_interaction = interaction.clone();
     let prepared = canvas(
         move |canvas_bounds, window, _| {
             *prepaint_bounds.borrow_mut() = Some(canvas_bounds);
+            pointer_input::record_surface(&prepaint_id, canvas_bounds, &prepaint_interaction);
             prepare(operations, window, Affine::identity(), 1.0)
         },
         move |canvas_bounds, operations, window, cx| {
@@ -180,10 +183,6 @@ pub(super) fn render(
             let _ = move_host.update(app, |host, cx| {
                 host.scene_surface_move(move_id.clone(), &move_spec, x, y, cx)
             });
-        })
-        .on_scroll_wheel(|_, window, app| {
-            window.prevent_default();
-            app.stop_propagation();
         })
         .on_mouse_up(
             MouseButton::Left,

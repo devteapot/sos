@@ -1,4 +1,12 @@
-use std::{cell::RefCell, ops::Range};
+use std::{
+    cell::RefCell,
+    collections::VecDeque,
+    ops::Range,
+    sync::{
+        atomic::{AtomicBool, AtomicU32, Ordering},
+        Mutex, OnceLock,
+    },
+};
 
 use experience_ir::MAX_TEXT_BYTES;
 use gpui::{
@@ -10,11 +18,107 @@ use gpui::{
 };
 use unicode_segmentation::UnicodeSegmentation as _;
 
-use super::ExperienceHost;
+use super::{accessibility, ExperienceHost};
+use gpui_mobile::android::jni::{activity, find_app_class, get_string, with_env};
+use jni::objects::{JObject, JValue};
 
 thread_local! {
     static ACTIVE_INPUT: RefCell<Option<String>> = const { RefCell::new(None) };
     static PENDING_TEXT: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+}
+
+#[derive(Clone, Debug)]
+pub struct ImeState {
+    pub node_id: String,
+    pub text: String,
+    pub selection_start: usize,
+    pub selection_end: usize,
+    pub marked: Option<Range<usize>>,
+    pub kind: String,
+}
+
+pub struct ImeApplyOutcome {
+    pub changed: bool,
+    pub state_key: String,
+    pub value: String,
+    pub submit_action: Option<String>,
+}
+
+static IME_STATES: OnceLock<Mutex<VecDeque<ImeState>>> = OnceLock::new();
+static IME_INSET_BITS: AtomicU32 = AtomicU32::new(0);
+static IME_INSET_CHANGED: AtomicBool = AtomicBool::new(false);
+
+pub fn ime_inset() -> f32 {
+    f32::from_bits(IME_INSET_BITS.load(Ordering::Acquire))
+}
+
+pub fn take_ime_inset_changed() -> bool {
+    IME_INSET_CHANGED.swap(false, Ordering::AcqRel)
+}
+
+pub fn take_ime_states() -> Vec<ImeState> {
+    IME_STATES
+        .get_or_init(|| Mutex::new(VecDeque::new()))
+        .lock()
+        .expect("IME state lock")
+        .drain(..)
+        .collect()
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn Java_dev_gpui_mobile_GpuiActivity_nativeOnImeState(
+    _env: *mut std::ffi::c_void,
+    _class: *mut std::ffi::c_void,
+    target: *mut std::ffi::c_void,
+    text: *mut std::ffi::c_void,
+    selection_start: i32,
+    selection_end: i32,
+    marked_start: i32,
+    marked_end: i32,
+    kind: *mut std::ffi::c_void,
+) {
+    let _ = with_env(|env| {
+        let target = JObject::from_raw(env, target as jni::sys::jobject);
+        let text = JObject::from_raw(env, text as jni::sys::jobject);
+        let kind = JObject::from_raw(env, kind as jni::sys::jobject);
+        let node_id = get_string(env, &target);
+        if node_id.is_empty() {
+            return Ok(());
+        }
+        let marked = (marked_start >= 0 && marked_end >= marked_start)
+            .then_some(marked_start as usize..marked_end as usize);
+        let state = ImeState {
+            node_id,
+            text: get_string(env, &text),
+            selection_start: selection_start.max(0) as usize,
+            selection_end: selection_end.max(0) as usize,
+            marked,
+            kind: get_string(env, &kind),
+        };
+        let mut states = IME_STATES
+            .get_or_init(|| Mutex::new(VecDeque::new()))
+            .lock()
+            .expect("IME state lock");
+        if states.len() >= 64 {
+            states.pop_front();
+        }
+        states.push_back(state);
+        super::request_host_frame();
+        Ok(())
+    });
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn Java_dev_gpui_mobile_GpuiActivity_nativeOnImeInset(
+    _env: *mut std::ffi::c_void,
+    _class: *mut std::ffi::c_void,
+    logical_bottom: f32,
+) {
+    let inset = logical_bottom.clamp(0.0, 2_048.0);
+    IME_INSET_BITS.store(inset.to_bits(), Ordering::Release);
+    IME_INSET_CHANGED.store(true, Ordering::Release);
+    log::info!("ime_inset_changed logical_bottom={inset:.1}");
+    super::request_host_frame();
 }
 
 fn install_mobile_keyboard_callback(node_id: &str) {
@@ -95,6 +199,13 @@ pub struct NativeTextInput {
     _focus_subscriptions: Vec<Subscription>,
 }
 
+#[derive(Clone, Debug)]
+pub struct AccessibilityTextState {
+    pub value: String,
+    pub selection: Range<usize>,
+    pub marked: Option<Range<usize>>,
+}
+
 impl NativeTextInput {
     // These values are the complete immutable configuration for one keyed GPUI
     // text-input entity; grouping them would only move the same boundary.
@@ -111,14 +222,15 @@ impl NativeTextInput {
     ) -> Self {
         let focus_handle = cx.focus_handle();
         let focused = cx.on_focus(&focus_handle, window, |this, _, cx| {
-            install_mobile_keyboard_callback(&this.node_id);
-            gpui_mobile::show_keyboard();
+            this.activate_mobile_ime();
             this.notify_focus(true, cx);
         });
         let blurred = cx.on_blur(&focus_handle, window, |this, _, cx| {
+            this.deactivate_mobile_ime();
             clear_mobile_keyboard_callback(&this.node_id);
             gpui_mobile::hide_keyboard();
             this.marked_range = None;
+            accessibility::mark_state_changed();
             this.notify_focus(false, cx);
         });
         let cursor = content.len();
@@ -163,10 +275,10 @@ impl NativeTextInput {
     }
 
     pub fn activate(&self, window: &mut Window, cx: &mut Context<Self>) {
-        install_mobile_keyboard_callback(&self.node_id);
         if !self.focus_handle.is_focused(window) {
             window.focus(&self.focus_handle, cx);
-            gpui_mobile::show_keyboard();
+        } else {
+            self.activate_mobile_ime();
         }
     }
 
@@ -176,10 +288,161 @@ impl NativeTextInput {
         self.selected_range = cursor..cursor;
         self.selection_reversed = false;
         self.marked_range = None;
+        accessibility::mark_state_changed();
+        self.activate_mobile_ime();
         cx.notify();
     }
 
+    pub fn accessibility_state(&self) -> AccessibilityTextState {
+        AccessibilityTextState {
+            value: self.content.to_string(),
+            selection: self.range_to_utf16(&self.selected_range),
+            marked: self
+                .marked_range
+                .as_ref()
+                .map(|range| self.range_to_utf16(range)),
+        }
+    }
+
+    pub fn set_selection_from_accessibility(
+        &mut self,
+        start_utf16: usize,
+        end_utf16: usize,
+        cx: &mut Context<Self>,
+    ) {
+        let start = self.offset_from_utf16(start_utf16);
+        let end = self.offset_from_utf16(end_utf16);
+        self.selected_range = start.min(end)..start.max(end);
+        self.selection_reversed = start > end;
+        self.marked_range = None;
+        accessibility::mark_state_changed();
+        self.activate_mobile_ime();
+        cx.notify();
+    }
+
+    pub fn accessibility_clipboard_action(
+        &mut self,
+        action: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match action {
+            "copy" => self.copy(&Copy, window, cx),
+            "cut" => self.cut(&Cut, window, cx),
+            "paste" => self.paste(&Paste, window, cx),
+            _ => {}
+        }
+        self.activate_mobile_ime();
+    }
+
+    pub fn apply_ime_state(&mut self, state: ImeState, cx: &mut Context<Self>) -> ImeApplyOutcome {
+        log::info!(
+            "ime_state_applied node_id={} kind={} selection={}:{} marked={}",
+            self.node_id,
+            state.kind,
+            state.selection_start,
+            state.selection_end,
+            state
+                .marked
+                .as_ref()
+                .map(|range| format!("{}:{}", range.start, range.end))
+                .unwrap_or_else(|| "none".into())
+        );
+        let mut text = state.text.replace(['\r', '\n'], "");
+        if text.len() > MAX_TEXT_BYTES {
+            let mut end = MAX_TEXT_BYTES;
+            while !text.is_char_boundary(end) {
+                end -= 1;
+            }
+            text.truncate(end);
+        }
+        let changed = self.content.as_ref() != text;
+        self.content = text.into();
+        let start = self.offset_from_utf16(state.selection_start);
+        let end = self.offset_from_utf16(state.selection_end);
+        self.selected_range = start.min(end)..start.max(end);
+        self.selection_reversed = start > end;
+        self.marked_range = state.marked.map(|range| self.range_from_utf16(&range));
+        accessibility::mark_state_changed();
+        let submit_action = (state.kind == "submit")
+            .then(|| self.submit_action.clone())
+            .flatten();
+        cx.notify();
+        ImeApplyOutcome {
+            changed,
+            state_key: self.state_key.clone(),
+            value: self.content.to_string(),
+            submit_action,
+        }
+    }
+
+    fn activate_mobile_ime(&self) {
+        gpui_mobile::set_text_input_callback(None);
+        ACTIVE_INPUT.with(|active| *active.borrow_mut() = Some(self.node_id.clone()));
+        let state = self.accessibility_state();
+        let result = with_env(|env| {
+            let helper = find_app_class(env, "dev.gpui.mobile.GpuiImeBridge")?;
+            let activity = activity(env)?;
+            let node_id = env
+                .new_string(&self.node_id)
+                .map_err(|error| error.to_string())?;
+            let text = env
+                .new_string(&state.value)
+                .map_err(|error| error.to_string())?;
+            let (marked_start, marked_end) = state
+                .marked
+                .map(|range| (range.start as i32, range.end as i32))
+                .unwrap_or((-1, -1));
+            env.call_static_method(
+                &helper,
+                jni::jni_str!("activate"),
+                jni::jni_sig!("(Landroid/app/Activity;Ljava/lang/String;Ljava/lang/String;IIII)V"),
+                &[
+                    JValue::Object(&activity),
+                    JValue::Object(&node_id),
+                    JValue::Object(&text),
+                    JValue::Int(state.selection.start as i32),
+                    JValue::Int(state.selection.end as i32),
+                    JValue::Int(marked_start),
+                    JValue::Int(marked_end),
+                ],
+            )
+            .map_err(|error| {
+                env.exception_clear();
+                error.to_string()
+            })?;
+            Ok(())
+        });
+        if let Err(error) = result {
+            log::warn!("composition_ime_unavailable error={error}; using committed-text fallback");
+            install_mobile_keyboard_callback(&self.node_id);
+            gpui_mobile::show_keyboard();
+        }
+    }
+
+    fn deactivate_mobile_ime(&self) {
+        let _ = with_env(|env| {
+            let helper = find_app_class(env, "dev.gpui.mobile.GpuiImeBridge")?;
+            let activity = activity(env)?;
+            let node_id = env
+                .new_string(&self.node_id)
+                .map_err(|error| error.to_string())?;
+            env.call_static_method(
+                &helper,
+                jni::jni_str!("deactivate"),
+                jni::jni_sig!("(Landroid/app/Activity;Ljava/lang/String;)V"),
+                &[JValue::Object(&activity), JValue::Object(&node_id)],
+            )
+            .map_err(|error| {
+                env.exception_clear();
+                error.to_string()
+            })?;
+            Ok(())
+        });
+    }
+
     fn notify_change(&self, cx: &mut Context<Self>) {
+        accessibility::mark_state_changed();
         let node_id = self.node_id.clone();
         let state_key = self.state_key.clone();
         let value = self.content.to_string();
@@ -292,10 +555,11 @@ impl NativeTextInput {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        window.focus(&self.focus_handle, cx);
-        install_mobile_keyboard_callback(&self.node_id);
-        gpui_mobile::show_keyboard();
-        self.notify_focus(true, cx);
+        if self.focus_handle.is_focused(window) {
+            self.activate_mobile_ime();
+        } else {
+            window.focus(&self.focus_handle, cx);
+        }
         self.is_selecting = true;
         if event.modifiers.shift {
             self.select_to(self.index_for_mouse_position(event.position), cx);
@@ -317,6 +581,7 @@ impl NativeTextInput {
     fn move_to(&mut self, offset: usize, cx: &mut Context<Self>) {
         self.selected_range = offset..offset;
         self.selection_reversed = false;
+        accessibility::mark_state_changed();
         cx.notify();
     }
 
@@ -330,6 +595,7 @@ impl NativeTextInput {
             self.selection_reversed = !self.selection_reversed;
             self.selected_range = self.selected_range.end..self.selected_range.start;
         }
+        accessibility::mark_state_changed();
         cx.notify();
     }
 

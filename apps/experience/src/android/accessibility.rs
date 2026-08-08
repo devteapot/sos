@@ -12,6 +12,8 @@ use gpui_mobile::android::jni::{activity, find_app_class, get_string, with_env};
 use jni::objects::{JObject, JValue};
 use serde_json::{json, Value};
 
+use super::native_input::AccessibilityTextState;
+
 #[derive(Clone, Debug)]
 pub struct Action {
     pub kind: String,
@@ -21,6 +23,7 @@ pub struct Action {
 
 static BOUNDS: OnceLock<Mutex<HashMap<String, [f32; 4]>>> = OnceLock::new();
 static BOUNDS_CHANGED: AtomicBool = AtomicBool::new(true);
+static STATE_CHANGED: AtomicBool = AtomicBool::new(true);
 static ACTIONS: OnceLock<Mutex<VecDeque<Action>>> = OnceLock::new();
 
 pub fn record_bounds(id: &str, bounds: Bounds<Pixels>) {
@@ -40,8 +43,25 @@ pub fn record_bounds(id: &str, bounds: Bounds<Pixels>) {
     }
 }
 
+pub fn bounds(id: &str) -> Option<[f32; 4]> {
+    BOUNDS
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .expect("accessibility bounds lock")
+        .get(id)
+        .copied()
+}
+
 pub fn take_bounds_changed() -> bool {
     BOUNDS_CHANGED.swap(false, Ordering::AcqRel)
+}
+
+pub fn mark_state_changed() {
+    STATE_CHANGED.store(true, Ordering::Release);
+}
+
+pub fn take_state_changed() -> bool {
+    STATE_CHANGED.swap(false, Ordering::AcqRel)
 }
 
 pub fn take_action() -> Option<Action> {
@@ -59,6 +79,7 @@ fn role_name(role: SemanticRole) -> &'static str {
         SemanticRole::TextField => "text_field",
         SemanticRole::Header => "header",
         SemanticRole::Status => "status",
+        SemanticRole::ScrollArea => "scroll_area",
     }
 }
 
@@ -94,34 +115,71 @@ pub fn summary(scene: &Scene) -> String {
     parts.join("; ")
 }
 
-fn snapshot(scene: &Scene) -> Value {
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ScrollState {
+    pub offset_y: f32,
+    pub max_offset_y: f32,
+    pub bounds: [f32; 4],
+}
+
+fn snapshot(
+    scene: &Scene,
+    text: &HashMap<String, AccessibilityTextState>,
+    scroll: &HashMap<String, ScrollState>,
+) -> Value {
     fn visit(
         node: &SceneNode,
         semantic_parent: Option<&str>,
         bounds: &HashMap<String, [f32; 4]>,
+        text: &HashMap<String, AccessibilityTextState>,
+        scroll: &HashMap<String, ScrollState>,
         nodes: &mut Vec<Value>,
     ) {
         let mut next_parent = semantic_parent;
-        if let (Some(id), Some(semantic)) = (node.id.as_deref(), node.semantics.as_ref()) {
-            let value = match &node.content {
-                Some(Content::TextSession(input)) => Some(input.value.as_str()),
-                _ => semantic.value.as_deref(),
-            };
+        if let Some(id) = node
+            .id
+            .as_deref()
+            .filter(|_| node.semantics.is_some() || node.layout.scroll_y)
+        {
+            let semantic = node.semantics.as_ref();
+            let text_state = text.get(id);
+            let scroll_state = scroll.get(id).copied().unwrap_or_default();
+            let value =
+                text_state
+                    .map(|state| state.value.as_str())
+                    .or_else(|| match &node.content {
+                        Some(Content::TextSession(input)) => Some(input.value.as_str()),
+                        _ => semantic.and_then(|semantic| semantic.value.as_deref()),
+                    });
+            let selection = text_state.map(|state| state.selection.clone());
+            let marked = text_state.and_then(|state| state.marked.clone());
+            let semantic_bounds = scroll
+                .get(id)
+                .map(|state| state.bounds)
+                .or_else(|| bounds.get(id).copied())
+                .unwrap_or([0.0; 4]);
             nodes.push(json!({
                 "id": id,
                 "parent": semantic_parent,
-                "role": role_name(semantic.role),
-                "label": semantic.label,
+                "role": semantic.map(|value| role_name(value.role)).unwrap_or("scroll_area"),
+                "label": semantic.map(|value| value.label.as_str()).unwrap_or("Scrollable content"),
                 "value": value,
-                "hint": semantic.hint,
-                "bounds": bounds.get(id).copied().unwrap_or([0.0; 4]),
+                "hint": semantic.and_then(|value| value.hint.as_deref()),
+                "bounds": semantic_bounds,
                 "click_action": node.interaction.tap_action,
                 "editable": matches!(node.content, Some(Content::TextSession(_))),
+                "selection_start": selection.as_ref().map(|range| range.start),
+                "selection_end": selection.as_ref().map(|range| range.end),
+                "marked_start": marked.as_ref().map(|range| range.start),
+                "marked_end": marked.as_ref().map(|range| range.end),
+                "scrollable": node.layout.scroll_y,
+                "scroll_offset_y": scroll_state.offset_y,
+                "scroll_max_y": scroll_state.max_offset_y,
             }));
             next_parent = Some(id);
         }
         for child in &node.children {
-            visit(child, next_parent, bounds, nodes);
+            visit(child, next_parent, bounds, text, scroll, nodes);
         }
     }
 
@@ -130,12 +188,17 @@ fn snapshot(scene: &Scene) -> Value {
         .lock()
         .expect("accessibility bounds lock");
     let mut nodes = Vec::new();
-    visit(&scene.root, None, &bounds, &mut nodes);
+    visit(&scene.root, None, &bounds, text, scroll, &mut nodes);
     json!({ "summary": summary(scene), "nodes": nodes })
 }
 
-pub fn publish(scene: &Scene) -> Result<usize, String> {
-    let payload = serde_json::to_string(&snapshot(scene)).map_err(|error| error.to_string())?;
+pub fn publish(
+    scene: &Scene,
+    text: &HashMap<String, AccessibilityTextState>,
+    scroll: &HashMap<String, ScrollState>,
+) -> Result<usize, String> {
+    let payload =
+        serde_json::to_string(&snapshot(scene, text, scroll)).map_err(|error| error.to_string())?;
     let bytes = payload.len();
     with_env(|env| {
         let helper = find_app_class(env, "dev.gpui.mobile.GpuiPlatformView")?;
@@ -185,6 +248,7 @@ pub unsafe extern "C" fn Java_dev_gpui_mobile_GpuiActivity_nativeOnAccessibility
             actions.pop_front();
         }
         actions.push_back(action);
+        super::request_host_frame();
         Ok(())
     });
 }

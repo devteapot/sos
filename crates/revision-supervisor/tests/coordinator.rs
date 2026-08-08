@@ -177,6 +177,7 @@ fn install(store: &RevisionStore, source: &str, state: serde_json::Value) -> Str
             state,
             schema_version: 1,
             experience_api_version: 1,
+            assets: Vec::new(),
         })
         .unwrap()
         .manifest

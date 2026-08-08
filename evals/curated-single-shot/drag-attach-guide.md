@@ -3,7 +3,7 @@
 This is a deliberately small authoring guide for one comparison against the
 frozen raw `drag_attach` baseline. It is not a production prompt or skill.
 
-- Implement one complete Luau module with `api_version = 2`,
+- Implement one complete Luau module with `api_version = 3`,
   `render(model, state)`, and `update(model, state, event)`; do not modify the
   Rust host.
 - Use one scene node with explicit width/height, at least two `path` and two

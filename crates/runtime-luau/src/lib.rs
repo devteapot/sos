@@ -1,6 +1,8 @@
 use std::{
     cell::Cell,
     collections::HashMap,
+    fs,
+    path::{Component, Path},
     rc::Rc,
     thread,
     time::{Duration, Instant},
@@ -8,17 +10,19 @@ use std::{
 
 use experience_ir::{
     validate_scene, Align, Animation, AnimationKind, ClipRect, Content, ExperienceModel, Flow,
-    GlyphRun, HitRegion, ImageContent, Interaction, Justify, Layout, LayoutPosition, PaintOp,
-    PaintPoint, ProviderEffect, Scene, SceneEvent, SceneNode, SemanticRole, Semantics, TextContent,
-    TextSession, Transform2D, EXPERIENCE_API_VERSION, MAX_CHILDREN, MAX_EFFECTS,
-    MAX_EFFECT_PAYLOAD_BYTES, MAX_GLYPH_RUNS, MAX_HIT_REGIONS, MAX_PAINT_DEPTH, MAX_PAINT_OPS,
-    MAX_PAINT_POINTS, MAX_REVISION_ASSETS, MAX_REVISION_ASSET_BYTES, MAX_SCENE_DEPTH,
-    MAX_SCENE_NODES, MAX_STATE_BYTES, MAX_TEXT_BYTES,
+    GlyphRun, HitRegion, ImageContent, Interaction, Justify, Layout, LayoutPosition, LayoutProgram,
+    PaintOp, PaintPoint, PointerCapture, ProviderEffect, Scene, SceneEvent, SceneNode,
+    SemanticRole, Semantics, TextContent, TextSession, Transform2D, EXPERIENCE_API_VERSION,
+    MAX_CHILDREN, MAX_EFFECTS, MAX_EFFECT_PAYLOAD_BYTES, MAX_GLYPH_RUNS, MAX_HIT_REGIONS,
+    MAX_PAINT_DEPTH, MAX_PAINT_OPS, MAX_PAINT_POINTS, MAX_REVISION_ASSETS,
+    MAX_REVISION_ASSET_BYTES, MAX_REVISION_ASSET_TOTAL_BYTES, MAX_SCENE_DEPTH, MAX_SCENE_NODES,
+    MAX_STATE_BYTES, MAX_TEXT_BYTES,
 };
 use mlua::{
     chunk::{ChunkMode, Compiler},
     Error as LuaError, Function, Lua, LuaSerdeExt, RegistryKey, Table, Value, VmState,
 };
+use serde::Deserialize;
 use serde_json::{json, Value as JsonValue};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
@@ -54,6 +58,109 @@ pub struct RevisionAsset {
     pub kind: String,
     pub bytes: Vec<u8>,
     pub sha256: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RevisionAssetInput {
+    pub id: String,
+    pub kind: String,
+    pub bytes: Vec<u8>,
+}
+
+#[derive(Deserialize)]
+struct SidecarManifest {
+    format_version: u32,
+    assets: Vec<SidecarIdentity>,
+}
+
+#[derive(Deserialize)]
+struct SidecarIdentity {
+    id: String,
+    kind: String,
+    file: SidecarFileIdentity,
+}
+
+#[derive(Deserialize)]
+struct SidecarFileIdentity {
+    path: String,
+    size: u64,
+    sha256: String,
+}
+
+/// Loads and re-verifies the immutable sidecars from a supervisor revision.
+/// The returned bytes are still untrusted input and are validated again by
+/// `compile_with_assets` before they become visible to a scene.
+pub fn load_revision_assets(directory: &Path) -> Result<Vec<RevisionAssetInput>, RuntimeError> {
+    let manifest = fs::read(directory.join("manifest.json")).map_err(|error| {
+        RuntimeError::Invalid(format!("could not read revision manifest: {error}"))
+    })?;
+    let manifest: SidecarManifest = serde_json::from_slice(&manifest)
+        .map_err(|error| RuntimeError::Invalid(format!("invalid revision manifest: {error}")))?;
+    if manifest.format_version != 3 || manifest.assets.len() > MAX_REVISION_ASSETS {
+        return Err(RuntimeError::Invalid(
+            "unsupported revision sidecar manifest".into(),
+        ));
+    }
+    let mut total = 0usize;
+    let mut assets = Vec::with_capacity(manifest.assets.len());
+    for asset in manifest.assets {
+        let relative = Path::new(&asset.file.path);
+        if !asset.file.path.starts_with("assets/")
+            || relative.components().count() != 2
+            || !relative
+                .components()
+                .all(|component| matches!(component, Component::Normal(_)))
+        {
+            return Err(RuntimeError::Invalid(format!(
+                "invalid revision asset path: {}",
+                asset.file.path
+            )));
+        }
+        if asset.file.size == 0 || asset.file.size > MAX_REVISION_ASSET_BYTES as u64 {
+            return Err(RuntimeError::Invalid(format!(
+                "invalid revision asset size: {}",
+                asset.id
+            )));
+        }
+        total = total.saturating_add(asset.file.size as usize);
+        if total > MAX_REVISION_ASSET_TOTAL_BYTES {
+            return Err(RuntimeError::Invalid(
+                "revision asset package is too large".into(),
+            ));
+        }
+        let path = directory.join(relative);
+        let metadata = fs::symlink_metadata(&path).map_err(|error| {
+            RuntimeError::Invalid(format!(
+                "could not inspect revision asset {}: {error}",
+                asset.id
+            ))
+        })?;
+        if !metadata.file_type().is_file() || metadata.len() != asset.file.size {
+            return Err(RuntimeError::Invalid(format!(
+                "invalid revision asset type or size: {}",
+                asset.id
+            )));
+        }
+        let bytes = fs::read(path).map_err(|error| {
+            RuntimeError::Invalid(format!(
+                "could not read revision asset {}: {error}",
+                asset.id
+            ))
+        })?;
+        let sha256 = format!("{:x}", Sha256::digest(&bytes));
+        if bytes.len() as u64 != asset.file.size || sha256 != asset.file.sha256 {
+            return Err(RuntimeError::Invalid(format!(
+                "revision asset identity mismatch: {}",
+                asset.id
+            )));
+        }
+        assets.push(RevisionAssetInput {
+            id: asset.id,
+            kind: asset.kind,
+            bytes,
+        });
+    }
+    Ok(assets)
 }
 
 #[derive(Clone, Debug)]
@@ -168,6 +275,16 @@ impl RuntimeWorker {
         state: JsonValue,
         state_schema_version: u64,
     ) -> Result<(Self, async_channel::Receiver<Result<WorkerReady, String>>), RuntimeError> {
+        Self::spawn_with_assets(source, model, state, state_schema_version, Vec::new())
+    }
+
+    pub fn spawn_with_assets(
+        source: String,
+        model: ExperienceModel,
+        state: JsonValue,
+        state_schema_version: u64,
+        sidecars: Vec<RevisionAssetInput>,
+    ) -> Result<(Self, async_channel::Receiver<Result<WorkerReady, String>>), RuntimeError> {
         let (commands_tx, commands_rx) = async_channel::unbounded();
         let (results_tx, results_rx) = async_channel::unbounded();
         let (ready_tx, ready_rx) = async_channel::bounded::<Result<WorkerReady, String>>(1);
@@ -176,12 +293,13 @@ impl RuntimeWorker {
             .name("sos-luau-runtime".into())
             .spawn(move || {
                 let started = Instant::now();
-                let initialized = LuauRuntime::compile(&source).and_then(|runtime| {
-                    let state = runtime.migrate_state(state_schema_version, &state)?;
-                    let state_schema_version = runtime.state_schema_version()?;
-                    let scene = runtime.render(&model, &state)?;
-                    Ok((runtime, scene, state, state_schema_version))
-                });
+                let initialized = LuauRuntime::compile_with_assets(&source, sidecars.clone())
+                    .and_then(|runtime| {
+                        let state = runtime.migrate_state(state_schema_version, &state)?;
+                        let state_schema_version = runtime.state_schema_version()?;
+                        let scene = runtime.render(&model, &state)?;
+                        Ok((runtime, scene, state, state_schema_version))
+                    });
                 let (mut active_runtime, scene, active_state, active_state_schema_version) =
                     match initialized {
                         Ok(initialized) => initialized,
@@ -233,26 +351,28 @@ impl RuntimeWorker {
                             let worker_started = Instant::now();
                             let queue_us = micros(worker_started.duration_since(submitted_at));
                             let compile_started = Instant::now();
-                            let candidate_runtime = match LuauRuntime::compile(&source) {
-                                Ok(runtime) => runtime,
-                                Err(error) => {
-                                    let timings = CandidateTimings {
-                                        submitted_at,
-                                        queue_us,
-                                        compile_us: micros(compile_started.elapsed()),
-                                        render_us: 0,
-                                        worker_total_us: micros(worker_started.elapsed()),
-                                    };
-                                    let _ =
-                                        results_tx.send_blocking(WorkerResult::CandidateRejected {
-                                            request_id,
-                                            source,
-                                            error: error.to_string(),
-                                            timings,
-                                        });
-                                    continue;
-                                }
-                            };
+                            let candidate_runtime =
+                                match LuauRuntime::compile_with_assets(&source, sidecars.clone()) {
+                                    Ok(runtime) => runtime,
+                                    Err(error) => {
+                                        let timings = CandidateTimings {
+                                            submitted_at,
+                                            queue_us,
+                                            compile_us: micros(compile_started.elapsed()),
+                                            render_us: 0,
+                                            worker_total_us: micros(worker_started.elapsed()),
+                                        };
+                                        let _ = results_tx.send_blocking(
+                                            WorkerResult::CandidateRejected {
+                                                request_id,
+                                                source,
+                                                error: error.to_string(),
+                                                timings,
+                                            },
+                                        );
+                                        continue;
+                                    }
+                                };
                             let compile_us = micros(compile_started.elapsed());
                             let state = match candidate_runtime
                                 .migrate_state(state_schema_version, &state)
@@ -511,6 +631,13 @@ fn micros(duration: Duration) -> u64 {
 
 impl LuauRuntime {
     pub fn compile(source: &str) -> Result<Self, RuntimeError> {
+        Self::compile_with_assets(source, Vec::new())
+    }
+
+    pub fn compile_with_assets(
+        source: &str,
+        sidecars: Vec<RevisionAssetInput>,
+    ) -> Result<Self, RuntimeError> {
         if source.len() > MAX_SOURCE_BYTES {
             return Err(RuntimeError::SourceTooLarge);
         }
@@ -534,7 +661,7 @@ impl LuauRuntime {
             Ok(VmState::Continue)
         });
 
-        let (module, assets, asset_paths) = {
+        let (module, mut assets, mut asset_paths) = {
             let result = run_bounded(&deadline, RENDER_BUDGET, || {
                 lua.load(source)
                     .set_name("experience")
@@ -556,6 +683,7 @@ impl LuauRuntime {
                 decode_revision_assets(result.get::<Option<Table>>("assets")?)?;
             (lua.create_registry_value(result)?, assets, asset_paths)
         };
+        merge_revision_assets(&mut assets, &mut asset_paths, sidecars)?;
 
         Ok(Self {
             lua,
@@ -738,6 +866,101 @@ fn decode_revision_assets(
     Ok((assets, paths))
 }
 
+fn merge_revision_assets(
+    assets: &mut Vec<RevisionAsset>,
+    paths: &mut HashMap<String, String>,
+    mut sidecars: Vec<RevisionAssetInput>,
+) -> Result<(), RuntimeError> {
+    if assets.len().saturating_add(sidecars.len()) > MAX_REVISION_ASSETS {
+        return Err(RuntimeError::Invalid(
+            "revision declares too many assets".into(),
+        ));
+    }
+    sidecars.sort_by(|left, right| left.id.cmp(&right.id));
+    for sidecar in sidecars {
+        if sidecar.id.is_empty()
+            || sidecar.id.len() > 128
+            || !sidecar
+                .id
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+            || sidecar.id == "album-orbit"
+            || assets.iter().any(|asset| asset.id == sidecar.id)
+        {
+            return Err(RuntimeError::Invalid(format!(
+                "invalid or duplicate revision asset id: {}",
+                sidecar.id
+            )));
+        }
+        validate_revision_asset_bytes(&sidecar.kind, &sidecar.bytes)?;
+        let extension = revision_asset_extension(&sidecar.kind).ok_or_else(|| {
+            RuntimeError::Invalid(format!("unsupported revision asset kind: {}", sidecar.kind))
+        })?;
+        let sha256 = format!("{:x}", Sha256::digest(&sidecar.bytes));
+        let path = format!("sos/revisions/{sha256}.{extension}");
+        if matches!(sidecar.kind.as_str(), "svg" | "png" | "jpeg" | "webp") {
+            paths.insert(sidecar.id.clone(), path.clone());
+        }
+        assets.push(RevisionAsset {
+            id: sidecar.id,
+            path,
+            kind: sidecar.kind,
+            bytes: sidecar.bytes,
+            sha256,
+        });
+    }
+    let total = assets.iter().map(|asset| asset.bytes.len()).sum::<usize>();
+    if total > MAX_REVISION_ASSET_TOTAL_BYTES {
+        return Err(RuntimeError::Invalid(
+            "revision asset package is too large".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn revision_asset_extension(kind: &str) -> Option<&'static str> {
+    match kind {
+        "svg" => Some("svg"),
+        "png" => Some("png"),
+        "jpeg" => Some("jpg"),
+        "webp" => Some("webp"),
+        "font" => Some("font"),
+        "shader" => Some("wgsl"),
+        _ => None,
+    }
+}
+
+fn validate_revision_asset_bytes(kind: &str, bytes: &[u8]) -> Result<(), RuntimeError> {
+    if bytes.is_empty() || bytes.len() > MAX_REVISION_ASSET_BYTES {
+        return Err(RuntimeError::Invalid(format!("invalid {kind} asset size")));
+    }
+    let valid = match kind {
+        "svg" => std::str::from_utf8(bytes)
+            .ok()
+            .is_some_and(|data| validate_svg_asset(data).is_ok()),
+        "png" => bytes.starts_with(b"\x89PNG\r\n\x1a\n"),
+        "jpeg" => bytes.starts_with(&[0xff, 0xd8, 0xff]),
+        "webp" => bytes.starts_with(b"RIFF") && bytes.get(8..12) == Some(b"WEBP"),
+        "font" => {
+            bytes.starts_with(&[0, 1, 0, 0])
+                || bytes.starts_with(b"OTTO")
+                || bytes.starts_with(b"ttcf")
+                || bytes.starts_with(b"wOFF")
+                || bytes.starts_with(b"wOF2")
+        }
+        "shader" => std::str::from_utf8(bytes).is_ok_and(|text| {
+            text.contains("@vertex") || text.contains("@fragment") || text.contains("@compute")
+        }),
+        _ => false,
+    };
+    if !valid {
+        return Err(RuntimeError::Invalid(format!(
+            "invalid or unsupported {kind} revision asset"
+        )));
+    }
+    Ok(())
+}
+
 fn validate_svg_asset(data: &str) -> Result<(), RuntimeError> {
     let normalized = data.to_ascii_lowercase();
     if data.len() > MAX_REVISION_ASSET_BYTES
@@ -882,6 +1105,17 @@ fn decode_layout(table: Option<Table>) -> Result<Layout, RuntimeError> {
                 Ok(LayoutPosition {
                     x: scene_number(&position, "x")?,
                     y: scene_number(&position, "y")?,
+                })
+            })
+            .transpose()?,
+        program: table
+            .get::<Option<Table>>("program")?
+            .map(|program| -> Result<LayoutProgram, RuntimeError> {
+                Ok(LayoutProgram {
+                    measure_width: layout_fraction(&program, "measure_width")?,
+                    measure_height: layout_fraction(&program, "measure_height")?,
+                    arrange_x: layout_fraction(&program, "arrange_x")?,
+                    arrange_y: layout_fraction(&program, "arrange_y")?,
                 })
             })
             .transpose()?,
@@ -1124,6 +1358,18 @@ fn decode_interaction(table: Option<Table>) -> Result<Interaction, RuntimeError>
         double_tap_action: bounded_optional_string(&table, "double_tap_action", 256)?,
         long_press_action: bounded_optional_string(&table, "long_press_action", 256)?,
         swipe_action: bounded_optional_string(&table, "swipe_action", 256)?,
+        pointer_action: bounded_optional_string(&table, "pointer_action", 256)?,
+        multi_pointer_action: bounded_optional_string(&table, "multi_pointer_action", 256)?,
+        capture: match table.get::<Option<String>>("capture")?.as_deref() {
+            None | Some("none") => PointerCapture::None,
+            Some("pointer") => PointerCapture::Pointer,
+            Some("surface") => PointerCapture::Surface,
+            Some(value) => {
+                return Err(RuntimeError::Invalid(format!(
+                    "invalid pointer capture policy: {value}"
+                )))
+            }
+        },
         hit_regions,
     })
 }
@@ -1178,6 +1424,7 @@ fn decode_semantics(table: Option<Table>) -> Result<Option<Semantics>, RuntimeEr
         "text_field" => SemanticRole::TextField,
         "header" => SemanticRole::Header,
         "status" => SemanticRole::Status,
+        "scroll_area" => SemanticRole::ScrollArea,
         value => {
             return Err(RuntimeError::Invalid(format!(
                 "invalid semantic role: {value}"
@@ -1196,6 +1443,16 @@ fn finite_dimension(table: &Table, key: &'static str) -> Result<Option<f32>, Run
     let value = table.get::<Option<f32>>(key)?;
     if value.is_some_and(|value| !(0.0..=10_000.0).contains(&value)) {
         return Err(RuntimeError::Invalid(format!("invalid {key}")));
+    }
+    Ok(value)
+}
+
+fn layout_fraction(table: &Table, key: &'static str) -> Result<Option<f32>, RuntimeError> {
+    let value = table.get::<Option<f32>>(key)?;
+    if value.is_some_and(|value| !value.is_finite() || !(-4.0..=4.0).contains(&value)) {
+        return Err(RuntimeError::Invalid(format!(
+            "invalid layout program fraction: {key}"
+        )));
     }
     Ok(value)
 }
@@ -1235,7 +1492,7 @@ mod tests {
 
     const SCRIPT: &str = r#"
         return {
-            api_version = 2,
+            api_version = 3,
             render = function(model, state)
                 return {
                     id = "root", layout = { flow = "column", gap = 8 }, children = {
@@ -1289,13 +1546,13 @@ mod tests {
         .err()
         .unwrap()
         .to_string();
-        assert!(version_one.contains("host requires 2"));
+        assert!(version_one.contains("host requires 3"));
     }
 
     #[test]
     fn interrupts_an_infinite_render() {
         let runtime = LuauRuntime::compile(
-            "return { api_version = 2, render = function() while true do end end }",
+            "return { api_version = 3, render = function() while true do end end }",
         )
         .unwrap();
         let error = runtime
@@ -1307,7 +1564,7 @@ mod tests {
     #[test]
     fn rejects_unknown_content() {
         let runtime = LuauRuntime::compile(
-            "return { api_version = 2, render = function() return { content = { kind = 'native_surface' } } end }",
+            "return { api_version = 3, render = function() return { content = { kind = 'native_surface' } } end }",
         )
         .unwrap();
         assert!(runtime
@@ -1322,7 +1579,7 @@ mod tests {
         let runtime = LuauRuntime::compile(
             r#"
                 return {
-                    api_version = 2,
+                    api_version = 3,
                     render = function()
                         return {
                             id = "root", layout = { flow = "column" }, children = {
@@ -1369,7 +1626,7 @@ mod tests {
     #[test]
     fn rejects_undeclared_image_assets() {
         let runtime = LuauRuntime::compile(
-            "return { api_version = 2, render = function() return { id = 'x', content = { kind = 'image', asset = 'https://example.com/x.png' } } end }",
+            "return { api_version = 3, render = function() return { id = 'x', content = { kind = 'image', asset = 'https://example.com/x.png' } } end }",
         )
         .unwrap();
         assert!(runtime
@@ -1384,7 +1641,7 @@ mod tests {
         let runtime = LuauRuntime::compile(
             r##"
                 return {
-                    api_version = 2,
+                    api_version = 3,
                     assets = {
                         mark = { kind = "svg", data = [[<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="#fff"/></svg>]] },
                     },
@@ -1395,6 +1652,7 @@ mod tests {
                                 width = 320, height = 480, min_width = 280, max_width = 360,
                                 aspect_ratio = 0.6666667, clip_bounds = true,
                                 position = { x = 4, y = 8 },
+                                program = { measure_width = 0.75, arrange_x = 0.125 },
                             },
                             paint = {{
                                 kind = "layer", opacity = 0.8,
@@ -1407,6 +1665,8 @@ mod tests {
                             interaction = {
                                 tap_action = "tap", double_tap_action = "zoom",
                                 long_press_action = "pin", swipe_action = "swipe",
+                                pointer_action = "pointer", multi_pointer_action = "pinch",
+                                capture = "surface",
                             },
                             children = {{ id = "mark", content = { kind = "image", asset = "mark" } }},
                         }
@@ -1422,12 +1682,14 @@ mod tests {
             .render(&providers_fake_for_test(), &json!({}))
             .unwrap();
         assert_eq!(scene.root.layout.position.unwrap().x, 4.0);
+        assert_eq!(scene.root.layout.program.unwrap().measure_width, Some(0.75));
         assert!(scene.root.layout.clip_bounds);
         assert!(matches!(scene.root.paint[0], PaintOp::Layer { .. }));
         assert_eq!(
             scene.root.interaction.double_tap_action.as_deref(),
             Some("zoom")
         );
+        assert_eq!(scene.root.interaction.capture, PointerCapture::Surface);
         let Some(Content::Image(image)) = &scene.root.children[0].content else {
             panic!("expected revision image")
         };
@@ -1435,9 +1697,47 @@ mod tests {
     }
 
     #[test]
+    fn sidecar_images_fonts_and_shaders_enter_one_runtime_asset_set() {
+        let runtime = LuauRuntime::compile_with_assets(
+            r#"return {
+                api_version = 3,
+                render = function()
+                    return { id = "hero", content = { kind = "image", asset = "hero" } }
+                end,
+            }"#,
+            vec![
+                RevisionAssetInput {
+                    id: "hero".into(),
+                    kind: "png".into(),
+                    bytes: b"\x89PNG\r\n\x1a\nfixture".to_vec(),
+                },
+                RevisionAssetInput {
+                    id: "display".into(),
+                    kind: "font".into(),
+                    bytes: b"OTTOfixture".to_vec(),
+                },
+                RevisionAssetInput {
+                    id: "glow".into(),
+                    kind: "shader".into(),
+                    bytes: b"@fragment fn fragment_main() {}".to_vec(),
+                },
+            ],
+        )
+        .unwrap();
+        assert_eq!(runtime.assets().len(), 3);
+        let scene = runtime
+            .render(&providers_fake_for_test(), &json!({}))
+            .unwrap();
+        let Some(Content::Image(image)) = scene.root.content else {
+            panic!("expected sidecar image")
+        };
+        assert!(image.asset.ends_with(".png"));
+    }
+
+    #[test]
     fn rejects_active_content_in_revision_svg_assets() {
         let error = match LuauRuntime::compile(
-            r#"return { api_version = 2, assets = { bad = { kind = "svg", data = "<svg><script>bad()</script></svg>" } }, render = function() return { id = "root" } end }"#,
+            r#"return { api_version = 3, assets = { bad = { kind = "svg", data = "<svg><script>bad()</script></svg>" } }, render = function() return { id = "root" } end }"#,
         ) {
             Ok(_) => panic!("active SVG content should be rejected"),
             Err(error) => error,
@@ -1450,7 +1750,7 @@ mod tests {
         let runtime = LuauRuntime::compile(
             r#"
                 return {
-                    api_version = 2,
+                    api_version = 3,
                     render = function(_, state)
                         return {
                             id = "time-space",
@@ -1503,7 +1803,7 @@ mod tests {
         let runtime = LuauRuntime::compile(
             r#"
                 return {
-                    api_version = 2,
+                    api_version = 3,
                     render = function() return { id = "root" } end,
                     update = function(_, state)
                         state.attached = true
@@ -1539,7 +1839,7 @@ mod tests {
         let runtime = LuauRuntime::compile(
             r#"
                 return {
-                    api_version = 2,
+                    api_version = 3,
                     state_version = 2,
                     migrate = function(from_version, state)
                         if from_version ~= 1 then error("unexpected source schema") end
@@ -1563,7 +1863,7 @@ mod tests {
     #[test]
     fn rejects_a_schema_change_without_a_migration() {
         let runtime = LuauRuntime::compile(
-            r#"return { api_version = 2, state_version = 2, render = function() return {} end }"#,
+            r#"return { api_version = 3, state_version = 2, render = function() return {} end }"#,
         )
         .unwrap();
         assert!(runtime.migrate_state(1, &json!({})).is_err());
@@ -1579,7 +1879,7 @@ mod tests {
         let runtime = LuauRuntime::compile(
             r#"
                 return {
-                    api_version = 2,
+                    api_version = 3,
                     render = function()
                         if io ~= nil or package ~= nil or (os ~= nil and os.execute ~= nil) then
                             error("privileged library exposed")
@@ -1600,7 +1900,7 @@ mod tests {
         let runtime = LuauRuntime::compile(
             r#"
                 return {
-                    api_version = 2,
+                    api_version = 3,
                     render = function()
                         local values = {}
                         while true do
@@ -1651,7 +1951,7 @@ mod tests {
         worker
             .prepare_candidate(
                 2,
-                "return { api_version = 2, render = function() while true do end end }".into(),
+                "return { api_version = 3, render = function() while true do end end }".into(),
                 model.clone(),
                 json!({}),
                 1,

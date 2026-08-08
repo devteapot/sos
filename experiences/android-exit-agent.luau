@@ -223,8 +223,15 @@ local function render(model, state)
                 layout = {
                     position = { x = 306, y = 50 }, width = 38, height = 38,
                     min_width = 30, max_width = 44, aspect_ratio = 1, clip_bounds = true,
+                    program = { measure_width = 0.1, arrange_x = 0.85 },
                 },
                 content = { kind = "image", asset = "thread-mark" },
+                interaction = {
+                    pointer_action = "asset_pointer",
+                    multi_pointer_action = "asset_transform",
+                    capture = "surface",
+                },
+                semantics = { role = "image", label = "Revision asset gesture target" },
             },
         },
     }
@@ -269,7 +276,28 @@ local function render(model, state)
             }))
     end
 
-    return group("column", { scroll_y = true }, children, {
+    table.insert(children, group("column", { padding = 16, gap = 7 }, {
+        text("COMPOSING NOTE", 10, violet),
+        {
+            id = "note-draft",
+            layout = { padding = 12, min_height = 48 },
+            content = {
+                kind = "text_session", state_key = "draft",
+                value = state.draft or "", placeholder = "Write with your keyboard…",
+                submit_action = "save_draft",
+            },
+            paint = {{ kind = "fill_bounds", color = 0x263D42, radius = 14 }},
+            semantics = {
+                role = "text_field", label = "Composing note",
+                hint = "Supports selection and marked text",
+            },
+        },
+    }))
+
+    return group("column", {
+        scroll_y = true,
+        program = { measure_width = 1, measure_height = 1 },
+    }, children, {
         id = "android-exit-spatial-root", background = ink,
     })
 end
@@ -311,8 +339,18 @@ local function update(model, state, event)
     elseif event.action == "event_swipe" then
         local direction = (event.delta_x or 0) >= 0 and "right" or "left"
         state.last_gesture = "Swiped " .. direction .. " on " .. tostring(event.target)
+    elseif event.action == "asset_pointer" then
+        state.last_gesture = string.format(
+            "Pointer %s · id %s · %d active",
+            event.phase or "move", tostring(event.pointer_id or "?"), event.pointer_count or 0)
+    elseif event.action == "asset_transform" then
+        state.last_gesture = string.format(
+            "Transform %.2fx · %.0f°",
+            event.scale or 1, event.rotation_degrees or 0)
+    elseif event.action == "save_draft" then
+        state.last_gesture = "Composing note saved"
     end
     return state
 end
 
-return { api_version = 2, assets = assets, render = render, update = update }
+return { api_version = 3, assets = assets, render = render, update = update }

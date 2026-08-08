@@ -77,6 +77,13 @@ public class GpuiPlatformView {
         String hint;
         String clickAction;
         boolean editable;
+        boolean scrollable;
+        int selectionStart = -1;
+        int selectionEnd = -1;
+        int markedStart = -1;
+        int markedEnd = -1;
+        float scrollOffsetY;
+        float scrollMaxY;
         float x;
         float y;
         float width;
@@ -116,6 +123,13 @@ public class GpuiPlatformView {
                         node.clickAction = value.isNull("click_action")
                                 ? null : value.optString("click_action", null);
                         node.editable = value.optBoolean("editable", false);
+                        node.scrollable = value.optBoolean("scrollable", false);
+                        node.selectionStart = value.optInt("selection_start", -1);
+                        node.selectionEnd = value.optInt("selection_end", -1);
+                        node.markedStart = value.optInt("marked_start", -1);
+                        node.markedEnd = value.optInt("marked_end", -1);
+                        node.scrollOffsetY = (float)value.optDouble("scroll_offset_y", 0);
+                        node.scrollMaxY = (float)value.optDouble("scroll_max_y", 0);
                         JSONArray bounds = value.optJSONArray("bounds");
                         if (bounds != null && bounds.length() == 4) {
                             node.x = (float)bounds.optDouble(0, 0);
@@ -182,7 +196,11 @@ public class GpuiPlatformView {
             info.setText(node.value == null || node.value.isEmpty() ? node.label : node.value);
             if (node.hint != null) info.setHintText(node.hint);
             info.setEnabled(true);
-            info.setVisibleToUser(node.width > 0 && node.height > 0 && host.isShown());
+            float density = host.getResources().getDisplayMetrics().density;
+            info.setVisibleToUser(
+                    node.width > 0 && node.height > 0 && host.isShown()
+                    && node.x + node.width > 0 && node.y + node.height > 0
+                    && node.x * density < host.getWidth() && node.y * density < host.getHeight());
             info.setFocusable(true);
             info.setAccessibilityFocused(accessibilityFocus == node.virtualId);
             if ("header".equals(node.role) && android.os.Build.VERSION.SDK_INT >= 28) {
@@ -197,8 +215,24 @@ public class GpuiPlatformView {
             }
             if (node.editable) {
                 info.setEditable(true);
+                if (node.selectionStart >= 0 && node.selectionEnd >= 0) {
+                    info.setTextSelection(node.selectionStart, node.selectionEnd);
+                }
                 info.addAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_SET_TEXT);
+                info.addAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_SET_SELECTION);
+                info.addAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_COPY);
+                info.addAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_CUT);
+                info.addAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_PASTE);
                 info.addAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_FOCUS);
+            }
+            if (node.scrollable) {
+                info.setScrollable(true);
+                if (node.scrollOffsetY < node.scrollMaxY) {
+                    info.addAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_FORWARD);
+                }
+                if (node.scrollOffsetY > 0) {
+                    info.addAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_BACKWARD);
+                }
             }
             info.addAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_ACCESSIBILITY_FOCUS);
             info.addAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_CLEAR_ACCESSIBILITY_FOCUS);
@@ -251,6 +285,36 @@ public class GpuiPlatformView {
                 sendEvent(node, AccessibilityEvent.TYPE_VIEW_TEXT_CHANGED);
                 return true;
             }
+            if (action == AccessibilityNodeInfo.ACTION_SET_SELECTION
+                    && node.editable && arguments != null) {
+                int start = arguments.getInt(
+                        AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_START_INT, -1);
+                int end = arguments.getInt(
+                        AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_END_INT, -1);
+                if (start < 0 || end < 0) return false;
+                node.selectionStart = start;
+                node.selectionEnd = end;
+                GpuiActivity.dispatchAccessibilityAction(
+                        "set_selection", node.id, start + ":" + end);
+                sendEvent(node, AccessibilityEvent.TYPE_VIEW_TEXT_SELECTION_CHANGED);
+                return true;
+            }
+            if (node.editable && (action == AccessibilityNodeInfo.ACTION_COPY
+                    || action == AccessibilityNodeInfo.ACTION_CUT
+                    || action == AccessibilityNodeInfo.ACTION_PASTE)) {
+                String command = action == AccessibilityNodeInfo.ACTION_COPY
+                        ? "copy" : action == AccessibilityNodeInfo.ACTION_CUT ? "cut" : "paste";
+                GpuiActivity.dispatchAccessibilityAction(command, node.id, "");
+                return true;
+            }
+            if (node.scrollable && (action == AccessibilityNodeInfo.ACTION_SCROLL_FORWARD
+                    || action == AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD)) {
+                String command = action == AccessibilityNodeInfo.ACTION_SCROLL_FORWARD
+                        ? "scroll_forward" : "scroll_backward";
+                GpuiActivity.dispatchAccessibilityAction(command, node.id, "");
+                sendEvent(node, AccessibilityEvent.TYPE_VIEW_SCROLLED);
+                return true;
+            }
             return false;
         }
 
@@ -285,6 +349,7 @@ public class GpuiPlatformView {
                 case "button": return "android.widget.Button";
                 case "image": return "android.widget.ImageView";
                 case "text_field": return "android.widget.EditText";
+                case "scroll_area": return "android.widget.ScrollView";
                 default: return "android.widget.TextView";
             }
         }

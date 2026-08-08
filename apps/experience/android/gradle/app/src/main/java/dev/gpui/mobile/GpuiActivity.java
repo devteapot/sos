@@ -60,6 +60,29 @@ public class GpuiActivity extends NativeActivity {
         }
     }
 
+    static void dispatchImeState(
+            String target, String text, int selectionStart, int selectionEnd,
+            int markedStart, int markedEnd, String kind) {
+        if (!sNativeLibLoaded) return;
+        try {
+            nativeOnImeState(
+                    target, text, selectionStart, selectionEnd,
+                    markedStart, markedEnd, kind);
+            nativeOnDeepLink("sos://ime");
+        } catch (UnsatisfiedLinkError ignored) {
+            Log.w("GpuiActivity", "native IME bridge unavailable");
+        }
+    }
+
+    static void dispatchImeInset(float logicalBottom) {
+        if (!sNativeLibLoaded) return;
+        try {
+            nativeOnImeInset(logicalBottom);
+        } catch (UnsatisfiedLinkError ignored) {
+            Log.w("GpuiActivity", "native IME inset bridge unavailable");
+        }
+    }
+
     @Override
     public boolean dispatchKeyEvent(KeyEvent event) {
         return super.dispatchKeyEvent(event);
@@ -90,4 +113,8 @@ public class GpuiActivity extends NativeActivity {
     private static native void nativeOnDeepLink(String url);
     private static native void nativeOnAccessibilityAction(
             String action, String target, String value);
+    private static native void nativeOnImeState(
+            String target, String text, int selectionStart, int selectionEnd,
+            int markedStart, int markedEnd, String kind);
+    private static native void nativeOnImeInset(float logicalBottom);
 }

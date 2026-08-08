@@ -1,7 +1,7 @@
 use std::{
     borrow::Cow,
-    collections::HashMap,
-    sync::{OnceLock, RwLock},
+    collections::{HashMap, HashSet},
+    sync::{Mutex, OnceLock, RwLock},
 };
 
 use gpui::{AssetSource, SharedString};
@@ -26,13 +26,49 @@ const ALBUM_ORBIT: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0
 pub struct SosAssets;
 
 static REVISION_ASSETS: OnceLock<RwLock<HashMap<String, Vec<u8>>>> = OnceLock::new();
+static REVISION_FONTS: OnceLock<RwLock<Vec<(String, Vec<u8>)>>> = OnceLock::new();
+static LOADED_FONTS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
 
 pub fn install(assets: &[RevisionAsset]) {
     let registry = REVISION_ASSETS.get_or_init(|| RwLock::new(HashMap::new()));
     let mut registry = registry.write().expect("revision asset registry");
     registry.clear();
+    let mut fonts = REVISION_FONTS
+        .get_or_init(|| RwLock::new(Vec::new()))
+        .write()
+        .expect("revision font registry");
+    fonts.clear();
     for asset in assets {
         registry.insert(asset.path.clone(), asset.bytes.clone());
+        if asset.kind == "font" {
+            fonts.push((asset.sha256.clone(), asset.bytes.clone()));
+        }
+    }
+}
+
+pub fn install_fonts(window: &mut gpui::Window) {
+    let Some(fonts) = REVISION_FONTS.get().and_then(|fonts| fonts.read().ok()) else {
+        return;
+    };
+    let mut loaded = LOADED_FONTS
+        .get_or_init(|| Mutex::new(HashSet::new()))
+        .lock()
+        .expect("loaded font registry");
+    let pending = fonts
+        .iter()
+        .filter(|(sha256, _)| !loaded.contains(sha256))
+        .cloned()
+        .collect::<Vec<_>>();
+    if pending.is_empty() {
+        return;
+    }
+    let bytes = pending
+        .iter()
+        .map(|(_, bytes)| Cow::Owned(bytes.clone()))
+        .collect::<Vec<_>>();
+    match window.text_system().add_fonts(bytes) {
+        Ok(()) => loaded.extend(pending.into_iter().map(|(sha256, _)| sha256)),
+        Err(error) => log::warn!("revision_font_load_failed error={error}"),
     }
 }
 

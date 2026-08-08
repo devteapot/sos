@@ -13,6 +13,9 @@ service-protocol.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
+experience-ir.workspace = true
+providers-fake.workspace = true
+runtime-luau.workspace = true
 tempfile = "3"
 
 [[bin]]

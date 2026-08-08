@@ -9,8 +9,8 @@ use std::{
 
 use provider_state_service::ServiceClient;
 use revision_supervisor::{
-    CoordinatedSupervisor, HostCommand, RevisionInput, RevisionStore, RevisionSupervisor,
-    SupervisorEvent,
+    CoordinatedSupervisor, HostCommand, RevisionAssetInput, RevisionInput, RevisionStore,
+    RevisionSupervisor, SupervisorEvent,
 };
 use serde::{Deserialize, Serialize};
 
@@ -96,12 +96,36 @@ fn install(options: Options) -> Result<(), Box<dyn std::error::Error>> {
     let state = serde_json::from_slice(&fs::read(options.required("--state")?)?)?;
     let schema_version = options.required("--schema")?.parse()?;
     let experience_api_version = options.required("--api")?.parse()?;
+    let assets = options
+        .values("--asset")
+        .into_iter()
+        .map(
+            |specification| -> Result<RevisionAssetInput, Box<dyn std::error::Error>> {
+                let mut parts = specification.splitn(3, ':');
+                let id = parts.next().unwrap_or_default();
+                let kind = parts.next().unwrap_or_default();
+                let path = parts.next().unwrap_or_default();
+                if id.is_empty() || kind.is_empty() || path.is_empty() {
+                    return Err(format!(
+                        "invalid --asset {specification:?}; expected ID:KIND:FILE"
+                    )
+                    .into());
+                }
+                Ok(RevisionAssetInput {
+                    id: id.into(),
+                    kind: kind.into(),
+                    bytes: fs::read(path)?,
+                })
+            },
+        )
+        .collect::<Result<Vec<_>, _>>()?;
     let store = RevisionStore::open(root)?;
     let revision = store.install(RevisionInput {
         source,
         state,
         schema_version,
         experience_api_version,
+        assets,
     })?;
     println!("{}", revision.manifest.revision_id);
     Ok(())
@@ -338,7 +362,7 @@ fn parse_options(arguments: Vec<String>) -> Result<Options, String> {
 }
 
 fn usage() -> &'static str {
-    "usage:\n  sos-revision-supervisor install --root DIR --source FILE --state FILE --schema N --api N\n  sos-revision-supervisor bootstrap --root DIR --revision ID\n  sos-revision-supervisor serve --root DIR --host-executable FILE [--host-arg VALUE ...] [--timeout-ms N] [--service-socket PATH --service-timeout-ms N]\n  sos-revision-supervisor activate --root DIR --revision ID [--transaction ID]\n  sos-revision-supervisor daemon-status --root DIR\n  sos-revision-supervisor shutdown --root DIR\n  sos-revision-supervisor status --root DIR"
+    "usage:\n  sos-revision-supervisor install --root DIR --source FILE --state FILE --schema N --api N [--asset ID:KIND:FILE ...]\n  sos-revision-supervisor bootstrap --root DIR --revision ID\n  sos-revision-supervisor serve --root DIR --host-executable FILE [--host-arg VALUE ...] [--timeout-ms N] [--service-socket PATH --service-timeout-ms N]\n  sos-revision-supervisor activate --root DIR --revision ID [--transaction ID]\n  sos-revision-supervisor daemon-status --root DIR\n  sos-revision-supervisor shutdown --root DIR\n  sos-revision-supervisor status --root DIR"
 }
 
 fn send_control(

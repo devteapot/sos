@@ -10,7 +10,9 @@ pub use coordinator::{
 };
 pub use host::{ExperienceHost, HostCommand, HostEvent, HostRequest};
 pub use store::{
-    DurableState, FileIdentity, RevisionInput, RevisionManifest, RevisionStore, VerifiedRevision,
+    AssetIdentity, DurableState, FileIdentity, RevisionAssetInput, RevisionInput, RevisionManifest,
+    RevisionStore, VerifiedRevision, MAX_REVISION_ASSETS, MAX_REVISION_ASSET_BYTES,
+    MAX_REVISION_ASSET_TOTAL_BYTES,
 };
 use thiserror::Error;
 

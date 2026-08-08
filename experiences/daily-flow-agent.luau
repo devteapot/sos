@@ -129,4 +129,4 @@ local function update(model, state, event)
     return state
 end
 
-return { api_version = 2, render = render, update = update }
+return { api_version = 3, render = render, update = update }

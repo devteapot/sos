@@ -33,11 +33,12 @@ Their supervisor-owned activation journal is in
 Ongoing experiments, failures, measurements, and decisions are indexed in the
 living [`docs/progress.md`](docs/progress.md) ledger.
 
-Scene ABI v2 lets any retained node combine layout, content, nested
-clips/transforms/layers, host-shaped glyph runs, custom hit regions and rich
-gestures, animation, and semantics without selecting a widget type. Android
-now adapts the host semantic tree to real per-element accessibility nodes, and
-accepted Luau revisions can carry bounded content-addressed SVG assets.
+Scene ABI v3 lets any retained node combine responsive host layout, content,
+nested clips/transforms/layers, host-shaped glyph runs, raw multi-pointer
+routing, animation, and semantics without selecting a widget type. Android
+adapts the host semantic tree to real per-element accessibility nodes and a
+complete composing text bridge; supervisor revisions can carry bounded,
+content-addressed image/font/shader sidecars.
 The original Android-exit audit passed at prototype scope. SOS has also removed
 native experience binaries from the revision format: one permanent Rust/GPUI
 host prepares and activates Luau scenes. The stable-host change has both Linux
@@ -46,8 +47,10 @@ protocol evidence and a 10,000-swap physical-device gate; see
 
 ## Milestone 0
 
-The upstream GPUI Mobile source is fetched at a pinned commit into `.cache/` and
-is never patched. The wrapper builds an optimized ARM64 Rust library, packages
+Milestone 0 fetched an unmodified pinned GPUI Mobile source into `.cache/`.
+The permanent host now vendors that same commit under `vendor/gpui-mobile` with
+a narrow pre-compatibility raw-touch observation hook, because Android's
+`NativeActivity` input stream bypasses Java `dispatchTouchEvent`. The wrapper builds an optimized ARM64 Rust library, packages
 it in a debug-signed APK, installs it on a connected phone, launches it, and
 follows the process logs:
 
@@ -97,6 +100,6 @@ Replace only the experience source while the same process and APK stay alive:
 ./tools/sosctl stress 10000
 ```
 
-A candidate must declare Scene ABI v2, compile, finish within its time budget,
+A candidate must declare Scene ABI v3, compile, finish within its time budget,
 decode to a bounded scene, and render against the current model and state before it replaces the
 accepted revision. A rejected candidate leaves the current experience live.

@@ -3,7 +3,7 @@ use std::collections::HashSet;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-pub const EXPERIENCE_API_VERSION: u32 = 2;
+pub const EXPERIENCE_API_VERSION: u32 = 3;
 pub const MAX_SCENE_DEPTH: usize = 32;
 pub const MAX_SCENE_NODES: usize = 2_048;
 pub const MAX_CHILDREN: usize = 256;
@@ -14,7 +14,8 @@ pub const MAX_PAINT_DEPTH: usize = 16;
 pub const MAX_GLYPH_RUNS: usize = 256;
 pub const MAX_HIT_REGIONS: usize = 256;
 pub const MAX_REVISION_ASSETS: usize = 64;
-pub const MAX_REVISION_ASSET_BYTES: usize = 256 * 1024;
+pub const MAX_REVISION_ASSET_BYTES: usize = 4 * 1024 * 1024;
+pub const MAX_REVISION_ASSET_TOTAL_BYTES: usize = 16 * 1024 * 1024;
 pub const MAX_EFFECTS: usize = 16;
 pub const MAX_EFFECT_PAYLOAD_BYTES: usize = 16 * 1024;
 pub const MAX_STATE_BYTES: usize = 1024 * 1024;
@@ -80,6 +81,16 @@ pub struct SceneEvent {
     pub velocity_y: Option<f32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub phase: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pointer_id: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pointer_count: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pressure: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scale: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rotation_degrees: Option<f32>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -209,10 +220,22 @@ pub struct Layout {
     pub max_height: Option<f32>,
     pub aspect_ratio: Option<f32>,
     pub position: Option<LayoutPosition>,
+    pub program: Option<LayoutProgram>,
     pub clip_bounds: bool,
     pub grow: bool,
     pub align: Option<Align>,
     pub justify: Option<Justify>,
+}
+
+/// A bounded retained program evaluated by the host layout engine. Fractions
+/// are relative to the containing block, so responsive layout does not call
+/// back into Luau during frame construction.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct LayoutProgram {
+    pub measure_width: Option<f32>,
+    pub measure_height: Option<f32>,
+    pub arrange_x: Option<f32>,
+    pub arrange_y: Option<f32>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -343,7 +366,18 @@ pub struct Interaction {
     pub double_tap_action: Option<String>,
     pub long_press_action: Option<String>,
     pub swipe_action: Option<String>,
+    pub pointer_action: Option<String>,
+    pub multi_pointer_action: Option<String>,
+    pub capture: PointerCapture,
     pub hit_regions: Vec<HitRegion>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PointerCapture {
+    #[default]
+    None,
+    Pointer,
+    Surface,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -390,6 +424,7 @@ pub enum SemanticRole {
     TextField,
     Header,
     Status,
+    ScrollArea,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -437,6 +472,8 @@ pub enum ValidationError {
     TooManyGlyphRuns,
     #[error("scene node exceeds maximum hit-region count of {MAX_HIT_REGIONS}")]
     TooManyHitRegions,
+    #[error("layout program contains an invalid relative fraction")]
+    InvalidLayoutProgram,
 }
 
 pub fn validate_scene(scene: &Scene) -> Result<usize, ValidationError> {
@@ -478,10 +515,13 @@ pub fn validate_scene(scene: &Scene) -> Result<usize, ValidationError> {
             }
             _ => {}
         }
-        if (node.interaction.tap_action.is_some()
+        if (node.layout.scroll_y
+            || node.interaction.tap_action.is_some()
             || node.interaction.double_tap_action.is_some()
             || node.interaction.long_press_action.is_some()
             || node.interaction.swipe_action.is_some()
+            || node.interaction.pointer_action.is_some()
+            || node.interaction.multi_pointer_action.is_some()
             || !node.interaction.hit_regions.is_empty()
             || node.animation.is_some())
             && node.id.is_none()
@@ -518,6 +558,19 @@ pub fn validate_scene(scene: &Scene) -> Result<usize, ValidationError> {
             if !valid_scene_number(position.x) || !valid_scene_number(position.y) {
                 return Err(ValidationError::InvalidDimension("layout position"));
             }
+        }
+        if node.layout.program.is_some_and(|program| {
+            [
+                program.measure_width,
+                program.measure_height,
+                program.arrange_x,
+                program.arrange_y,
+            ]
+            .into_iter()
+            .flatten()
+            .any(|value| !value.is_finite() || !(-4.0..=4.0).contains(&value))
+        }) {
+            return Err(ValidationError::InvalidLayoutProgram);
         }
         for child in &node.children {
             visit(child, depth + 1, count, ids)?;
