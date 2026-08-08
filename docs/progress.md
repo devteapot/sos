@@ -114,8 +114,10 @@ with visible-frame p50/p95/p99 of 17.073/20.618/20.815 ms, a 29.803 ms maximum,
 and 2.936 ms worker p95. RSS started at 274,016 KB, peaked at 274,080 KB, and
 ended at 259,180 KB. A later infinite loop was rejected in the same PID without
 changing the active-source hash, and 20 home/resume cycles kept that PID alive.
-Seven runtime tests passed. Full definitions, commands, caveats, and the
-development artifact identity are in
+Seven runtime tests passed. The clean 34,678,451-byte APK from commit
+`1c9cf464ed13` has SHA-256
+`77265416cda78e12ec3b65ca6d9e912fbdb0d65bdb5a02fb8440916933b9b249`.
+Full definitions, commands, caveats, and artifact identity are in
 [`worker-stress-gate.md`](worker-stress-gate.md).
 
 The first stress launch failed because an unescaped `&` in the deep-link URI was

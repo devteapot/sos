@@ -123,10 +123,10 @@ All seven tests passed. The new worker test verifies a distinct owning thread,
 prepare/commit replacement, hostile-candidate rejection, and continued actions
 through the previously committed runtime.
 
-The device APK produced while this gate was under development is
-`artifacts/sos-experience-074d8c5738d5-dirty.apk`, 34,678,451 bytes, SHA-256
+The clean revision artifact is
+`artifacts/sos-experience-1c9cf464ed13.apk`, built from commit `1c9cf464ed13`,
+34,678,451 bytes, SHA-256
 `77265416cda78e12ec3b65ca6d9e912fbdb0d65bdb5a02fb8440916933b9b249`.
-A clean revision artifact is recorded in the progress ledger after publication.
 
 ## Failures and fixes
 
