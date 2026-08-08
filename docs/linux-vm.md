@@ -75,8 +75,8 @@ ssh -p 2222 sos@127.0.0.1 '~/sos/tools/linux-vm/provision-debian'
 `provision-debian` refuses non-Debian-13 guests, installs the pinned GPUI/Zed
 Linux development libraries plus Weston/Xvfb/Mesa, installs Rust 1.95.0 through
 Debian's `rustup` package, fetches the locked dependency graph, and links the
-four session binaries. Log out and back in if it adds render/input group
-membership.
+four session binaries plus `sos-compositor`. Log out and back in if it adds
+render/input group membership.
 
 ## Automated acceptance gate
 
@@ -110,6 +110,19 @@ GPU/input path. Software rendering is acceptable for functional evidence, but
 no VM run establishes hardware latency, thermals, physical touch, suspend, or
 vendor DRM/KMS behavior.
 
+Then run the compositor gate in the same guest:
+
+```sh
+ssh -p 2222 sos@127.0.0.1 '~/sos/tools/linux-compositor/verify-nested'
+```
+
+It adds a Smithay compositor between the outer Weston session and GPUI,
+activates a revision without replacing the host, forces and recovers one host
+crash without replacing the compositor, and maps a separate compatibility
+client. Its `evidence=nested_backend_submit` is compositor-owned submission to
+the outer session, not proof of a physical KMS page flip. The full contract is
+in [`linux-compositor.md`](linux-compositor.md).
+
 ## Current status
 
 The gate passes in a KVM-accelerated ARM64 Debian 13.6 guest on kernel
@@ -124,9 +137,13 @@ SHA-256 `0e68f071dec0215f5d8c7e6f51898213951a6c1a4859f1b980fb4d479255e2bc`,
 and official SHA-512
 `e8ed94e83edded072c66b8871beff8243e0b846ac53980847e2ae44c6d47a8a55579181390b6c85939e85e2a821014ae87e9684930c0509a045212753c8d7916`.
 The mutable overlay is retained under ignored `.cache/linux-vm/` for continued
-development but is not an evidence artifact. The next gate is the minimal
-nested Smithay compositor; this result does not change any physical-hardware or
-latency claim.
+development but is not an evidence artifact. The nested Smithay gate now also
+passes in this guest: revision `552f0696…` activated in unchanged PID 11310,
+then the killed host recovered the same committed revision in PID 11514; boot,
+activation, and recovery each produced compositor-owned nested-backend submit
+evidence, and the compatibility client mapped at `(280, 140)`. This result does
+not change any physical-hardware or latency claim. The next compositor gate is
+direct DRM/libinput session ownership in the VM.
 
 References: [Debian Cloud images](https://wiki.debian.org/Cloud),
 [Debian cloud image comparison](https://wiki.debian.org/Cloud/SystemsComparison),

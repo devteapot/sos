@@ -1,0 +1,23 @@
+[package]
+name = "sos-compositor"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+anyhow = "1"
+compositor-control-protocol.workspace = true
+nix = { version = "0.31", features = ["socket"] }
+serde_json.workspace = true
+smithay = { version = "=0.7.0", default-features = false, features = [
+    "backend_winit",
+    "desktop",
+    "wayland_frontend",
+] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[[bin]]
+name = "sos-compositor"
+path = "src/main.rs"

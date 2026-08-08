@@ -36,9 +36,11 @@ host. Host stdout is reserved for newline-delimited protocol events; all GPUI,
 runtime, timing, and recovery diagnostics go to stderr. A candidate is compiled
 and rendered in a fresh Luau VM while the accepted scene remains active. On
 `present`, the worker commits that prepared VM and the same GPUI entity renders
-the new scene. A GPUI next-frame callback emits `presented`, and a later
-`confirm` request proves that the event loop is still responsive before the
-supervisor advances `current`.
+the new scene. In an ordinary Wayland session, a GPUI next-frame callback emits
+`presented`. Under `sos-compositor`, the host instead arms the scene handoff and
+waits for the compositor to observe its later shell commit in a successful
+nested backend submit. A later `confirm` request proves that the event loop is
+still responsive before the supervisor advances `current`.
 
 The Linux adapter consumes Scene ABI v3: orthogonal layout/content/paint/
 interaction/animation facets, bounded containing-block layout programs, nested
@@ -96,6 +98,9 @@ authority.
 
 The reproducible Debian 13 guest definition, provisioning command, and nested
 acceptance gate are in [`linux-vm.md`](linux-vm.md).
+The authenticated Smithay shell, compatibility-surface policy, input fence,
+crash recovery, and compositor-owned submit evidence are in
+[`linux-compositor.md`](linux-compositor.md).
 
 The executable link on Debian/Ubuntu requires the XKB development libraries in
 addition to the usual Rust/GPUI Linux prerequisites:
@@ -165,9 +170,11 @@ gate, not a GPU, compositor-presentation, or latency gate.
 
 ## Honest boundaries and next gate
 
-- `presented` currently means GPUI's next-frame callback, not compositor-owned
-  proof that a particular buffer reached an output. `sos-compositor` must own
-  that stronger acknowledgment.
+- An ordinary `linux-run` still uses GPUI's next-frame callback. The nested
+  `sos-compositor` path now owns stronger shell-commit/backend-submit evidence,
+  but its outer compositor can still delay or discard that nested buffer. Only
+  direct DRM/KMS page-flip evidence can complete the physical presentation
+  boundary.
 - The Linux text-input node is display-only. Native editing, selection, marked
   text, clipboard, and Wayland input-method integration remain open.
 - Scene semantics remain the source of truth, but Linux does not yet adapt them
@@ -183,15 +190,15 @@ gate, not a GPU, compositor-presentation, or latency gate.
   mapping, validation rules, and activation semantics. Platform lifecycle,
   layout/content details, raw pointer collection, text editing, and
   accessibility remain separate adapters.
-- Input is rejected while a host operation or action is active, but the custom
-  compositor must explicitly quiesce input across the coordinated authority
-  commit and scene switch.
+- The nested compositor quiesces forwarded input from arming through successful
+  shell submit. Direct libinput/touch routing and the appliance session boundary
+  remain unimplemented.
 - This is a nested desktop result. It does not prove boot-to-SOS, direct
   DRM/KMS, virtual-terminal ownership, touch, GPU performance, thermals,
   suspend/resume, or any hardware/latency gate.
 
-The next architectural slice is a small Smithay compositor running nested in a
-normal Wayland session. It should authenticate the SOS shell, own surface order
-and focus, place one compatibility client, and turn the shell's exact buffer
-presentation into the activation fence. Direct VM boot and physical hardware
-come only after that nested policy is stable.
+The nested Smithay slice is complete. The next architectural slice moves the
+same policy to a direct session backend in the Debian VM: logind ownership,
+DRM/GBM output, libinput, a compositor-owned recovery view, and page-flip-backed
+presentation evidence. Physical hardware comes only after that VM session is
+stable.

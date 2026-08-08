@@ -31,6 +31,7 @@ use service_protocol::{
 use sha2::{Digest, Sha256};
 
 use crate::assets::{self, SosAssets, ALBUM_ASSET};
+use crate::compositor_fence::{CompositorFence, FenceEvent};
 use crate::scene_surface;
 
 #[derive(Clone, Debug)]
@@ -138,6 +139,16 @@ pub fn run() -> Result<()> {
         bail!("the first host request must be boot");
     };
     let revision = load_revision(&revision_id, &revision_path, experience_api_version)?;
+    let compositor_fence = CompositorFence::from_environment()?;
+    if let Some(fence) = &compositor_fence {
+        let after_commit_sequence = fence
+            .arm(request_id, &revision.revision_id)
+            .context("arm boot presentation with SOS compositor")?;
+        eprintln!(
+            "sos_compositor_armed request_id={request_id} revision_id={} after_commit_sequence={after_commit_sequence}",
+            revision.revision_id
+        );
+    }
     let model = providers_fake::snapshot();
     let (worker, ready) = RuntimeWorker::start_with_assets(
         revision.source.clone(),
@@ -191,6 +202,7 @@ pub fn run() -> Result<()> {
                             protocol_rx,
                             results,
                             options.service_socket,
+                            compositor_fence,
                             cx,
                         )
                     })
@@ -216,6 +228,7 @@ pub(super) struct LinuxExperienceHost {
     active_revision_id: String,
     active_source_sha256: String,
     service_socket: Option<PathBuf>,
+    compositor_fence: Option<CompositorFence>,
     preparing: Option<PreparingRevision>,
     prepared: Option<PreparedRevision>,
     pending_commit: Option<PendingCommit>,
@@ -241,12 +254,16 @@ impl LinuxExperienceHost {
         protocol: async_channel::Receiver<ProtocolInput>,
         results: async_channel::Receiver<WorkerResult>,
         service_socket: Option<PathBuf>,
+        compositor_fence: Option<CompositorFence>,
         cx: &mut Context<Self>,
     ) -> Self {
         let (action_commits, action_results) = async_channel::unbounded();
         Self::attach_protocol(protocol, cx);
         Self::attach_worker_results(results, cx);
         Self::attach_action_results(action_results, cx);
+        if let Some(fence) = &compositor_fence {
+            Self::attach_compositor_events(fence.events(), cx);
+        }
         assets::install(&ready.assets);
         Self {
             model,
@@ -257,6 +274,7 @@ impl LinuxExperienceHost {
             active_revision_id: revision.revision_id.clone(),
             active_source_sha256: revision.source_sha256,
             service_socket,
+            compositor_fence,
             preparing: None,
             prepared: None,
             pending_commit: None,
@@ -329,6 +347,72 @@ impl LinuxExperienceHost {
             }
         })
         .detach();
+    }
+
+    fn attach_compositor_events(
+        events: async_channel::Receiver<FenceEvent>,
+        cx: &mut Context<Self>,
+    ) {
+        cx.spawn(async move |this, cx| {
+            while let Ok(event) = events.recv().await {
+                let failed = matches!(event, FenceEvent::Failed(_));
+                if this
+                    .update(cx, |this, cx| {
+                        this.handle_compositor_event(event, cx);
+                        cx.notify();
+                    })
+                    .is_err()
+                    || failed
+                {
+                    break;
+                }
+            }
+        })
+        .detach();
+    }
+
+    fn handle_compositor_event(&mut self, event: FenceEvent, cx: &mut Context<Self>) {
+        match event {
+            FenceEvent::Presented(presented) => {
+                let Some(pending) = self.pending_presentation.take() else {
+                    eprintln!(
+                        "sos_compositor_evidence_unexpected request_id={} revision_id={}",
+                        presented.request_id, presented.revision_id
+                    );
+                    cx.quit();
+                    return;
+                };
+                if pending.request_id != presented.request_id
+                    || pending.revision_id != presented.revision_id
+                {
+                    eprintln!(
+                        "sos_compositor_evidence_mismatch expected_request_id={} expected_revision_id={} request_id={} revision_id={}",
+                        pending.request_id,
+                        pending.revision_id,
+                        presented.request_id,
+                        presented.revision_id
+                    );
+                    cx.quit();
+                    return;
+                }
+                self.last_presented_revision = Some(presented.revision_id.clone());
+                self.status = None;
+                eprintln!(
+                    "sos_revision_frame revision_id={} evidence=nested_backend_submit commit_sequence={} submit_sequence={}",
+                    presented.revision_id,
+                    presented.commit_sequence,
+                    presented.submit_sequence
+                );
+                emit(&HostEvent::Presented {
+                    request_id: presented.request_id,
+                    revision_id: presented.revision_id,
+                });
+            }
+            FenceEvent::Failed(error) => {
+                eprintln!("sos_compositor_fence_failed error={error}");
+                cx.quit();
+            }
+        }
     }
 
     fn handle_protocol_input(&mut self, input: ProtocolInput, cx: &mut Context<Self>) {
@@ -412,15 +496,15 @@ impl LinuxExperienceHost {
                     return;
                 }
                 if let Err(error) = self.worker.commit_candidate(prepared.prepare_request_id) {
-                    self.prepared = Some(prepared);
                     reject(request_id, revision_id, error);
+                    self.prepared = Some(prepared);
                     return;
                 }
                 self.pending_commit = Some(PendingCommit {
                     present_request_id: request_id,
                     revision: prepared,
                 });
-                self.status = Some(("Switching retained scene…".into(), true));
+                self.status = Some(("Committing prepared Luau VM…".into(), true));
             }
             HostRequest::Confirm {
                 request_id,
@@ -538,17 +622,45 @@ impl LinuxExperienceHost {
                     self.pending_commit = Some(commit);
                     return;
                 }
+                let revision_id = commit.revision.revision.revision_id.clone();
+                if let Some(fence) = &self.compositor_fence {
+                    let after_commit_sequence = match fence
+                        .arm(commit.present_request_id, &revision_id)
+                    {
+                        Ok(sequence) => sequence,
+                        Err(error) => {
+                            eprintln!(
+                                "sos_compositor_arm_failed request_id={} revision_id={} error={error:#}",
+                                commit.present_request_id, revision_id
+                            );
+                            cx.quit();
+                            return;
+                        }
+                    };
+                    eprintln!(
+                        "sos_compositor_armed request_id={} revision_id={} after_commit_sequence={after_commit_sequence}",
+                        commit.present_request_id, revision_id
+                    );
+                }
                 assets::install(&revision_assets);
                 self.scene = scene;
                 self.state = state;
                 self.state_schema_version = state_schema_version;
-                self.active_revision_id = commit.revision.revision.revision_id.clone();
+                self.active_revision_id = revision_id;
                 self.active_source_sha256 = commit.revision.revision.source_sha256;
                 self.pending_presentation = Some(PendingPresentation {
                     request_id: commit.present_request_id,
                     revision_id: self.active_revision_id.clone(),
                 });
-                self.status = Some(("Scene switched; waiting for GPUI frame…".into(), true));
+                self.status = Some((
+                    if self.compositor_fence.is_some() {
+                        "Scene switched; waiting for compositor submit…"
+                    } else {
+                        "Scene switched; waiting for GPUI frame…"
+                    }
+                    .into(),
+                    true,
+                ));
                 eprintln!(
                     "sos_revision_committed revision_id={} worker_total_us={}",
                     self.active_revision_id, timings.worker_total_us
@@ -1229,20 +1341,22 @@ impl Render for LinuxExperienceHost {
                     .child(SharedString::from(message.clone())),
             );
         }
-        if let Some(presentation) = self.pending_presentation.take() {
-            cx.on_next_frame(window, move |this, _, cx| {
-                this.last_presented_revision = Some(presentation.revision_id.clone());
-                this.status = None;
-                eprintln!(
-                    "sos_revision_frame revision_id={} evidence=gpui_next_frame",
-                    presentation.revision_id
-                );
-                emit(&HostEvent::Presented {
-                    request_id: presentation.request_id,
-                    revision_id: presentation.revision_id,
+        if self.compositor_fence.is_none() {
+            if let Some(presentation) = self.pending_presentation.take() {
+                cx.on_next_frame(window, move |this, _, cx| {
+                    this.last_presented_revision = Some(presentation.revision_id.clone());
+                    this.status = None;
+                    eprintln!(
+                        "sos_revision_frame revision_id={} evidence=gpui_next_frame",
+                        presentation.revision_id
+                    );
+                    emit(&HostEvent::Presented {
+                        request_id: presentation.request_id,
+                        revision_id: presentation.revision_id,
+                    });
+                    cx.notify();
                 });
-                cx.notify();
-            });
+            }
         }
         root
     }

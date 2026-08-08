@@ -1305,3 +1305,128 @@ Smithay compositor for shell authentication, surface/focus policy, one
 compatibility client, input quiescing, and an exact compositor-owned
 presentation fence. No desktop or VM result completes direct DRM, physical
 touch, hardware latency, thermals, or suspend/resume gates.
+
+## 2026-08-09 — Fence Linux activation through a nested SOS compositor
+
+**Goal:** Replace GPUI's client-side next-frame signal with evidence owned by a
+minimal nested compositor, without exposing Wayland to Luau or disturbing the
+Android path. Authenticate the permanent host, constrain shell/compatibility
+surface policy, quiesce input across the visible scene handoff, survive a host
+crash without replacing the compositor, and repeat the result inside the
+reference Debian VM. Do not claim physical presentation from a nested backend.
+
+**Changed:** Added the Linux-only `sos-compositor` crate pinned to Smithay 0.7.0
+(crates.io checksum
+`740cea6927892bc182d5bf70c8f79806c8bc9f68f2fb96e55a30be171b63af98`).
+It uses Smithay's winit development backend, XDG shell, SHM, seat/data-device,
+output, and presentation helpers. The retained state/input/winit setup was
+reduced from Smithay's MIT `smallvil`/`anvil` examples at tag `v0.7.0`, commit
+`a166cf4c94b5aedc332a65aa1dd753e8148829c3`; source comments and the upstream
+license notice are retained. The compositor admits one fullscreen authenticated
+shell and one fixed 720-by-520 compatibility toplevel, owns focus and ordering,
+constrains popups, and forwards keyboard/pointer input only while no activation
+fence is armed.
+
+Added the platform-neutral `compositor-control-protocol` wire crate. Its
+8-KiB-bounded newline JSON carries shell registration, presentation arming, and
+registered/armed/presented/rejected events; tokens are bounded to 256 non-newline
+bytes. The compositor binds a mode-0600 socket in the caller's private runtime
+directory and requires both the launch token and the exact `SO_PEERCRED` PID.
+The host registers before GPUI opens its Wayland connection, so that PID alone
+receives the shell role and every other client receives the compatibility role.
+
+The Linux experience host now uses that control channel when
+`SOS_COMPOSITOR_CONTROL` and `SOS_COMPOSITOR_TOKEN` are both present and keeps
+the existing GPUI next-frame path when neither is present. At `present`, it
+first asks the worker to commit the prepared VM. In the resulting GPUI-thread
+callback it arms the exact request/revision, installs the worker-confirmed
+scene/state/schema/assets, and requests a frame. This avoids both certifying an
+old animated frame during asynchronous worker commit and displaying a revision
+whose active VM was not confirmed. Smithay tags the first later root shell
+commit and emits evidence only after the shell render element participates in a
+successful nested backend submit. The returned
+commit and submit sequences are matched against the host's pending request
+before the supervisor receives `presented`. An arm failure preserves the old
+visible scene but follows the already committed worker by exiting for supervisor
+recovery.
+
+The compositor drops pending fences and releases input when control disconnects.
+It records roles independently of live Wayland client lookup and replaces a
+stale shell surface when the supervisor authenticates a recovery PID, allowing
+the compositor to remain alive across permanent-host death. Added
+`tools/linux-compositor/verify-nested`, deterministic ANSI-free logs, failure-log
+reporting, the focused [`linux-compositor.md`](linux-compositor.md) contract,
+and VM provisioner/README/stable-host updates. The verifier creates an isolated
+Xvfb plus outer Weston session, runs `sos-compositor` nested, starts the existing
+coordinated provider/supervisor/GPUI session inside it, activates
+`daily-flow.luau`, kills the exact host PID, waits for recovery, and maps
+`weston-simple-shm` as the separate compatibility client. All runtime stores
+and logs are deleted after the gate; no raw artifact was added to Git.
+
+**Evidence:** `./tools/linux-compositor/verify-nested` passes on the ARM64
+Ubuntu 24.04 host. Revision `552f0696…` activated without replacing PID
+1799559; after an exact `SIGKILL`, the supervisor booted that committed revision
+in PID 1799841 without replacing the compositor. Boot, activation, and recovery
+reported nested-backend submit sequences 1034, 1042, and 1124, and the
+compatibility client mapped at `(280, 140)`.
+
+The exact-worktree gate also passes in the retained ARM64 KVM guest: Debian
+13.6, kernel `6.12.100+deb13-arm64`, Weston 14.0.2, and Mesa 25.0.7 software
+rendering. It activated full revision
+`552f06968bbc5c69de3db581454f60d4303289f304eaaf47a6e9dc3200297cdb` in
+unchanged PID 11310, then recovered it in PID 11514. Compositor evidence was
+commit/submit 1/928 for boot, 9/936 for activation, and 14/1009 for recovery.
+The exact durable authority and supervisor pointer matched, no
+`gpui_next_frame` fallback appeared, and `weston-simple-shm` mapped as the one
+compatibility toplevel at `(280, 140)`.
+
+`cargo test --workspace --all-features --lib --bins --tests --locked` passes all
+104 non-documentation tests, including the new control-wire, compositor-policy,
+and real Unix-socket fence-client cases. Strict all-feature/all-target workspace
+clippy passes with warnings denied. The NDK 29 native-Clang
+`aarch64-linux-android` release check passes with `gate-strict`, confirming the
+Linux-only dependency/feature split did not affect Android. All five bundled
+experiences pass `sosctl validate`; formatting, Bash syntax, ShellCheck,
+conflict-marker, `git diff --check`, both local/guest compositor gates, and the
+locked five-binary Linux build pass.
+
+**Failures and fixes:** The first Smithay compile exposed version-specific
+imports, Wayland trait requirements, winit callback return types, and calloop
+errors that cannot enter `anyhow` because their sources are intentionally not
+`Send`/`Sync`; using the 0.7.0 APIs and converting insertion failures at the
+boundary fixed them. Reviewing the first host wiring exposed the old-frame race
+before it became evidence; waiting for worker commit and arming at the actual
+event-thread scene handoff fixed it. The first Debian verification had all
+correct evidence but failed its log match because tracing emitted ANSI escapes;
+machine logs are now explicitly ANSI-free. The recovery extension required
+surface-role records and stale-shell replacement so delayed destruction of the
+dead host cannot corrupt cardinality or reject its replacement.
+
+The VM stopped when the host SSD previously filled and left only its exact stale
+QEMU PID file. After space was freed, removing that verified-stale PID file and
+resuming the preserved overlay restored the gate; Cargo detected and discarded
+one corrupt incremental artifact from the abrupt stop. The first broad
+`cargo test --workspace --all-features` also ran two pre-existing vendored GPUI
+Mobile illustrative doctests that omit their surrounding imports/types and
+failed to compile. The complete lib/bin/integration target suite above passes;
+the unrelated vendor examples were not changed as part of this Linux slice.
+
+**Decision:** Keep the compositor a trusted Linux platform layer beneath GPUI
+and the generated Scene ABI. Use a separate bounded host/compositor protocol,
+PID credentials, and Rust-owned surface policy; never give generated code
+Wayland authority. Treat `nested_backend_submit` as valid functional activation
+evidence for this development topology, but not as output presentation or
+latency evidence. Preserve ordinary-compositor `linux-run` as the simpler host
+gate and opt into the stronger fence only when the compositor environment is
+present.
+
+**Open risks / next gate:** The launch token plus private socket is a
+development authenticator; production needs separated service identities or
+system-managed credentials against same-UID inspection. The current compositor
+has no direct DRM/GBM, udev/logind session, libinput backend, permanent recovery
+view, cursor rendering policy, touch/multi-pointer route, text-input/IME,
+clipboard, accessibility adapter, layer shell, XWayland, or general application
+placement capability. Its successful submit can still be delayed or discarded
+by the outer compositor. Next, carry the same policy into a direct Debian VM
+session and bind acceptance to KMS/page-flip evidence. Only after that VM gate
+should SOS attempt boot-to-session packaging or physical-device performance.

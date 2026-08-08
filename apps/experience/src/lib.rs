@@ -6,6 +6,8 @@ mod android;
 ))]
 mod assets;
 #[cfg(all(target_os = "linux", feature = "linux-host"))]
+mod compositor_fence;
+#[cfg(all(target_os = "linux", feature = "linux-host"))]
 mod linux;
 #[cfg(all(test, not(target_os = "android")))]
 #[allow(dead_code)]

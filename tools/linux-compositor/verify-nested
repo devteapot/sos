@@ -1,0 +1,231 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+gate_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+cd "$gate_root"
+for gate_command in cargo sed weston weston-simple-shm Xvfb; do
+  command -v "$gate_command" >/dev/null 2>&1 || {
+    printf 'error: required command not found: %s\n' "$gate_command" >&2
+    exit 1
+  }
+done
+
+gate_run_dir="$(mktemp -d /tmp/sos-nested-compositor.XXXXXX)"
+gate_runtime_dir="$gate_run_dir/runtime"
+gate_revision_root="$gate_run_dir/revisions"
+gate_control_socket="$gate_runtime_dir/compositor-control.sock"
+gate_token="sos-nested-$BASHPID-$RANDOM"
+mkdir "$gate_runtime_dir"
+chmod 700 "$gate_runtime_dir"
+gate_xvfb_pid=""
+gate_weston_pid=""
+gate_compositor_pid=""
+gate_session_pid=""
+gate_compatibility_pid=""
+
+cleanup_nested_gate() {
+  if [[ -n "$gate_session_pid" ]] && kill -0 "$gate_session_pid" 2>/dev/null; then
+    SOS_LINUX_REVISION_ROOT="$gate_revision_root" \
+      ./tools/sosctl linux-stop >/dev/null 2>&1 || true
+    wait "$gate_session_pid" 2>/dev/null || true
+  fi
+  for gate_pid in \
+    "$gate_compatibility_pid" \
+    "$gate_compositor_pid" \
+    "$gate_weston_pid" \
+    "$gate_xvfb_pid"; do
+    if [[ -n "$gate_pid" ]] && kill -0 "$gate_pid" 2>/dev/null; then
+      kill "$gate_pid" 2>/dev/null || true
+      wait "$gate_pid" 2>/dev/null || true
+    fi
+  done
+  if [[ "$gate_run_dir" == /tmp/sos-nested-compositor.* && -d "$gate_run_dir" ]]; then
+    chmod -R u+w "$gate_run_dir" 2>/dev/null || true
+    rm -r -- "$gate_run_dir"
+  fi
+}
+trap cleanup_nested_gate EXIT
+
+report_nested_gate_failure() {
+  local gate_status="$?"
+  local gate_line="$1"
+  set +e
+  printf 'error: nested compositor gate failed at line %s (status %s)\n' \
+    "$gate_line" "$gate_status" >&2
+  for gate_log in compositor.log session.log compatibility.log weston.log; do
+    if [[ -f "$gate_run_dir/$gate_log" ]]; then
+      printf '%s:\n' "$gate_log" >&2
+      tail -n 120 "$gate_run_dir/$gate_log" >&2
+    fi
+  done
+  exit "$gate_status"
+}
+trap 'report_nested_gate_failure "$LINENO"' ERR
+
+cargo build --locked \
+  -p sos-compositor --bin sos-compositor \
+  -p sos-experience --features linux-host --bin sos-experience-host \
+  -p revision-supervisor --bin sos-revision-supervisor \
+  -p provider-state-service --bin sos-provider-state-service \
+  -p sos-linux-session --bin sos-linux-session
+
+Xvfb -displayfd 1 -screen 0 1280x800x24 \
+  >"$gate_run_dir/display" 2>"$gate_run_dir/xvfb.log" &
+gate_xvfb_pid=$!
+for _ in {1..200}; do
+  [[ -s "$gate_run_dir/display" ]] && break
+  kill -0 "$gate_xvfb_pid" 2>/dev/null || {
+    sed -n '1,120p' "$gate_run_dir/xvfb.log"
+    exit 1
+  }
+  sleep 0.01
+done
+gate_display=":$(tr -d '\r\n' < "$gate_run_dir/display")"
+
+DISPLAY="$gate_display" XDG_RUNTIME_DIR="$gate_runtime_dir" \
+  weston --backend=x11-backend.so --socket=wayland-outer \
+  --width=1280 --height=800 --idle-time=0 \
+  >"$gate_run_dir/weston.log" 2>&1 &
+gate_weston_pid=$!
+for _ in {1..500}; do
+  [[ -S "$gate_runtime_dir/wayland-outer" ]] && break
+  kill -0 "$gate_weston_pid" 2>/dev/null || {
+    sed -n '1,180p' "$gate_run_dir/weston.log"
+    exit 1
+  }
+  sleep 0.01
+done
+
+DISPLAY="$gate_display" \
+XDG_RUNTIME_DIR="$gate_runtime_dir" \
+WAYLAND_DISPLAY=wayland-outer \
+LIBGL_ALWAYS_SOFTWARE=1 \
+RUST_LOG=sos_compositor=info \
+  target/debug/sos-compositor \
+    --socket wayland-sos \
+    --control-socket "$gate_control_socket" \
+    --shell-token "$gate_token" \
+    >"$gate_run_dir/compositor.out" 2>"$gate_run_dir/compositor.log" &
+gate_compositor_pid=$!
+for _ in {1..1000}; do
+  if [[ -S "$gate_runtime_dir/wayland-sos" && -S "$gate_control_socket" ]]; then
+    break
+  fi
+  kill -0 "$gate_compositor_pid" 2>/dev/null || {
+    sed -n '1,240p' "$gate_run_dir/compositor.log"
+    exit 1
+  }
+  sleep 0.01
+done
+[[ -S "$gate_runtime_dir/wayland-sos" ]]
+[[ -S "$gate_control_socket" ]]
+
+DISPLAY="$gate_display" \
+XDG_RUNTIME_DIR="$gate_runtime_dir" \
+WAYLAND_DISPLAY=wayland-sos \
+LIBGL_ALWAYS_SOFTWARE=1 \
+SOS_COMPOSITOR_CONTROL="$gate_control_socket" \
+SOS_COMPOSITOR_TOKEN="$gate_token" \
+SOS_LINUX_REVISION_ROOT="$gate_revision_root" \
+  ./tools/sosctl linux-run --windowed >"$gate_run_dir/session.log" 2>&1 &
+gate_session_pid=$!
+for _ in {1..2000}; do
+  [[ -S "$gate_revision_root/run/supervisor.sock" ]] && break
+  kill -0 "$gate_session_pid" 2>/dev/null || {
+    sed -n '1,300p' "$gate_run_dir/session.log"
+    sed -n '1,300p' "$gate_run_dir/compositor.log"
+    exit 1
+  }
+  sleep 0.01
+done
+[[ -S "$gate_revision_root/run/supervisor.sock" ]]
+
+gate_status_before="$(
+  SOS_LINUX_REVISION_ROOT="$gate_revision_root" ./tools/sosctl linux-status
+)"
+gate_pid_before="$(
+  sed -n 's/.*"host_pid":\([0-9][0-9]*\).*/\1/p' <<<"$gate_status_before"
+)"
+gate_activation="$(
+  SOS_LINUX_REVISION_ROOT="$gate_revision_root" \
+    ./tools/sosctl linux-script experiences/daily-flow.luau
+)"
+gate_status_after="$(
+  SOS_LINUX_REVISION_ROOT="$gate_revision_root" ./tools/sosctl linux-status
+)"
+gate_pid_after="$(
+  sed -n 's/.*"host_pid":\([0-9][0-9]*\).*/\1/p' <<<"$gate_status_after"
+)"
+[[ -n "$gate_pid_before" && "$gate_pid_before" == "$gate_pid_after" ]]
+
+kill -KILL "$gate_pid_after"
+gate_restarted_pid=""
+for _ in {1..1000}; do
+  gate_restart_status="$(
+    SOS_LINUX_REVISION_ROOT="$gate_revision_root" ./tools/sosctl linux-status 2>/dev/null || true
+  )"
+  gate_restarted_pid="$(
+    sed -n 's/.*"host_pid":\([0-9][0-9]*\).*/\1/p' <<<"$gate_restart_status"
+  )"
+  if [[ -n "$gate_restarted_pid" && "$gate_restarted_pid" != "$gate_pid_after" ]]; then
+    break
+  fi
+  kill -0 "$gate_session_pid" 2>/dev/null
+  sleep 0.01
+done
+[[ -n "$gate_restarted_pid" && "$gate_restarted_pid" != "$gate_pid_after" ]]
+
+XDG_RUNTIME_DIR="$gate_runtime_dir" WAYLAND_DISPLAY=wayland-sos \
+  weston-simple-shm >"$gate_run_dir/compatibility.log" 2>&1 &
+gate_compatibility_pid=$!
+for _ in {1..500}; do
+  if grep -q 'mapped fixed-policy XDG toplevel role=Compatibility x=280 y=140' \
+    "$gate_run_dir/compositor.log"; then
+    break
+  fi
+  kill -0 "$gate_compatibility_pid" 2>/dev/null || {
+    sed -n '1,120p' "$gate_run_dir/compatibility.log"
+    exit 1
+  }
+  sleep 0.01
+done
+
+gate_current_revision="$(
+  target/debug/sos-revision-supervisor status --root "$gate_revision_root"
+)"
+gate_authority_revision="$(
+  sed -n 's/.*"revision_id": "\([0-9a-f]*\)".*/\1/p' \
+    "$gate_revision_root/authority.json" | head -1
+)"
+[[ "$gate_current_revision" == "$gate_authority_revision" ]]
+[[ "$(grep -c 'evidence=nested_backend_submit' "$gate_run_dir/session.log")" -eq 3 ]]
+if grep -q 'evidence=gpui_next_frame' "$gate_run_dir/session.log"; then
+  printf 'error: host fell back to GPUI next-frame evidence\n' >&2
+  exit 1
+fi
+grep -q "authenticated SOS shell control connection pid=$gate_pid_after" \
+  "$gate_run_dir/compositor.log"
+grep -q "accepted Wayland client pid=$gate_pid_after role=Shell" \
+  "$gate_run_dir/compositor.log"
+grep -q "authenticated SOS shell control connection pid=$gate_restarted_pid" \
+  "$gate_run_dir/compositor.log"
+grep -q "accepted Wayland client pid=$gate_restarted_pid role=Shell" \
+  "$gate_run_dir/compositor.log"
+[[ "$(grep -c 'presented armed shell revision' "$gate_run_dir/compositor.log")" -eq 3 ]]
+grep -q 'HostRestarted' "$gate_run_dir/session.log"
+grep -q 'accepted Wayland client.*role=Compatibility' "$gate_run_dir/compositor.log"
+grep -q 'mapped fixed-policy XDG toplevel role=Compatibility x=280 y=140' \
+  "$gate_run_dir/compositor.log"
+
+SOS_LINUX_REVISION_ROOT="$gate_revision_root" ./tools/sosctl linux-stop >/dev/null
+wait "$gate_session_pid"
+gate_session_pid=""
+
+printf 'linux_nested_compositor_passed activation_pid=%s restarted_pid=%s revision_id=%s evidence=nested_backend_submit\n' \
+  "$gate_pid_after" "$gate_restarted_pid" "$gate_current_revision"
+printf 'activation=%s\n' "$gate_activation"
+printf 'authority_revision=%s\n' "$gate_authority_revision"
+grep -E \
+  'authenticated SOS shell|mapped fixed-policy|presented armed shell revision' \
+  "$gate_run_dir/compositor.log"

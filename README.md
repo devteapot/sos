@@ -31,6 +31,9 @@ and remaining compositor boundaries are in
 [`docs/linux-stable-host.md`](docs/linux-stable-host.md).
 The passing reproducible Debian 13 VM gate and acceptance command are in
 [`docs/linux-vm.md`](docs/linux-vm.md).
+The authenticated nested Smithay compositor, compatibility-surface policy, and
+compositor-owned activation fence are in
+[`docs/linux-compositor.md`](docs/linux-compositor.md).
 The durable typed provider/state Unix-socket protocol and authority are in
 [`docs/provider-state-service.md`](docs/provider-state-service.md).
 Their supervisor-owned activation journal is in
@@ -101,12 +104,20 @@ without replacing the process or native window:
 ./tools/sosctl linux-stop
 ```
 
-This is the client-host gate, not yet a complete SOS session. The command now
-starts the provider/state authority and uses coordinated revision activation;
-presentation is still acknowledged by GPUI's next-frame callback. Native Linux
-text editing, compositor-owned presentation evidence, compatibility surfaces,
-boot-to-SOS, and direct hardware remain subsequent gates. See
-[`docs/linux-stable-host.md`](docs/linux-stable-host.md) for the exact evidence
+This command remains the ordinary Wayland client-host gate and uses GPUI's
+next-frame callback. The next slice now also passes through SOS's own nested
+Smithay compositor, where a peer-credential-authenticated shell gets
+compositor-owned submit evidence and one separately owned compatibility client:
+
+```sh
+./tools/linux-compositor/verify-nested
+```
+
+That nested result is not yet a direct SOS session. Native Linux text editing,
+accessibility, direct DRM/KMS and libinput ownership, boot-to-SOS, and physical
+hardware remain subsequent gates. See
+[`docs/linux-stable-host.md`](docs/linux-stable-host.md) and
+[`docs/linux-compositor.md`](docs/linux-compositor.md) for the exact evidence
 and limitations.
 
 ## Milestone 1 vertical slice
