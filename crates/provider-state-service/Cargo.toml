@@ -1,0 +1,23 @@
+[package]
+name = "provider-state-service"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+service-protocol.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tempfile = "3"
+
+[[bin]]
+name = "sos-provider-state-service"
+path = "src/main.rs"
+
+[[bin]]
+name = "provider-state-probe"
+path = "src/bin/provider-state-probe.rs"

@@ -432,3 +432,154 @@ canonical drag, crash probes, strict dependency check, back-to-back PID test,
 and 10,000-swap run as regressions. A multi-hour attributed heap soak, drag
 coalescing, arbitrary native/shader revisions, and production security remain
 future gates.
+
+## 2026-08-08 — Standalone Linux revision supervisor
+
+**Goal:** Remove revision and crash authority from the accepted experience
+process, while defining a filesystem and candidate ABI that can be developed
+before the AOSP environment is ready.
+
+**Changed:** Added the `revision-supervisor` crate and long-lived
+`sos-revision-supervisor` daemon. It installs read-only content-addressed
+revision directories, verifies source/state/schema/executable identity, launches
+direct child candidates, accepts a token-bound first-frame event over a Unix
+socket, atomically replaces the relative `current` symlink, monitors the
+accepted child, and rolls back plus relaunches the preceding revision after
+exit. The typed local control protocol supports promote, status, and shutdown.
+The complete contract and usage are in
+[`revision-supervisor.md`](revision-supervisor.md).
+
+**Evidence:** `cargo test -p revision-supervisor --all-targets` passed nine
+tests in 17.96 seconds on the Linux development host. Tests use real child
+executables and Unix sockets. They cover immutable/content-addressed install,
+state/source/schema drift rejection, directory-ID recomputation, 50 atomic
+pointer swaps under a concurrent reader, pre-frame crash preservation,
+first-frame timeout, accepted boot-process relaunch, post-frame crash rollback
+with predecessor relaunch, and a separate daemon that remains alive and answers
+a control request after the candidate dies. The initial 500-swap
+atomic-pointer test was rejected because rehashing the copied debug executable
+on every verified pointer write made it exceed 60 seconds; 50 swaps retain the
+atomic-reader assertion without pretending this is a throughput benchmark. A
+CLI helper initially failed compilation because its request/response types were
+one-way serde types; removing the unused helper, then restoring it with explicit
+bidirectional derives when control commands were added, fixed the boundary.
+
+**Decision:** Keep this process/filesystem contract as the standalone revision
+authority prototype. It directly closes the architectural coupling in which the
+accepted Android process supervised its candidate, but it does not complete the
+AOSP surface/input or production security gates.
+
+**Open risks / next gate:** Bind first-frame readiness to compositor-owned
+surface presentation; sign manifests; put revision processes in namespaces and
+cgroups; add process-tree/resource enforcement and multi-level recovery. Next,
+move provider/state authority behind a durable Unix-socket transaction protocol
+whose transaction ID is committed consistently with this revision pointer, and
+inject failures before, during, and after promotion. Repeat crash/promotion
+evidence on the AOSP target; this desktop test does not complete a hardware or
+latency gate.
+
+## 2026-08-08 — Durable typed provider/state authority
+
+**Goal:** Replace the workstation prototype's in-memory stage/effect bookkeeping
+with a clean local protocol and durable authority that can reconcile schema,
+state, and exactly-once provider effects across ambiguous promotion failures and
+process restart.
+
+**Changed:** Added `service-protocol` with versioned typed resources, actions,
+events, transactions, errors, and fault points. Added the
+`provider-state-service` Unix-socket daemon/client, atomic authority-file
+persistence, caller-stable transaction IDs, migration proofs bound to the exact
+prior state hash, durable `staged/committing/committed/aborted` records, typed
+notes projection, deterministic effect receipts, and restart/live recovery.
+Both pathname and Linux/Android abstract `@name` sockets are supported. Added an
+ARM64 probe and the native-Clang NDK linker wrapper required by this ARM64 host.
+The detailed protocol and fault semantics are in
+[`provider-state-service.md`](provider-state-service.md).
+
+**Evidence:** Ten targeted tests pass, covering all five injected fault points,
+migration proof acceptance/rejection, stale competing writers, abort,
+idempotency, bounded events, restart from the durable middle phase, and a real
+daemon/client Unix-socket exchange. Strict clippy passes for both new crates.
+The complete workspace passes 42 tests.
+On the Samsung SM-A336B (API 35), transaction `device-probe-1` injected
+`during_promotion`, reconciled the ambiguous result to revision 1, and reported
+exactly one receipt, one notes attachment, and four ordered events. Killing and
+restarting the daemon preserved revision ID `93f1aed4…` and the exact resource/
+event counts. The 2,452-byte authority file SHA-256 was `36412cad…`; exact binary
+sizes/hashes are recorded in the focused document. Device probe files were
+removed afterward.
+
+**Failures and fixes:** Plain Cargo selected the host linker and missed Android
+libraries. `cargo-ndk` selected the installed x86-64 NDK linker, which cannot run
+in this ARM64 container's incomplete binfmt setup. A small wrapper now drives
+native system Clang against the NDK 29 Android sysroot and ARM64 unwind runtime.
+The first device daemon then failed with an unlabelled `EACCES`; contextual I/O
+errors identified Android SELinux denial at pathname Unix-socket bind. Abstract
+namespace transport fixed it without relaxing policy. An initial 500-iteration
+supervisor pointer test from the preceding slice remains intentionally reduced;
+it is unrelated to this service's transaction evidence.
+
+**Decision:** Adopt the new protocol/authority as the provider and durable-state
+system-service prototype while retaining the legacy TCP daemon solely for the
+current APK regression harness. The Android shell run proves the service binary,
+durable file, and abstract IPC work on the device; it is not an AOSP service,
+privileged integration, or latency gate.
+
+**Open risks / next gate:** Add a supervisor-owned promotion journal binding the
+atomic `current` pointer to the authority transaction ID, with crash injection
+between intent, pointer swap, service commit, and journal cleanup. External
+providers must durably deduplicate effect IDs. Add event compaction, peer
+credentials/authorization, signed manifests, cgroup/process-tree limits, and an
+AOSP-owned socket/service location before replacing the APK adapter.
+
+## 2026-08-08 — Coordinate revision pointer and service transaction
+
+**Goal:** Make immutable revision promotion and the durable provider/state
+transaction converge to one decision after supervisor, candidate, or service
+failure, without exposing a candidate whose state/effects are not committed.
+
+**Changed:** Added `CoordinatedSupervisor` and an atomically persisted
+`promotion-journal.json` with `intent`, `service_committed`, and
+`pointer_committed` phases. Revision preparation now waits for first frame while
+the accepted child stays alive; the service transaction is the commit decision;
+the candidate is checked for death again before atomic pointer replacement.
+Startup recovery compares journal, pointer, immutable bundled state, and typed
+service transaction, then deterministically keeps/aborts the previous revision
+or relaunches the committed candidate. The long-lived supervisor daemon accepts
+`--service-socket`, and coordinated promote requires `--transaction`. Full
+ordering and recovery rules are in
+[`coordinated-promotion.md`](coordinated-promotion.md).
+
+**Evidence:** Ten coordinator integration tests passed in 9.03 seconds using
+real child executables and a real Unix-socket authority. They cover normal
+promotion; exact state/source/schema binding; candidate pre-frame death; service
+failure before and during commit; supervisor crashes after intent, service
+commit, and pointer commit; restart reconciliation; committed-current relaunch
+after an accepted crash; and the external daemon control path. The ten-test base
+supervisor suite passed in 26.26 seconds and now
+also rejects a child that dies after first frame but before pointer commitment.
+The complete workspace passes 53 tests with strict workspace clippy.
+
+**Failures and fixes:** The first serialized test run hung because Rust drops
+struct fields in declaration order: `TempDir` removed the pathname socket before
+the service harness could send shutdown, leaving its join blocked. Making the
+service field drop first fixed ownership and the suite completes in parallel.
+A lifecycle audit after the first green coordinator run found the post-frame/
+pre-pointer child-death race; an explicit liveness check now preserves the old
+pointer and leaves a committed journal for fresh-candidate recovery. A final
+cross-authority audit found that the base supervisor's accepted-child rollback
+would move only the pointer after a coordinated commit while durable service
+state remained new. Coordinated crash handling now pins the committed `current`
+revision and relaunches it instead, keeping both authorities aligned.
+
+**Decision:** Use the service transaction as the durable commit decision and
+the supervisor journal as the cross-authority recovery record. This closes the
+Linux process/filesystem consistency slice: before service commit recovery keeps
+the previous revision; after service commit recovery must install the candidate.
+It is not a claim of kernel-atomic cross-service commit.
+
+**Open risks / next gate:** A compositor must quiesce old-revision input during
+the short service-commit-to-pointer interval and bind `first_frame` to an actual
+staged surface. Add signed revision/journal verification, peer credentials,
+cgroups/process-tree enforcement, event compaction, and multi-level recovery.
+Those can be partly prototyped on Linux; surface/input ownership requires AOSP.
