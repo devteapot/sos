@@ -279,6 +279,70 @@ install_script() {
   info "candidate delivered; use ./tools/sosctl m1-logs to inspect acceptance"
 }
 
+validate_script() {
+  local source_path="${1:-}"
+  [[ -n "$source_path" ]] || fail "usage: ./tools/sosctl validate <experience.luau>"
+  [[ -f "$source_path" ]] || fail "script not found: $source_path"
+  (
+    cd "$SOS_ROOT"
+    cargo run --quiet --locked -p runtime-luau --example validate -- "$source_path"
+  )
+}
+
+agent_apply_script() {
+  local source_path="${1:-}"
+  [[ -n "$source_path" ]] || fail "usage: ./tools/sosctl agent-apply <experience.luau>"
+  validate_script "$source_path"
+
+  resolve_android_environment
+  require_command adb
+  select_device
+  local app_pid before_results result=""
+  app_pid="$(adb shell pidof "$M1_ANDROID_PACKAGE" | tr -d '\r')"
+  [[ -n "$app_pid" ]] || fail "$M1_ANDROID_PACKAGE is not running; use ./tools/sosctl m1-launch"
+  before_results="$(adb logcat -d --pid="$app_pid" -v brief | grep -Ec 'script_(visible|rejected)' || true)"
+  install_script "$source_path"
+  for _ in {1..100}; do
+    result="$(adb logcat -d --pid="$app_pid" -v brief | grep -E 'script_(visible|rejected)' | tail -n +$((before_results + 1)) | tail -n 1 || true)"
+    [[ -n "$result" ]] && break
+    sleep 0.1
+  done
+  [[ -n "$result" ]] || fail "candidate produced no acceptance result"
+  printf '%s\n' "$result"
+  [[ "$result" == *"script_visible"* ]] || fail "candidate was rejected"
+
+  mkdir -p "$ARTIFACT_DIR"
+  local screenshot="$ARTIFACT_DIR/sos-agent-latest.png"
+  adb exec-out screencap -p > "$screenshot"
+  local active_hash
+  active_hash="$(adb shell run-as "$M1_ANDROID_PACKAGE" sha256sum files/experience.active.luau | awk '{ print $1 }')"
+  info "candidate accepted; active source SHA-256: $active_hash"
+  info "inspection screenshot: $screenshot"
+  info "keep this revision or run ./tools/sosctl rollback"
+}
+
+restart_runtime_worker() {
+  resolve_android_environment
+  require_command adb
+  select_device
+  local app_pid before_ready result=""
+  app_pid="$(adb shell pidof "$M1_ANDROID_PACKAGE" | tr -d '\r')"
+  [[ -n "$app_pid" ]] || fail "$M1_ANDROID_PACKAGE is not running; use ./tools/sosctl m1-launch"
+  before_ready="$(adb logcat -d --pid="$app_pid" -v brief | grep -c 'runtime_worker_ready' || true)"
+  adb shell am start \
+    -W \
+    -a android.intent.action.VIEW \
+    -d 'sos://worker-restart' \
+    -n "$M1_ANDROID_PACKAGE/$ANDROID_ACTIVITY" >/dev/null
+  for _ in {1..100}; do
+    result="$(adb logcat -d --pid="$app_pid" -v brief | grep 'runtime_worker_ready' | tail -n +$((before_ready + 1)) | tail -n 1 || true)"
+    [[ -n "$result" ]] && break
+    sleep 0.1
+  done
+  [[ -n "$result" ]] || fail "runtime worker did not become ready after restart"
+  printf '%s\n' "$result"
+}
+
 rollback_script() {
   resolve_android_environment
   require_command adb
@@ -305,7 +369,8 @@ stress_experience() {
   app_pid="$(adb shell pidof "$M1_ANDROID_PACKAGE" | tr -d '\r')"
   [[ -n "$app_pid" ]] || fail "$M1_ANDROID_PACKAGE is not running; use ./tools/sosctl m1-launch"
 
-  local run_id="$(date +%s)-$$-$count"
+  local run_id
+  run_id="$(date +%s)-$$-$count"
   info "starting $count transactional swaps; each swap waits for a GPUI frame"
   adb shell am start \
     -W \
@@ -348,8 +413,11 @@ Commands:
   m1-run [--no-follow]
                       Build, install, launch, and follow logs.
   script <file>       Transactionally load Luau source; no APK or restart.
+  validate <file>     Compile, evaluate, decode, and validate Luau locally.
+  agent-apply <file>  Validate, install, await frame, and capture screenshot.
   rollback            Submit the prior accepted Luau source as a candidate.
   stress [count]      Run frame-paced transactional swaps (default: 1000).
+  worker-restart      Recreate the Luau worker without replacing the APK.
   help                 Show this message.
 
 Set ADB_SERIAL when more than one Android device is connected.
@@ -395,12 +463,24 @@ case "$command_name" in
   script)
     install_script "${1:-}"
     ;;
+  validate)
+    [[ "$#" -eq 1 ]] || fail "usage: ./tools/sosctl validate <experience.luau>"
+    validate_script "$1"
+    ;;
+  agent-apply)
+    [[ "$#" -eq 1 ]] || fail "usage: ./tools/sosctl agent-apply <experience.luau>"
+    agent_apply_script "$1"
+    ;;
   rollback)
     rollback_script
     ;;
   stress)
     [[ "$#" -le 1 ]] || fail "usage: ./tools/sosctl stress [count]"
     stress_experience "${1:-1000}"
+    ;;
+  worker-restart)
+    [[ "$#" -eq 0 ]] || fail "usage: ./tools/sosctl worker-restart"
+    restart_runtime_worker
     ;;
   m1-run)
     no_follow=false

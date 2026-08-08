@@ -1,3 +1,7 @@
+mod accessibility;
+mod assets;
+mod native_input;
+
 use std::{
     collections::HashMap,
     fs,
@@ -10,19 +14,24 @@ use std::{
     time::{Duration, Instant},
 };
 
-use experience_ir::{Align, ExperienceModel, Justify, NodeKind, UiEvent, UiNode};
+use experience_ir::{Align, AnimationKind, ExperienceModel, Justify, NodeKind, UiEvent, UiNode};
 use gpui::{
-    div, prelude::*, px, rgb, AnyElement, App, Application, Context, MouseButton, Render,
-    SharedString, Window, WindowOptions,
+    div, img, prelude::*, px, rgb, Animation as GpuiAnimation, AnimationExt as _, AnyElement, App,
+    Application, Context, Entity, MouseButton, Render, SharedString, Window, WindowOptions,
 };
 use gpui_mobile::{android::jni, packages::deeplink};
-use runtime_luau::{CandidateTimings, RuntimeWorker, WorkerResult};
+use runtime_luau::{CandidateTimings, RuntimeWorker, WorkerReady, WorkerResult};
 use serde_json::{json, Value as JsonValue};
 
-use crate::{DEFAULT_EXPERIENCE, TIMEFLOW_EXPERIENCE};
+use crate::{
+    DAILY_FLOW_AGENT_EXPERIENCE, DAILY_FLOW_EXPERIENCE, DEFAULT_EXPERIENCE, TIMEFLOW_EXPERIENCE,
+};
+use assets::{SosAssets, ALBUM_ASSET};
+use native_input::NativeTextInput;
 
 static FILES_DIR: OnceLock<PathBuf> = OnceLock::new();
 static RELOAD_REQUESTED: AtomicBool = AtomicBool::new(false);
+static WORKER_RESTART_REQUESTED: AtomicBool = AtomicBool::new(false);
 static STRESS_REQUEST: OnceLock<Mutex<Option<StressRequest>>> = OnceLock::new();
 
 const ACTIVE_FILE: &str = "experience.active.luau";
@@ -61,6 +70,7 @@ struct StressRun {
     worker_latencies_us: Vec<u64>,
     rss_start_kb: u64,
     rss_peak_kb: u64,
+    rss_samples: Vec<(usize, u64)>,
 }
 
 #[no_mangle]
@@ -89,6 +99,9 @@ fn android_main(app: android_activity::AndroidApp) {
         if url.starts_with("sos://reload") {
             RELOAD_REQUESTED.store(true, Ordering::Release);
             log::info!("script_reload_requested");
+        } else if url.starts_with("sos://worker-restart") {
+            WORKER_RESTART_REQUESTED.store(true, Ordering::Release);
+            log::info!("runtime_worker_restart_requested");
         } else if url.starts_with("sos://stress") {
             match parse_stress_request(url) {
                 Some(request) => {
@@ -100,18 +113,21 @@ fn android_main(app: android_activity::AndroidApp) {
         }
     });
 
-    Application::with_platform(shared.into_rc()).run(|cx: &mut App| {
-        match cx.open_window(
-            WindowOptions {
-                window_bounds: None,
-                ..Default::default()
-            },
-            |_, cx| cx.new(ExperienceHost::new),
-        ) {
-            Ok(_) => log::info!("SOS experience window is live"),
-            Err(error) => log::error!("failed to open experience window: {error}"),
-        }
-    });
+    Application::with_platform(shared.into_rc())
+        .with_assets(SosAssets)
+        .run(|cx: &mut App| {
+            native_input::bind_keys(cx);
+            match cx.open_window(
+                WindowOptions {
+                    window_bounds: None,
+                    ..Default::default()
+                },
+                |_, cx| cx.new(ExperienceHost::new),
+            ) {
+                Ok(_) => log::info!("SOS experience window is live"),
+                Err(error) => log::error!("failed to open experience window: {error}"),
+            }
+        });
 }
 
 struct ExperienceHost {
@@ -124,6 +140,10 @@ struct ExperienceHost {
     next_request_id: u64,
     candidates: HashMap<u64, CandidatePurpose>,
     action_in_flight: bool,
+    pending_input_event: Option<UiEvent>,
+    input_state_shadow: HashMap<String, String>,
+    inputs: HashMap<String, Entity<NativeTextInput>>,
+    pending_focus_restore: Option<String>,
     pending_frame: Option<PendingFrame>,
     stress: Option<StressRun>,
 }
@@ -132,31 +152,54 @@ impl ExperienceHost {
     fn new(cx: &mut Context<Self>) -> Self {
         let model = providers_fake::snapshot();
         let state = load_state();
-        let preferred_source =
-            read_file(ACTIVE_FILE).unwrap_or_else(|| DEFAULT_EXPERIENCE.to_owned());
-        let (worker, ready, source) =
-            match RuntimeWorker::start(preferred_source.clone(), model.clone(), state.clone()) {
-                Ok((worker, ready)) => (worker, ready, preferred_source),
-                Err(error) => {
-                    log::error!(
-                        "active source rejected at startup: {error}; using embedded source"
-                    );
-                    let (worker, ready) = RuntimeWorker::start(
-                        DEFAULT_EXPERIENCE.to_owned(),
-                        model.clone(),
-                        state.clone(),
-                    )
-                    .expect("embedded experience must be valid");
-                    (worker, ready, DEFAULT_EXPERIENCE.to_owned())
-                }
-            };
-
+        let source = read_file(ACTIVE_FILE).unwrap_or_else(|| DEFAULT_EXPERIENCE.to_owned());
+        let (worker, ready) = RuntimeWorker::spawn(source.clone(), model.clone(), state.clone())
+            .expect("runtime worker thread must start");
         let results = worker.results();
+        Self::attach_worker_channels(ready, results, cx);
+        log::info!(
+            "runtime_worker_spawned ui_thread={:?}",
+            thread::current().id()
+        );
+
+        Self {
+            model,
+            worker,
+            tree: loading_tree(),
+            state,
+            source,
+            status: Some(("Starting Luau worker…".into(), true)),
+            next_request_id: 1,
+            candidates: HashMap::new(),
+            action_in_flight: false,
+            pending_input_event: None,
+            input_state_shadow: HashMap::new(),
+            inputs: HashMap::new(),
+            pending_focus_restore: None,
+            pending_frame: None,
+            stress: None,
+        }
+    }
+
+    fn attach_worker_channels(
+        ready: async_channel::Receiver<Result<WorkerReady, String>>,
+        results: async_channel::Receiver<WorkerResult>,
+        cx: &mut Context<Self>,
+    ) {
+        cx.spawn(async move |this, cx| {
+            if let Ok(result) = ready.recv().await {
+                let _ = this.update(cx, |this, cx| {
+                    this.handle_worker_ready(result, cx);
+                    cx.notify();
+                });
+            }
+        })
+        .detach();
         cx.spawn(async move |this, cx| {
             while let Ok(result) = results.recv().await {
                 if this
                     .update(cx, |this, cx| {
-                        this.handle_worker_result(result);
+                        this.handle_worker_result(result, cx);
                         cx.notify();
                     })
                     .is_err()
@@ -166,31 +209,47 @@ impl ExperienceHost {
             }
         })
         .detach();
+    }
 
-        log::info!(
-            "runtime_worker_ready ui_thread={:?} worker_thread={} initialize_us={}",
-            thread::current().id(),
-            ready.worker_thread,
-            ready.initialize_us
-        );
-
-        let mut host = Self {
-            model,
-            worker,
-            tree: ready.tree,
-            state,
-            source,
-            status: None,
-            next_request_id: 1,
-            candidates: HashMap::new(),
-            action_in_flight: false,
-            pending_frame: None,
-            stress: None,
-        };
-        if file_path(CANDIDATE_FILE).is_file() {
-            host.submit_reload();
+    fn handle_worker_ready(&mut self, result: Result<WorkerReady, String>, cx: &mut Context<Self>) {
+        match result {
+            Ok(ready) => {
+                self.tree = ready.tree;
+                self.status = None;
+                self.publish_accessibility();
+                log::info!(
+                    "runtime_worker_ready ui_thread={:?} worker_thread={} initialize_us={}",
+                    thread::current().id(),
+                    ready.worker_thread,
+                    ready.initialize_us
+                );
+                if file_path(CANDIDATE_FILE).is_file() {
+                    self.submit_reload();
+                }
+            }
+            Err(error) if self.source.trim() != DEFAULT_EXPERIENCE.trim() => {
+                log::error!("active source rejected at startup: {error}; using embedded source");
+                self.source = DEFAULT_EXPERIENCE.to_owned();
+                match RuntimeWorker::spawn(
+                    self.source.clone(),
+                    self.model.clone(),
+                    self.state.clone(),
+                ) {
+                    Ok((worker, ready)) => {
+                        let results = worker.results();
+                        self.worker = worker;
+                        Self::attach_worker_channels(ready, results, cx);
+                    }
+                    Err(error) => {
+                        self.status = Some((format!("Runtime could not start: {error}"), false));
+                    }
+                }
+            }
+            Err(error) => {
+                log::error!("embedded runtime rejected at startup: {error}");
+                self.status = Some((format!("Runtime could not start: {error}"), false));
+            }
         }
-        host
     }
 
     fn allocate_request_id(&mut self) -> u64 {
@@ -199,22 +258,149 @@ impl ExperienceHost {
         request_id
     }
 
+    fn restart_worker(&mut self, cx: &mut Context<Self>) {
+        if self.stress.is_some() || !self.candidates.is_empty() || self.action_in_flight {
+            log::warn!("runtime_worker_restart_rejected reason=runtime_busy");
+            return;
+        }
+        match RuntimeWorker::spawn(self.source.clone(), self.model.clone(), self.state.clone()) {
+            Ok((worker, ready)) => {
+                let results = worker.results();
+                self.worker = worker;
+                self.status = Some(("Restarting Luau worker…".into(), true));
+                Self::attach_worker_channels(ready, results, cx);
+                log::info!(
+                    "runtime_worker_restarting ui_thread={:?}",
+                    thread::current().id()
+                );
+            }
+            Err(error) => {
+                self.status = Some((format!("Worker restart failed: {error}"), false));
+                log::error!("runtime_worker_restart_failed error={error}");
+            }
+        }
+    }
+
     fn dispatch(&mut self, action: String, cx: &mut Context<Self>) {
+        self.dispatch_event(
+            UiEvent {
+                action,
+                ..Default::default()
+            },
+            cx,
+        );
+    }
+
+    fn dispatch_event(&mut self, event: UiEvent, cx: &mut Context<Self>) {
         if self.action_in_flight || self.stress.is_some() {
             return;
         }
         let request_id = self.allocate_request_id();
-        log::info!("experience_action request_id={request_id} action={action}");
+        log::info!(
+            "experience_action request_id={request_id} action={} target={}",
+            event.action,
+            event.target.as_deref().unwrap_or("none")
+        );
         self.action_in_flight = true;
-        if let Err(error) = self.worker.action(
-            request_id,
-            self.model.clone(),
-            self.state.clone(),
-            UiEvent { action },
-        ) {
+        if let Err(error) =
+            self.worker
+                .action(request_id, self.model.clone(), self.state.clone(), event)
+        {
             self.action_in_flight = false;
             self.status = Some((format!("Action could not start: {error}"), false));
             cx.notify();
+        }
+    }
+
+    pub(super) fn native_input_changed(
+        &mut self,
+        node_id: String,
+        state_key: String,
+        value: String,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.state.is_object() {
+            self.state = json!({});
+        }
+        if let Some(object) = self.state.as_object_mut() {
+            object.insert(state_key.clone(), JsonValue::String(value.clone()));
+        }
+        self.input_state_shadow.insert(state_key, value.clone());
+        persist_state(&self.state);
+        log::info!(
+            "native_text_changed node_id={} bytes={} marked_safe=true",
+            node_id,
+            value.len()
+        );
+        self.queue_input_event(
+            UiEvent {
+                action: "text_changed".into(),
+                target: Some(node_id),
+                value: Some(value),
+                focused: None,
+            },
+            cx,
+        );
+    }
+
+    pub(super) fn native_input_focus_changed(
+        &mut self,
+        node_id: String,
+        focused: bool,
+        cx: &mut Context<Self>,
+    ) {
+        log::info!("native_text_focus node_id={node_id} focused={focused}");
+        self.queue_input_event(
+            UiEvent {
+                action: "focus_changed".into(),
+                target: Some(node_id),
+                value: None,
+                focused: Some(focused),
+            },
+            cx,
+        );
+    }
+
+    pub(super) fn native_input_submitted(
+        &mut self,
+        node_id: String,
+        action: String,
+        value: String,
+        cx: &mut Context<Self>,
+    ) {
+        self.queue_input_event(
+            UiEvent {
+                action,
+                target: Some(node_id),
+                value: Some(value),
+                focused: Some(true),
+            },
+            cx,
+        );
+    }
+
+    fn queue_input_event(&mut self, event: UiEvent, cx: &mut Context<Self>) {
+        if self.action_in_flight || self.stress.is_some() {
+            self.pending_input_event = Some(event);
+        } else {
+            self.dispatch_event(event, cx);
+        }
+    }
+
+    fn dispatch_pending_input_event(&mut self, cx: &mut Context<Self>) {
+        if let Some(event) = self.pending_input_event.take() {
+            self.dispatch_event(event, cx);
+        }
+    }
+
+    fn merge_native_input_state(&self, state: &mut JsonValue) {
+        if !state.is_object() {
+            *state = json!({});
+        }
+        if let Some(object) = state.as_object_mut() {
+            for (key, value) in &self.input_state_shadow {
+                object.insert(key.clone(), JsonValue::String(value.clone()));
+            }
         }
     }
 
@@ -267,7 +453,11 @@ impl ExperienceHost {
             return;
         }
 
-        let alternate_source = if self.source.trim() == TIMEFLOW_EXPERIENCE.trim() {
+        let alternate_source = if self.source.trim() == DAILY_FLOW_EXPERIENCE.trim() {
+            DAILY_FLOW_AGENT_EXPERIENCE.to_owned()
+        } else if self.source.trim() == DAILY_FLOW_AGENT_EXPERIENCE.trim() {
+            DAILY_FLOW_EXPERIENCE.to_owned()
+        } else if self.source.trim() == TIMEFLOW_EXPERIENCE.trim() {
             DEFAULT_EXPERIENCE.to_owned()
         } else {
             TIMEFLOW_EXPERIENCE.to_owned()
@@ -291,6 +481,7 @@ impl ExperienceHost {
             worker_latencies_us: Vec::with_capacity(request.count),
             rss_start_kb,
             rss_peak_kb: rss_start_kb,
+            rss_samples: vec![(0, rss_start_kb)],
         });
         self.submit_next_stress_candidate();
     }
@@ -319,7 +510,7 @@ impl ExperienceHost {
         }
     }
 
-    fn handle_worker_result(&mut self, result: WorkerResult) {
+    fn handle_worker_result(&mut self, result: WorkerResult, cx: &mut Context<Self>) {
         match result {
             WorkerResult::CandidatePrepared {
                 request_id, source, ..
@@ -381,8 +572,10 @@ impl ExperienceHost {
                 let Some(purpose) = self.candidates.remove(&request_id) else {
                     return;
                 };
+                self.pending_focus_restore = native_input::active_input_id();
                 self.source = source;
                 self.tree = tree;
+                self.publish_accessibility();
                 if purpose == CandidatePurpose::Regular {
                     let _ = fs::remove_file(file_path(CANDIDATE_FILE));
                     self.status =
@@ -396,18 +589,21 @@ impl ExperienceHost {
             }
             WorkerResult::ActionCompleted {
                 request_id,
-                state,
+                mut state,
                 tree,
                 worker_us,
             } => {
                 self.action_in_flight = false;
+                self.merge_native_input_state(&mut state);
                 self.state = state;
                 self.tree = tree;
+                self.publish_accessibility();
                 persist_state(&self.state);
                 self.status = None;
                 log::info!(
                     "experience_action_completed request_id={request_id} worker_us={worker_us}"
                 );
+                self.dispatch_pending_input_event(cx);
             }
             WorkerResult::ActionRejected {
                 request_id,
@@ -419,7 +615,20 @@ impl ExperienceHost {
                 log::warn!(
                     "experience_action_rejected request_id={request_id} worker_us={worker_us} error={error}"
                 );
+                self.dispatch_pending_input_event(cx);
             }
+        }
+    }
+
+    fn publish_accessibility(&self) {
+        let summary = accessibility::summary(&self.tree);
+        match accessibility::publish(&summary) {
+            Ok(()) => log::info!(
+                "accessibility_published bytes={} semantics={}",
+                summary.len(),
+                count_semantics(&self.tree)
+            ),
+            Err(error) => log::warn!("accessibility_publish_failed error={error}"),
         }
     }
 
@@ -452,6 +661,17 @@ impl ExperienceHost {
                     .worker_latencies_us
                     .push(frame.timings.worker_total_us);
                 stress.rss_peak_kb = stress.rss_peak_kb.max(rss_kb);
+                if stress.completed % 250 == 0 || stress.completed == stress.total {
+                    stress.rss_samples.push((stress.completed, rss_kb));
+                    log::info!(
+                        "stress_sample run_id={} iteration={} rss_kb={} visible_us={} worker_us={}",
+                        stress.run_id,
+                        stress.completed,
+                        rss_kb,
+                        visible_us,
+                        frame.timings.worker_total_us
+                    );
+                }
 
                 if stress.completed == stress.total {
                     self.complete_stress();
@@ -487,7 +707,7 @@ impl ExperienceHost {
         let worker_p95_us = percentile(&stress.worker_latencies_us, 95);
         let duration_ms = stress.started_at.elapsed().as_millis();
         log::info!(
-            "stress_complete run_id={} total={} accepted={} rejected=0 duration_ms={} visible_p50_us={} visible_p95_us={} visible_p99_us={} visible_max_us={} worker_p95_us={} rss_start_kb={} rss_end_kb={} rss_peak_kb={} rss_delta_kb={}",
+            "stress_complete run_id={} total={} accepted={} rejected=0 duration_ms={} visible_p50_us={} visible_p95_us={} visible_p99_us={} visible_max_us={} worker_p95_us={} rss_start_kb={} rss_end_kb={} rss_peak_kb={} rss_delta_kb={} rss_samples={}",
             stress.run_id,
             stress.total,
             stress.completed,
@@ -500,7 +720,8 @@ impl ExperienceHost {
             stress.rss_start_kb,
             rss_end_kb,
             stress.rss_peak_kb,
-            rss_end_kb.saturating_sub(stress.rss_start_kb)
+            rss_end_kb.saturating_sub(stress.rss_start_kb),
+            stress.rss_samples.len()
         );
         self.status = Some((
             format!(
@@ -538,15 +759,20 @@ impl ExperienceHost {
         &mut self,
         node: &UiNode,
         path: SharedString,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let element_id = node.id.clone().unwrap_or_else(|| path.to_string());
         let mut element = div();
-        match node.kind {
+        match &node.kind {
             NodeKind::Column => element = element.flex().flex_col(),
             NodeKind::Row => element = element.flex().flex_row(),
             NodeKind::Scroll => element = element.flex().flex_col().size_full(),
-            NodeKind::Box | NodeKind::Spacer | NodeKind::Text(_) => {}
+            NodeKind::Box
+            | NodeKind::Spacer
+            | NodeKind::Text(_)
+            | NodeKind::TextInput(_)
+            | NodeKind::Image(_) => {}
         }
 
         if let Some(background) = node.style.background {
@@ -592,27 +818,100 @@ impl ExperienceHost {
         if let NodeKind::Text(text) = &node.kind {
             element = element.child(SharedString::from(text.clone()));
         }
+        if let NodeKind::Image(image) = &node.kind {
+            debug_assert_eq!(image.asset, "album-orbit");
+            element = element.child(img(ALBUM_ASSET).size_full());
+        }
+        if let NodeKind::TextInput(input) = &node.kind {
+            self.input_state_shadow
+                .entry(input.state_key.clone())
+                .or_insert_with(|| input.value.clone());
+            let mut created = false;
+            let native = if let Some(native) = self.inputs.get(&element_id) {
+                native.clone()
+            } else {
+                created = true;
+                let host = cx.weak_entity();
+                let native = cx.new(|input_cx| {
+                    NativeTextInput::new(
+                        element_id.clone(),
+                        input.state_key.clone(),
+                        input.value.clone(),
+                        input.placeholder.clone(),
+                        input.submit_action.clone(),
+                        host,
+                        window,
+                        input_cx,
+                    )
+                });
+                self.inputs.insert(element_id.clone(), native.clone());
+                native
+            };
+            let should_activate = (created && input.autofocus)
+                || self.pending_focus_restore.as_deref() == Some(element_id.as_str());
+            native.update(cx, |native, native_cx| {
+                native.sync(
+                    &input.state_key,
+                    &input.value,
+                    &input.placeholder,
+                    input.submit_action.as_deref(),
+                    window,
+                    native_cx,
+                );
+                if should_activate {
+                    native.activate(window, native_cx);
+                }
+            });
+            if should_activate {
+                self.pending_focus_restore = None;
+            }
+            element = element.child(native);
+        }
         for (index, child) in node.children.iter().enumerate() {
             let child_path = SharedString::from(format!("{path}-{index}"));
-            element = element.child(self.render_node(child, child_path, cx));
+            element = element.child(self.render_node(child, child_path, window, cx));
         }
-        if let Some(action) = &node.action {
+        let mut rendered = if let Some(action) = &node.action {
             let action = action.clone();
-            return element
-                .id(SharedString::from(element_id))
+            element
+                .id(SharedString::from(element_id.clone()))
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(move |this, _, _, cx| this.dispatch(action.clone(), cx)),
                 )
-                .into_any_element();
-        }
-        if matches!(node.kind, NodeKind::Scroll) {
-            return element
-                .id(SharedString::from(element_id))
+                .into_any_element()
+        } else if matches!(node.kind, NodeKind::Scroll) {
+            element
+                .id(SharedString::from(element_id.clone()))
                 .overflow_y_scroll()
+                .into_any_element()
+        } else {
+            element.into_any_element()
+        };
+
+        if let Some(animation) = &node.animation {
+            let animation_id = SharedString::from(format!("animation-{element_id}"));
+            let native_animation = GpuiAnimation::new(Duration::from_millis(animation.duration_ms));
+            let native_animation = if animation.repeat {
+                native_animation.repeat()
+            } else {
+                native_animation
+            };
+            let kind = animation.kind;
+            rendered = div()
+                .child(rendered)
+                .with_animation(animation_id, native_animation, move |element, delta| {
+                    let opacity = match kind {
+                        AnimationKind::Pulse => {
+                            0.62 + 0.38 * (delta * std::f32::consts::TAU).sin().abs()
+                        }
+                        AnimationKind::FadeIn => delta,
+                    };
+                    element.opacity(opacity)
+                })
                 .into_any_element();
         }
-        element.into_any_element()
+        rendered
     }
 }
 
@@ -621,12 +920,22 @@ impl Render for ExperienceHost {
         if RELOAD_REQUESTED.swap(false, Ordering::AcqRel) {
             self.submit_reload();
         }
+        if WORKER_RESTART_REQUESTED.swap(false, Ordering::AcqRel) {
+            self.restart_worker(cx);
+        }
         let stress_request = stress_request_slot()
             .lock()
             .expect("stress request lock")
             .take();
         if let Some(stress_request) = stress_request {
             self.start_stress(stress_request);
+        }
+        if self.stress.is_none()
+            && self.candidates.is_empty()
+            && !self.action_in_flight
+            && self.pending_input_event.is_some()
+        {
+            self.dispatch_pending_input_event(cx);
         }
         if let Some(frame) = self.pending_frame.take() {
             cx.on_next_frame(window, move |this, _, cx| {
@@ -635,7 +944,7 @@ impl Render for ExperienceHost {
         }
 
         let tree = self.tree.clone();
-        let content = self.render_node(&tree, SharedString::from("root"), cx);
+        let content = self.render_node(&tree, SharedString::from("root"), window, cx);
         let mut root = div()
             .flex()
             .flex_col()
@@ -665,6 +974,35 @@ impl Render for ExperienceHost {
 
 fn stress_request_slot() -> &'static Mutex<Option<StressRequest>> {
     STRESS_REQUEST.get_or_init(|| Mutex::new(None))
+}
+
+fn loading_tree() -> UiNode {
+    let mut root = UiNode {
+        id: Some("startup-root".into()),
+        kind: NodeKind::Column,
+        ..Default::default()
+    };
+    root.style.padding = Some(24.);
+    root.style.gap = Some(10.);
+    root.children.push(UiNode {
+        kind: NodeKind::Text("SOS is ready".into()),
+        style: experience_ir::Style {
+            text_size: Some(28.),
+            color: Some(0x17211B),
+            ..Default::default()
+        },
+        ..Default::default()
+    });
+    root.children.push(UiNode {
+        kind: NodeKind::Text("Starting the experience runtime…".into()),
+        style: experience_ir::Style {
+            text_size: Some(14.),
+            color: Some(0x637069),
+            ..Default::default()
+        },
+        ..Default::default()
+    });
+    root
 }
 
 fn parse_stress_request(url: &str) -> Option<StressRequest> {
@@ -727,6 +1065,11 @@ fn current_rss_kb() -> Option<u64> {
     let status = fs::read_to_string("/proc/self/status").ok()?;
     let line = status.lines().find(|line| line.starts_with("VmRSS:"))?;
     line.split_whitespace().nth(1)?.parse().ok()
+}
+
+fn count_semantics(root: &UiNode) -> usize {
+    usize::from(root.accessibility.is_some())
+        + root.children.iter().map(count_semantics).sum::<usize>()
 }
 
 fn percentile(values: &[u64], percent: usize) -> u64 {

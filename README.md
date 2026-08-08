@@ -13,6 +13,9 @@ The verified end-to-end results are in
 [`docs/vertical-slice.md`](docs/vertical-slice.md).
 The worker-thread and 1,000-swap latency gate is in
 [`docs/worker-stress-gate.md`](docs/worker-stress-gate.md).
+The stateful generated-experience gate, including native input and the
+10,000-swap device soak, is in
+[`docs/stateful-experience-gate.md`](docs/stateful-experience-gate.md).
 Ongoing experiments, failures, measurements, and decisions are indexed in the
 living [`docs/progress.md`](docs/progress.md) ledger.
 
@@ -62,8 +65,11 @@ Replace only the experience source while the same process and APK stay alive:
 
 ```sh
 ./tools/sosctl script experiences/timeflow.luau
+./tools/sosctl validate experiences/daily-flow-agent.luau
+./tools/sosctl agent-apply experiences/daily-flow-agent.luau
 ./tools/sosctl rollback
-./tools/sosctl stress 1000
+./tools/sosctl worker-restart
+./tools/sosctl stress 10000
 ```
 
 A candidate must compile, finish within its time budget, decode to the bounded

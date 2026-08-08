@@ -3955,6 +3955,7 @@ dependencies = [
  "async-channel 2.5.0",
  "experience-ir",
  "mlua",
+ "providers-fake",
  "serde_json",
  "thiserror 2.0.19",
 ]
@@ -4435,13 +4436,17 @@ version = "0.1.0"
 dependencies = [
  "android-activity",
  "android_logger",
+ "anyhow",
+ "async-channel 2.5.0",
  "experience-ir",
  "gpui",
  "gpui-mobile",
+ "jni",
  "log",
  "providers-fake",
  "runtime-luau",
  "serde_json",
+ "unicode-segmentation",
 ]
 
 [[package]]

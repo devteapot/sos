@@ -46,9 +46,15 @@ pub struct Music {
     pub playing: bool,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 pub struct UiEvent {
     pub action: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub value: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub focused: Option<bool>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -57,6 +63,8 @@ pub struct UiNode {
     pub kind: NodeKind,
     pub style: Style,
     pub action: Option<String>,
+    pub animation: Option<Animation>,
+    pub accessibility: Option<Accessibility>,
     pub children: Vec<UiNode>,
 }
 
@@ -68,7 +76,53 @@ pub enum NodeKind {
     Row,
     Scroll,
     Text(String),
+    TextInput(TextInput),
+    Image(Image),
     Spacer,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct TextInput {
+    pub state_key: String,
+    pub value: String,
+    pub placeholder: String,
+    pub submit_action: Option<String>,
+    pub autofocus: bool,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Image {
+    pub asset: String,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Animation {
+    pub kind: AnimationKind,
+    pub duration_ms: u64,
+    pub repeat: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum AnimationKind {
+    Pulse,
+    FadeIn,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Accessibility {
+    pub role: AccessibilityRole,
+    pub label: String,
+    pub value: Option<String>,
+    pub hint: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum AccessibilityRole {
+    Button,
+    Image,
+    TextField,
+    Header,
+    Status,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -115,6 +169,12 @@ pub enum ValidationError {
     DuplicateId(String),
     #[error("invalid finite dimension in {0}")]
     InvalidDimension(&'static str),
+    #[error("interactive node requires a stable id")]
+    MissingInteractiveId,
+    #[error("semantic text exceeds maximum length of {MAX_TEXT_BYTES} bytes")]
+    SemanticTextTooLong,
+    #[error("animation duration must be between 16 and 60000 ms")]
+    InvalidAnimationDuration,
 }
 
 pub fn validate_tree(root: &UiNode) -> Result<usize, ValidationError> {
@@ -134,10 +194,25 @@ pub fn validate_tree(root: &UiNode) -> Result<usize, ValidationError> {
         if node.children.len() > MAX_CHILDREN {
             return Err(ValidationError::TooManyChildren);
         }
-        if let NodeKind::Text(text) = &node.kind {
-            if text.len() > MAX_TEXT_BYTES {
+        match &node.kind {
+            NodeKind::Text(text) if text.len() > MAX_TEXT_BYTES => {
                 return Err(ValidationError::TextTooLong);
             }
+            NodeKind::TextInput(input) => {
+                if node.id.is_none() {
+                    return Err(ValidationError::MissingInteractiveId);
+                }
+                if input.state_key.len() > 256
+                    || input.value.len() > MAX_TEXT_BYTES
+                    || input.placeholder.len() > MAX_TEXT_BYTES
+                {
+                    return Err(ValidationError::SemanticTextTooLong);
+                }
+            }
+            NodeKind::Image(_) if node.id.is_none() => {
+                return Err(ValidationError::MissingInteractiveId);
+            }
+            _ => {}
         }
         if let Some(id) = &node.id {
             if !ids.insert(id.clone()) {
@@ -158,6 +233,25 @@ pub fn validate_tree(root: &UiNode) -> Result<usize, ValidationError> {
         }
         for child in &node.children {
             visit(child, depth + 1, count, ids)?;
+        }
+        if let Some(animation) = &node.animation {
+            if !(16..=60_000).contains(&animation.duration_ms) {
+                return Err(ValidationError::InvalidAnimationDuration);
+            }
+        }
+        if let Some(accessibility) = &node.accessibility {
+            if accessibility.label.len() > MAX_TEXT_BYTES
+                || accessibility
+                    .value
+                    .as_ref()
+                    .is_some_and(|value| value.len() > MAX_TEXT_BYTES)
+                || accessibility
+                    .hint
+                    .as_ref()
+                    .is_some_and(|hint| hint.len() > MAX_TEXT_BYTES)
+            {
+                return Err(ValidationError::SemanticTextTooLong);
+            }
         }
         Ok(())
     }
@@ -189,6 +283,51 @@ mod tests {
         assert_eq!(
             validate_tree(&node),
             Err(ValidationError::DuplicateId("same".into()))
+        );
+    }
+
+    #[test]
+    fn keyed_native_nodes_require_stable_ids() {
+        let input = UiNode {
+            kind: NodeKind::TextInput(TextInput {
+                state_key: "draft".into(),
+                value: String::new(),
+                placeholder: String::new(),
+                submit_action: None,
+                autofocus: false,
+            }),
+            ..Default::default()
+        };
+        assert_eq!(
+            validate_tree(&input),
+            Err(ValidationError::MissingInteractiveId)
+        );
+
+        let image = UiNode {
+            kind: NodeKind::Image(Image {
+                asset: "album-orbit".into(),
+            }),
+            ..Default::default()
+        };
+        assert_eq!(
+            validate_tree(&image),
+            Err(ValidationError::MissingInteractiveId)
+        );
+    }
+
+    #[test]
+    fn rejects_animation_outside_the_bounded_range() {
+        let node = UiNode {
+            animation: Some(Animation {
+                kind: AnimationKind::Pulse,
+                duration_ms: 15,
+                repeat: true,
+            }),
+            ..Default::default()
+        };
+        assert_eq!(
+            validate_tree(&node),
+            Err(ValidationError::InvalidAnimationDuration)
         );
     }
 }

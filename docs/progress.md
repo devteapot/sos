@@ -134,3 +134,53 @@ leaks; startup still waits for the initial worker tree. Extend the IR through
 real text-input/IME, image, animation, focus, and accessibility experiences,
 add longer soaks, and review process isolation before accepting untrusted
 remote source.
+
+## 2026-08-08 — Stateful generated experience and 10,000-swap gate
+
+**Goal:** Prove that an agent can structurally rewrite a useful phone-like
+experience while native input, focus, state, image, animation, semantics, worker
+lifecycle, rollback, and visible-frame latency remain sound on hardware.
+
+**Changed:** Added bounded keyed text-input and allowlisted image nodes, native
+GPUI animation declarations, accessibility metadata, a cached GPUI input entity
+with Rust-owned state shadowing, asynchronous cold worker startup, explicit
+worker recreation, two structurally different daily-flow experiences, local
+candidate validation, an agent-apply command, and sampled 10,000-swap telemetry.
+The accepted source remains Luau data; GPUI, input, rendering, persistence, and
+validation remain in the stable Rust APK.
+
+**Evidence:** On the Samsung SM-A336B (API 35, ARM64), the final agent rewrite
+validated as 5,130 bytes/37 nodes and reached a GPUI post-render callback in
+15.858 ms without changing PID or JSON state; typing continued with the Android
+keyboard still open. Rollback was visible in 15.302 ms and retained data. A
+final-code 10,000/10,000 swap run completed in 172.646 s with visible p50/p95/
+p99/max of 16.997/18.092/23.062/35.533 ms, worker p95 3.816 ms, RSS
+289,268→281,088 KB, peak 294,432 KB, and zero positive delta. Five injected
+keyboard taps landed during that run and the final coalesced event completed.
+Twenty home/resume cycles retained PID/state and editing worked afterward;
+Android automatically redisplayed the IME on 1/20 cycles, while a field tap
+restored it on all others. Infinite-loop and memory-bomb candidates were
+rejected without changing the accepted hash. `uiautomator` saw all six semantic
+records in one window description. Fifteen workspace tests, formatting, clippy,
+ARM64 packaging, install, launch, touch, submit, scroll, and native animation
+checks passed. Full commands and caveats are in
+[`stateful-experience-gate.md`](stateful-experience-gate.md).
+
+Three failures materially shaped the result. GPUI Mobile bypassed the generic
+GPUI input handler for its Android keyboard, requiring a narrow character-
+callback bridge. The first structural swap lost that callback despite retaining
+the cursor, so commit now restores the active stable ID. The first long-soak
+implementation left the final coalesced text event pending; draining it when
+stress clears fixed the bug and the 10,000-swap run was repeated.
+
+**Decision:** Confirm the smallest complete thesis for a trusted prototype. An
+external coding agent produced a nontrivial GPUI composition; the phone
+interpreted, validated, displayed, preserved state through, and rolled it back
+without rebuilding the APK.
+
+**Open risks / next gate:** The GPUI Mobile callback does not prove full marked-
+text/non-Latin composition, accessibility is one coarse window node rather than
+individually navigable elements, and a three-minute RSS run is not long-term
+leak proof. Decide the untrusted-code process boundary, sign/revision source
+delivery, add explicit state-schema migration, run an hours-long attributed
+heap soak, and upstream or isolate the required GPUI Mobile platform changes.

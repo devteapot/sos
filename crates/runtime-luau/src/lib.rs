@@ -6,7 +6,8 @@ use std::{
 };
 
 use experience_ir::{
-    validate_tree, Align, ExperienceModel, Justify, NodeKind, Style, UiEvent, UiNode, MAX_CHILDREN,
+    validate_tree, Accessibility, AccessibilityRole, Align, Animation, AnimationKind,
+    ExperienceModel, Image, Justify, NodeKind, Style, TextInput, UiEvent, UiNode, MAX_CHILDREN,
     MAX_TEXT_BYTES, MAX_TREE_DEPTH, MAX_TREE_NODES,
 };
 use mlua::{
@@ -106,6 +107,7 @@ enum WorkerCommand {
         state: JsonValue,
         event: UiEvent,
     },
+    Shutdown,
 }
 
 struct PreparedCandidate {
@@ -119,19 +121,20 @@ struct PreparedCandidate {
 pub struct RuntimeWorker {
     commands: async_channel::Sender<WorkerCommand>,
     results: async_channel::Receiver<WorkerResult>,
+    thread: Option<thread::JoinHandle<()>>,
 }
 
 impl RuntimeWorker {
-    pub fn start(
+    pub fn spawn(
         source: String,
         model: ExperienceModel,
         state: JsonValue,
-    ) -> Result<(Self, WorkerReady), RuntimeError> {
+    ) -> Result<(Self, async_channel::Receiver<Result<WorkerReady, String>>), RuntimeError> {
         let (commands_tx, commands_rx) = async_channel::unbounded();
         let (results_tx, results_rx) = async_channel::unbounded();
-        let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel::<Result<WorkerReady, String>>(1);
+        let (ready_tx, ready_rx) = async_channel::bounded::<Result<WorkerReady, String>>(1);
 
-        thread::Builder::new()
+        let thread = thread::Builder::new()
             .name("sos-luau-runtime".into())
             .spawn(move || {
                 let started = Instant::now();
@@ -142,7 +145,7 @@ impl RuntimeWorker {
                 let (mut active_runtime, tree) = match initialized {
                     Ok(initialized) => initialized,
                     Err(error) => {
-                        let _ = ready_tx.send(Err(error.to_string()));
+                        let _ = ready_tx.send_blocking(Err(error.to_string()));
                         return;
                     }
                 };
@@ -151,7 +154,7 @@ impl RuntimeWorker {
                     worker_thread: format!("{:?}", thread::current().id()),
                     initialize_us: micros(started.elapsed()),
                 };
-                if ready_tx.send(Ok(ready)).is_err() {
+                if ready_tx.send_blocking(Ok(ready)).is_err() {
                     return;
                 }
 
@@ -301,22 +304,33 @@ impl RuntimeWorker {
                             };
                             let _ = results_tx.send_blocking(result);
                         }
+                        WorkerCommand::Shutdown => break,
                     }
                 }
             })
             .map_err(|error| RuntimeError::Invalid(format!("could not start worker: {error}")))?;
 
-        let ready = ready_rx
-            .recv()
-            .map_err(|_| RuntimeError::Invalid("runtime worker stopped during startup".into()))?
-            .map_err(RuntimeError::Invalid)?;
         Ok((
             Self {
                 commands: commands_tx,
                 results: results_rx,
+                thread: Some(thread),
             },
-            ready,
+            ready_rx,
         ))
+    }
+
+    pub fn start(
+        source: String,
+        model: ExperienceModel,
+        state: JsonValue,
+    ) -> Result<(Self, WorkerReady), RuntimeError> {
+        let (worker, ready_rx) = Self::spawn(source, model, state)?;
+        let ready = ready_rx
+            .recv_blocking()
+            .map_err(|_| RuntimeError::Invalid("runtime worker stopped during startup".into()))?
+            .map_err(RuntimeError::Invalid)?;
+        Ok((worker, ready))
     }
 
     pub fn results(&self) -> async_channel::Receiver<WorkerResult> {
@@ -369,6 +383,23 @@ impl RuntimeWorker {
                 event,
             })
             .map_err(|_| "runtime worker is unavailable".into())
+    }
+
+    pub fn shutdown(mut self) -> Result<(), String> {
+        let _ = self.commands.send_blocking(WorkerCommand::Shutdown);
+        self.commands.close();
+        if let Some(thread) = self.thread.take() {
+            thread
+                .join()
+                .map_err(|_| "runtime worker panicked during shutdown".to_owned())?;
+        }
+        Ok(())
+    }
+}
+
+impl Drop for RuntimeWorker {
+    fn drop(&mut self) {
+        self.commands.close();
     }
 }
 
@@ -506,6 +537,23 @@ impl Decoder {
                 }
                 NodeKind::Text(text)
             }
+            "text_input" => NodeKind::TextInput(TextInput {
+                state_key: required_bounded_string(table, "state_key", 256)?,
+                value: required_bounded_string(table, "value", MAX_TEXT_BYTES)?,
+                placeholder: bounded_optional_string(table, "placeholder", MAX_TEXT_BYTES)?
+                    .unwrap_or_default(),
+                submit_action: bounded_optional_string(table, "submit_action", 256)?,
+                autofocus: table.get::<Option<bool>>("autofocus")?.unwrap_or(false),
+            }),
+            "image" => {
+                let asset = required_bounded_string(table, "asset", 256)?;
+                if asset != "album-orbit" {
+                    return Err(RuntimeError::Invalid(format!(
+                        "image asset is not allowed: {asset}"
+                    )));
+                }
+                NodeKind::Image(Image { asset })
+            }
             other => return Err(RuntimeError::Invalid(format!("unknown node type: {other}"))),
         };
 
@@ -528,9 +576,59 @@ impl Decoder {
             kind,
             style,
             action: bounded_optional_string(table, "action", 256)?,
+            animation: decode_animation(table.get::<Option<Table>>("animation")?)?,
+            accessibility: decode_accessibility(table.get::<Option<Table>>("accessibility")?)?,
             children,
         })
     }
+}
+
+fn decode_animation(table: Option<Table>) -> Result<Option<Animation>, RuntimeError> {
+    let Some(table) = table else {
+        return Ok(None);
+    };
+    let kind = match required_bounded_string(&table, "kind", 32)?.as_str() {
+        "pulse" => AnimationKind::Pulse,
+        "fade_in" => AnimationKind::FadeIn,
+        value => {
+            return Err(RuntimeError::Invalid(format!(
+                "invalid animation kind: {value}"
+            )))
+        }
+    };
+    let duration_ms = table.get::<u64>("duration_ms")?;
+    if !(16..=60_000).contains(&duration_ms) {
+        return Err(RuntimeError::Invalid("invalid animation duration".into()));
+    }
+    Ok(Some(Animation {
+        kind,
+        duration_ms,
+        repeat: table.get::<Option<bool>>("loop")?.unwrap_or(false),
+    }))
+}
+
+fn decode_accessibility(table: Option<Table>) -> Result<Option<Accessibility>, RuntimeError> {
+    let Some(table) = table else {
+        return Ok(None);
+    };
+    let role = match required_bounded_string(&table, "role", 32)?.as_str() {
+        "button" => AccessibilityRole::Button,
+        "image" => AccessibilityRole::Image,
+        "text_field" => AccessibilityRole::TextField,
+        "header" => AccessibilityRole::Header,
+        "status" => AccessibilityRole::Status,
+        value => {
+            return Err(RuntimeError::Invalid(format!(
+                "invalid accessibility role: {value}"
+            )))
+        }
+    };
+    Ok(Some(Accessibility {
+        role,
+        label: required_bounded_string(&table, "label", MAX_TEXT_BYTES)?,
+        value: bounded_optional_string(&table, "value", MAX_TEXT_BYTES)?,
+        hint: bounded_optional_string(&table, "hint", MAX_TEXT_BYTES)?,
+    }))
 }
 
 fn decode_style(table: &Table) -> Result<Style, RuntimeError> {
@@ -582,6 +680,15 @@ fn bounded_optional_string(
     Ok(value)
 }
 
+fn required_bounded_string(
+    table: &Table,
+    key: &'static str,
+    max: usize,
+) -> Result<String, RuntimeError> {
+    bounded_optional_string(table, key, max)?
+        .ok_or_else(|| RuntimeError::Invalid(format!("{key} is required")))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -616,6 +723,7 @@ mod tests {
                 &state,
                 &UiEvent {
                     action: "toggle".into(),
+                    ..Default::default()
                 },
             )
             .unwrap();
@@ -643,6 +751,58 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("unknown node type"));
+    }
+
+    #[test]
+    fn decodes_bounded_native_primitives_and_semantics() {
+        let runtime = LuauRuntime::compile(
+            r#"
+                return {
+                    render = function()
+                        return {
+                            type = "column", id = "root", children = {
+                                {
+                                    type = "image", id = "art", asset = "album-orbit",
+                                    animation = { kind = "pulse", duration_ms = 1200, loop = true },
+                                    accessibility = { role = "image", label = "Album art" },
+                                },
+                                {
+                                    type = "text_input", id = "draft", state_key = "draft",
+                                    value = "Caffè ☕️ – 明日のデザイン", autofocus = true,
+                                    submit_action = "save_note",
+                                    accessibility = {
+                                        role = "text_field", label = "Note draft",
+                                        value = "Caffè ☕️ – 明日のデザイン",
+                                    },
+                                },
+                            },
+                        }
+                    end,
+                }
+            "#,
+        )
+        .unwrap();
+        let tree = runtime
+            .render(&providers_fake_for_test(), &json!({}))
+            .unwrap();
+        assert_eq!(tree.children.len(), 2);
+        assert!(matches!(tree.children[0].kind, NodeKind::Image(_)));
+        assert!(tree.children[0].animation.is_some());
+        assert!(matches!(tree.children[1].kind, NodeKind::TextInput(_)));
+        assert!(tree.children[1].accessibility.is_some());
+    }
+
+    #[test]
+    fn rejects_non_allowlisted_image_assets() {
+        let runtime = LuauRuntime::compile(
+            "return { render = function() return { type = 'image', id = 'x', asset = 'https://example.com/x.png' } end }",
+        )
+        .unwrap();
+        assert!(runtime
+            .render(&providers_fake_for_test(), &json!({}))
+            .unwrap_err()
+            .to_string()
+            .contains("image asset is not allowed"));
     }
 
     #[test]
@@ -742,6 +902,7 @@ mod tests {
                 json!({}),
                 UiEvent {
                     action: "toggle".into(),
+                    ..Default::default()
                 },
             )
             .unwrap();
@@ -753,6 +914,17 @@ mod tests {
                 assert_eq!(state["on"], true);
             }
             result => panic!("unexpected result: {result:?}"),
+        }
+    }
+
+    #[test]
+    fn worker_shuts_down_and_recreates_cleanly() {
+        let model = providers_fake_for_test();
+        for _ in 0..25 {
+            let (worker, ready) =
+                RuntimeWorker::start(SCRIPT.into(), model.clone(), json!({})).unwrap();
+            assert_eq!(ready.tree.children.len(), 2);
+            worker.shutdown().unwrap();
         }
     }
 

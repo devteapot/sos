@@ -39,6 +39,23 @@ public class GpuiPlatformView {
     private static FrameLayout rootContainer;
 
     /**
+     * Publish the current GPUI semantic summary to Android accessibility.
+     *
+     * GPUI Mobile does not yet expose per-element accessibility nodes, so SOS
+     * deliberately provides one coarse, system-visible description rather
+     * than pretending that each painted node is independently navigable.
+     */
+    public static void updateAccessibilitySummary(Activity activity, String summary) {
+        mainHandler.post(() -> {
+            View decor = activity.getWindow().getDecorView();
+            decor.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_YES);
+            decor.setContentDescription(summary);
+            decor.sendAccessibilityEvent(android.view.accessibility.AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED);
+            Log.i(TAG, "Accessibility summary updated: " + summary);
+        });
+    }
+
+    /**
      * Ensure the root container exists in the activity's view hierarchy.
      * Platform views are added as children of this container.
      */
