@@ -11,6 +11,8 @@ checks in [`docs/experiment.md`](docs/experiment.md) and the runtime decision in
 [`docs/runtime-evaluation.md`](docs/runtime-evaluation.md).
 The verified end-to-end results are in
 [`docs/vertical-slice.md`](docs/vertical-slice.md).
+Ongoing experiments, failures, measurements, and decisions are indexed in the
+living [`docs/progress.md`](docs/progress.md) ledger.
 
 ## Milestone 0
 
