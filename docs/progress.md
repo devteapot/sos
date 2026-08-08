@@ -187,3 +187,40 @@ individually navigable elements, and a three-minute RSS run is not long-term
 leak proof. Decide the untrusted-code process boundary, sign/revision source
 delivery, add explicit state-schema migration, run an hours-long attributed
 heap soak, and upstream or isolate the required GPUI Mobile platform changes.
+
+## 2026-08-08 — Reassert the agent-native OS north star
+
+**Goal:** Prevent the successful Luau/Android vertical slice from narrowing the
+project into a scriptable app or closed declarative component system, and define
+what “moving off Android” means in the original research vision.
+
+**Changed:** Added [`vision.md`](vision.md) as the authoritative project goal and
+linked it from the README and runtime decision. It defines the user experience,
+provider-based replacement for visible applications, minimal fixed runtime,
+durable revision artifact, immediate Luau and unrestricted native execution
+tiers, target service architecture, staged AOSP transition, and measurable
+Android-exit gate. Corrected the stateful-gate next step to prioritize generative
+depth and autonomous revision engineering before production hardening.
+
+**Evidence:** Re-read the initial design conversation. The defining user choice
+was to avoid a preconfigured component catalog and allow the agent to write
+dynamic implementation code—including component types, layout, drawing, hit
+testing, navigation, behavior, dependencies, and shaders. The decisive example
+was not a card rearrangement; it was a bent time axis with drag-to-attach
+behavior that requires new geometry, interaction state, and a provider action.
+The conversation also defined the permanent base as a minimal recovery
+supervisor plus graphics/input/state/provider/build machinery, with immutable
+source/binary revisions and eventually a privileged shell on the thin Android
+hardware substrate.
+
+**Decision:** Luau + typed IR remains the fast experimental path, not the final
+component vocabulary. “Off Android” means SOS owns boot-to-experience, revision
+supervision, provider/state services, input/surface routing, and composition on
+AOSP/vendor foundations; it does not mean an ordinary Linux desktop port or an
+immediate rewrite of the kernel and hardware stack.
+
+**Open risks / next gate:** The current IR cannot express the decisive custom
+interaction, `agent-apply` is still manually orchestrated, fake providers are
+linked rather than reached through IPC, and swaps replace an in-process tree
+rather than promote a complete candidate process/surface. Prove those four
+properties with synthetic data before starting the privileged AOSP shell phase.

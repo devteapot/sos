@@ -213,9 +213,17 @@ The proposed success condition is confirmed for a trusted prototype:
 > and displayed it without an APK rebuild, user state and keyboard editing
 > survived the structural revision, and source rollback did not roll back data.
 
-Continue with Luau + bounded IR + stable GPUI host. The next gate is not more UI
-vocabulary. It is the trust boundary: decide whether untrusted generated source
-must execute in an isolated Android process, add signed/revisioned source
-delivery and explicit state-schema migration, and run an hours-long soak with
-heap attribution. Per-element Android accessibility and a real composition-aware
-IME bridge remain platform-port work.
+Continue with Luau + GPUI, but do not mistake the current bounded IR for the
+end-state UI model. This gate proves a fast stateful composition path; it does
+not yet prove the [north-star claim](vision.md) that an agent can invent a
+component implementation outside a predefined catalog.
+
+The next gate is generative depth: implement the original “bent time axis” and
+drag-a-note interaction using agent-authored geometry, hit testing, state, and a
+typed provider action. In parallel, turn the manual `agent-apply` scaffolding
+into a request→patch→inspect→self-correct→accept/rollback loop. Once that works,
+prove whole native revision process/surface promotion behind a minimal recovery
+supervisor and move providers/state across IPC. Those are the Android-exit
+criteria. Production isolation, signed delivery, real personal data, polished
+per-element accessibility, and a full composition-aware IME remain later gates
+while the experiment uses synthetic data.

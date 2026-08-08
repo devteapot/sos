@@ -1,9 +1,15 @@
 # SOS
 
-SOS is a research prototype for an agent-generated native mobile experience.
-The project starts with a kill-or-confirm spike for the community GPUI Mobile
-Android port. No agent, provider protocol, or operating-system architecture is
-part of Milestone 0.
+SOS is a research prototype for an agent-native operating experience: the user
+directs an agent that continuously writes and installs the native interface,
+while separately installed providers remain authoritative over data and
+actions. It is not intended to become a scriptable Android application or a
+fixed catalog of generated widgets. The authoritative end goal and the meaning
+of “moving off Android” are defined in [`docs/vision.md`](docs/vision.md).
+
+The project begins inside Android only as a hardware and interaction laboratory.
+Milestone 0 intentionally contains no agent, provider protocol, or operating-
+system architecture.
 
 **Status:** Milestone 0 is confirmed on a physical Samsung SM-A336B. Milestone
 1 is now a GPUI host with a sandboxed Luau experience layer. See the hardware
@@ -18,6 +24,11 @@ The stateful generated-experience gate, including native input and the
 [`docs/stateful-experience-gate.md`](docs/stateful-experience-gate.md).
 Ongoing experiments, failures, measurements, and decisions are indexed in the
 living [`docs/progress.md`](docs/progress.md) ledger.
+
+The current bounded Luau UI IR is a proven sub-20-ms rapid-execution tier, not
+the final expressive ceiling. Before moving to a privileged AOSP shell, SOS must
+prove an autonomous request-to-revision loop, custom geometry/hit testing beyond
+the catalog, crash-safe whole-revision promotion, and provider/state independence.
 
 ## Milestone 0
 
