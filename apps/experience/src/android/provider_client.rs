@@ -5,7 +5,10 @@ use std::{
     time::Duration,
 };
 
-use experience_ir::{ExperienceModel, ProviderEffect, ProviderRequest, ProviderResponse};
+use experience_ir::{
+    ExperienceModel, ProviderEffect, ProviderRequest, ProviderResponse, StateEnvelope,
+    StateFaultPoint,
+};
 use serde_json::Value as JsonValue;
 
 const ADDRESS: &str = "127.0.0.1:47777";
@@ -28,6 +31,58 @@ pub(super) fn execute(effect: &ProviderEffect) -> Result<JsonValue, String> {
         payload: effect.payload.clone(),
     })?;
     Ok(response.result.unwrap_or(JsonValue::Null))
+}
+
+pub(super) fn load_state() -> Result<StateEnvelope, String> {
+    request(ProviderRequest::LoadState {
+        request_id: allocate_request_id(),
+    })?
+    .state
+    .ok_or_else(|| "state response omitted its envelope".into())
+}
+
+pub(super) fn commit_state(
+    expected_revision: u64,
+    schema_version: u64,
+    state: &JsonValue,
+) -> Result<StateEnvelope, String> {
+    let stage = request(ProviderRequest::StageState {
+        request_id: allocate_request_id(),
+        expected_revision,
+        schema_version,
+        state: state.clone(),
+    })?;
+    let stage_id = stage
+        .stage_id
+        .ok_or_else(|| "state stage response omitted its id".to_owned())?;
+    match request(ProviderRequest::PromoteState {
+        request_id: allocate_request_id(),
+        stage_id,
+    }) {
+        Ok(response) => response
+            .state
+            .ok_or_else(|| "state promotion response omitted its envelope".into()),
+        Err(error) => {
+            let current = load_state()?;
+            if current.revision == expected_revision.saturating_add(1)
+                && current.schema_version == schema_version
+                && current.state == *state
+            {
+                Ok(current)
+            } else {
+                Err(error)
+            }
+        }
+    }
+}
+
+#[allow(dead_code)]
+pub(super) fn configure_state_fault(point: Option<StateFaultPoint>) -> Result<(), String> {
+    request(ProviderRequest::ConfigureStateFault {
+        request_id: allocate_request_id(),
+        point,
+    })?;
+    Ok(())
 }
 
 fn request(request: ProviderRequest) -> Result<ProviderResponse, String> {

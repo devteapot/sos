@@ -9,8 +9,8 @@ use experience_ir::{
     validate_tree, Accessibility, AccessibilityRole, Align, Animation, AnimationKind, Canvas,
     CanvasCommand, CanvasPoint, ExperienceModel, HitRegion, Image, Justify, NodeKind,
     ProviderEffect, Style, TextInput, UiEvent, UiNode, MAX_CANVAS_COMMANDS, MAX_CANVAS_POINTS,
-    MAX_CHILDREN, MAX_EFFECTS, MAX_EFFECT_PAYLOAD_BYTES, MAX_HIT_REGIONS, MAX_TEXT_BYTES,
-    MAX_TREE_DEPTH, MAX_TREE_NODES,
+    MAX_CHILDREN, MAX_EFFECTS, MAX_EFFECT_PAYLOAD_BYTES, MAX_HIT_REGIONS, MAX_STATE_BYTES,
+    MAX_TEXT_BYTES, MAX_TREE_DEPTH, MAX_TREE_NODES,
 };
 use mlua::{
     chunk::{ChunkMode, Compiler},
@@ -23,6 +23,7 @@ pub const MAX_SOURCE_BYTES: usize = 256 * 1024;
 pub const MEMORY_LIMIT_BYTES: usize = 16 * 1024 * 1024;
 pub const RENDER_BUDGET: Duration = Duration::from_millis(20);
 pub const UPDATE_BUDGET: Duration = Duration::from_millis(5);
+pub const MIGRATION_BUDGET: Duration = Duration::from_millis(20);
 
 #[derive(Debug, Error)]
 pub enum RuntimeError {
@@ -463,6 +464,53 @@ impl LuauRuntime {
 
     pub fn initial_state(&self) -> JsonValue {
         json!({})
+    }
+
+    pub fn state_schema_version(&self) -> Result<u64, RuntimeError> {
+        let module: Table = self.lua.registry_value(&self.module)?;
+        let version = module.get::<Option<u64>>("state_version")?.unwrap_or(1);
+        if version == 0 {
+            return Err(RuntimeError::Invalid(
+                "state_version must be a positive integer".into(),
+            ));
+        }
+        Ok(version)
+    }
+
+    pub fn migrate_state(
+        &self,
+        from_version: u64,
+        state: &JsonValue,
+    ) -> Result<JsonValue, RuntimeError> {
+        let target_version = self.state_schema_version()?;
+        if from_version == target_version {
+            return Ok(state.clone());
+        }
+        if from_version > target_version {
+            return Err(RuntimeError::Invalid(format!(
+                "cannot migrate state backward from schema {from_version} to {target_version}"
+            )));
+        }
+        let module: Table = self.lua.registry_value(&self.module)?;
+        let migrate: Option<Function> = module.get("migrate")?;
+        let migrate = migrate.ok_or_else(|| {
+            RuntimeError::Invalid(format!(
+                "schema changed from {from_version} to {target_version} but migrate(from_version, state) is missing"
+            ))
+        })?;
+        let state = self.lua.to_value(state)?;
+        let migrated = run_bounded(&self.deadline, MIGRATION_BUDGET, || {
+            migrate.call::<Value>((from_version, state))
+        })?;
+        let migrated: JsonValue = self.lua.from_value(migrated)?;
+        if serde_json::to_vec(&migrated)
+            .map_err(|error| RuntimeError::Invalid(error.to_string()))?
+            .len()
+            > MAX_STATE_BYTES
+        {
+            return Err(RuntimeError::Invalid("migrated state is too large".into()));
+        }
+        Ok(migrated)
     }
 
     pub fn render(
@@ -1057,6 +1105,40 @@ mod tests {
         assert_eq!(outcome.state["attached"], true);
         assert_eq!(outcome.effects.len(), 1);
         assert_eq!(outcome.effects[0].provider, "notes");
+    }
+
+    #[test]
+    fn runs_an_explicit_bounded_state_schema_migration() {
+        let runtime = LuauRuntime::compile(
+            r#"
+                return {
+                    state_version = 2,
+                    migrate = function(from_version, state)
+                        if from_version ~= 1 then error("unexpected source schema") end
+                        return { playing = state.playing, migrated_from = from_version }
+                    end,
+                    render = function() return { type = "box" } end,
+                }
+            "#,
+        )
+        .unwrap();
+        assert_eq!(runtime.state_schema_version().unwrap(), 2);
+        assert_eq!(
+            runtime
+                .migrate_state(1, &json!({ "playing": true }))
+                .unwrap(),
+            json!({ "playing": true, "migrated_from": 1 })
+        );
+        assert!(runtime.migrate_state(3, &json!({})).is_err());
+    }
+
+    #[test]
+    fn rejects_a_schema_change_without_a_migration() {
+        let runtime = LuauRuntime::compile(
+            r#"return { state_version = 2, render = function() return { type = "box" } end }"#,
+        )
+        .unwrap();
+        assert!(runtime.migrate_state(1, &json!({})).is_err());
     }
 
     #[test]

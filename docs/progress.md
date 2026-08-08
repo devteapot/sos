@@ -305,3 +305,52 @@ input. Redirecting Codex stdin from `/dev/null` fixed the runner. The partial
 artifact is retained but is not a suite result; its sole 10,498-byte source
 scored 5/5 and has SHA-256
 `bbdcda53d511fffaebb72f7ab86ced58a2c6f03a00a40fa6f534a436f2bf8ce4`.
+
+## 2026-08-08 — Android-exit gates B–D follow-up
+
+**Goal:** Measure the raw six-case agent baseline, attribute the generated-
+canvas latency tail, prototype process/surface crash recovery, and externalize
+versioned state with migration and fault injection.
+
+**Changed:** Added segmented source-to-frame telemetry; an isolated Android
+candidate process/surface plus reproducible crash probe; a durable optimistic
+state service with stage/promote/abort and four injected fault points; remote
+state boot/action promotion; and a bounded Luau state migration contract.
+Expanded the authoring contract with exact accessibility roles and the audited
+phone viewport constraint. Full evidence is in
+[`android-exit-followup.md`](android-exit-followup.md).
+
+**Evidence:** Raw Luna medium v2 compiled 3/6 and scored 17/40 in 454.403 s,
+using 659,981 input and 22,630 output tokens. Three identical unsupported-role
+errors explain all compile failures; the drag result reached the typed provider
+effect but failed safe geometry. A confirming physical-device 1,000-swap run
+accepted 1,000/1,000 with visible p95 79.390 ms, worker p95 8.086 ms,
+worker-to-commit p95 51.600 ms, GPUI tree-build p95 0.272 ms, callback p95
+26.124 ms, and +3,748 KB RSS. Separate candidate PIDs `16995` and `17048`
+failed before/after first frame while accepted PID `16889`, source, state, and
+surface survived. The remote state envelope persisted across daemon restart;
+phone-side before-promotion failure rejected state, while an ambiguous
+after-promotion failure was reconciled by exact reload. Twenty-one Rust tests,
+Java compilation, ARM64 build/install, and both candidate probes passed.
+The final 37,256,773-byte dirty APK has SHA-256
+`aacdc9fc8545ee008c8a542c1f3ff7f2928a688d13071204796e3d2031e0aa44`;
+an exact-source after-first-frame smoke probe also retained accepted PID
+`17754` after candidate PID `17861` died.
+
+Direct process killing originally caused an Android restart loop; same-task
+exceptions returned to the launcher; and an unhandled separate-task exception
+showed Samsung's crash dialog. Isolating the candidate task and installing its
+own uncaught-exception cleanup fixed the controlled probe. The raw evaluator's
+first attempt also consumed its case-loop stdin; `/dev/null` isolation fixed it
+before the authoritative v2 run.
+
+**Decision:** The <100 ms latency gate passes and Luau/GPUI remain confirmed.
+Do not move to privileged AOSP yet. Process recovery and provider/state
+independence are meaningful partials, not complete gates.
+
+**Open risks / next gate:** Replace the Java probe surface with a complete
+GPUI/Luau candidate; keep the accepted experience interactive during build;
+handle native process death from a fixed supervisor; remove the linked/local
+fallback in the gate build; atomically bind migration, source, state, provider
+effects, and surface promotion; coalesce drag state; then run the longer
+thermal/memory soak.

@@ -10,6 +10,8 @@ import android.os.Bundle;
 import android.util.Log;
 import android.view.KeyEvent;
 
+import dev.sos.experience.CandidateActivity;
+
 import androidx.core.splashscreen.SplashScreen;
 
 /**
@@ -148,6 +150,13 @@ public class GpuiActivity extends NativeActivity {
         if (data != null) {
             String url = data.toString();
             Log.i("GpuiActivity", "onNewIntent deeplink: " + url);
+            if ("sos".equals(data.getScheme()) && "candidate".equals(data.getHost())) {
+                Intent candidate = new Intent(this, CandidateActivity.class);
+                candidate.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK);
+                candidate.putExtra("revision", data.getQueryParameter("revision"));
+                candidate.putExtra("mode", data.getQueryParameter("mode"));
+                startActivity(candidate);
+            }
             try {
                 nativeOnDeepLink(url);
             } catch (UnsatisfiedLinkError e) {

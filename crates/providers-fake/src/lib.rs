@@ -1,5 +1,7 @@
 use experience_ir::{CalendarEvent, ExperienceModel, Music, Note, Weather};
 
+pub mod state_service;
+
 pub fn snapshot() -> ExperienceModel {
     ExperienceModel {
         greeting: "Good afternoon, Carli".into(),

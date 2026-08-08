@@ -12,6 +12,7 @@ pub const MAX_CANVAS_POINTS: usize = 8_192;
 pub const MAX_HIT_REGIONS: usize = 256;
 pub const MAX_EFFECTS: usize = 16;
 pub const MAX_EFFECT_PAYLOAD_BYTES: usize = 16 * 1024;
+pub const MAX_STATE_BYTES: usize = 1024 * 1024;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct ExperienceModel {
@@ -75,6 +76,23 @@ pub struct ProviderEffect {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct StateEnvelope {
+    pub revision: u64,
+    pub schema_version: u64,
+    #[serde(default)]
+    pub state: serde_json::Value,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum StateFaultPoint {
+    BeforeStage,
+    AfterStage,
+    BeforePromote,
+    AfterPromote,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ProviderRequest {
     Snapshot {
@@ -86,12 +104,39 @@ pub enum ProviderRequest {
         action: String,
         payload: serde_json::Value,
     },
+    LoadState {
+        request_id: u64,
+    },
+    StageState {
+        request_id: u64,
+        expected_revision: u64,
+        schema_version: u64,
+        state: serde_json::Value,
+    },
+    PromoteState {
+        request_id: u64,
+        stage_id: u64,
+    },
+    AbortState {
+        request_id: u64,
+        stage_id: u64,
+    },
+    ConfigureStateFault {
+        request_id: u64,
+        point: Option<StateFaultPoint>,
+    },
 }
 
 impl ProviderRequest {
     pub fn request_id(&self) -> u64 {
         match self {
-            Self::Snapshot { request_id } | Self::Action { request_id, .. } => *request_id,
+            Self::Snapshot { request_id }
+            | Self::Action { request_id, .. }
+            | Self::LoadState { request_id }
+            | Self::StageState { request_id, .. }
+            | Self::PromoteState { request_id, .. }
+            | Self::AbortState { request_id, .. }
+            | Self::ConfigureStateFault { request_id, .. } => *request_id,
         }
     }
 }
@@ -104,6 +149,10 @@ pub struct ProviderResponse {
     pub model: Option<ExperienceModel>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub result: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state: Option<StateEnvelope>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stage_id: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
 }

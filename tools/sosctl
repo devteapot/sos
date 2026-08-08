@@ -427,6 +427,52 @@ stress_experience() {
   fail "stress run $run_id did not finish within $attempts seconds"
 }
 
+candidate_process_probe() {
+  local mode="${1:-crash-after}"
+  [[ "$mode" == "crash-before" || "$mode" == "crash-after" ]] || \
+    fail "candidate probe mode must be crash-before or crash-after"
+
+  resolve_android_environment
+  require_command adb
+  select_device
+  local main_pid before_logs revision
+  main_pid="$(adb shell pidof "$M1_ANDROID_PACKAGE" | tr -d '\r')"
+  [[ -n "$main_pid" ]] || fail "$M1_ANDROID_PACKAGE is not running; use ./tools/sosctl m1-launch"
+  before_logs="$(adb logcat -d -v brief -s sos-supervisor:I '*:S' | wc -l | tr -d ' ')"
+  revision="probe-$(date +%s)"
+
+  info "launching disposable candidate process ($mode); accepted PID is $main_pid"
+  adb shell am start \
+    -W \
+    -a android.intent.action.VIEW \
+    -d "sos://candidate?revision=$revision\&mode=$mode" \
+    -n "$M1_ANDROID_PACKAGE/$ANDROID_ACTIVITY" >/dev/null || true
+
+  local result="" candidate_pid=""
+  for _ in {1..100}; do
+    candidate_pid="$(adb shell pidof "$M1_ANDROID_PACKAGE:candidate" 2>/dev/null | tr -d '\r' || true)"
+    result="$(adb logcat -d -v brief -s sos-supervisor:I '*:S' | tail -n +$((before_logs + 1)))"
+    if [[ -z "$candidate_pid" && "$result" == *"candidate_forced_crash"* ]]; then
+      break
+    fi
+    sleep 0.05
+  done
+
+  local main_pid_after resumed
+  main_pid_after="$(adb shell pidof "$M1_ANDROID_PACKAGE" | tr -d '\r')"
+  [[ "$main_pid_after" == "$main_pid" ]] || fail "accepted process changed: $main_pid -> $main_pid_after"
+  [[ "$result" == *"candidate_forced_crash"* ]] || fail "candidate did not reach forced crash"
+  if [[ "$mode" == "crash-after" ]]; then
+    [[ "$result" == *"candidate_first_frame"* ]] || fail "candidate crashed without reporting a first frame"
+  else
+    [[ "$result" != *"candidate_first_frame"* ]] || fail "crash-before candidate unexpectedly presented"
+  fi
+  resumed="$(adb shell dumpsys activity top | grep 'ACTIVITY' | tail -n 1 || true)"
+  [[ "$resumed" == *"$M1_ANDROID_PACKAGE/$ANDROID_ACTIVITY"* ]] || fail "accepted activity did not resume: $resumed"
+  printf '%s\n' "$result"
+  info "candidate process died; accepted PID $main_pid and surface resumed"
+}
+
 usage() {
   cat <<'USAGE'
 Usage: ./tools/sosctl <command>
@@ -452,6 +498,8 @@ Commands:
                       One-shot headless Codex generation (Luna, medium).
   rollback            Submit the prior accepted Luau source as a candidate.
   stress [count]      Run frame-paced transactional swaps (default: 1000).
+  candidate-probe [crash-before|crash-after]
+                      Crash a disposable revision process and verify return.
   worker-restart      Recreate the Luau worker without replacing the APK.
   help                 Show this message.
 
@@ -516,6 +564,10 @@ case "$command_name" in
   stress)
     [[ "$#" -le 1 ]] || fail "usage: ./tools/sosctl stress [count]"
     stress_experience "${1:-1000}"
+    ;;
+  candidate-probe)
+    [[ "$#" -le 1 ]] || fail "usage: ./tools/sosctl candidate-probe [crash-before|crash-after]"
+    candidate_process_probe "${1:-crash-after}"
     ;;
   worker-restart)
     [[ "$#" -eq 0 ]] || fail "usage: ./tools/sosctl worker-restart"

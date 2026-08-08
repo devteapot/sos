@@ -40,6 +40,11 @@ Every node is a table with `type`; interactive/native nodes require a stable
 unique `id`. Containers use `children`. A normal node may have `action`,
 `style`, `animation`, and `accessibility`.
 
+Accessibility is optional. When present it requires `label` and a `role` from
+exactly `button`, `image`, `text_field`, `header`, or `status`; arbitrary roles
+such as `text` are rejected. Plain text nodes usually need no accessibility
+table because their content is already included in the native summary.
+
 Available types are `box`, `column`, `row`, `scroll`, `text`, `text_input`,
 `image`, `canvas`, and `spacer`. Text uses `text`. The sole prototype image
 asset is `album-orbit`. See the checked-in experiences for conventional node
@@ -77,6 +82,11 @@ Canvas coordinates are local logical pixels. Paths are filled when `width` is
 omitted and stroked otherwise. A canvas event contains `action`, `target`, `x`,
 and `y`. The revision owns its geometry, hit regions, drag state, and drop
 semantics. The host only paints bounded commands and routes coordinates.
+
+For the SM-A336B audit, use an explicit canvas width and height and keep the
+complete initial draggable region at local `y <= 400`. Content below that may
+be visually present but off the initially reachable interaction area. This is
+a current viewport constraint, not a permanent SOS layout rule.
 
 Limits are enforced before presentation: 2,048 tree nodes, depth 32, 4,096
 canvas commands, 8,192 path points, 256 hit regions, 16 effects, 16 KiB effect

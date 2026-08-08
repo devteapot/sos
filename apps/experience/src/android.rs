@@ -61,6 +61,11 @@ struct PendingFrame {
     request_id: u64,
     purpose: CandidatePurpose,
     timings: CandidateTimings,
+    committed_at: Instant,
+    worker_to_commit_us: u64,
+    commit_to_render_us: u64,
+    render_build_us: u64,
+    callback_scheduled_at: Instant,
 }
 
 struct StressRun {
@@ -72,6 +77,10 @@ struct StressRun {
     alternate_source: String,
     visible_latencies_us: Vec<u64>,
     worker_latencies_us: Vec<u64>,
+    worker_to_commit_latencies_us: Vec<u64>,
+    commit_to_render_latencies_us: Vec<u64>,
+    render_build_latencies_us: Vec<u64>,
+    frame_callback_latencies_us: Vec<u64>,
     rss_start_kb: u64,
     rss_peak_kb: u64,
     rss_samples: Vec<(usize, u64)>,
@@ -139,6 +148,8 @@ struct ExperienceHost {
     worker: RuntimeWorker,
     tree: UiNode,
     state: JsonValue,
+    remote_state_revision: Option<u64>,
+    state_schema_version: u64,
     source: String,
     status: Option<(String, bool)>,
     next_request_id: u64,
@@ -165,7 +176,25 @@ impl ExperienceHost {
                 providers_fake::snapshot()
             }
         };
-        let state = load_state();
+        let (state, remote_state_revision, state_schema_version) =
+            match provider_client::load_state() {
+                Ok(envelope) => {
+                    log::info!(
+                        "experience_state_remote revision={} schema_version={}",
+                        envelope.revision,
+                        envelope.schema_version
+                    );
+                    (
+                        envelope.state,
+                        Some(envelope.revision),
+                        envelope.schema_version,
+                    )
+                }
+                Err(error) => {
+                    log::warn!("experience_state_fallback error={error}");
+                    (load_state(), None, 1)
+                }
+            };
         let source = read_file(ACTIVE_FILE).unwrap_or_else(|| DEFAULT_EXPERIENCE.to_owned());
         let (worker, ready) = RuntimeWorker::spawn(source.clone(), model.clone(), state.clone())
             .expect("runtime worker thread must start");
@@ -181,6 +210,8 @@ impl ExperienceHost {
             worker,
             tree: loading_tree(),
             state,
+            remote_state_revision,
+            state_schema_version,
             source,
             status: Some(("Starting Luau worker…".into(), true)),
             next_request_id: 1,
@@ -583,6 +614,10 @@ impl ExperienceHost {
             alternate_source,
             visible_latencies_us: Vec::with_capacity(request.count),
             worker_latencies_us: Vec::with_capacity(request.count),
+            worker_to_commit_latencies_us: Vec::with_capacity(request.count),
+            commit_to_render_latencies_us: Vec::with_capacity(request.count),
+            render_build_latencies_us: Vec::with_capacity(request.count),
+            frame_callback_latencies_us: Vec::with_capacity(request.count),
             rss_start_kb,
             rss_peak_kb: rss_start_kb,
             rss_samples: vec![(0, rss_start_kb)],
@@ -685,10 +720,18 @@ impl ExperienceHost {
                     self.status =
                         Some(("Candidate rendered; confirming presentation…".into(), true));
                 }
+                let committed_at = Instant::now();
+                let worker_to_commit_us =
+                    micros(timings.submitted_at.elapsed()).saturating_sub(timings.worker_total_us);
                 self.pending_frame = Some(PendingFrame {
                     request_id,
                     purpose,
                     timings,
+                    committed_at,
+                    worker_to_commit_us,
+                    commit_to_render_us: 0,
+                    render_build_us: 0,
+                    callback_scheduled_at: Instant::now(),
                 });
             }
             WorkerResult::ActionCompleted {
@@ -728,6 +771,28 @@ impl ExperienceHost {
                     }
                 }
                 self.merge_native_input_state(&mut state);
+                if let Some(expected_revision) = self.remote_state_revision {
+                    match provider_client::commit_state(
+                        expected_revision,
+                        self.state_schema_version,
+                        &state,
+                    ) {
+                        Ok(envelope) => {
+                            self.remote_state_revision = Some(envelope.revision);
+                            log::info!(
+                                "experience_state_promoted revision={} schema_version={}",
+                                envelope.revision,
+                                envelope.schema_version
+                            );
+                        }
+                        Err(error) => {
+                            self.status = Some((format!("State promotion failed: {error}"), false));
+                            log::warn!("experience_state_rejected error={error}");
+                            self.dispatch_pending_input_event(cx);
+                            return;
+                        }
+                    }
+                }
                 self.state = state;
                 self.tree = tree;
                 self.publish_accessibility();
@@ -767,6 +832,8 @@ impl ExperienceHost {
 
     fn frame_presented(&mut self, frame: PendingFrame, cx: &mut Context<Self>) {
         let visible_us = micros(frame.timings.submitted_at.elapsed());
+        let frame_callback_us = micros(frame.callback_scheduled_at.elapsed());
+        let post_worker_us = visible_us.saturating_sub(frame.timings.worker_total_us);
         match frame.purpose {
             CandidatePurpose::Regular => {
                 self.status = Some((
@@ -774,13 +841,18 @@ impl ExperienceHost {
                     true,
                 ));
                 log::info!(
-                    "script_visible request_id={} source_to_visible_us={} queue_us={} compile_us={} render_us={} worker_total_us={}",
+                    "script_visible request_id={} source_to_visible_us={} queue_us={} compile_us={} render_us={} worker_total_us={} post_worker_us={} worker_to_commit_us={} commit_to_render_us={} gpui_tree_build_us={} frame_callback_us={}",
                     frame.request_id,
                     visible_us,
                     frame.timings.queue_us,
                     frame.timings.compile_us,
                     frame.timings.render_us,
-                    frame.timings.worker_total_us
+                    frame.timings.worker_total_us,
+                    post_worker_us,
+                    frame.worker_to_commit_us,
+                    frame.commit_to_render_us,
+                    frame.render_build_us,
+                    frame_callback_us
                 );
             }
             CandidatePurpose::Stress => {
@@ -793,16 +865,29 @@ impl ExperienceHost {
                 stress
                     .worker_latencies_us
                     .push(frame.timings.worker_total_us);
+                stress
+                    .worker_to_commit_latencies_us
+                    .push(frame.worker_to_commit_us);
+                stress
+                    .commit_to_render_latencies_us
+                    .push(frame.commit_to_render_us);
+                stress.render_build_latencies_us.push(frame.render_build_us);
+                stress.frame_callback_latencies_us.push(frame_callback_us);
                 stress.rss_peak_kb = stress.rss_peak_kb.max(rss_kb);
                 if stress.completed % 250 == 0 || stress.completed == stress.total {
                     stress.rss_samples.push((stress.completed, rss_kb));
                     log::info!(
-                        "stress_sample run_id={} iteration={} rss_kb={} visible_us={} worker_us={}",
+                        "stress_sample run_id={} iteration={} rss_kb={} visible_us={} worker_us={} post_worker_us={} worker_to_commit_us={} commit_to_render_us={} gpui_tree_build_us={} frame_callback_us={}",
                         stress.run_id,
                         stress.completed,
                         rss_kb,
                         visible_us,
-                        frame.timings.worker_total_us
+                        frame.timings.worker_total_us,
+                        post_worker_us,
+                        frame.worker_to_commit_us,
+                        frame.commit_to_render_us,
+                        frame.render_build_us,
+                        frame_callback_us
                     );
                 }
 
@@ -838,9 +923,13 @@ impl ExperienceHost {
             .max()
             .unwrap_or_default();
         let worker_p95_us = percentile(&stress.worker_latencies_us, 95);
+        let worker_to_commit_p95_us = percentile(&stress.worker_to_commit_latencies_us, 95);
+        let commit_to_render_p95_us = percentile(&stress.commit_to_render_latencies_us, 95);
+        let render_build_p95_us = percentile(&stress.render_build_latencies_us, 95);
+        let frame_callback_p95_us = percentile(&stress.frame_callback_latencies_us, 95);
         let duration_ms = stress.started_at.elapsed().as_millis();
         log::info!(
-            "stress_complete run_id={} total={} accepted={} rejected=0 duration_ms={} visible_p50_us={} visible_p95_us={} visible_p99_us={} visible_max_us={} worker_p95_us={} rss_start_kb={} rss_end_kb={} rss_peak_kb={} rss_delta_kb={} rss_samples={}",
+            "stress_complete run_id={} total={} accepted={} rejected=0 duration_ms={} visible_p50_us={} visible_p95_us={} visible_p99_us={} visible_max_us={} worker_p95_us={} worker_to_commit_p95_us={} commit_to_render_p95_us={} gpui_tree_build_p95_us={} frame_callback_p95_us={} rss_start_kb={} rss_end_kb={} rss_peak_kb={} rss_delta_kb={} rss_samples={}",
             stress.run_id,
             stress.total,
             stress.completed,
@@ -850,6 +939,10 @@ impl ExperienceHost {
             visible_p99_us,
             visible_max_us,
             worker_p95_us,
+            worker_to_commit_p95_us,
+            commit_to_render_p95_us,
+            render_build_p95_us,
+            frame_callback_p95_us,
             stress.rss_start_kb,
             rss_end_kb,
             stress.rss_peak_kb,
@@ -1079,11 +1172,8 @@ impl Render for ExperienceHost {
         {
             self.dispatch_pending_input_event(cx);
         }
-        if let Some(frame) = self.pending_frame.take() {
-            cx.on_next_frame(window, move |this, _, cx| {
-                this.frame_presented(frame, cx);
-            });
-        }
+        let mut pending_frame = self.pending_frame.take();
+        let render_started_at = Instant::now();
 
         let tree = self.tree.clone();
         let content = self.render_node(&tree, SharedString::from("root"), window, cx);
@@ -1109,6 +1199,15 @@ impl Render for ExperienceHost {
                     .text_size(px(12.0))
                     .child(SharedString::from(message.clone())),
             );
+        }
+        if let Some(mut frame) = pending_frame.take() {
+            frame.commit_to_render_us =
+                micros(render_started_at.duration_since(frame.committed_at));
+            frame.render_build_us = micros(render_started_at.elapsed());
+            frame.callback_scheduled_at = Instant::now();
+            cx.on_next_frame(window, move |this, _, cx| {
+                this.frame_presented(frame, cx);
+            });
         }
         root
     }
