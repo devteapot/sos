@@ -1,0 +1,85 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+vm_tools_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+vm_root="$(cd "$vm_tools_dir/../.." && pwd)"
+vm_cache_root="${SOS_LINUX_VM_ROOT:-$vm_root/.cache/linux-vm}"
+vm_name="${SOS_LINUX_VM_NAME:-sos-debian13}"
+vm_ssh_port="${SOS_LINUX_VM_SSH_PORT:-2222}"
+vm_vnc_display="${SOS_LINUX_VM_VNC_DISPLAY:-1}"
+vm_overlay="$vm_cache_root/$vm_name.qcow2"
+vm_seed="$vm_cache_root/$vm_name-seed.img"
+vm_vars="$vm_cache_root/$vm_name-vars.fd"
+vm_pid_file="$vm_cache_root/$vm_name.pid"
+vm_qemu_log="$vm_cache_root/$vm_name-qemu.log"
+vm_serial_log="$vm_cache_root/$vm_name-serial.log"
+
+fail() {
+  printf 'error: %s\n' "$*" >&2
+  exit 1
+}
+
+[[ "$#" -eq 0 ]] || fail "usage: tools/linux-vm/start"
+[[ "$vm_ssh_port" =~ ^[0-9]+$ && "$vm_ssh_port" -ge 1024 && "$vm_ssh_port" -le 65535 ]] || \
+  fail "SSH port must be an unprivileged TCP port"
+[[ "$vm_vnc_display" =~ ^[0-9]+$ && "$vm_vnc_display" -le 99 ]] || \
+  fail "VNC display must be an integer from 0 through 99"
+[[ ! -e "$vm_pid_file" ]] || fail "VM PID file already exists: $vm_pid_file"
+for vm_input in "$vm_overlay" "$vm_seed" "$vm_vars"; do
+  [[ -f "$vm_input" ]] || fail "VM input not found: $vm_input"
+done
+[[ -r /dev/kvm && -w /dev/kvm ]] || fail "/dev/kvm is not readable and writable by $(id -un)"
+
+case "$(uname -m)" in
+  aarch64)
+    vm_qemu="qemu-system-aarch64"
+    vm_firmware_code="/usr/share/AAVMF/AAVMF_CODE.no-secboot.fd"
+    vm_machine_options=(-machine "virt,accel=kvm,gic-version=host" -cpu host)
+    ;;
+  x86_64)
+    vm_qemu="qemu-system-x86_64"
+    if [[ -f /usr/share/OVMF/OVMF_CODE_4M.fd ]]; then
+      vm_firmware_code="/usr/share/OVMF/OVMF_CODE_4M.fd"
+    else
+      vm_firmware_code="/usr/share/OVMF/OVMF_CODE.fd"
+    fi
+    vm_machine_options=(-machine "q35,accel=kvm" -cpu host)
+    ;;
+  *) fail "unsupported host architecture: $(uname -m)" ;;
+esac
+command -v "$vm_qemu" >/dev/null 2>&1 || fail "required command not found: $vm_qemu"
+[[ -f "$vm_firmware_code" ]] || fail "UEFI code firmware not found: $vm_firmware_code"
+
+"$vm_qemu" "${vm_machine_options[@]}" \
+  -name "$vm_name" \
+  -smp 8 \
+  -m 12288 \
+  -drive "if=pflash,format=raw,unit=0,readonly=on,file=$vm_firmware_code" \
+  -drive "if=pflash,format=raw,unit=1,file=$vm_vars" \
+  -drive "if=none,format=qcow2,id=system,file=$vm_overlay" \
+  -device virtio-blk-pci,drive=system \
+  -drive "if=none,format=raw,readonly=on,id=seed,file=$vm_seed" \
+  -device virtio-blk-pci,drive=seed \
+  -device virtio-gpu-pci \
+  -device qemu-xhci \
+  -device usb-kbd \
+  -device usb-tablet \
+  -device virtio-rng-pci \
+  -device virtio-net-pci,netdev=vmnet \
+  -netdev "user,id=vmnet,hostfwd=tcp:127.0.0.1:$vm_ssh_port-:22" \
+  -display "vnc=127.0.0.1:$vm_vnc_display" \
+  -serial "file:$vm_serial_log" \
+  -D "$vm_qemu_log" \
+  -pidfile "$vm_pid_file" \
+  -daemonize
+
+[[ -s "$vm_pid_file" ]] || fail "QEMU did not write its PID file; inspect $vm_qemu_log"
+vm_pid="$(<"$vm_pid_file")"
+[[ "$vm_pid" =~ ^[0-9]+$ ]] || fail "QEMU wrote an invalid PID: $vm_pid"
+kill -0 "$vm_pid" 2>/dev/null || fail "QEMU exited during startup; inspect $vm_qemu_log and $vm_serial_log"
+
+printf 'Started %s with QEMU PID %s.\n' "$vm_name" "$vm_pid"
+printf 'Connect with: ssh -p %s sos@127.0.0.1\n' "$vm_ssh_port"
+printf 'Open the console with: remote-viewer vnc://127.0.0.1:%s\n' "$((5900 + vm_vnc_display))"
+printf 'Shut the guest down cleanly, or terminate QEMU with: ./tools/linux-vm/stop\n'

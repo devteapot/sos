@@ -22,6 +22,10 @@ M1_DEVICE_STAGING="/data/local/tmp/dev.sos.experience.candidate.luau"
 LINUX_REVISION_ROOT="${SOS_LINUX_REVISION_ROOT:-$CACHE_ROOT/linux-revisions-v3}"
 LINUX_SUPERVISOR="$SOS_ROOT/target/debug/sos-revision-supervisor"
 LINUX_HOST="$SOS_ROOT/target/debug/sos-experience-host"
+LINUX_PROVIDER_SERVICE="$SOS_ROOT/target/debug/sos-provider-state-service"
+LINUX_SESSION="$SOS_ROOT/target/debug/sos-linux-session"
+LINUX_PROVIDER_SOCKET="$LINUX_REVISION_ROOT/run/provider-state.sock"
+LINUX_AUTHORITY_FILE="$LINUX_REVISION_ROOT/authority.json"
 
 info() {
   printf '==> %s\n' "$*"
@@ -487,15 +491,17 @@ stress_experience() {
   fail "stress run $run_id did not finish within $attempts seconds"
 }
 
-build_linux_host() {
+build_linux_session() {
   [[ "$(uname -s)" == "Linux" ]] || fail "the Wayland host currently requires Linux"
   require_command cargo
-  info "building the Linux GPUI host and revision supervisor"
+  info "building the Linux GPUI host, authority, and revision session"
   (
     cd "$SOS_ROOT"
     cargo build --locked \
       -p sos-experience --features linux-host --bin sos-experience-host \
-      -p revision-supervisor --bin sos-revision-supervisor
+      -p revision-supervisor --bin sos-revision-supervisor \
+      -p provider-state-service --bin sos-provider-state-service \
+      -p sos-linux-session --bin sos-linux-session
   )
 }
 
@@ -507,6 +513,38 @@ require_wayland_session() {
     fail "Wayland socket not found: $runtime_directory/$display_name"
 }
 
+wait_for_linux_socket() {
+  local socket_path="$1"
+  local process_id="$2"
+  local process_name="$3"
+  for _ in {1..500}; do
+    [[ -S "$socket_path" ]] && return
+    kill -0 "$process_id" 2>/dev/null || {
+      wait "$process_id" || true
+      fail "$process_name exited before creating $socket_path"
+    }
+    sleep 0.01
+  done
+  fail "$process_name did not create $socket_path"
+}
+
+cleanup_linux_processes() {
+  local supervisor_pid="$1"
+  local provider_pid="$2"
+  if [[ -n "$supervisor_pid" ]] && kill -0 "$supervisor_pid" 2>/dev/null; then
+    "$LINUX_SUPERVISOR" shutdown --root "$LINUX_REVISION_ROOT" >/dev/null 2>&1 || true
+  fi
+  if [[ -n "$provider_pid" ]] && kill -0 "$provider_pid" 2>/dev/null; then
+    "$LINUX_SESSION" shutdown \
+      --service-socket "$LINUX_PROVIDER_SOCKET" >/dev/null 2>&1 || true
+  fi
+  [[ -z "$supervisor_pid" ]] || wait "$supervisor_pid" 2>/dev/null || true
+  [[ -z "$provider_pid" ]] || wait "$provider_pid" 2>/dev/null || true
+  if [[ -S "$LINUX_PROVIDER_SOCKET" ]]; then
+    rm -f "$LINUX_PROVIDER_SOCKET"
+  fi
+}
+
 linux_run() {
   local windowed=false
   if [[ "${1:-}" == "--windowed" ]]; then
@@ -515,7 +553,7 @@ linux_run() {
   fi
   [[ "$#" -eq 0 ]] || fail "usage: ./tools/sosctl linux-run [--windowed]"
   require_wayland_session
-  build_linux_host
+  build_linux_session
   mkdir -p "$LINUX_REVISION_ROOT"
 
   local current_revision
@@ -533,16 +571,52 @@ linux_run() {
       --revision "$current_revision" >/dev/null
   fi
 
-  info "starting permanent Linux host at revision $current_revision"
+  [[ ! -e "$LINUX_PROVIDER_SOCKET" ]] || \
+    fail "provider socket already exists: $LINUX_PROVIDER_SOCKET"
+  info "starting provider/state authority"
+  "$LINUX_PROVIDER_SERVICE" \
+    --socket "$LINUX_PROVIDER_SOCKET" \
+    --state-file "$LINUX_AUTHORITY_FILE" &
+  local provider_pid=$!
+  local supervisor_pid=""
+  trap 'cleanup_linux_processes "$supervisor_pid" "$provider_pid"' EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+  wait_for_linux_socket "$LINUX_PROVIDER_SOCKET" "$provider_pid" "provider/state authority"
+  "$LINUX_SESSION" bootstrap \
+    --root "$LINUX_REVISION_ROOT" \
+    --service-socket "$LINUX_PROVIDER_SOCKET"
+
+  info "starting coordinated permanent Linux host at revision $current_revision"
   local arguments=(
     serve
     --root "$LINUX_REVISION_ROOT"
     --host-executable "$LINUX_HOST"
+    --service-socket "$LINUX_PROVIDER_SOCKET"
+    --host-arg --service-socket
+    --host-arg "$LINUX_PROVIDER_SOCKET"
   )
   if $windowed; then
     arguments+=(--host-arg --windowed)
   fi
-  exec "$LINUX_SUPERVISOR" "${arguments[@]}"
+  "$LINUX_SUPERVISOR" "${arguments[@]}" &
+  supervisor_pid=$!
+
+  local session_status=0
+  set +e
+  wait -n "$supervisor_pid" "$provider_pid"
+  session_status=$?
+  set -e
+  local provider_failed=false
+  if ! kill -0 "$provider_pid" 2>/dev/null && kill -0 "$supervisor_pid" 2>/dev/null; then
+    provider_failed=true
+  fi
+  cleanup_linux_processes "$supervisor_pid" "$provider_pid"
+  trap - EXIT INT TERM
+  if $provider_failed; then
+    fail "provider/state authority exited while the Linux session was active"
+  fi
+  return "$session_status"
 }
 
 linux_script() {
@@ -554,6 +628,8 @@ linux_script() {
   [[ -f "$state_file" ]] || fail "experience state not found: $state_file"
   [[ -S "$LINUX_REVISION_ROOT/run/supervisor.sock" ]] || \
     fail "Linux supervisor is not running; start ./tools/sosctl linux-run"
+  [[ -S "$LINUX_PROVIDER_SOCKET" ]] || \
+    fail "provider/state authority is not running; restart ./tools/sosctl linux-run"
 
   local revision_id
   revision_id="$($LINUX_SUPERVISOR install \
@@ -562,10 +638,16 @@ linux_script() {
     --state "$state_file" \
     --schema 1 \
     --api 3)"
-  info "activating Luau revision $revision_id"
+  local transaction_id
+  transaction_id="$($LINUX_SESSION stage \
+    --root "$LINUX_REVISION_ROOT" \
+    --revision "$revision_id" \
+    --service-socket "$LINUX_PROVIDER_SOCKET")"
+  info "activating Luau revision $revision_id through transaction $transaction_id"
   "$LINUX_SUPERVISOR" activate \
     --root "$LINUX_REVISION_ROOT" \
-    --revision "$revision_id"
+    --revision "$revision_id" \
+    --transaction "$transaction_id"
 }
 
 linux_status() {
@@ -575,7 +657,13 @@ linux_status() {
 
 linux_stop() {
   [[ "$#" -eq 0 ]] || fail "usage: ./tools/sosctl linux-stop"
-  "$LINUX_SUPERVISOR" shutdown --root "$LINUX_REVISION_ROOT"
+  if [[ -S "$LINUX_REVISION_ROOT/run/supervisor.sock" ]]; then
+    "$LINUX_SUPERVISOR" shutdown --root "$LINUX_REVISION_ROOT"
+  elif [[ -S "$LINUX_PROVIDER_SOCKET" ]]; then
+    "$LINUX_SESSION" shutdown --service-socket "$LINUX_PROVIDER_SOCKET"
+  else
+    fail "Linux session is not running"
+  fi
 }
 
 usage() {
@@ -605,11 +693,11 @@ Commands:
   stress [count]      Run frame-paced transactional swaps (default: 1000).
   worker-restart      Recreate the Luau worker without replacing the APK.
   linux-run [--windowed]
-                      Build and run the permanent GPUI host in this Wayland session.
+                      Run authority, coordinator, and permanent GPUI host in Wayland.
   linux-script <file> [state.json]
-                      Install and activate Luau in the running Linux host.
+                      Stage and activate Luau through the coordinated Linux session.
   linux-status        Report the active Linux revision and permanent host PID.
-  linux-stop          Shut down the Linux revision supervisor and host.
+  linux-stop          Shut down authority, revision supervisor, and host.
   help                 Show this message.
 
 Set ADB_SERIAL when more than one Android device is connected.

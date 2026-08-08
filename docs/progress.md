@@ -1190,3 +1190,118 @@ Smithay compositor that authenticates the shell, owns focus/surface ordering,
 quiesces input across activation, places one compatibility client, and
 acknowledges the exact presented shell buffer. Only after that should the same
 compositor take over a VM DRM/input session.
+
+## 2026-08-08 — Coordinate the Linux authority and define the Debian VM gate
+
+**Goal:** Remove standalone provider startup from the Linux developer path and
+make the next distro check reproducible. Prove that a real GPUI revision switch
+advances the durable authority and supervisor pointer together before beginning
+the Smithay compositor; do not count the existing Ubuntu nested run as Debian
+VM evidence.
+
+**Changed:** Added the Linux-only `sos-linux-session` crate. It re-verifies the
+revision store, binds an empty authority to the immutable boot revision through
+an idempotent durable transaction, refuses to overwrite an initialized or
+unexplained mismatched authority, creates schema-bound candidate transactions,
+and shuts the authority down through its typed protocol. The sole admitted
+mismatch is an authority candidate and previous-revision pointer bound by the
+durable activation journal, allowing the existing coordinator to finish crash
+recovery. `linux-run` now builds and owns
+the provider service, session helper, coordinated supervisor, and permanent
+GPUI host. It passes one socket to both supervisor and host, monitors the two
+top-level services, and tears the other down if either exits. `linux-script`
+stages the installed revision and supplies its stable transaction ID to
+coordinated activation.
+
+Added `tools/linux-vm/create`, `start`, and `stop`, a cloud-init template, a
+Debian-13-only package/Rust provisioner, and `tools/linux-vm/verify-session`.
+The creator accepts only the host-matching official Debian 13 `generic` qcow2
+filename and an explicit 128-hex SHA-512, verifies it before creating a 100 GiB
+overlay, and starts an 8-vCPU/12-GiB UEFI VirtIO guest as a direct unprivileged
+QEMU/KVM process. Networking is QEMU user mode with only loopback SSH port 2222;
+the console is loopback VNC. `start` resumes the ignored overlay, while `stop`
+targets only the recorded PID, preserves disks/logs, and refuses a force kill.
+The verifier uses an isolated Xvfb/Weston seat and store, and reports the guest
+OS so only `os=debian version=13` completes the VM gate. The full contract is in
+[`linux-vm.md`](linux-vm.md).
+
+**Evidence:** `cargo test -p sos-linux-session` passes the real-socket authority
+test: it creates two verified revisions, bootstraps the first, proves bootstrap
+idempotence, stages the schema-2 candidate with a proof bound to authoritative
+state, confirms staging does not prematurely change current state, and refuses
+to bootstrap across a deliberately promoted pointer/authority mismatch. It
+then adds the exact durable journal binding and classifies that mismatch for
+coordinator recovery without resetting either side. The
+locked Linux-feature workspace passes all 99 tests. Strict workspace clippy,
+the NDK 29 AArch64 Android cross-check, all five checked-in experience
+validators, formatting, ShellCheck/Bash syntax, conflict-marker, and diff checks
+pass. All four session executables link together under `cargo build --locked`.
+
+`tools/linux-vm/verify-session` passes on the current ARM64 Ubuntu 24.04 host.
+It bootstrapped authority revision `f174e726…`, booted the real GPUI host in PID
+1661845, and activated revision `552f0696…` through transaction
+`linux-activate-1-552f0696…` in that same PID. The worker measured 34 us queue,
+1,162 us compile, 654 us render, and 1,825 us total. The exact 64-hex authority
+revision and supervisor pointer matched after the GPUI frame/confirmation.
+Shutdown removed both sockets; the exact disposable `/tmp/sos-linux-session.*`
+tree was made owner-writable because immutable revision directories are mode
+0555, then removed.
+
+The same verifier passes inside the actual KVM guest with
+`linux_nested_session_passed os=debian version=13 host_pid=3874
+revision_id=552f06968bbc5c69de3db581454f60d4303289f304eaaf47a6e9dc3200297cdb`.
+The guest is Debian 13.6 on `6.12.100+deb13-arm64`, with Rust 1.95.0, Weston
+14.0.2, Xvfb 21.1.16, Wayland client 1.23.1, and Mesa Vulkan 25.0.7. It booted
+revision `f174e726…` with 3,635 us worker initialization and activated
+`552f0696…` through `linux-activate-1-552f0696…` in unchanged PID 3874. The
+candidate measured 374 us queue, 1,147 us compile, 651 us render, and 1,807 us
+worker total; the exact authority revision and supervisor pointer matched.
+
+The immutable gate input was official
+`debian-13-generic-arm64.qcow2`, retrieved 2026-08-08: 428,736,512 bytes,
+SHA-256 `0e68f071dec0215f5d8c7e6f51898213951a6c1a4859f1b980fb4d479255e2bc`,
+SHA-512
+`e8ed94e83edded072c66b8871beff8243e0b846ac53980847e2ae44c6d47a8a55579181390b6c85939e85e2a821014ae87e9684930c0509a045212753c8d7916`.
+The raw base, seed, and mutable overlay remain ignored under `.cache/linux-vm/`;
+the overlay is reusable development state, not evidence. QEMU 8.2.2 cleanly
+booted and resumed that overlay through the checked-in direct launcher.
+
+**Failures and fixes:** The first session-helper compile treated
+`state_sha256` as infallible; propagating its authority error fixed the migration
+proof. The first hand-written nested run could not delete its disposable
+revision files because the store correctly makes them read-only; cleanup now
+validates the exact `mktemp` prefix and restores only owner write permission
+before removal. An initial package-index update tried the host's foreign AMD64
+architecture against ARM64-only Ubuntu ports and failed; installing the named
+ARM64 virtualization packages directly succeeded. `virt-install` 4.1 first
+rejected the proposed `portForward` network suboption. Moving the forward to
+QEMU's monitor exposed the deeper problem: unprivileged libvirt advertised
+only software `domain type=qemu` and rejected both host-model and
+host-passthrough CPUs even though direct QEMU initialized KVM successfully.
+The harness therefore rejected libvirt and now invokes QEMU directly.
+
+The existing login did not acquire its newly added `kvm` supplementary group,
+so this one run used `sg kvm`; a new login uses the normal group membership.
+GDM/logind also replaced a temporary per-user KVM ACL, confirming that the
+group is the durable fix. A clean guest poweroff made QEMU remove its PID file
+before `stop` ran; `stop` is now idempotent when the file is absent and its live
+PID path was tested against a disposable process. The preserved VM then
+resumed and returned `cloud-init status --wait` successfully. Mesa software
+rendering remains deliberate in the nested verifier, so no GPU or latency claim
+changed.
+
+**Decision:** Keep authority binding and process orchestration in a Linux-only
+session layer; do not add Linux lifecycle policy to the platform-neutral
+supervisor or expose it to Luau. An empty authority may be initialized from the
+already committed immutable pointer. Any non-empty mismatch is an error, never
+an implicit reset, unless the activation journal binds the exact candidate/
+previous pair for coordinator recovery. Treat the official image digest and
+matching guest architecture as gate inputs, while keeping all raw VM disks
+outside Git.
+
+**Open risks / next gate:** The Debian client-host gate is complete. Native
+Linux text editing and accessibility remain open. Add the minimal nested
+Smithay compositor for shell authentication, surface/focus policy, one
+compatibility client, input quiescing, and an exact compositor-owned
+presentation fence. No desktop or VM result completes direct DRM, physical
+touch, hardware latency, thermals, or suspend/resume gates.

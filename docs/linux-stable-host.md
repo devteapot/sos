@@ -21,6 +21,16 @@ one GPUI Wayland surface
 existing Wayland compositor
 ```
 
+`linux-run` also owns a sibling provider/state authority. The Linux-only
+`sos-linux-session` helper verifies the revision store, bootstraps an empty
+authority from the committed pointer, and stages each candidate before asking
+the coordinated supervisor to activate it. The same authority socket is passed
+to the supervisor and permanent host; either top-level service exiting tears
+down the developer session. A non-empty mismatch remains fatal unless the
+durable activation journal binds the pointer as its previous revision and the
+authority as its candidate; that one crash boundary is handed to the existing
+coordinator recovery path instead of being mistaken for corruption.
+
 `experience-host-protocol` owns the transport ABI shared by the supervisor and
 host. Host stdout is reserved for newline-delimited protocol events; all GPUI,
 runtime, timing, and recovery diagnostics go to stderr. A candidate is compiled
@@ -75,13 +85,17 @@ From a second terminal:
 ```
 
 `linux-script` accepts an optional second `state.json` argument and otherwise
-starts the candidate with `{}`. Set `SOS_LINUX_REVISION_ROOT` to use a disposable
-or isolated revision store. The current convenience command intentionally runs
-the supervisor in standalone mode and installs source-only candidates. Use the
-supervisor's `install --asset ID:KIND:FILE` interface described in
+starts the candidate with `{}`. It stages that immutable state in the authority,
+then supplies the stable transaction ID to the coordinated supervisor. Set
+`SOS_LINUX_REVISION_ROOT` to use a disposable or isolated revision store. Use
+the supervisor's `install --asset ID:KIND:FILE` interface described in
 [`revision-supervisor.md`](revision-supervisor.md) when testing v3 sidecars.
-Coordinated service startup and authority bootstrap will become the
-appliance/session manager's job.
+The shell helper is development orchestration; a later appliance/session
+manager must own the same lifecycle without granting generated code process
+authority.
+
+The reproducible Debian 13 guest definition, provisioning command, and nested
+acceptance gate are in [`linux-vm.md`](linux-vm.md).
 
 The executable link on Debian/Ubuntu requires the XKB development libraries in
 addition to the usual Rust/GPUI Linux prerequisites:
@@ -128,6 +142,26 @@ down, restarts it from the durable authority file, and reads the same attachment
 back through the socket. The combined workspace suite additionally proves that
 each prepared worker candidate receives its own sidecar set and that the Linux
 manifest loader carries verified sidecars into the runtime boundary.
+
+The coordinated executable rerun used an isolated Xvfb/Weston seat and store.
+It bootstrapped authority revision `f174e726…`, booted the real host in PID
+1661845, staged transaction `linux-activate-1-552f0696…`, and activated revision
+`552f0696…` in that same PID. The worker reported 34 us queue, 1,162 us compile,
+654 us render, and 1,825 us total. After activation the durable authority and
+supervisor `current` pointer both named the full candidate revision. `linux-stop`
+shut down both top-level services, and the exact disposable read-only store was
+made owner-writable and removed. This was still the ARM64 Ubuntu nested setup,
+not the Debian VM gate.
+
+The reproducible VM gate then passed in an ARM64 Debian 13.6 guest on kernel
+`6.12.100+deb13-arm64`, provisioned from the verified official generic image.
+Weston 14.0.2 ran inside Xvfb 21.1.16 with Mesa Vulkan 25.0.7. The real host
+booted `f174e726…` and initialized its worker in 3,635 us, then activated
+`552f0696…` through `linux-activate-1-552f0696…` in unchanged PID 3874. That
+candidate measured 374 us queue, 1,147 us compile, 651 us render, and 1,807 us
+worker total. The exact authority revision and supervisor pointer matched after
+the GPUI frame and confirmation. This completes the functional client-host VM
+gate, not a GPU, compositor-presentation, or latency gate.
 
 ## Honest boundaries and next gate
 

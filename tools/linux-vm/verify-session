@@ -1,0 +1,105 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+vm_repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+cd "$vm_repo_root"
+for vm_command in cargo sed weston Xvfb; do
+  command -v "$vm_command" >/dev/null 2>&1 || {
+    printf 'error: required command not found: %s\n' "$vm_command" >&2
+    exit 1
+  }
+done
+
+vm_run_dir="$(mktemp -d /tmp/sos-linux-session.XXXXXX)"
+vm_runtime_dir="$vm_run_dir/runtime"
+vm_revision_root="$vm_run_dir/revisions"
+mkdir -p "$vm_runtime_dir"
+chmod 700 "$vm_runtime_dir"
+vm_xvfb_pid=""
+vm_weston_pid=""
+vm_session_pid=""
+
+cleanup_vm_gate() {
+  if [[ -n "$vm_session_pid" ]] && kill -0 "$vm_session_pid" 2>/dev/null; then
+    SOS_LINUX_REVISION_ROOT="$vm_revision_root" ./tools/sosctl linux-stop >/dev/null 2>&1 || true
+    wait "$vm_session_pid" 2>/dev/null || true
+  fi
+  if [[ -n "$vm_weston_pid" ]] && kill -0 "$vm_weston_pid" 2>/dev/null; then
+    kill "$vm_weston_pid" 2>/dev/null || true
+    wait "$vm_weston_pid" 2>/dev/null || true
+  fi
+  if [[ -n "$vm_xvfb_pid" ]] && kill -0 "$vm_xvfb_pid" 2>/dev/null; then
+    kill "$vm_xvfb_pid" 2>/dev/null || true
+    wait "$vm_xvfb_pid" 2>/dev/null || true
+  fi
+  if [[ "$vm_run_dir" == /tmp/sos-linux-session.* && -d "$vm_run_dir" ]]; then
+    chmod -R u+w "$vm_run_dir" 2>/dev/null || true
+    rm -r -- "$vm_run_dir"
+  fi
+}
+trap cleanup_vm_gate EXIT
+
+Xvfb -displayfd 1 -screen 0 1280x800x24 >"$vm_run_dir/display" 2>"$vm_run_dir/xvfb.log" &
+vm_xvfb_pid=$!
+for _ in {1..200}; do
+  [[ -s "$vm_run_dir/display" ]] && break
+  kill -0 "$vm_xvfb_pid" 2>/dev/null || {
+    sed -n '1,120p' "$vm_run_dir/xvfb.log"
+    exit 1
+  }
+  sleep 0.01
+done
+vm_display=":$(tr -d '\r\n' < "$vm_run_dir/display")"
+
+DISPLAY="$vm_display" XDG_RUNTIME_DIR="$vm_runtime_dir" \
+  weston --backend=x11-backend.so --socket=wayland-sos \
+  --width=1280 --height=800 --idle-time=0 >"$vm_run_dir/weston.log" 2>&1 &
+vm_weston_pid=$!
+for _ in {1..500}; do
+  [[ -S "$vm_runtime_dir/wayland-sos" ]] && break
+  kill -0 "$vm_weston_pid" 2>/dev/null || {
+    sed -n '1,180p' "$vm_run_dir/weston.log"
+    exit 1
+  }
+  sleep 0.01
+done
+
+DISPLAY="$vm_display" \
+XDG_RUNTIME_DIR="$vm_runtime_dir" \
+WAYLAND_DISPLAY=wayland-sos \
+LIBGL_ALWAYS_SOFTWARE=1 \
+SOS_LINUX_REVISION_ROOT="$vm_revision_root" \
+  ./tools/sosctl linux-run --windowed >"$vm_run_dir/session.log" 2>&1 &
+vm_session_pid=$!
+for _ in {1..1200}; do
+  if [[ -S "$vm_revision_root/run/supervisor.sock" && -S "$vm_revision_root/run/provider-state.sock" ]]; then
+    break
+  fi
+  kill -0 "$vm_session_pid" 2>/dev/null || {
+    sed -n '1,260p' "$vm_run_dir/session.log"
+    exit 1
+  }
+  sleep 0.01
+done
+
+vm_status_before="$(SOS_LINUX_REVISION_ROOT="$vm_revision_root" ./tools/sosctl linux-status)"
+vm_pid_before="$(sed -n 's/.*"host_pid":\([0-9][0-9]*\).*/\1/p' <<<"$vm_status_before")"
+vm_activation="$(SOS_LINUX_REVISION_ROOT="$vm_revision_root" ./tools/sosctl linux-script experiences/daily-flow.luau)"
+vm_status_after="$(SOS_LINUX_REVISION_ROOT="$vm_revision_root" ./tools/sosctl linux-status)"
+vm_pid_after="$(sed -n 's/.*"host_pid":\([0-9][0-9]*\).*/\1/p' <<<"$vm_status_after")"
+[[ -n "$vm_pid_before" && "$vm_pid_before" == "$vm_pid_after" ]]
+vm_current_revision="$(target/debug/sos-revision-supervisor status --root "$vm_revision_root")"
+vm_authority_revision="$(sed -n 's/.*"revision_id": "\([0-9a-f]*\)".*/\1/p' "$vm_revision_root/authority.json" | head -1)"
+[[ "$vm_current_revision" == "$vm_authority_revision" ]]
+
+SOS_LINUX_REVISION_ROOT="$vm_revision_root" ./tools/sosctl linux-stop >/dev/null
+wait "$vm_session_pid"
+vm_session_pid=""
+# shellcheck source=/dev/null
+source /etc/os-release
+printf 'linux_nested_session_passed os=%s version=%s host_pid=%s revision_id=%s\n' \
+  "${ID:-unknown}" "${VERSION_ID:-unknown}" "$vm_pid_after" "$vm_current_revision"
+printf 'activation=%s\n' "$vm_activation"
+printf 'authority_revision=%s\n' "$vm_authority_revision"
+tail -n 20 "$vm_run_dir/session.log"

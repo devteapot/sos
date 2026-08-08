@@ -5085,6 +5085,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "sos-linux-session"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "provider-state-service",
+ "revision-supervisor",
+ "serde_json",
+ "service-protocol",
+ "tempfile",
+]
+
+[[package]]
 name = "spin"
 version = "0.9.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"

@@ -3,6 +3,7 @@ members = [
     "apps/experience",
     "crates/experience-host-protocol",
     "crates/experience-ir",
+    "crates/linux-session",
     "crates/providers-fake",
     "crates/provider-state-service",
     "crates/revision-supervisor",

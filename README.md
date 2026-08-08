@@ -29,6 +29,8 @@ The stable-host Linux revision supervisor and its Luau activation ABI are in
 The real GPUI/Wayland host, same-PID activation evidence, developer commands,
 and remaining compositor boundaries are in
 [`docs/linux-stable-host.md`](docs/linux-stable-host.md).
+The passing reproducible Debian 13 VM gate and acceptance command are in
+[`docs/linux-vm.md`](docs/linux-vm.md).
 The durable typed provider/state Unix-socket protocol and authority are in
 [`docs/provider-state-service.md`](docs/provider-state-service.md).
 Their supervisor-owned activation journal is in
@@ -99,10 +101,11 @@ without replacing the process or native window:
 ./tools/sosctl linux-stop
 ```
 
-This is the client-host gate, not yet a complete SOS session. Presentation is
-acknowledged by GPUI's next-frame callback; native Linux text editing, provider
-session orchestration, compositor-owned presentation evidence, compatibility
-surfaces, boot-to-SOS, and direct hardware remain subsequent gates. See
+This is the client-host gate, not yet a complete SOS session. The command now
+starts the provider/state authority and uses coordinated revision activation;
+presentation is still acknowledged by GPUI's next-frame callback. Native Linux
+text editing, compositor-owned presentation evidence, compatibility surfaces,
+boot-to-SOS, and direct hardware remain subsequent gates. See
 [`docs/linux-stable-host.md`](docs/linux-stable-host.md) for the exact evidence
 and limitations.
 
