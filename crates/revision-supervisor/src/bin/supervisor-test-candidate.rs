@@ -32,6 +32,10 @@ fn main() {
         "exit-after" => {
             thread::sleep(Duration::from_millis(40));
         }
+        "crash-later" => {
+            thread::sleep(Duration::from_millis(250));
+            process::exit(43);
+        }
         _ => loop {
             thread::sleep(Duration::from_secs(60));
         },

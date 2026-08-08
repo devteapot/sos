@@ -255,6 +255,28 @@ fn first_frame_timeout_kills_candidate_without_promotion() {
 }
 
 #[test]
+fn candidate_exit_between_first_frame_and_pointer_commit_is_rejected() {
+    let directory = TempDir::new().unwrap();
+    let store = RevisionStore::open(directory.path()).unwrap();
+    let accepted = install(&store, "accepted", "stay");
+    let candidate = install(&store, "candidate", "exit-after");
+    store.set_current(&accepted).unwrap();
+    let mut supervisor = RevisionSupervisor::new(store.clone(), Duration::from_secs(2));
+    supervisor.boot().unwrap();
+    let prepared = supervisor.prepare(&candidate).unwrap();
+    thread::sleep(Duration::from_millis(80));
+    assert!(matches!(
+        supervisor.commit_prepared(prepared),
+        Err(Error::CandidateExitedBeforePointerCommit(_))
+    ));
+    assert_eq!(supervisor.active_revision(), Some(accepted.as_str()));
+    assert_eq!(
+        store.current().unwrap().unwrap().manifest.revision_id,
+        accepted
+    );
+}
+
+#[test]
 fn standalone_daemon_survives_candidate_crash_and_accepts_more_control_requests() {
     let directory = TempDir::new().unwrap();
     let store = RevisionStore::open(directory.path()).unwrap();

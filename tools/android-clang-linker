@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+ndk_root="${ANDROID_NDK_ROOT:-${ANDROID_NDK_HOME:-}}"
+if [[ -z "$ndk_root" ]]; then
+  printf 'error: ANDROID_NDK_ROOT or ANDROID_NDK_HOME is required\n' >&2
+  exit 1
+fi
+
+ndk_sysroot="$ndk_root/toolchains/llvm/prebuilt/linux-x86_64/sysroot"
+ndk_runtime="$ndk_root/toolchains/llvm/prebuilt/linux-x86_64/lib/clang/21/lib/linux/aarch64"
+if [[ ! -d "$ndk_sysroot" ]]; then
+  printf 'error: Android NDK sysroot not found: %s\n' "$ndk_sysroot" >&2
+  exit 1
+fi
+if [[ ! -d "$ndk_runtime" ]]; then
+  printf 'error: Android NDK ARM64 runtime not found: %s\n' "$ndk_runtime" >&2
+  exit 1
+fi
+
+# The installed NDK host tools are x86-64-only, while this development host is
+# ARM64. The system Clang supports the Android target and can use the NDK
+# sysroot without executing the foreign host toolchain.
+exec /usr/bin/clang \
+  --target=aarch64-linux-android31 \
+  --sysroot="$ndk_sysroot" \
+  -fuse-ld=lld \
+  -L"$ndk_runtime" \
+  "$@"

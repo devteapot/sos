@@ -1,11 +1,10 @@
 [package]
-name = "revision-supervisor"
+name = "provider-state-service"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 
 [dependencies]
-provider-state-service.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
@@ -16,9 +15,9 @@ thiserror.workspace = true
 tempfile = "3"
 
 [[bin]]
-name = "sos-revision-supervisor"
+name = "sos-provider-state-service"
 path = "src/main.rs"
 
 [[bin]]
-name = "supervisor-test-candidate"
-path = "src/bin/supervisor-test-candidate.rs"
+name = "provider-state-probe"
+path = "src/bin/provider-state-probe.rs"

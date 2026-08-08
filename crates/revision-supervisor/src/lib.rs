@@ -1,8 +1,13 @@
+mod coordinator;
 mod process;
 mod store;
 
 use std::{path::PathBuf, process::ExitStatus, time::Duration};
 
+pub use coordinator::{
+    CoordinatedSupervisor, CoordinationError, CoordinationEvent, CoordinatorFaultPoint,
+    JournalPhase, PromotionJournal,
+};
 pub use process::{launch_until_first_frame, CandidateEvent, ManagedCandidate};
 pub use store::{
     DurableState, FileIdentity, RevisionInput, RevisionManifest, RevisionStore, VerifiedRevision,
@@ -25,6 +30,8 @@ pub enum Error {
     InvalidPointer(PathBuf),
     #[error("candidate exited before its first frame: {0}")]
     CandidateExitedBeforeFirstFrame(ExitStatus),
+    #[error("candidate exited after first frame but before pointer commit: {0}")]
+    CandidateExitedBeforePointerCommit(ExitStatus),
     #[error("candidate did not report its first frame within {0:?}")]
     FirstFrameTimeout(Duration),
     #[error("candidate sent an invalid first-frame event")]
@@ -61,6 +68,22 @@ pub struct RevisionSupervisor {
     rollback_revision: Option<String>,
 }
 
+pub struct PreparedRevision {
+    candidate: ManagedCandidate,
+    revision_id: String,
+    previous_revision: String,
+}
+
+impl PreparedRevision {
+    pub fn revision_id(&self) -> &str {
+        &self.revision_id
+    }
+
+    pub fn previous_revision(&self) -> &str {
+        &self.previous_revision
+    }
+}
+
 impl RevisionSupervisor {
     pub fn new(store: RevisionStore, first_frame_timeout: Duration) -> Self {
         Self {
@@ -86,6 +109,11 @@ impl RevisionSupervisor {
     }
 
     pub fn promote(&mut self, revision_id: &str) -> Result<SupervisorEvent> {
+        let prepared = self.prepare(revision_id)?;
+        self.commit_prepared(prepared)
+    }
+
+    pub fn prepare(&self, revision_id: &str) -> Result<PreparedRevision> {
         let previous = self
             .store
             .current()?
@@ -93,17 +121,28 @@ impl RevisionSupervisor {
             .ok_or(Error::NoCurrentRevision)?;
         let revision = self.store.verify(revision_id)?;
         let candidate = launch_until_first_frame(&revision, self.first_frame_timeout)?;
-        self.store.set_current(revision_id)?;
+        Ok(PreparedRevision {
+            candidate,
+            revision_id: revision_id.into(),
+            previous_revision: previous,
+        })
+    }
+
+    pub fn commit_prepared(&mut self, mut prepared: PreparedRevision) -> Result<SupervisorEvent> {
+        if let Some(status) = prepared.candidate.try_wait()? {
+            return Err(Error::CandidateExitedBeforePointerCommit(status));
+        }
+        self.store.set_current(&prepared.revision_id)?;
+        let revision_id = prepared.revision_id;
+        let previous = prepared.previous_revision;
+        let candidate = prepared.candidate;
         let pid = candidate.id();
         let replaced = self.active.replace(candidate);
         self.rollback_revision = Some(previous);
         if let Some(active) = replaced {
             active.terminate()?;
         }
-        let event = SupervisorEvent::Promoted {
-            revision_id: revision_id.into(),
-            pid,
-        };
+        let event = SupervisorEvent::Promoted { revision_id, pid };
         Ok(event)
     }
 
@@ -141,6 +180,24 @@ impl RevisionSupervisor {
         self.active
             .as_ref()
             .map(|candidate| candidate.revision_id.as_str())
+    }
+
+    pub fn current_revision(&self) -> Result<Option<String>> {
+        Ok(self
+            .store
+            .current()?
+            .map(|revision| revision.manifest.revision_id))
+    }
+
+    pub fn recover_current_on_exit(&mut self) -> Result<()> {
+        let current = self.current_revision()?.ok_or(Error::NoCurrentRevision)?;
+        if self.active_revision() != Some(current.as_str()) {
+            return Err(Error::InvalidRevision(
+                "active process does not match the current pointer".into(),
+            ));
+        }
+        self.rollback_revision = Some(current);
+        Ok(())
     }
 
     pub fn shutdown(&mut self) -> Result<()> {

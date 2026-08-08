@@ -3577,6 +3577,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "provider-state-service"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "service-protocol",
+ "sha2 0.10.9",
+ "tempfile",
+ "thiserror 2.0.19",
+]
+
+[[package]]
 name = "providers-fake"
 version = "0.1.0"
 dependencies = [
@@ -3938,8 +3950,10 @@ dependencies = [
 name = "revision-supervisor"
 version = "0.1.0"
 dependencies = [
+ "provider-state-service",
  "serde",
  "serde_json",
+ "service-protocol",
  "sha2 0.10.9",
  "tempfile",
  "thiserror 2.0.19",
@@ -4272,6 +4286,14 @@ dependencies = [
  "itoa",
  "ryu",
  "serde",
+]
+
+[[package]]
+name = "service-protocol"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
