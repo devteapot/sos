@@ -298,3 +298,10 @@ hashes and summary, and audit representative results on hardware. Later compare
 prompt/skill/retrieval and model variants against the unchanged suite. Consider
 fine-tuning only after there is a useful accepted/rejected corpus and after
 confirming support for the intended base model.
+
+The first attempted run, `20260808-luna-medium-raw-v1`, stopped after one case
+because `codex exec` inherited and consumed the case loop's piped standard
+input. Redirecting Codex stdin from `/dev/null` fixed the runner. The partial
+artifact is retained but is not a suite result; its sole 10,498-byte source
+scored 5/5 and has SHA-256
+`bbdcda53d511fffaebb72f7ab86ced58a2c6f03a00a40fa6f534a436f2bf8ce4`.

@@ -38,7 +38,7 @@ Create only artifacts/evals/$SUITE_ID/$case_id.luau. Do not edit any tracked fil
       --ephemeral \
       --json \
       --output-last-message "$final_message" \
-      "$prompt" >"$transcript"
+      "$prompt" </dev/null >"$transcript"
   )
   codex_status=$?
   set -e
