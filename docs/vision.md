@@ -62,13 +62,14 @@ around the user's current goal from those separately installed providers.
 The permanent layer should contain only machinery that generated experiences
 cannot safely or practically replace while they are running:
 
-- a recovery supervisor that can launch, observe, promote, and roll back
+- a recovery supervisor that can stage, activate, observe, and recover
   revisions;
 - display surfaces, frame scheduling, graphics/text primitives, input, and
   clocks;
 - provider and system-service transport;
 - persistent state that outlives any generated component graph or process;
-- immutable revision storage, diagnostics, and a build/evaluation service;
+- immutable revision storage, diagnostics, experience evaluation, and a
+  separate permanent-host update service;
 - a small recovery interface that remains usable when every candidate fails.
 
 Everything normally visible above that boundary is eligible to be generated:
@@ -77,8 +78,9 @@ Everything normally visible above that boundary is eligible to be generated:
 - layout and navigation models;
 - geometry, drawing, hit testing, gestures, and animation;
 - state machines, asynchronous behavior, and provider workflows;
-- custom GPUI `Element` implementations, raw drawing, and eventually shaders or
-  other GPU escape hatches;
+- element-equivalent layout/paint/hit-test behavior expressed through the
+  experience API, including validated shader modules where evidence justifies
+  them;
 - most or all of the visible system shell.
 
 Convenience libraries are welcome. A closed component catalog is not the
@@ -107,32 +109,37 @@ The user must be able to pin a space, modify it conversationally, inspect which
 providers supply it, compare versions, undo changes, disable adaptation, and
 export its implementation without exporting private provider data.
 
-## Execution tiers, not a permanent Luau ceiling
+## One experience language, not a permanent IR ceiling
 
 The current GPUI host interprets Luau into a bounded `UiNode` tree. This is a
-successful latency experiment and a useful rapid-execution tier; it is not the
+successful latency experiment and a useful execution path; it is not the
 full thesis and must not quietly become a fixed widget schema.
 
-SOS can ultimately use two complementary paths:
+SOS uses one generated-experience path:
 
 ```text
-Immediate path
-request → agent edits Luau → on-device evaluation → GPUI frame
-
-Unrestricted path
-request → agent edits native experience source → build candidate
-        → launch candidate process/surface → first frame → promote or reject
+request → agent edits Luau/modules/assets/migrations
+        → fresh-VM evaluation and capability validation
+        → prepare retained scene in the permanent GPUI host
+        → commit state/effects → present at a frame boundary → activate or reject
 ```
 
-The immediate path should grow toward script-defined components over low-level
-layout, paint, hit-test, event, animation, and provider APIs. The unrestricted
-path permits arbitrary GPUI Rust views and custom elements when script/IR
-boundaries are insufficient. A successful dynamic implementation may later be
-promoted to native Rust; a native build must never block or destroy the current
-experience.
+The experience API grows toward script-defined components over low-level
+layout, paint, hit-test, event, animation, semantics, text-editing, asset, and
+provider capabilities. Luau produces retained, host-owned structures; Rust/GPUI
+executes frame-critical paint, input, text, and platform work. Experience code
+never receives a GPUI `Context`, raw device handle, provider object, filesystem,
+or socket.
 
-The exact language split remains an experiment. The invariant is stronger than
-the implementation choice: normal requests must not be limited to a catalog of
+There is no successful-Luau-to-native graduation step. If an experience cannot
+express a request, SOS extends the versioned permanent-host capability API or
+adds a validated revision asset kind. Replacing the Rust/GPUI host itself is a
+rare signed A/B system update with its own recovery path, never the normal
+conversational mutation loop and never part of an experience artifact.
+
+Luau remains an implementation choice that can be revisited, but the product
+contract has one safe experience tier. The invariant is stronger than the
+language choice: normal requests must not be limited to a catalog of
 preconceived visual components or interaction patterns.
 
 ## Target architecture
@@ -144,21 +151,19 @@ Agent engineering service
 source inspection │ screenshot │ traces │ compiler/runtime feedback
     ↓
 Versioned experience source + state migration
-    ├──────────── immediate Luau candidate ────────────┐
-    └──────────── native GPUI build candidate ─────────┤
-                                                       ↓
-                                         Recovery/revision supervisor
-                                         old revision stays usable
-                                         first-frame promotion/rollback
-                                                       ↓
-                     ┌─────────────────────────────────┴──────────────┐
-                     ↓                                                ↓
-          Persistent state service                         Provider broker
-                                                         resources/actions/events
-                     └─────────────────────────────────┬──────────────┘
-                                                       ↓
-                                  Native system and hardware services
-                                  display │ input │ audio │ storage │ GPU
+    ↓
+Fresh Luau VM → capability validation → retained candidate scene
+    ↓
+Recovery/revision supervisor + permanent Rust/GPUI host
+old scene stays usable → frame-boundary activation/recovery
+    ├───────────────────────────────┐
+    ↓                               ↓
+Persistent state service      Provider broker
+                              resources/actions/events
+    └───────────────────────────────┤
+                                    ↓
+                       Native system and hardware services
+                       display │ input │ audio │ storage │ GPU
 ```
 
 The agent is central to composition but does not need to be in the frame loop.
@@ -179,7 +184,7 @@ The intended transition is incremental:
    and owns the visible shell. Android applications may temporarily appear as
    compatibility providers or embedded surfaces.
 3. **SOS system services.** Revision supervision, state, providers, agent,
-   build/evaluation, input routing, and surface promotion become first-class
+   evaluation, input routing, and scene activation become first-class
    services rather than APK-local mechanisms.
 4. **Thin hardware substrate.** SOS runs over the Linux kernel, device drivers,
    vendor HALs, graphics/audio stacks, and whichever AOSP services remain useful.
@@ -213,8 +218,7 @@ The third request is the decisive one. The original `UiNode` catalog could not
 express it; the prototype now has bounded low-level canvas geometry and hit
 regions, but the first agent trial still required an operator layout correction
 on the physical phone. Passing requires an untouched agent output to complete
-the interaction through this low-level Luau API, generated GPUI Rust, or a
-combination of both.
+the interaction through the low-level Luau capability API.
 
 ### B. A genuine single-shot agent loop
 
@@ -233,20 +237,23 @@ candidate, and rollback. Screenshot/log inspection and autonomous
 self-correction remain important future work, but are deliberately not part of
 this gate. A human manually writing the candidate is not completion.
 
-### C. Complete revision replacement and recovery
+### C. Complete revision activation and recovery
 
-Prove immutable source and artifacts, a persistent current/previous pointer,
-candidate launch while the old experience remains interactive, first-frame
-promotion, crash detection, and rollback from the fixed recovery supervisor.
-For native revisions, use a process boundary rather than a Rust plugin ABI.
+Prove immutable source and assets, a persistent current pointer, fresh-VM
+candidate preparation while the old experience remains interactive,
+frame-boundary scene activation, rejected-candidate recovery, and permanent-host
+restart from the fixed recovery supervisor. The host PID must remain stable
+across ordinary experience revisions. Real-data deployments should isolate the
+Luau worker without turning each experience into native code.
 
 ### D. Provider and state independence
 
 Move calendar, notes, weather, and media behind a typed resource/action/event
 transport rather than linking their data directly into the experience. At least
-one interaction must cross that boundary. State must survive component and
-process replacement, and incompatible revisions must carry explicit migrations.
-Inject failure before, during, and after migration/promotion.
+one interaction must cross that boundary. State must survive component, worker,
+and permanent-host replacement, and incompatible revisions must carry explicit
+migrations. Inject failure before, during, and after migration/activation and
+durable service commit.
 
 ### E. Sustained device viability
 
@@ -257,8 +264,8 @@ transition on production-quality Android accessibility, polished IME behavior,
 real personal data, or a final security model.
 
 The prototype deliberately uses synthetic data and disposable identities while
-generated code remains unrestricted. Security, provider certification, and
-protected system surfaces become mandatory before real credentials or
+generated code remains prototype-sandboxed. Security, provider certification,
+and protected system surfaces become mandatory before real credentials or
 consequential actions—not before testing whether the generative experience is
 worth building.
 
@@ -266,36 +273,49 @@ worth building.
 
 We are ready to begin the privileged AOSP/system-services phase when a user can
 make the three increasingly unconventional requests above; an agent implements
-them in an unattended single shot; the phone promotes each working revision without
-freezing or losing state; the old revision survives every failed candidate; and
-the final drag operation crosses a typed provider boundary. At that point SOS
+them in an unattended single shot; the phone activates each working revision
+without freezing or losing state; the old revision survives every failed
+candidate; and the final drag operation crosses a typed provider boundary. At
+that point SOS
 has demonstrated that the interface is genuinely being programmed around the
 user rather than configured from a catalog. Remaining inside a normal APK would
 then constrain the research more than it de-risks it.
 
 ## Current phase decision
 
-The 2026-08-08 Android laboratory gate now passes at prototype scope. A curated
-single-shot Luna revision completed the canonical low-level drag/provider
-interaction on the phone; isolated GPUI candidate processes survived
-pre/post-frame native crash probes and back-to-back replacement; source, state,
-schema and effects share promotion authority; and 10,000 swaps completed with
-20.7 ms visible p95 and no rejection. The evidence and important limitations
-are recorded in [`android-exit-verdict.md`](android-exit-verdict.md).
+The original 2026-08-08 Android laboratory gate passed at prototype scope. A
+curated single-shot Luna revision completed the canonical low-level
+drag/provider interaction on the phone; the then-current disposable-process
+prototype survived pre/post-frame native crash probes; source, state, schema and
+effects shared one commit decision; and 10,000 swaps completed with 20.7 ms
+visible p95 and no rejection. This is historical evidence, not validation of the
+new stable-host contract. The measurements and limitations are recorded in
+[`android-exit-verdict.md`](android-exit-verdict.md).
+
+The replacement stable-host contract has now also passed its APK regression
+gate on the same phone. Accepted and rejected Luau revisions, rollback, worker
+and process restart, IME editing, the coarse semantics bridge, a typed provider
+effect, durable authority recovery, and 10,000 frame-paced swaps all ran through
+one GPUI experience process. The new run's visible p95 was 92.708 ms with zero
+rejections; full evidence is in
+[`stable-host-device-gate.md`](stable-host-device-gate.md).
 
 The project should therefore begin the privileged AOSP/system-services phase.
-This does not mean Android has already been removed: the current supervisor is
-inside the accepted Android process, surface promotion uses Activity tasks, and
-the provider daemon remains workstation-hosted. Those three ownership
-boundaries are now the primary research work. The APK remains a regression
-harness while that work proceeds.
+The earlier APK gate used disposable candidate Activities as a recovery probe;
+that evidence remains historical, but the product architecture no longer uses
+per-revision processes or surfaces. The current Android harness now activates
+Luau in one GPUI host process, while the Linux supervisor drives a stable host
+through a typed prepare/present protocol. The new phone gate confirms the APK
+lifecycle, but revision authority, the provider daemon, compositor-backed
+presentation acknowledgement, and permanent-host recovery are not yet owned by
+the target system. The APK remains a regression harness while that work proceeds.
 
 ## Explicit non-goals for the current phase
 
 - Rebuilding the Linux kernel or vendor hardware stack.
 - Replacing every Android service before the interaction thesis is proven.
-- Production security for unrestricted generated code using synthetic data.
+- Production security for generated code using real identities or data.
 - A final permission, provider-certification, or model-isolation architecture.
 - Shipping real banking, private messaging, identity, DRM, or payment flows.
-- Polishing the current bounded IR into a universal component framework.
+- Treating the current bounded IR as the final experience API.
 - Treating Luau, GPUI, wgpu, or Android as irreversible product choices.

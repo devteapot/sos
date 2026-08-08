@@ -125,6 +125,6 @@ Unix addresses fixed transport without changing device policy.
 
 The authority transaction is now bound to the revision supervisor's `current`
 pointer by the durable recovery protocol in
-[`coordinated-promotion.md`](coordinated-promotion.md). The APK remains on its
+[`coordinated-activation.md`](coordinated-activation.md). The APK remains on its
 legacy TCP adapter until that coordinator has an AOSP-owned service, process,
 and surface location.

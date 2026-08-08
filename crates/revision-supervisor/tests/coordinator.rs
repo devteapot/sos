@@ -10,7 +10,7 @@ use std::{
 use provider_state_service::{serve, ServiceClient};
 use revision_supervisor::{
     CoordinatedSupervisor, CoordinationError, CoordinationEvent, CoordinatorFaultPoint,
-    JournalPhase, RevisionInput, RevisionStore, RevisionSupervisor,
+    HostCommand, JournalPhase, RevisionInput, RevisionStore, RevisionSupervisor,
 };
 use serde_json::json;
 use service_protocol::{
@@ -102,7 +102,7 @@ impl Fixture {
         let service = ServiceHarness::start(&directory.path().join("service"));
         let accepted_source = "accepted-source";
         let accepted_state = json!({"screen":"accepted"});
-        let accepted = install(&store, accepted_source, accepted_state.clone(), "stay");
+        let accepted = install(&store, accepted_source, accepted_state.clone());
         stage(
             &service.client(),
             "bootstrap-tx",
@@ -114,14 +114,14 @@ impl Fixture {
         promote_service(&service.client(), "bootstrap-tx");
         store.set_current(&accepted).unwrap();
 
-        let candidate_source = "candidate-source";
+        let candidate_source = match candidate_mode {
+            "stay" => "candidate-source",
+            "crash-later" => "host:crash-later",
+            "crash-before" => "host:reject",
+            mode => panic!("unsupported test host mode: {mode}"),
+        };
         let candidate_state = json!({"screen":"candidate"});
-        let candidate = install(
-            &store,
-            candidate_source,
-            candidate_state.clone(),
-            candidate_mode,
-        );
+        let candidate = install(&store, candidate_source, candidate_state.clone());
         let transaction_id = "candidate-tx".to_owned();
         stage(
             &service.client(),
@@ -144,7 +144,11 @@ impl Fixture {
     fn coordinator(&self) -> CoordinatedSupervisor {
         CoordinatedSupervisor::new(
             self.store.clone(),
-            RevisionSupervisor::new(self.store.clone(), Duration::from_secs(2)),
+            RevisionSupervisor::new(
+                self.store.clone(),
+                HostCommand::new(host_executable()),
+                Duration::from_secs(2),
+            ),
             self.service.client(),
         )
     }
@@ -154,10 +158,10 @@ impl Fixture {
     }
 }
 
-fn candidate_executable() -> PathBuf {
-    std::env::var_os("CARGO_BIN_EXE_supervisor-test-candidate")
+fn host_executable() -> PathBuf {
+    std::env::var_os("CARGO_BIN_EXE_supervisor-test-host")
         .map(Into::into)
-        .expect("Cargo exposes candidate binary")
+        .expect("Cargo exposes host binary")
 }
 
 fn supervisor_executable() -> PathBuf {
@@ -166,14 +170,13 @@ fn supervisor_executable() -> PathBuf {
         .expect("Cargo exposes supervisor binary")
 }
 
-fn install(store: &RevisionStore, source: &str, state: serde_json::Value, mode: &str) -> String {
+fn install(store: &RevisionStore, source: &str, state: serde_json::Value) -> String {
     store
         .install(RevisionInput {
             source: source.as_bytes().to_vec(),
             state,
             schema_version: 1,
-            executable: candidate_executable(),
-            args: vec![mode.into()],
+            experience_api_version: 1,
         })
         .unwrap()
         .manifest
@@ -217,14 +220,14 @@ fn promote_service(client: &ServiceClient, transaction_id: &str) {
 }
 
 #[test]
-fn coordinated_promotion_commits_service_before_pointer_and_clears_journal() {
+fn coordinated_activation_commits_service_before_pointer_and_clears_journal() {
     let fixture = Fixture::new("stay");
     let mut coordinator = fixture.coordinator();
     coordinator.boot().unwrap();
     let event = coordinator
-        .promote(&fixture.transaction_id, &fixture.candidate)
+        .activate(&fixture.transaction_id, &fixture.candidate)
         .unwrap();
-    assert!(matches!(event, CoordinationEvent::Promoted { .. }));
+    assert!(matches!(event, CoordinationEvent::Activated { .. }));
     assert_eq!(fixture.current(), fixture.candidate);
     assert_eq!(
         fixture.service.transaction(&fixture.transaction_id).status,
@@ -241,7 +244,7 @@ fn crash_after_intent_recovers_previous_and_aborts_staged_transaction() {
         coordinator.boot().unwrap();
         coordinator.configure_fault(Some(CoordinatorFaultPoint::AfterIntent));
         assert!(matches!(
-            coordinator.promote(&fixture.transaction_id, &fixture.candidate),
+            coordinator.activate(&fixture.transaction_id, &fixture.candidate),
             Err(CoordinationError::InjectedFault(
                 CoordinatorFaultPoint::AfterIntent
             ))
@@ -269,7 +272,7 @@ fn crash_after_service_commit_recovers_candidate_and_pointer() {
         coordinator.boot().unwrap();
         coordinator.configure_fault(Some(CoordinatorFaultPoint::AfterServiceCommit));
         assert!(matches!(
-            coordinator.promote(&fixture.transaction_id, &fixture.candidate),
+            coordinator.activate(&fixture.transaction_id, &fixture.candidate),
             Err(CoordinationError::InjectedFault(
                 CoordinatorFaultPoint::AfterServiceCommit
             ))
@@ -298,7 +301,7 @@ fn crash_after_pointer_commit_boots_candidate_and_only_cleans_journal() {
         coordinator.boot().unwrap();
         coordinator.configure_fault(Some(CoordinatorFaultPoint::AfterPointerCommit));
         assert!(matches!(
-            coordinator.promote(&fixture.transaction_id, &fixture.candidate),
+            coordinator.activate(&fixture.transaction_id, &fixture.candidate),
             Err(CoordinationError::InjectedFault(
                 CoordinatorFaultPoint::AfterPointerCommit
             ))
@@ -322,7 +325,7 @@ fn service_middle_fault_is_reconciled_before_pointer_commit() {
     let mut coordinator = fixture.coordinator();
     coordinator.boot().unwrap();
     coordinator
-        .promote(&fixture.transaction_id, &fixture.candidate)
+        .activate(&fixture.transaction_id, &fixture.candidate)
         .unwrap();
     assert_eq!(fixture.current(), fixture.candidate);
     assert_eq!(
@@ -338,7 +341,7 @@ fn service_precommit_fault_aborts_transaction_and_keeps_previous() {
     let mut coordinator = fixture.coordinator();
     coordinator.boot().unwrap();
     assert!(coordinator
-        .promote(&fixture.transaction_id, &fixture.candidate)
+        .activate(&fixture.transaction_id, &fixture.candidate)
         .is_err());
     assert_eq!(fixture.current(), fixture.accepted);
     assert_eq!(
@@ -354,7 +357,7 @@ fn accepted_crash_relaunches_committed_current_instead_of_splitting_state() {
     let mut coordinator = fixture.coordinator();
     coordinator.boot().unwrap();
     coordinator
-        .promote(&fixture.transaction_id, &fixture.candidate)
+        .activate(&fixture.transaction_id, &fixture.candidate)
         .unwrap();
     thread::sleep(Duration::from_millis(300));
     let event = coordinator.poll().unwrap();
@@ -371,12 +374,12 @@ fn accepted_crash_relaunches_committed_current_instead_of_splitting_state() {
 }
 
 #[test]
-fn candidate_pre_frame_crash_aborts_transaction_and_preserves_previous() {
+fn candidate_validation_rejection_aborts_transaction_and_preserves_previous() {
     let fixture = Fixture::new("crash-before");
     let mut coordinator = fixture.coordinator();
     coordinator.boot().unwrap();
     assert!(coordinator
-        .promote(&fixture.transaction_id, &fixture.candidate)
+        .activate(&fixture.transaction_id, &fixture.candidate)
         .is_err());
     assert_eq!(fixture.current(), fixture.accepted);
     assert_eq!(
@@ -401,7 +404,7 @@ fn mismatched_immutable_state_is_rejected_before_journal_or_launch() {
     let mut coordinator = fixture.coordinator();
     coordinator.boot().unwrap();
     assert!(matches!(
-        coordinator.promote(mismatched, &fixture.candidate),
+        coordinator.activate(mismatched, &fixture.candidate),
         Err(CoordinationError::InvalidBinding(_))
     ));
     assert_eq!(fixture.current(), fixture.accepted);
@@ -409,7 +412,7 @@ fn mismatched_immutable_state_is_rejected_before_journal_or_launch() {
 }
 
 #[test]
-fn standalone_daemon_exposes_coordinated_promotion_control() {
+fn standalone_daemon_exposes_coordinated_activation_control() {
     let fixture = Fixture::new("stay");
     let mut daemon = Command::new(supervisor_executable())
         .args([
@@ -418,6 +421,8 @@ fn standalone_daemon_exposes_coordinated_promotion_control() {
             fixture.store.root().to_str().unwrap(),
             "--timeout-ms",
             "2000",
+            "--host-executable",
+            host_executable().to_str().unwrap(),
             "--service-socket",
             fixture.service.socket.to_str().unwrap(),
             "--service-timeout-ms",
@@ -432,7 +437,7 @@ fn standalone_daemon_exposes_coordinated_promotion_control() {
     let response = control(
         &socket,
         json!({
-            "action":"promote",
+            "action":"activate",
             "revision_id":fixture.candidate,
             "transaction_id":fixture.transaction_id,
         }),

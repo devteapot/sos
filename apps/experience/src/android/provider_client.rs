@@ -45,7 +45,7 @@ pub(super) fn commit_state(
         source_sha256,
         effects,
     )?;
-    promote_state(stage_id, expected_revision, schema_version, source_sha256)
+    commit_staged_state(stage_id, expected_revision, schema_version, source_sha256)
 }
 
 pub(super) fn stage_state(
@@ -68,7 +68,7 @@ pub(super) fn stage_state(
         .ok_or_else(|| "state stage response omitted its id".to_owned())
 }
 
-pub(super) fn promote_state(
+pub(super) fn commit_staged_state(
     stage_id: u64,
     expected_revision: u64,
     schema_version: u64,
@@ -80,7 +80,7 @@ pub(super) fn promote_state(
     }) {
         Ok(response) => response
             .state
-            .ok_or_else(|| "state promotion response omitted its envelope".into()),
+            .ok_or_else(|| "state commit response omitted its envelope".into()),
         Err(error) => {
             let current = load_state()?;
             if current.revision == expected_revision.saturating_add(1)

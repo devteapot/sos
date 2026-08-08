@@ -4,6 +4,12 @@ This is the contract available to an agent-authored Luau revision. It is a
 temporary low-level execution API for the Android research gate, not the final
 SOS component catalog.
 
+Luau is the long-lived experience language. A revision declares the version of
+this API that it requires; it never contains a native executable. The permanent
+Rust/GPUI host prepares each candidate in a fresh VM, retains the accepted scene
+until validation succeeds, and activates the prepared scene at a frame boundary.
+Host upgrades are separate system updates.
+
 ## Module contract
 
 An experience returns a module with:
@@ -91,6 +97,28 @@ a current viewport constraint, not a permanent SOS layout rule.
 Limits are enforced before presentation: 2,048 tree nodes, depth 32, 4,096
 canvas commands, 8,192 path points, 256 hit regions, 16 effects, 16 KiB effect
 payloads, a 16 MiB VM cap, and per-call time budgets.
+
+## Direction of the integration layer
+
+The current `UiNode` decoder is a bootstrap representation. It should evolve
+into a versioned retained-scene contract with four low-level capability groups:
+
+- measure/arrange callbacks that return bounded layout results;
+- paint lists with paths, glyph runs, clips, transforms, layers, and cached
+  revision-scoped resources;
+- host-executed hit testing, pointer capture, gestures, and animation timelines;
+- complete semantics and text-editing sessions mapped to Android accessibility
+  and IME APIs.
+
+Luau should update retained structures when model or state changes. Rust/GPUI
+should execute frame-critical paint, animation, text, and input work without a
+high-frequency cross-language callback per primitive. Fonts, images, and future
+shader modules belong to the immutable revision as typed assets and must be
+decoded, compiled, bounded, and rejected by the host before activation.
+
+The boundary deliberately continues to exclude raw GPUI contexts, pointers,
+filesystem/network access, and provider objects. Capability and resource limits
+are evidence-tuned safety controls, not expressiveness failures.
 
 ## Agent test request
 

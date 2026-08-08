@@ -2,6 +2,10 @@
 
 Date: 2026-08-08
 
+> Historical evidence: the process/surface mechanism in this report has been
+> superseded by stable-host Luau activation. The measurements remain useful;
+> the current contract is [`revision-supervisor.md`](revision-supervisor.md).
+
 This follow-up implements the next work on gates B–D from
 [`android-exit-gate.md`](android-exit-gate.md). It does not claim that SOS is
 ready to leave the Android application laboratory.

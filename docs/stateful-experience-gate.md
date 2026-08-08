@@ -1,5 +1,9 @@
 # Stateful generated-experience gate
 
+> Historical gate: its recommendation to add native process/surface promotion
+> was later superseded. The same-process Luau path became the product contract;
+> see [`vision.md`](vision.md).
+
 ## Result
 
 The gate is **confirmed with two explicit platform constraints** on a physical

@@ -1,28 +1,26 @@
-# Standalone revision supervisor prototype
+# Stable-host revision supervisor
 
 Date: 2026-08-08
 
-This is the first Linux implementation of the fixed supervisor described in
-[`android-exit-verdict.md`](android-exit-verdict.md). It is deliberately outside
-the Android application and every experience process. The prototype establishes
-the process, revision, and promotion contract that a later privileged AOSP
-service can adopt; it does not claim the AOSP surface or input gates are complete.
+This is the Linux prototype of SOS revision activation after removing native
+experience binaries from the experience contract. Generated revisions are Luau
+bundles consumed by one permanent Rust/GPUI host. Updating that host is a
+separate system-software operation, not an experience mutation tier.
 
 ## Owned invariants
 
-The `revision-supervisor` crate owns these operations:
+The `revision-supervisor` crate now owns these operations:
 
-- install a content-addressed revision containing source, durable state, schema,
-  executable, arguments, and a manifest;
-- verify every file's byte length and SHA-256 before launch or pointer change;
-- verify that `state.json` names the manifest schema and exact source SHA-256;
-- launch a candidate as a direct child and provide a per-launch Unix-socket
-  readiness channel;
-- promote only after an authenticated, revision-specific `first_frame` event;
-- observe direct-child exit independently of the experience;
+- install a content-addressed revision containing Luau source, durable state,
+  state schema, and required experience-API version;
+- verify every file's byte length and SHA-256 before activation;
+- keep the active host process independent from revision contents;
+- ask that stable host to prepare a candidate while the accepted scene remains
+  active;
+- activate only after the host reports that the candidate was presented;
 - atomically replace the relative `current` symlink;
-- on post-promotion exit, restore the preceding pointer and launch that
-  preceding immutable revision again.
+- restart the permanent host on its committed current revision if the host
+  process exits.
 
 The on-disk shape is:
 
@@ -33,52 +31,46 @@ ROOT/
     manifest.json
     source.luau
     state.json
-    experience
   run/
     supervisor.sock
 ```
 
-`revision-id` is a SHA-256 over the format version, schema, the three payload
-identities, and the executable arguments. Installation writes and `fsync`s a
-private staging directory, changes payloads to read-only and the executable to
-read/execute-only, then renames the complete directory into `revisions/` and
-`fsync`s its parent. The prototype calls these directories immutable because
-there is no update API and normal permissions reject writes. It does not yet
-use a read-only mount, fs-verity, or Linux immutable attributes against a
-privileged attacker.
+There is deliberately no `experience` executable or per-revision argument list.
+Format version 2 hashes the state schema, experience-API version, source
+identity, and state identity. Installation writes and `fsync`s a private staging
+directory, changes its files to read-only, renames it into `revisions/`, and
+`fsync`s the parent. `current` is replaced with an atomic relative-symlink
+rename followed by a directory `fsync`.
 
-`current` is replaced by creating a new relative symlink, renaming it over the
-old name, and `fsync`ing the root directory. Concurrent readers therefore see
-the complete old or complete new target.
+## Permanent host protocol
 
-## Candidate process ABI
+The supervisor is configured once with `--host-executable`; this executable is
+not copied into or identified by an experience revision. It remains alive while
+many revisions are activated. The current Linux adapter uses newline-delimited
+JSON over the child's stdin/stdout:
 
-The supervisor launches `experience` with the manifest arguments, its revision
-directory as the working directory, and three environment variables:
-
-| Variable | Meaning |
+| Supervisor request | Required host behavior |
 | --- | --- |
-| `SOS_REVISION_ID` | Exact immutable revision being launched |
-| `SOS_SUPERVISOR_SOCKET` | Per-launch Unix readiness socket |
-| `SOS_SUPERVISOR_TOKEN` | Per-launch token required in the event |
+| `boot` | Load the committed revision and report `presented` |
+| `prepare` | Create a fresh VM, migrate state, validate capabilities, and prepare a retained scene without replacing the active scene |
+| `present` | Switch to the prepared scene at a frame boundary and report `presented` |
+| `confirm` | Prove the host event loop is still alive after presentation and before pointer commit |
+| `discard` | Destroy an unaccepted candidate VM/scene |
+| `shutdown` | Terminate the permanent host cleanly |
 
-After it has rendered its first frame, the candidate connects to that socket
-and writes one newline-delimited JSON event:
+Every request and response carries a request ID; revision operations also carry
+the content-addressed revision ID. `boot` and `prepare` include the verified,
+read-only revision directory and required experience-API version. A production
+AOSP integration may replace pipes with a privileged IPC transport, but must
+preserve these semantics.
 
-```json
-{"event":"first_frame","token":"<launch token>","revision_id":"<revision id>"}
-```
+Candidate syntax, migration, capability, timeout, and render-preparation errors
+therefore reject a Luau revision without launching a new native process or
+surface. A successful activation keeps the same host PID. A host crash is a
+permanent-layer failure: the supervisor restarts the host on `current`; it does
+not roll back durable provider state by moving only the source pointer.
 
-Exit before that event or expiry of the configured timeout kills the candidate
-and leaves both the old child and `current` intact. After the event, the
-supervisor swaps `current`, retires the preceding child, and monitors the new
-one. Any subsequent exit is currently classified as a crash: the supervisor
-restores the preceding pointer and waits for a first frame from a fresh launch
-of the preceding revision.
-
-The long-lived daemon accepts typed newline-delimited JSON on
-`run/supervisor.sock`: `promote`, `status`, and `shutdown`. The CLI is a client
-for that socket. A minimal local exercise is:
+## CLI
 
 ```sh
 cargo build -p revision-supervisor --bins
@@ -86,45 +78,44 @@ SUPERVISOR=target/debug/sos-revision-supervisor
 ROOT=/tmp/sos-revisions
 
 $SUPERVISOR install --root "$ROOT" --source experience.luau \
-  --state state.json --schema 1 --executable ./experience
-$SUPERVISOR bootstrap --root "$ROOT" --revision <first-revision-id>
-$SUPERVISOR serve --root "$ROOT"
-$SUPERVISOR promote --root "$ROOT" --revision <candidate-revision-id>
+  --state state.json --schema 1 --api 1
+$SUPERVISOR bootstrap --root "$ROOT" --revision <initial-revision-id>
+$SUPERVISOR serve --root "$ROOT" --host-executable /usr/libexec/sos-experience-host
+$SUPERVISOR activate --root "$ROOT" --revision <candidate-revision-id>
 ```
 
 `bootstrap` refuses an initialized store. All later pointer movement belongs to
-the running supervisor.
+the daemon. Coordinated mode additionally requires a stable state transaction
+ID; see [`coordinated-activation.md`](coordinated-activation.md).
 
-## Linux evidence
+## Evidence
 
-`cargo test -p revision-supervisor --all-targets` passes nine tests. They use a
-real copied Rust candidate executable, real Unix sockets, and OS child exit
-statuses. Covered cases are content identity and read-only modes; rejection of
-state/source/schema drift and recomputation of the content-addressed directory
-identity; 50 atomic pointer alternations with a concurrent reader; pre-frame
-exit; first-frame timeout; relaunch of a crashing boot revision; post-frame exit
-with pointer rollback and predecessor relaunch; and a separate daemon process
-that survives the accepted candidate's crash and answers another control request
-afterward.
+`cargo test -p revision-supervisor --all-targets` passes 22 integration tests.
+Twelve supervisor tests cover executable-free revision identity, API-version
+binding, read-only storage, concurrent atomic pointer reads, candidate
+rejection, preparation timeout, failures before and immediately after
+presentation, same-PID activation, host restart on the committed revision, and
+the external daemon. Ten
+coordinator tests retain state/source/schema binding and crash-journal cases.
 
-The final nine-test suite took 17.96 seconds. This is desktop
-process/filesystem evidence, not an Android hardware, surface, boot, or latency
-result.
+This is Linux process/filesystem evidence. The corresponding Android harness
+uses one GPUI process and in-process worker activation. Its physical-device
+activation, rejection, recovery, platform regression, typed-effect, and
+10,000-swap measurements are recorded in
+[`stable-host-device-gate.md`](stable-host-device-gate.md). The AOSP adapter
+still needs to join that real GPUI host to this external supervisor protocol.
 
 ## Remaining boundaries
 
-- The manifest is content-addressed but not signed. Signature policy belongs to
-  the native revision format/security work.
-- Direct children are owned, but descendants are not yet placed in a cgroup or
-  killed as a process group. Resource, syscall, namespace, and capability limits
-  are not implemented.
-- `first_frame` proves the candidate contract event, not compositor presentation.
-  A privileged surface owner must bind the event to an actual staged surface.
-- State is consistent inside the immutable revision, but provider effects and
-  durable service state do not yet share this supervisor's commit record. The
-  next provider protocol should stage a transaction, let this supervisor make
-  the sole promotion decision, and reconcile before/during/after-promotion
-  failures by transaction/revision ID.
-- If the restored predecessor cannot reach its first frame, the daemon reports
-  the recovery failure and remains available, but it has no multi-level
-  recovery/recovery-UI policy yet.
+- The current external host binary used by integration tests is a protocol
+  probe. The AOSP GPUI shell still needs to implement this transport around its
+  real Luau worker and compositor frame callback.
+- The manifest and journal remain unsigned.
+- Host process descendants are not yet in a cgroup or capability sandbox.
+- An actual compositor-present fence must replace the prototype host's
+  `presented` assertion.
+- The recovery interface and A/B permanent-host update mechanism remain to be
+  built.
+- Real-data isolation requires moving the Luau VM behind a constrained worker
+  process or equivalently strong boundary; the current in-process Android VM is
+  not a production trust boundary.

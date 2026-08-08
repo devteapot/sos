@@ -2,6 +2,10 @@
 
 Date: 2026-08-08
 
+> Historical audit: later work first implemented and then retired the native
+> candidate-process path. Current revisions are Luau-only and activate within a
+> permanent host; see [`vision.md`](vision.md).
+
 This audit tests the five gates in [`vision.md`](vision.md) before SOS starts a
 privileged AOSP shell. It deliberately reduces the agent requirement to a
 single unattended mutation. Screenshot inspection and autonomous repair are

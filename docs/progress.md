@@ -583,3 +583,143 @@ the short service-commit-to-pointer interval and bind `first_frame` to an actual
 staged surface. Add signed revision/journal verification, peer credentials,
 cgroups/process-tree enforcement, event compaction, and multi-level recovery.
 Those can be partly prototyped on Linux; surface/input ownership requires AOSP.
+
+## 2026-08-08 — Remove native experience promotion; adopt stable-host activation
+
+**Goal:** Make Luau the sole generated-experience language, remove executable-
+per-revision and Luau-to-native graduation contracts, and retain the atomic
+source/state/effect/recovery guarantees as revision activation.
+
+**Changed:** Revision format 2 now contains `source.luau`, `state.json`, schema,
+and a required experience-API version; it no longer accepts, hashes, stores, or
+launches an experience executable or arguments. `revision-supervisor` now starts
+one configured permanent host and speaks a typed `boot`, `prepare`, `present`,
+post-presentation `confirm`, `discard`, and `shutdown` protocol. The CLI and
+public API use `activate`, the
+journal is `activation-journal.json`, successful swaps retain the host PID, and
+host/protocol failures restart `current` without rolling back already committed
+service state. Candidate validation rejection remains non-destructive.
+
+The Android harness removed `CandidateGpuiActivity`, the `:candidate` manifest
+process, Java watchdog/broadcast code, process-role JNI, and `candidate-probe`.
+A regular edit now prepares a fresh Luau VM on the existing worker, stages and
+commits authoritative state, swaps the prepared runtime/tree in the permanent
+GPUI host, and uses the existing next-frame callback as visibility evidence.
+The candidate source remains a short crash journal; startup reconciles it by the
+authoritative source hash if the host dies between service commit and local
+source-pointer persistence. Provider transaction internals retain their staged
+commit/reconciliation behavior. The north star, runtime decision, experience
+API, supervisor docs, README, and historical gate notices now distinguish
+experience activation from rare permanent-host A/B updates. Detailed ordering
+is in [`coordinated-activation.md`](coordinated-activation.md).
+
+**Evidence:** `cargo test --workspace --all-targets` passes 55 tests. The revised
+supervisor contributes 22 integration tests: 12 base cases cover executable-free
+content identity, API-version rejection, atomic pointers, same-PID activation,
+candidate rejection/timeout/presentation failure, protocol recovery, permanent-
+host restart, and daemon control; ten coordinator cases cover immutable
+state/source binding and all journal/service fault phases. Both
+`cargo clippy --workspace --all-targets -- -D warnings` and strict ARM64 Android
+clippy pass. The latter used NDK 29 with `tools/android-clang-linker`, native
+Clang/Clang++, and explicit Android sysroot flags. `:app:compileDebugJavaWithJavac`
+also passed using a temporary writable SDK overlay because the system SDK is
+read-only. No generated artifact was added to Git.
+
+**Failures and fixes:** The first ARM64 check selected no cross C/C++ compiler
+for `psm`; explicit `CC_aarch64_linux_android`, `CXX_aarch64_linux_android`,
+archive tool, and sysroot flags fixed it. The first Gradle attempt tried to add
+Build Tools 36 to read-only `/usr/lib/android-sdk`; a temporary SDK overlay let
+Gradle install that tool without modifying the system SDK. Strict Android
+clippy then exposed the existing eight-argument keyed text-input constructor;
+the constructor now carries a focused allow with its immutable-boundary reason.
+After protocol timeout recovery became eager, one presentation-failure test
+still expected a later poll event; it was corrected to assert the immediate
+replacement host PID and unchanged current revision.
+An additional lifecycle audit found the remaining presented-event-to-pointer
+race; a post-presentation `confirm` handshake and regression test now reject a
+host that exits in that interval before `current` advances.
+
+**Decision:** Native code is permanent substrate, not an experience artifact.
+SOS will extend the versioned Luau-to-host capability layer or add validated
+asset kinds when expressiveness is missing. Ordinary experience edits must not
+compile Rust, replace the APK, or create a new GPUI process/surface. “Promotion”
+remains only an internal legacy verb in the provider transaction service; the
+product-level operation is revision activation.
+
+**Open risks / next gate:** This is not a new hardware pass. The Linux host
+executable is a protocol probe, while the Android harness mirrors the lifecycle
+in-process but does not yet consume the external supervisor transport. Build and
+run the changed APK on the SM-A336B; prove rejected and back-to-back revisions
+in one PID, frame-bound activation, state/effect reconciliation, host restart,
+IME/accessibility regressions, and latency/soak results. Then implement the AOSP
+GPUI shell adapter, bind `presented` to a compositor frame, quiesce input across
+the service-commit/scene-switch interval, isolate Luau for real data, and deepen
+the retained layout/paint/hit-test/gesture/semantics/asset API beyond the current
+bounded `UiNode` decoder.
+
+## 2026-08-08 — Confirm stable-host activation on physical Android hardware
+
+**Goal:** Close the preceding APK hardware gate for the Luau-only stable-host
+contract: prove same-process activation and rejection, frame acknowledgement,
+state/effect consistency, recovery, IME/accessibility regression behavior, and
+latency/soak viability on the Samsung SM-A336B rather than inferring them from
+Linux tests.
+
+**Changed:** No runtime behavior changed in response to a device failure. The
+device run did expose a reproducibility defect in `tools/sosctl`: Google's NDK
+Clang and Maven `aapt2` were x86-64-only on the ARM64 Linux workstation, and the
+system SDK was read-only. `m1-build` now selects native Clang/Clang++,
+`llvm-ar-18`, the NDK sysroot, and `tools/android-clang-linker` on Linux ARM64;
+it packages through a cached writable SDK overlay and native system `aapt2`.
+The final documented command built and installed the tested APK. Detailed
+measurements and artifacts are in
+[`stable-host-device-gate.md`](stable-host-device-gate.md).
+
+**Evidence:** The dirty `c710597f0296` APK is 36,649,277 bytes with SHA-256
+`5a425e1f442c5670f2e90117c9cbdcec12ae75a3bb127d1a6f545d1659eb322d`.
+On the SM-A336B/API 35, a structural Luau rewrite became visible in PID 28073 in
+102.632 ms. An infinite render was interrupted in 20.313 ms without changing
+PID, accepted-source hash, or authority-file hash. Rollback completed in the
+same PID in 47.138 ms; worker recreation changed only the worker thread and took
+7.153 ms. `uiautomator` retained the six-item coarse summary, the IME remained
+shown, and an injected character updated the keyed Unicode draft and durable
+authority. A real canvas drag committed `notes.attach_to_event` exactly once and
+authority revision 46 contained the attachment and receipt.
+
+The 1,000-swap smoke run accepted 1,000/1,000 with visible p95 80.191 ms and
+maximum 82.777 ms. The full run accepted 10,000/10,000 in 428.631 seconds with
+visible p50/p95/p99/max 40.197/92.708/93.846/97.376 ms, worker p95 5.352 ms,
+RSS start/peak/end 296,476/306,292/306,268 KB, and a 9,792 KB positive delta.
+Only one `dev.sos.experience` process existed. Restarting the external authority
+and Android host recovered revision 46, the exact source and authority hashes,
+Unicode draft, and effect receipt without an extra activation or write. The
+final standard `./tools/sosctl m1-build`, `m1-install`, and `m1-launch` path then
+repeated that recovery in PID 31416.
+
+**Failures and fixes:** `doctor` first lacked exported SDK/JDK paths. The stock
+`cargo-ndk` route then failed through the absent x86-64 glibc loader; the native
+LLVM path fixed compilation. Gradle next failed while installing Build Tools 36
+into the read-only SDK and then failed to start x86-64 Maven `aapt2`; the SDK
+overlay and native `aapt2` override fixed full APK packaging. The existing APK
+used a different debug key, so `adb install -r` was rejected. Five private
+source/state files were streamed through `run-as` to an ignored local backup,
+SHA-256 verified, and restored byte-for-byte around the one required uninstall.
+The fresh package initially lacked its `files/` directory; creating it under
+`run-as` before extraction completed the safe restore. Subsequent installation
+of the final artifact succeeded with `adb install -r`.
+
+**Decision:** The stable-host APK regression gate is confirmed at prototype
+scope. Native experience promotion remains removed: accepted, rejected,
+rollback, input, provider-effect, soak, and restart cases all worked through one
+permanent GPUI experience process. The result replaces the previous “no new
+hardware pass” status; it does not turn the APK into the permanent SOS system.
+
+**Open risks / next gate:** Join the real AOSP-owned GPUI shell to the external
+stable-host supervisor protocol, use an actual compositor-present fence,
+quiesce old-scene input across authority commit, and inject crashes at each
+on-device commit interstice. The gate still uses a workstation provider daemon
+through `adb reverse`, began from a fresh external authority rather than
+automatically migrating the legacy local state file, and retains the known
+coarse TalkBack and incomplete marked-text bridges. Track the 9,792 KB RSS delta
+in a longer thermal/leak soak, add signing and real-data isolation, and deepen
+the Luau layout/paint/hit-test/gesture/semantics/asset API.

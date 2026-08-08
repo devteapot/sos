@@ -9,9 +9,10 @@ Do not use Flutter Engine as a scripting layer for GPUI.
 This is a tactical latency decision, not a redefinition of the project. SOS's
 [north star](vision.md) permits the agent to invent component types, layout,
 geometry, hit testing, navigation, and native behavior without a closed catalog.
-The bounded tree below is the immediate tier used to learn quickly; it must
-eventually gain low-level script-defined component capabilities or coexist with
-agent-generated GPUI Rust revisions.
+The bounded tree below is the initial contract used to learn quickly; it must
+gain low-level script-defined component capabilities. Agent-generated GPUI Rust
+is no longer an experience tier; Rust/GPUI changes belong to the permanent host
+update path.
 
 The intended boundary is:
 
@@ -38,8 +39,8 @@ The target was the same Samsung SM-A336B ARM64 device used for Milestone 0.
 
 The measured cached native loop was roughly 14.5 seconds: 8.70 seconds Rust
 release rebuild, 1.56 seconds APK packaging, 2.91 seconds install, and 1.34
-seconds cold launch. This confirms that APK rebuild/install is a promotion path,
-not the normal conversational mutation loop.
+seconds cold launch. This confirms that APK rebuild/install belongs only to
+rare permanent-host updates, not the conversational experience loop.
 
 ## Safety and lifecycle constraints
 

@@ -1,7 +1,7 @@
 # SOS
 
 SOS is a research prototype for an agent-native operating experience: the user
-directs an agent that continuously writes and installs the native interface,
+directs an agent that continuously writes and installs the visible experience,
 while separately installed providers remain authoritative over data and
 actions. It is not intended to become a scriptable Android application or a
 fixed catalog of generated widgets. The authoritative end goal and the meaning
@@ -24,20 +24,21 @@ The stateful generated-experience gate, including native input and the
 [`docs/stateful-experience-gate.md`](docs/stateful-experience-gate.md).
 The current five-assumption Android-exit audit is in
 [`docs/android-exit-gate.md`](docs/android-exit-gate.md).
-The first standalone Linux revision supervisor and its candidate ABI are in
+The stable-host Linux revision supervisor and its Luau activation ABI are in
 [`docs/revision-supervisor.md`](docs/revision-supervisor.md).
 The durable typed provider/state Unix-socket protocol and authority are in
 [`docs/provider-state-service.md`](docs/provider-state-service.md).
-Their supervisor-owned cross-process promotion journal is in
-[`docs/coordinated-promotion.md`](docs/coordinated-promotion.md).
+Their supervisor-owned activation journal is in
+[`docs/coordinated-activation.md`](docs/coordinated-activation.md).
 Ongoing experiments, failures, measurements, and decisions are indexed in the
 living [`docs/progress.md`](docs/progress.md) ledger.
 
-The current bounded Luau UI IR now includes custom canvas geometry and drag hit
-testing, but the first Android-exit audit remains incomplete. Before moving to
-a privileged AOSP shell, SOS must prove reliable single-shot task completion,
-crash-safe whole-revision promotion, provider/state independence with
-migrations, and sustained sub-100-ms presentation on the deeper experience.
+The bounded Luau UI IR includes custom canvas geometry and drag hit testing, and
+the original Android-exit audit passed at prototype scope. SOS has since removed
+native experience binaries from the revision format: one permanent Rust/GPUI
+host now prepares and activates Luau scenes. The stable-host change has both
+Linux protocol evidence and a 10,000-swap physical-device gate; see
+[`docs/stable-host-device-gate.md`](docs/stable-host-device-gate.md).
 
 ## Milestone 0
 

@@ -20,5 +20,5 @@ name = "sos-revision-supervisor"
 path = "src/main.rs"
 
 [[bin]]
-name = "supervisor-test-candidate"
-path = "src/bin/supervisor-test-candidate.rs"
+name = "supervisor-test-host"
+path = "src/bin/supervisor-test-host.rs"

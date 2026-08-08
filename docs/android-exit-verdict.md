@@ -2,6 +2,10 @@
 
 Date: 2026-08-08
 
+> Historical evidence: this gate used disposable native candidate Activities.
+> SOS subsequently removed native executables and per-revision processes from
+> the experience contract; see [`revision-supervisor.md`](revision-supervisor.md).
+
 This report closes the current APK research gate. It does **not** claim that
 SOS is already an operating system, production-safe, or independent of Android.
 It answers the narrower question: has the application laboratory de-risked the

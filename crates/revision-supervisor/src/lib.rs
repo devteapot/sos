@@ -1,14 +1,14 @@
 mod coordinator;
-mod process;
+mod host;
 mod store;
 
 use std::{path::PathBuf, process::ExitStatus, time::Duration};
 
 pub use coordinator::{
-    CoordinatedSupervisor, CoordinationError, CoordinationEvent, CoordinatorFaultPoint,
-    JournalPhase, PromotionJournal,
+    ActivationJournal, CoordinatedSupervisor, CoordinationError, CoordinationEvent,
+    CoordinatorFaultPoint, JournalPhase,
 };
-pub use process::{launch_until_first_frame, CandidateEvent, ManagedCandidate};
+pub use host::{ExperienceHost, HostCommand, HostEvent, HostRequest};
 pub use store::{
     DurableState, FileIdentity, RevisionInput, RevisionManifest, RevisionStore, VerifiedRevision,
 };
@@ -28,48 +28,48 @@ pub enum Error {
     InvalidRevision(String),
     #[error("invalid current pointer: {0}")]
     InvalidPointer(PathBuf),
-    #[error("candidate exited before its first frame: {0}")]
-    CandidateExitedBeforeFirstFrame(ExitStatus),
-    #[error("candidate exited after first frame but before pointer commit: {0}")]
-    CandidateExitedBeforePointerCommit(ExitStatus),
-    #[error("candidate did not report its first frame within {0:?}")]
-    FirstFrameTimeout(Duration),
-    #[error("candidate sent an invalid first-frame event")]
-    InvalidCandidateEvent,
-    #[error("no rollback revision is available")]
-    NoRollbackRevision,
+    #[error("experience host exited: {0}")]
+    HostExited(ExitStatus),
+    #[error("experience host did not respond within {0:?}")]
+    HostTimeout(Duration),
+    #[error("experience host sent an invalid event")]
+    InvalidHostEvent,
+    #[error("experience host protocol failed: {0}")]
+    HostProtocol(String),
+    #[error("experience revision was rejected: {0}")]
+    HostRejected(String),
     #[error("no current revision is initialized")]
     NoCurrentRevision,
-    #[error("the supervisor has no active process")]
-    NoActiveProcess,
+    #[error("the supervisor has no active experience host")]
+    NoActiveHost,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SupervisorEvent {
     Booted {
         revision_id: String,
-        pid: u32,
+        host_pid: u32,
     },
-    Promoted {
+    Activated {
         revision_id: String,
-        pid: u32,
+        host_pid: u32,
     },
-    RolledBack {
-        failed_revision: String,
-        restored_revision: String,
-        restored_pid: u32,
+    HostRestarted {
+        revision_id: String,
+        failed_host_pid: u32,
+        host_pid: u32,
     },
 }
 
 pub struct RevisionSupervisor {
     store: RevisionStore,
-    first_frame_timeout: Duration,
-    active: Option<ManagedCandidate>,
-    rollback_revision: Option<String>,
+    host_command: HostCommand,
+    host_timeout: Duration,
+    host: Option<ExperienceHost>,
+    active_revision: Option<String>,
 }
 
 pub struct PreparedRevision {
-    candidate: ManagedCandidate,
     revision_id: String,
     previous_revision: String,
 }
@@ -85,12 +85,13 @@ impl PreparedRevision {
 }
 
 impl RevisionSupervisor {
-    pub fn new(store: RevisionStore, first_frame_timeout: Duration) -> Self {
+    pub fn new(store: RevisionStore, host_command: HostCommand, host_timeout: Duration) -> Self {
         Self {
             store,
-            first_frame_timeout,
-            active: None,
-            rollback_revision: None,
+            host_command,
+            host_timeout,
+            host: None,
+            active_revision: None,
         }
     }
 
@@ -98,88 +99,103 @@ impl RevisionSupervisor {
         let Some(current) = self.store.current()? else {
             return Ok(None);
         };
-        let candidate = launch_until_first_frame(&current, self.first_frame_timeout)?;
+        let mut host = ExperienceHost::launch(self.host_command.clone(), self.host_timeout)?;
+        host.boot(&current)?;
         let event = SupervisorEvent::Booted {
-            revision_id: candidate.revision_id.clone(),
-            pid: candidate.id(),
+            revision_id: current.manifest.revision_id.clone(),
+            host_pid: host.id(),
         };
-        self.rollback_revision = Some(candidate.revision_id.clone());
-        self.active = Some(candidate);
+        self.active_revision = Some(current.manifest.revision_id);
+        self.host = Some(host);
         Ok(Some(event))
     }
 
-    pub fn promote(&mut self, revision_id: &str) -> Result<SupervisorEvent> {
+    pub fn activate(&mut self, revision_id: &str) -> Result<SupervisorEvent> {
         let prepared = self.prepare(revision_id)?;
         self.commit_prepared(prepared)
     }
 
-    pub fn prepare(&self, revision_id: &str) -> Result<PreparedRevision> {
-        let previous = self
+    pub fn prepare(&mut self, revision_id: &str) -> Result<PreparedRevision> {
+        let previous_revision = self
             .store
             .current()?
             .map(|revision| revision.manifest.revision_id)
             .ok_or(Error::NoCurrentRevision)?;
         let revision = self.store.verify(revision_id)?;
-        let candidate = launch_until_first_frame(&revision, self.first_frame_timeout)?;
+        let prepared = self
+            .host
+            .as_mut()
+            .ok_or(Error::NoActiveHost)?
+            .prepare(&revision);
+        if let Err(error) = prepared {
+            if !matches!(&error, Error::HostRejected(_)) {
+                self.restart_current_host()?;
+            }
+            return Err(error);
+        }
         Ok(PreparedRevision {
-            candidate,
             revision_id: revision_id.into(),
-            previous_revision: previous,
+            previous_revision,
         })
     }
 
-    pub fn commit_prepared(&mut self, mut prepared: PreparedRevision) -> Result<SupervisorEvent> {
-        if let Some(status) = prepared.candidate.try_wait()? {
-            return Err(Error::CandidateExitedBeforePointerCommit(status));
+    pub fn commit_prepared(&mut self, prepared: PreparedRevision) -> Result<SupervisorEvent> {
+        let presented = self
+            .host
+            .as_mut()
+            .ok_or(Error::NoActiveHost)?
+            .present(&prepared.revision_id);
+        if let Err(error) = presented {
+            if matches!(&error, Error::HostRejected(_)) {
+                if let Some(host) = self.host.as_mut() {
+                    host.discard(&prepared.revision_id).ok();
+                }
+            } else {
+                self.restart_current_host()?;
+            }
+            return Err(error);
         }
-        self.store.set_current(&prepared.revision_id)?;
-        let revision_id = prepared.revision_id;
-        let previous = prepared.previous_revision;
-        let candidate = prepared.candidate;
-        let pid = candidate.id();
-        let replaced = self.active.replace(candidate);
-        self.rollback_revision = Some(previous);
-        if let Some(active) = replaced {
-            active.terminate()?;
+        if let Some(status) = self.host.as_mut().ok_or(Error::NoActiveHost)?.try_wait()? {
+            let error = Error::HostExited(status);
+            self.restart_current_host()?;
+            return Err(error);
         }
-        let event = SupervisorEvent::Promoted { revision_id, pid };
-        Ok(event)
+        let host = self.host.as_mut().ok_or(Error::NoActiveHost)?;
+        if let Err(error) = self.store.set_current(&prepared.revision_id) {
+            if let Ok(previous) = self.store.verify(&prepared.previous_revision) {
+                host.prepare(&previous).ok();
+                host.present(&prepared.previous_revision).ok();
+            }
+            return Err(error);
+        }
+        self.active_revision = Some(prepared.revision_id.clone());
+        Ok(SupervisorEvent::Activated {
+            revision_id: prepared.revision_id,
+            host_pid: host.id(),
+        })
     }
 
     pub fn poll(&mut self) -> Result<Option<SupervisorEvent>> {
-        let Some(active) = self.active.as_mut() else {
+        let Some(host) = self.host.as_mut() else {
             return Ok(None);
         };
-        if active.try_wait()?.is_none() {
+        if host.try_wait()?.is_none() {
             return Ok(None);
         }
-        let failed_revision = self
-            .active
-            .take()
-            .expect("active process was checked")
-            .revision_id
-            .clone();
-        let restored_revision = self
-            .rollback_revision
-            .take()
-            .ok_or(Error::NoRollbackRevision)?;
-        self.store.set_current(&restored_revision)?;
-        let restored = self.store.verify(&restored_revision)?;
-        let candidate = launch_until_first_frame(&restored, self.first_frame_timeout)?;
-        let event = SupervisorEvent::RolledBack {
-            failed_revision,
-            restored_revision: restored_revision.clone(),
-            restored_pid: candidate.id(),
-        };
-        self.rollback_revision = Some(restored_revision);
-        self.active = Some(candidate);
-        Ok(Some(event))
+        let (revision_id, failed_host_pid, host_pid) = self.restart_current_host()?;
+        Ok(Some(SupervisorEvent::HostRestarted {
+            revision_id,
+            failed_host_pid,
+            host_pid,
+        }))
     }
 
     pub fn active_revision(&self) -> Option<&str> {
-        self.active
-            .as_ref()
-            .map(|candidate| candidate.revision_id.as_str())
+        self.active_revision.as_deref()
+    }
+
+    pub fn host_pid(&self) -> Option<u32> {
+        self.host.as_ref().map(ExperienceHost::id)
     }
 
     pub fn current_revision(&self) -> Result<Option<String>> {
@@ -189,22 +205,32 @@ impl RevisionSupervisor {
             .map(|revision| revision.manifest.revision_id))
     }
 
-    pub fn recover_current_on_exit(&mut self) -> Result<()> {
-        let current = self.current_revision()?.ok_or(Error::NoCurrentRevision)?;
-        if self.active_revision() != Some(current.as_str()) {
-            return Err(Error::InvalidRevision(
-                "active process does not match the current pointer".into(),
-            ));
+    pub fn shutdown(&mut self) -> Result<()> {
+        if let Some(host) = self.host.take() {
+            host.terminate()?;
         }
-        self.rollback_revision = Some(current);
+        self.active_revision = None;
         Ok(())
     }
 
-    pub fn shutdown(&mut self) -> Result<()> {
-        if let Some(active) = self.active.take() {
-            active.terminate()?;
-        }
-        Ok(())
+    fn restart_current_host(&mut self) -> Result<(String, u32, u32)> {
+        let failed_host_pid = self
+            .host
+            .take()
+            .map(|host| {
+                let pid = host.id();
+                drop(host);
+                pid
+            })
+            .ok_or(Error::NoActiveHost)?;
+        let current = self.store.current()?.ok_or(Error::NoCurrentRevision)?;
+        let mut replacement = ExperienceHost::launch(self.host_command.clone(), self.host_timeout)?;
+        replacement.boot(&current)?;
+        let host_pid = replacement.id();
+        let revision_id = current.manifest.revision_id;
+        self.active_revision = Some(revision_id.clone());
+        self.host = Some(replacement);
+        Ok((revision_id, failed_host_pid, host_pid))
     }
 }
 

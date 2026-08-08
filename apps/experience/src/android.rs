@@ -16,7 +16,6 @@ use std::{
     time::{Duration, Instant},
 };
 
-use ::jni::objects::JValue;
 use experience_ir::{
     Align, AnimationKind, Canvas, ExperienceModel, HitRegion, Justify, NodeKind, StateEnvelope,
     UiEvent, UiNode,
@@ -39,10 +38,7 @@ use native_input::NativeTextInput;
 static FILES_DIR: OnceLock<PathBuf> = OnceLock::new();
 static RELOAD_REQUESTED: AtomicBool = AtomicBool::new(false);
 static WORKER_RESTART_REQUESTED: AtomicBool = AtomicBool::new(false);
-static CANDIDATE_PROMOTED: AtomicBool = AtomicBool::new(false);
 static STRESS_REQUEST: OnceLock<Mutex<Option<StressRequest>>> = OnceLock::new();
-static CANDIDATE_EVENT: OnceLock<Mutex<Option<CandidateEvent>>> = OnceLock::new();
-static PROCESS_CONFIG: OnceLock<ProcessConfig> = OnceLock::new();
 
 const ACTIVE_FILE: &str = "experience.active.luau";
 const CANDIDATE_FILE: &str = "experience.candidate.luau";
@@ -51,34 +47,6 @@ const PREVIOUS_FILE: &str = "experience.previous.luau";
 const REJECTED_FILE: &str = "experience.rejected.luau";
 const STATE_FILE: &str = "experience-state.json";
 const MAX_STRESS_SWAPS: usize = 10_000;
-
-#[derive(Clone, Debug, Default)]
-struct ProcessConfig {
-    candidate_revision: Option<String>,
-    candidate_mode: Option<String>,
-    stage_id: Option<u64>,
-    expected_revision: Option<u64>,
-}
-
-#[derive(Clone, Debug)]
-enum CandidateEvent {
-    Presented(String),
-    Died(String),
-}
-
-struct PendingPromotion {
-    request_id: u64,
-    revision: String,
-    stage_id: u64,
-    expected_revision: u64,
-    source_sha256: String,
-}
-
-impl ProcessConfig {
-    fn is_candidate(&self) -> bool {
-        self.candidate_revision.is_some()
-    }
-}
 
 #[derive(Clone, Debug)]
 struct StressRequest {
@@ -138,24 +106,7 @@ fn android_main(app: android_activity::AndroidApp) {
     }
 
     let _platform = jni::init_platform(&app);
-    let process_config = read_process_config().unwrap_or_else(|error| {
-        log::warn!("process_role_read_failed error={error}");
-        ProcessConfig::default()
-    });
-    log::info!(
-        "sos_process_role role={} revision={} mode={}",
-        if process_config.is_candidate() {
-            "candidate"
-        } else {
-            "accepted"
-        },
-        process_config
-            .candidate_revision
-            .as_deref()
-            .unwrap_or("none"),
-        process_config.candidate_mode.as_deref().unwrap_or("none")
-    );
-    let _ = PROCESS_CONFIG.set(process_config);
+    log::info!("sos_experience_host role=permanent");
     let Some(shared) = jni::shared_platform() else {
         log::error!("shared Android platform is unavailable");
         return;
@@ -176,14 +127,6 @@ fn android_main(app: android_activity::AndroidApp) {
                 }
                 None => log::warn!("invalid stress request: {url}"),
             }
-        } else if let Some(revision) = url.strip_prefix("sos://candidate-presented?revision=") {
-            *candidate_event_slot().lock().expect("candidate event lock") =
-                Some(CandidateEvent::Presented(revision.to_owned()));
-            log::info!("candidate_presentation_observed revision={revision}");
-        } else if let Some(revision) = url.strip_prefix("sos://candidate-died?revision=") {
-            *candidate_event_slot().lock().expect("candidate event lock") =
-                Some(CandidateEvent::Died(revision.to_owned()));
-            log::info!("candidate_death_observed revision={revision}");
         }
     });
 
@@ -223,14 +166,11 @@ struct ExperienceHost {
     pending_focus_restore: Option<String>,
     pending_frame: Option<PendingFrame>,
     stress: Option<StressRun>,
-    candidate_first_frame_pending: bool,
-    pending_promotion: Option<PendingPromotion>,
     pending_reconciled_state: Option<StateEnvelope>,
 }
 
 impl ExperienceHost {
     fn new(cx: &mut Context<Self>) -> Self {
-        let process_config = PROCESS_CONFIG.get().cloned().unwrap_or_default();
         let model = match provider_client::snapshot() {
             Ok(model) => {
                 log::info!("provider_snapshot_remote transport=tcp");
@@ -246,7 +186,7 @@ impl ExperienceHost {
                 panic!("strict gate requires provider snapshot: {error}")
             }
         };
-        let (mut state, remote_state_revision, mut state_schema_version) =
+        let (state, remote_state_revision, state_schema_version, remote_source_sha256) =
             match provider_client::load_state() {
                 Ok(envelope) => {
                     log::info!(
@@ -258,37 +198,20 @@ impl ExperienceHost {
                         envelope.state,
                         Some(envelope.revision),
                         envelope.schema_version,
+                        Some(envelope.source_sha256),
                     )
                 }
                 Err(error) => {
                     #[cfg(feature = "offline-fallback")]
                     {
                         log::warn!("experience_state_fallback error={error}");
-                        (load_state(), None, 1)
+                        (load_state(), None, 1, None)
                     }
                     #[cfg(not(feature = "offline-fallback"))]
                     panic!("strict gate requires external state service: {error}")
                 }
             };
-        if process_config.is_candidate() {
-            if let Some(envelope) = read_state_envelope(CANDIDATE_STATE_FILE) {
-                state = envelope.state;
-                state_schema_version = envelope.schema_version;
-                log::info!(
-                    "candidate_staged_state_loaded revision={} schema_version={} source_sha256={}",
-                    envelope.revision,
-                    envelope.schema_version,
-                    envelope.source_sha256
-                );
-            }
-        }
-        let source = if process_config.is_candidate() {
-            read_file(CANDIDATE_FILE)
-                .or_else(|| read_file(ACTIVE_FILE))
-                .unwrap_or_else(|| DEFAULT_EXPERIENCE.to_owned())
-        } else {
-            read_file(ACTIVE_FILE).unwrap_or_else(|| DEFAULT_EXPERIENCE.to_owned())
-        };
+        let source = recover_committed_source(remote_source_sha256.as_deref());
         let (worker, ready) = RuntimeWorker::spawn(
             source.clone(),
             model.clone(),
@@ -322,8 +245,6 @@ impl ExperienceHost {
             pending_focus_restore: None,
             pending_frame: None,
             stress: None,
-            candidate_first_frame_pending: false,
-            pending_promotion: None,
             pending_reconciled_state: None,
         }
     }
@@ -372,26 +293,7 @@ impl ExperienceHost {
                     ready.worker_thread,
                     ready.initialize_us
                 );
-                if PROCESS_CONFIG
-                    .get()
-                    .is_some_and(ProcessConfig::is_candidate)
-                {
-                    if PROCESS_CONFIG
-                        .get()
-                        .and_then(|config| config.candidate_mode.as_deref())
-                        .is_some_and(|mode| mode == "crash-before" || mode == "native-crash-before")
-                    {
-                        log::error!(
-                            "candidate_native_crash phase=before_first_frame revision={}",
-                            PROCESS_CONFIG
-                                .get()
-                                .and_then(|config| config.candidate_revision.as_deref())
-                                .unwrap_or("unknown")
-                        );
-                        std::process::abort();
-                    }
-                    self.candidate_first_frame_pending = true;
-                } else if file_path(CANDIDATE_FILE).is_file() {
+                if file_path(CANDIDATE_FILE).is_file() {
                     self.submit_reload();
                 }
             }
@@ -466,11 +368,11 @@ impl ExperienceHost {
     }
 
     fn dispatch_event(&mut self, event: UiEvent, cx: &mut Context<Self>) {
-        let candidate_waiting_for_promotion = PROCESS_CONFIG
-            .get()
-            .is_some_and(|config| config.stage_id.is_some())
-            && !CANDIDATE_PROMOTED.load(Ordering::Acquire);
-        if self.pending_promotion.is_some() || candidate_waiting_for_promotion {
+        let revision_activation_pending = self
+            .candidates
+            .values()
+            .any(|purpose| *purpose == CandidatePurpose::Regular);
+        if revision_activation_pending {
             self.pending_input_event = Some(event);
             return;
         }
@@ -821,22 +723,6 @@ impl ExperienceHost {
                         return;
                     };
                     let hash = source_sha256(&source);
-                    let stage_id = match provider_client::stage_state(
-                        expected_revision,
-                        state_schema_version,
-                        &state,
-                        &hash,
-                        &[],
-                    ) {
-                        Ok(stage_id) => stage_id,
-                        Err(error) => {
-                            let _ = self.worker.discard_candidate(request_id);
-                            self.candidates.remove(&request_id);
-                            self.status =
-                                Some((format!("Could not stage revision: {error}"), false));
-                            return;
-                        }
-                    };
                     let revision = format!("{}-{}", expected_revision + 1, &hash[..12]);
                     let envelope = StateEnvelope {
                         revision: expected_revision + 1,
@@ -845,35 +731,76 @@ impl ExperienceHost {
                         state,
                     };
                     if let Err(error) = write_state_envelope(CANDIDATE_STATE_FILE, &envelope) {
-                        let _ = provider_client::abort_state(stage_id);
                         let _ = self.worker.discard_candidate(request_id);
                         self.candidates.remove(&request_id);
                         self.status =
                             Some((format!("Could not persist staged revision: {error}"), false));
                         return;
                     }
-                    self.pending_promotion = Some(PendingPromotion {
-                        request_id,
-                        revision: revision.clone(),
-                        stage_id,
-                        expected_revision,
-                        source_sha256: hash,
-                    });
                     self.status = Some((
-                        "Candidate validated; launching isolated GPUI process…".into(),
+                        "Candidate validated; committing state and activating scene…".into(),
                         true,
                     ));
-                    let mode = if source.contains("sos-test-crash-before-first-frame") {
-                        "crash-before"
-                    } else {
-                        "ready"
+                    let stage_id = match provider_client::stage_state(
+                        expected_revision,
+                        state_schema_version,
+                        &envelope.state,
+                        &hash,
+                        &[],
+                    ) {
+                        Ok(stage_id) => stage_id,
+                        Err(error) => {
+                            let _ = fs::remove_file(file_path(CANDIDATE_STATE_FILE));
+                            let _ = self.worker.discard_candidate(request_id);
+                            self.candidates.remove(&request_id);
+                            self.status =
+                                Some((format!("Could not stage revision: {error}"), false));
+                            return;
+                        }
                     };
-                    if let Err(error) =
-                        launch_native_candidate(&revision, stage_id, expected_revision, mode)
-                    {
-                        self.reject_pending_promotion(format!("candidate launch failed: {error}"));
-                    } else {
-                        log::info!("candidate_process_launch revision={revision} stage_id={stage_id} expected_revision={expected_revision}");
+                    let committed = match provider_client::commit_staged_state(
+                        stage_id,
+                        expected_revision,
+                        state_schema_version,
+                        &hash,
+                    ) {
+                        Ok(envelope) => envelope,
+                        Err(error) => {
+                            let _ = provider_client::abort_state(stage_id);
+                            let _ = fs::remove_file(file_path(CANDIDATE_STATE_FILE));
+                            let _ = self.worker.discard_candidate(request_id);
+                            self.candidates.remove(&request_id);
+                            self.status =
+                                Some((format!("Could not commit revision: {error}"), false));
+                            return;
+                        }
+                    };
+                    if let Some(active) = read_file(ACTIVE_FILE) {
+                        let _ = write_file(PREVIOUS_FILE, &active);
+                    }
+                    if let Err(error) = write_file(ACTIVE_FILE, &source) {
+                        log::error!("active_source_write_failed error={error}");
+                    }
+                    self.remote_state_revision = Some(committed.revision);
+                    self.pending_reconciled_state = Some(committed.clone());
+                    let _ = fs::remove_file(file_path(CANDIDATE_STATE_FILE));
+                    log::info!(
+                        "experience_revision_committed revision={} state_revision={} source_sha256={}",
+                        revision,
+                        committed.revision,
+                        committed.source_sha256
+                    );
+                    if let Err(error) = self.worker.commit_candidate(request_id) {
+                        self.candidates.remove(&request_id);
+                        self.source = source;
+                        self.state = committed.state;
+                        self.state_schema_version = committed.schema_version;
+                        self.pending_reconciled_state = None;
+                        self.status = Some((
+                            format!("Committed revision could not activate: {error}"),
+                            false,
+                        ));
+                        self.restart_worker(cx);
                     }
                     return;
                 }
@@ -993,7 +920,7 @@ impl ExperienceHost {
                             self.remote_state_revision = Some(envelope.revision);
                             state = envelope.state;
                             log::info!(
-                                "experience_revision_promoted revision={} schema_version={} source_sha256={} effects={}",
+                                "experience_state_committed revision={} schema_version={} source_sha256={} effects={}",
                                 envelope.revision,
                                 envelope.schema_version,
                                 envelope.source_sha256,
@@ -1001,7 +928,7 @@ impl ExperienceHost {
                             );
                         }
                         Err(error) => {
-                            self.status = Some((format!("State promotion failed: {error}"), false));
+                            self.status = Some((format!("State commit failed: {error}"), false));
                             log::warn!("experience_state_rejected error={error}");
                             self.dispatch_pending_input_event(cx);
                             return;
@@ -1043,74 +970,6 @@ impl ExperienceHost {
             ),
             Err(error) => log::warn!("accessibility_publish_failed error={error}"),
         }
-    }
-
-    fn reconcile_candidate_event(&mut self) {
-        let event = candidate_event_slot()
-            .lock()
-            .expect("candidate event lock")
-            .take();
-        let Some(event) = event else { return };
-        let Some(pending) = self.pending_promotion.take() else {
-            return;
-        };
-        let event_revision = match &event {
-            CandidateEvent::Presented(revision) | CandidateEvent::Died(revision) => revision,
-        };
-        if event_revision != &pending.revision {
-            self.pending_promotion = Some(pending);
-            return;
-        }
-        let promoted = provider_client::load_state().ok().filter(|current| {
-            current.revision > pending.expected_revision
-                && current.source_sha256 == pending.source_sha256
-        });
-        if let Some(current) = promoted {
-            if let Some(candidate) = read_file(CANDIDATE_FILE) {
-                if source_sha256(&candidate) == pending.source_sha256 {
-                    if let Some(active) = read_file(ACTIVE_FILE) {
-                        let _ = write_file(PREVIOUS_FILE, &active);
-                    }
-                    if let Err(error) = write_file(ACTIVE_FILE, &candidate) {
-                        log::error!("accepted_source_reconcile_failed error={error}");
-                    }
-                }
-            }
-            if let Err(error) = self.worker.commit_candidate(pending.request_id) {
-                log::error!("accepted_worker_candidate_commit_failed error={error}");
-            }
-            self.remote_state_revision = Some(current.revision);
-            self.pending_reconciled_state = Some(current);
-            log::info!(
-                "accepted_revision_reconciled revision={} source_sha256={}",
-                pending.revision,
-                pending.source_sha256
-            );
-        } else {
-            let _ = provider_client::abort_state(pending.stage_id);
-            let _ = self.worker.discard_candidate(pending.request_id);
-            self.candidates.remove(&pending.request_id);
-            let _ = fs::remove_file(file_path(CANDIDATE_STATE_FILE));
-            let _ = fs::rename(file_path(CANDIDATE_FILE), file_path(REJECTED_FILE));
-            self.status = Some((
-                "Candidate exited before atomic promotion; accepted revision preserved".into(),
-                false,
-            ));
-            log::warn!(
-                "candidate_revision_rolled_back revision={}",
-                pending.revision
-            );
-        }
-    }
-
-    fn reject_pending_promotion(&mut self, reason: String) {
-        if let Some(pending) = self.pending_promotion.take() {
-            let _ = provider_client::abort_state(pending.stage_id);
-            let _ = self.worker.discard_candidate(pending.request_id);
-            self.candidates.remove(&pending.request_id);
-        }
-        let _ = fs::remove_file(file_path(CANDIDATE_STATE_FILE));
-        self.status = Some((reason, false));
     }
 
     fn frame_presented(&mut self, frame: PendingFrame, cx: &mut Context<Self>) {
@@ -1435,13 +1294,11 @@ impl ExperienceHost {
 
 impl Render for ExperienceHost {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        self.reconcile_candidate_event();
         if RELOAD_REQUESTED.swap(false, Ordering::AcqRel) {
-            let revision_busy = self.pending_promotion.is_some()
-                || self
-                    .candidates
-                    .values()
-                    .any(|purpose| *purpose == CandidatePurpose::Regular);
+            let revision_busy = self
+                .candidates
+                .values()
+                .any(|purpose| *purpose == CandidatePurpose::Regular);
             if revision_busy {
                 RELOAD_REQUESTED.store(true, Ordering::Release);
                 cx.notify();
@@ -1503,151 +1360,12 @@ impl Render for ExperienceHost {
                 this.frame_presented(frame, cx);
             });
         }
-        if self.candidate_first_frame_pending {
-            self.candidate_first_frame_pending = false;
-            cx.on_next_frame(window, move |this, _, cx| {
-                if report_candidate_first_frame() {
-                    this.dispatch_pending_input_event(cx);
-                    cx.notify();
-                }
-            });
-        }
         root
     }
 }
 
-fn read_process_config() -> Result<ProcessConfig, String> {
-    let role = intent_string_extra("sos_process_role")?;
-    if role.as_deref() != Some("candidate") {
-        return Ok(ProcessConfig::default());
-    }
-    Ok(ProcessConfig {
-        candidate_revision: intent_string_extra("revision")?.or_else(|| Some("unknown".into())),
-        candidate_mode: intent_string_extra("mode")?.or_else(|| Some("ready".into())),
-        stage_id: intent_string_extra("stage_id")?
-            .and_then(|value| value.parse().ok())
-            .filter(|value| *value > 0),
-        expected_revision: intent_string_extra("expected_revision")?
-            .and_then(|value| value.parse().ok()),
-    })
-}
-
-fn intent_string_extra(key: &str) -> Result<Option<String>, String> {
-    jni::with_env(|env| {
-        let activity = jni::activity(env)?;
-        let intent = env
-            .call_method(
-                &activity,
-                ::jni::jni_str!("getIntent"),
-                ::jni::jni_sig!("()Landroid/content/Intent;"),
-                &[],
-            )
-            .and_then(|value| value.l())
-            .map_err(|error| error.to_string())?;
-        let key = env.new_string(key).map_err(|error| error.to_string())?;
-        let value = env
-            .call_method(
-                &intent,
-                ::jni::jni_str!("getStringExtra"),
-                ::jni::jni_sig!("(Ljava/lang/String;)Ljava/lang/String;"),
-                &[JValue::Object(&key)],
-            )
-            .and_then(|value| value.l())
-            .map_err(|error| error.to_string())?;
-        if value.is_null() {
-            Ok(None)
-        } else {
-            Ok(Some(jni::get_string(env, &value)))
-        }
-    })
-}
-
-fn report_candidate_first_frame() -> bool {
-    let Some(config) = PROCESS_CONFIG.get() else {
-        return false;
-    };
-    let Some(revision) = config.candidate_revision.clone() else {
-        return false;
-    };
-    if let (Some(stage_id), Some(expected_revision)) = (config.stage_id, config.expected_revision) {
-        let Some(staged) = read_state_envelope(CANDIDATE_STATE_FILE) else {
-            log::error!("candidate_promotion_failed reason=missing_staged_state");
-            std::process::abort();
-        };
-        let source = read_file(CANDIDATE_FILE).unwrap_or_default();
-        let source_hash = source_sha256(&source);
-        if source_hash != staged.source_sha256 {
-            log::error!("candidate_promotion_failed reason=source_hash_mismatch");
-            let _ = provider_client::abort_state(stage_id);
-            std::process::abort();
-        }
-        match provider_client::promote_state(
-            stage_id,
-            expected_revision,
-            staged.schema_version,
-            &source_hash,
-        ) {
-            Ok(envelope) => {
-                CANDIDATE_PROMOTED.store(true, Ordering::Release);
-                if let Some(active) = read_file(ACTIVE_FILE) {
-                    let _ = write_file(PREVIOUS_FILE, &active);
-                }
-                if let Err(error) = write_file(ACTIVE_FILE, &source) {
-                    log::error!("candidate_active_source_write_failed error={error}");
-                    std::process::abort();
-                }
-                let _ = fs::remove_file(file_path(CANDIDATE_STATE_FILE));
-                log::info!(
-                    "candidate_revision_promoted revision={} state_revision={} source_sha256={}",
-                    revision,
-                    envelope.revision,
-                    envelope.source_sha256
-                );
-            }
-            Err(error) => {
-                log::error!("candidate_promotion_failed error={error}");
-                std::process::abort();
-            }
-        }
-    }
-    let result = jni::with_env(|env| {
-        let activity = jni::activity(env)?;
-        let revision = env
-            .new_string(&revision)
-            .map_err(|error| error.to_string())?;
-        env.call_method(
-            &activity,
-            ::jni::jni_str!("onNativeCandidateFirstFrame"),
-            ::jni::jni_sig!("(Ljava/lang/String;)V"),
-            &[JValue::Object(&revision)],
-        )
-        .map_err(|error| error.to_string())?;
-        Ok(())
-    });
-    match result {
-        Ok(()) => log::info!("candidate_gpui_first_frame revision={revision}"),
-        Err(error) => log::error!("candidate_first_frame_report_failed error={error}"),
-    }
-    if config
-        .candidate_mode
-        .as_deref()
-        .is_some_and(|mode| mode == "crash-after" || mode == "native-crash-after")
-    {
-        thread::spawn(move || {
-            thread::sleep(Duration::from_millis(250));
-            log::error!("candidate_native_crash phase=after_first_frame revision={revision}");
-            std::process::abort();
-        });
-    }
-    true
-}
-
 fn stress_request_slot() -> &'static Mutex<Option<StressRequest>> {
     STRESS_REQUEST.get_or_init(|| Mutex::new(None))
-}
-
-fn candidate_event_slot() -> &'static Mutex<Option<CandidateEvent>> {
-    CANDIDATE_EVENT.get_or_init(|| Mutex::new(None))
 }
 
 fn loading_tree() -> UiNode {
@@ -1718,8 +1436,38 @@ fn write_file(name: &str, contents: &str) -> std::io::Result<()> {
     fs::rename(temporary, destination)
 }
 
-fn read_state_envelope(name: &str) -> Option<StateEnvelope> {
-    read_file(name).and_then(|contents| serde_json::from_str(&contents).ok())
+fn recover_committed_source(remote_source_sha256: Option<&str>) -> String {
+    let active = read_file(ACTIVE_FILE).unwrap_or_else(|| DEFAULT_EXPERIENCE.to_owned());
+    let Some(remote_source_sha256) = remote_source_sha256.filter(|hash| !hash.is_empty()) else {
+        return active;
+    };
+    if source_sha256(&active) == remote_source_sha256 {
+        if read_file(CANDIDATE_FILE)
+            .is_some_and(|candidate| source_sha256(&candidate) == remote_source_sha256)
+        {
+            let _ = fs::remove_file(file_path(CANDIDATE_FILE));
+            let _ = fs::remove_file(file_path(CANDIDATE_STATE_FILE));
+            log::info!("committed_source_cache_reconciled source_sha256={remote_source_sha256}");
+        }
+        return active;
+    }
+    let Some(candidate) = read_file(CANDIDATE_FILE)
+        .filter(|candidate| source_sha256(candidate) == remote_source_sha256)
+    else {
+        log::error!("committed_source_recovery_failed source_sha256={remote_source_sha256}");
+        return active;
+    };
+    if let Err(error) = write_file(PREVIOUS_FILE, &active) {
+        log::warn!("previous_source_recovery_write_failed error={error}");
+    }
+    if let Err(error) = write_file(ACTIVE_FILE, &candidate) {
+        log::error!("committed_source_recovery_write_failed error={error}");
+    } else {
+        let _ = fs::remove_file(file_path(CANDIDATE_FILE));
+        let _ = fs::remove_file(file_path(CANDIDATE_STATE_FILE));
+        log::info!("committed_source_recovered source_sha256={remote_source_sha256}");
+    }
+    candidate
 }
 
 fn write_state_envelope(name: &str, envelope: &StateEnvelope) -> std::io::Result<()> {
@@ -1727,42 +1475,7 @@ fn write_state_envelope(name: &str, envelope: &StateEnvelope) -> std::io::Result
     write_file(name, &contents)
 }
 
-fn launch_native_candidate(
-    revision: &str,
-    stage_id: u64,
-    expected_revision: u64,
-    mode: &str,
-) -> Result<(), String> {
-    jni::with_env(|env| {
-        let activity = jni::activity(env)?;
-        let revision = env
-            .new_string(revision)
-            .map_err(|error| error.to_string())?;
-        let stage_id = env
-            .new_string(stage_id.to_string())
-            .map_err(|error| error.to_string())?;
-        let expected_revision = env
-            .new_string(expected_revision.to_string())
-            .map_err(|error| error.to_string())?;
-        let mode = env.new_string(mode).map_err(|error| error.to_string())?;
-        env.call_method(
-            &activity,
-            ::jni::jni_str!("launchNativeCandidateMode"),
-            ::jni::jni_sig!(
-                "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)V"
-            ),
-            &[
-                JValue::Object(&revision),
-                JValue::Object(&stage_id),
-                JValue::Object(&expected_revision),
-                JValue::Object(&mode),
-            ],
-        )
-        .map_err(|error| error.to_string())?;
-        Ok(())
-    })
-}
-
+#[cfg(feature = "offline-fallback")]
 fn load_state() -> JsonValue {
     read_file(STATE_FILE)
         .and_then(|contents| serde_json::from_str(&contents).ok())

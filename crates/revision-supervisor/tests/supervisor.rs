@@ -13,15 +13,15 @@ use std::{
 };
 
 use revision_supervisor::{
-    Error, RevisionInput, RevisionStore, RevisionSupervisor, SupervisorEvent,
+    Error, HostCommand, RevisionInput, RevisionStore, RevisionSupervisor, SupervisorEvent,
 };
 use serde_json::json;
 use tempfile::TempDir;
 
-fn candidate_executable() -> std::path::PathBuf {
-    std::env::var_os("CARGO_BIN_EXE_supervisor-test-candidate")
+fn host_executable() -> std::path::PathBuf {
+    std::env::var_os("CARGO_BIN_EXE_supervisor-test-host")
         .map(Into::into)
-        .expect("Cargo exposes the test candidate binary")
+        .expect("Cargo exposes the test host binary")
 }
 
 fn supervisor_executable() -> std::path::PathBuf {
@@ -30,28 +30,36 @@ fn supervisor_executable() -> std::path::PathBuf {
         .expect("Cargo exposes the supervisor binary")
 }
 
-fn install(store: &RevisionStore, source: &str, mode: &str) -> String {
+fn install(store: &RevisionStore, source: &str) -> String {
+    install_api(store, source, 1)
+}
+
+fn install_api(store: &RevisionStore, source: &str, experience_api_version: u32) -> String {
     store
         .install(RevisionInput {
             source: source.as_bytes().to_vec(),
             state: json!({"source": source}),
             schema_version: 1,
-            executable: candidate_executable(),
-            args: vec![mode.into()],
+            experience_api_version,
         })
         .unwrap()
         .manifest
         .revision_id
 }
 
+fn supervisor(store: &RevisionStore, timeout: Duration) -> RevisionSupervisor {
+    RevisionSupervisor::new(store.clone(), HostCommand::new(host_executable()), timeout)
+}
+
 #[test]
-fn installs_verified_read_only_content_addressed_revisions() {
+fn installs_verified_read_only_luau_revisions_without_native_payloads() {
     let directory = TempDir::new().unwrap();
     let store = RevisionStore::open(directory.path()).unwrap();
-    let revision_id = install(&store, "return { render = true }", "stay");
+    let revision_id = install(&store, "return { render = true }");
     let revision = store.verify(&revision_id).unwrap();
     assert_eq!(revision.manifest.revision_id, revision_id);
     assert_eq!(revision.manifest.schema_version, 1);
+    assert_eq!(revision.manifest.experience_api_version, 1);
     assert_eq!(
         fs::metadata(&revision.directory)
             .unwrap()
@@ -68,7 +76,8 @@ fn installs_verified_read_only_content_addressed_revisions() {
             & 0o777,
         0o444
     );
-    let duplicate = install(&store, "return { render = true }", "stay");
+    assert!(!revision.directory.join("experience").exists());
+    let duplicate = install(&store, "return { render = true }");
     assert_eq!(duplicate, revision_id);
 }
 
@@ -76,7 +85,7 @@ fn installs_verified_read_only_content_addressed_revisions() {
 fn verification_rejects_state_source_or_schema_drift() {
     let directory = TempDir::new().unwrap();
     let store = RevisionStore::open(directory.path()).unwrap();
-    let revision_id = install(&store, "source-a", "stay");
+    let revision_id = install(&store, "source-a");
     let revision = store.verify(&revision_id).unwrap();
     let state_file = revision.directory.join("state.json");
     fs::set_permissions(&state_file, fs::Permissions::from_mode(0o644)).unwrap();
@@ -97,15 +106,15 @@ fn verification_rejects_state_source_or_schema_drift() {
 }
 
 #[test]
-fn verification_recomputes_the_content_addressed_directory_identity() {
+fn verification_recomputes_api_bound_content_identity() {
     let directory = TempDir::new().unwrap();
     let store = RevisionStore::open(directory.path()).unwrap();
-    let revision_id = install(&store, "source-a", "stay");
+    let revision_id = install(&store, "source-a");
     let revision = store.verify(&revision_id).unwrap();
     let manifest_file = revision.directory.join("manifest.json");
     let mut manifest: serde_json::Value =
         serde_json::from_slice(&fs::read(&manifest_file).unwrap()).unwrap();
-    manifest["args"] = json!(["stay", "unhashed-change"]);
+    manifest["experience_api_version"] = json!(2);
     fs::set_permissions(&manifest_file, fs::Permissions::from_mode(0o644)).unwrap();
     fs::write(&manifest_file, serde_json::to_vec(&manifest).unwrap()).unwrap();
     assert!(matches!(
@@ -118,8 +127,8 @@ fn verification_recomputes_the_content_addressed_directory_identity() {
 fn current_pointer_is_atomic_for_concurrent_readers() {
     let directory = TempDir::new().unwrap();
     let store = RevisionStore::open(directory.path()).unwrap();
-    let first = install(&store, "first", "stay");
-    let second = install(&store, "second", "stay");
+    let first = install(&store, "first");
+    let second = install(&store, "second");
     store.set_current(&first).unwrap();
     let stop = Arc::new(AtomicBool::new(false));
     let reader_stop = stop.clone();
@@ -147,17 +156,39 @@ fn current_pointer_is_atomic_for_concurrent_readers() {
 }
 
 #[test]
-fn crash_before_first_frame_preserves_the_accepted_process_and_pointer() {
+fn rejected_luau_candidate_preserves_active_scene_host_and_pointer() {
     let directory = TempDir::new().unwrap();
     let store = RevisionStore::open(directory.path()).unwrap();
-    let accepted = install(&store, "accepted", "stay");
-    let broken = install(&store, "broken", "crash-before");
+    let accepted = install(&store, "accepted");
+    let broken = install(&store, "host:reject");
     store.set_current(&accepted).unwrap();
-    let mut supervisor = RevisionSupervisor::new(store.clone(), Duration::from_secs(2));
+    let mut supervisor = supervisor(&store, Duration::from_secs(2));
+    supervisor.boot().unwrap();
+    let host_pid = supervisor.host_pid();
+    assert!(matches!(
+        supervisor.activate(&broken),
+        Err(Error::HostRejected(_))
+    ));
+    assert_eq!(supervisor.host_pid(), host_pid);
+    assert_eq!(supervisor.active_revision(), Some(accepted.as_str()));
+    assert_eq!(
+        store.current().unwrap().unwrap().manifest.revision_id,
+        accepted
+    );
+}
+
+#[test]
+fn unsupported_experience_api_rejects_before_scene_activation() {
+    let directory = TempDir::new().unwrap();
+    let store = RevisionStore::open(directory.path()).unwrap();
+    let accepted = install(&store, "accepted");
+    let unsupported = install_api(&store, "candidate", 2);
+    store.set_current(&accepted).unwrap();
+    let mut supervisor = supervisor(&store, Duration::from_secs(2));
     supervisor.boot().unwrap();
     assert!(matches!(
-        supervisor.promote(&broken),
-        Err(Error::CandidateExitedBeforeFirstFrame(_))
+        supervisor.activate(&unsupported),
+        Err(Error::HostRejected(_))
     ));
     assert_eq!(supervisor.active_revision(), Some(accepted.as_str()));
     assert_eq!(
@@ -167,39 +198,67 @@ fn crash_before_first_frame_preserves_the_accepted_process_and_pointer() {
 }
 
 #[test]
-fn first_frame_promotes_and_a_later_crash_rolls_back_and_relaunches() {
+fn activation_presents_in_the_existing_host_and_then_advances_pointer() {
     let directory = TempDir::new().unwrap();
     let store = RevisionStore::open(directory.path()).unwrap();
-    let accepted = install(&store, "accepted", "stay");
-    let candidate = install(&store, "candidate", "crash-after");
+    let accepted = install(&store, "accepted");
+    let candidate = install(&store, "candidate");
     store.set_current(&accepted).unwrap();
-    let mut supervisor = RevisionSupervisor::new(store.clone(), Duration::from_secs(2));
+    let mut supervisor = supervisor(&store, Duration::from_secs(2));
     supervisor.boot().unwrap();
+    let host_pid = supervisor.host_pid().unwrap();
     assert!(matches!(
-        supervisor.promote(&candidate).unwrap(),
-        SupervisorEvent::Promoted { .. }
+        supervisor.activate(&candidate).unwrap(),
+        SupervisorEvent::Activated {
+            host_pid: activated_pid,
+            ..
+        } if activated_pid == host_pid
     ));
+    assert_eq!(supervisor.host_pid(), Some(host_pid));
+    assert_eq!(supervisor.active_revision(), Some(candidate.as_str()));
     assert_eq!(
         store.current().unwrap().unwrap().manifest.revision_id,
         candidate
     );
+}
 
-    let deadline = Instant::now() + Duration::from_secs(2);
-    let rollback = loop {
-        if let Some(event) = supervisor.poll().unwrap() {
-            break event;
-        }
-        assert!(Instant::now() < deadline, "candidate did not crash");
-        thread::sleep(Duration::from_millis(5));
-    };
+#[test]
+fn presentation_failure_preserves_the_previous_pointer() {
+    let directory = TempDir::new().unwrap();
+    let store = RevisionStore::open(directory.path()).unwrap();
+    let accepted = install(&store, "accepted");
+    let candidate = install(&store, "host:exit-before-present");
+    store.set_current(&accepted).unwrap();
+    let mut supervisor = supervisor(&store, Duration::from_secs(2));
+    supervisor.boot().unwrap();
+    let failed_host_pid = supervisor.host_pid();
     assert!(matches!(
-        rollback,
-        SupervisorEvent::RolledBack {
-            ref failed_revision,
-            ref restored_revision,
-            ..
-        } if failed_revision == &candidate && restored_revision == &accepted
+        supervisor.activate(&candidate),
+        Err(Error::HostExited(_))
     ));
+    assert_eq!(
+        store.current().unwrap().unwrap().manifest.revision_id,
+        accepted
+    );
+    assert_ne!(supervisor.host_pid(), failed_host_pid);
+    assert_eq!(supervisor.active_revision(), Some(accepted.as_str()));
+}
+
+#[test]
+fn host_exit_after_present_before_pointer_preserves_previous_revision() {
+    let directory = TempDir::new().unwrap();
+    let store = RevisionStore::open(directory.path()).unwrap();
+    let accepted = install(&store, "accepted");
+    let candidate = install(&store, "host:exit-immediately-after-present");
+    store.set_current(&accepted).unwrap();
+    let mut supervisor = supervisor(&store, Duration::from_secs(2));
+    supervisor.boot().unwrap();
+    let failed_host_pid = supervisor.host_pid();
+    assert!(matches!(
+        supervisor.activate(&candidate),
+        Err(Error::HostExited(_))
+    ));
+    assert_ne!(supervisor.host_pid(), failed_host_pid);
     assert_eq!(supervisor.active_revision(), Some(accepted.as_str()));
     assert_eq!(
         store.current().unwrap().unwrap().manifest.revision_id,
@@ -208,86 +267,69 @@ fn first_frame_promotes_and_a_later_crash_rolls_back_and_relaunches() {
 }
 
 #[test]
-fn supervisor_survives_and_relaunches_the_boot_revision_it_accepted() {
+fn preparation_timeout_leaves_the_accepted_revision_running() {
     let directory = TempDir::new().unwrap();
     let store = RevisionStore::open(directory.path()).unwrap();
-    let accepted = install(&store, "accepted", "crash-after");
+    let accepted = install(&store, "accepted");
+    let candidate = install(&store, "host:no-response");
     store.set_current(&accepted).unwrap();
-    let mut supervisor = RevisionSupervisor::new(store, Duration::from_secs(2));
+    let mut supervisor = supervisor(&store, Duration::from_millis(30));
     supervisor.boot().unwrap();
-    let deadline = Instant::now() + Duration::from_secs(2);
-    let event = loop {
-        if let Some(event) = supervisor.poll().unwrap() {
-            break event;
-        }
-        assert!(Instant::now() < deadline, "accepted process did not exit");
-        thread::sleep(Duration::from_millis(5));
-    };
+    let initial_host_pid = supervisor.host_pid();
+    assert!(matches!(
+        supervisor.activate(&candidate),
+        Err(Error::HostTimeout(_))
+    ));
+    assert_ne!(supervisor.host_pid(), initial_host_pid);
+    assert_eq!(supervisor.active_revision(), Some(accepted.as_str()));
+    assert_eq!(
+        store.current().unwrap().unwrap().manifest.revision_id,
+        accepted
+    );
+}
+
+#[test]
+fn permanent_host_crash_restarts_the_committed_revision_without_pointer_rollback() {
+    let directory = TempDir::new().unwrap();
+    let store = RevisionStore::open(directory.path()).unwrap();
+    let accepted = install(&store, "accepted");
+    let candidate = install(&store, "host:crash-later");
+    store.set_current(&accepted).unwrap();
+    let mut supervisor = supervisor(&store, Duration::from_secs(2));
+    supervisor.boot().unwrap();
+    supervisor.activate(&candidate).unwrap();
+    let failed_host_pid = supervisor.host_pid().unwrap();
+    thread::sleep(Duration::from_millis(300));
+    let event = supervisor.poll().unwrap().unwrap();
     assert!(matches!(
         event,
-        SupervisorEvent::RolledBack {
-            ref failed_revision,
-            ref restored_revision,
-            ..
-        } if failed_revision == &accepted && restored_revision == &accepted
+        SupervisorEvent::HostRestarted {
+            ref revision_id,
+            failed_host_pid: failed,
+            host_pid,
+        } if revision_id == &candidate && failed == failed_host_pid && host_pid != failed_host_pid
     ));
-    assert_eq!(supervisor.active_revision(), Some(accepted.as_str()));
-}
-
-#[test]
-fn first_frame_timeout_kills_candidate_without_promotion() {
-    let directory = TempDir::new().unwrap();
-    let store = RevisionStore::open(directory.path()).unwrap();
-    let accepted = install(&store, "accepted", "stay");
-    let candidate = install(&store, "candidate", "no-ready");
-    store.set_current(&accepted).unwrap();
-    let mut supervisor = RevisionSupervisor::new(store.clone(), Duration::from_millis(30));
-    supervisor.boot().unwrap();
-    assert!(matches!(
-        supervisor.promote(&candidate),
-        Err(Error::FirstFrameTimeout(_))
-    ));
-    assert_eq!(supervisor.active_revision(), Some(accepted.as_str()));
+    assert_eq!(supervisor.active_revision(), Some(candidate.as_str()));
     assert_eq!(
         store.current().unwrap().unwrap().manifest.revision_id,
-        accepted
+        candidate
     );
 }
 
 #[test]
-fn candidate_exit_between_first_frame_and_pointer_commit_is_rejected() {
+fn daemon_activates_luau_in_one_stable_host_process() {
     let directory = TempDir::new().unwrap();
     let store = RevisionStore::open(directory.path()).unwrap();
-    let accepted = install(&store, "accepted", "stay");
-    let candidate = install(&store, "candidate", "exit-after");
-    store.set_current(&accepted).unwrap();
-    let mut supervisor = RevisionSupervisor::new(store.clone(), Duration::from_secs(2));
-    supervisor.boot().unwrap();
-    let prepared = supervisor.prepare(&candidate).unwrap();
-    thread::sleep(Duration::from_millis(80));
-    assert!(matches!(
-        supervisor.commit_prepared(prepared),
-        Err(Error::CandidateExitedBeforePointerCommit(_))
-    ));
-    assert_eq!(supervisor.active_revision(), Some(accepted.as_str()));
-    assert_eq!(
-        store.current().unwrap().unwrap().manifest.revision_id,
-        accepted
-    );
-}
-
-#[test]
-fn standalone_daemon_survives_candidate_crash_and_accepts_more_control_requests() {
-    let directory = TempDir::new().unwrap();
-    let store = RevisionStore::open(directory.path()).unwrap();
-    let accepted = install(&store, "accepted", "stay");
-    let candidate = install(&store, "candidate", "crash-after");
+    let accepted = install(&store, "accepted");
+    let candidate = install(&store, "candidate");
     store.set_current(&accepted).unwrap();
     let mut daemon = Command::new(supervisor_executable())
         .args([
             "serve",
             "--root",
             directory.path().to_str().unwrap(),
+            "--host-executable",
+            host_executable().to_str().unwrap(),
             "--timeout-ms",
             "2000",
         ])
@@ -299,26 +341,17 @@ fn standalone_daemon_survives_candidate_crash_and_accepts_more_control_requests(
     wait_for_socket(&mut daemon, &socket);
 
     let status = control(&socket, json!({"action":"status"}));
+    let host_pid = status["host_pid"].as_u64().unwrap();
     assert_eq!(status["active_revision"], accepted);
-    let promoted = control(
+    let activated = control(
         &socket,
-        json!({"action":"promote", "revision_id": candidate}),
+        json!({"action":"activate", "revision_id": candidate}),
     );
-    assert_eq!(promoted["ok"], true);
-    assert_eq!(promoted["active_revision"], candidate);
+    assert_eq!(activated["ok"], true);
+    assert_eq!(activated["active_revision"], candidate);
+    assert_eq!(activated["host_pid"], host_pid);
 
-    let deadline = Instant::now() + Duration::from_secs(3);
-    loop {
-        let status = control(&socket, json!({"action":"status"}));
-        if status["active_revision"] == accepted {
-            break;
-        }
-        assert!(Instant::now() < deadline, "daemon did not recover");
-        thread::sleep(Duration::from_millis(10));
-    }
-    assert!(daemon.try_wait().unwrap().is_none());
-    let shutdown = control(&socket, json!({"action":"shutdown"}));
-    assert_eq!(shutdown["ok"], true);
+    assert_eq!(control(&socket, json!({"action":"shutdown"}))["ok"], true);
     assert!(daemon.wait().unwrap().success());
 }
 

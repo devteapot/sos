@@ -100,24 +100,6 @@
             </intent-filter>
         </activity>
 
-        <!-- Disposable revision surface. It intentionally runs outside the
-             permanent GPUI host process so a candidate crash cannot destroy
-             the accepted experience. This Java surface is a supervisor
-             mechanism probe; a later gate must replace it with GPUI. -->
-        <activity
-            android:name="dev.sos.experience.CandidateGpuiActivity"
-            android:excludeFromRecents="true"
-            android:exported="false"
-            android:launchMode="singleTask"
-            android:process=":candidate"
-            android:taskAffinity="dev.sos.experience.candidate"
-            android:theme="@style/GpuiSplashTheme"
-        >
-            <meta-data
-                android:name="android.app.lib_name"
-                android:value="${nativeLibraryName}"
-            />
-        </activity>
         <!-- Transparent helper Activity for file/image picker results. -->
         <activity
             android:name="dev.gpui.mobile.GpuiPickerActivity"

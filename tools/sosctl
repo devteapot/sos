@@ -207,21 +207,78 @@ build_experience_apk() {
   find "$M1_JNI_DIR" -maxdepth 1 -type f -name '*.so' -delete
 
   info "building the SOS GPUI host and embedded Luau runtime for ARM64"
-  (
-    cd "$SOS_ROOT"
-    cargo ndk \
-      --link-libcxx-shared \
-      -t arm64-v8a \
-      -P 31 \
-      -o apps/experience/android/gradle/app/src/main/jniLibs \
-      build -p sos-experience --release --locked --no-default-features --features gate-strict
-  )
+  if [[ "$(uname -s)" == "Linux" && "$(uname -m)" == "aarch64" ]]; then
+    # Google's Linux NDK host tools are x86-64. On a native ARM64 workstation,
+    # compile C/C++ dependencies with the system LLVM toolchain and link through
+    # the repository wrapper, which supplies the NDK sysroot and runtime.
+    for command_name in clang clang++ llvm-ar-18; do
+      require_command "$command_name"
+    done
+    local ndk_sysroot="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/sysroot"
+    local ndk_libcxx="$ndk_sysroot/usr/lib/aarch64-linux-android/libc++_shared.so"
+    [[ -d "$ndk_sysroot" ]] || fail "Android NDK sysroot not found: $ndk_sysroot"
+    [[ -f "$ndk_libcxx" ]] || fail "Android NDK libc++ not found: $ndk_libcxx"
+    (
+      cd "$SOS_ROOT"
+      CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$SOS_ROOT/tools/android-clang-linker" \
+      CC_aarch64_linux_android="$(command -v clang)" \
+      CXX_aarch64_linux_android="$(command -v clang++)" \
+      AR_aarch64_linux_android="$(command -v llvm-ar-18)" \
+      CFLAGS_aarch64_linux_android="--target=aarch64-linux-android31 --sysroot=$ndk_sysroot" \
+      CXXFLAGS_aarch64_linux_android="--target=aarch64-linux-android31 --sysroot=$ndk_sysroot" \
+        cargo build \
+          -p sos-experience \
+          --target aarch64-linux-android \
+          --release \
+          --locked \
+          --no-default-features \
+          --features gate-strict
+    )
+    cp "$SOS_ROOT/target/aarch64-linux-android/release/libsos_experience.so" \
+      "$M1_JNI_DIR/libsos_experience.so"
+    cp "$ndk_libcxx" "$M1_JNI_DIR/libc++_shared.so"
+  else
+    (
+      cd "$SOS_ROOT"
+      cargo ndk \
+        --link-libcxx-shared \
+        -t arm64-v8a \
+        -P 31 \
+        -o apps/experience/android/gradle/app/src/main/jniLibs \
+        build -p sos-experience --release --locked --no-default-features --features gate-strict
+    )
+  fi
 
   info "packaging a debug-signed SOS APK"
-  (
-    cd "$M1_GRADLE_DIR"
-    ./gradlew clean assembleDebug
-  )
+  if [[ "$(uname -s)" == "Linux" && "$(uname -m)" == "aarch64" ]]; then
+    # AGP requests Build Tools 36 even with compileSdk 34. Keep additions out of
+    # a read-only system SDK and override Maven's x86-64 aapt2 with Ubuntu's
+    # native ARM64 binary.
+    require_command aapt2
+    local sdk_overlay="$CACHE_ROOT/android-sdk-arm64-overlay"
+    mkdir -p "$sdk_overlay/build-tools"
+    for sdk_directory in licenses platform-tools platforms; do
+      [[ -e "$ANDROID_HOME/$sdk_directory" ]] || fail "Android SDK directory missing: $sdk_directory"
+      ln -sfn "$ANDROID_HOME/$sdk_directory" "$sdk_overlay/$sdk_directory"
+    done
+    while IFS= read -r build_tools_directory; do
+      ln -sfn "$build_tools_directory" \
+        "$sdk_overlay/build-tools/$(basename "$build_tools_directory")"
+    done < <(find "$ANDROID_HOME/build-tools" -mindepth 1 -maxdepth 1 \
+      -type d -name '[0-9]*' | sort)
+    (
+      cd "$M1_GRADLE_DIR"
+      ANDROID_HOME="$sdk_overlay" ANDROID_SDK_ROOT="$sdk_overlay" \
+        ./gradlew \
+          -Pandroid.aapt2FromMavenOverride="$(command -v aapt2)" \
+          clean assembleDebug
+    )
+  else
+    (
+      cd "$M1_GRADLE_DIR"
+      ./gradlew clean assembleDebug
+    )
+  fi
 
   [[ -f "$M1_GRADLE_APK" ]] || fail "Gradle did not produce $M1_GRADLE_APK"
   cp "$M1_GRADLE_APK" "$M1_APK_PATH"
@@ -427,51 +484,6 @@ stress_experience() {
   fail "stress run $run_id did not finish within $attempts seconds"
 }
 
-candidate_process_probe() {
-  local mode="${1:-crash-after}"
-  [[ "$mode" == "crash-before" || "$mode" == "crash-after" ]] || \
-    fail "candidate probe mode must be crash-before or crash-after"
-
-  resolve_android_environment
-  require_command adb
-  select_device
-  local main_pid revision
-  main_pid="$(adb shell pidof "$M1_ANDROID_PACKAGE" | tr -d '\r')"
-  [[ -n "$main_pid" ]] || fail "$M1_ANDROID_PACKAGE is not running; use ./tools/sosctl m1-launch"
-  revision="probe-$(date +%s)"
-
-  info "launching disposable candidate process ($mode); accepted PID is $main_pid"
-  adb shell am start \
-    -a android.intent.action.VIEW \
-    -d "sos://candidate?revision=$revision\&mode=$mode" \
-    -n "$M1_ANDROID_PACKAGE/$ANDROID_ACTIVITY" >/dev/null || true
-
-  local result="" candidate_pid=""
-  for _ in {1..200}; do
-    candidate_pid="$(adb shell pidof "$M1_ANDROID_PACKAGE:candidate" 2>/dev/null | tr -d '\r' || true)"
-    result="$(adb logcat -d -v brief | grep "$revision" || true)"
-    if [[ -z "$candidate_pid" && "$result" == *"candidate_native_crash"* && "$result" == *"accepted_surface_restored"* ]]; then
-      break
-    fi
-    sleep 0.05
-  done
-
-  local main_pid_after resumed
-  main_pid_after="$(adb shell pidof "$M1_ANDROID_PACKAGE" | tr -d '\r')"
-  [[ "$main_pid_after" == "$main_pid" ]] || fail "accepted process changed: $main_pid -> $main_pid_after"
-  [[ "$result" == *"candidate_native_crash"* ]] || fail "candidate did not reach native crash"
-  [[ "$result" == *"accepted_surface_restored"* ]] || fail "watchdog did not restore the accepted surface"
-  if [[ "$mode" == "crash-after" ]]; then
-    [[ "$result" == *"candidate_gpui_first_frame"* ]] || fail "candidate crashed without reporting a GPUI frame"
-  else
-    [[ "$result" != *"candidate_gpui_first_frame"* ]] || fail "crash-before candidate unexpectedly presented"
-  fi
-  resumed="$(adb shell dumpsys activity top | grep 'ACTIVITY' | tail -n 1 || true)"
-  [[ "$resumed" == *"$M1_ANDROID_PACKAGE/$ANDROID_ACTIVITY"* ]] || fail "accepted activity did not resume: $resumed"
-  printf '%s\n' "$result"
-  info "candidate process died; accepted PID $main_pid and surface resumed"
-}
-
 usage() {
   cat <<'USAGE'
 Usage: ./tools/sosctl <command>
@@ -497,8 +509,6 @@ Commands:
                       One-shot headless Codex generation (Luna, medium).
   rollback            Submit the prior accepted Luau source as a candidate.
   stress [count]      Run frame-paced transactional swaps (default: 1000).
-  candidate-probe [crash-before|crash-after]
-                      Crash a disposable revision process and verify return.
   worker-restart      Recreate the Luau worker without replacing the APK.
   help                 Show this message.
 
@@ -563,10 +573,6 @@ case "$command_name" in
   stress)
     [[ "$#" -le 1 ]] || fail "usage: ./tools/sosctl stress [count]"
     stress_experience "${1:-1000}"
-    ;;
-  candidate-probe)
-    [[ "$#" -le 1 ]] || fail "usage: ./tools/sosctl candidate-probe [crash-before|crash-after]"
-    candidate_process_probe "${1:-crash-after}"
     ;;
   worker-restart)
     [[ "$#" -eq 0 ]] || fail "usage: ./tools/sosctl worker-restart"

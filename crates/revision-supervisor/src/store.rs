@@ -12,7 +12,7 @@ use sha2::{Digest, Sha256};
 
 use crate::{Error, Result};
 
-const FORMAT_VERSION: u32 = 1;
+const FORMAT_VERSION: u32 = 2;
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone, Debug)]
@@ -25,8 +25,7 @@ pub struct RevisionInput {
     pub source: Vec<u8>,
     pub state: Value,
     pub schema_version: u64,
-    pub executable: PathBuf,
-    pub args: Vec<String>,
+    pub experience_api_version: u32,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -41,10 +40,9 @@ pub struct RevisionManifest {
     pub format_version: u32,
     pub revision_id: String,
     pub schema_version: u64,
+    pub experience_api_version: u32,
     pub source: FileIdentity,
     pub state: FileIdentity,
-    pub executable: FileIdentity,
-    pub args: Vec<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
@@ -79,9 +77,10 @@ impl RevisionStore {
                 "schema version must be positive".into(),
             ));
         }
-        let executable = fs::read(&input.executable)?;
-        if executable.is_empty() {
-            return Err(Error::InvalidRevision("executable is empty".into()));
+        if input.experience_api_version == 0 {
+            return Err(Error::InvalidRevision(
+                "experience API version must be positive".into(),
+            ));
         }
         let source_sha256 = digest(&input.source);
         let durable_state = DurableState {
@@ -92,23 +91,20 @@ impl RevisionStore {
         let state = serde_json::to_vec(&durable_state)?;
         let source = identity("source.luau", &input.source);
         let state_identity = identity("state.json", &state);
-        let executable_identity = identity("experience", &executable);
 
         let revision_id = revision_identity(
             input.schema_version,
+            input.experience_api_version,
             &source,
             &state_identity,
-            &executable_identity,
-            &input.args,
-        )?;
+        );
         let manifest = RevisionManifest {
             format_version: FORMAT_VERSION,
             revision_id: revision_id.clone(),
             schema_version: input.schema_version,
+            experience_api_version: input.experience_api_version,
             source,
             state: state_identity,
-            executable: executable_identity,
-            args: input.args,
         };
         let destination = self.revision_path(&revision_id)?;
         if destination.exists() {
@@ -125,7 +121,6 @@ impl RevisionStore {
         let result = (|| {
             write_synced(&temporary.join("source.luau"), &input.source, 0o444)?;
             write_synced(&temporary.join("state.json"), &state, 0o444)?;
-            write_synced(&temporary.join("experience"), &executable, 0o555)?;
             let manifest_bytes = serde_json::to_vec_pretty(&manifest)?;
             write_synced(&temporary.join("manifest.json"), &manifest_bytes, 0o444)?;
             set_mode(&temporary, 0o555)?;
@@ -152,24 +147,22 @@ impl RevisionStore {
         }
         if revision_identity(
             manifest.schema_version,
+            manifest.experience_api_version,
             &manifest.source,
             &manifest.state,
-            &manifest.executable,
-            &manifest.args,
-        )? != revision_id
+        ) != revision_id
         {
             return Err(Error::InvalidRevision(
                 "content-addressed revision identity mismatch".into(),
             ));
         }
-        if manifest.schema_version == 0 {
+        if manifest.schema_version == 0 || manifest.experience_api_version == 0 {
             return Err(Error::InvalidRevision(
-                "schema version must be positive".into(),
+                "schema and experience API versions must be positive".into(),
             ));
         }
         verify_file(&directory, &manifest.source)?;
         verify_file(&directory, &manifest.state)?;
-        verify_file(&directory, &manifest.executable)?;
         let state: DurableState =
             serde_json::from_slice(&fs::read(directory.join(&manifest.state.path))?)?;
         if state.schema_version != manifest.schema_version
@@ -264,19 +257,17 @@ fn digest(bytes: &[u8]) -> String {
 
 fn revision_identity(
     schema_version: u64,
+    experience_api_version: u32,
     source: &FileIdentity,
     state: &FileIdentity,
-    executable: &FileIdentity,
-    args: &[String],
-) -> Result<String> {
+) -> String {
     let mut revision_digest = Sha256::new();
     revision_digest.update(FORMAT_VERSION.to_le_bytes());
     revision_digest.update(schema_version.to_le_bytes());
+    revision_digest.update(experience_api_version.to_le_bytes());
     revision_digest.update(source.sha256.as_bytes());
     revision_digest.update(state.sha256.as_bytes());
-    revision_digest.update(executable.sha256.as_bytes());
-    revision_digest.update(serde_json::to_vec(args)?);
-    Ok(format!("{:x}", revision_digest.finalize()))
+    format!("{:x}", revision_digest.finalize())
 }
 
 fn write_synced(path: &Path, bytes: &[u8], mode: u32) -> Result<()> {

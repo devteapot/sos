@@ -9,14 +9,15 @@ use std::{
 
 use provider_state_service::ServiceClient;
 use revision_supervisor::{
-    CoordinatedSupervisor, RevisionInput, RevisionStore, RevisionSupervisor, SupervisorEvent,
+    CoordinatedSupervisor, HostCommand, RevisionInput, RevisionStore, RevisionSupervisor,
+    SupervisorEvent,
 };
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(tag = "action", rename_all = "snake_case")]
 enum ControlRequest {
-    Promote {
+    Activate {
         revision_id: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         transaction_id: Option<String>,
@@ -29,6 +30,7 @@ enum ControlRequest {
 struct ControlResponse {
     ok: bool,
     active_revision: Option<String>,
+    host_pid: Option<u32>,
     event: Option<String>,
     error: Option<String>,
 }
@@ -45,7 +47,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     match args.next().as_deref() {
         Some("install") => install(parse_options(args.collect())?),
         Some("bootstrap") => bootstrap(parse_options(args.collect())?),
-        Some("promote") => control_command(parse_options(args.collect())?, "promote"),
+        Some("activate") => control_command(parse_options(args.collect())?, "activate"),
         Some("daemon-status") => control_command(parse_options(args.collect())?, "status"),
         Some("shutdown") => control_command(parse_options(args.collect())?, "shutdown"),
         Some("serve") => serve(parse_options(args.collect())?),
@@ -57,7 +59,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 fn bootstrap(options: Options) -> Result<(), Box<dyn std::error::Error>> {
     let store = RevisionStore::open(options.required("--root")?)?;
     if store.current()?.is_some() {
-        return Err("current is already initialized; use supervised promotion".into());
+        return Err("current is already initialized; use supervised activation".into());
     }
     let revision_id = options.required("--revision")?;
     store.set_current(&revision_id)?;
@@ -68,7 +70,7 @@ fn bootstrap(options: Options) -> Result<(), Box<dyn std::error::Error>> {
 fn control_command(options: Options, action: &str) -> Result<(), Box<dyn std::error::Error>> {
     let root = PathBuf::from(options.required("--root")?);
     let request = match action {
-        "promote" => ControlRequest::Promote {
+        "activate" => ControlRequest::Activate {
             revision_id: options.required("--revision")?,
             transaction_id: options.optional("--transaction"),
         },
@@ -93,14 +95,13 @@ fn install(options: Options) -> Result<(), Box<dyn std::error::Error>> {
     let source = fs::read(options.required("--source")?)?;
     let state = serde_json::from_slice(&fs::read(options.required("--state")?)?)?;
     let schema_version = options.required("--schema")?.parse()?;
-    let executable = PathBuf::from(options.required("--executable")?);
+    let experience_api_version = options.required("--api")?.parse()?;
     let store = RevisionStore::open(root)?;
     let revision = store.install(RevisionInput {
         source,
         state,
         schema_version,
-        executable,
-        args: options.values("--arg"),
+        experience_api_version,
     })?;
     println!("{}", revision.manifest.revision_id);
     Ok(())
@@ -127,9 +128,11 @@ fn serve(options: Options) -> Result<(), Box<dyn std::error::Error>> {
     if socket.exists() {
         return Err(format!("control socket already exists: {}", socket.display()).into());
     }
-    let listener = UnixListener::bind(&socket)?;
-    listener.set_nonblocking(true)?;
-    let supervisor = RevisionSupervisor::new(store.clone(), timeout);
+    let host_command = HostCommand::with_args(
+        options.required("--host-executable")?,
+        options.values("--host-arg"),
+    );
+    let supervisor = RevisionSupervisor::new(store.clone(), host_command, timeout);
     let mut runtime = if let Some(service_socket) = options.optional("--service-socket") {
         let service_timeout = Duration::from_millis(
             options
@@ -153,6 +156,8 @@ fn serve(options: Options) -> Result<(), Box<dyn std::error::Error>> {
         }
         Runtime::Standalone(standalone)
     };
+    let listener = UnixListener::bind(&socket)?;
+    listener.set_nonblocking(true)?;
     println!("revision_supervisor_listening socket={}", socket.display());
     let result = serve_loop(&listener, &mut runtime);
     runtime.shutdown().ok();
@@ -177,10 +182,10 @@ fn serve_loop(
                 BufReader::new(stream.try_clone()?).read_line(&mut line)?;
                 let request = serde_json::from_str::<ControlRequest>(&line);
                 let (response, shutdown) = match request {
-                    Ok(ControlRequest::Promote {
+                    Ok(ControlRequest::Activate {
                         revision_id,
                         transaction_id,
-                    }) => match runtime.promote(&revision_id, transaction_id.as_deref()) {
+                    }) => match runtime.activate(&revision_id, transaction_id.as_deref()) {
                         Ok(event) => {
                             println!("revision_supervisor_event event={event}");
                             (success(runtime, Some(event)), false)
@@ -212,7 +217,7 @@ enum Runtime {
 }
 
 impl Runtime {
-    fn promote(
+    fn activate(
         &mut self,
         revision_id: &str,
         transaction_id: Option<&str>,
@@ -222,14 +227,14 @@ impl Runtime {
                 if transaction_id.is_some() {
                     return Err("standalone supervisor does not accept a transaction ID".into());
                 }
-                Ok(format!("{:?}", supervisor.promote(revision_id)?))
+                Ok(format!("{:?}", supervisor.activate(revision_id)?))
             }
             Self::Coordinated(supervisor) => {
                 let transaction_id =
                     transaction_id.ok_or("coordinated supervisor requires --transaction")?;
                 Ok(format!(
                     "{:?}",
-                    supervisor.promote(transaction_id, revision_id)?
+                    supervisor.activate(transaction_id, revision_id)?
                 ))
             }
         }
@@ -253,6 +258,13 @@ impl Runtime {
         }
     }
 
+    fn host_pid(&self) -> Option<u32> {
+        match self {
+            Self::Standalone(supervisor) => supervisor.host_pid(),
+            Self::Coordinated(supervisor) => supervisor.host_pid(),
+        }
+    }
+
     fn shutdown(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         match self {
             Self::Standalone(supervisor) => supervisor.shutdown()?,
@@ -266,6 +278,7 @@ fn success(runtime: &Runtime, event: Option<String>) -> ControlResponse {
     ControlResponse {
         ok: true,
         active_revision: runtime.active_revision().map(str::to_owned),
+        host_pid: runtime.host_pid(),
         event,
         error: None,
     }
@@ -275,6 +288,7 @@ fn failure(runtime: &Runtime, error: String) -> ControlResponse {
     ControlResponse {
         ok: false,
         active_revision: runtime.active_revision().map(str::to_owned),
+        host_pid: runtime.host_pid(),
         event: None,
         error: Some(error),
     }
@@ -324,7 +338,7 @@ fn parse_options(arguments: Vec<String>) -> Result<Options, String> {
 }
 
 fn usage() -> &'static str {
-    "usage:\n  sos-revision-supervisor install --root DIR --source FILE --state FILE --schema N --executable FILE [--arg VALUE ...]\n  sos-revision-supervisor bootstrap --root DIR --revision ID\n  sos-revision-supervisor serve --root DIR [--timeout-ms N] [--service-socket PATH --service-timeout-ms N]\n  sos-revision-supervisor promote --root DIR --revision ID [--transaction ID]\n  sos-revision-supervisor daemon-status --root DIR\n  sos-revision-supervisor shutdown --root DIR\n  sos-revision-supervisor status --root DIR"
+    "usage:\n  sos-revision-supervisor install --root DIR --source FILE --state FILE --schema N --api N\n  sos-revision-supervisor bootstrap --root DIR --revision ID\n  sos-revision-supervisor serve --root DIR --host-executable FILE [--host-arg VALUE ...] [--timeout-ms N] [--service-socket PATH --service-timeout-ms N]\n  sos-revision-supervisor activate --root DIR --revision ID [--transaction ID]\n  sos-revision-supervisor daemon-status --root DIR\n  sos-revision-supervisor shutdown --root DIR\n  sos-revision-supervisor status --root DIR"
 }
 
 fn send_control(

@@ -28,7 +28,7 @@ pub enum JournalPhase {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
-pub struct PromotionJournal {
+pub struct ActivationJournal {
     pub format_version: u32,
     pub transaction_id: String,
     pub previous_revision: String,
@@ -45,10 +45,10 @@ pub enum CoordinatorFaultPoint {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CoordinationEvent {
-    Promoted {
+    Activated {
         transaction_id: String,
         revision_id: String,
-        pid: u32,
+        host_pid: u32,
     },
     RecoveredPrevious {
         transaction_id: String,
@@ -94,7 +94,7 @@ impl CoordinatedSupervisor {
         supervisor: RevisionSupervisor,
         service: ServiceClient,
     ) -> Self {
-        let journal_file = store.root().join("promotion-journal.json");
+        let journal_file = store.root().join("activation-journal.json");
         Self {
             supervisor,
             store,
@@ -114,7 +114,7 @@ impl CoordinatedSupervisor {
         self.fault = point;
     }
 
-    pub fn promote(
+    pub fn activate(
         &mut self,
         transaction_id: &str,
         revision_id: &str,
@@ -144,7 +144,7 @@ impl CoordinatedSupervisor {
                 transaction.status
             )));
         }
-        let mut journal = PromotionJournal {
+        let mut journal = ActivationJournal {
             format_version: JOURNAL_FORMAT_VERSION,
             transaction_id: transaction_id.into(),
             previous_revision,
@@ -197,19 +197,18 @@ impl CoordinatedSupervisor {
         self.inject(CoordinatorFaultPoint::AfterServiceCommit)?;
 
         let supervisor_event = self.supervisor.commit_prepared(prepared)?;
-        self.supervisor.recover_current_on_exit()?;
         journal.phase = JournalPhase::PointerCommitted;
         self.write_journal(&journal)?;
         self.inject(CoordinatorFaultPoint::AfterPointerCommit)?;
         self.clear_journal()?;
-        let pid = match supervisor_event {
-            SupervisorEvent::Promoted { pid, .. } => pid,
-            _ => unreachable!("prepared commit always promotes"),
+        let host_pid = match supervisor_event {
+            SupervisorEvent::Activated { host_pid, .. } => host_pid,
+            _ => unreachable!("prepared commit always activates"),
         };
-        Ok(CoordinationEvent::Promoted {
+        Ok(CoordinationEvent::Activated {
             transaction_id: transaction_id.into(),
             revision_id: revision_id.into(),
-            pid,
+            host_pid,
         })
     }
 
@@ -227,9 +226,8 @@ impl CoordinatedSupervisor {
         match transaction.status {
             TransactionStatus::Committed => {
                 if current != journal.candidate_revision {
-                    self.supervisor.promote(&journal.candidate_revision)?;
+                    self.supervisor.activate(&journal.candidate_revision)?;
                 }
-                self.supervisor.recover_current_on_exit()?;
                 self.clear_journal()?;
                 Ok(Some(CoordinationEvent::RecoveredCandidate {
                     transaction_id: journal.transaction_id,
@@ -238,7 +236,7 @@ impl CoordinatedSupervisor {
             }
             TransactionStatus::Staged | TransactionStatus::Aborted => {
                 if current != journal.previous_revision {
-                    self.supervisor.promote(&journal.previous_revision)?;
+                    self.supervisor.activate(&journal.previous_revision)?;
                 }
                 if transaction.status == TransactionStatus::Staged {
                     self.call(ServiceRequest::Abort {
@@ -266,7 +264,11 @@ impl CoordinatedSupervisor {
         self.supervisor.active_revision()
     }
 
-    pub fn journal(&self) -> Result<Option<PromotionJournal>, CoordinationError> {
+    pub fn host_pid(&self) -> Option<u32> {
+        self.supervisor.host_pid()
+    }
+
+    pub fn journal(&self) -> Result<Option<ActivationJournal>, CoordinationError> {
         self.load_journal()
     }
 
@@ -348,20 +350,20 @@ impl CoordinatedSupervisor {
         }
     }
 
-    fn validate_journal(&self, journal: &PromotionJournal) -> Result<(), CoordinationError> {
+    fn validate_journal(&self, journal: &ActivationJournal) -> Result<(), CoordinationError> {
         if journal.format_version != JOURNAL_FORMAT_VERSION
             || !is_sha256(&journal.previous_revision)
             || !is_sha256(&journal.candidate_revision)
             || journal.transaction_id.is_empty()
         {
             return Err(CoordinationError::InvalidBinding(
-                "invalid promotion journal".into(),
+                "invalid activation journal".into(),
             ));
         }
         Ok(())
     }
 
-    fn load_journal(&self) -> Result<Option<PromotionJournal>, CoordinationError> {
+    fn load_journal(&self) -> Result<Option<ActivationJournal>, CoordinationError> {
         match fs::read(&self.journal_file) {
             Ok(bytes) => Ok(Some(serde_json::from_slice(&bytes)?)),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
@@ -369,10 +371,10 @@ impl CoordinatedSupervisor {
         }
     }
 
-    fn write_journal(&self, journal: &PromotionJournal) -> Result<(), CoordinationError> {
+    fn write_journal(&self, journal: &ActivationJournal) -> Result<(), CoordinationError> {
         let sequence = FILE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
         let temporary = self.store.root().join(format!(
-            ".promotion-journal-{}-{sequence}.tmp",
+            ".activation-journal-{}-{sequence}.tmp",
             std::process::id()
         ));
         let mut file = OpenOptions::new()

@@ -96,6 +96,9 @@ pub struct NativeTextInput {
 }
 
 impl NativeTextInput {
+    // These values are the complete immutable configuration for one keyed GPUI
+    // text-input entity; grouping them would only move the same boundary.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         node_id: String,
         state_key: String,
