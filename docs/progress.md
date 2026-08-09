@@ -2727,3 +2727,59 @@ gate is to install it in the Debian reference VM, choose SOS through GDM, requir
 logind seat ownership plus a DRM page flip, inject the logout chord, confirm the
 greeter returns, and then repeat on physical hardware without promoting VM
 measurements to hardware evidence.
+
+## 2026-08-09 — Start the resident agent with the selectable SOS login
+
+**Goal / hypothesis:** A user who chooses SOS in GDM should receive the same
+resident authoring interaction as the appliance session, with the agent ready in
+the background and bound to that login's actual revision/provider authority.
+
+**Changed:** Extended `tools/install-linux-login-session` to require Node
+22.19+, build the locked TypeScript agent and release `sos-agent-authoring`
+broker, install their runtime, API document, and two reference experiences, and
+run a new per-user `sos-agent-login --if-needed` device-code helper. The helper
+stores the `openai-codex` credential, exact model selection, and later message
+history below `${XDG_STATE_HOME:-$HOME/.local/state}/sos/agent` with private
+permissions. `sos-login-session` now gives the host a session-private agent
+socket, waits for the provider and supervisor, starts the same-UID authoring
+broker and resident Node agent, waits for both sockets, monitors all three
+top-level lifecycles, and tears the background processes down on logout. If
+credentials are absent, login refuses to start and names the repair helper; if
+the agent or broker later exits, the session returns to GDM instead of silently
+presenting a dead agent. Updated the README, Linux session guide, and agent guide
+with configuration and ownership details.
+
+**Evidence:** `bash -n` and `shellcheck` pass the installer, session launcher,
+and new credential helper. `npm run check` and `npm test` pass all four agent
+tests, including atomic credential persistence and the bounded
+`context -> validate -> submit` flow. `cargo test -p sos-linux-session
+--all-targets` passes six unit tests and the authority integration test. Rust
+formatting and `git diff --check` pass. The exact release authoring-broker build
+passes in 16.02 seconds, strict all-target Linux-session Clippy passes, and the
+installer's exact `npm ci --ignore-scripts && npm run build` sequence installs
+99 locked packages with zero reported vulnerabilities and compiles the agent.
+An expected-failure installer invocation still stops before build/authentication
+and lists this host's missing `gbm`, `libinput`, `libseat`, and `libudev`
+development modules. Desktop-entry validation and the final combined
+format/shell/diff checks pass. Generated release, `node_modules`, and `dist`
+artifacts remain ignored and are not committed or used as runtime evidence.
+
+**Failures and fixes:** Enabling the existing `sos-agent.target` was rejected:
+its broker requires `sos-session.service` and hard-codes appliance paths under
+`/var/lib/sos` and `/run/sos`, while every GDM login has a per-user revision
+store and a fresh runtime directory. A system-wide agent would therefore point
+at the wrong authority and cross the session ownership boundary. The first
+provider override design also advertised API-key providers even though the new
+helper deliberately drives a device-code flow; selectable-session login is now
+restricted to `openai-codex`, with the existing credential/drop-in procedure
+retained for appliance API-key configurations.
+
+**Decision / remaining risk / next gate:** Keep the agent and broker as monitored
+children of the authenticated graphical session, not as the incompatible
+appliance system services. This proves builds, protocol tests, static lifecycle
+ordering, and credential-path policy only. The next gate remains an interactive
+GDM login in the Debian VM: require the DRM page flip, agent and broker sockets,
+a successful composer prompt and activation, then inject logout and prove the
+agent processes and private runtime paths disappear before GDM returns. No VM
+result will complete the physical hardware, latency, suspend, thermal, or GPU
+gate.

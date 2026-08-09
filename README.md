@@ -149,9 +149,12 @@ the default boot target:
 ```
 
 Log out, choose SOS from GDM's session menu, and authenticate normally. SOS then
-owns the Wayland session and display; `Ctrl+Alt+Backspace` logs out to GDM. This
-selectable-session path shares the authenticated UID across its components and
-does not provide the appliance session's separate service-identity boundary.
+owns the Wayland session and display; its resident agent and authoring broker
+run as monitored background components, and `Ctrl+Alt+Backspace` logs out to
+GDM. The installer runs device-code authentication when per-user credentials
+are missing. This selectable-session path shares the authenticated UID across
+its components and does not provide the appliance session's separate
+service-identity boundary.
 See [`docs/linux-stable-host.md`](docs/linux-stable-host.md) for installation,
 state locations, and current evidence limits.
 

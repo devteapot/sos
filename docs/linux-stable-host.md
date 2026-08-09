@@ -125,13 +125,20 @@ the experience host is its only ordinary desktop surface. Press
 `Ctrl+Alt+Backspace` to end SOS cleanly and return to GDM. Choose GNOME from the
 same session menu on the next login to return to the conventional desktop.
 
-The installer builds the direct compositor and Linux host in release mode,
-installs the five session binaries and launcher below `/usr/local/libexec/sos`,
-installs the default experience below `/usr/share/sos`, and adds
-`/usr/share/wayland-sessions/sos.desktop`. It does not stop or reconfigure GDM,
-change the default boot target, create service users, or enable the appliance
-units. The first SOS login creates the authenticated user's private revision,
-authority, recovery, and shell-token state below
+The installer builds the direct compositor, Linux host, authoring broker, and
+pinned Node agent in release mode. It installs the session binaries and
+launchers below `/usr/local/libexec/sos`, the resident agent below
+`/usr/local/libexec/sos-agent`, the reference experiences and API documentation
+below `/usr/share/sos` and `/usr/share/doc/sos`, and adds
+`/usr/share/wayland-sessions/sos.desktop`. On first installation it also runs
+the agent's device-code authentication flow as the desktop user; set
+`SOS_AGENT_MODEL` before invoking the installer to override the `gpt-5.6-sol`
+default. The selectable-session credential helper currently requires the
+subscription-backed `openai-codex` provider; API-key providers retain their
+separate appliance/development configuration. The installer does not stop or
+reconfigure GDM, change the default boot target, create service users, or enable
+the appliance units. The first SOS login creates the authenticated user's
+private revision, authority, recovery, and shell-token state below
 `${XDG_STATE_HOME:-$HOME/.local/state}/sos`; each login receives a fresh private
 runtime directory below `XDG_RUNTIME_DIR`.
 
@@ -143,16 +150,37 @@ GDM authentication (login user owns the active logind seat)
             -> provider/state authority
             -> revision supervisor
                 -> permanent SOS experience host
+        -> per-user authoring broker
+        -> resident Pi agent
 ```
+
+The authoring broker and resident agent start automatically after the provider
+and supervisor sockets are ready. They are monitored background children of the
+login session, use the same private runtime directory, and are stopped on
+logout. If either exits unexpectedly, the session fails back to GDM instead of
+silently leaving an apparently available composer without an agent. Credentials,
+model selection, and message history live below
+`${XDG_STATE_HOME:-$HOME/.local/state}/sos/agent`. To reauthenticate or change
+the exact model before logging into SOS, run:
+
+```sh
+SOS_AGENT_MODEL=gpt-5.6-sol \
+  /usr/local/libexec/sos/sos-agent-login
+```
+
+The installer completes authentication before offering a successful handoff.
+If credentials are later removed, the SOS login refuses to start and its journal
+names the login helper rather than presenting a composer backed by no agent.
 
 This path intentionally differs from the boot-owned appliance session's
 multi-UID isolation. A process launched from a display-manager session must keep
 the authenticated UID that logind authorizes for DRM and input. `run-user`
 therefore rejects root, rejects explicit service-account overrides, and requires
-the compositor, provider, supervisor, and host to use the current effective UID
-and GID. Its per-user directories and shell token are private, but processes in
-that login account are not security-isolated from one another. Use the system
-session below when the separate service identities are required.
+the compositor, provider, supervisor, host, authoring broker, and agent to use
+the current effective UID and GID. Its per-user directories and shell token are
+private, but processes in that login account are not security-isolated from one
+another. Use the system session below when the separate service identities are
+required.
 
 The selectable-session packaging and identity policy have desktop build and
 static packaging evidence only. They have not yet completed an interactive GDM

@@ -95,6 +95,36 @@ login command.
 
 ## Boot image wiring
 
+### Selectable GDM session
+
+`tools/install-linux-login-session install` builds and installs the pinned Node
+agent plus `sos-agent-authoring`, then runs per-user device-code authentication
+when credentials are missing. In the SOS GDM session, `sos-login-session` waits
+for that user's provider and revision-supervisor sockets, starts the authoring
+broker and resident agent against those exact paths, waits for the agent socket,
+and monitors both background processes until logout. This is deliberately not
+the appliance's system-wide `sos-agent.service`: the GDM session owns per-user
+state below `${XDG_STATE_HOME:-$HOME/.local/state}/sos/agent` and a private
+runtime directory that changes on every login.
+
+Reauthenticate or change the exact model from GNOME or a text login, then start
+a new SOS session:
+
+```sh
+SOS_AGENT_MODEL=gpt-5.6-sol \
+  /usr/local/libexec/sos/sos-agent-login
+```
+
+This helper currently supports the subscription-backed `openai-codex` device
+flow. Keep using the appliance credential/drop-in procedure below for API-key
+providers.
+
+Without credentials, the graphical login refuses to start and names the helper
+required to repair it. An unexpected agent or broker exit ends the SOS login so
+it cannot silently present a dead agent as available.
+
+### Boot-owned appliance
+
 Packaging includes `sos-agent.target`, `sos-agent-authoring.service`, the
 `sos-agent.service` sandbox, and the `sos-agent` system account. The reference
 Debian provisioner installs checksum-pinned Node 24.18.0, and the boot verifier
