@@ -2783,3 +2783,37 @@ a successful composer prompt and activation, then inject logout and prove the
 agent processes and private runtime paths disappear before GDM returns. No VM
 result will complete the physical hardware, latency, suspend, thermal, or GPU
 gate.
+
+## 2026-08-09 — Direct SOS login completes a live experience rewrite in a local VM
+
+**Goal / hypothesis:** Test the prototype as a user-visible end-to-end flow by
+logging directly into SOS in a local VM hosted on a MacBook Pro, entering a
+natural-language change through the experience itself, and observing the
+resulting revision rather than driving the authoring path from a development
+shell.
+
+**Environment / evidence:** The user reports completing the direct SOS login in
+the local VM and supplied a before/after capture. In the first frame, the live
+single-column experience contains the request “i want the layout to be two
+columns, the chat should be on the right col and the rest in the left one.” In
+the second frame, SOS reports that it updated and activated the layout, the
+dashboard content remains on the left, and the conversation and composer are
+rendered in a new right column. The two external 3000x2122 RGBA PNG artifacts
+remain outside Git:
+
+- `Screenshot 2026-08-09 at 19.56.43.png`, user-supplied capture with no embedded
+  source/build revision, 1,039,721 bytes, SHA-256
+  `e61bd6a75f5c8dddeeed5bcac7524c37e98651c9e850371814cf6b9c72dc5790`;
+- `Screenshot 2026-08-09 at 19.57.01.png`, user-supplied capture with no embedded
+  source/build revision, 1,214,146 bytes, SHA-256
+  `9f34a6dd8fcbd1b7beef98d8be965362354af4864ee43ccfc12b5110033ae1bc`.
+
+**Decision / remaining risk / next gate:** Confirm the user-facing VM prototype
+gate: a person can enter SOS directly, ask the resident experience to change its
+own composition, and continue in the visibly activated result. This evidence
+does not identify the exact model, source/build commit, old and new revision
+IDs, activation latency, service logs, DRM page flips, or lifecycle cleanup;
+the captures also do not independently show the GDM selection or logout path.
+Repeat with timestamped supervisor/agent logs and revision IDs, exercise logout
+back to GDM while checking process/runtime cleanup, and separately run the
+physical-hardware, suspend, latency, thermal, and GPU gates.
