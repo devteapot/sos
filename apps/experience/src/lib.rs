@@ -1,3 +1,5 @@
+#[cfg(all(target_os = "linux", feature = "linux-host"))]
+mod agent_bridge;
 #[cfg(target_os = "android")]
 mod android;
 #[cfg(any(
@@ -65,6 +67,13 @@ mod tests {
                     .iter()
                     .any(|child| contains_action(child, action))
         }
+        fn contains_agent_composer(node: &experience_ir::SceneNode) -> bool {
+            matches!(
+                &node.content,
+                Some(experience_ir::Content::TextSession(session))
+                    if session.submit_action.as_deref() == Some("agent_submit")
+            ) || node.children.iter().any(contains_agent_composer)
+        }
         assert!(contains_action(&scene.root, "toggle_music"));
 
         let timeflow = runtime_luau::LuauRuntime::compile(super::TIMEFLOW_EXPERIENCE).unwrap();
@@ -84,6 +93,34 @@ mod tests {
                 .unwrap();
             assert!(experience_ir::validate_scene(&scene).unwrap() > 15);
             assert!(contains_action(&scene.root, "toggle_music"));
+        }
+
+        for source in [
+            super::DEFAULT_EXPERIENCE,
+            super::TIMEFLOW_EXPERIENCE,
+            super::DAILY_FLOW_EXPERIENCE,
+        ] {
+            let runtime = runtime_luau::LuauRuntime::compile(source).unwrap();
+            let model = providers_fake::snapshot();
+            let state = runtime.initial_state();
+            let scene = runtime.render(&model, &state).unwrap();
+            assert!(contains_agent_composer(&scene.root));
+            let outcome = runtime
+                .update_with_effects(
+                    &model,
+                    &state,
+                    &experience_ir::SceneEvent {
+                        action: "agent_submit".into(),
+                        target: Some("agent-prompt".into()),
+                        value: Some("Make this calmer".into()),
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+            assert_eq!(outcome.effects.len(), 1);
+            assert_eq!(outcome.effects[0].provider, "agent");
+            assert_eq!(outcome.effects[0].action, "prompt");
+            assert_eq!(outcome.effects[0].payload["prompt"], "Make this calmer");
         }
     }
 }

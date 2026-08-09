@@ -172,6 +172,10 @@ impl NativeTextInput {
         }
     }
 
+    pub fn accessibility_submit(&self, cx: &mut Context<Self>) {
+        self.submit(cx);
+    }
+
     fn notify_change(&self, cx: &mut Context<Self>) {
         let node_id = self.node_id.clone();
         let state_key = self.state_key.clone();

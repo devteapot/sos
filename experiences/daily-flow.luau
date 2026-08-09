@@ -33,6 +33,49 @@ local function group(flow, layout, children, options)
     }
 end
 
+local function agent_panel(model, state)
+    local agent = model.agent or {}
+    local messages = {}
+    for index, message in ipairs(agent.messages or {}) do
+        table.insert(messages, group("column", { gap = 3, padding = 11 }, {
+            text(message.role == "user" and "YOU" or "SOS", 10, coral),
+            text(message.text, 13, ink, {
+                role = "status", label = (message.role == "user" and "YOU" or "SOS") .. " message",
+                value = message.text,
+            }, "agent-message-" .. tostring(index)),
+        }, { background = message.role == "user" and 0xF4E6DD or 0xE8EEE8, radius = 13 }))
+    end
+    if #messages == 0 then
+        table.insert(messages, text("Describe a different rhythm, layout, or behavior.", 13, muted))
+    end
+    if agent.error then table.insert(messages, text(agent.error, 12, 0x9A3D36)) end
+    local draft = state.agent_draft or ""
+    table.insert(messages, {
+        id = "agent-prompt",
+        layout = { height = 44, padding = 9 },
+        content = {
+            kind = "text_session", state_key = "agent_draft", value = draft,
+            placeholder = agent.busy and "SOS is working…" or "Change this experience…",
+            submit_action = "agent_submit",
+        },
+        paint = {{ kind = "fill_bounds", color = 0xF0ECE4, radius = 12 }},
+        semantics = {
+            role = "text_field", label = "Ask SOS to change this experience", value = draft,
+            hint = "Type a request and press enter",
+        },
+    })
+    return group("column", { gap = 9, padding = 16 }, {
+        group("row", { justify = "between" }, {
+            text("MAKE IT YOURS", 12, coral),
+            text(agent.activity or (agent.available and "Ready" or "Agent unavailable"), 11, muted, {
+                role = "status", label = "SOS agent status",
+                value = agent.activity or (agent.available and "Ready" or "Agent unavailable"),
+            }, "agent-status"),
+        }),
+        group("column", { gap = 7 }, messages),
+    }, { id = "agent-conversation", background = white, radius = 20 })
+end
+
 local function render(model, state)
     local draft = state.draft
     if draft == nil then draft = "Caffè ☕️ – 明日のデザイン" end
@@ -133,6 +176,7 @@ local function render(model, state)
             }, "system-status"),
             text("TODAY", 11, muted),
             group("column", { gap = 6 }, agenda),
+            agent_panel(model, state),
         }),
     }, { id = "daily-flow-root", background = paper })
 end
@@ -140,6 +184,8 @@ end
 local function update(model, state, event)
     if event.action == "text_changed" and event.target == "note-draft" then
         state.draft = event.value
+    elseif event.action == "text_changed" and event.target == "agent-prompt" then
+        state.agent_draft = event.value
     elseif event.action == "save_note" then
         state.draft = event.value or state.draft
         state.last_saved = true
@@ -148,6 +194,15 @@ local function update(model, state, event)
         else state.playing = not state.playing end
     elseif event.action == "focus_changed" then
         state.editor_focused = event.focused
+    elseif event.action == "agent_submit" and not (model.agent and model.agent.busy) then
+        local prompt = event.value or state.agent_draft or ""
+        if prompt ~= "" then
+            state.agent_draft = ""
+            return {
+                state = state,
+                effects = {{ provider = "agent", action = "prompt", payload = { prompt = prompt } }},
+            }
+        end
     end
     return state
 end

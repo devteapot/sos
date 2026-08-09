@@ -2361,3 +2361,146 @@ compile boundary, and chronological documentation agree. The Linux integration
 prototype is complete under the explicit virtual-device scope and physical
 touch-device waiver; no desktop/VM result is promoted to physical latency,
 thermal, GPU-performance, or touch evidence.
+
+## 2026-08-09 — Bounded resident Pi agent reaches transactional Linux activation
+
+**Goal:** Establish the first honest agent-to-running-experience path: a user
+prompt enters a resident model loop, produces complete Luau, and changes the
+accepted Linux revision without giving the model shell, arbitrary filesystem,
+or supervisor identity.
+
+**Changed:** Added the Node service under `services/sos-agent`, pinned
+`@earendil-works/pi-agent-core` and `@earendil-works/pi-ai` to 0.84.1, and
+defined only `get_experience_context`, `validate_experience`, and
+`submit_experience`. Added `sos-agent-authoring`, a Rust Unix broker that checks
+`SO_PEERCRED`, bounds requests, preserves/migrates durable state, compiles and
+renders candidates against the fake-provider snapshot, installs a
+content-addressed revision, stages provider authority, and invokes the existing
+coordinated supervisor. Pi runs under a separate identity and never receives a
+revision-store path. Added developer commands, an exact faux-provider stack
+gate, systemd/sysusers packaging, credential loading, and the live procedure in
+`docs/sos-agent.md`. `docs/runtime-evaluation.md` records why low-level Pi was
+selected over Sloppy and Prime Agent.
+
+**Evidence:** `npm run check && npm test` passed the strict TypeScript check and
+the Unix-socket Pi event-loop test, which observed the exact context, validate,
+submit order and a completed streamed response. `cargo test -p
+sos-linux-session authoring -- --nocapture` passed candidate acceptance and
+invalid-render rejection. `./tools/sosctl linux-agent-test` built the locked
+Rust/Node stack and drove Pi's faux provider through the public agent socket,
+the authenticated authoring broker, real provider authority, staging, and
+coordinated supervisor. It changed the accepted revision from
+`f174e7261e67de25eaf84bf101aa93f62d61a2d6a906af2fb2eac8af0f8652c6` to
+`b4718a74acad7caba8e7c7f72ed75ed6fa516d844aab5bfee788ab21f168588b`.
+The full `tools/linux-vm/verify-boot-session` campaign then installed the agent
+as separate `sos-agent`/`sos-supervisor` services and issued the same bounded
+faux prompt after boot. The direct KMS host stayed at PID 913 while the agent
+changed revision `f174e726…` to `d3a76a46…`; the compositor logged the matching
+armed shell presentation with `evidence="drm_page_flip"`. Agent PID 856 and
+broker PID 848 had the intended separate identities. The rest of the boot
+recovery campaign still passed through final revision `b4718a74…`, replacement
+owner PID 1967, and two service restarts. Debian provisioning downloaded
+`node-v24.18.0-linux-arm64.tar.xz` (Node revision 24.18.0, 30,473,480 bytes,
+SHA-256 `58c9520501f6ae2b52d5b210444e24b9d0c029a58c5011b797bc1fe7105886f6`)
+and verified it before installation.
+The complete `sos-linux-session` and `revision-supervisor` all-target suites,
+strict `sos-linux-session` clippy, ShellCheck, Rust formatting, sysusers dry-run,
+and `git diff --check` also passed.
+
+**Failures / fixes / rejected evidence:** The first invalid-render fixture
+returned an empty table, which is a valid default scene; a scalar result now
+exercises the decoder rejection. The first exact stack run completed activation
+but its cleanup could not delete immutable revision files, and a log-string
+assertion did not match the supervisor display form. Cleanup now makes only its
+validated `mktemp` root writable before removal, and the causal assertion uses
+the supervisor's active revision. A shared writable `/run/sos` broker socket
+was rejected during review; packaging now gives the broker a
+supervisor-owned, group-traversable runtime directory the agent cannot modify.
+The first image provisioning run exposed Cargo applying the added bin selector
+to every package in the existing multi-package command; building the broker in
+a separate locked invocation fixed it. The first boot prompt then raced
+systemd's process-active state before the supervisor socket existed. Requiring
+the existing direct-page-flip ready marker and the supervisor socket removed the
+race. No Wayland socket was available in the outer development environment; the
+visible evidence therefore comes only from the disposable direct-KMS VM and is
+not a physical-display claim.
+
+**Decision / remaining risk / next gate:** Pi is integrated for the first
+bounded Linux test and the real SOS transaction changes revision under
+deterministic orchestration. The next required evidence is the documented
+credentialed live-model prompt in the booted distro. A trusted GPUI conversation
+surface, visual screenshot feedback/repair, asset generation, transcript
+compaction, and physical hardware behavior remain open. No desktop/VM result is
+promoted to physical latency, GPU, thermal, or input evidence.
+
+## 2026-08-09 — Pi becomes a Luau capability and passes the booted UI path
+
+**Goal / hypothesis:** Make the resident Pi loop usable from an on-the-fly
+experience without turning it into a fixed native GPUI panel. The hypothesis
+was that Luau can own the visible conversation and composer while a narrow host
+capability safely transports prompts and typed stream updates.
+
+**Changed:** Scene model v3 now includes bounded `model.agent` availability,
+activity, error, and user/assistant messages. Luau may emit one typed
+`agent.prompt`; the Linux host commits the interaction state first, then bridges
+that effect to Pi's Unix protocol and feeds text/tool/completion events back
+through ordinary model refreshes. The default, daily-flow, and timeflow sources
+render their own composer and conversation. Agent submission validation rejects
+a replacement that removes every Luau `text_session` with
+`submit_action = "agent_submit"`, so a generated experience may redesign the
+entry surface but cannot strand the user. The system session passes only the
+agent socket path to the isolated host. Linux semantic input gained event-driven
+wake-up and a bounded text-session `submit` action for accessibility and UI
+automation.
+
+Activation now distinguishes immutable revision binding from mutable durable
+interaction state: staging verifies revision ID, source digest, and schema, but
+allows authority state to have evolved since installation. Pi validation and
+installation use that current authoritative state. Provider refreshes preserve
+agent state at ingestion, while queued agent refreshes retain their newer
+conversation snapshot.
+
+**Evidence:** `./tools/sosctl validate` accepted all three reference sources
+with their Luau text sessions and semantic nodes. The runtime, Linux host, and
+Linux-session suites passed 20, 13, and 4 tests respectively, including typed
+`agent.prompt`, the real bounded Unix stream, authoritative effect commit,
+composer-retention rejection, and the evolving-state activation regression.
+The TypeScript check and Pi faux-provider test passed; Rust formatting,
+ShellCheck, and `git diff --check` passed. The locked workspace
+lib/bin/integration suite passed without failures, strict workspace and
+Linux-host all-target Clippy passed with `-D warnings`, and
+`./tools/sosctl m1-check` preserved the ARM64 Android compile boundary.
+
+The complete `tools/linux-vm/verify-boot-session` campaign then entered “Turn
+this into a spatial time flow” by setting and submitting the visible Luau
+`agent-prompt`. It emitted:
+
+`linux_boot_agent_luau_passed host_pid=906 initial_revision=b0d20599… active_revision=2cb2a047… agent_pid=848 broker_pid=836 input=text_session effect=agent.prompt tools=context,validate,submit evidence=drm_page_flip`
+
+The assistant completion returned to the Luau semantic tree, and the same host
+presented the agent-authored revision through a direct DRM page flip. The
+remaining boot regression passed as
+`linux_boot_session_passed session=1 main_pid=772 activation_pid=906
+recovered_host_pid=1632 restarted_main_pid=1739 restarted_host_pid=1823
+lifecycle_recovered_main_pid=2004 revision_id=93357d56… nrestarts=2
+identities=separated evidence=drm_page_flip`.
+
+**Failures / fixes / rejected evidence:** The first UI attempt queued semantic
+input after GPUI became idle; delivering actions through an async host wake path
+fixed it. The next attempt reached all Pi tools but submission failed because
+staging treated legitimate composer state as revision corruption; separating
+binding identity from evolving state fixed activation. A following run changed
+the revision but an older provider refresh overwrote the queued assistant
+completion; merging provider agent state only at ingestion preserved the latest
+stream snapshot. One otherwise successful run used a systemd-unit journal
+filter that omitted launcher descendants; the final gate uses the established
+`sos-linux-session` identifier and requires the exact activated revision's page
+flip. These failed runs are not counted as passing evidence.
+
+**Decision / remaining risk / next gate:** The product boundary is Luau over a
+typed Pi capability; GPUI remains the renderer and trusted transport owner, not
+the conversation UI. The deterministic direct-KMS test is complete at virtual
+hardware scope. The next gate is one credentialed live-model prompt entered in
+the booted distro. Visual screenshot feedback/repair, asset generation,
+transcript compaction, physical input/hardware behavior, latency, thermal, and
+GPU measurements remain unverified.

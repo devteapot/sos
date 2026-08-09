@@ -5784,9 +5784,13 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "compositor-control-protocol",
+ "experience-ir",
  "nix 0.31.3",
  "provider-state-service",
+ "providers-fake",
  "revision-supervisor",
+ "runtime-luau",
+ "serde",
  "serde_json",
  "service-protocol",
  "signal-hook",

@@ -29,13 +29,35 @@ return {
 ```
 
 `model` contains `greeting`, `date`, `weather`, `calendar`, `notes`, `music`,
-`system`, and `surfaces` values. Android and unconfigured development sessions
+`system`, `surfaces`, and `agent` values. Android and unconfigured development sessions
 use the deterministic fixture provider. A configured Linux host replaces the
 resource domains with file/iCalendar/MPRIS-backed data and capability-scoped
 system/media snapshots, then pushes live changes into the accepted VM without
 installing a revision. `system` includes time/timezone, online interfaces,
 battery/AC, audio volume/mute, connected DRM displays, and input devices.
 `state` is JSON-like durable experience state.
+`agent` is the bounded host-fed conversation view:
+
+```luau
+model.agent = {
+    available = true,
+    busy = false,
+    activity = "Ready",
+    error = nil,
+    messages = {
+        { role = "user", text = "Make this calmer" },
+        { role = "assistant", text = "I changed the daily flow." },
+    },
+}
+```
+
+An experience decides how and where to render this state. It normally pairs it
+with a `text_session` whose submit action returns an `agent.prompt` effect. The
+conversation is not a GPUI widget and is preserved across provider refresh and
+revision activation by the host.
+The resident-agent validation path requires each submitted revision to retain
+at least one Luau `text_session` with `submit_action = "agent_submit"`.
+
 `render` returns the root scene node. `update` may mutate and return state, or
 return a typed effect envelope:
 
@@ -57,13 +79,19 @@ The effect allowlist is:
 - `notes.write(name, content)` for an atomically replaced Markdown note;
 - `calendar.append(name, time, title, detail)` for an iCalendar event;
 - `music.command(command)` where command is `play-pause`, `next`, or
-  `previous` through MPRIS/playerctl.
+  `previous` through MPRIS/playerctl;
+- `agent.prompt(prompt)` sends one non-empty, bounded request to the resident Pi
+  authoring runtime after the interaction state commits.
 
 Linux loads a private capability manifest for the candidate revision before it
 is allowed to render. A provider effect is validated and staged with the state
 promotion, executed only through the trusted adapter, and rejected on missing
 grant, cancellation, invalid path/payload, or temporary provider failure.
-Luau never receives provider credentials or a provider object.
+Luau never receives provider credentials or a provider object. In particular,
+it never receives Pi's Unix socket or model credentials. The Linux host bridges
+`agent.prompt`, streams typed progress and text into `model.agent`, and asks the
+same Luau module to render each refresh. Pi-authored replacement revisions must
+retain a visible composer, though they are free to redesign it.
 
 ## Scene nodes
 
@@ -263,7 +291,7 @@ and moving descendant bounds to TalkBack.
 Linux publishes the same tree through the SOS-owned mode-0600 Unix semantic
 service selected by `SOS_ACCESSIBILITY_SOCKET`. Its bounded newline-JSON API
 supports snapshots/waits, hierarchy traversal and semantic focus, activation,
-scrolling, editable value and UTF-16 selection, and copy/cut/paste. It is also
+scrolling, editable value and submission, UTF-16 selection, and copy/cut/paste. It is also
 the automation-facing semantic API and reconnects after host crash recovery.
 
 `text_session` uses a host-owned Android `InputConnection`. Commit,

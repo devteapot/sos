@@ -38,6 +38,8 @@ The durable typed provider/state Unix-socket protocol and authority are in
 [`docs/provider-state-service.md`](docs/provider-state-service.md).
 Their supervisor-owned activation journal is in
 [`docs/coordinated-activation.md`](docs/coordinated-activation.md).
+The bounded resident Pi authoring service and first Linux live-test procedure
+are in [`docs/sos-agent.md`](docs/sos-agent.md).
 Ongoing experiments, failures, measurements, and decisions are indexed in the
 living [`docs/progress.md`](docs/progress.md) ledger.
 
@@ -103,6 +105,18 @@ without replacing the process or native window:
 ./tools/sosctl linux-status
 ./tools/sosctl linux-stop
 ```
+
+The first resident-agent gate can be run deterministically without a model API
+call, then repeated from the Luau-authored composer in the live GPUI window:
+
+```sh
+./tools/sosctl linux-agent-test
+./tools/sosctl linux-agent-run --fake experiences/daily-flow.luau
+```
+
+Type “Turn this into a calm daily flow” in the experience's “Make it yours”
+field and press Enter. `linux-agent-prompt` remains available as a protocol
+diagnostic, but it is not the product interaction boundary.
 
 This command remains the ordinary Wayland client-host gate and uses GPUI's
 next-frame callback. SOS's own compositor has both a nested development backend

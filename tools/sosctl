@@ -24,8 +24,14 @@ LINUX_SUPERVISOR="$SOS_ROOT/target/debug/sos-revision-supervisor"
 LINUX_HOST="$SOS_ROOT/target/debug/sos-experience-host"
 LINUX_PROVIDER_SERVICE="$SOS_ROOT/target/debug/sos-provider-state-service"
 LINUX_SESSION="$SOS_ROOT/target/debug/sos-linux-session"
+LINUX_AGENT_AUTHORING="$SOS_ROOT/target/debug/sos-agent-authoring"
 LINUX_PROVIDER_SOCKET="$LINUX_REVISION_ROOT/run/provider-state.sock"
 LINUX_AUTHORITY_FILE="$LINUX_REVISION_ROOT/authority.json"
+LINUX_AGENT_ROOT="$CACHE_ROOT/linux-agent"
+LINUX_AGENT_SOCKET="$LINUX_AGENT_ROOT/agent.sock"
+LINUX_AGENT_AUTHORING_SOCKET="$LINUX_AGENT_ROOT/authoring.sock"
+LINUX_AGENT_STATE="$LINUX_AGENT_ROOT/messages.json"
+LINUX_AGENT_PACKAGE="$SOS_ROOT/services/sos-agent"
 
 info() {
   printf '==> %s\n' "$*"
@@ -560,6 +566,26 @@ build_linux_session() {
       -p revision-supervisor --bin sos-revision-supervisor \
       -p provider-state-service --bin sos-provider-state-service \
       -p sos-linux-session --bin sos-linux-session
+    cargo build --locked -p sos-linux-session --bin sos-agent-authoring
+  )
+}
+
+build_linux_agent() {
+  require_command node
+  require_command npm
+  local node_version
+  node_version="$(node --version | sed 's/^v//')"
+  [[ "$(printf '%s\n' 22.19.0 "$node_version" | sort -V | head -n 1)" == "22.19.0" ]] || \
+    fail "sos-agent requires Node 22.19 or newer"
+  info "building pinned Pi agent service"
+  (
+    cd "$LINUX_AGENT_PACKAGE"
+    npm ci --ignore-scripts
+    npm run build
+  )
+  (
+    cd "$SOS_ROOT"
+    cargo build -p sos-linux-session --bin sos-agent-authoring
   )
 }
 
@@ -657,6 +683,8 @@ linux_run() {
     --timeout-ms "$host_timeout_ms"
     --host-arg --service-socket
     --host-arg "$LINUX_PROVIDER_SOCKET"
+    --host-arg --agent-socket
+    --host-arg "$LINUX_AGENT_SOCKET"
   )
   if $windowed; then
     arguments+=(--host-arg --windowed)
@@ -728,6 +756,69 @@ linux_stop() {
   fi
 }
 
+linux_agent_run() {
+  local fake_source=""
+  if [[ "${1:-}" == "--fake" ]]; then
+    [[ "$#" -eq 2 ]] || fail "usage: ./tools/sosctl linux-agent-run [--fake candidate.luau]"
+    fake_source="$2"
+    [[ -f "$fake_source" ]] || fail "fake candidate source not found: $fake_source"
+    shift 2
+  fi
+  [[ "$#" -eq 0 ]] || fail "usage: ./tools/sosctl linux-agent-run [--fake candidate.luau]"
+  [[ -S "$LINUX_REVISION_ROOT/run/supervisor.sock" ]] || \
+    fail "Linux supervisor is not running; start ./tools/sosctl linux-run"
+  [[ -S "$LINUX_PROVIDER_SOCKET" ]] || \
+    fail "provider/state authority is not running; restart ./tools/sosctl linux-run"
+  if [[ -z "$fake_source" ]]; then
+    [[ -n "${SOS_AGENT_MODEL:-}" ]] || \
+      fail "set SOS_AGENT_MODEL to an exact Pi model id (and SOS_AGENT_PROVIDER if not openai)"
+  fi
+  build_linux_agent
+  mkdir -p "$LINUX_AGENT_ROOT"
+
+  info "starting SOS authoring broker for unprivileged user $(id -un)"
+  "$LINUX_AGENT_AUTHORING" \
+    --root "$LINUX_REVISION_ROOT" \
+    --service-socket "$LINUX_PROVIDER_SOCKET" \
+    --supervisor-socket "$LINUX_REVISION_ROOT/run/supervisor.sock" \
+    --listen-socket "$LINUX_AGENT_AUTHORING_SOCKET" \
+    --agent-user "$(id -un)" &
+  local broker_pid=$!
+  trap 'kill "$broker_pid" 2>/dev/null || true; wait "$broker_pid" 2>/dev/null || true' EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+  wait_for_linux_socket "$LINUX_AGENT_AUTHORING_SOCKET" "$broker_pid" "SOS authoring broker"
+
+  local arguments=(
+    serve
+    --socket "$LINUX_AGENT_SOCKET"
+    --authoring-socket "$LINUX_AGENT_AUTHORING_SOCKET"
+    --state "$LINUX_AGENT_STATE"
+    --api-doc "$SOS_ROOT/docs/experience-api.md"
+    --example "$SOS_ROOT/experiences/default.luau"
+    --example-secondary "$SOS_ROOT/experiences/daily-flow.luau"
+  )
+  if [[ -n "$fake_source" ]]; then
+    arguments+=(--fake-source "$fake_source")
+  fi
+  info "starting resident Pi agent at $LINUX_AGENT_SOCKET"
+  node "$LINUX_AGENT_PACKAGE/dist/src/main.js" "${arguments[@]}"
+  local agent_status=$?
+  kill "$broker_pid" 2>/dev/null || true
+  wait "$broker_pid" 2>/dev/null || true
+  trap - EXIT INT TERM
+  return "$agent_status"
+}
+
+linux_agent_prompt() {
+  [[ "$#" -eq 1 ]] || fail 'usage: ./tools/sosctl linux-agent-prompt "request"'
+  [[ -S "$LINUX_AGENT_SOCKET" ]] || \
+    fail "resident agent is not running; start ./tools/sosctl linux-agent-run"
+  node "$LINUX_AGENT_PACKAGE/dist/src/main.js" prompt \
+    --socket "$LINUX_AGENT_SOCKET" \
+    --request "$1"
+}
+
 usage() {
   cat <<'USAGE'
 Usage: ./tools/sosctl <command>
@@ -761,6 +852,11 @@ Commands:
                       Stage and activate Luau through the coordinated Linux session.
   linux-status        Report the active Linux revision and permanent host PID.
   linux-stop          Shut down authority, revision supervisor, and host.
+  linux-agent-run [--fake candidate.luau]
+                      Run the bounded resident Pi agent beside a live Linux session.
+  linux-agent-prompt <request>
+                      Ask the resident agent to change the active experience.
+  linux-agent-test    Run Pi faux-provider through the full headless SOS stack.
   help                 Show this message.
 
 Set ADB_SERIAL when more than one Android device is connected.
@@ -843,6 +939,16 @@ case "$command_name" in
     ;;
   linux-stop)
     linux_stop "$@"
+    ;;
+  linux-agent-run)
+    linux_agent_run "$@"
+    ;;
+  linux-agent-prompt)
+    linux_agent_prompt "$@"
+    ;;
+  linux-agent-test)
+    [[ "$#" -eq 0 ]] || fail "usage: ./tools/sosctl linux-agent-test"
+    "$SOS_ROOT/tools/linux-agent-e2e"
     ;;
   m1-run)
     no_follow=false

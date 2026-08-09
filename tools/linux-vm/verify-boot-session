@@ -71,18 +71,26 @@ cleanup_boot_gate() {
     vm_ssh 'bash -s' <<'REMOTE_CLEANUP'
 set +e
 sudo systemctl set-default graphical.target
+sudo systemctl disable --now sos-agent.target
 sudo systemctl stop sos-session.service
 sudo systemctl enable seatd.service
 sudo systemctl start seatd.service
 sudo systemctl start gdm.service
 sudo rm -f -- \
   /etc/systemd/system/sos-session.service \
-  /etc/systemd/system/sos-session.target
+  /etc/systemd/system/sos-session.target \
+  /etc/systemd/system/sos-agent-authoring.service \
+  /etc/systemd/system/sos-agent.service \
+  /etc/systemd/system/sos-agent.target
 sudo rm -r -- \
   /usr/local/libexec/sos \
+  /usr/local/libexec/sos-agent \
+  /usr/share/sos \
+  /usr/share/doc/sos \
   /etc/sos \
-  /var/lib/sos
-for vm_user in sos-host sos-supervisor sos-provider sos-compositor; do
+  /var/lib/sos \
+  /var/lib/sos-agent
+for vm_user in sos-agent sos-host sos-supervisor sos-provider sos-compositor; do
   sudo userdel "$vm_user" 2>/dev/null || true
 done
 sudo gpasswd -d sos sos-ipc >/dev/null 2>&1 || true
@@ -105,12 +113,23 @@ systemctl is-active --quiet seatd.service
 [[ "$(systemctl is-enabled seatd.service)" == enabled ]]
 for path in \
   /usr/local/libexec/sos \
+  /usr/local/libexec/sos-agent \
+  /usr/share/sos \
+  /usr/share/doc/sos \
   /etc/sos \
   /var/lib/sos \
+  /var/lib/sos-agent \
   /etc/systemd/system/sos-session.service \
-  /etc/systemd/system/sos-session.target; do
+  /etc/systemd/system/sos-session.target \
+  /etc/systemd/system/sos-agent-authoring.service \
+  /etc/systemd/system/sos-agent.service \
+  /etc/systemd/system/sos-agent.target; do
   [[ ! -e "$path" ]]
 done
+for vm_user in sos-agent sos-host sos-supervisor sos-provider sos-compositor; do
+  ! id "$vm_user" >/dev/null 2>&1
+done
+! getent group sos-ipc >/dev/null
 printf 'os=%s version=%s kernel=%s\n' "$ID" "$VERSION_ID" "$(uname -r)"
 REMOTE_PREFLIGHT
 )" || fail "reference VM preflight failed or found pre-existing SOS boot-session state"
@@ -130,7 +149,9 @@ vm_ssh "cd '$vm_guest_root' && cargo build --locked \
   -p sos-experience --features linux-host --bin sos-experience-host \
   -p revision-supervisor --bin sos-revision-supervisor \
   -p provider-state-service --bin sos-provider-state-service \
-  -p sos-linux-session --bin sos-linux-session"
+  -p sos-linux-session --bin sos-linux-session \
+  && cargo build --locked -p sos-linux-session --bin sos-agent-authoring \
+  && cd services/sos-agent && npm ci --ignore-scripts && npm run build"
 
 vm_cleanup_required=true
 vm_ssh 'bash -s' -- "$vm_guest_root" <<'REMOTE_INSTALL'
@@ -140,7 +161,7 @@ vm_bin_dir=/usr/local/libexec/sos
 if ! getent group sos-ipc >/dev/null; then
   sudo groupadd --system sos-ipc
 fi
-for vm_user in sos-compositor sos-provider sos-supervisor sos-host; do
+for vm_user in sos-compositor sos-provider sos-supervisor sos-host sos-agent; do
   if ! id "$vm_user" >/dev/null 2>&1; then
     sudo useradd --system --gid sos-ipc --no-create-home \
       --home-dir /nonexistent --shell /usr/sbin/nologin "$vm_user"
@@ -153,9 +174,26 @@ for vm_binary in \
   sos-experience-host \
   sos-provider-state-service \
   sos-revision-supervisor \
-  sos-linux-session; do
+  sos-linux-session \
+  sos-agent-authoring; do
   sudo install -o root -g root -m 0755 \
     "$vm_guest_root/target/debug/$vm_binary" "$vm_bin_dir/$vm_binary"
+done
+sudo install -d -o root -g root -m 0755 \
+  /usr/local/libexec/sos-agent \
+  /usr/share/sos/experiences \
+  /usr/share/doc/sos
+sudo cp -a "$vm_guest_root/services/sos-agent/dist" \
+  "$vm_guest_root/services/sos-agent/node_modules" \
+  "$vm_guest_root/services/sos-agent/package.json" \
+  /usr/local/libexec/sos-agent/
+sudo install -o root -g root -m 0644 \
+  "$vm_guest_root/docs/experience-api.md" /usr/share/doc/sos/experience-api.md
+sudo install -o root -g root -m 0644 \
+  "$vm_guest_root/docs/sos-agent.md" /usr/share/doc/sos/sos-agent.md
+for vm_experience in default.luau daily-flow.luau timeflow.luau; do
+  sudo install -o root -g root -m 0644 \
+    "$vm_guest_root/experiences/$vm_experience" "/usr/share/sos/experiences/$vm_experience"
 done
 sudo install -o root -g root -m 0644 \
   "$vm_guest_root/packaging/systemd/sos-session.service" \
@@ -163,9 +201,22 @@ sudo install -o root -g root -m 0644 \
 sudo install -o root -g root -m 0644 \
   "$vm_guest_root/packaging/systemd/sos-session.target" \
   /etc/systemd/system/sos-session.target
+for vm_agent_unit in sos-agent-authoring.service sos-agent.service sos-agent.target; do
+  sudo install -o root -g root -m 0644 \
+    "$vm_guest_root/packaging/systemd/$vm_agent_unit" "/etc/systemd/system/$vm_agent_unit"
+done
 sudo sh -c 'umask 077; od -An -N32 -tx1 /dev/urandom | tr -d " \n" > /etc/sos/shell-token'
 sudo chown root:root /etc/sos/shell-token
 sudo chmod 0400 /etc/sos/shell-token
+sudo sh -c 'printf "%s\n" \
+  "SOS_AGENT_PROVIDER=openai" \
+  "SOS_AGENT_MODEL=gpt-5.6-sol" \
+  "SOS_AGENT_FAKE_SOURCE=/usr/share/sos/experiences/timeflow.luau" \
+  > /etc/sos/agent.env'
+sudo sh -c 'printf "%s\n" "faux-provider-does-not-use-this-credential" > /etc/sos/agent-api-key'
+sudo chown root:root /etc/sos/agent.env /etc/sos/agent-api-key
+sudo chmod 0444 /etc/sos/agent.env
+sudo chmod 0400 /etc/sos/agent-api-key
 sudo install -d -o sos-compositor -g sos-ipc -m 0750 /var/lib/sos
 sudo install -d -o sos-supervisor -g sos-ipc -m 0750 /var/lib/sos/revisions
 sudo install -d -o sos-supervisor -g sos-ipc -m 0750 /var/lib/sos/staging
@@ -187,7 +238,11 @@ sudo -u sos-supervisor "$vm_bin_dir/sos-revision-supervisor" bootstrap \
 sudo systemctl daemon-reload
 sudo systemd-analyze verify \
   /etc/systemd/system/sos-session.service \
-  /etc/systemd/system/sos-session.target
+  /etc/systemd/system/sos-session.target \
+  /etc/systemd/system/sos-agent-authoring.service \
+  /etc/systemd/system/sos-agent.service \
+  /etc/systemd/system/sos-agent.target
+sudo systemctl enable sos-agent.target
 sudo systemctl disable --now seatd.service
 sudo systemctl set-default sos-session.target
 printf 'boot_revision=%s\n' "$vm_revision"
@@ -197,6 +252,110 @@ printf 'Rebooting into sos-session.target; SSH is used only as the test controll
 vm_ssh 'sudo systemctl reboot' >/dev/null 2>&1 || true
 wait_for_vm_down
 wait_for_vm_up
+
+vm_agent_evidence="$(vm_ssh 'bash -s' <<'REMOTE_AGENT'
+set -euo pipefail
+vm_bin_dir=/usr/local/libexec/sos
+vm_revision_root=/var/lib/sos/revisions
+for _ in {1..3000}; do
+  if systemctl is-active --quiet sos-session.service \
+    && systemctl is-active --quiet sos-agent-authoring.service \
+    && systemctl is-active --quiet sos-agent.service \
+    && [[ -S /run/sos-agent/agent.sock ]] \
+    && [[ -S /run/sos/accessibility.sock ]] \
+    && [[ -S "$vm_revision_root/run/supervisor.sock" ]] \
+    && sudo journalctl -b -t sos-linux-session --no-pager -n 240 \
+      | grep 'linux_system_session_ready.*evidence=drm_page_flip' >/dev/null; then
+    break
+  fi
+  sleep 0.02
+done
+systemctl is-active --quiet sos-session.service
+systemctl is-active --quiet sos-agent-authoring.service
+systemctl is-active --quiet sos-agent.service
+[[ -S /run/sos-agent/agent.sock ]]
+[[ -S /run/sos/accessibility.sock ]]
+[[ -S "$vm_revision_root/run/supervisor.sock" ]]
+accessibility_call() {
+  python3 - /run/sos/accessibility.sock "$1" <<'PY'
+import socket
+import sys
+
+client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+client.connect(sys.argv[1])
+client.sendall(sys.argv[2].encode() + b"\n")
+response = bytearray()
+while not response.endswith(b"\n"):
+    chunk = client.recv(65536)
+    if not chunk:
+        break
+    response.extend(chunk)
+sys.stdout.write(response.decode())
+PY
+}
+vm_before_status="$(sudo -u sos-supervisor "$vm_bin_dir/sos-revision-supervisor" daemon-status \
+  --root "$vm_revision_root")"
+vm_before_revision="$(jq -er '.active_revision' <<<"$vm_before_status")"
+vm_before_host="$(jq -er '.host_pid' <<<"$vm_before_status")"
+vm_agent_snapshot="$(accessibility_call '{"method":"snapshot"}')"
+if ! jq -e '.ok and any(.snapshot.nodes[]; .id == "agent-prompt" and .editable)' \
+  <<<"$vm_agent_snapshot" >/dev/null; then
+  printf 'agent composer missing from semantic snapshot: %s\n' "$vm_agent_snapshot" >&2
+  exit 1
+fi
+[[ "$(accessibility_call '{"method":"action","kind":"set_value","target":"agent-prompt","value":"Turn this into a spatial time flow"}' | jq -r '.ok')" == true ]]
+for _ in {1..500}; do
+  if accessibility_call '{"method":"snapshot"}' \
+    | jq -e 'any(.snapshot.nodes[]; .id == "agent-prompt" and .value == "Turn this into a spatial time flow")' >/dev/null; then
+    break
+  fi
+  sleep 0.02
+done
+accessibility_call '{"method":"snapshot"}' \
+  | jq -e 'any(.snapshot.nodes[]; .id == "agent-prompt" and .value == "Turn this into a spatial time flow")' >/dev/null
+[[ "$(accessibility_call '{"method":"action","kind":"submit","target":"agent-prompt"}' | jq -r '.ok')" == true ]]
+for _ in {1..3000}; do
+  vm_after_status="$(sudo -u sos-supervisor "$vm_bin_dir/sos-revision-supervisor" daemon-status \
+    --root "$vm_revision_root")"
+  vm_after_revision="$(jq -er '.active_revision' <<<"$vm_after_status")"
+  [[ "$vm_after_revision" != "$vm_before_revision" ]] && break
+  sleep 0.02
+done
+vm_after_status="$(sudo -u sos-supervisor "$vm_bin_dir/sos-revision-supervisor" daemon-status \
+  --root "$vm_revision_root")"
+vm_after_revision="$(jq -er '.active_revision' <<<"$vm_after_status")"
+vm_after_host="$(jq -er '.host_pid' <<<"$vm_after_status")"
+[[ "$vm_after_revision" =~ ^[0-9a-f]{64}$ ]]
+[[ "$vm_after_revision" != "$vm_before_revision" ]]
+[[ "$vm_after_host" == "$vm_before_host" ]]
+vm_agent_pid="$(systemctl show sos-agent.service -p MainPID --value)"
+vm_broker_pid="$(systemctl show sos-agent-authoring.service -p MainPID --value)"
+[[ "$(ps -o user= -p "$vm_agent_pid" | xargs)" == sos-agent ]]
+[[ "$(ps -o user= -p "$vm_broker_pid" | xargs)" == sos-supervisor ]]
+for vm_tool in get_experience_context validate_experience submit_experience; do
+  sudo journalctl -b -t sos-linux-session --no-pager \
+    | grep "sos_agent_tool_started name=$vm_tool" >/dev/null
+done
+sudo journalctl -b -t sos-linux-session --no-pager \
+  | grep "presented armed shell revision.*revision_id=\"$vm_after_revision\".*evidence=\"drm_page_flip\"" >/dev/null
+for _ in {1..1000}; do
+  if accessibility_call '{"method":"snapshot"}' \
+    | jq -e 'any(.snapshot.nodes[]; .id == "agent-status" and .value == "Ready") and any(.snapshot.nodes[]; .label == "SOS message" and (.value | contains("candidate experience is active")))' >/dev/null; then
+    break
+  fi
+  sleep 0.02
+done
+vm_agent_final_snapshot="$(accessibility_call '{"method":"snapshot"}')"
+if ! jq -e 'any(.snapshot.nodes[]; .id == "agent-status" and .value == "Ready") and any(.snapshot.nodes[]; .label == "SOS message" and (.value | contains("candidate experience is active")))' \
+  <<<"$vm_agent_final_snapshot" >/dev/null; then
+  printf 'agent completion missing from semantic snapshot: %s\n' "$vm_agent_final_snapshot" >&2
+  exit 1
+fi
+printf 'linux_boot_agent_luau_passed host_pid=%s initial_revision=%s active_revision=%s agent_pid=%s broker_pid=%s input=text_session effect=agent.prompt tools=context,validate,submit evidence=drm_page_flip\n' \
+  "$vm_after_host" "$vm_before_revision" "$vm_after_revision" "$vm_agent_pid" "$vm_broker_pid"
+REMOTE_AGENT
+)" || fail "packaged resident Pi agent did not activate a visible boot-session revision"
+printf '%s\n' "$vm_agent_evidence"
 
 # Exercise lifecycle behavior while the packaged, PAM/logind-owned compositor
 # owns the seat.  The ARM virt machine has no platform wake source, so switch
@@ -594,7 +753,7 @@ REMOTE_VERIFY
 )" || fail "boot-session evidence run failed"
 
 printf 'Restoring graphical.target and rebooting back to GNOME.\n'
-vm_ssh 'sudo systemctl set-default graphical.target; sudo systemctl enable seatd.service; sudo systemctl reboot' \
+vm_ssh 'sudo systemctl set-default graphical.target; sudo systemctl disable sos-agent.target; sudo systemctl enable seatd.service; sudo systemctl reboot' \
   >/dev/null 2>&1 || true
 wait_for_vm_down
 wait_for_vm_up
@@ -609,12 +768,28 @@ systemctl is-active --quiet gdm.service
 systemctl is-active --quiet seatd.service
 sudo rm -f -- \
   /etc/systemd/system/sos-session.service \
-  /etc/systemd/system/sos-session.target
-for path in /usr/local/libexec/sos /etc/sos /var/lib/sos; do
-  [[ "$path" == /usr/local/libexec/sos || "$path" == /etc/sos || "$path" == /var/lib/sos ]]
+  /etc/systemd/system/sos-session.target \
+  /etc/systemd/system/sos-agent-authoring.service \
+  /etc/systemd/system/sos-agent.service \
+  /etc/systemd/system/sos-agent.target
+for path in \
+  /usr/local/libexec/sos \
+  /usr/local/libexec/sos-agent \
+  /usr/share/sos \
+  /usr/share/doc/sos \
+  /etc/sos \
+  /var/lib/sos \
+  /var/lib/sos-agent; do
+  [[ "$path" == /usr/local/libexec/sos \
+    || "$path" == /usr/local/libexec/sos-agent \
+    || "$path" == /usr/share/sos \
+    || "$path" == /usr/share/doc/sos \
+    || "$path" == /etc/sos \
+    || "$path" == /var/lib/sos \
+    || "$path" == /var/lib/sos-agent ]]
   sudo rm -r -- "$path"
 done
-for vm_user in sos-host sos-supervisor sos-provider sos-compositor; do
+for vm_user in sos-agent sos-host sos-supervisor sos-provider sos-compositor; do
   sudo userdel "$vm_user"
 done
 sudo gpasswd -d sos sos-ipc >/dev/null 2>&1 || true

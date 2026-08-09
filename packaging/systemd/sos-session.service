@@ -31,11 +31,13 @@ Environment=XDG_VTNR=1
 Environment=XDG_RUNTIME_DIR=/run/sos
 Environment=LIBSEAT_BACKEND=logind
 Environment=RUST_LOG=sos_compositor=info
+Environment=SOS_ACCESSIBILITY_SOCKET=/run/sos/accessibility.sock
 ExecStart=/usr/local/libexec/sos/sos-linux-session run \
   --root /var/lib/sos/revisions \
   --runtime-dir /run/sos \
   --authority-file /var/lib/sos/provider/authority.json \
   --shell-token-file %d/shell-token \
+  --agent-socket /run/sos-agent/agent.sock \
   --compositor /usr/local/libexec/sos/sos-compositor \
   --provider /usr/local/libexec/sos/sos-provider-state-service \
   --supervisor /usr/local/libexec/sos/sos-revision-supervisor \

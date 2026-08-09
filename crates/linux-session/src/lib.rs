@@ -1,3 +1,4 @@
+mod authoring;
 mod system_session;
 
 use std::{fs, path::Path, time::Duration};
@@ -10,6 +11,7 @@ use service_protocol::{
     StateResource, TransactionRecord, TransactionStatus,
 };
 
+pub use authoring::{run_authoring_broker, AuthoringBrokerOptions};
 pub use system_session::{
     run_host_proxy, run_system_session, ServiceIdentity, SystemSessionOptions,
 };
@@ -110,7 +112,7 @@ pub fn stage_revision(
     let candidate = load_revision_state(&store.verify(revision_id)?)?;
     let client = ServiceClient::new(service_socket, timeout);
     let current = get_state(&client)?;
-    if !state_matches(&current, &accepted) {
+    if !state_binding_matches(&current, &accepted) {
         bail!(
             "provider authority revision {} does not match the accepted pointer {}",
             display_revision(&current.revision_id),
@@ -281,10 +283,13 @@ fn describe_response_error(response: std::io::Result<service_protocol::ServiceRe
 }
 
 fn state_matches(current: &StateResource, target: &RevisionState) -> bool {
+    state_binding_matches(current, target) && current.state == target.durable.state
+}
+
+fn state_binding_matches(current: &StateResource, target: &RevisionState) -> bool {
     current.revision_id == target.revision_id
         && current.schema_version == target.durable.schema_version
         && current.source_sha256 == target.durable.source_sha256
-        && current.state == target.durable.state
 }
 
 fn display_revision(revision_id: &str) -> &str {
@@ -292,5 +297,31 @@ fn display_revision(revision_id: &str) -> &str {
         "<uninitialized>"
     } else {
         revision_id
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn activation_binding_allows_authoritative_interaction_state_to_evolve() {
+        let target = RevisionState {
+            revision_id: "revision-a".into(),
+            durable: DurableState {
+                schema_version: 1,
+                source_sha256: "source-a".into(),
+                state: serde_json::json!({}),
+            },
+        };
+        let current = StateResource {
+            revision: 3,
+            revision_id: "revision-a".into(),
+            schema_version: 1,
+            source_sha256: "source-a".into(),
+            state: serde_json::json!({"agent_draft": ""}),
+        };
+        assert!(state_binding_matches(&current, &target));
+        assert!(!state_matches(&current, &target));
     }
 }

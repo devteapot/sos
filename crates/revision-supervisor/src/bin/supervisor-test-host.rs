@@ -21,7 +21,7 @@ fn main() {
                 revision_path,
                 experience_api_version,
             } => {
-                if experience_api_version != 1 {
+                if !matches!(experience_api_version, 1 | 3) {
                     emit(HostEvent::Rejected {
                         request_id,
                         revision_id,
@@ -45,7 +45,7 @@ fn main() {
                 experience_api_version,
             } => {
                 let mode = source_mode(&revision_path);
-                if experience_api_version != 1 {
+                if !matches!(experience_api_version, 1 | 3) {
                     emit(HostEvent::Rejected {
                         request_id,
                         revision_id,

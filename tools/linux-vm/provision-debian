@@ -3,6 +3,7 @@
 set -euo pipefail
 
 vm_repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+vm_node_version="24.18.0"
 # shellcheck source=/dev/null
 source /etc/os-release
 [[ "${ID:-}" == "debian" && "${VERSION_ID:-}" == "13" ]] || {
@@ -59,6 +60,37 @@ for vm_group in video render input; do
   fi
 done
 
+case "$(uname -m)" in
+  aarch64)
+    vm_node_arch="arm64"
+    vm_node_sha256="58c9520501f6ae2b52d5b210444e24b9d0c029a58c5011b797bc1fe7105886f6"
+    ;;
+  x86_64)
+    vm_node_arch="x64"
+    vm_node_sha256="55aa7153f9d88f28d765fcdad5ae6945b5c0f98a36881703817e4c450fa76742"
+    ;;
+  *)
+    printf 'error: unsupported Node architecture: %s\n' "$(uname -m)" >&2
+    exit 1
+    ;;
+esac
+vm_node_staging="$(mktemp -d -t sos-node.XXXXXX)"
+trap 'rm -r -- "$vm_node_staging"' EXIT
+vm_node_archive="$vm_node_staging/node.tar.xz"
+curl --fail --location --silent --show-error \
+  "https://nodejs.org/dist/v$vm_node_version/node-v$vm_node_version-linux-$vm_node_arch.tar.xz" \
+  --output "$vm_node_archive"
+printf '%s  %s\n' "$vm_node_sha256" "$vm_node_archive" | sha256sum --check --status
+sudo install -d -o root -g root -m 0755 "/usr/local/lib/node-v$vm_node_version"
+sudo tar -xJf "$vm_node_archive" \
+  -C "/usr/local/lib/node-v$vm_node_version" --strip-components=1
+for vm_node_binary in node npm npx; do
+  sudo ln -sfn "/usr/local/lib/node-v$vm_node_version/bin/$vm_node_binary" \
+    "/usr/local/bin/$vm_node_binary"
+done
+rm -r -- "$vm_node_staging"
+trap - EXIT
+
 rustup set profile minimal
 rustup toolchain install 1.95.0
 rustup default 1.95.0
@@ -72,6 +104,13 @@ cargo build --locked \
   -p revision-supervisor --bin sos-revision-supervisor \
   -p provider-state-service --bin sos-provider-state-service \
   -p sos-linux-session --bin sos-linux-session
+cargo build --locked -p sos-linux-session --bin sos-agent-authoring
+(
+  cd services/sos-agent
+  npm ci --ignore-scripts
+  npm run build
+)
 
-printf 'Debian 13 Linux host/compositor dependencies and Rust %s are ready.\n' "$(rustc --version)"
+printf 'Debian 13 Linux host/compositor dependencies, Rust %s, and Node %s are ready.\n' \
+  "$(rustc --version)" "$(node --version)"
 printf 'Log out and back in if this run added video/render/input group membership.\n'

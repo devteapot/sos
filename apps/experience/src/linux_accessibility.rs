@@ -100,6 +100,10 @@ pub fn start(path: &Path) -> Result<Service, String> {
 }
 
 impl Service {
+    pub fn actions(&self) -> async_channel::Receiver<Action> {
+        self.actions.clone()
+    }
+
     pub fn publish(&self, scene: &Scene, focused: Option<String>, status: Option<String>) {
         let (lock, changed) = &*self.shared;
         let mut current = lock.lock().expect("accessibility snapshot lock");
@@ -111,10 +115,6 @@ impl Service {
             current.status = status;
             changed.notify_all();
         }
-    }
-
-    pub fn try_action(&self) -> Option<Action> {
-        self.actions.try_recv().ok()
     }
 }
 
@@ -193,6 +193,7 @@ fn valid_action(action: &Action) -> bool {
                 | "scroll_forward"
                 | "scroll_backward"
                 | "set_value"
+                | "submit"
                 | "set_selection"
                 | "copy"
                 | "cut"

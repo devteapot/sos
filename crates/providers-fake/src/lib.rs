@@ -51,6 +51,7 @@ pub fn snapshot() -> ExperienceModel {
             ..SystemState::default()
         },
         surfaces: Vec::new(),
+        agent: Default::default(),
     }
 }
 

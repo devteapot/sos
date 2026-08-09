@@ -1138,6 +1138,7 @@ fn decode_effects(table: Option<Table>, lua: &Lua) -> Result<Vec<ProviderEffect>
                 | ("notes", "write")
                 | ("calendar", "append")
                 | ("music", "command")
+                | ("agent", "prompt")
         ) {
             return Err(RuntimeError::Invalid(format!(
                 "provider action is not allowed: {provider}.{action}"
@@ -2024,6 +2025,43 @@ mod tests {
     }
 
     #[test]
+    fn returns_the_bounded_agent_prompt_capability() {
+        let runtime = LuauRuntime::compile(
+            r#"
+                return {
+                    api_version = 3,
+                    render = function() return { id = "root" } end,
+                    update = function(_, state, event)
+                        return {
+                            state = state,
+                            effects = {{
+                                provider = "agent", action = "prompt",
+                                payload = { prompt = event.value },
+                            }},
+                        }
+                    end,
+                }
+            "#,
+        )
+        .unwrap();
+        let outcome = runtime
+            .update_with_effects(
+                &providers_fake_for_test(),
+                &json!({}),
+                &SceneEvent {
+                    action: "agent_submit".into(),
+                    value: Some("Make this calmer".into()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(outcome.effects.len(), 1);
+        assert_eq!(outcome.effects[0].provider, "agent");
+        assert_eq!(outcome.effects[0].action, "prompt");
+        assert_eq!(outcome.effects[0].payload["prompt"], "Make this calmer");
+    }
+
+    #[test]
     fn runs_an_explicit_bounded_state_schema_migration() {
         let runtime = LuauRuntime::compile(
             r#"
@@ -2266,6 +2304,7 @@ mod tests {
             },
             system: experience_ir::SystemState::default(),
             surfaces: Vec::new(),
+            agent: Default::default(),
         }
     }
 }

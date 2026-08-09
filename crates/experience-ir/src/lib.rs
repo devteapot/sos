@@ -19,6 +19,8 @@ pub const MAX_REVISION_ASSET_TOTAL_BYTES: usize = 16 * 1024 * 1024;
 pub const MAX_EFFECTS: usize = 16;
 pub const MAX_EFFECT_PAYLOAD_BYTES: usize = 16 * 1024;
 pub const MAX_STATE_BYTES: usize = 1024 * 1024;
+pub const MAX_AGENT_MESSAGES: usize = 24;
+pub const MAX_AGENT_MESSAGE_BYTES: usize = 32 * 1024;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct ExperienceModel {
@@ -32,6 +34,33 @@ pub struct ExperienceModel {
     pub system: SystemState,
     #[serde(default)]
     pub surfaces: Vec<ProviderSurface>,
+    #[serde(default)]
+    pub agent: AgentConversation,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AgentConversation {
+    pub available: bool,
+    pub busy: bool,
+    #[serde(default)]
+    pub activity: String,
+    #[serde(default)]
+    pub messages: Vec<AgentMessage>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AgentMessage {
+    pub role: AgentMessageRole,
+    pub text: String,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentMessageRole {
+    User,
+    Assistant,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]

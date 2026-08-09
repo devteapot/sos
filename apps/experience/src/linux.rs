@@ -11,8 +11,9 @@ use std::{
 use anyhow::{bail, Context as _, Result};
 use experience_host_protocol::{HostEvent, HostRequest};
 use experience_ir::{
-    Align, AnimationKind, Content, ExperienceModel, Flow, HitRegion, Interaction, Justify, PaintOp,
-    Scene, SceneEvent, SceneNode, EXPERIENCE_API_VERSION,
+    AgentMessage, AgentMessageRole, Align, AnimationKind, Content, ExperienceModel, Flow,
+    HitRegion, Interaction, Justify, PaintOp, Scene, SceneEvent, SceneNode, EXPERIENCE_API_VERSION,
+    MAX_AGENT_MESSAGES, MAX_AGENT_MESSAGE_BYTES,
 };
 use gpui::{
     div, img, prelude::*, px, relative, rgb, size, Animation as GpuiAnimation, AnimationExt as _,
@@ -32,6 +33,7 @@ use service_protocol::{
 };
 use sha2::{Digest, Sha256};
 
+use crate::agent_bridge::{self, AgentUpdate};
 use crate::assets::{self, SosAssets, ALBUM_ASSET};
 use crate::compositor_fence::{CompositorFence, FenceEvent};
 use crate::linux_accessibility::{self, Action as AccessibilityAction};
@@ -42,6 +44,7 @@ use crate::scene_surface;
 #[derive(Clone, Debug)]
 struct Options {
     service_socket: Option<PathBuf>,
+    agent_socket: Option<PathBuf>,
     windowed: bool,
 }
 
@@ -155,7 +158,13 @@ struct ActionCommitResult {
     request_id: u64,
     state: JsonValue,
     scene: Scene,
-    result: std::result::Result<StateResource, String>,
+    result: std::result::Result<ActionCommitOutcome, String>,
+}
+
+#[derive(Debug)]
+struct ActionCommitOutcome {
+    authoritative: StateResource,
+    agent_prompt: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -224,7 +233,12 @@ pub fn run() -> Result<()> {
             revision.revision_id
         );
     }
-    let (model, provider_updates, provider_access) = start_provider_updates(&revision.revision_id)?;
+    let (mut model, provider_updates, provider_access) =
+        start_provider_updates(&revision.revision_id)?;
+    model.agent.available = options
+        .agent_socket
+        .as_ref()
+        .is_some_and(|socket| socket.exists());
     let (worker, ready) = RuntimeWorker::start_with_assets(
         revision.source.clone(),
         model.clone(),
@@ -279,6 +293,7 @@ pub fn run() -> Result<()> {
                             results,
                             provider_updates,
                             provider_access,
+                            options.agent_socket,
                             accessibility,
                             options.service_socket,
                             compositor_fence,
@@ -327,7 +342,10 @@ pub(super) struct LinuxExperienceHost {
     queued_provider_model: Option<ExperienceModel>,
     next_provider_request_id: u64,
     provider_access: Option<LinuxProviderAccess>,
+    agent_socket: Option<PathBuf>,
+    agent_updates: async_channel::Sender<AgentUpdate>,
     accessibility: Option<linux_accessibility::Service>,
+    accessibility_actions: VecDeque<AccessibilityAction>,
     semantic_focus: Option<String>,
 }
 
@@ -343,16 +361,22 @@ impl LinuxExperienceHost {
         results: async_channel::Receiver<WorkerResult>,
         provider_updates: async_channel::Receiver<ProviderUpdate>,
         provider_access: Option<LinuxProviderAccess>,
+        agent_socket: Option<PathBuf>,
         accessibility: Option<linux_accessibility::Service>,
         service_socket: Option<PathBuf>,
         compositor_fence: Option<CompositorFence>,
         cx: &mut Context<Self>,
     ) -> Self {
         let (action_commits, action_results) = async_channel::unbounded();
+        let (agent_updates, agent_results) = async_channel::unbounded();
         Self::attach_protocol(protocol, cx);
         Self::attach_worker_results(results, cx);
         Self::attach_provider_updates(provider_updates, cx);
         Self::attach_action_results(action_results, cx);
+        Self::attach_agent_updates(agent_results, cx);
+        if let Some(accessibility) = &accessibility {
+            Self::attach_accessibility_actions(accessibility.actions(), cx);
+        }
         if let Some(fence) = &compositor_fence {
             Self::attach_compositor_events(fence.events(), cx);
         }
@@ -392,7 +416,10 @@ impl LinuxExperienceHost {
             queued_provider_model: None,
             next_provider_request_id: 1,
             provider_access,
+            agent_socket,
+            agent_updates,
             accessibility,
+            accessibility_actions: VecDeque::new(),
             semantic_focus: None,
         }
     }
@@ -453,7 +480,9 @@ impl LinuxExperienceHost {
                             update.generation, this.active_revision_id
                         );
                         assets::install_provider_frames(&update.frames);
-                        this.request_model_refresh(update.model, cx);
+                        let mut model = update.model;
+                        model.agent = this.model.agent.clone();
+                        this.request_model_refresh(model, cx);
                     })
                     .is_err()
                 {
@@ -513,6 +542,86 @@ impl LinuxExperienceHost {
             }
         })
         .detach();
+    }
+
+    fn attach_agent_updates(updates: async_channel::Receiver<AgentUpdate>, cx: &mut Context<Self>) {
+        cx.spawn(async move |this, cx| {
+            while let Ok(update) = updates.recv().await {
+                if this
+                    .update(cx, |this, cx| {
+                        this.handle_agent_update(update, cx);
+                        cx.notify();
+                    })
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        })
+        .detach();
+    }
+
+    fn attach_accessibility_actions(
+        actions: async_channel::Receiver<AccessibilityAction>,
+        cx: &mut Context<Self>,
+    ) {
+        cx.spawn(async move |this, cx| {
+            while let Ok(action) = actions.recv().await {
+                if this
+                    .update(cx, |this, cx| {
+                        this.accessibility_actions.push_back(action);
+                        cx.notify();
+                    })
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        })
+        .detach();
+    }
+
+    fn handle_agent_update(&mut self, update: AgentUpdate, cx: &mut Context<Self>) {
+        match update {
+            AgentUpdate::Started { prompt } => {
+                eprintln!("sos_agent_prompt_started bytes={}", prompt.len());
+                self.model.agent.available = true;
+                self.model.agent.busy = true;
+                self.model.agent.activity = "Thinking…".into();
+                self.model.agent.error = None;
+                push_agent_message(&mut self.model, AgentMessageRole::User, prompt);
+            }
+            AgentUpdate::TextDelta(delta) => {
+                eprintln!("sos_agent_text_delta bytes={}", delta.len());
+                self.model.agent.activity = "Writing…".into();
+                append_assistant_delta(&mut self.model, &delta);
+            }
+            AgentUpdate::ToolStarted(name) => {
+                eprintln!("sos_agent_tool_started name={name}");
+                self.model.agent.activity = format!("Using {}…", display_agent_tool(&name));
+            }
+            AgentUpdate::ToolFinished { name, ok } => {
+                eprintln!("sos_agent_tool_finished name={name} ok={ok}");
+                self.model.agent.activity = if ok {
+                    format!("Finished {}", display_agent_tool(&name))
+                } else {
+                    format!("{} failed", display_agent_tool(&name))
+                };
+            }
+            AgentUpdate::Completed => {
+                eprintln!("sos_agent_prompt_completed");
+                self.model.agent.busy = false;
+                self.model.agent.activity = "Ready".into();
+            }
+            AgentUpdate::Failed(error) => {
+                eprintln!("sos_agent_prompt_failed error={error}");
+                self.model.agent.available = self.agent_socket.is_some();
+                self.model.agent.busy = false;
+                self.model.agent.activity = "Could not complete request".into();
+                self.model.agent.error = Some(truncate_agent_text(error));
+            }
+        }
+        self.request_model_refresh(self.model.clone(), cx);
     }
 
     fn attach_compositor_events(
@@ -575,6 +684,7 @@ impl LinuxExperienceHost {
                     request_id: presented.request_id,
                     revision_id: presented.revision_id,
                 });
+                self.dispatch_queued_provider_model(cx);
             }
             FenceEvent::Failed(error) => {
                 eprintln!("sos_compositor_fence_failed error={error}");
@@ -631,7 +741,7 @@ impl LinuxExperienceHost {
                             return;
                         }
                     };
-                let (candidate_model, provider_frames) = match &self.provider_access {
+                let (mut candidate_model, provider_frames) = match &self.provider_access {
                     Some(access) => match access.snapshot(&revision.revision_id) {
                         Ok(snapshot) => (snapshot.model, snapshot.frames),
                         Err(error) => {
@@ -641,6 +751,7 @@ impl LinuxExperienceHost {
                     },
                     None => (self.model.clone(), Vec::new()),
                 };
+                candidate_model.agent = self.model.agent.clone();
                 if let Err(error) = self.worker.prepare_candidate_with_assets(
                     request_id,
                     revision.source.clone(),
@@ -1043,7 +1154,8 @@ impl LinuxExperienceHost {
     fn handle_action_commit(&mut self, result: ActionCommitResult, cx: &mut Context<Self>) {
         self.action_in_flight = false;
         match result.result {
-            Ok(authoritative) => {
+            Ok(outcome) => {
+                let authoritative = outcome.authoritative;
                 if authoritative.state != result.state {
                     self.status = Some((
                         "Authority returned unexpected interaction state".into(),
@@ -1061,6 +1173,9 @@ impl LinuxExperienceHost {
                         "sos_action_committed request_id={} authority_revision={}",
                         result.request_id, authoritative.revision
                     );
+                    if let Some(prompt) = outcome.agent_prompt {
+                        self.start_agent_prompt(prompt, cx);
+                    }
                 }
             }
             Err(error) => {
@@ -1072,6 +1187,28 @@ impl LinuxExperienceHost {
             }
         }
         self.dispatch_pending_input_event(cx);
+        self.dispatch_queued_provider_model(cx);
+    }
+
+    fn start_agent_prompt(&mut self, prompt: String, cx: &mut Context<Self>) {
+        if self.model.agent.busy {
+            self.status = Some(("The agent is already handling a request".into(), false));
+            return;
+        }
+        let Some(socket) = self.agent_socket.clone() else {
+            self.handle_agent_update(
+                AgentUpdate::Failed("resident Pi agent is not configured".into()),
+                cx,
+            );
+            return;
+        };
+        self.handle_agent_update(
+            AgentUpdate::Started {
+                prompt: prompt.clone(),
+            },
+            cx,
+        );
+        agent_bridge::spawn_prompt(socket, prompt, self.agent_updates.clone());
     }
 
     fn dispatch(&mut self, action: String, cx: &mut Context<Self>) {
@@ -1306,6 +1443,13 @@ impl LinuxExperienceHost {
                         input.update(cx, |input, input_cx| {
                             input.accessibility_set_selection(start, end, input_cx)
                         });
+                    });
+                }
+            }
+            "submit" => {
+                if let Some(input) = self.inputs.get(&action.target).cloned() {
+                    window.defer(cx, move |_, cx| {
+                        input.update(cx, |input, input_cx| input.accessibility_submit(input_cx));
                     });
                 }
             }
@@ -1869,7 +2013,7 @@ impl scene_surface::SceneSurfaceHost for LinuxExperienceHost {
 impl Render for LinuxExperienceHost {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if let Some(accessibility) = self.accessibility.clone() {
-            while let Some(action) = accessibility.try_action() {
+            while let Some(action) = self.accessibility_actions.pop_front() {
                 self.handle_accessibility_action(action, window, cx);
             }
             accessibility.publish(
@@ -1921,6 +2065,7 @@ impl Render for LinuxExperienceHost {
                         request_id: presentation.request_id,
                         revision_id: presentation.revision_id,
                     });
+                    this.dispatch_queued_provider_model(cx);
                     cx.notify();
                 });
             }
@@ -2040,6 +2185,7 @@ fn start_provider_updates(
 
 fn parse_options(args: impl Iterator<Item = String>) -> Result<Options> {
     let mut service_socket = None;
+    let mut agent_socket = None;
     let mut windowed = false;
     let mut args = args.peekable();
     while let Some(argument) = args.next() {
@@ -2049,12 +2195,18 @@ fn parse_options(args: impl Iterator<Item = String>) -> Result<Options> {
                     args.next().context("--service-socket requires a path")?,
                 ));
             }
+            "--agent-socket" => {
+                agent_socket = Some(PathBuf::from(
+                    args.next().context("--agent-socket requires a path")?,
+                ));
+            }
             "--windowed" => windowed = true,
             other => bail!("unknown option: {other}"),
         }
     }
     Ok(Options {
         service_socket,
+        agent_socket,
         windowed,
     })
 }
@@ -2165,7 +2317,7 @@ fn commit_action(
     state: &JsonValue,
     effects: &[experience_ir::ProviderEffect],
     provider_access: Option<&LinuxProviderAccess>,
-) -> std::result::Result<StateResource, String> {
+) -> std::result::Result<ActionCommitOutcome, String> {
     let client = ServiceClient::new(socket, Duration::from_secs(2));
     let current = get_service_state(&client, 1)?;
     if current.revision_id != revision_id
@@ -2176,7 +2328,27 @@ fn commit_action(
     }
     let mut actions = Vec::new();
     let mut linux_effects = Vec::new();
+    let mut agent_prompt = None;
     for effect in effects {
+        if effect.provider == "agent" && effect.action == "prompt" {
+            if agent_prompt.is_some() {
+                return Err("one interaction may emit only one agent.prompt effect".into());
+            }
+            let prompt = effect
+                .payload
+                .get("prompt")
+                .and_then(JsonValue::as_str)
+                .map(str::trim)
+                .filter(|prompt| !prompt.is_empty())
+                .ok_or_else(|| "agent.prompt omitted a non-empty prompt".to_owned())?;
+            if prompt.len() > MAX_AGENT_MESSAGE_BYTES {
+                return Err(format!(
+                    "agent.prompt exceeds the {MAX_AGENT_MESSAGE_BYTES}-byte limit"
+                ));
+            }
+            agent_prompt = Some(prompt.to_owned());
+            continue;
+        }
         match provider_action(effect)? {
             Some(action) => actions.push(action),
             None => linux_effects.push(effect.clone()),
@@ -2246,7 +2418,60 @@ fn commit_action(
             ));
         }
     }
-    get_service_state(&client, 5)
+    Ok(ActionCommitOutcome {
+        authoritative: get_service_state(&client, 5)?,
+        agent_prompt,
+    })
+}
+
+fn truncate_agent_text(mut text: String) -> String {
+    if text.len() <= MAX_AGENT_MESSAGE_BYTES {
+        return text;
+    }
+    let mut boundary = MAX_AGENT_MESSAGE_BYTES;
+    while !text.is_char_boundary(boundary) {
+        boundary -= 1;
+    }
+    text.truncate(boundary);
+    text
+}
+
+fn push_agent_message(model: &mut ExperienceModel, role: AgentMessageRole, text: String) {
+    let text = truncate_agent_text(text);
+    if text.is_empty() {
+        return;
+    }
+    model.agent.messages.push(AgentMessage { role, text });
+    if model.agent.messages.len() > MAX_AGENT_MESSAGES {
+        let excess = model.agent.messages.len() - MAX_AGENT_MESSAGES;
+        model.agent.messages.drain(..excess);
+    }
+}
+
+fn append_assistant_delta(model: &mut ExperienceModel, delta: &str) {
+    if delta.is_empty() {
+        return;
+    }
+    if let Some(message) = model
+        .agent
+        .messages
+        .last_mut()
+        .filter(|message| message.role == AgentMessageRole::Assistant)
+    {
+        message.text.push_str(delta);
+        message.text = truncate_agent_text(std::mem::take(&mut message.text));
+    } else {
+        push_agent_message(model, AgentMessageRole::Assistant, delta.to_owned());
+    }
+}
+
+fn display_agent_tool(name: &str) -> &str {
+    match name {
+        "get_experience_context" => "experience context",
+        "validate_experience" => "experience validator",
+        "submit_experience" => "experience installer",
+        _ => "agent tool",
+    }
 }
 
 fn get_service_state(
@@ -2389,15 +2614,25 @@ mod tests {
     #[test]
     fn host_options_are_explicit() {
         let options = parse_options(
-            ["--windowed", "--service-socket", "/run/sos/provider.sock"]
-                .into_iter()
-                .map(str::to_owned),
+            [
+                "--windowed",
+                "--service-socket",
+                "/run/sos/provider.sock",
+                "--agent-socket",
+                "/run/sos-agent/agent.sock",
+            ]
+            .into_iter()
+            .map(str::to_owned),
         )
         .unwrap();
         assert!(options.windowed);
         assert_eq!(
             options.service_socket,
             Some(PathBuf::from("/run/sos/provider.sock"))
+        );
+        assert_eq!(
+            options.agent_socket,
+            Some(PathBuf::from("/run/sos-agent/agent.sock"))
         );
         assert!(parse_options(["--unknown".into()].into_iter()).is_err());
     }
@@ -2592,12 +2827,21 @@ mod tests {
                         "content": "# Generated action\nCapability checked."
                     }),
                 },
+                experience_ir::ProviderEffect {
+                    provider: "agent".into(),
+                    action: "prompt".into(),
+                    payload: serde_json::json!({"prompt": "Make the day quieter"}),
+                },
             ],
             Some(&provider_access),
         )
         .unwrap();
-        assert_eq!(committed.revision, 2);
-        assert_eq!(committed.state, state);
+        assert_eq!(committed.authoritative.revision, 2);
+        assert_eq!(committed.authoritative.state, state);
+        assert_eq!(
+            committed.agent_prompt.as_deref(),
+            Some("Make the day quieter")
+        );
         assert!(temporary
             .path()
             .join("linux-providers/notes/from-generated-action.md")

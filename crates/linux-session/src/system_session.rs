@@ -56,6 +56,7 @@ pub struct SystemSessionOptions {
     pub runtime_directory: PathBuf,
     pub authority_file: PathBuf,
     pub shell_token_file: PathBuf,
+    pub agent_socket: PathBuf,
     pub compositor_executable: PathBuf,
     pub provider_executable: PathBuf,
     pub supervisor_executable: PathBuf,
@@ -105,6 +106,7 @@ fn validate_options(options: &SystemSessionOptions) -> Result<()> {
         ("runtime directory", options.runtime_directory.as_path()),
         ("authority file", options.authority_file.as_path()),
         ("shell credential", options.shell_token_file.as_path()),
+        ("agent socket", options.agent_socket.as_path()),
         (
             "compositor executable",
             options.compositor_executable.as_path(),
@@ -357,6 +359,8 @@ fn start_and_monitor(
             args: vec![
                 "--service-socket".into(),
                 provider_socket.clone().into_os_string(),
+                "--agent-socket".into(),
+                options.agent_socket.clone().into_os_string(),
             ],
             identity: options.host_identity.clone(),
             runtime_directory: options.runtime_directory.clone(),

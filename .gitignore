@@ -6,3 +6,5 @@ target/
 **/.gradle/
 **/build/
 **/jniLibs/
+**/node_modules/
+services/sos-agent/dist/
