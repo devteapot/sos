@@ -1,4 +1,7 @@
 use std::{
+    io::Write as _,
+    net::Shutdown,
+    os::unix::net::UnixStream,
     path::Path,
     process::{Child, Command, Stdio},
     thread,
@@ -34,6 +37,18 @@ fn daemon_speaks_typed_unix_protocol_and_survives_ambiguous_promotion() {
     .unwrap();
     wait_for_socket(&mut daemon, &socket);
     let client = ServiceClient::new(&socket, Duration::from_secs(2));
+
+    // A cancelled/crashed caller may stop receiving after submitting work.
+    // Its EPIPE must remain scoped to that connection, not kill authority.
+    let mut abandoned = UnixStream::connect(&socket).unwrap();
+    abandoned.shutdown(Shutdown::Read).unwrap();
+    abandoned
+        .write_all(
+            br#"{"protocol_version":1,"method":"get_resource","request_id":900,"query":"notes"}
+"#,
+        )
+        .unwrap();
+    drop(abandoned);
 
     let staged = client
         .call(&ServiceRequest::StagePromotion {

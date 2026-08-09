@@ -1,0 +1,98 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+vm_tools_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+vm_root="$(cd "$vm_tools_dir/../.." && pwd)"
+vm_cache_root="${SOS_LINUX_VM_ROOT:-$vm_root/.cache/linux-vm}"
+vm_name="${SOS_LINUX_VM_NAME:-sos-debian13}"
+vm_ssh_key="${SOS_LINUX_VM_SSH_KEY:-${HOME}/.ssh/id_ed25519.pub}"
+vm_ssh_port="${SOS_LINUX_VM_SSH_PORT:-2222}"
+vm_vnc_display="${SOS_LINUX_VM_VNC_DISPLAY:-1}"
+
+fail() {
+  printf 'error: %s\n' "$*" >&2
+  exit 1
+}
+
+require_command() {
+  command -v "$1" >/dev/null 2>&1 || fail "required command not found: $1"
+}
+
+[[ "$#" -eq 2 ]] || fail "usage: tools/linux-vm/create <debian-13-generic-ARCH.qcow2> <sha512>"
+vm_base_image="$(realpath "$1")"
+vm_expected_sha512="$2"
+[[ -f "$vm_base_image" ]] || fail "Debian image not found: $vm_base_image"
+[[ "$vm_expected_sha512" =~ ^[0-9a-fA-F]{128}$ ]] || fail "expected SHA-512 must contain 128 hexadecimal characters"
+[[ -f "$vm_ssh_key" ]] || fail "SSH public key not found: $vm_ssh_key"
+[[ "$vm_ssh_port" =~ ^[0-9]+$ && "$vm_ssh_port" -ge 1024 && "$vm_ssh_port" -le 65535 ]] || \
+  fail "SSH port must be an unprivileged TCP port"
+[[ "$vm_vnc_display" =~ ^[0-9]+$ && "$vm_vnc_display" -le 99 ]] || \
+  fail "VNC display must be an integer from 0 through 99"
+for vm_command in cloud-localds qemu-img sha512sum; do
+  require_command "$vm_command"
+done
+
+case "$(uname -m)" in
+  aarch64)
+    vm_debian_arch="arm64"
+    vm_qemu="qemu-system-aarch64"
+    vm_firmware_code="/usr/share/AAVMF/AAVMF_CODE.no-secboot.fd"
+    vm_firmware_vars="/usr/share/AAVMF/AAVMF_VARS.fd"
+    ;;
+  x86_64)
+    vm_debian_arch="amd64"
+    vm_qemu="qemu-system-x86_64"
+    if [[ -f /usr/share/OVMF/OVMF_CODE_4M.fd ]]; then
+      vm_firmware_code="/usr/share/OVMF/OVMF_CODE_4M.fd"
+      vm_firmware_vars="/usr/share/OVMF/OVMF_VARS_4M.fd"
+    else
+      vm_firmware_code="/usr/share/OVMF/OVMF_CODE.fd"
+      vm_firmware_vars="/usr/share/OVMF/OVMF_VARS.fd"
+    fi
+    ;;
+  *) fail "unsupported host architecture: $(uname -m)" ;;
+esac
+require_command "$vm_qemu"
+[[ -r /dev/kvm && -w /dev/kvm ]] || fail "/dev/kvm is not readable and writable by $(id -un)"
+[[ -f "$vm_firmware_code" ]] || fail "UEFI code firmware not found: $vm_firmware_code"
+[[ -f "$vm_firmware_vars" ]] || fail "UEFI variables firmware not found: $vm_firmware_vars"
+
+vm_image_name="$(basename "$vm_base_image")"
+[[ "$vm_image_name" == "debian-13-generic-$vm_debian_arch.qcow2" ]] || \
+  fail "expected Debian generic image debian-13-generic-$vm_debian_arch.qcow2, got $vm_image_name"
+vm_actual_sha512="$(sha512sum "$vm_base_image" | awk '{print $1}')"
+[[ "${vm_actual_sha512,,}" == "${vm_expected_sha512,,}" ]] || fail "Debian image SHA-512 does not match"
+
+mkdir -p "$vm_cache_root"
+vm_overlay="$vm_cache_root/$vm_name.qcow2"
+vm_user_data="$vm_cache_root/$vm_name-user-data.yaml"
+vm_meta_data="$vm_cache_root/$vm_name-meta-data.yaml"
+vm_seed="$vm_cache_root/$vm_name-seed.img"
+vm_vars="$vm_cache_root/$vm_name-vars.fd"
+vm_pid_file="$vm_cache_root/$vm_name.pid"
+vm_qemu_log="$vm_cache_root/$vm_name-qemu.log"
+vm_serial_log="$vm_cache_root/$vm_name-serial.log"
+for vm_output in \
+  "$vm_overlay" "$vm_user_data" "$vm_meta_data" "$vm_seed" "$vm_vars" \
+  "$vm_pid_file" "$vm_qemu_log" "$vm_serial_log"; do
+  [[ ! -e "$vm_output" ]] || fail "VM output already exists: $vm_output"
+done
+
+vm_public_key="$(tr -d '\r\n' < "$vm_ssh_key")"
+[[ -n "$vm_public_key" ]] || fail "SSH public key is empty: $vm_ssh_key"
+while IFS= read -r vm_cloud_line; do
+  if [[ "$vm_cloud_line" == "      - __SOS_SSH_PUBLIC_KEY__" ]]; then
+    printf '      - %s\n' "$vm_public_key"
+  else
+    printf '%s\n' "$vm_cloud_line"
+  fi
+done < "$vm_tools_dir/cloud-init.yaml.in" > "$vm_user_data"
+printf 'instance-id: %s\nlocal-hostname: %s\n' "$vm_name" "$vm_name" > "$vm_meta_data"
+cloud-localds "$vm_seed" "$vm_user_data" "$vm_meta_data"
+cp -- "$vm_firmware_vars" "$vm_vars"
+qemu-img create -q -f qcow2 -F qcow2 -b "$vm_base_image" "$vm_overlay" 100G
+
+"$vm_tools_dir/start"
+printf 'Created %s from verified %s (%s).\n' \
+  "$vm_name" "$vm_image_name" "$vm_actual_sha512"

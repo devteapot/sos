@@ -1,0 +1,85 @@
+[Unit]
+Description=SOS direct Wayland system session
+Documentation=file:/usr/share/doc/sos/linux-stable-host.md
+After=local-fs.target systemd-logind.service systemd-user-sessions.service
+Conflicts=display-manager.service getty@tty1.service
+Before=display-manager.service getty@tty1.service
+
+[Service]
+Type=exec
+User=sos-compositor
+Group=sos-ipc
+PAMName=login
+TTYPath=/dev/tty1
+StandardInput=tty-force
+StandardOutput=journal
+StandardError=journal
+TTYReset=yes
+TTYVHangup=yes
+TTYVTDisallocate=yes
+UtmpIdentifier=tty1
+UtmpMode=user
+RuntimeDirectory=sos
+RuntimeDirectoryMode=0770
+StateDirectory=sos
+StateDirectoryMode=0750
+LoadCredential=shell-token:/etc/sos/shell-token
+Environment=XDG_SESSION_TYPE=wayland
+Environment=XDG_SESSION_CLASS=user
+Environment=XDG_SEAT=seat0
+Environment=XDG_VTNR=1
+Environment=XDG_RUNTIME_DIR=/run/sos
+Environment=LIBSEAT_BACKEND=logind
+Environment=RUST_LOG=sos_compositor=info
+Environment=SOS_ACCESSIBILITY_SOCKET=/run/sos/accessibility.sock
+ExecStart=/usr/local/libexec/sos/sos-linux-session run \
+  --root /var/lib/sos/revisions \
+  --runtime-dir /run/sos \
+  --authority-file /var/lib/sos/provider/authority.json \
+  --shell-token-file %d/shell-token \
+  --agent-socket /run/sos-agent/agent.sock \
+  --compositor /usr/local/libexec/sos/sos-compositor \
+  --provider /usr/local/libexec/sos/sos-provider-state-service \
+  --supervisor /usr/local/libexec/sos/sos-revision-supervisor \
+  --host /usr/local/libexec/sos/sos-experience-host \
+  --compositor-user sos-compositor \
+  --provider-user sos-provider \
+  --supervisor-user sos-supervisor \
+  --host-user sos-host \
+  --timeout-ms 30000
+Restart=on-failure
+RestartSec=250ms
+TimeoutStopSec=8s
+KillMode=mixed
+UMask=0007
+NoNewPrivileges=yes
+CapabilityBoundingSet=CAP_CHOWN CAP_SETUID CAP_SETGID CAP_KILL
+AmbientCapabilities=CAP_CHOWN CAP_SETUID CAP_SETGID CAP_KILL
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+LockPersonality=yes
+RestrictAddressFamilies=AF_UNIX AF_NETLINK
+SystemCallArchitectures=native
+SystemCallFilter=~@mount @swap @obsolete @raw-io
+MemoryAccounting=yes
+MemoryHigh=1280M
+MemoryMax=1536M
+TasksAccounting=yes
+TasksMax=256
+CPUAccounting=yes
+CPUQuota=300%
+IOAccounting=yes
+LimitNOFILE=4096
+LimitNPROC=512
+ReadWritePaths=/var/lib/sos /run/sos
+
+[Install]
+WantedBy=sos-session.target

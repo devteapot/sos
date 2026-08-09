@@ -19,6 +19,8 @@ pub const MAX_REVISION_ASSET_TOTAL_BYTES: usize = 16 * 1024 * 1024;
 pub const MAX_EFFECTS: usize = 16;
 pub const MAX_EFFECT_PAYLOAD_BYTES: usize = 16 * 1024;
 pub const MAX_STATE_BYTES: usize = 1024 * 1024;
+pub const MAX_AGENT_MESSAGES: usize = 24;
+pub const MAX_AGENT_MESSAGE_BYTES: usize = 32 * 1024;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct ExperienceModel {
@@ -28,6 +30,75 @@ pub struct ExperienceModel {
     pub calendar: Vec<CalendarEvent>,
     pub notes: Vec<Note>,
     pub music: Music,
+    #[serde(default)]
+    pub system: SystemState,
+    #[serde(default)]
+    pub surfaces: Vec<ProviderSurface>,
+    #[serde(default)]
+    pub agent: AgentConversation,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AgentConversation {
+    pub available: bool,
+    pub busy: bool,
+    #[serde(default)]
+    pub activity: String,
+    #[serde(default)]
+    pub messages: Vec<AgentMessage>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AgentMessage {
+    pub role: AgentMessageRole,
+    pub text: String,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentMessageRole {
+    User,
+    Assistant,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SystemState {
+    pub unix_time_ms: u64,
+    pub timezone: String,
+    pub online_interfaces: Vec<String>,
+    pub battery_percent: Option<u8>,
+    pub on_ac_power: Option<bool>,
+    pub audio_volume_percent: Option<u8>,
+    pub audio_muted: Option<bool>,
+    pub connected_displays: Vec<String>,
+    pub input_devices: Vec<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProviderSurface {
+    pub id: String,
+    pub kind: ProviderSurfaceKind,
+    pub width: u32,
+    pub height: u32,
+    pub protected: bool,
+    pub status: ProviderSurfaceStatus,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderSurfaceKind {
+    Video,
+    Camera,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderSurfaceStatus {
+    Ready,
+    Unavailable,
+    ProtectedUnavailable,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -257,6 +328,7 @@ pub enum Content {
     Text(TextContent),
     TextSession(TextSession),
     Image(ImageContent),
+    ProviderSurface(ProviderSurfaceContent),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -278,6 +350,11 @@ pub struct TextSession {
 #[derive(Clone, Debug, PartialEq)]
 pub struct ImageContent {
     pub asset: String,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct ProviderSurfaceContent {
+    pub surface: String,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -307,6 +384,15 @@ pub enum PaintOp {
         line_height: Option<f32>,
         max_width: Option<f32>,
         runs: Vec<GlyphRun>,
+    },
+    /// Execute a revision-owned, host-validated WGSL module into a bounded
+    /// offscreen target and composite the result into the retained scene.
+    Shader {
+        asset: String,
+        x: f32,
+        y: f32,
+        width: f32,
+        height: f32,
     },
     Layer {
         clip: Option<ClipRect>,
@@ -513,6 +599,15 @@ pub fn validate_scene(scene: &Scene) -> Result<usize, ValidationError> {
                     return Err(ValidationError::SemanticTextTooLong);
                 }
             }
+            Some(Content::ProviderSurface(surface))
+                if surface.surface.is_empty()
+                    || surface.surface.len() > 128
+                    || !surface.surface.bytes().all(|byte| {
+                        byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.')
+                    }) =>
+            {
+                return Err(ValidationError::InvalidDimension("provider surface id"));
+            }
             _ => {}
         }
         if (node.layout.scroll_y
@@ -711,6 +806,26 @@ fn validate_paint(
                     })
                 {
                     return Err(ValidationError::InvalidDimension("paint glyphs"));
+                }
+            }
+            PaintOp::Shader {
+                asset,
+                x,
+                y,
+                width,
+                height,
+            } => {
+                if asset.is_empty()
+                    || asset.len() > 256
+                    || [*x, *y, *width, *height]
+                        .into_iter()
+                        .any(|value| !valid_scene_number(value))
+                    || *width <= 0.0
+                    || *height <= 0.0
+                    || *width > 1024.0
+                    || *height > 1024.0
+                {
+                    return Err(ValidationError::InvalidDimension("paint shader"));
                 }
             }
             PaintOp::Layer {

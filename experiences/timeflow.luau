@@ -8,8 +8,12 @@ local sage = 0xA7C7AE
 local dim = 0x9EAAA3
 local amber = 0xF0A83B
 
-local function text(value, size, color)
-    return { content = { kind = "text", value = tostring(value), size = size, color = color or cream } }
+local function text(value, size, color, semantics, id)
+    return {
+        id = id,
+        content = { kind = "text", value = tostring(value), size = size, color = color or cream },
+        semantics = semantics,
+    }
 end
 
 local function group(flow, layout, children, background, radius, id, tap_action)
@@ -34,6 +38,48 @@ local function timeline_item(time, title, detail, last)
             text(title, 20, cream), text(detail, 13, dim),
         }),
     })
+end
+
+local function agent_panel(model, state)
+    local agent = model.agent or {}
+    local children = {
+        group("row", { justify = "between" }, {
+            text("SHAPE THIS FLOW", 11, sage),
+            text(agent.activity or (agent.available and "Ready" or "Agent unavailable"), 11, dim, {
+                role = "status", label = "SOS agent status",
+                value = agent.activity or (agent.available and "Ready" or "Agent unavailable"),
+            }, "agent-status"),
+        }),
+    }
+    for index, message in ipairs(agent.messages or {}) do
+        table.insert(children, group("column", { gap = 3, padding = 11 }, {
+            text(message.role == "user" and "YOU" or "SOS", 10, amber),
+            text(message.text, 13, cream, {
+                role = "status", label = (message.role == "user" and "YOU" or "SOS") .. " message",
+                value = message.text,
+            }, "agent-message-" .. tostring(index)),
+        }, 0x213129, 12))
+    end
+    if #(agent.messages or {}) == 0 then
+        table.insert(children, text("Tell SOS how this experience should change.", 13, dim))
+    end
+    if agent.error then table.insert(children, text(agent.error, 12, 0xE07A6A)) end
+    local draft = state.agent_draft or ""
+    table.insert(children, {
+        id = "agent-prompt",
+        layout = { height = 44, padding = 9 },
+        content = {
+            kind = "text_session", state_key = "agent_draft", value = draft,
+            placeholder = agent.busy and "SOS is working…" or "Change this flow…",
+            submit_action = "agent_submit",
+        },
+        paint = {{ kind = "fill_bounds", color = 0x213129, radius = 14 }},
+        semantics = {
+            role = "text_field", label = "Ask SOS to change this experience", value = draft,
+            hint = "Type a request and press enter",
+        },
+    })
+    return group("column", { gap = 9, padding = 14 }, children, 0x18251F, 16, "agent-conversation")
 end
 
 local function render(model, state)
@@ -71,14 +117,27 @@ local function render(model, state)
             text(note.title, 17, cream), text(note.preview, 13, dim),
         }))
     end
+    table.insert(children, agent_panel(model, state))
 
     return group("column", { scroll_y = true }, {
         group("column", { padding = 22, gap = 18 }, children),
     }, night, 0, "timeflow-root")
 end
 
-local function update(_, state, event)
+local function update(model, state, event)
     if event.action == "toggle_music" then state.playing = false end
+    if event.action == "text_changed" and event.target == "agent-prompt" then
+        state.agent_draft = event.value
+    elseif event.action == "agent_submit" and not (model.agent and model.agent.busy) then
+        local prompt = event.value or state.agent_draft or ""
+        if prompt ~= "" then
+            state.agent_draft = ""
+            return {
+                state = state,
+                effects = {{ provider = "agent", action = "prompt", payload = { prompt = prompt } }},
+            }
+        end
+    end
     return state
 end
 

@@ -104,7 +104,16 @@ fn installs_content_addressed_revision_sidecars_and_rejects_drift() {
                 RevisionAssetInput {
                     id: "tone".into(),
                     kind: "shader".into(),
-                    bytes: b"@fragment fn fragment_main() {}".to_vec(),
+                    bytes: br#"
+                        @vertex fn vs_main(@builtin(vertex_index) i: u32) -> @builtin(position) vec4<f32> {
+                            let x = f32((i << 1u) & 2u);
+                            let y = f32(i & 2u);
+                            return vec4<f32>(x * 2.0 - 1.0, 1.0 - y * 2.0, 0.0, 1.0);
+                        }
+                        @fragment fn fs_main() -> @location(0) vec4<f32> {
+                            return vec4<f32>(0.1, 0.2, 0.3, 1.0);
+                        }
+                    "#.to_vec(),
                 },
             ],
         })

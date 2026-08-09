@@ -1,0 +1,341 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+vm_repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+cd "$vm_repo_root"
+for vm_command in cargo python3 systemctl systemd-detect-virt weston-simple-shm; do
+  command -v "$vm_command" >/dev/null 2>&1 || {
+    printf 'error: required command not found: %s\n' "$vm_command" >&2
+    exit 1
+  }
+done
+systemd-detect-virt --quiet || {
+  printf 'error: the direct-session verifier may only take over a disposable VM\n' >&2
+  exit 1
+}
+# shellcheck source=/dev/null
+source /etc/os-release
+[[ "${ID:-}" == "debian" && "${VERSION_ID:-}" == "13" ]] || {
+  printf 'error: expected Debian 13, found %s %s\n' "${ID:-unknown}" "${VERSION_ID:-unknown}" >&2
+  exit 1
+}
+systemctl is-active --quiet seatd || {
+  printf 'error: seatd must be active for the disposable direct-session gate\n' >&2
+  exit 1
+}
+
+vm_run_dir="$(mktemp -d /tmp/sos-direct-session.XXXXXX)"
+vm_runtime_dir="$vm_run_dir/runtime"
+vm_revision_root="$vm_run_dir/revisions"
+vm_control_socket="$vm_runtime_dir/compositor-control.sock"
+vm_output_config="$vm_run_dir/output.json"
+vm_token="sos-direct-$BASHPID-$RANDOM"
+mkdir "$vm_runtime_dir"
+printf '{}\n' >"$vm_output_config"
+chmod 700 "$vm_runtime_dir"
+vm_compositor_pid=""
+vm_session_pid=""
+vm_compatibility_pid=""
+vm_input_pid=""
+vm_gdm_was_active=false
+if systemctl is-active --quiet gdm; then
+  vm_gdm_was_active=true
+fi
+
+cleanup_direct_gate() {
+  if [[ -w /sys/class/drm/card0-Virtual-2/status ]]; then
+    sudo sh -c 'echo off > /sys/class/drm/card0-Virtual-2/status; echo change > /sys/class/drm/card0/uevent' \
+      >/dev/null 2>&1 || true
+  fi
+  if [[ -n "$vm_session_pid" ]] && kill -0 "$vm_session_pid" 2>/dev/null; then
+    SOS_LINUX_REVISION_ROOT="$vm_revision_root" \
+      ./tools/sosctl linux-stop >/dev/null 2>&1 || true
+    wait "$vm_session_pid" 2>/dev/null || true
+  fi
+  for vm_pid in "$vm_input_pid" "$vm_compatibility_pid" "$vm_compositor_pid"; do
+    if [[ -n "$vm_pid" ]] && kill -0 "$vm_pid" 2>/dev/null; then
+      kill "$vm_pid" 2>/dev/null || true
+      wait "$vm_pid" 2>/dev/null || true
+    fi
+  done
+  if [[ "$vm_gdm_was_active" == true ]]; then
+    sudo systemctl start gdm >/dev/null 2>&1 || true
+  fi
+  if [[ "$vm_run_dir" == /tmp/sos-direct-session.* && -d "$vm_run_dir" ]]; then
+    chmod -R u+w "$vm_run_dir" 2>/dev/null || true
+    rm -r -- "$vm_run_dir"
+  fi
+}
+trap cleanup_direct_gate EXIT
+
+report_direct_gate_failure() {
+  local vm_status="$?"
+  local vm_line="$1"
+  set +e
+  printf 'error: direct compositor gate failed at line %s (status %s)\n' \
+    "$vm_line" "$vm_status" >&2
+  for vm_log in compositor.log session.log compatibility.log; do
+    if [[ -f "$vm_run_dir/$vm_log" ]]; then
+      printf '%s:\n' "$vm_log" >&2
+      tail -n 160 "$vm_run_dir/$vm_log" >&2
+    fi
+  done
+  exit "$vm_status"
+}
+trap 'report_direct_gate_failure "$LINENO"' ERR
+
+cargo build --locked \
+  -p sos-compositor --features direct-backend --bin sos-compositor
+cargo build --locked \
+  -p sos-experience --features linux-host --bin sos-experience-host \
+  -p revision-supervisor --bin sos-revision-supervisor \
+  -p provider-state-service --bin sos-provider-state-service \
+  -p sos-linux-session --bin sos-linux-session
+
+sudo systemctl stop gdm
+for _ in {1..500}; do
+  ! systemctl is-active --quiet gdm && break
+  sleep 0.01
+done
+if systemctl is-active --quiet gdm; then
+  printf 'error: GDM did not release the disposable VM seat\n' >&2
+  exit 1
+fi
+# Hard VM resets can leave logind greeter sessions behind after the GDM unit
+# has stopped.  This gate owns the disposable seat, so retire those sessions
+# before acquiring DRM master.
+sudo loginctl terminate-seat seat0 >/dev/null 2>&1 || true
+
+XDG_RUNTIME_DIR="$vm_runtime_dir" \
+LIBSEAT_BACKEND=seatd \
+SOS_OUTPUT_CONFIG_FILE="$vm_output_config" \
+RUST_LOG=sos_compositor=info \
+  target/debug/sos-compositor \
+    --backend drm \
+    --socket wayland-sos \
+    --control-socket "$vm_control_socket" \
+    --shell-token "$vm_token" \
+    >"$vm_run_dir/compositor.out" 2>"$vm_run_dir/compositor.log" &
+vm_compositor_pid=$!
+for _ in {1..5000}; do
+  if [[ -S "$vm_runtime_dir/wayland-sos" \
+    && -S "$vm_control_socket" \
+    && -s "$vm_run_dir/compositor.out" ]] \
+    && grep -q 'completed significant DRM page flip.*recovery_view=true' "$vm_run_dir/compositor.log"; then
+    break
+  fi
+  if ! kill -0 "$vm_compositor_pid" 2>/dev/null; then
+    false
+  fi
+  sleep 0.01
+done
+grep -q 'sos_compositor_ready.*backend=drm.*evidence=drm_page_flip' \
+  "$vm_run_dir/compositor.out"
+grep -q 'completed significant DRM page flip.*recovery_view=true' "$vm_run_dir/compositor.log"
+grep -q 'initialized direct DRM/libinput session seat="seat0"' \
+  "$vm_run_dir/compositor.log"
+
+# Apply a live mode/scale/rotation configuration through the same DRM udev
+# lifecycle path used for connector changes. QEMU's Virtual-1 exposes this
+# standard mode; the compositor must stay alive and page flip the replacement.
+printf '{"mode":"1024x768","rotation":180,"scale":1.25}\n' >"$vm_output_config"
+sudo sh -c 'echo change > /sys/class/drm/card0/uevent'
+for _ in {1..2000}; do
+  if grep -q 'initialized direct KMS output.*width=1024.*height=768.*scale=1.25.*transform=_180' \
+    "$vm_run_dir/compositor.log"; then
+    break
+  fi
+  kill -0 "$vm_compositor_pid"
+  sleep 0.01
+done
+grep -q 'applying changed direct output configuration' "$vm_run_dir/compositor.log"
+grep -q 'initialized direct KMS output.*width=1024.*height=768.*scale=1.25.*transform=_180' \
+  "$vm_run_dir/compositor.log"
+
+XDG_RUNTIME_DIR="$vm_runtime_dir" \
+WAYLAND_DISPLAY=wayland-sos \
+SOS_COMPOSITOR_CONTROL="$vm_control_socket" \
+SOS_COMPOSITOR_TOKEN="$vm_token" \
+SOS_LINUX_REVISION_ROOT="$vm_revision_root" \
+  ./tools/sosctl linux-run >"$vm_run_dir/session.log" 2>&1 &
+vm_session_pid=$!
+for _ in {1..10000}; do
+  [[ -S "$vm_revision_root/run/supervisor.sock" ]] && break
+  if ! kill -0 "$vm_session_pid" 2>/dev/null; then
+    false
+  fi
+  sleep 0.01
+done
+[[ -S "$vm_revision_root/run/supervisor.sock" ]]
+
+if [[ -w /sys/class/drm/card0-Virtual-2/status ]]; then
+  vm_second_outputs_before="$(grep -c 'initialized direct KMS output.*output="Virtual-2"' "$vm_run_dir/compositor.log" || true)"
+  sudo sh -c 'echo on > /sys/class/drm/card0-Virtual-2/status; echo change > /sys/class/drm/card0/uevent'
+  for _ in {1..2000}; do
+    vm_second_outputs_after="$(grep -c 'initialized direct KMS output.*output="Virtual-2"' "$vm_run_dir/compositor.log" || true)"
+    if (( vm_second_outputs_after > vm_second_outputs_before )) \
+      && grep -q 'completed .*DRM page flip.*output="Virtual-2"' "$vm_run_dir/compositor.log"; then
+      break
+    fi
+    kill -0 "$vm_compositor_pid"
+    sleep 0.01
+  done
+  grep -q 'prepared initial direct output frame.*output="Virtual-2".*empty=false' \
+    "$vm_run_dir/compositor.log"
+  grep -q 'completed .*DRM page flip.*output="Virtual-2"' "$vm_run_dir/compositor.log"
+  sudo sh -c 'echo off > /sys/class/drm/card0-Virtual-2/status; echo change > /sys/class/drm/card0/uevent'
+fi
+
+vm_status_before="$(SOS_LINUX_REVISION_ROOT="$vm_revision_root" ./tools/sosctl linux-status)"
+vm_pid_before="$(sed -n 's/.*"host_pid":\([0-9][0-9]*\).*/\1/p' <<<"$vm_status_before")"
+vm_input_ready="$vm_run_dir/uinput-ready"
+# The test controller, not sudo, intentionally owns this disposable log.
+# shellcheck disable=SC2024
+sudo tools/linux-vm/inject-uinput "$vm_input_ready" 1500 \
+  >"$vm_run_dir/uinput.log" 2>&1 &
+vm_input_pid=$!
+for _ in {1..500}; do
+  [[ -s "$vm_input_ready" ]] && break
+  kill -0 "$vm_input_pid" 2>/dev/null
+  sleep 0.01
+done
+[[ -s "$vm_input_ready" ]]
+for vm_input_class in keyboard relative_pointer pointer_button touch; do
+  grep -q "observed native compositor input input_class=\"$vm_input_class\"" \
+    "$vm_run_dir/compositor.log"
+done
+vm_activation="$(
+  SOS_LINUX_REVISION_ROOT="$vm_revision_root" \
+    ./tools/sosctl linux-script tests/fixtures/linux-direct-input.luau
+)"
+wait "$vm_input_pid"
+vm_input_pid=""
+grep -q 'observed native compositor input input_class="tablet_pressure"' \
+  "$vm_run_dir/compositor.log"
+grep -Eq 'forwarded native tablet pressure pressure=0\.[1-9][0-9]*' \
+  "$vm_run_dir/compositor.log"
+grep -Eq 'detached focused input for revision quiesce keys=[1-9][0-9]* buttons=[1-9][0-9]* touches=2' \
+  "$vm_run_dir/compositor.log"
+grep -q 'suppressed key held across activation.*released=true' "$vm_run_dir/compositor.log"
+grep -q 'suppressed release for button held across activation' "$vm_run_dir/compositor.log"
+[[ "$(grep -c 'suppressed touch release held across activation' "$vm_run_dir/compositor.log")" -eq 2 ]]
+vm_status_after="$(SOS_LINUX_REVISION_ROOT="$vm_revision_root" ./tools/sosctl linux-status)"
+vm_pid_after="$(sed -n 's/.*"host_pid":\([0-9][0-9]*\).*/\1/p' <<<"$vm_status_after")"
+[[ -n "$vm_pid_before" && "$vm_pid_before" == "$vm_pid_after" ]]
+
+# Repeat the same held-device lifecycle through an authority rejection after
+# compositor quiesce. This proves discard/resume suppression as well as the
+# successful presentation path above.
+vm_input_ready="$vm_run_dir/uinput-abort-ready"
+# shellcheck disable=SC2024
+sudo tools/linux-vm/inject-uinput "$vm_input_ready" 1500 \
+  >"$vm_run_dir/uinput-abort.log" 2>&1 &
+vm_input_pid=$!
+for _ in {1..500}; do
+  [[ -s "$vm_input_ready" ]] && break
+  kill -0 "$vm_input_pid" 2>/dev/null
+  sleep 0.01
+done
+[[ -s "$vm_input_ready" ]]
+python3 - "$vm_revision_root/run/provider-state.sock" <<'PY'
+import json
+import socket
+import sys
+
+request = {
+    "protocol_version": 1,
+    "method": "configure_fault",
+    "request_id": 9001,
+    "point": "before_promotion",
+}
+client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+client.connect(sys.argv[1])
+client.sendall((json.dumps(request) + "\n").encode())
+response = bytearray()
+while not response.endswith(b"\n"):
+    response.extend(client.recv(65536))
+if not json.loads(response)["ok"]:
+    raise SystemExit("provider fault configuration was rejected")
+PY
+if SOS_LINUX_REVISION_ROOT="$vm_revision_root" \
+  ./tools/sosctl linux-script experiences/default.luau \
+    >"$vm_run_dir/aborted-activation.log" 2>&1; then
+  vm_abort_status=0
+else
+  vm_abort_status=$?
+fi
+[[ "$vm_abort_status" -ne 0 ]]
+wait "$vm_input_pid"
+vm_input_pid=""
+[[ "$(target/debug/sos-revision-supervisor status --root "$vm_revision_root")" == \
+  "$(sed -n 's/.*"revision_id": "\([0-9a-f]*\)".*/\1/p' "$vm_revision_root/authority.json" | head -1)" ]]
+[[ "$(grep -c 'detached focused input for revision quiesce keys=1 buttons=1 touches=2' "$vm_run_dir/compositor.log")" -ge 2 ]]
+[[ "$(grep -c 'suppressed key held across activation.*released=true' "$vm_run_dir/compositor.log")" -ge 2 ]]
+[[ "$(grep -c 'suppressed release for button held across activation' "$vm_run_dir/compositor.log")" -ge 2 ]]
+[[ "$(grep -c 'suppressed touch release held across activation' "$vm_run_dir/compositor.log")" -ge 4 ]]
+
+kill -KILL "$vm_pid_after"
+vm_restarted_pid=""
+for _ in {1..1000}; do
+  vm_restart_status="$(
+    SOS_LINUX_REVISION_ROOT="$vm_revision_root" ./tools/sosctl linux-status 2>/dev/null || true
+  )"
+  vm_restarted_pid="$(
+    sed -n 's/.*"host_pid":\([0-9][0-9]*\).*/\1/p' <<<"$vm_restart_status"
+  )"
+  if [[ -n "$vm_restarted_pid" && "$vm_restarted_pid" != "$vm_pid_after" ]]; then
+    break
+  fi
+  kill -0 "$vm_session_pid" 2>/dev/null
+  sleep 0.01
+done
+[[ -n "$vm_restarted_pid" && "$vm_restarted_pid" != "$vm_pid_after" ]]
+
+XDG_RUNTIME_DIR="$vm_runtime_dir" WAYLAND_DISPLAY=wayland-sos \
+  weston-simple-shm >"$vm_run_dir/compatibility.log" 2>&1 &
+vm_compatibility_pid=$!
+for _ in {1..500}; do
+  if grep -q 'mapped fixed-policy XDG toplevel role=Compatibility x=280 y=140' \
+    "$vm_run_dir/compositor.log"; then
+    break
+  fi
+  if ! kill -0 "$vm_compatibility_pid" 2>/dev/null; then
+    false
+  fi
+  sleep 0.01
+done
+
+vm_current_revision="$(
+  target/debug/sos-revision-supervisor status --root "$vm_revision_root"
+)"
+vm_authority_revision="$(
+  sed -n 's/.*"revision_id": "\([0-9a-f]*\)".*/\1/p' \
+    "$vm_revision_root/authority.json" | head -1
+)"
+[[ "$vm_current_revision" == "$vm_authority_revision" ]]
+[[ "$(grep -c 'evidence=drm_page_flip' "$vm_run_dir/session.log")" -eq 3 ]]
+if grep -qE 'evidence=(gpui_next_frame|nested_backend_submit)' "$vm_run_dir/session.log"; then
+  printf 'error: host used weaker presentation evidence in direct mode\n' >&2
+  exit 1
+fi
+[[ "$(grep -c 'presented armed shell revision.*evidence=\"drm_page_flip\"' \
+  "$vm_run_dir/compositor.log")" -eq 3 ]]
+grep -q "authenticated SOS shell control connection pid=$vm_pid_after" \
+  "$vm_run_dir/compositor.log"
+grep -q "authenticated SOS shell control connection pid=$vm_restarted_pid" \
+  "$vm_run_dir/compositor.log"
+grep -q 'HostRestarted' "$vm_run_dir/session.log"
+grep -q 'accepted Wayland client.*role=Compatibility' "$vm_run_dir/compositor.log"
+
+SOS_LINUX_REVISION_ROOT="$vm_revision_root" ./tools/sosctl linux-stop >/dev/null
+wait "$vm_session_pid"
+vm_session_pid=""
+
+printf 'linux_direct_session_passed activation_pid=%s restarted_pid=%s revision_id=%s evidence=drm_page_flip\n' \
+  "$vm_pid_after" "$vm_restarted_pid" "$vm_current_revision"
+printf 'activation=%s\n' "$vm_activation"
+printf 'authority_revision=%s\n' "$vm_authority_revision"
+grep -E \
+  'completed significant DRM page flip.*recovery_view=true|presented armed shell revision' \
+  "$vm_run_dir/compositor.log"

@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+vm_tools_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+vm_root="$(cd "$vm_tools_dir/../.." && pwd)"
+vm_cache_root="${SOS_LINUX_VM_ROOT:-$vm_root/.cache/linux-vm}"
+vm_name="${SOS_LINUX_VM_NAME:-sos-debian13}"
+vm_pid_file="$vm_cache_root/$vm_name.pid"
+vm_qmp_socket="$vm_cache_root/$vm_name-qmp.sock"
+
+[[ "$#" -eq 0 ]] || {
+  printf 'error: usage: tools/linux-vm/stop\n' >&2
+  exit 1
+}
+if [[ ! -e "$vm_pid_file" ]]; then
+  printf '%s is already stopped (no PID file).\n' "$vm_name"
+  exit 0
+fi
+[[ -s "$vm_pid_file" ]] || {
+  printf 'error: VM PID file is empty: %s\n' "$vm_pid_file" >&2
+  exit 1
+}
+vm_pid="$(<"$vm_pid_file")"
+[[ "$vm_pid" =~ ^[0-9]+$ ]] || {
+  printf 'error: invalid VM PID: %s\n' "$vm_pid" >&2
+  exit 1
+}
+
+if kill -0 "$vm_pid" 2>/dev/null; then
+  kill -TERM "$vm_pid"
+  for _ in {1..300}; do
+    kill -0 "$vm_pid" 2>/dev/null || break
+    sleep 0.1
+  done
+  kill -0 "$vm_pid" 2>/dev/null && {
+    printf 'error: QEMU PID %s did not stop after 30 seconds; refusing to force it\n' "$vm_pid" >&2
+    exit 1
+  }
+fi
+rm -- "$vm_pid_file"
+if [[ -S "$vm_qmp_socket" ]]; then
+  rm -- "$vm_qmp_socket"
+fi
+printf 'Stopped %s (QEMU PID %s); disk and logs were preserved.\n' "$vm_name" "$vm_pid"

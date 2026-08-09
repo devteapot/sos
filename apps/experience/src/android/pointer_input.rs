@@ -60,6 +60,7 @@ static SAMPLES: OnceLock<Mutex<VecDeque<Sample>>> = OnceLock::new();
 static ROUTER: OnceLock<Mutex<Router>> = OnceLock::new();
 static CLOCK: OnceLock<Instant> = OnceLock::new();
 
+#[cfg(target_os = "android")]
 pub fn install() {
     let start = *CLOCK.get_or_init(Instant::now);
     gpui_mobile::set_raw_touch_callback(Some(Box::new(move |event| {
@@ -84,6 +85,40 @@ pub fn install() {
             x: event.x,
             y: event.y,
             pressure: event.pressure.clamp(0.0, 1.0),
+            pointer_count: event.pointer_count.min(32),
+            event_time_nanos: start.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64,
+        });
+    })));
+}
+
+#[cfg(target_os = "linux")]
+pub fn install() {
+    let start = *CLOCK.get_or_init(Instant::now);
+    gpui_linux::set_raw_touch_callback(Some(Box::new(move |event| {
+        let phase = match event.phase {
+            gpui_linux::RawTouchPhase::Down => Phase::Down,
+            gpui_linux::RawTouchPhase::Move => Phase::Move,
+            gpui_linux::RawTouchPhase::Up => Phase::Up,
+            gpui_linux::RawTouchPhase::Cancel => Phase::Cancel,
+        };
+        if phase != Phase::Move {
+            log::info!(
+                "scene_pointer platform=linux phase={} id={} count={} pressure={}",
+                phase_name(phase),
+                event.id,
+                event.pointer_count,
+                event
+                    .pressure
+                    .map(|pressure| format!("{pressure:.3}"))
+                    .unwrap_or_else(|| "unavailable".into()),
+            );
+        }
+        push_sample(Sample {
+            id: event.id.max(0) as u64,
+            phase,
+            x: event.x,
+            y: event.y,
+            pressure: event.pressure.unwrap_or(1.0).clamp(0.0, 1.0),
             pointer_count: event.pointer_count.min(32),
             event_time_nanos: start.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64,
         });

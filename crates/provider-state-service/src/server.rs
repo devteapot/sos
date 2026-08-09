@@ -1,6 +1,7 @@
 use std::{
     fs,
     io::{BufRead, BufReader, Read, Write},
+    os::unix::fs::PermissionsExt as _,
     os::unix::net::{SocketAddr, UnixListener, UnixStream},
     path::Path,
 };
@@ -42,12 +43,22 @@ pub fn serve(
     let listener = bind(socket).map_err(|error| {
         std::io::Error::new(error.kind(), format!("bind service socket: {error}"))
     })?;
+    if !abstract_socket {
+        fs::set_permissions(socket, fs::Permissions::from_mode(0o660))?;
+    }
     let mut authority = Authority::open(state_file)?;
     let result = (|| {
         for stream in listener.incoming() {
             let mut stream = stream?;
-            if handle(&mut stream, &mut authority)? {
-                return Ok(());
+            match handle(&mut stream, &mut authority) {
+                Ok(true) => return Ok(()),
+                Ok(false) => {}
+                Err(error) => {
+                    // A requester may be cancelled or crash after sending its
+                    // bounded request. That connection must not take down the
+                    // durable provider authority or unrelated subscribers.
+                    eprintln!("provider_state_client_failed error={error}");
+                }
             }
         }
         Ok(())
@@ -114,9 +125,19 @@ fn handle(stream: &mut UnixStream, authority: &mut Authority) -> std::io::Result
             ),
         }
     };
-    serde_json::to_writer(&mut *stream, &response).map_err(std::io::Error::other)?;
-    stream.write_all(b"\n")?;
-    stream.flush()?;
+    let written = (|| {
+        serde_json::to_writer(&mut *stream, &response).map_err(std::io::Error::other)?;
+        stream.write_all(b"\n")?;
+        stream.flush()
+    })();
+    if let Err(error) = written {
+        if shutdown {
+            // Shutdown authority is carried by the authenticated request, not
+            // by the requester's continued presence for the acknowledgement.
+            return Ok(true);
+        }
+        return Err(error);
+    }
     Ok(shutdown)
 }
 

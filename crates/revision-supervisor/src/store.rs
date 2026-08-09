@@ -165,6 +165,14 @@ impl RevisionStore {
             }
             let manifest_bytes = serde_json::to_vec_pretty(&manifest)?;
             write_synced(&temporary.join("manifest.json"), &manifest_bytes, 0o444)?;
+            if let Some(key) = signing_key("SOS_REVISION_SIGNING_KEY_FILE")? {
+                let signature = hmac_sha256(&key, &manifest_bytes);
+                write_synced(
+                    &temporary.join("manifest.hmac-sha256"),
+                    format!("{signature}\n").as_bytes(),
+                    0o444,
+                )?;
+            }
             set_mode(&temporary, 0o555)?;
             sync_directory(&temporary)?;
             fs::rename(&temporary, &destination)?;
@@ -180,8 +188,17 @@ impl RevisionStore {
 
     pub fn verify(&self, revision_id: &str) -> Result<VerifiedRevision> {
         let directory = self.revision_path(revision_id)?;
-        let manifest: RevisionManifest =
-            serde_json::from_slice(&fs::read(directory.join("manifest.json"))?)?;
+        let manifest_bytes = fs::read(directory.join("manifest.json"))?;
+        if let Some(key) = signing_key("SOS_REVISION_VERIFY_KEY_FILE")? {
+            let expected = hmac_sha256(&key, &manifest_bytes);
+            let supplied = fs::read_to_string(directory.join("manifest.hmac-sha256"))?;
+            if !constant_time_equal(expected.as_bytes(), supplied.trim().as_bytes()) {
+                return Err(Error::InvalidRevision(
+                    "revision manifest signature mismatch".into(),
+                ));
+            }
+        }
+        let manifest: RevisionManifest = serde_json::from_slice(&manifest_bytes)?;
         if manifest.format_version != FORMAT_VERSION || manifest.revision_id != revision_id {
             return Err(Error::InvalidRevision(
                 "manifest format or revision identity mismatch".into(),
@@ -241,9 +258,34 @@ impl RevisionStore {
         self.verify(revision_id).map(Some)
     }
 
+    pub fn previous(&self) -> Result<Option<VerifiedRevision>> {
+        let pointer = self.root.join("previous");
+        let target = match fs::read_link(&pointer) {
+            Ok(target) => target,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error.into()),
+        };
+        let revision_id = target
+            .strip_prefix("revisions")
+            .ok()
+            .and_then(|value| value.to_str())
+            .ok_or_else(|| Error::InvalidPointer(target.clone()))?;
+        self.verify(revision_id).map(Some)
+    }
+
     pub fn set_current(&self, revision_id: &str) -> Result<()> {
         self.verify(revision_id)?;
         let sequence = TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        if let Ok(current_target) = fs::read_link(self.root.join("current")) {
+            let previous_temporary = self
+                .root
+                .join(format!(".previous-{}-{sequence}", std::process::id()));
+            symlink(current_target, &previous_temporary)?;
+            if let Err(error) = fs::rename(&previous_temporary, self.root.join("previous")) {
+                fs::remove_file(&previous_temporary).ok();
+                return Err(error.into());
+            }
+        }
         let temporary = self
             .root
             .join(format!(".current-{}-{sequence}", std::process::id()));
@@ -275,6 +317,56 @@ fn identity(path: &str, bytes: &[u8]) -> FileIdentity {
         size: bytes.len() as u64,
         sha256: digest(bytes),
     }
+}
+
+fn signing_key(variable: &str) -> Result<Option<Vec<u8>>> {
+    let Some(path) = std::env::var_os(variable).map(PathBuf::from) else {
+        return Ok(None);
+    };
+    let metadata = fs::metadata(&path)?;
+    if metadata.permissions().mode() & 0o077 != 0 || metadata.len() < 32 || metadata.len() > 4096 {
+        return Err(Error::InvalidRevision(format!(
+            "{variable} must name a private 32..4096-byte key file"
+        )));
+    }
+    Ok(Some(fs::read(path)?))
+}
+
+fn hmac_sha256(key: &[u8], message: &[u8]) -> String {
+    let mut block = [0_u8; 64];
+    if key.len() > block.len() {
+        block[..32].copy_from_slice(&Sha256::digest(key));
+    } else {
+        block[..key.len()].copy_from_slice(key);
+    }
+    let mut inner_key = block;
+    let mut outer_key = block;
+    for byte in &mut inner_key {
+        *byte ^= 0x36;
+    }
+    for byte in &mut outer_key {
+        *byte ^= 0x5c;
+    }
+    let mut inner = Sha256::new();
+    inner.update(inner_key);
+    inner.update(message);
+    let inner = inner.finalize();
+    let mut outer = Sha256::new();
+    outer.update(outer_key);
+    outer.update(inner);
+    format!("{:x}", outer.finalize())
+}
+
+fn constant_time_equal(left: &[u8], right: &[u8]) -> bool {
+    if left.len() != right.len() {
+        return false;
+    }
+    left.iter()
+        .zip(right)
+        .fold(0_u8, |difference, (left, right)| {
+            difference | (left ^ right)
+        })
+        == 0
 }
 
 fn verify_file(directory: &Path, expected: &FileIdentity) -> Result<()> {
@@ -487,9 +579,9 @@ fn validate_asset_bytes(kind: &str, bytes: &[u8]) -> Result<()> {
                 || bytes.starts_with(b"wOFF")
                 || bytes.starts_with(b"wOF2")
         }
-        "shader" => std::str::from_utf8(bytes).is_ok_and(|text| {
-            text.contains("@vertex") || text.contains("@fragment") || text.contains("@compute")
-        }),
+        "shader" => std::str::from_utf8(bytes)
+            .ok()
+            .is_some_and(validate_shader_asset),
         _ => false,
     };
     if !valid {
@@ -498,6 +590,40 @@ fn validate_asset_bytes(kind: &str, bytes: &[u8]) -> Result<()> {
         )));
     }
     Ok(())
+}
+
+fn validate_shader_asset(source: &str) -> bool {
+    let Ok(module) = naga::front::wgsl::parse_str(source) else {
+        return false;
+    };
+    if module
+        .global_variables
+        .iter()
+        .any(|(_, global)| global.binding.is_some())
+    {
+        return false;
+    }
+    let has_vertex = module
+        .entry_points
+        .iter()
+        .any(|entry| entry.name == "vs_main" && entry.stage == naga::ShaderStage::Vertex);
+    let has_fragment = module
+        .entry_points
+        .iter()
+        .any(|entry| entry.name == "fs_main" && entry.stage == naga::ShaderStage::Fragment);
+    let has_compute = module
+        .entry_points
+        .iter()
+        .any(|entry| entry.stage == naga::ShaderStage::Compute);
+    has_vertex
+        && has_fragment
+        && !has_compute
+        && naga::valid::Validator::new(
+            naga::valid::ValidationFlags::all(),
+            naga::valid::Capabilities::empty(),
+        )
+        .validate(&module)
+        .is_ok()
 }
 
 fn write_synced(path: &Path, bytes: &[u8], mode: u32) -> Result<()> {
@@ -515,4 +641,19 @@ fn set_mode(path: &Path, mode: u32) -> std::io::Result<()> {
 fn sync_directory(path: &Path) -> Result<()> {
     File::open(path)?.sync_all()?;
     Ok(())
+}
+
+#[cfg(test)]
+mod signing_tests {
+    use super::{constant_time_equal, hmac_sha256};
+
+    #[test]
+    fn detached_manifest_hmac_matches_standard_vector() {
+        assert_eq!(
+            hmac_sha256(b"key", b"The quick brown fox jumps over the lazy dog"),
+            "f7bc83f430538424b13298e6aa6fb143ef4d59a14946175997479dbc2d1a3cd8"
+        );
+        assert!(constant_time_equal(b"same", b"same"));
+        assert!(!constant_time_equal(b"same", b"diff"));
+    }
 }

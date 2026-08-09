@@ -1,0 +1,41 @@
+[package]
+name = "sos-compositor"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+anyhow = "1"
+compositor-control-protocol.workspace = true
+font8x8 = "0.3"
+nix = { version = "0.31", features = ["socket"] }
+serde_json.workspace = true
+serde.workspace = true
+smithay = { version = "=0.7.0", default-features = false, features = [
+    "desktop",
+    "wayland_frontend",
+    "xwayland",
+] }
+smithay-drm-extras = { version = "=0.1.0", default-features = false, optional = true }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[features]
+default = ["nested-backend"]
+direct-backend = [
+    "dep:smithay-drm-extras",
+    "smithay/backend_drm",
+    "smithay/backend_egl",
+    "smithay/backend_gbm",
+    "smithay/backend_libinput",
+    "smithay/backend_session_libseat",
+    "smithay/backend_udev",
+    "smithay/renderer_gl",
+    "smithay/use_system_lib",
+]
+nested-backend = ["smithay/backend_winit"]
+
+[[bin]]
+name = "sos-compositor"
+path = "src/main.rs"

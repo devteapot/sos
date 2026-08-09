@@ -1,0 +1,564 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+gate_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+cd "$gate_root"
+for gate_command in cargo gst-launch-1.0 jq python3 sed weston weston-simple-shm Xvfb Xwayland xmessage; do
+  command -v "$gate_command" >/dev/null 2>&1 || {
+    printf 'error: required command not found: %s\n' "$gate_command" >&2
+    exit 1
+  }
+done
+
+gate_run_dir="$(mktemp -d /tmp/sos-nested-compositor.XXXXXX)"
+gate_runtime_dir="$gate_run_dir/runtime"
+gate_revision_root="$gate_run_dir/revisions"
+gate_provider_root="$gate_run_dir/providers"
+gate_control_socket="$gate_runtime_dir/compositor-control.sock"
+gate_accessibility_socket="$gate_runtime_dir/accessibility.sock"
+gate_xwayland_display_file="$gate_runtime_dir/xwayland-display"
+gate_token="sos-nested-$BASHPID-$RANDOM"
+mkdir "$gate_runtime_dir"
+mkdir -p "$gate_provider_root/notes" "$gate_provider_root/calendar" "$gate_provider_root/surfaces"
+printf '# Linux note\nFile-backed provider data.\n' >"$gate_provider_root/notes/demo.md"
+printf 'BEGIN:VCALENDAR\nBEGIN:VEVENT\nDTSTART:20260809T093000\nSUMMARY:Linux provider gate\nDESCRIPTION:Live data\nEND:VEVENT\nEND:VCALENDAR\n' \
+  >"$gate_provider_root/calendar/demo.ics"
+printf '{"title":"Provider Song","artist":"MPRIS fixture","playing":true}\n' \
+  >"$gate_provider_root/music.json"
+gst-launch-1.0 -q videotestsrc num-buffers=1 pattern=smpte \
+  ! video/x-raw,width=160,height=90 ! pngenc \
+  ! filesink location="$gate_provider_root/surfaces/provider-video.png"
+printf '{"kind":"video","width":160,"height":90,"frame":"provider-video.png"}\n' \
+  >"$gate_provider_root/surfaces/provider-video.json"
+printf '{"kind":"camera","width":160,"height":90,"frame":"secure-camera.png","protected":true}\n' \
+  >"$gate_provider_root/surfaces/secure-camera.json"
+printf '{"*":["calendar_read","calendar_write","notes_read","notes_write","music_read","music_control","system_read","video_read","camera_read","protected_surface"]}\n' \
+  >"$gate_provider_root/grants.json"
+chmod 600 "$gate_provider_root/grants.json"
+chmod 700 "$gate_runtime_dir"
+gate_xvfb_pid=""
+gate_weston_pid=""
+gate_compositor_pid=""
+gate_session_pid=""
+gate_compatibility_pid=""
+gate_input_pid=""
+gate_ime_pid=""
+gate_x11_pid=""
+
+cleanup_nested_gate() {
+  if [[ -n "$gate_session_pid" ]] && kill -0 "$gate_session_pid" 2>/dev/null; then
+    SOS_LINUX_REVISION_ROOT="$gate_revision_root" \
+      ./tools/sosctl linux-stop >/dev/null 2>&1 || true
+    wait "$gate_session_pid" 2>/dev/null || true
+  fi
+  for gate_pid in \
+    "$gate_input_pid" \
+    "$gate_ime_pid" \
+    "$gate_x11_pid" \
+    "$gate_compatibility_pid" \
+    "$gate_compositor_pid" \
+    "$gate_weston_pid" \
+    "$gate_xvfb_pid"; do
+    if [[ -n "$gate_pid" ]] && kill -0 "$gate_pid" 2>/dev/null; then
+      kill "$gate_pid" 2>/dev/null || true
+      wait "$gate_pid" 2>/dev/null || true
+    fi
+  done
+  if [[ "$gate_run_dir" == /tmp/sos-nested-compositor.* && -d "$gate_run_dir" ]]; then
+    chmod -R u+w "$gate_run_dir" 2>/dev/null || true
+    rm -r -- "$gate_run_dir"
+  fi
+}
+trap cleanup_nested_gate EXIT
+
+report_nested_gate_failure() {
+  local gate_status="$?"
+  local gate_line="$1"
+  set +e
+  printf 'error: nested compositor gate failed at line %s (status %s)\n' \
+    "$gate_line" "$gate_status" >&2
+  for gate_log in compositor.log session.log ime.log compatibility.log weston.log; do
+    if [[ -f "$gate_run_dir/$gate_log" ]]; then
+      printf '%s:\n' "$gate_log" >&2
+      tail -n 120 "$gate_run_dir/$gate_log" >&2
+    fi
+  done
+  exit "$gate_status"
+}
+trap 'report_nested_gate_failure "$LINENO"' ERR
+
+inject_x11_input() {
+  DISPLAY="$gate_display" python3 - "$@" <<'PY'
+import ctypes
+import os
+import sys
+import time
+
+x11 = ctypes.CDLL("libX11.so.6")
+xtst = ctypes.CDLL("libXtst.so.6")
+x11.XOpenDisplay.argtypes = [ctypes.c_char_p]
+x11.XOpenDisplay.restype = ctypes.c_void_p
+x11.XStringToKeysym.argtypes = [ctypes.c_char_p]
+x11.XStringToKeysym.restype = ctypes.c_ulong
+x11.XKeysymToKeycode.argtypes = [ctypes.c_void_p, ctypes.c_ulong]
+x11.XKeysymToKeycode.restype = ctypes.c_uint
+x11.XFlush.argtypes = [ctypes.c_void_p]
+x11.XCloseDisplay.argtypes = [ctypes.c_void_p]
+xtst.XTestFakeKeyEvent.argtypes = [ctypes.c_void_p, ctypes.c_uint, ctypes.c_int, ctypes.c_ulong]
+xtst.XTestFakeButtonEvent.argtypes = [ctypes.c_void_p, ctypes.c_uint, ctypes.c_int, ctypes.c_ulong]
+xtst.XTestFakeMotionEvent.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_ulong]
+
+display_name = os.environ["DISPLAY"].encode()
+display = x11.XOpenDisplay(display_name)
+if not display:
+    raise SystemExit(f"could not open X display {display_name.decode()}")
+
+def keycode(name):
+    keysym = x11.XStringToKeysym(name.encode())
+    code = x11.XKeysymToKeycode(display, keysym)
+    if not keysym or not code:
+        raise SystemExit(f"X11 key is unavailable: {name}")
+    return code
+
+def key(name, pressed):
+    if not xtst.XTestFakeKeyEvent(display, keycode(name), int(pressed), 0):
+        raise SystemExit(f"could not inject X11 key: {name}")
+
+def tap(name):
+    key(name, True)
+    key(name, False)
+
+try:
+    mode = sys.argv[1]
+    if mode == "click":
+        x, y = int(sys.argv[2]), int(sys.argv[3])
+        xtst.XTestFakeMotionEvent(display, -1, x, y, 0)
+        xtst.XTestFakeButtonEvent(display, 1, 1, 0)
+        xtst.XTestFakeButtonEvent(display, 1, 0, 0)
+    elif mode == "spam":
+        name, count = sys.argv[2], int(sys.argv[3])
+        for _ in range(count):
+            tap(name)
+            x11.XFlush(display)
+            time.sleep(0.001)
+    elif mode == "replace":
+        key("Control_L", True)
+        tap("a")
+        key("Control_L", False)
+        for character in sys.argv[2]:
+            tap(character)
+        tap("Return")
+    elif mode == "ime":
+        for character in "nihao":
+            tap(character)
+        tap("Right")
+        tap("space")
+        tap("apostrophe")
+        tap("e")
+    elif mode == "clipboard":
+        key("Control_L", True)
+        tap("a")
+        tap("c")
+        tap("x")
+        tap("v")
+        key("Control_L", False)
+    else:
+        raise SystemExit(f"unknown injection mode: {mode}")
+    x11.XFlush(display)
+finally:
+    x11.XCloseDisplay(display)
+PY
+}
+
+accessibility_call() {
+  python3 - "$gate_accessibility_socket" "$1" <<'PY'
+import socket
+import sys
+
+client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+client.connect(sys.argv[1])
+client.sendall(sys.argv[2].encode() + b"\n")
+response = bytearray()
+while not response.endswith(b"\n"):
+    chunk = client.recv(65536)
+    if not chunk:
+        break
+    response.extend(chunk)
+sys.stdout.write(response.decode())
+PY
+}
+
+cargo build --locked \
+  -p sos-compositor --bin sos-compositor \
+  -p linux-input-method --bin sos-input-method \
+  -p sos-experience --features linux-host --bin sos-experience-host \
+  -p revision-supervisor --bin sos-revision-supervisor \
+  -p provider-state-service --bin sos-provider-state-service \
+  -p sos-linux-session --bin sos-linux-session
+
+Xvfb -displayfd 1 -screen 0 1280x800x24 \
+  >"$gate_run_dir/display" 2>"$gate_run_dir/xvfb.log" &
+gate_xvfb_pid=$!
+for _ in {1..200}; do
+  [[ -s "$gate_run_dir/display" ]] && break
+  kill -0 "$gate_xvfb_pid" 2>/dev/null || {
+    sed -n '1,120p' "$gate_run_dir/xvfb.log"
+    exit 1
+  }
+  sleep 0.01
+done
+gate_display=":$(tr -d '\r\n' < "$gate_run_dir/display")"
+
+DISPLAY="$gate_display" XDG_RUNTIME_DIR="$gate_runtime_dir" \
+  weston --backend=x11-backend.so --socket=wayland-outer \
+  --width=1280 --height=800 --idle-time=0 \
+  >"$gate_run_dir/weston.log" 2>&1 &
+gate_weston_pid=$!
+for _ in {1..500}; do
+  [[ -S "$gate_runtime_dir/wayland-outer" ]] && break
+  kill -0 "$gate_weston_pid" 2>/dev/null || {
+    sed -n '1,180p' "$gate_run_dir/weston.log"
+    exit 1
+  }
+  sleep 0.01
+done
+
+DISPLAY="$gate_display" \
+XDG_RUNTIME_DIR="$gate_runtime_dir" \
+WAYLAND_DISPLAY=wayland-outer \
+LIBGL_ALWAYS_SOFTWARE=1 \
+RUST_LOG=sos_compositor=info \
+  target/debug/sos-compositor \
+    --socket wayland-sos \
+    --control-socket "$gate_control_socket" \
+    --shell-token "$gate_token" \
+    --xwayland-display-file "$gate_xwayland_display_file" \
+    >"$gate_run_dir/compositor.out" 2>"$gate_run_dir/compositor.log" &
+gate_compositor_pid=$!
+for _ in {1..1000}; do
+  if [[ -S "$gate_runtime_dir/wayland-sos" && -S "$gate_control_socket" ]]; then
+    break
+  fi
+  kill -0 "$gate_compositor_pid" 2>/dev/null || {
+    sed -n '1,240p' "$gate_run_dir/compositor.log"
+    exit 1
+  }
+  sleep 0.01
+done
+[[ -S "$gate_runtime_dir/wayland-sos" ]]
+[[ -S "$gate_control_socket" ]]
+
+DISPLAY="$gate_display" \
+XDG_RUNTIME_DIR="$gate_runtime_dir" \
+WAYLAND_DISPLAY=wayland-sos \
+LIBGL_ALWAYS_SOFTWARE=1 \
+SOS_COMPOSITOR_CONTROL="$gate_control_socket" \
+SOS_COMPOSITOR_TOKEN="$gate_token" \
+SOS_LINUX_REVISION_ROOT="$gate_revision_root" \
+SOS_LINUX_PROVIDER_ROOT="$gate_provider_root" \
+SOS_PROVIDER_GRANTS="$gate_provider_root/grants.json" \
+SOS_PROVIDER_DEVELOPMENT_GRANTS=1 \
+SOS_ACCESSIBILITY_SOCKET="$gate_accessibility_socket" \
+  ./tools/sosctl linux-run --windowed >"$gate_run_dir/session.log" 2>&1 &
+gate_session_pid=$!
+for _ in {1..10000}; do
+  [[ -S "$gate_revision_root/run/supervisor.sock" ]] && break
+  kill -0 "$gate_session_pid" 2>/dev/null || {
+    sed -n '1,300p' "$gate_run_dir/session.log"
+    sed -n '1,300p' "$gate_run_dir/compositor.log"
+    exit 1
+  }
+  sleep 0.01
+done
+[[ -S "$gate_revision_root/run/supervisor.sock" ]]
+for _ in {1..1000}; do
+  [[ -S "$gate_accessibility_socket" ]] && break
+  kill -0 "$gate_session_pid" 2>/dev/null
+  sleep 0.01
+done
+[[ -S "$gate_accessibility_socket" ]]
+for _ in {1..1000}; do
+  grep -q 'sos_provider_frame_installed surface_id=provider-video' "$gate_run_dir/session.log" && break
+  kill -0 "$gate_session_pid" 2>/dev/null
+  sleep 0.01
+done
+grep -q 'sos_provider_frame_installed surface_id=provider-video' "$gate_run_dir/session.log"
+
+# Establish compositor keyboard focus, then keep native events flowing while
+# the coordinator crosses its explicit input-quiesce boundary.
+inject_x11_input click 640 400
+inject_x11_input spam F12 500 >"$gate_run_dir/input-inject.log" 2>&1 &
+gate_input_pid=$!
+sleep 0.02
+
+gate_status_before="$(
+  SOS_LINUX_REVISION_ROOT="$gate_revision_root" ./tools/sosctl linux-status
+)"
+gate_pid_before="$(
+  sed -n 's/.*"host_pid":\([0-9][0-9]*\).*/\1/p' <<<"$gate_status_before"
+)"
+gate_activation="$(
+  SOS_LINUX_REVISION_ROOT="$gate_revision_root" \
+    ./tools/sosctl linux-script experiences/daily-flow.luau
+)"
+if kill -0 "$gate_input_pid" 2>/dev/null; then
+  kill "$gate_input_pid"
+fi
+wait "$gate_input_pid" 2>/dev/null || true
+gate_input_pid=""
+grep -Eq 'finished compositor input quiesce suppressed_events=[1-9][0-9]* restore_shell_focus=true' \
+  "$gate_run_dir/compositor.log"
+gate_suppressed_events="$(
+  sed -n \
+    's/.*finished compositor input quiesce suppressed_events=\([1-9][0-9]*\).*/\1/p' \
+    "$gate_run_dir/compositor.log"
+)"
+[[ -n "$gate_suppressed_events" ]]
+
+# The candidate autofocuses its native GPUI text session. These events enter
+# through XTest, the outer Weston seat, Smithay, and the inner wl_keyboard.
+sleep 0.2
+inject_x11_input replace wayland
+for _ in {1..1000}; do
+  if [[ "$(jq -r '.current.state.draft // empty' "$gate_revision_root/authority.json")" == wayland ]] && \
+    [[ "$(jq -r '.current.state.last_saved // false' "$gate_revision_root/authority.json")" == true ]]; then
+    break
+  fi
+  kill -0 "$gate_session_pid" 2>/dev/null
+  sleep 0.01
+done
+[[ "$(jq -r '.current.state.draft // empty' "$gate_revision_root/authority.json")" == wayland ]]
+[[ "$(jq -r '.current.state.last_saved // false' "$gate_revision_root/authority.json")" == true ]]
+gate_accessibility_snapshot="$(accessibility_call '{"method":"snapshot"}')"
+[[ "$(jq -r '.ok' <<<"$gate_accessibility_snapshot")" == true ]]
+jq -e '.snapshot.nodes[] | select(.id == "note-draft" and .role == "text_field" and .editable)' \
+  <<<"$gate_accessibility_snapshot" >/dev/null
+[[ "$(accessibility_call '{"method":"action","kind":"next","target":"daily-flow-root"}' | jq -r '.ok')" == true ]]
+[[ "$(accessibility_call '{"method":"action","kind":"previous","target":"daily-flow-root"}' | jq -r '.ok')" == true ]]
+[[ "$(accessibility_call '{"method":"action","kind":"activate","target":"music-toggle"}' | jq -r '.ok')" == true ]]
+[[ "$(accessibility_call '{"method":"action","kind":"scroll_forward","target":"daily-flow-root"}' | jq -r '.ok')" == true ]]
+for gate_accessibility_action in next previous activate scroll_forward; do
+  for _ in {1..500}; do
+    grep -q "sos_accessibility_action kind=$gate_accessibility_action" "$gate_run_dir/session.log" && break
+    sleep 0.01
+  done
+  grep -q "sos_accessibility_action kind=$gate_accessibility_action" "$gate_run_dir/session.log"
+done
+gate_accessibility_generation="$(accessibility_call '{"method":"snapshot"}' | jq -r '.snapshot.generation')"
+[[ "$(accessibility_call '{"method":"action","kind":"focus","target":"note-draft"}' | jq -r '.ok')" == true ]]
+gate_accessibility_wait="$(accessibility_call "{\"method\":\"wait\",\"after_generation\":$gate_accessibility_generation,\"timeout_ms\":2000}")"
+[[ "$(jq -r '.ok' <<<"$gate_accessibility_wait")" == true ]]
+[[ "$(jq -r '.snapshot.focused' <<<"$gate_accessibility_wait")" == note-draft ]]
+[[ "$(accessibility_call '{"method":"action","kind":"set_selection","target":"note-draft","value":"0:7"}' | jq -r '.ok')" == true ]]
+[[ "$(accessibility_call '{"method":"action","kind":"copy","target":"note-draft"}' | jq -r '.ok')" == true ]]
+[[ "$(accessibility_call '{"method":"action","kind":"cut","target":"note-draft"}' | jq -r '.ok')" == true ]]
+for _ in {1..500}; do
+  [[ "$(jq -r '.current.state.draft // "missing"' "$gate_revision_root/authority.json")" == "" ]] && break
+  sleep 0.01
+done
+[[ "$(accessibility_call '{"method":"action","kind":"paste","target":"note-draft"}' | jq -r '.ok')" == true ]]
+for _ in {1..500}; do
+  [[ "$(jq -r '.current.state.draft // empty' "$gate_revision_root/authority.json")" == wayland ]] && break
+  sleep 0.01
+done
+[[ "$(jq -r '.current.state.draft // empty' "$gate_revision_root/authority.json")" == wayland ]]
+for gate_accessibility_action in focus set_selection copy cut paste; do
+  for _ in {1..500}; do
+    grep -q "sos_accessibility_action kind=$gate_accessibility_action" "$gate_run_dir/session.log" && break
+    sleep 0.01
+  done
+  grep -q "sos_accessibility_action kind=$gate_accessibility_action" "$gate_run_dir/session.log"
+done
+# GPUI's copy owns a wl_data_source, cut mutates the field, and paste reads the
+# compositor's wl_data_offer. The final value proves the round trip preserved
+# UTF-8 data through the Wayland clipboard path.
+inject_x11_input clipboard
+for _ in {1..1000}; do
+  if [[ "$(jq -r '.current.state.draft // empty' "$gate_revision_root/authority.json")" == wayland ]] && \
+    grep -q 'sos_linux_clipboard action=paste bytes=7' "$gate_run_dir/session.log"; then
+    break
+  fi
+  kill -0 "$gate_session_pid" 2>/dev/null
+  sleep 0.01
+done
+grep -q 'sos_linux_clipboard action=copy bytes=7' "$gate_run_dir/session.log"
+grep -q 'sos_linux_clipboard action=cut bytes=7' "$gate_run_dir/session.log"
+grep -q 'sos_linux_clipboard action=paste bytes=7' "$gate_run_dir/session.log"
+[[ "$(jq -r '.current.state.draft // empty' "$gate_revision_root/authority.json")" == wayland ]]
+# Mutating a real provider file must rerender the accepted revision in place;
+# no prepare/commit/presentation fence is involved.
+gate_presentations_before="$(grep -c 'sos_revision_frame' "$gate_run_dir/session.log")"
+gate_provider_sha_before="$(
+  grep 'sos_provider_frame_installed surface_id=provider-video' "$gate_run_dir/session.log" \
+    | tail -1 | sed -n 's/.*sha256=\([0-9a-f]*\).*/\1/p'
+)"
+gate_provider_refreshes_before="$(grep -c 'sos_provider_model_refreshed' "$gate_run_dir/session.log" || true)"
+printf '# Linux note changed\nLive subscription reached the host.\n' \
+  >"$gate_provider_root/notes/demo.md"
+gst-launch-1.0 -q videotestsrc num-buffers=1 pattern=ball \
+  ! video/x-raw,width=160,height=90 ! pngenc \
+  ! filesink location="$gate_provider_root/surfaces/provider-video.next.png"
+mv "$gate_provider_root/surfaces/provider-video.next.png" \
+  "$gate_provider_root/surfaces/provider-video.png"
+for _ in {1..1000}; do
+  gate_provider_sha_after="$(
+    grep 'sos_provider_frame_installed surface_id=provider-video' "$gate_run_dir/session.log" \
+      | tail -1 | sed -n 's/.*sha256=\([0-9a-f]*\).*/\1/p'
+  )"
+  gate_provider_refreshes_after="$(grep -c 'sos_provider_model_refreshed' "$gate_run_dir/session.log" || true)"
+  if [[ -n "$gate_provider_sha_after" && "$gate_provider_sha_after" != "$gate_provider_sha_before" ]] && \
+    [[ "$gate_provider_refreshes_after" -gt "$gate_provider_refreshes_before" ]]; then
+    break
+  fi
+  kill -0 "$gate_session_pid" 2>/dev/null
+  sleep 0.01
+done
+grep -q 'sos_provider_event generation=' "$gate_run_dir/session.log"
+grep -q 'sos_provider_model_refreshed' "$gate_run_dir/session.log"
+[[ -n "$gate_provider_sha_after" && "$gate_provider_sha_after" != "$gate_provider_sha_before" ]]
+[[ "$(grep -c 'sos_revision_frame' "$gate_run_dir/session.log")" == "$gate_presentations_before" ]]
+gate_status_after="$(
+  SOS_LINUX_REVISION_ROOT="$gate_revision_root" ./tools/sosctl linux-status
+)"
+gate_pid_after="$(
+  sed -n 's/.*"host_pid":\([0-9][0-9]*\).*/\1/p' <<<"$gate_status_after"
+)"
+[[ -n "$gate_pid_before" && "$gate_pid_before" == "$gate_pid_after" ]]
+
+# Attach before the recovery transition. Smithay then proves the focused
+# text-input-v3 session deactivates with the failed host and activates again on
+# the replacement host, instead of relying on a synthetic initial event.
+XDG_RUNTIME_DIR="$gate_runtime_dir" WAYLAND_DISPLAY=wayland-sos \
+  target/debug/sos-input-method >"$gate_run_dir/ime.out" 2>"$gate_run_dir/ime.log" &
+gate_ime_pid=$!
+for _ in {1..500}; do
+  grep -q 'sos-ime: attached input-method-v2' "$gate_run_dir/ime.log" && break
+  kill -0 "$gate_ime_pid" 2>/dev/null
+  sleep 0.01
+done
+grep -q 'sos-ime: attached input-method-v2' "$gate_run_dir/ime.log"
+
+kill -KILL "$gate_pid_after"
+gate_restarted_pid=""
+for _ in {1..1000}; do
+  gate_restart_status="$(
+    SOS_LINUX_REVISION_ROOT="$gate_revision_root" ./tools/sosctl linux-status 2>/dev/null || true
+  )"
+  gate_restarted_pid="$(
+    sed -n 's/.*"host_pid":\([0-9][0-9]*\).*/\1/p' <<<"$gate_restart_status"
+  )"
+  if [[ -n "$gate_restarted_pid" && "$gate_restarted_pid" != "$gate_pid_after" ]]; then
+    break
+  fi
+  kill -0 "$gate_session_pid" 2>/dev/null
+  sleep 0.01
+done
+[[ -n "$gate_restarted_pid" && "$gate_restarted_pid" != "$gate_pid_after" ]]
+for _ in {1..1000}; do
+  if [[ -S "$gate_accessibility_socket" ]] && \
+    accessibility_call '{"method":"snapshot"}' 2>/dev/null | jq -e '.ok' >/dev/null; then
+    break
+  fi
+  sleep 0.01
+done
+accessibility_call '{"method":"snapshot"}' | jq -e '.ok' >/dev/null
+
+# Physical key events traverse XTest, Weston, Smithay's input-method keyboard
+# grab, the compose engine, and GPUI's EntityInputHandler.
+inject_x11_input click 640 400
+for _ in {1..1000}; do
+  if grep -q 'sos-ime: activated' "$gate_run_dir/ime.log" && \
+    grep -q 'sos-ime: cursor-rectangle=' "$gate_run_dir/ime.log"; then
+    break
+  fi
+  kill -0 "$gate_ime_pid" 2>/dev/null
+  sleep 0.01
+done
+grep -q 'sos-ime: activated' "$gate_run_dir/ime.log"
+grep -q 'sos-ime: cursor-rectangle=' "$gate_run_dir/ime.log"
+inject_x11_input ime
+for _ in {1..500}; do
+  grep -q 'selected=Some("你号")' "$gate_run_dir/ime.log" && break
+  kill -0 "$gate_ime_pid" 2>/dev/null
+  sleep 0.01
+done
+grep -q 'candidates=\["你好", "你号"\] selected=Some("你号")' \
+  "$gate_run_dir/ime.log"
+
+for _ in {1..500}; do
+  [[ -s "$gate_xwayland_display_file" ]] && break
+  kill -0 "$gate_compositor_pid"
+  sleep 0.01
+done
+[[ "$(cat "$gate_xwayland_display_file")" =~ ^:[0-9]+$ ]]
+DISPLAY="$(cat "$gate_xwayland_display_file")" \
+  xmessage -buttons OK:0 -default OK 'SOS XWayland compatibility gate' \
+  >"$gate_run_dir/xwayland-client.log" 2>&1 &
+gate_x11_pid=$!
+for _ in {1..500}; do
+  grep -q 'mapped bounded XWayland window' "$gate_run_dir/compositor.log" && break
+  kill -0 "$gate_x11_pid"
+  sleep 0.01
+done
+grep -q 'rootless XWayland ready' "$gate_run_dir/compositor.log"
+grep -q 'mapped bounded XWayland window' "$gate_run_dir/compositor.log"
+
+XDG_RUNTIME_DIR="$gate_runtime_dir" WAYLAND_DISPLAY=wayland-sos \
+  weston-simple-shm >"$gate_run_dir/compatibility.log" 2>&1 &
+gate_compatibility_pid=$!
+for _ in {1..500}; do
+  if grep -q 'mapped fixed-policy XDG toplevel role=Compatibility x=280 y=140' \
+    "$gate_run_dir/compositor.log"; then
+    break
+  fi
+  kill -0 "$gate_compatibility_pid" 2>/dev/null || {
+    sed -n '1,120p' "$gate_run_dir/compatibility.log"
+    exit 1
+  }
+  sleep 0.01
+done
+
+gate_current_revision="$(
+  target/debug/sos-revision-supervisor status --root "$gate_revision_root"
+)"
+gate_authority_revision="$(
+  sed -n 's/.*"revision_id": "\([0-9a-f]*\)".*/\1/p' \
+    "$gate_revision_root/authority.json" | head -1
+)"
+[[ "$gate_current_revision" == "$gate_authority_revision" ]]
+[[ "$(grep -c 'evidence=nested_backend_submit' "$gate_run_dir/session.log")" -eq 3 ]]
+if grep -q 'evidence=gpui_next_frame' "$gate_run_dir/session.log"; then
+  printf 'error: host fell back to GPUI next-frame evidence\n' >&2
+  exit 1
+fi
+grep -q "authenticated SOS shell control connection pid=$gate_pid_after" \
+  "$gate_run_dir/compositor.log"
+grep -q "accepted Wayland client pid=$gate_pid_after role=Shell" \
+  "$gate_run_dir/compositor.log"
+grep -q "authenticated SOS shell control connection pid=$gate_restarted_pid" \
+  "$gate_run_dir/compositor.log"
+grep -q "accepted Wayland client pid=$gate_restarted_pid role=Shell" \
+  "$gate_run_dir/compositor.log"
+[[ "$(grep -c 'presented armed shell revision' "$gate_run_dir/compositor.log")" -eq 3 ]]
+grep -q 'HostRestarted' "$gate_run_dir/session.log"
+grep -q 'accepted Wayland client.*role=Compatibility' "$gate_run_dir/compositor.log"
+grep -q 'mapped fixed-policy XDG toplevel role=Compatibility x=280 y=140' \
+  "$gate_run_dir/compositor.log"
+grep -q 'mapped bounded XWayland window' "$gate_run_dir/compositor.log"
+
+SOS_LINUX_REVISION_ROOT="$gate_revision_root" ./tools/sosctl linux-stop >/dev/null
+wait "$gate_session_pid"
+gate_session_pid=""
+
+printf 'linux_nested_compositor_passed activation_pid=%s restarted_pid=%s revision_id=%s evidence=nested_backend_submit\n' \
+  "$gate_pid_after" "$gate_restarted_pid" "$gate_current_revision"
+printf 'activation=%s\n' "$gate_activation"
+printf 'authority_revision=%s\n' "$gate_authority_revision"
+printf 'native_text=%s input_quiesce_suppressed_events=%s\n' \
+  "$(jq -r '.current.state.draft' "$gate_revision_root/authority.json")" \
+  "$gate_suppressed_events"
+grep -E 'attached input-method|cursor-rectangle|selected=Some' "$gate_run_dir/ime.log"
+grep -E \
+  'authenticated SOS shell|mapped fixed-policy|presented armed shell revision' \
+  "$gate_run_dir/compositor.log"

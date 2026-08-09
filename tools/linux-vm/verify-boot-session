@@ -1,0 +1,799 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+vm_tools_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+vm_repo_root="$(cd "$vm_tools_dir/../.." && pwd)"
+vm_cache_root="${SOS_LINUX_VM_ROOT:-$vm_repo_root/.cache/linux-vm}"
+vm_ssh_port="${SOS_LINUX_VM_SSH_PORT:-2222}"
+vm_ssh_user="${SOS_LINUX_VM_SSH_USER:-sos}"
+vm_guest_root="${SOS_LINUX_VM_GUEST_ROOT:-/home/$vm_ssh_user/sos}"
+vm_ssh_key="${SOS_LINUX_VM_SSH_PRIVATE_KEY:-$vm_cache_root/id_ed25519}"
+vm_destination="$vm_ssh_user@127.0.0.1"
+vm_ssh_options=(
+  -p "$vm_ssh_port"
+  -o BatchMode=yes
+  -o ConnectTimeout=5
+  -o StrictHostKeyChecking=no
+  -o UserKnownHostsFile=/dev/null
+)
+if [[ -f "$vm_ssh_key" ]]; then
+  vm_ssh_options+=(-i "$vm_ssh_key")
+fi
+
+fail() {
+  printf 'error: %s\n' "$*" >&2
+  exit 1
+}
+
+for vm_command in rsync ssh; do
+  command -v "$vm_command" >/dev/null 2>&1 || fail "required command not found: $vm_command"
+done
+[[ "$#" -eq 0 ]] || fail "usage: tools/linux-vm/verify-boot-session"
+[[ "$vm_ssh_port" =~ ^[0-9]+$ ]] || fail "SSH port must be numeric"
+[[ "$vm_guest_root" == /home/*/sos* ]] || \
+  fail "guest worktree must be an explicit path below /home ending in an SOS directory"
+
+vm_ssh() {
+  # Arguments intentionally form the remote command after SSH has connected.
+  # shellcheck disable=SC2029
+  ssh "${vm_ssh_options[@]}" "$vm_destination" "$@"
+}
+
+wait_for_vm_down() {
+  for _ in {1..90}; do
+    if ! vm_ssh true >/dev/null 2>&1; then
+      return
+    fi
+    sleep 1
+  done
+  fail "VM did not disconnect for reboot"
+}
+
+wait_for_vm_up() {
+  for _ in {1..240}; do
+    if vm_ssh true >/dev/null 2>&1; then
+      return
+    fi
+    sleep 1
+  done
+  fail "VM did not return after reboot"
+}
+
+vm_cleanup_required=false
+vm_cleanup_complete=false
+cleanup_boot_gate() {
+  local vm_status="$?"
+  trap - EXIT INT TERM
+  if [[ "$vm_cleanup_required" == true && "$vm_cleanup_complete" == false ]]; then
+  set +e
+    wait_for_vm_up
+    vm_ssh 'bash -s' <<'REMOTE_CLEANUP'
+set +e
+sudo systemctl set-default graphical.target
+sudo systemctl disable --now sos-agent.target
+sudo systemctl stop sos-session.service
+sudo systemctl enable seatd.service
+sudo systemctl start seatd.service
+sudo systemctl start gdm.service
+sudo rm -f -- \
+  /etc/systemd/system/sos-session.service \
+  /etc/systemd/system/sos-session.target \
+  /etc/systemd/system/sos-agent-authoring.service \
+  /etc/systemd/system/sos-agent.service \
+  /etc/systemd/system/sos-agent.target
+sudo rm -r -- \
+  /usr/local/libexec/sos \
+  /usr/local/libexec/sos-agent \
+  /usr/share/sos \
+  /usr/share/doc/sos \
+  /etc/sos \
+  /var/lib/sos \
+  /var/lib/sos-agent
+for vm_user in sos-agent sos-host sos-supervisor sos-provider sos-compositor; do
+  sudo userdel "$vm_user" 2>/dev/null || true
+done
+sudo gpasswd -d sos sos-ipc >/dev/null 2>&1 || true
+sudo groupdel sos-ipc 2>/dev/null || true
+sudo systemctl daemon-reload
+REMOTE_CLEANUP
+  fi
+  exit "$vm_status"
+}
+trap cleanup_boot_gate EXIT INT TERM
+
+vm_preflight="$(vm_ssh 'bash -s' <<'REMOTE_PREFLIGHT'
+set -euo pipefail
+systemd-detect-virt --quiet
+source /etc/os-release
+[[ "${ID:-}" == debian && "${VERSION_ID:-}" == 13 ]]
+[[ "$(systemctl get-default)" == graphical.target ]]
+systemctl is-active --quiet gdm.service
+systemctl is-active --quiet seatd.service
+[[ "$(systemctl is-enabled seatd.service)" == enabled ]]
+for path in \
+  /usr/local/libexec/sos \
+  /usr/local/libexec/sos-agent \
+  /usr/share/sos \
+  /usr/share/doc/sos \
+  /etc/sos \
+  /var/lib/sos \
+  /var/lib/sos-agent \
+  /etc/systemd/system/sos-session.service \
+  /etc/systemd/system/sos-session.target \
+  /etc/systemd/system/sos-agent-authoring.service \
+  /etc/systemd/system/sos-agent.service \
+  /etc/systemd/system/sos-agent.target; do
+  [[ ! -e "$path" ]]
+done
+for vm_user in sos-agent sos-host sos-supervisor sos-provider sos-compositor; do
+  ! id "$vm_user" >/dev/null 2>&1
+done
+! getent group sos-ipc >/dev/null
+printf 'os=%s version=%s kernel=%s\n' "$ID" "$VERSION_ID" "$(uname -r)"
+REMOTE_PREFLIGHT
+)" || fail "reference VM preflight failed or found pre-existing SOS boot-session state"
+printf 'Preparing disposable SOS boot session (%s).\n' "$vm_preflight"
+
+vm_ssh_transport="ssh -p $vm_ssh_port -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
+if [[ -f "$vm_ssh_key" ]]; then
+  vm_ssh_transport+=" -i $vm_ssh_key"
+fi
+rsync -a --delete \
+  --exclude .cache --exclude .git --exclude artifacts --exclude target \
+  -e "$vm_ssh_transport" \
+  "$vm_repo_root/" "$vm_destination:$vm_guest_root/"
+
+vm_ssh "cd '$vm_guest_root' && cargo build --locked \
+  -p sos-compositor --features direct-backend --bin sos-compositor \
+  -p sos-experience --features linux-host --bin sos-experience-host \
+  -p revision-supervisor --bin sos-revision-supervisor \
+  -p provider-state-service --bin sos-provider-state-service \
+  -p sos-linux-session --bin sos-linux-session \
+  && cargo build --locked -p sos-linux-session --bin sos-agent-authoring \
+  && cd services/sos-agent && npm ci --ignore-scripts && npm run build"
+
+vm_cleanup_required=true
+vm_ssh 'bash -s' -- "$vm_guest_root" <<'REMOTE_INSTALL'
+set -euo pipefail
+vm_guest_root="$1"
+vm_bin_dir=/usr/local/libexec/sos
+if ! getent group sos-ipc >/dev/null; then
+  sudo groupadd --system sos-ipc
+fi
+for vm_user in sos-compositor sos-provider sos-supervisor sos-host sos-agent; do
+  if ! id "$vm_user" >/dev/null 2>&1; then
+    sudo useradd --system --gid sos-ipc --no-create-home \
+      --home-dir /nonexistent --shell /usr/sbin/nologin "$vm_user"
+  fi
+done
+sudo usermod -a -G sos-ipc sos
+sudo install -d -o root -g root -m 0755 "$vm_bin_dir" /etc/sos
+for vm_binary in \
+  sos-compositor \
+  sos-experience-host \
+  sos-provider-state-service \
+  sos-revision-supervisor \
+  sos-linux-session \
+  sos-agent-authoring; do
+  sudo install -o root -g root -m 0755 \
+    "$vm_guest_root/target/debug/$vm_binary" "$vm_bin_dir/$vm_binary"
+done
+sudo install -d -o root -g root -m 0755 \
+  /usr/local/libexec/sos-agent \
+  /usr/share/sos/experiences \
+  /usr/share/doc/sos
+sudo cp -a "$vm_guest_root/services/sos-agent/dist" \
+  "$vm_guest_root/services/sos-agent/node_modules" \
+  "$vm_guest_root/services/sos-agent/package.json" \
+  /usr/local/libexec/sos-agent/
+sudo install -o root -g root -m 0644 \
+  "$vm_guest_root/docs/experience-api.md" /usr/share/doc/sos/experience-api.md
+sudo install -o root -g root -m 0644 \
+  "$vm_guest_root/docs/sos-agent.md" /usr/share/doc/sos/sos-agent.md
+for vm_experience in default.luau daily-flow.luau timeflow.luau; do
+  sudo install -o root -g root -m 0644 \
+    "$vm_guest_root/experiences/$vm_experience" "/usr/share/sos/experiences/$vm_experience"
+done
+sudo install -o root -g root -m 0644 \
+  "$vm_guest_root/packaging/systemd/sos-session.service" \
+  /etc/systemd/system/sos-session.service
+sudo install -o root -g root -m 0644 \
+  "$vm_guest_root/packaging/systemd/sos-session.target" \
+  /etc/systemd/system/sos-session.target
+for vm_agent_unit in sos-agent-authoring.service sos-agent.service sos-agent.target; do
+  sudo install -o root -g root -m 0644 \
+    "$vm_guest_root/packaging/systemd/$vm_agent_unit" "/etc/systemd/system/$vm_agent_unit"
+done
+sudo sh -c 'umask 077; od -An -N32 -tx1 /dev/urandom | tr -d " \n" > /etc/sos/shell-token'
+sudo chown root:root /etc/sos/shell-token
+sudo chmod 0400 /etc/sos/shell-token
+sudo sh -c 'printf "%s\n" \
+  "SOS_AGENT_PROVIDER=openai-codex" \
+  "SOS_AGENT_MODEL=gpt-5.6-sol" \
+  "SOS_AGENT_FAKE_SOURCE=/usr/share/sos/experiences/timeflow.luau" \
+  > /etc/sos/agent.env'
+sudo chown root:root /etc/sos/agent.env
+sudo chmod 0444 /etc/sos/agent.env
+sudo install -d -o sos-compositor -g sos-ipc -m 0750 /var/lib/sos
+sudo install -d -o sos-supervisor -g sos-ipc -m 0750 /var/lib/sos/revisions
+sudo install -d -o sos-supervisor -g sos-ipc -m 0750 /var/lib/sos/staging
+sudo install -o sos-supervisor -g sos-ipc -m 0640 \
+  "$vm_guest_root/experiences/default.luau" /var/lib/sos/staging/default.luau
+sudo install -o sos-supervisor -g sos-ipc -m 0640 \
+  "$vm_guest_root/experiences/daily-flow.luau" /var/lib/sos/staging/daily-flow.luau
+sudo install -o sos-supervisor -g sos-ipc -m 0640 \
+  "$vm_guest_root/tests/fixtures/empty-state.json" /var/lib/sos/staging/empty-state.json
+vm_revision="$(sudo -u sos-supervisor "$vm_bin_dir/sos-revision-supervisor" install \
+  --root /var/lib/sos/revisions \
+  --source /var/lib/sos/staging/default.luau \
+  --state /var/lib/sos/staging/empty-state.json \
+  --schema 1 \
+  --api 3)"
+sudo -u sos-supervisor "$vm_bin_dir/sos-revision-supervisor" bootstrap \
+  --root /var/lib/sos/revisions \
+  --revision "$vm_revision" >/dev/null
+sudo systemctl daemon-reload
+sudo systemd-analyze verify \
+  /etc/systemd/system/sos-session.service \
+  /etc/systemd/system/sos-session.target \
+  /etc/systemd/system/sos-agent-authoring.service \
+  /etc/systemd/system/sos-agent.service \
+  /etc/systemd/system/sos-agent.target
+sudo systemctl enable sos-agent.target
+sudo systemctl disable --now seatd.service
+sudo systemctl set-default sos-session.target
+printf 'boot_revision=%s\n' "$vm_revision"
+REMOTE_INSTALL
+
+printf 'Rebooting into sos-session.target; SSH is used only as the test controller.\n'
+vm_ssh 'sudo systemctl reboot' >/dev/null 2>&1 || true
+wait_for_vm_down
+wait_for_vm_up
+
+vm_agent_evidence="$(vm_ssh 'bash -s' <<'REMOTE_AGENT'
+set -euo pipefail
+vm_bin_dir=/usr/local/libexec/sos
+vm_revision_root=/var/lib/sos/revisions
+for _ in {1..3000}; do
+  if systemctl is-active --quiet sos-session.service \
+    && systemctl is-active --quiet sos-agent-authoring.service \
+    && systemctl is-active --quiet sos-agent.service \
+    && [[ -S /run/sos-agent/agent.sock ]] \
+    && [[ -S /run/sos/accessibility.sock ]] \
+    && [[ -S "$vm_revision_root/run/supervisor.sock" ]] \
+    && sudo journalctl -b -t sos-linux-session --no-pager -n 240 \
+      | grep 'linux_system_session_ready.*evidence=drm_page_flip' >/dev/null; then
+    break
+  fi
+  sleep 0.02
+done
+systemctl is-active --quiet sos-session.service
+systemctl is-active --quiet sos-agent-authoring.service
+systemctl is-active --quiet sos-agent.service
+[[ -S /run/sos-agent/agent.sock ]]
+[[ -S /run/sos/accessibility.sock ]]
+[[ -S "$vm_revision_root/run/supervisor.sock" ]]
+accessibility_call() {
+  python3 - /run/sos/accessibility.sock "$1" <<'PY'
+import socket
+import sys
+
+client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+client.connect(sys.argv[1])
+client.sendall(sys.argv[2].encode() + b"\n")
+response = bytearray()
+while not response.endswith(b"\n"):
+    chunk = client.recv(65536)
+    if not chunk:
+        break
+    response.extend(chunk)
+sys.stdout.write(response.decode())
+PY
+}
+vm_before_status="$(sudo -u sos-supervisor "$vm_bin_dir/sos-revision-supervisor" daemon-status \
+  --root "$vm_revision_root")"
+vm_before_revision="$(jq -er '.active_revision' <<<"$vm_before_status")"
+vm_before_host="$(jq -er '.host_pid' <<<"$vm_before_status")"
+vm_agent_snapshot="$(accessibility_call '{"method":"snapshot"}')"
+if ! jq -e '.ok and any(.snapshot.nodes[]; .id == "agent-prompt" and .editable)' \
+  <<<"$vm_agent_snapshot" >/dev/null; then
+  printf 'agent composer missing from semantic snapshot: %s\n' "$vm_agent_snapshot" >&2
+  exit 1
+fi
+[[ "$(accessibility_call '{"method":"action","kind":"set_value","target":"agent-prompt","value":"Turn this into a spatial time flow"}' | jq -r '.ok')" == true ]]
+for _ in {1..500}; do
+  if accessibility_call '{"method":"snapshot"}' \
+    | jq -e 'any(.snapshot.nodes[]; .id == "agent-prompt" and .value == "Turn this into a spatial time flow")' >/dev/null; then
+    break
+  fi
+  sleep 0.02
+done
+accessibility_call '{"method":"snapshot"}' \
+  | jq -e 'any(.snapshot.nodes[]; .id == "agent-prompt" and .value == "Turn this into a spatial time flow")' >/dev/null
+[[ "$(accessibility_call '{"method":"action","kind":"submit","target":"agent-prompt"}' | jq -r '.ok')" == true ]]
+for _ in {1..3000}; do
+  vm_after_status="$(sudo -u sos-supervisor "$vm_bin_dir/sos-revision-supervisor" daemon-status \
+    --root "$vm_revision_root")"
+  vm_after_revision="$(jq -er '.active_revision' <<<"$vm_after_status")"
+  [[ "$vm_after_revision" != "$vm_before_revision" ]] && break
+  sleep 0.02
+done
+vm_after_status="$(sudo -u sos-supervisor "$vm_bin_dir/sos-revision-supervisor" daemon-status \
+  --root "$vm_revision_root")"
+vm_after_revision="$(jq -er '.active_revision' <<<"$vm_after_status")"
+vm_after_host="$(jq -er '.host_pid' <<<"$vm_after_status")"
+[[ "$vm_after_revision" =~ ^[0-9a-f]{64}$ ]]
+[[ "$vm_after_revision" != "$vm_before_revision" ]]
+[[ "$vm_after_host" == "$vm_before_host" ]]
+vm_agent_pid="$(systemctl show sos-agent.service -p MainPID --value)"
+vm_broker_pid="$(systemctl show sos-agent-authoring.service -p MainPID --value)"
+[[ "$(ps -o user= -p "$vm_agent_pid" | xargs)" == sos-agent ]]
+[[ "$(ps -o user= -p "$vm_broker_pid" | xargs)" == sos-supervisor ]]
+for vm_tool in get_experience_context validate_experience submit_experience; do
+  sudo journalctl -b -t sos-linux-session --no-pager \
+    | grep "sos_agent_tool_started name=$vm_tool" >/dev/null
+done
+sudo journalctl -b -t sos-linux-session --no-pager \
+  | grep "presented armed shell revision.*revision_id=\"$vm_after_revision\".*evidence=\"drm_page_flip\"" >/dev/null
+for _ in {1..1000}; do
+  if accessibility_call '{"method":"snapshot"}' \
+    | jq -e 'any(.snapshot.nodes[]; .id == "agent-status" and .value == "Ready") and any(.snapshot.nodes[]; .label == "SOS message" and (.value | contains("candidate experience is active")))' >/dev/null; then
+    break
+  fi
+  sleep 0.02
+done
+vm_agent_final_snapshot="$(accessibility_call '{"method":"snapshot"}')"
+if ! jq -e 'any(.snapshot.nodes[]; .id == "agent-status" and .value == "Ready") and any(.snapshot.nodes[]; .label == "SOS message" and (.value | contains("candidate experience is active")))' \
+  <<<"$vm_agent_final_snapshot" >/dev/null; then
+  printf 'agent completion missing from semantic snapshot: %s\n' "$vm_agent_final_snapshot" >&2
+  exit 1
+fi
+printf 'linux_boot_agent_luau_passed host_pid=%s initial_revision=%s active_revision=%s agent_pid=%s broker_pid=%s input=text_session effect=agent.prompt tools=context,validate,submit evidence=drm_page_flip\n' \
+  "$vm_after_host" "$vm_before_revision" "$vm_after_revision" "$vm_agent_pid" "$vm_broker_pid"
+REMOTE_AGENT
+)" || fail "packaged resident Pi agent did not activate a visible boot-session revision"
+printf '%s\n' "$vm_agent_evidence"
+
+# Exercise lifecycle behavior while the packaged, PAM/logind-owned compositor
+# owns the seat.  The ARM virt machine has no platform wake source, so switch
+# away from the compositor VT (the same libseat pause/activation boundary), run
+# Linux's userspace freeze/resume test, and switch back before the unsupported
+# final platform power stage. Device hotplug is exercised independently below;
+# QEMU virtio-net does not resume from the deeper `pm_test=devices` level.
+vm_lifecycle_main_before="$(vm_ssh 'bash -s' <<'REMOTE_LIFECYCLE_SUSPEND'
+set -euo pipefail
+switch_vt() {
+  sudo python3 - "$1" <<'PY'
+import fcntl
+import os
+import struct
+import sys
+
+VT_ACTIVATE = 0x5606
+VT_WAITACTIVE = 0x5607
+fd = os.open("/dev/tty0", os.O_RDWR | os.O_CLOEXEC)
+try:
+    number = int(sys.argv[1])
+    fcntl.ioctl(fd, VT_ACTIVATE, number)
+    fcntl.ioctl(fd, VT_WAITACTIVE, number)
+finally:
+    os.close(fd)
+PY
+}
+restore_lifecycle_state() {
+  set +e
+  sudo sh -c 'echo none > /sys/power/pm_test; echo on > /sys/class/drm/card0-Virtual-1/status; echo off > /sys/class/drm/card0-Virtual-2/status; echo change > /sys/class/drm/card0/uevent'
+  switch_vt 1
+}
+trap restore_lifecycle_state EXIT
+for _ in {1..3000}; do
+  if systemctl is-active --quiet sos-session.service \
+    && sudo journalctl -b -t sos-linux-session --no-pager -n 240 \
+      | grep 'linux_system_session_ready.*evidence=drm_page_flip' >/dev/null; then
+    break
+  fi
+  sleep 0.02
+done
+systemctl is-active --quiet sos-session.service
+vm_main_before="$(systemctl show sos-session.service -p MainPID --value)"
+[[ "$vm_main_before" =~ ^[1-9][0-9]*$ ]]
+vm_entries_before="$(sudo journalctl -k -b --no-pager | grep -c 'PM: suspend entry (s2idle)' || true)"
+vm_exits_before="$(sudo journalctl -k -b --no-pager | grep -c 'PM: suspend exit' || true)"
+vm_pauses_before="$(sudo journalctl -b -t sos-linux-session --no-pager | grep -c 'direct session paused' || true)"
+vm_activations_before="$(sudo journalctl -b -t sos-linux-session --no-pager | grep -c 'direct session activated' || true)"
+switch_vt 2
+for _ in {1..1000}; do
+  vm_pauses_after="$(sudo journalctl -b -t sos-linux-session --no-pager | grep -c 'direct session paused' || true)"
+  (( vm_pauses_after > vm_pauses_before )) && break
+  sleep 0.02
+done
+(( vm_pauses_after > vm_pauses_before ))
+sudo sh -c 'echo freezer > /sys/power/pm_test; echo mem > /sys/power/state; echo none > /sys/power/pm_test'
+switch_vt 1
+for _ in {1..1000}; do
+  vm_activations_after="$(sudo journalctl -b -t sos-linux-session --no-pager | grep -c 'direct session activated' || true)"
+  (( vm_activations_after > vm_activations_before )) && break
+  sleep 0.02
+done
+(( vm_activations_after > vm_activations_before ))
+vm_entries_after="$(sudo journalctl -k -b --no-pager | grep -c 'PM: suspend entry (s2idle)' || true)"
+vm_exits_after="$(sudo journalctl -k -b --no-pager | grep -c 'PM: suspend exit' || true)"
+(( vm_entries_after > vm_entries_before ))
+(( vm_exits_after > vm_exits_before ))
+[[ "$(systemctl show sos-session.service -p MainPID --value)" == "$vm_main_before" ]]
+sudo journalctl -b -t sos-linux-session --no-pager | grep 'direct session paused' >/dev/null
+sudo journalctl -b -t sos-linux-session --no-pager | grep 'direct session activated' >/dev/null
+
+vm_disconnects_before="$(sudo journalctl -b -t sos-linux-session --no-pager | grep -c 'disconnected DRM output' || true)"
+vm_outputs_before="$(sudo journalctl -b -t sos-linux-session --no-pager | grep -c 'initialized direct KMS output' || true)"
+sudo sh -c 'echo off > /sys/class/drm/card0-Virtual-1/status; echo change > /sys/class/drm/card0/uevent'
+for _ in {1..1000}; do
+  vm_disconnects_after="$(sudo journalctl -b -t sos-linux-session --no-pager | grep -c 'disconnected DRM output' || true)"
+  (( vm_disconnects_after > vm_disconnects_before )) && break
+  sleep 0.02
+done
+(( vm_disconnects_after > vm_disconnects_before ))
+[[ "$(systemctl show sos-session.service -p MainPID --value)" == "$vm_main_before" ]]
+sudo sh -c 'echo on > /sys/class/drm/card0-Virtual-1/status; echo change > /sys/class/drm/card0/uevent'
+for _ in {1..1000}; do
+  vm_outputs_after="$(sudo journalctl -b -t sos-linux-session --no-pager | grep -c 'initialized direct KMS output' || true)"
+  (( vm_outputs_after > vm_outputs_before )) && break
+  sleep 0.02
+done
+(( vm_outputs_after > vm_outputs_before ))
+[[ "$(systemctl show sos-session.service -p MainPID --value)" == "$vm_main_before" ]]
+
+trap - EXIT
+printf '%s\n' "$vm_main_before"
+REMOTE_LIFECYCLE_SUSPEND
+)" || fail "packaged compositor did not survive suspend/output lifecycle campaign"
+[[ "$vm_lifecycle_main_before" =~ ^[1-9][0-9]*$ ]] || \
+  fail "invalid lifecycle compositor-owner PID"
+
+vm_evidence="$(vm_ssh 'bash -s' -- "$vm_guest_root" <<'REMOTE_VERIFY'
+set -euo pipefail
+vm_guest_root="$1"
+vm_bin_dir=/usr/local/libexec/sos
+vm_revision_root=/var/lib/sos/revisions
+vm_provider_socket=/run/sos/provider-state.sock
+
+report_boot_failure() {
+  local vm_status="$?"
+  local vm_line="$1"
+  trap - ERR
+  printf 'boot-session assertion failed at line %s (status %s)\n' \
+    "$vm_line" "$vm_status" >&2
+  sudo systemctl status sos-session.service --no-pager -l >&2 || true
+  sudo journalctl -b -t sos-linux-session --no-pager -n 240 >&2 || true
+  exit "$vm_status"
+}
+trap 'report_boot_failure "$LINENO"' ERR
+
+wait_for_unit_ready() {
+  for _ in {1..3000}; do
+    if systemctl is-active --quiet sos-session.service \
+      && sudo journalctl -b -t sos-linux-session --no-pager -n 240 \
+        | grep 'linux_system_session_ready.*evidence=drm_page_flip' >/dev/null; then
+      return
+    fi
+    sleep 0.02
+  done
+  sudo systemctl status sos-session.service --no-pager -l >&2 || true
+  sudo journalctl -b -t sos-linux-session --no-pager -n 240 >&2 || true
+  return 1
+}
+
+host_pid() {
+  sudo -u sos-supervisor "$vm_bin_dir/sos-revision-supervisor" daemon-status \
+    --root "$vm_revision_root" | jq -er '.host_pid'
+}
+
+recovery_action() {
+  python3 - "$1" <<'PY'
+import json
+import socket
+import sys
+
+client = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+client.sendto(
+    (json.dumps({"action": sys.argv[1]}) + "\n").encode(),
+    "/run/sos/recovery-command.sock",
+)
+PY
+}
+
+authority_revision() {
+  sudo jq -er '.. | .revision_id? // empty' /var/lib/sos/provider/authority.json | sed -n '1p'
+}
+
+wait_for_unit_ready
+[[ "$(systemctl get-default)" == sos-session.target ]]
+! systemctl is-active --quiet seatd.service
+vm_main_before="$(systemctl show sos-session.service -p MainPID --value)"
+[[ "$vm_main_before" =~ ^[1-9][0-9]*$ ]]
+vm_session="$(loginctl show-seat seat0 -p ActiveSession --value)"
+[[ -n "$vm_session" ]]
+[[ "$(loginctl show-session "$vm_session" -p Active --value)" == yes ]]
+[[ "$(loginctl show-session "$vm_session" -p Seat --value)" == seat0 ]]
+[[ "$(loginctl show-session "$vm_session" -p TTY --value)" == tty1 ]]
+[[ "$(loginctl show-session "$vm_session" -p Type --value)" == wayland ]]
+[[ "$(loginctl show-session "$vm_session" -p Leader --value)" == "$vm_main_before" ]]
+sudo journalctl -b -t sos-linux-session --no-pager \
+  | grep 'initialized direct DRM/libinput session seat="seat0"' >/dev/null
+sudo journalctl -b -t sos-linux-session --no-pager -n 240 \
+  | grep 'completed significant DRM page flip.*recovery_view=true' >/dev/null
+sudo journalctl -b -t sos-linux-session --no-pager \
+  | grep 'sos_compositor_presenting evidence=drm_page_flip' >/dev/null
+
+vm_compositor_pid="$(pgrep -P "$vm_main_before" -f '^/usr/local/libexec/sos/sos-compositor')"
+vm_provider_pid="$(pgrep -P "$vm_main_before" -f '^/usr/local/libexec/sos/sos-provider-state-service')"
+vm_supervisor_pid="$(pgrep -P "$vm_main_before" -f '^/usr/local/libexec/sos/sos-revision-supervisor')"
+vm_host_before="$(host_pid)"
+vm_actual_host_before="$(pgrep -u sos-host -f '^/usr/local/libexec/sos/sos-experience-host')"
+for vm_pid in \
+  "$vm_main_before" "$vm_compositor_pid" "$vm_provider_pid" \
+  "$vm_supervisor_pid" "$vm_host_before" "$vm_actual_host_before"; do
+  [[ "$vm_pid" =~ ^[1-9][0-9]*$ ]]
+done
+
+declare -A vm_expected_users=(
+  ["$vm_main_before"]=sos-compositor
+  ["$vm_compositor_pid"]=sos-compositor
+  ["$vm_provider_pid"]=sos-provider
+  ["$vm_supervisor_pid"]=sos-supervisor
+  ["$vm_host_before"]=sos-supervisor
+  ["$vm_actual_host_before"]=sos-host
+)
+for vm_pid in "${!vm_expected_users[@]}"; do
+  [[ "$(ps -o user= -p "$vm_pid" | xargs)" == "${vm_expected_users[$vm_pid]}" ]]
+done
+for vm_pid in "$vm_compositor_pid" "$vm_provider_pid" "$vm_supervisor_pid" "$vm_actual_host_before"; do
+  [[ "$(sudo awk '/^CapEff:/ { print $2 }' "/proc/$vm_pid/status")" == 0000000000000000 ]]
+done
+
+[[ "$(sudo stat -c '%a %U %G' /etc/sos/shell-token)" == '400 root root' ]]
+vm_token="$(sudo cat /etc/sos/shell-token)"
+[[ ${#vm_token} -eq 64 ]]
+for vm_pid in "$vm_main_before" "$vm_compositor_pid" "$vm_supervisor_pid" "$vm_host_before" "$vm_actual_host_before"; do
+  vm_process_data="$(sudo sh -c "tr '\\0' '\\n' < /proc/$vm_pid/cmdline; tr '\\0' '\\n' < /proc/$vm_pid/environ")"
+  [[ "$vm_process_data" != *"$vm_token"* ]]
+done
+vm_compositor_command="$(sudo sh -c "tr '\\0' '\\n' < /proc/$vm_compositor_pid/cmdline")"
+grep -Fxq -- '--shell-token-file' <<<"$vm_compositor_command"
+! grep -Fxq -- '--shell-token' <<<"$vm_compositor_command"
+vm_host_environment="$(sudo sh -c "tr '\\0' '\\n' < /proc/$vm_actual_host_before/environ")"
+grep -Eq '^SOS_COMPOSITOR_TOKEN_FILE=/run/sos/credential-host-[0-9]+$' \
+  <<<"$vm_host_environment"
+vm_compositor_credential="$(sudo find /run/sos -maxdepth 1 -type f \
+  -name 'credential-compositor-*' -user sos-compositor -print -quit)"
+vm_host_credential="$(sudo find /run/sos -maxdepth 1 -type f \
+  -name 'credential-host-*' -user sos-host -print -quit)"
+[[ "$(sudo stat -c '%a %U' "$vm_compositor_credential")" == '400 sos-compositor' ]]
+[[ "$(sudo stat -c '%a %U' "$vm_host_credential")" == '400 sos-host' ]]
+
+vm_candidate="$(sudo -u sos-supervisor "$vm_bin_dir/sos-revision-supervisor" install \
+  --root "$vm_revision_root" \
+  --source /var/lib/sos/staging/daily-flow.luau \
+  --state /var/lib/sos/staging/empty-state.json \
+  --schema 1 \
+  --api 3)"
+vm_transaction="$(sudo -u sos-supervisor "$vm_bin_dir/sos-linux-session" stage \
+  --root "$vm_revision_root" \
+  --revision "$vm_candidate" \
+  --service-socket "$vm_provider_socket")"
+vm_activation="$(sudo -u sos-supervisor "$vm_bin_dir/sos-revision-supervisor" activate \
+  --root "$vm_revision_root" \
+  --revision "$vm_candidate" \
+  --transaction "$vm_transaction")"
+vm_host_after="$(host_pid)"
+[[ "$vm_host_after" == "$vm_host_before" ]]
+[[ "$(sudo -u sos-supervisor "$vm_bin_dir/sos-revision-supervisor" status --root "$vm_revision_root")" == "$vm_candidate" ]]
+[[ "$(authority_revision)" == "$vm_candidate" ]]
+
+# Exercise the lifecycle command used by the compositor-owned recovery panel,
+# not a privileged test-only rollback path. Rolling back twice proves both
+# revision directions while returning the rest of the campaign to vm_candidate.
+for _ in {1..1000}; do
+  if [[ "$(sudo jq -r '.current_revision' /run/sos/recovery.json)" == "$vm_candidate" ]] \
+    && [[ "$(sudo jq -r '.previous_revision' /run/sos/recovery.json)" =~ ^[0-9a-f]{64}$ ]]; then
+    break
+  fi
+  sleep 0.02
+done
+vm_previous="$(sudo jq -er '.previous_revision' /run/sos/recovery.json)"
+[[ "$vm_previous" =~ ^[0-9a-f]{64}$ && "$vm_previous" != "$vm_candidate" ]]
+recovery_action rollback
+for _ in {1..1000}; do
+  if [[ "$(sudo -u sos-supervisor "$vm_bin_dir/sos-revision-supervisor" status --root "$vm_revision_root" 2>/dev/null || true)" == "$vm_previous" ]] \
+    && [[ "$(sudo jq -r '.current_revision' /run/sos/recovery.json)" == "$vm_previous" ]] \
+    && [[ "$(sudo jq -r '.progress' /run/sos/recovery.json)" == RUNNING ]]; then
+    break
+  fi
+  sleep 0.02
+done
+[[ "$(authority_revision)" == "$vm_previous" ]]
+[[ "$(host_pid)" == "$vm_host_after" ]]
+recovery_action rollback
+for _ in {1..1000}; do
+  if [[ "$(sudo -u sos-supervisor "$vm_bin_dir/sos-revision-supervisor" status --root "$vm_revision_root" 2>/dev/null || true)" == "$vm_candidate" ]] \
+    && [[ "$(sudo jq -r '.current_revision' /run/sos/recovery.json)" == "$vm_candidate" ]] \
+    && [[ "$(sudo jq -r '.progress' /run/sos/recovery.json)" == RUNNING ]]; then
+    break
+  fi
+  sleep 0.02
+done
+[[ "$(authority_revision)" == "$vm_candidate" ]]
+[[ "$(host_pid)" == "$vm_host_after" ]]
+[[ "$(sudo jq -r '.current_revision' /run/sos/recovery.json)" == "$vm_candidate" ]]
+[[ "$(sudo jq -r '.progress' /run/sos/recovery.json)" == RUNNING ]]
+[[ "$(sudo journalctl -b -t sos-linux-session --no-pager | grep -c 'linux_recovery_action_completed action=rollback')" -eq 2 ]]
+
+sudo kill -KILL "$vm_actual_host_before"
+vm_restarted_host=""
+for _ in {1..1000}; do
+  vm_restarted_host="$(host_pid 2>/dev/null || true)"
+  if [[ "$vm_restarted_host" =~ ^[1-9][0-9]*$ && "$vm_restarted_host" != "$vm_host_after" ]]; then
+    break
+  fi
+  sleep 0.02
+done
+[[ "$vm_restarted_host" =~ ^[1-9][0-9]*$ && "$vm_restarted_host" != "$vm_host_after" ]]
+vm_restarted_actual_host=""
+for _ in {1..1000}; do
+  vm_restarted_actual_host="$(pgrep -u sos-host -f '^/usr/local/libexec/sos/sos-experience-host' || true)"
+  [[ "$vm_restarted_actual_host" =~ ^[1-9][0-9]*$ \
+    && "$vm_restarted_actual_host" != "$vm_actual_host_before" ]] && break
+  sleep 0.02
+done
+[[ "$vm_restarted_actual_host" =~ ^[1-9][0-9]*$ \
+  && "$vm_restarted_actual_host" != "$vm_actual_host_before" ]]
+vm_presented_count="$(sudo journalctl -b -t sos-linux-session --no-pager -n 320 \
+  | grep -c 'presented armed shell revision.*evidence="drm_page_flip"' || true)"
+[[ "$vm_presented_count" -ge 3 ]]
+sudo journalctl -b -t sos-linux-session --no-pager \
+  | grep 'HostRestarted' >/dev/null
+
+vm_ready_count_before="$(sudo journalctl -b -t sos-linux-session --no-pager \
+  | grep -c 'linux_system_session_ready.*evidence=drm_page_flip')"
+sudo kill -KILL "$vm_provider_pid"
+for _ in {1..500}; do
+  vm_provider_state="$(sudo awk '{ print $3 }' "/proc/$vm_provider_pid/stat" 2>/dev/null || true)"
+  [[ -z "$vm_provider_state" || "$vm_provider_state" == Z || "$vm_provider_state" == X ]] && break
+  sleep 0.02
+done
+[[ -z "$vm_provider_state" || "$vm_provider_state" == Z || "$vm_provider_state" == X ]]
+vm_main_after=""
+for _ in {1..600}; do
+  vm_main_after="$(systemctl show sos-session.service -p MainPID --value)"
+  if [[ "$vm_main_after" =~ ^[1-9][0-9]*$ \
+    && "$vm_main_after" != "$vm_main_before" ]]; then
+    break
+  fi
+  sleep 0.05
+done
+[[ "$vm_main_after" =~ ^[1-9][0-9]*$ && "$vm_main_after" != "$vm_main_before" ]]
+wait_for_unit_ready
+for _ in {1..200}; do
+  vm_ready_count_after="$(sudo journalctl -b -t sos-linux-session --no-pager \
+    | grep -c 'linux_system_session_ready.*evidence=drm_page_flip' || true)"
+  [[ "$vm_ready_count_after" -gt "$vm_ready_count_before" ]] && break
+  sleep 0.05
+done
+[[ "$vm_ready_count_after" -gt "$vm_ready_count_before" ]]
+systemctl is-active --quiet sos-session.service
+vm_session_after="$(loginctl show-seat seat0 -p ActiveSession --value)"
+[[ -n "$vm_session_after" ]]
+[[ "$(loginctl show-session "$vm_session_after" -p Active --value)" == yes ]]
+[[ "$(loginctl show-session "$vm_session_after" -p Leader --value)" == "$vm_main_after" ]]
+vm_host_after_restart="$(host_pid)"
+[[ "$vm_host_after_restart" =~ ^[1-9][0-9]*$ ]]
+[[ "$(sudo -u sos-supervisor "$vm_bin_dir/sos-revision-supervisor" status --root "$vm_revision_root")" == "$vm_candidate" ]]
+[[ "$(authority_revision)" == "$vm_candidate" ]]
+vm_restart_count="$(systemctl show sos-session.service -p NRestarts --value)"
+[[ "$vm_restart_count" -ge 1 ]]
+
+# Kill the PAM/session lifecycle owner itself. The replacement must validate
+# the persisted PID/start-time registry, reap every process from the abandoned
+# scope (including the separately-owned host), and establish a fresh seat.
+vm_old_tree=(
+  "$vm_main_after"
+  "$(pgrep -P "$vm_main_after" -f '^/usr/local/libexec/sos/sos-compositor')"
+  "$(pgrep -P "$vm_main_after" -f '^/usr/local/libexec/sos/sos-provider-state-service')"
+  "$(pgrep -P "$vm_main_after" -f '^/usr/local/libexec/sos/sos-revision-supervisor')"
+  "$(pgrep -u sos-host -f '^/usr/local/libexec/sos/sos-experience-host')"
+)
+vm_ready_count_before_owner_kill="$(sudo journalctl -b -t sos-linux-session --no-pager \
+  | grep -c 'linux_system_session_ready.*evidence=drm_page_flip')"
+sudo kill -KILL "$vm_main_after"
+vm_main_final=""
+for _ in {1..600}; do
+  vm_main_final="$(systemctl show sos-session.service -p MainPID --value)"
+  if [[ "$vm_main_final" =~ ^[1-9][0-9]*$ \
+    && "$vm_main_final" != "$vm_main_after" ]]; then
+    break
+  fi
+  sleep 0.05
+done
+[[ "$vm_main_final" =~ ^[1-9][0-9]*$ && "$vm_main_final" != "$vm_main_after" ]]
+wait_for_unit_ready
+for _ in {1..200}; do
+  vm_ready_count_final="$(sudo journalctl -b -t sos-linux-session --no-pager \
+    | grep -c 'linux_system_session_ready.*evidence=drm_page_flip' || true)"
+  [[ "$vm_ready_count_final" -gt "$vm_ready_count_before_owner_kill" ]] && break
+  sleep 0.05
+done
+[[ "$vm_ready_count_final" -gt "$vm_ready_count_before_owner_kill" ]]
+systemctl is-active --quiet sos-session.service
+for vm_old_pid in "${vm_old_tree[@]}"; do
+  [[ "$vm_old_pid" =~ ^[1-9][0-9]*$ ]]
+  ! sudo kill -0 "$vm_old_pid" 2>/dev/null
+done
+vm_session_final="$(loginctl show-seat seat0 -p ActiveSession --value)"
+[[ "$(loginctl show-session "$vm_session_final" -p Leader --value)" == "$vm_main_final" ]]
+[[ "$(ps -o user= -p "$vm_main_final" | xargs)" == sos-compositor ]]
+[[ "$(ps -o user= -p "$(pgrep -u sos-host -f '^/usr/local/libexec/sos/sos-experience-host')" | xargs)" == sos-host ]]
+[[ "$(sudo -u sos-supervisor "$vm_bin_dir/sos-revision-supervisor" status --root "$vm_revision_root")" == "$vm_candidate" ]]
+[[ "$(authority_revision)" == "$vm_candidate" ]]
+sudo journalctl -b -t sos-linux-session --no-pager \
+  | grep 'linux_system_session_recovered artifact=abandoned_process_registry' >/dev/null
+vm_restart_count="$(systemctl show sos-session.service -p NRestarts --value)"
+[[ "$vm_restart_count" -ge 2 ]]
+
+printf 'linux_boot_session_passed session=%s main_pid=%s activation_pid=%s recovered_host_pid=%s restarted_main_pid=%s restarted_host_pid=%s lifecycle_recovered_main_pid=%s revision_id=%s nrestarts=%s identities=separated evidence=drm_page_flip\n' \
+  "$vm_session" "$vm_main_before" "$vm_host_after" "$vm_restarted_host" \
+  "$vm_main_after" "$vm_host_after_restart" "$vm_main_final" "$vm_candidate" "$vm_restart_count"
+printf 'activation=%s\n' "$vm_activation"
+sudo journalctl -b -t sos-linux-session --no-pager \
+  | grep -E 'sos_compositor_presenting|linux_system_session_ready|presented armed shell revision' \
+  | tail -n 24
+REMOTE_VERIFY
+)" || fail "boot-session evidence run failed"
+
+printf 'Restoring graphical.target and rebooting back to GNOME.\n'
+vm_ssh 'sudo systemctl set-default graphical.target; sudo systemctl disable sos-agent.target; sudo systemctl enable seatd.service; sudo systemctl reboot' \
+  >/dev/null 2>&1 || true
+wait_for_vm_down
+wait_for_vm_up
+vm_ssh 'bash -s' <<'REMOTE_UNINSTALL'
+set -euo pipefail
+[[ "$(systemctl get-default)" == graphical.target ]]
+for _ in {1..300}; do
+  systemctl is-active --quiet gdm.service && break
+  sleep 0.1
+done
+systemctl is-active --quiet gdm.service
+systemctl is-active --quiet seatd.service
+sudo rm -f -- \
+  /etc/systemd/system/sos-session.service \
+  /etc/systemd/system/sos-session.target \
+  /etc/systemd/system/sos-agent-authoring.service \
+  /etc/systemd/system/sos-agent.service \
+  /etc/systemd/system/sos-agent.target
+for path in \
+  /usr/local/libexec/sos \
+  /usr/local/libexec/sos-agent \
+  /usr/share/sos \
+  /usr/share/doc/sos \
+  /etc/sos \
+  /var/lib/sos \
+  /var/lib/sos-agent; do
+  [[ "$path" == /usr/local/libexec/sos \
+    || "$path" == /usr/local/libexec/sos-agent \
+    || "$path" == /usr/share/sos \
+    || "$path" == /usr/share/doc/sos \
+    || "$path" == /etc/sos \
+    || "$path" == /var/lib/sos \
+    || "$path" == /var/lib/sos-agent ]]
+  sudo rm -r -- "$path"
+done
+for vm_user in sos-agent sos-host sos-supervisor sos-provider sos-compositor; do
+  sudo userdel "$vm_user"
+done
+sudo gpasswd -d sos sos-ipc >/dev/null 2>&1 || true
+sudo groupdel sos-ipc
+sudo systemctl daemon-reload
+REMOTE_UNINSTALL
+vm_cleanup_complete=true
+
+printf '%s\n' "$vm_evidence"

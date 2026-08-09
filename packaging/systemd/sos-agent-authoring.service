@@ -1,0 +1,43 @@
+[Unit]
+Description=SOS resident-agent authoring broker
+Documentation=file:/usr/share/doc/sos/sos-agent.md
+Requires=sos-session.service
+After=sos-session.service
+PartOf=sos-agent.target
+
+[Service]
+Type=exec
+User=sos-supervisor
+Group=sos-ipc
+RuntimeDirectory=sos-agent-authoring
+RuntimeDirectoryMode=0750
+ExecStart=/usr/local/libexec/sos/sos-agent-authoring \
+  --root /var/lib/sos/revisions \
+  --service-socket /run/sos/provider-state.sock \
+  --supervisor-socket /var/lib/sos/revisions/run/supervisor.sock \
+  --listen-socket /run/sos-agent-authoring/authoring.sock \
+  --agent-user sos-agent \
+  --timeout-ms 30000
+Restart=on-failure
+RestartSec=250ms
+UMask=0007
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+LockPersonality=yes
+RestrictAddressFamilies=AF_UNIX
+SystemCallArchitectures=native
+SystemCallFilter=~@mount @swap @obsolete @raw-io
+MemoryMax=192M
+TasksMax=32
+ReadWritePaths=/var/lib/sos/revisions /run/sos-agent-authoring
+
+[Install]
+WantedBy=sos-agent.target

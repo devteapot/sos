@@ -10,8 +10,12 @@ local moss = 0x3E6B52
 local mint = 0xDCE8D8
 local sun = 0xE9A23B
 
-local function text(value, size, color)
-    return { content = { kind = "text", value = tostring(value), size = size, color = color or ink } }
+local function text(value, size, color, semantics, id)
+    return {
+        id = id,
+        content = { kind = "text", value = tostring(value), size = size, color = color or ink },
+        semantics = semantics,
+    }
 end
 
 local function group(flow, layout, children, background, radius, id, tap_action)
@@ -34,6 +38,48 @@ local function event_row(event)
             text(event.detail, 13, muted),
         }),
     }, white, 18)
+end
+
+local function agent_panel(model, state)
+    local agent = model.agent or {}
+    local messages = {}
+    for index, message in ipairs(agent.messages or {}) do
+        local speaker = message.role == "user" and "YOU" or "SOS"
+        table.insert(messages, group("column", { gap = 3, padding = 12 }, {
+            text(speaker, 10, moss), text(message.text, 14, ink, {
+                role = "status", label = speaker .. " message", value = message.text,
+            }, "agent-message-" .. tostring(index)),
+        }, message.role == "user" and 0xE8E4D7 or mint, 14))
+    end
+    if #messages == 0 then
+        table.insert(messages, text("Describe what you want this experience to become.", 13, muted))
+    end
+    if agent.error then table.insert(messages, text(agent.error, 12, 0x8C3A36)) end
+    local draft = state.agent_draft or ""
+    table.insert(messages, {
+        id = "agent-prompt",
+        layout = { height = 44, padding = 9 },
+        content = {
+            kind = "text_session", state_key = "agent_draft", value = draft,
+            placeholder = agent.busy and "SOS is working…" or "Change this experience…",
+            submit_action = "agent_submit",
+        },
+        paint = {{ kind = "fill_bounds", color = white, radius = 14 }},
+        semantics = {
+            role = "text_field", label = "Ask SOS to change this experience", value = draft,
+            hint = "Type a request and press enter",
+        },
+    })
+    return group("column", { gap = 9, padding = 16 }, {
+        group("row", { justify = "between", align = "center" }, {
+            text("MAKE IT YOURS", 12, moss),
+            text(agent.activity or (agent.available and "Ready" or "Agent unavailable"), 11, muted, {
+                role = "status", label = "SOS agent status",
+                value = agent.activity or (agent.available and "Ready" or "Agent unavailable"),
+            }, "agent-status"),
+        }),
+        group("column", { gap = 7 }, messages),
+    }, 0xECE9DC, 20, "agent-conversation")
 end
 
 local function render(model, state)
@@ -65,6 +111,7 @@ local function render(model, state)
         group("column", { gap = 9 }, agenda),
         text("NOTES", 12, moss),
         group("column", { gap = 9 }, notes),
+        agent_panel(model, state),
     }
 
     if playing then
@@ -86,9 +133,20 @@ local function render(model, state)
     }, paper, 0, "experience-root")
 end
 
-local function update(_, state, event)
+local function update(model, state, event)
     if event.action == "toggle_music" then
         if state.playing == nil then state.playing = false else state.playing = not state.playing end
+    elseif event.action == "text_changed" and event.target == "agent-prompt" then
+        state.agent_draft = event.value
+    elseif event.action == "agent_submit" and not (model.agent and model.agent.busy) then
+        local prompt = event.value or state.agent_draft or ""
+        if prompt ~= "" then
+            state.agent_draft = ""
+            return {
+                state = state,
+                effects = {{ provider = "agent", action = "prompt", payload = { prompt = prompt } }},
+            }
+        end
     end
     return state
 end

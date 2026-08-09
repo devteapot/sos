@@ -1,0 +1,194 @@
+#!/usr/bin/env python3
+"""Create virtual direct-libinput devices and hold one event from each class."""
+
+import fcntl
+import os
+import struct
+import sys
+import time
+
+EV_SYN, EV_KEY, EV_REL, EV_ABS = 0, 1, 2, 3
+SYN_REPORT = 0
+KEY_LEFTCTRL, BTN_LEFT, BTN_TOUCH, BTN_STYLUS = 29, 272, 330, 331
+BTN_TOOL_PEN = 320
+REL_X, REL_Y = 0, 1
+ABS_X, ABS_Y, ABS_PRESSURE = 0, 1, 24
+ABS_MT_SLOT, ABS_MT_POSITION_X = 0x2F, 0x35
+ABS_MT_POSITION_Y, ABS_MT_TRACKING_ID, ABS_MT_PRESSURE = 0x36, 0x39, 0x3A
+INPUT_PROP_DIRECT = 1
+BUS_USB = 3
+
+
+def iow(number, size=4):
+    return (1 << 30) | (size << 16) | (ord("U") << 8) | number
+
+
+UI_SET_EVBIT = iow(100)
+UI_SET_KEYBIT = iow(101)
+UI_SET_RELBIT = iow(102)
+UI_SET_ABSBIT = iow(103)
+UI_SET_PROPBIT = iow(110)
+UI_ABS_SETUP = iow(4, 28)
+UI_DEV_CREATE, UI_DEV_DESTROY = 0x5501, 0x5502
+
+
+def create_device(
+    name, capabilities, absolute=None, direct=False, resolutions=None, product=0x5301
+):
+    descriptor = os.open("/dev/uinput", os.O_WRONLY | os.O_NONBLOCK)
+    for event_type, codes in capabilities.items():
+        fcntl.ioctl(descriptor, UI_SET_EVBIT, event_type)
+        request = {
+            EV_KEY: UI_SET_KEYBIT,
+            EV_REL: UI_SET_RELBIT,
+            EV_ABS: UI_SET_ABSBIT,
+        }.get(event_type)
+        if request is not None:
+            for code in codes:
+                fcntl.ioctl(descriptor, request, code)
+    if direct:
+        fcntl.ioctl(descriptor, UI_SET_PROPBIT, INPUT_PROP_DIRECT)
+    maxima = [0] * 64
+    minima = [0] * 64
+    for code, (minimum, maximum) in (absolute or {}).items():
+        minima[code] = minimum
+        maxima[code] = maximum
+    header = struct.pack(
+        "80sHHHHI", name.encode(), BUS_USB, 0x534F, product, 1, 0
+    )
+    axes = struct.pack("256i", *(maxima + minima + [0] * 64 + [0] * 64))
+    os.write(descriptor, header + axes)
+    for code, resolution in (resolutions or {}).items():
+        minimum, maximum = absolute[code]
+        setup = struct.pack("H2x6i", code, 0, minimum, maximum, 0, 0, resolution)
+        fcntl.ioctl(descriptor, UI_ABS_SETUP, setup)
+    fcntl.ioctl(descriptor, UI_DEV_CREATE)
+    return descriptor
+
+
+def event(descriptor, event_type, code, value):
+    os.write(descriptor, struct.pack("llHHi", 0, 0, event_type, code, value))
+
+
+def sync(descriptor):
+    event(descriptor, EV_SYN, SYN_REPORT, 0)
+
+
+def destroy(descriptor):
+    try:
+        fcntl.ioctl(descriptor, UI_DEV_DESTROY)
+    finally:
+        os.close(descriptor)
+
+
+def main():
+    if len(sys.argv) != 3:
+        raise SystemExit("usage: inject-uinput READY_FILE HOLD_MILLISECONDS")
+    ready_file, hold_seconds = sys.argv[1], int(sys.argv[2]) / 1000
+    keyboard = create_device(
+        "SOS Gate Keyboard", {EV_KEY: [KEY_LEFTCTRL]}, product=0x5301
+    )
+    pointer = create_device(
+        "SOS Gate Relative Pointer",
+        {EV_KEY: [BTN_LEFT], EV_REL: [REL_X, REL_Y]},
+        product=0x5302,
+    )
+    touch = create_device(
+        "SOS Gate Multitouch",
+        {EV_KEY: [BTN_TOUCH], EV_ABS: [
+            ABS_MT_SLOT,
+            ABS_MT_POSITION_X,
+            ABS_MT_POSITION_Y,
+            ABS_MT_TRACKING_ID,
+            ABS_MT_PRESSURE,
+        ]},
+        {
+            ABS_MT_SLOT: (0, 9),
+            ABS_MT_POSITION_X: (0, 1279),
+            ABS_MT_POSITION_Y: (0, 799),
+            ABS_MT_TRACKING_ID: (0, 65535),
+            ABS_MT_PRESSURE: (0, 255),
+        },
+        direct=True,
+        product=0x5303,
+    )
+    tablet = create_device(
+        "SOS Gate Pressure Stylus",
+        {
+            EV_KEY: [BTN_TOOL_PEN, BTN_TOUCH, BTN_STYLUS],
+            EV_ABS: [ABS_X, ABS_Y, ABS_PRESSURE],
+        },
+        {
+            ABS_X: (0, 1279),
+            ABS_Y: (0, 799),
+            ABS_PRESSURE: (0, 1023),
+        },
+        direct=True,
+        resolutions={ABS_X: 10, ABS_Y: 10},
+        product=0x5304,
+    )
+    try:
+        time.sleep(0.5)
+        event(keyboard, EV_KEY, KEY_LEFTCTRL, 1)
+        sync(keyboard)
+        event(pointer, EV_REL, REL_X, 24)
+        event(pointer, EV_REL, REL_Y, 12)
+        event(pointer, EV_KEY, BTN_LEFT, 1)
+        sync(pointer)
+        event(touch, EV_KEY, BTN_TOUCH, 1)
+        for slot, tracking, x, y, pressure in (
+            (0, 101, 320, 240, 120),
+            (1, 102, 820, 540, 210),
+        ):
+            event(touch, EV_ABS, ABS_MT_SLOT, slot)
+            event(touch, EV_ABS, ABS_MT_TRACKING_ID, tracking)
+            event(touch, EV_ABS, ABS_MT_POSITION_X, x)
+            event(touch, EV_ABS, ABS_MT_POSITION_Y, y)
+            event(touch, EV_ABS, ABS_MT_PRESSURE, pressure)
+        sync(touch)
+        # Let libinput deliver every held contact before the controller starts
+        # activation.
+        time.sleep(0.2)
+        with open(ready_file, "w", encoding="utf-8") as ready:
+            ready.write("keyboard pointer multitouch held\n")
+        os.chmod(ready_file, 0o666)
+        time.sleep(hold_seconds)
+        event(keyboard, EV_KEY, KEY_LEFTCTRL, 0)
+        sync(keyboard)
+        event(pointer, EV_KEY, BTN_LEFT, 0)
+        sync(pointer)
+        for slot in (0, 1):
+            event(touch, EV_ABS, ABS_MT_SLOT, slot)
+            event(touch, EV_ABS, ABS_MT_TRACKING_ID, -1)
+        event(touch, EV_KEY, BTN_TOUCH, 0)
+        sync(touch)
+        # libinput deliberately cancels touchscreen contacts while a pen is in
+        # proximity for palm rejection. Exercise the pressure stream after the
+        # held-touch activation boundary so both gates remain independent.
+        time.sleep(0.1)
+        event(tablet, EV_KEY, BTN_TOOL_PEN, 1)
+        event(tablet, EV_ABS, ABS_X, 520)
+        event(tablet, EV_ABS, ABS_Y, 360)
+        event(tablet, EV_ABS, ABS_PRESSURE, 128)
+        sync(tablet)
+        event(tablet, EV_KEY, BTN_TOUCH, 1)
+        event(tablet, EV_ABS, ABS_PRESSURE, 640)
+        sync(tablet)
+        event(tablet, EV_ABS, ABS_X, 560)
+        event(tablet, EV_ABS, ABS_Y, 390)
+        event(tablet, EV_ABS, ABS_PRESSURE, 896)
+        sync(tablet)
+        time.sleep(0.1)
+        event(tablet, EV_ABS, ABS_PRESSURE, 0)
+        event(tablet, EV_KEY, BTN_TOUCH, 0)
+        sync(tablet)
+        event(tablet, EV_KEY, BTN_TOOL_PEN, 0)
+        sync(tablet)
+        time.sleep(0.1)
+    finally:
+        for descriptor in (tablet, touch, pointer, keyboard):
+            destroy(descriptor)
+
+
+if __name__ == "__main__":
+    main()

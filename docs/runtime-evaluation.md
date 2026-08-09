@@ -33,6 +33,24 @@ or provider object. A candidate revision runs in a fresh VM and replaces the
 active scene only after compilation, bounded evaluation, decoding, validation,
 and a successful first render. Persistent provider data remains Rust-owned.
 
+## Resident agent selection (2026-08-09)
+
+Use the low-level `@earendil-works/pi-agent-core` plus
+`@earendil-works/pi-ai`, pinned at 0.84.1, for the first Linux resident-agent
+gate. Do not embed Pi's coding-agent harness or server. SOS owns the Unix
+protocol, persistence, system prompt, tool definitions, authorization, and
+activation transaction; Pi supplies the model/provider stream and tool-call
+loop.
+
+The evaluated alternatives did not fit this first boundary. Sloppy has the
+closest resident-service shape, but brings its own broader workspace/tool model
+and had no usable repository license at evaluation time. Prime Agent is aimed
+at a remote computer-use/coding environment with substantially broader machine
+authority. Pi's small core allows SOS to expose only context, validation, and
+transactional submission while keeping shell and filesystem capability absent.
+This is an orchestration choice above Luau, not a replacement for the sandboxed
+experience runtime described here.
+
 ## Measurements on the target phone
 
 The target was the same Samsung SM-A336B ARM64 device used for Milestone 0.

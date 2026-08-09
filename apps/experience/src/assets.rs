@@ -26,6 +26,9 @@ const ALBUM_ORBIT: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0
 pub struct SosAssets;
 
 static REVISION_ASSETS: OnceLock<RwLock<HashMap<String, Vec<u8>>>> = OnceLock::new();
+static PROVIDER_ASSETS: OnceLock<RwLock<HashMap<String, Vec<u8>>>> = OnceLock::new();
+#[cfg(target_os = "linux")]
+static PROVIDER_SURFACES: OnceLock<RwLock<HashMap<String, String>>> = OnceLock::new();
 type RevisionFont = (String, Vec<u8>);
 static REVISION_FONTS: OnceLock<RwLock<Vec<RevisionFont>>> = OnceLock::new();
 static LOADED_FONTS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
@@ -45,6 +48,38 @@ pub fn install(assets: &[RevisionAsset]) {
             fonts.push((asset.sha256.clone(), asset.bytes.clone()));
         }
     }
+}
+
+#[cfg(target_os = "linux")]
+pub fn install_provider_frames(frames: &[providers_linux::ProviderFrame]) {
+    let mut assets = PROVIDER_ASSETS
+        .get_or_init(|| RwLock::new(HashMap::new()))
+        .write()
+        .expect("provider asset registry");
+    let mut surfaces = PROVIDER_SURFACES
+        .get_or_init(|| RwLock::new(HashMap::new()))
+        .write()
+        .expect("provider surface registry");
+    assets.clear();
+    surfaces.clear();
+    for frame in frames {
+        let path = format!("sos/providers/{}.{}", frame.sha256, frame.extension);
+        eprintln!(
+            "sos_provider_frame_installed surface_id={} sha256={} bytes={}",
+            frame.surface_id,
+            frame.sha256,
+            frame.bytes.len()
+        );
+        assets.insert(path.clone(), frame.bytes.clone());
+        surfaces.insert(frame.surface_id.clone(), path);
+    }
+}
+
+#[cfg(target_os = "linux")]
+pub fn provider_surface_path(id: &str) -> Option<String> {
+    PROVIDER_SURFACES
+        .get()
+        .and_then(|surfaces| surfaces.read().ok()?.get(id).cloned())
 }
 
 pub fn install_fonts(window: &mut gpui::Window) {
@@ -73,10 +108,23 @@ pub fn install_fonts(window: &mut gpui::Window) {
     }
 }
 
+#[cfg(target_os = "linux")]
+pub(crate) fn bytes(path: &str) -> Option<Vec<u8>> {
+    REVISION_ASSETS
+        .get()
+        .and_then(|assets| assets.read().ok()?.get(path).cloned())
+}
+
 impl AssetSource for SosAssets {
     fn load(&self, path: &str) -> anyhow::Result<Option<Cow<'static, [u8]>>> {
         if path == ALBUM_ASSET {
             return Ok(Some(Cow::Borrowed(ALBUM_ORBIT.as_bytes())));
+        }
+        if let Some(bytes) = PROVIDER_ASSETS
+            .get()
+            .and_then(|assets| assets.read().ok()?.get(path).cloned())
+        {
+            return Ok(Some(Cow::Owned(bytes)));
         }
         Ok(REVISION_ASSETS
             .get()
@@ -91,6 +139,15 @@ impl AssetSource for SosAssets {
             Vec::new()
         };
         if let Some(assets) = REVISION_ASSETS.get().and_then(|assets| assets.read().ok()) {
+            listed.extend(
+                assets
+                    .keys()
+                    .filter(|asset| asset.starts_with(path))
+                    .cloned()
+                    .map(SharedString::from),
+            );
+        }
+        if let Some(assets) = PROVIDER_ASSETS.get().and_then(|assets| assets.read().ok()) {
             listed.extend(
                 assets
                     .keys()

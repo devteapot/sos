@@ -1,0 +1,26 @@
+#cloud-config
+hostname: sos-debian13
+manage_etc_hosts: true
+ssh_pwauth: false
+users:
+  - default
+  - name: sos
+    gecos: SOS developer
+    groups: [sudo]
+    shell: /bin/bash
+    sudo: ALL=(ALL) NOPASSWD:ALL
+    lock_passwd: true
+    ssh_authorized_keys:
+      - __SOS_SSH_PUBLIC_KEY__
+package_update: true
+packages:
+  - gdm3
+  - gnome-core
+  - openssh-server
+  - rsync
+  - spice-vdagent
+runcmd:
+  - [systemctl, set-default, graphical.target]
+  - [systemctl, enable, gdm3]
+  - [systemctl, enable, --now, ssh]
+final_message: SOS Debian 13 Wayland VM provisioning completed

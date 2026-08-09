@@ -75,6 +75,7 @@ pub struct RevisionSupervisor {
 pub struct PreparedRevision {
     revision_id: String,
     previous_revision: String,
+    input_quiesced: bool,
 }
 
 impl PreparedRevision {
@@ -139,10 +140,38 @@ impl RevisionSupervisor {
         Ok(PreparedRevision {
             revision_id: revision_id.into(),
             previous_revision,
+            input_quiesced: false,
         })
     }
 
-    pub fn commit_prepared(&mut self, prepared: PreparedRevision) -> Result<SupervisorEvent> {
+    pub fn quiesce_prepared(&mut self, prepared: &mut PreparedRevision) -> Result<()> {
+        if prepared.input_quiesced {
+            return Ok(());
+        }
+        let quiesced = self
+            .host
+            .as_mut()
+            .ok_or(Error::NoActiveHost)?
+            .quiesce_input(&prepared.revision_id);
+        if let Err(error) = quiesced {
+            if !matches!(&error, Error::HostRejected(_)) {
+                self.restart_current_host()?;
+            }
+            return Err(error);
+        }
+        prepared.input_quiesced = true;
+        Ok(())
+    }
+
+    pub fn discard_prepared(&mut self, prepared: PreparedRevision) -> Result<()> {
+        self.host
+            .as_mut()
+            .ok_or(Error::NoActiveHost)?
+            .discard(&prepared.revision_id)
+    }
+
+    pub fn commit_prepared(&mut self, mut prepared: PreparedRevision) -> Result<SupervisorEvent> {
+        self.quiesce_prepared(&mut prepared)?;
         let presented = self
             .host
             .as_mut()
@@ -214,6 +243,15 @@ impl RevisionSupervisor {
         }
         self.active_revision = None;
         Ok(())
+    }
+
+    pub fn restart_host(&mut self) -> Result<SupervisorEvent> {
+        let (revision_id, failed_host_pid, host_pid) = self.restart_current_host()?;
+        Ok(SupervisorEvent::HostRestarted {
+            revision_id,
+            failed_host_pid,
+            host_pid,
+        })
     }
 
     fn restart_current_host(&mut self) -> Result<(String, u32, u32)> {

@@ -8,21 +8,36 @@ if [[ -z "$ndk_root" ]]; then
   exit 1
 fi
 
-ndk_sysroot="$ndk_root/toolchains/llvm/prebuilt/linux-x86_64/sysroot"
-ndk_runtime="$ndk_root/toolchains/llvm/prebuilt/linux-x86_64/lib/clang/21/lib/linux/aarch64"
+ndk_prebuilt="$ndk_root/toolchains/llvm/prebuilt/linux-x86_64"
+ndk_sysroot="$ndk_prebuilt/sysroot"
+ndk_runtime=""
+for runtime_candidate in "$ndk_prebuilt"/lib/clang/*/lib/linux/aarch64; do
+  if [[ -d "$runtime_candidate" ]]; then
+    ndk_runtime="$runtime_candidate"
+  fi
+done
 if [[ ! -d "$ndk_sysroot" ]]; then
   printf 'error: Android NDK sysroot not found: %s\n' "$ndk_sysroot" >&2
   exit 1
 fi
-if [[ ! -d "$ndk_runtime" ]]; then
-  printf 'error: Android NDK ARM64 runtime not found: %s\n' "$ndk_runtime" >&2
+if [[ -z "$ndk_runtime" ]]; then
+  printf 'error: Android NDK ARM64 runtime not found under: %s\n' "$ndk_prebuilt/lib/clang" >&2
+  exit 1
+fi
+
+clang_binary="${SOS_ANDROID_CLANG:-}"
+if [[ -z "$clang_binary" ]]; then
+  clang_binary="$(command -v clang || true)"
+fi
+if [[ -z "$clang_binary" || ! -x "$clang_binary" ]]; then
+  printf 'error: native Clang not found; set SOS_ANDROID_CLANG\n' >&2
   exit 1
 fi
 
 # The installed NDK host tools are x86-64-only, while this development host is
 # ARM64. The system Clang supports the Android target and can use the NDK
 # sysroot without executing the foreign host toolchain.
-exec /usr/bin/clang \
+exec "$clang_binary" \
   --target=aarch64-linux-android31 \
   --sysroot="$ndk_sysroot" \
   -fuse-ld=lld \

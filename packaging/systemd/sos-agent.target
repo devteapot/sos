@@ -1,0 +1,7 @@
+[Unit]
+Description=SOS resident agent
+Requires=sos-agent-authoring.service sos-agent.service
+After=sos-session.service
+
+[Install]
+WantedBy=sos-session.target

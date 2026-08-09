@@ -1,0 +1,31 @@
+[package]
+name = "sos-linux-session"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+anyhow = "1"
+compositor-control-protocol.workspace = true
+experience-ir.workspace = true
+nix = { version = "0.31", features = ["fs", "signal", "socket", "user"] }
+provider-state-service.workspace = true
+providers-fake.workspace = true
+revision-supervisor = { path = "../revision-supervisor" }
+runtime-luau.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+service-protocol.workspace = true
+signal-hook = "0.3"
+
+[dev-dependencies]
+tempfile = "3"
+
+[[bin]]
+name = "sos-linux-session"
+path = "src/main.rs"
+
+[[bin]]
+name = "sos-agent-authoring"
+path = "src/bin/sos-agent-authoring.rs"

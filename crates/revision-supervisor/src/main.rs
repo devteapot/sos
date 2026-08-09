@@ -1,6 +1,7 @@
 use std::{
     env, fs,
     io::{BufRead, BufReader, Write},
+    os::unix::fs::PermissionsExt as _,
     os::unix::net::{UnixListener, UnixStream},
     path::PathBuf,
     thread,
@@ -23,6 +24,7 @@ enum ControlRequest {
         transaction_id: Option<String>,
     },
     Status,
+    Restart,
     Shutdown,
 }
 
@@ -49,6 +51,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         Some("bootstrap") => bootstrap(parse_options(args.collect())?),
         Some("activate") => control_command(parse_options(args.collect())?, "activate"),
         Some("daemon-status") => control_command(parse_options(args.collect())?, "status"),
+        Some("restart") => control_command(parse_options(args.collect())?, "restart"),
         Some("shutdown") => control_command(parse_options(args.collect())?, "shutdown"),
         Some("serve") => serve(parse_options(args.collect())?),
         Some("status") => status(parse_options(args.collect())?),
@@ -75,6 +78,7 @@ fn control_command(options: Options, action: &str) -> Result<(), Box<dyn std::er
             transaction_id: options.optional("--transaction"),
         },
         "status" => ControlRequest::Status,
+        "restart" => ControlRequest::Restart,
         "shutdown" => ControlRequest::Shutdown,
         _ => unreachable!(),
     };
@@ -150,7 +154,23 @@ fn serve(options: Options) -> Result<(), Box<dyn std::error::Error>> {
     );
     let socket = store.root().join("run/supervisor.sock");
     if socket.exists() {
-        return Err(format!("control socket already exists: {}", socket.display()).into());
+        match UnixStream::connect(&socket) {
+            Ok(_) => {
+                return Err(format!(
+                    "an active revision supervisor already owns {}",
+                    socket.display()
+                )
+                .into());
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::ConnectionRefused => {
+                fs::remove_file(&socket)?;
+                println!(
+                    "revision_supervisor_recovered artifact=stale_control_socket path={}",
+                    socket.display()
+                );
+            }
+            Err(error) => return Err(error.into()),
+        }
     }
     let host_command = HostCommand::with_args(
         options.required("--host-executable")?,
@@ -181,6 +201,7 @@ fn serve(options: Options) -> Result<(), Box<dyn std::error::Error>> {
         Runtime::Standalone(standalone)
     };
     let listener = UnixListener::bind(&socket)?;
+    fs::set_permissions(&socket, fs::Permissions::from_mode(0o660))?;
     listener.set_nonblocking(true)?;
     println!("revision_supervisor_listening socket={}", socket.display());
     let result = serve_loop(&listener, &mut runtime);
@@ -217,6 +238,10 @@ fn serve_loop(
                         Err(error) => (failure(runtime, error.to_string()), false),
                     },
                     Ok(ControlRequest::Status) => (success(runtime, None), false),
+                    Ok(ControlRequest::Restart) => match runtime.restart_host() {
+                        Ok(event) => (success(runtime, Some(event)), false),
+                        Err(error) => (failure(runtime, error.to_string()), false),
+                    },
                     Ok(ControlRequest::Shutdown) => (success(runtime, None), true),
                     Err(error) => (failure(runtime, error.to_string()), false),
                 };
@@ -295,6 +320,13 @@ impl Runtime {
             Self::Coordinated(supervisor) => supervisor.shutdown()?,
         }
         Ok(())
+    }
+
+    fn restart_host(&mut self) -> Result<String, Box<dyn std::error::Error>> {
+        match self {
+            Self::Standalone(supervisor) => Ok(format!("{:?}", supervisor.restart_host()?)),
+            Self::Coordinated(supervisor) => Ok(format!("{:?}", supervisor.restart_host()?)),
+        }
     }
 }
 

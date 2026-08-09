@@ -154,7 +154,7 @@ impl CoordinatedSupervisor {
         self.write_journal(&journal)?;
         self.inject(CoordinatorFaultPoint::AfterIntent)?;
 
-        let prepared = match self.supervisor.prepare(revision_id) {
+        let mut prepared = match self.supervisor.prepare(revision_id) {
             Ok(prepared) => prepared,
             Err(error) => {
                 self.call(ServiceRequest::Abort {
@@ -165,6 +165,15 @@ impl CoordinatedSupervisor {
                 return Err(error.into());
             }
         };
+        if let Err(error) = self.supervisor.quiesce_prepared(&mut prepared) {
+            self.call(ServiceRequest::Abort {
+                request_id: next_request_id(),
+                transaction_id: transaction_id.into(),
+            })?;
+            self.supervisor.discard_prepared(prepared).ok();
+            self.clear_journal()?;
+            return Err(error.into());
+        }
         let committed = if transaction.status == TransactionStatus::Committed {
             transaction
         } else {
@@ -186,6 +195,7 @@ impl CoordinatedSupervisor {
                     transaction_id: transaction_id.into(),
                 })?;
             }
+            self.supervisor.discard_prepared(prepared)?;
             self.clear_journal()?;
             return Err(CoordinationError::InvalidBinding(format!(
                 "service transaction did not commit: {:?}",
@@ -274,6 +284,10 @@ impl CoordinatedSupervisor {
 
     pub fn shutdown(&mut self) -> Result<(), CoordinationError> {
         self.supervisor.shutdown().map_err(Into::into)
+    }
+
+    pub fn restart_host(&mut self) -> Result<SupervisorEvent, CoordinationError> {
+        self.supervisor.restart_host().map_err(Into::into)
     }
 
     fn validate_binding(
