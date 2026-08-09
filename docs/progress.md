@@ -2592,3 +2592,47 @@ prompt through the Luau composer, observe Pi refresh/request authentication and
 transactional revision activation, and record the model, revision IDs, service
 logs, and DRM presentation evidence. This desktop/VM work makes no physical
 hardware, latency, thermal, or GPU-performance claim.
+
+## 2026-08-09 — Restart preserves evolved authority state and cleans up safely
+
+**Goal / hypothesis:** Repair the live developer restart failure observed after
+successful provider login. `linux-stop` followed by `linux-run --windowed`
+reopened authority revision `b0d20599…`, but bootstrap rejected it as a
+replacement by the identical revision and the EXIT trap then failed with
+`supervisor_pid: unbound variable`. The hypothesis was that bootstrap was
+incorrectly comparing mutable interaction state to the immutable installed
+state even though the revision/schema/source binding still matched.
+
+**Changed:** `bootstrap_authority` now treats a matching revision ID, schema,
+and source digest as already bound while preserving the authority's newer
+durable state. It still rejects an unexplained binding mismatch and still
+requires an exact state match immediately after first initialization. The
+developer runner's EXIT cleanup now reads task-specific PID slots that outlive
+the `linux_run` function scope, rather than expanding local variables after Bash
+has unwound the failed function.
+
+**Evidence:** The authority integration test now commits a same-revision state
+change, shuts down the provider process, reopens the durable authority file in a
+new process, and receives `BootstrapOutcome::AlreadyBound`; it then continues to
+stage the next revision and retains the mismatch/recovery checks. `cargo test -p
+sos-linux-session --all-targets` passed four unit tests and the strengthened
+integration test. Strict all-target Clippy, Rust formatting, ShellCheck, Bash
+syntax validation, and `git diff --check` passed. The complete deterministic
+`./tools/sosctl linux-agent-test` path also passed the bounded
+`context -> validate -> submit` sequence and activated revision
+`93357d5643d00a4510a728743e04b0c35ce3439fb6a308c46b1c7f977a3ede84`
+from `b0d20599c81f62db31cfffd4883289e64a12ee9ada6f20a1c92ef518277e9be4`.
+
+**Failures / fixes / rejected evidence:** The first trap repair intentionally
+captured numeric PIDs when installing the trap, but ShellCheck rejected eager
+trap expansion. Replacing that approach with persistent, narrowly named PID
+slots made the lifetime explicit and passed strict checking. No Wayland socket
+is attached to this worktree, so a local `linux-run --windowed` result was not
+claimed; the durable-process restart test is the causal automated evidence.
+
+**Decision / remaining risk / next gate:** Authority state may evolve within an
+immutable revision binding and must survive ordinary service restarts. Retry the
+original windowed stop/start sequence in the live VM, then start the
+credentialed resident agent and issue one Luau-composer prompt. That VM result
+will establish the developer restart and live-provider gate only, not physical
+display, latency, thermal, or GPU behavior.

@@ -48,7 +48,7 @@ pub fn bootstrap_authority(
     let target = load_revision_state(&revision)?;
     let client = ServiceClient::new(service_socket, timeout);
     let current = get_state(&client)?;
-    if state_matches(&current, &target) {
+    if state_binding_matches(&current, &target) {
         return Ok(BootstrapOutcome::AlreadyBound {
             revision_id: target.revision_id,
         });

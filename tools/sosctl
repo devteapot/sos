@@ -33,6 +33,8 @@ LINUX_AGENT_AUTHORING_SOCKET="$LINUX_AGENT_ROOT/authoring.sock"
 LINUX_AGENT_STATE="$LINUX_AGENT_ROOT/messages.json"
 LINUX_AGENT_CREDENTIALS="$LINUX_AGENT_ROOT/auth.json"
 LINUX_AGENT_PACKAGE="$SOS_ROOT/services/sos-agent"
+LINUX_CLEANUP_SUPERVISOR_PID=""
+LINUX_CLEANUP_PROVIDER_PID=""
 
 info() {
   printf '==> %s\n' "$*"
@@ -630,6 +632,10 @@ cleanup_linux_processes() {
   fi
 }
 
+cleanup_linux_processes_from_trap() {
+  cleanup_linux_processes "$LINUX_CLEANUP_SUPERVISOR_PID" "$LINUX_CLEANUP_PROVIDER_PID"
+}
+
 linux_run() {
   local windowed=false
   local host_timeout_ms="${SOS_LINUX_HOST_TIMEOUT_MS:-30000}"
@@ -667,7 +673,9 @@ linux_run() {
     --state-file "$LINUX_AUTHORITY_FILE" &
   local provider_pid=$!
   local supervisor_pid=""
-  trap 'cleanup_linux_processes "$supervisor_pid" "$provider_pid"' EXIT
+  LINUX_CLEANUP_SUPERVISOR_PID=""
+  LINUX_CLEANUP_PROVIDER_PID="$provider_pid"
+  trap cleanup_linux_processes_from_trap EXIT
   trap 'exit 130' INT
   trap 'exit 143' TERM
   wait_for_linux_socket "$LINUX_PROVIDER_SOCKET" "$provider_pid" "provider/state authority"
@@ -692,6 +700,7 @@ linux_run() {
   fi
   "$LINUX_SUPERVISOR" "${arguments[@]}" &
   supervisor_pid=$!
+  LINUX_CLEANUP_SUPERVISOR_PID="$supervisor_pid"
 
   local session_status=0
   set +e
@@ -703,6 +712,8 @@ linux_run() {
     provider_failed=true
   fi
   cleanup_linux_processes "$supervisor_pid" "$provider_pid"
+  LINUX_CLEANUP_SUPERVISOR_PID=""
+  LINUX_CLEANUP_PROVIDER_PID=""
   trap - EXIT INT TERM
   if $provider_failed; then
     fail "provider/state authority exited while the Linux session was active"

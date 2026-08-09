@@ -3,7 +3,8 @@ use std::{fs, path::PathBuf, thread, time::Duration};
 use provider_state_service::ServiceClient;
 use revision_supervisor::{ActivationJournal, JournalPhase, RevisionInput, RevisionStore};
 use service_protocol::{
-    ResourceQuery, ResourceValue, ResponsePayload, ServiceRequest, TransactionStatus,
+    PromotionDraft, ResourceQuery, ResourceValue, ResponsePayload, ServiceRequest,
+    TransactionStatus,
 };
 use sos_linux_session::{
     bootstrap_authority, shutdown_authority, stage_revision, BootstrapOutcome,
@@ -35,7 +36,7 @@ fn bootstraps_current_and_stages_the_next_verified_revision() {
             assets: Vec::new(),
         })
         .unwrap();
-    let service = start_service(socket.clone(), authority_file);
+    let mut service = start_service(socket.clone(), authority_file.clone());
 
     let outcome = bootstrap_authority(&root, &socket, Duration::from_secs(2)).unwrap();
     assert!(matches!(
@@ -49,6 +50,50 @@ fn bootstraps_current_and_stages_the_next_verified_revision() {
             if revision_id == initial.manifest.revision_id
     ));
 
+    let client = ServiceClient::new(&socket, Duration::from_secs(2));
+    let state = client
+        .call(&ServiceRequest::GetResource {
+            request_id: 8,
+            query: ResourceQuery::ExperienceState,
+        })
+        .unwrap();
+    let state = match state.payload {
+        Some(ResponsePayload::Resource {
+            value: ResourceValue::ExperienceState(state),
+        }) => state,
+        _ => panic!("state response omitted the experience state"),
+    };
+    let interaction = "same-revision-interaction".to_owned();
+    client
+        .call(&ServiceRequest::StagePromotion {
+            request_id: 9,
+            draft: PromotionDraft {
+                transaction_id: interaction.clone(),
+                expected_revision: state.revision,
+                revision_id: state.revision_id,
+                schema_version: state.schema_version,
+                source_sha256: state.source_sha256,
+                state: serde_json::json!({"count": 7}),
+                migration: None,
+                actions: Vec::new(),
+            },
+        })
+        .unwrap();
+    client
+        .call(&ServiceRequest::Promote {
+            request_id: 10,
+            transaction_id: interaction,
+        })
+        .unwrap();
+    shutdown_authority(&socket, Duration::from_secs(2)).unwrap();
+    service.join().unwrap().unwrap();
+    service = start_service(socket.clone(), authority_file);
+    assert!(matches!(
+        bootstrap_authority(&root, &socket, Duration::from_secs(2)).unwrap(),
+        BootstrapOutcome::AlreadyBound { revision_id }
+            if revision_id == initial.manifest.revision_id
+    ));
+
     let transaction_id = stage_revision(
         &root,
         &candidate.manifest.revision_id,
@@ -56,10 +101,9 @@ fn bootstraps_current_and_stages_the_next_verified_revision() {
         Duration::from_secs(2),
     )
     .unwrap();
-    let client = ServiceClient::new(&socket, Duration::from_secs(2));
     let transaction = client
         .call(&ServiceRequest::GetTransaction {
-            request_id: 10,
+            request_id: 11,
             transaction_id: transaction_id.clone(),
         })
         .unwrap();
@@ -68,14 +112,14 @@ fn bootstraps_current_and_stages_the_next_verified_revision() {
         _ => panic!("transaction response omitted the record"),
     };
     assert_eq!(record.draft.revision_id, candidate.manifest.revision_id);
-    assert_eq!(record.draft.expected_revision, 1);
+    assert_eq!(record.draft.expected_revision, 2);
     assert_eq!(record.draft.schema_version, 2);
     assert!(record.draft.migration.is_some());
     assert!(record.draft.actions.is_empty());
 
     let state = client
         .call(&ServiceRequest::GetResource {
-            request_id: 11,
+            request_id: 12,
             query: ResourceQuery::ExperienceState,
         })
         .unwrap();
@@ -88,7 +132,7 @@ fn bootstraps_current_and_stages_the_next_verified_revision() {
 
     let promoted = client
         .call(&ServiceRequest::Promote {
-            request_id: 12,
+            request_id: 13,
             transaction_id,
         })
         .unwrap();
