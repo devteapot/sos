@@ -209,14 +209,12 @@ sudo sh -c 'umask 077; od -An -N32 -tx1 /dev/urandom | tr -d " \n" > /etc/sos/sh
 sudo chown root:root /etc/sos/shell-token
 sudo chmod 0400 /etc/sos/shell-token
 sudo sh -c 'printf "%s\n" \
-  "SOS_AGENT_PROVIDER=openai" \
+  "SOS_AGENT_PROVIDER=openai-codex" \
   "SOS_AGENT_MODEL=gpt-5.6-sol" \
   "SOS_AGENT_FAKE_SOURCE=/usr/share/sos/experiences/timeflow.luau" \
   > /etc/sos/agent.env'
-sudo sh -c 'printf "%s\n" "faux-provider-does-not-use-this-credential" > /etc/sos/agent-api-key'
-sudo chown root:root /etc/sos/agent.env /etc/sos/agent-api-key
+sudo chown root:root /etc/sos/agent.env
 sudo chmod 0444 /etc/sos/agent.env
-sudo chmod 0400 /etc/sos/agent-api-key
 sudo install -d -o sos-compositor -g sos-ipc -m 0750 /var/lib/sos
 sudo install -d -o sos-supervisor -g sos-ipc -m 0750 /var/lib/sos/revisions
 sudo install -d -o sos-supervisor -g sos-ipc -m 0750 /var/lib/sos/staging

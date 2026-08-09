@@ -31,6 +31,7 @@ LINUX_AGENT_ROOT="$CACHE_ROOT/linux-agent"
 LINUX_AGENT_SOCKET="$LINUX_AGENT_ROOT/agent.sock"
 LINUX_AGENT_AUTHORING_SOCKET="$LINUX_AGENT_ROOT/authoring.sock"
 LINUX_AGENT_STATE="$LINUX_AGENT_ROOT/messages.json"
+LINUX_AGENT_CREDENTIALS="$LINUX_AGENT_ROOT/auth.json"
 LINUX_AGENT_PACKAGE="$SOS_ROOT/services/sos-agent"
 
 info() {
@@ -756,6 +757,17 @@ linux_stop() {
   fi
 }
 
+linux_agent_login() {
+  [[ "$#" -eq 0 ]] || fail "usage: ./tools/sosctl linux-agent-login"
+  build_linux_agent
+  mkdir -p "$LINUX_AGENT_ROOT"
+  info "starting Pi device-code login for ${SOS_AGENT_PROVIDER:-openai-codex}"
+  node "$LINUX_AGENT_PACKAGE/dist/src/main.js" login \
+    --provider "${SOS_AGENT_PROVIDER:-openai-codex}" \
+    --credentials "$LINUX_AGENT_CREDENTIALS" \
+    --device-code
+}
+
 linux_agent_run() {
   local fake_source=""
   if [[ "${1:-}" == "--fake" ]]; then
@@ -771,7 +783,7 @@ linux_agent_run() {
     fail "provider/state authority is not running; restart ./tools/sosctl linux-run"
   if [[ -z "$fake_source" ]]; then
     [[ -n "${SOS_AGENT_MODEL:-}" ]] || \
-      fail "set SOS_AGENT_MODEL to an exact Pi model id (and SOS_AGENT_PROVIDER if not openai)"
+      fail "set SOS_AGENT_MODEL to an exact Pi model id and select SOS_AGENT_PROVIDER if needed"
   fi
   build_linux_agent
   mkdir -p "$LINUX_AGENT_ROOT"
@@ -794,6 +806,7 @@ linux_agent_run() {
     --socket "$LINUX_AGENT_SOCKET"
     --authoring-socket "$LINUX_AGENT_AUTHORING_SOCKET"
     --state "$LINUX_AGENT_STATE"
+    --credentials "$LINUX_AGENT_CREDENTIALS"
     --api-doc "$SOS_ROOT/docs/experience-api.md"
     --example "$SOS_ROOT/experiences/default.luau"
     --example-secondary "$SOS_ROOT/experiences/daily-flow.luau"
@@ -854,6 +867,7 @@ Commands:
   linux-stop          Shut down authority, revision supervisor, and host.
   linux-agent-run [--fake candidate.luau]
                       Run the bounded resident Pi agent beside a live Linux session.
+  linux-agent-login   Authenticate Pi's selected provider using a headless device code.
   linux-agent-prompt <request>
                       Ask the resident agent to change the active experience.
   linux-agent-test    Run Pi faux-provider through the full headless SOS stack.
@@ -942,6 +956,9 @@ case "$command_name" in
     ;;
   linux-agent-run)
     linux_agent_run "$@"
+    ;;
+  linux-agent-login)
+    linux_agent_login "$@"
     ;;
   linux-agent-prompt)
     linux_agent_prompt "$@"

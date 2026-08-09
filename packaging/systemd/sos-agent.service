@@ -6,7 +6,6 @@ After=sos-agent-authoring.service network-online.target
 Wants=network-online.target
 PartOf=sos-agent.target
 ConditionPathExists=/etc/sos/agent.env
-ConditionPathExists=/etc/sos/agent-api-key
 
 [Service]
 Type=exec
@@ -17,11 +16,11 @@ StateDirectoryMode=0750
 RuntimeDirectory=sos-agent
 RuntimeDirectoryMode=0750
 EnvironmentFile=/etc/sos/agent.env
-LoadCredential=agent-api-key:/etc/sos/agent-api-key
 ExecStart=/usr/local/bin/node /usr/local/libexec/sos-agent/dist/src/main.js serve \
   --socket /run/sos-agent/agent.sock \
   --authoring-socket /run/sos-agent-authoring/authoring.sock \
   --state /var/lib/sos-agent/messages.json \
+  --credentials /var/lib/sos-agent/auth.json \
   --api-doc /usr/share/doc/sos/experience-api.md \
   --example /usr/share/sos/experiences/default.luau \
   --example-secondary /usr/share/sos/experiences/daily-flow.luau

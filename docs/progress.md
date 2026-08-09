@@ -2537,3 +2537,58 @@ behavior. The next gate is to rebuild/restart
 `./tools/sosctl linux-run --windowed` on the macOS-hosted VM and click, type into,
 select within, and clear the empty agent prompt without a host restart; physical
 Android input remains a separate gate.
+
+## 2026-08-09 — Pi-backed ChatGPT subscription authentication for SOS agent
+
+**Goal / hypothesis:** Connect the resident SOS agent to OpenAI Codex through a
+ChatGPT Plus/Pro subscription without introducing an SOS-owned OAuth protocol or
+requiring an OpenAI API key. The hypothesis was that the pinned Pi 0.84.1
+provider, login, refresh, and request-authentication APIs could remain the sole
+provider implementation while SOS supplied only durable service-local storage
+and a headless interaction adapter.
+
+**Changed:** SOS now registers Pi's `openaiCodexProvider`, accepts the
+`openai-codex` provider ID, calls `Models.login(..., "oauth", ...)`, and exposes
+a `login --device-code` command. `./tools/sosctl linux-agent-login` drives that
+flow and the resident runtime reads the same `.cache/linux-agent/auth.json`.
+Added a mode-`0600`, atomic JSON `CredentialStore` with in-process queuing and a
+process-visible mutation lock so Pi can persist rotated refresh credentials
+without a lost update. The boot unit now uses
+`/var/lib/sos-agent/auth.json` and no longer requires an API-key file; an
+optional systemd drop-in retains the prior protected API-key path for `openai`
+and `anthropic`. The reference faux-provider boot setup no longer creates a
+dummy secret. Updated the live developer and booted-VM procedures in
+`docs/sos-agent.md` and the README.
+
+**Evidence:** `npm run check && npm test` passed four tests: atomic credential
+persistence and `0600` permissions, secret-free credential listing/deletion,
+serialized refresh-style updates across two store instances, Pi Codex provider
+registration/model discovery, and the existing bounded faux-agent stream.
+`shellcheck tools/sosctl tools/linux-vm/verify-boot-session` and `bash -n` for
+both tools passed. `./tools/sosctl linux-agent-test` rebuilt the locked Rust and
+Node stack, reported zero npm audit vulnerabilities, preserved the exact
+`get_experience_context -> validate_experience -> submit_experience` tool order,
+and activated revision
+`93357d5643d00a4510a728743e04b0c35ce3439fb6a308c46b1c7f977a3ede84`
+from
+`b0d20599c81f62db31cfffd4883289e64a12ee9ada6f20a1c92ef518277e9be4`.
+`git diff --check` passed.
+
+**Failures / fixes / rejected evidence:** The first ShellCheck invocation ran
+from `services/sos-agent` with repository-relative paths and therefore checked
+nothing; it was rejected and rerun from the repository root. A local
+`systemd-analyze verify` attempt was also rejected as packaging evidence because
+the workstation lacks the packaged `/usr/local` executables and cannot read an
+unrelated host unit. The existing disposable-VM verifier remains the valid unit
+installation check and was updated, but was not rerun for this change. No OAuth
+URL was requested and no live model call was made during automated tests, so the
+provider factory test is not credentialed network evidence.
+
+**Decision / remaining risk / next gate:** Reuse Pi for every provider-specific
+step; SOS owns only credential durability and the user-facing/headless login
+transport. The next gate is the intentionally manual live E2E: run device-code
+authorization for the isolated `sos-agent` account in the booted distro, enter a
+prompt through the Luau composer, observe Pi refresh/request authentication and
+transactional revision activation, and record the model, revision IDs, service
+logs, and DRM presentation evidence. This desktop/VM work makes no physical
+hardware, latency, thermal, or GPU-performance claim.

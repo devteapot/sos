@@ -118,6 +118,21 @@ Type “Turn this into a calm daily flow” in the experience's “Make it yours
 field and press Enter. `linux-agent-prompt` remains available as a protocol
 diagnostic, but it is not the product interaction boundary.
 
+For a subscription-backed live model, authenticate through Pi's headless
+OpenAI Codex flow before starting the resident agent:
+
+```sh
+export SOS_AGENT_PROVIDER=openai-codex
+export SOS_AGENT_MODEL=gpt-5.6-sol
+unset SOS_AGENT_FAKE_SOURCE
+./tools/sosctl linux-agent-login
+./tools/sosctl linux-agent-run
+```
+
+The browser authorization can happen on another machine; the command prints
+the device URL and code. See [`docs/sos-agent.md`](docs/sos-agent.md) for the
+boot-service procedure and credential boundary.
+
 This command remains the ordinary Wayland client-host gate and uses GPUI's
 next-frame callback. SOS's own compositor has both a nested development backend
 and a direct Debian-VM backend. The nested gate is safe to run on a workstation:

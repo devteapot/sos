@@ -67,20 +67,31 @@ evidence to be `drm_page_flip`.
 
 ## Live model test
 
-Pi requires Node 22.19 or newer. Select an exact model from Pi's pinned catalog,
-provide a credential, and omit `--fake`:
+Pi requires Node 22.19 or newer. SOS uses Pi's own `openai-codex` provider,
+ChatGPT OAuth flow, token refresh, and request authentication; SOS only supplies
+the durable credential file. Authenticate once with the headless device flow,
+select an exact model from Pi's pinned catalog, and omit `--fake`:
 
 ```sh
-export SOS_AGENT_PROVIDER=openai
-export SOS_AGENT_MODEL=gpt-5.2
-export SOS_AGENT_API_KEY='...'
+export SOS_AGENT_PROVIDER=openai-codex
+export SOS_AGENT_MODEL=gpt-5.6-sol
+unset SOS_AGENT_FAKE_SOURCE
+./tools/sosctl linux-agent-login
 ./tools/sosctl linux-agent-run
 ```
 
-`anthropic` is the other supported provider. The exact available model IDs are
-reported if `SOS_AGENT_MODEL` is unknown. The developer service stores the Pi
-conversation under `.cache/linux-agent/messages.json`; revisions remain in the
-existing Linux revision store.
+The login command prints `https://auth.openai.com/codex/device` and a short
+code. Open that URL in any browser, enter the code, and approve the ChatGPT
+Plus/Pro account. Pi writes and later refreshes the OAuth credential through
+SOS's process-safe store at `.cache/linux-agent/auth.json`; the file is mode
+`0600` and is never passed to Luau or an agent tool. The exact available model
+IDs are reported if `SOS_AGENT_MODEL` is unknown. The developer service stores
+the Pi conversation separately under `.cache/linux-agent/messages.json`;
+revisions remain in the existing Linux revision store.
+
+The API-key-backed `openai` and `anthropic` providers remain supported. For a
+developer run, set `SOS_AGENT_API_KEY` as before instead of running the OAuth
+login command.
 
 ## Boot image wiring
 
@@ -93,16 +104,38 @@ with the reference experiences and docs used by the unit.
 Create `/etc/sos/agent.env` with non-secret model selection:
 
 ```ini
-SOS_AGENT_PROVIDER=openai
-SOS_AGENT_MODEL=gpt-5.2
+SOS_AGENT_PROVIDER=openai-codex
+SOS_AGENT_MODEL=gpt-5.6-sol
 ```
 
-Place the API key alone in `/etc/sos/agent-api-key`, mode `0400`, then start
-`sos-agent.target`. systemd exposes the key as a service credential rather than
-an environment variable. `/run/sos-agent/agent.sock` is passed only to the
-trusted Linux host capability bridge. The privileged broker socket
-lives in a supervisor-owned directory that the agent can traverse but cannot
-modify.
+Ensure `SOS_AGENT_FAKE_SOURCE` is absent; that variable deliberately keeps the
+reference boot gate offline and overrides live-provider selection.
+
+Before starting the target, create the state directory and run Pi's device-code
+flow as the isolated service account:
+
+```sh
+sudo install -d -o sos-agent -g sos-ipc -m 0750 /var/lib/sos-agent
+sudo -u sos-agent /usr/local/bin/node \
+  /usr/local/libexec/sos-agent/dist/src/main.js login \
+  --provider openai-codex \
+  --credentials /var/lib/sos-agent/auth.json \
+  --device-code
+sudo systemctl start sos-agent.target
+```
+
+Pi automatically refreshes expiring credentials and SOS persists the rotated
+credential atomically. `/run/sos-agent/agent.sock` is passed only to the trusted
+Linux host capability bridge. The privileged broker socket lives in a
+supervisor-owned directory that the agent can traverse but cannot modify.
+
+For an API-key boot deployment, install
+`packaging/systemd/sos-agent-api-key.conf` as
+`/etc/systemd/system/sos-agent.service.d/api-key.conf`, place the key alone in
+`/etc/sos/agent-api-key` with mode `0400`, and select `openai` or `anthropic` in
+`agent.env`. The optional drop-in exposes the key as a systemd service
+credential rather than an environment variable; OAuth deployments do not need
+the key file or drop-in.
 
 For diagnosis, a prompt can still be issued from an authenticated SOS
 maintenance shell:

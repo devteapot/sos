@@ -7,24 +7,30 @@ import {
   fauxToolCall,
   type Model,
   type Api,
+  type AuthInteraction,
+  type CredentialStore,
+  type MutableModels,
 } from "@earendil-works/pi-ai";
 import { anthropicProvider } from "@earendil-works/pi-ai/providers/anthropic";
+import { openaiCodexProvider } from "@earendil-works/pi-ai/providers/openai-codex";
 import { openaiProvider } from "@earendil-works/pi-ai/providers/openai";
 import { Agent, type AgentMessage } from "@earendil-works/pi-agent-core";
 import { createAuthoringTools, type AuthoringBackend } from "./authoring.js";
 
+export type SupportedProvider = "openai" | "anthropic" | "openai-codex";
+
 export interface AgentRuntimeOptions {
   backend: AuthoringBackend;
   systemPrompt: string;
-  provider: "openai" | "anthropic";
+  provider: SupportedProvider;
   model: string;
   apiKey?: string;
+  credentials?: CredentialStore;
   messages?: AgentMessage[];
 }
 
 export function createAgentRuntime(options: AgentRuntimeOptions): Agent {
-  const models = createModels();
-  models.setProvider(options.provider === "openai" ? openaiProvider() : anthropicProvider());
+  const models = createProviderModels(options.provider, options.credentials);
   const model = models.getModel(options.provider, options.model);
   if (!model) {
     const known = models
@@ -47,6 +53,34 @@ export function createAgentRuntime(options: AgentRuntimeOptions): Agent {
       }),
     toolExecution: "sequential",
   });
+}
+
+export function createProviderModels(
+  provider: SupportedProvider,
+  credentials?: CredentialStore,
+): MutableModels {
+  const models = createModels(credentials ? { credentials } : undefined);
+  switch (provider) {
+    case "openai":
+      models.setProvider(openaiProvider());
+      break;
+    case "anthropic":
+      models.setProvider(anthropicProvider());
+      break;
+    case "openai-codex":
+      models.setProvider(openaiCodexProvider());
+      break;
+  }
+  return models;
+}
+
+export async function loginProvider(
+  provider: SupportedProvider,
+  credentials: CredentialStore,
+  interaction: AuthInteraction,
+): Promise<void> {
+  const models = createProviderModels(provider, credentials);
+  await models.login(provider, "oauth", interaction);
 }
 
 export function createFauxAgentRuntime(
