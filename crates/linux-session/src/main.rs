@@ -2,8 +2,8 @@ use std::{collections::BTreeMap, env, path::PathBuf, time::Duration};
 
 use anyhow::{bail, Context as _, Result};
 use sos_linux_session::{
-    bootstrap_authority, run_system_session, shutdown_authority, stage_revision, BootstrapOutcome,
-    SystemSessionOptions,
+    bootstrap_authority, run_host_proxy, run_system_session, shutdown_authority, stage_revision,
+    BootstrapOutcome, ServiceIdentity, SystemSessionOptions,
 };
 
 fn main() {
@@ -72,6 +72,10 @@ fn run() -> Result<()> {
                 "--provider",
                 "--supervisor",
                 "--host",
+                "--compositor-user",
+                "--provider-user",
+                "--supervisor-user",
+                "--host-user",
                 "--timeout-ms",
             ])?;
             run_system_session(SystemSessionOptions {
@@ -83,8 +87,20 @@ fn run() -> Result<()> {
                 provider_executable: PathBuf::from(options.required("--provider")?),
                 supervisor_executable: PathBuf::from(options.required("--supervisor")?),
                 host_executable: PathBuf::from(options.required("--host")?),
+                compositor_identity: ServiceIdentity::resolve(
+                    options.required("--compositor-user")?,
+                )?,
+                provider_identity: ServiceIdentity::resolve(options.required("--provider-user")?)?,
+                supervisor_identity: ServiceIdentity::resolve(
+                    options.required("--supervisor-user")?,
+                )?,
+                host_identity: ServiceIdentity::resolve(options.required("--host-user")?)?,
                 startup_timeout: timeout,
             })?;
+        }
+        "host-proxy" => {
+            options.ensure_only(&["--launcher-socket"])?;
+            run_host_proxy(PathBuf::from(options.required("--launcher-socket")?))?;
         }
         _ => bail!(usage()),
     }
@@ -130,5 +146,5 @@ impl Options {
 }
 
 fn usage() -> &'static str {
-    "usage:\n  sos-linux-session bootstrap --root DIR --service-socket PATH [--timeout-ms N]\n  sos-linux-session stage --root DIR --revision ID --service-socket PATH [--timeout-ms N]\n  sos-linux-session shutdown --service-socket PATH [--timeout-ms N]\n  sos-linux-session run --root DIR --runtime-dir DIR --authority-file FILE --shell-token-file FILE --compositor FILE --provider FILE --supervisor FILE --host FILE [--timeout-ms N]"
+    "usage:\n  sos-linux-session bootstrap --root DIR --service-socket PATH [--timeout-ms N]\n  sos-linux-session stage --root DIR --revision ID --service-socket PATH [--timeout-ms N]\n  sos-linux-session shutdown --service-socket PATH [--timeout-ms N]\n  sos-linux-session run --root DIR --runtime-dir DIR --authority-file FILE --shell-token-file FILE --compositor FILE --provider FILE --supervisor FILE --host FILE --compositor-user USER --provider-user USER --supervisor-user USER --host-user USER [--timeout-ms N]"
 }

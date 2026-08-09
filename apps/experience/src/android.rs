@@ -1,6 +1,5 @@
 mod accessibility;
 mod native_input;
-mod pointer_input;
 mod provider_client;
 
 use std::{
@@ -30,6 +29,7 @@ use serde_json::{json, Value as JsonValue};
 use sha2::{Digest, Sha256};
 
 use crate::assets::{self, SosAssets, ALBUM_ASSET};
+use crate::pointer_input;
 use crate::scene_surface;
 use crate::{
     DAILY_FLOW_AGENT_EXPERIENCE, DAILY_FLOW_EXPERIENCE, DEFAULT_EXPERIENCE, TIMEFLOW_EXPERIENCE,
@@ -1173,6 +1173,27 @@ impl ExperienceHost {
                 );
                 self.dispatch_pending_input_event(cx);
             }
+            WorkerResult::ModelRefreshed {
+                request_id,
+                scene,
+                worker_us,
+            } => {
+                self.scene = scene;
+                self.accessibility_dirty = true;
+                log::info!(
+                    "experience_model_refreshed request_id={request_id} worker_us={worker_us}"
+                );
+            }
+            WorkerResult::ModelRefreshRejected {
+                request_id,
+                error,
+                worker_us,
+            } => {
+                self.status = Some((format!("Model refresh rejected: {error}"), false));
+                log::warn!(
+                    "experience_model_refresh_rejected request_id={request_id} worker_us={worker_us} error={error}"
+                );
+            }
         }
     }
 
@@ -1467,6 +1488,16 @@ impl ExperienceHost {
                 image.asset.clone()
             };
             element = element.child(img(path).size_full());
+        }
+        if matches!(&node.content, Some(Content::ProviderSurface(_))) {
+            element = element.child(
+                div()
+                    .size_full()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child("Provider surface unavailable on this host"),
+            );
         }
         if let Some(Content::TextSession(input)) = &node.content {
             self.input_state_shadow

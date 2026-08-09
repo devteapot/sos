@@ -1,11 +1,11 @@
-use std::{cell::RefCell, rc::Rc};
+use std::{cell::RefCell, rc::Rc, sync::Arc};
 
 use experience_ir::{ClipRect, HitRegion, Interaction, PaintOp, SceneEvent, Transform2D};
 use gpui::{
     canvas, div, point, prelude::*, px, quad, rgb, transparent_black, AnyElement, BorderStyle,
-    Bounds, ContentMask, Context, Font, FontStyle, FontWeight, MouseButton, MouseDownEvent,
-    MouseMoveEvent, MouseUpEvent, PathBuilder, Pixels, ShapedLine, SharedString, TextAlign,
-    TextRun,
+    Bounds, ContentMask, Context, Corners, Font, FontStyle, FontWeight, MouseButton,
+    MouseDownEvent, MouseMoveEvent, MouseUpEvent, PathBuilder, Pixels, RenderImage, ShapedLine,
+    SharedString, TextAlign, TextRun,
 };
 
 pub(crate) trait SceneSurfaceHost: Sized + 'static {
@@ -75,6 +75,13 @@ enum PreparedPaint {
         line_height: Option<f32>,
         max_width: Option<f32>,
         line: Box<ShapedLine>,
+    },
+    Shader {
+        x: f32,
+        y: f32,
+        width: f32,
+        height: f32,
+        image: Option<Arc<RenderImage>>,
     },
     Layer {
         clip: Option<ClipRect>,
@@ -342,6 +349,29 @@ fn prepare(
                     line: Box::new(line),
                 }
             }
+            PaintOp::Shader {
+                asset,
+                x,
+                y,
+                width,
+                height,
+            } => {
+                #[cfg(all(target_os = "linux", feature = "linux-host"))]
+                let image =
+                    crate::shader_paint::render(&asset, width.ceil() as u32, height.ceil() as u32);
+                #[cfg(not(all(target_os = "linux", feature = "linux-host")))]
+                let image = {
+                    let _ = asset;
+                    None
+                };
+                PreparedPaint::Shader {
+                    x,
+                    y,
+                    width,
+                    height,
+                    image,
+                }
+            }
             PaintOp::Layer {
                 clip,
                 transform: local_transform,
@@ -459,6 +489,27 @@ fn paint(
                     });
                 } else {
                     let _ = line.paint(origin, line_height, TextAlign::Left, None, window, cx);
+                }
+            }
+            PreparedPaint::Shader {
+                x,
+                y,
+                width,
+                height,
+                image,
+            } => {
+                let Some(image) = image else { continue };
+                let clip = ClipRect {
+                    x: *x,
+                    y: *y,
+                    width: *width,
+                    height: *height,
+                };
+                let bounds = transformed_bounds(canvas_bounds, clip, transform);
+                if let Err(error) =
+                    window.paint_image(bounds, Corners::default(), image.clone(), 0, false)
+                {
+                    log::warn!("shader_paint_composite_failed error={error}");
                 }
             }
             PreparedPaint::Layer {

@@ -7,7 +7,11 @@ use std::time::Duration;
 use smithay::{
     backend::{
         renderer::{
-            damage::OutputDamageTracker, element::surface::WaylandSurfaceRenderElement,
+            damage::OutputDamageTracker,
+            element::{
+                surface::{render_elements_from_surface_tree, WaylandSurfaceRenderElement},
+                Kind,
+            },
             gles::GlesRenderer,
         },
         winit::{self, WinitEvent},
@@ -81,6 +85,26 @@ pub fn init_winit(
                         let (renderer, mut framebuffer) = backend
                             .bind()
                             .map_err(|error| format!("bind nested framebuffer: {error}"))?;
+                        let input_method_elements = state
+                            .input_method_popups
+                            .iter()
+                            .filter(|popup| popup.alive())
+                            .flat_map(|popup| {
+                                let parent_location = popup
+                                    .get_parent()
+                                    .map(|parent| parent.location.loc)
+                                    .unwrap_or_default();
+                                render_elements_from_surface_tree(
+                                    renderer,
+                                    popup.wl_surface(),
+                                    (parent_location + popup.location())
+                                        .to_physical_precise_round(1.0),
+                                    1.0,
+                                    1.0,
+                                    Kind::Unspecified,
+                                )
+                            })
+                            .collect::<Vec<WaylandSurfaceRenderElement<GlesRenderer>>>();
                         render_output::<_, WaylandSurfaceRenderElement<GlesRenderer>, _, _>(
                             &output,
                             renderer,
@@ -88,7 +112,7 @@ pub fn init_winit(
                             1.0,
                             0,
                             [&state.space],
-                            &[],
+                            &input_method_elements,
                             &mut damage_tracker,
                             [0.025, 0.03, 0.035, 1.0],
                         )

@@ -79,8 +79,9 @@ impl NativeTextInput {
         cx: &mut Context<Self>,
     ) -> Self {
         let focus_handle = cx.focus_handle();
-        let focused = cx.on_focus(&focus_handle, window, |this, _, cx| {
+        let focused = cx.on_focus(&focus_handle, window, |this, window, cx| {
             this.notify_focus(true, cx);
+            window.invalidate_character_coordinates();
         });
         let blurred = cx.on_blur(&focus_handle, window, |this, _, cx| {
             this.marked_range = None;
@@ -130,6 +131,44 @@ impl NativeTextInput {
     pub fn activate(&self, window: &mut Window, cx: &mut Context<Self>) {
         if !self.focus_handle.is_focused(window) {
             window.focus(&self.focus_handle, cx);
+        }
+    }
+
+    pub fn accessibility_set_value(
+        &mut self,
+        value: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let range = 0..self.content.encode_utf16().count();
+        self.replace_text_in_range(Some(range), value, window, cx);
+    }
+
+    pub fn accessibility_set_selection(
+        &mut self,
+        start: usize,
+        end: usize,
+        cx: &mut Context<Self>,
+    ) {
+        let start = self.offset_from_utf16(start);
+        let end = self.offset_from_utf16(end);
+        self.selected_range = start.min(end)..start.max(end);
+        self.selection_reversed = start > end;
+        self.marked_range = None;
+        cx.notify();
+    }
+
+    pub fn accessibility_clipboard_action(
+        &mut self,
+        action: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match action {
+            "copy" => self.copy(&Copy, window, cx),
+            "cut" => self.cut(&Cut, window, cx),
+            "paste" => self.paste(&Paste, window, cx),
+            _ => {}
         }
     }
 
@@ -227,12 +266,17 @@ impl NativeTextInput {
 
     fn paste(&mut self, _: &Paste, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
+            eprintln!("sos_linux_clipboard action=paste bytes={}", text.len());
             self.replace_text_in_range(None, &text.replace(['\r', '\n'], " "), window, cx);
         }
     }
 
     fn copy(&mut self, _: &Copy, _: &mut Window, cx: &mut Context<Self>) {
         if !self.selected_range.is_empty() {
+            eprintln!(
+                "sos_linux_clipboard action=copy bytes={}",
+                self.selected_range.len()
+            );
             cx.write_to_clipboard(ClipboardItem::new_string(
                 self.content[self.selected_range.clone()].to_string(),
             ));
@@ -242,6 +286,10 @@ impl NativeTextInput {
     fn cut(&mut self, _: &Cut, window: &mut Window, cx: &mut Context<Self>) {
         self.copy(&Copy, window, cx);
         if !self.selected_range.is_empty() {
+            eprintln!(
+                "sos_linux_clipboard action=cut bytes={}",
+                self.selected_range.len()
+            );
             self.replace_text_in_range(None, "", window, cx);
         }
     }

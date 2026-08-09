@@ -49,6 +49,28 @@ local function render(model, state)
         }))
     end
 
+    local provider_surfaces = {}
+    for _, surface in ipairs(model.surfaces or {}) do
+        table.insert(provider_surfaces, group("column", { gap = 6, width = 220 }, {
+            {
+                id = "provider-surface-" .. surface.id,
+                layout = { width = 220, height = 124 },
+                content = { kind = "provider_surface", surface = surface.id },
+                semantics = {
+                    role = "image",
+                    label = surface.kind .. " surface " .. surface.id,
+                    value = surface.status,
+                },
+            },
+            text(surface.kind .. " · " .. surface.status, 11, muted),
+        }))
+    end
+    local system = model.system or {}
+    local audio = system.audio_volume_percent
+    local system_summary = tostring(#(system.online_interfaces or {})) .. " network · "
+        .. tostring(#(system.connected_displays or {})) .. " display · "
+        .. (audio and (tostring(audio) .. "% audio") or "audio unavailable")
+
     return group("column", { scroll_y = true }, {
         group("column", { padding = 22, gap = 18 }, {
             text("A living day", 30, ink, {
@@ -81,6 +103,7 @@ local function render(model, state)
                     }),
                 }),
             }),
+            group("row", { gap = 12 }, provider_surfaces),
             group("column", { gap = 8, padding = 16 }, {
                 text("Capture a thought", 18, ink),
                 {
@@ -105,6 +128,9 @@ local function render(model, state)
                 role = "status", label = "Weather",
                 value = model.weather.temperature_c .. " degrees, " .. model.weather.summary,
             }, "weather-status"),
+            text(system_summary, 12, muted, {
+                role = "status", label = "Linux system state", value = system_summary,
+            }, "system-status"),
             text("TODAY", 11, muted),
             group("column", { gap = 6 }, agenda),
         }),

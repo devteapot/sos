@@ -7,6 +7,7 @@ vm_root="$(cd "$vm_tools_dir/../.." && pwd)"
 vm_cache_root="${SOS_LINUX_VM_ROOT:-$vm_root/.cache/linux-vm}"
 vm_name="${SOS_LINUX_VM_NAME:-sos-debian13}"
 vm_pid_file="$vm_cache_root/$vm_name.pid"
+vm_qmp_socket="$vm_cache_root/$vm_name-qmp.sock"
 
 [[ "$#" -eq 0 ]] || {
   printf 'error: usage: tools/linux-vm/stop\n' >&2
@@ -38,4 +39,7 @@ if kill -0 "$vm_pid" 2>/dev/null; then
   }
 fi
 rm -- "$vm_pid_file"
+if [[ -S "$vm_qmp_socket" ]]; then
+  rm -- "$vm_qmp_socket"
+fi
 printf 'Stopped %s (QEMU PID %s); disk and logs were preserved.\n' "$vm_name" "$vm_pid"

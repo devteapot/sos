@@ -62,10 +62,12 @@ objects and file descriptors are never exposed to Luau.
 
 When `--service-socket` is configured, interaction results are committed on a
 background thread through the versioned provider/state Unix-socket protocol.
-The Linux boundary currently maps only the allowed typed
-`notes.attach_to_event` effect; unknown actions are rejected. It reconciles an
-ambiguous promotion by stable transaction ID and accepts the new scene only when
-the authority returns the exact expected state.
+The Linux boundary maps only the typed `notes.attach_to_event`, `notes.write`,
+`calendar.append`, and `music.command` effects; unknown actions are rejected.
+It checks the active revision's grant for each real adapter, isolates caller
+cancellation/disconnection, reconciles an ambiguous promotion by stable
+transaction ID, and accepts the new scene only when authority returns the exact
+expected state.
 
 ## Run it in an existing Wayland session
 
@@ -131,14 +133,15 @@ systemd restart the whole session on durable authority and the committed
 revision. A refused stale supervisor socket is removed only after proving that
 no process is listening on it.
 
-One recovery edge remains explicit: an uncatchable death of the lifecycle owner
-itself is not equivalent to a child failure because the active PAM tree lives in
-`session-N.scope`, outside the service cgroup. `PrivatePIDs=yes` was tested as a
-kernel-reaping fallback, but systemd 257 failed its namespace exec step for this
-PAM/tty topology before SOS started. The current gate covers child failure and
-normal service stop; production should split seat ownership from the other
-systemd-managed processes or add another independently supervised reaper before
-claiming lifecycle-owner `SIGKILL` recovery.
+The lifecycle owner also persists exact executable/PID/start-time records. An
+uncatchable death of that owner is recovered by validating this registry before
+the replacement session starts; matching survivors are reaped, while already
+completed logind/kernel cleanup is recorded explicitly. This is necessary
+because the active PAM tree lives in `session-N.scope`, outside the service
+cgroup. `PrivatePIDs=yes` was rejected after systemd 257 failed its namespace
+exec step for this PAM/tty topology before SOS started. The current boot
+campaign kills the lifecycle owner and proves every old-tree PID disappears
+before accepting the replacement session.
 
 Startup is presentation-ordered rather than socket-ordered. The compositor
 creates an exclusive readiness record only after its recovery view reaches a
@@ -153,9 +156,26 @@ service's private credential directory with `LoadCredential=`, and the
 compositor and host receive only the credential path. The bounded parser rejects
 empty, oversized, non-UTF-8, or newline-bearing credentials. The secret is not
 present in the lifecycle owner, compositor, supervisor, or host command lines
-or environment values. This is protected delivery for the current appliance
-unit, not proof of mutually distrusting same-UID providers; production service
-identity separation remains a later hardening step.
+or environment values. The compositor/session, provider, supervisor, and
+generated host run under distinct Unix identities. Per-role credential copies
+are owner-readable only, and every role child clears inherited lifecycle
+capabilities before exec.
+
+When real Linux providers are configured, `SOS_PROVIDER_GRANTS` names a private
+revision-keyed capability manifest. The host loads the candidate's grants and
+snapshot before candidate render, switches the live watcher only at commit,
+and drops events tagged for another revision. A generated interface therefore
+receives typed data/effects, not provider handles, filesystem paths, network
+access, or ambient credentials. Development wildcard grants require the
+explicit `SOS_PROVIDER_DEVELOPMENT_GRANTS=1` escape hatch.
+
+`SOS_REVISION_SIGNING_KEY_FILE` makes revision installation emit a detached
+HMAC-SHA256 manifest authenticator; `SOS_REVISION_VERIFY_KEY_FILE` makes every
+load require and constant-time verify it. Key files are bounded and must not be
+group/world accessible. This is suitable for one-owner prototype update and
+rollback testing. Permanent-host binaries remain distribution/image-owned and
+must use that update system's signing policy; production revisions should move
+to asymmetric signatures rather than distribute a shared HMAC key.
 
 The executable link on Debian/Ubuntu requires the XKB development libraries in
 addition to the usual Rust/GPUI Linux prerequisites:
@@ -234,38 +254,76 @@ socket, and booted the committed revision in host PID 1312 with a new 1/3
 page-flip fence. The verifier then rebooted to `graphical.target`, confirmed GDM and
 seatd, and removed its exact units, binaries, credential, and state.
 
-## Honest boundaries and next gate
+## Completed Linux envelope
 
-- An ordinary `linux-run` still uses GPUI's next-frame callback. The nested
-  `sos-compositor` path owns shell-commit/backend-submit evidence but its outer
-  compositor can still delay or discard that buffer. The direct Debian VM path
-  now waits for the matching DRM VBlank; only physical hardware can turn that
-  into a device timing claim.
-- The Linux text-input node is display-only. Native editing, selection, marked
-  text, clipboard, and Wayland input-method integration remain open.
-- Scene semantics remain the source of truth, but Linux does not yet adapt them
-  to a native accessibility protocol.
-- Conventional GPUI mouse input now emits the v3 single-pointer shape with a
-  stable synthetic pointer ID. Native Wayland touch, multi-pointer transforms,
-  pressure, and explicit capture policy remain compositor/input-adapter work;
-  Android's raw NDK router is intentionally platform-specific.
-- The model still comes from `providers-fake`; only state/effect authority uses
-  the local service path.
-- Linux and Android now share the Luau runtime worker, Scene ABI, revision asset
-  and font registry, retained paint/glyph/layer surface, bounded layout-program
-  mapping, validation rules, and activation semantics. Platform lifecycle,
-  layout/content details, raw pointer collection, text editing, and
-  accessibility remain separate adapters.
-- Both compositor backends quiesce forwarded input from arming through their
-  evidence boundary. Direct libinput is wired to the shared router, but cursor,
-  touch/multi-pointer policy and injected input evidence remain open.
-- The direct path now proves unattended boot-to-SOS and logind/tty1 ownership in
-  the Debian VM without seatd. It does not prove physical touch, vendor GPU
-  behavior, thermals, suspend/resume, or any hardware/latency gate.
+The permanent Linux host now has the following platform adapters around the
+same Scene ABI and worker:
 
-The client-host, nested compositor, direct DRM, and boot-session ownership
-slices are complete. The next clean Linux gate is deterministic input evidence:
-render a compositor-owned cursor and inject keyboard, pointer, and touch events
-through the VM devices while proving focus, coordinates, touch lifecycle, and
-activation quiescing. Native text editing/IME and clipboard should follow as a
-separate protocol slice. Physical performance remains later hardware work.
+- compositor/client `wl_touch` transport into the shared multi-pointer router,
+  plus a compositor-owned cursor and direct-libinput VM campaign;
+- a compositor-restricted `sos-input-method` input-method-v2 client with pinyin
+  preedit/candidates/commit, candidate selection, dead acute composition,
+  keyboard grab, popup rendering, and cursor rectangles;
+- end-to-end Wayland data-device clipboard ownership for copy, cut, and paste;
+- Markdown notes, iCalendar, JSON/MPRIS music, and Linux time, connectivity,
+  PipeWire audio, battery/AC, DRM-display, and input-device snapshots with
+  revision-scoped grants, live generation events, typed writes/commands,
+  cancellation, disconnected-client isolation, and explicit unavailable errors;
+- capability-scoped video/camera frame surfaces backed by provider-owned atomic
+  PNG/JPEG/WebP updates; protected content is represented but deliberately
+  remains unavailable because this prototype has no secure scanout path;
+- an SOS-owned Unix semantic service for traversal, semantic focus, activation,
+  scrolling, editable text/selection/clipboard actions, status changes, and
+  automation waits;
+- a direct compositor recovery panel showing current/previous revision,
+  progress and failure, with restart, rollback, safe-mode, and provider-disable
+  controls. The lifecycle owner republishes status after ordinary activation;
+- connector/DRM-device rescans, libseat pause/activate handling, live output
+  mode/scale/rotation configuration, simultaneous outputs, input hotplug,
+  child/host/lifecycle-owner recovery, clean stop, and durable authority;
+- executable resource-free WGSL paint through a capped offscreen target and an
+  opt-in bounded rootless XWayland compatibility service;
+- private revision grant manifests, bounded Luau execution, a restricted
+  systemd unit, scoped shell credential delivery, and optional detached
+  HMAC-SHA256 revision-manifest verification.
+
+`tools/linux-compositor/verify-nested` proves the IME, clipboard, provider,
+accessibility, activation, abort suppression, and host-recovery interactions in
+one campaign. `tools/linux-vm/verify-direct-session` uses kernel `uinput`
+keyboard, relative-pointer, and two-contact touchscreen devices through direct
+libinput, including held inputs across successful and aborted activations.
+`tools/linux-vm/verify-boot-session` boots the appliance target, invokes the
+recovery rollback channel in both directions, kills/restarts the host, kills a
+provider to restart the whole service, and restores GNOME afterward.
+
+## Honest remaining boundaries
+
+- An ordinary `linux-run` still uses GPUI's next-frame callback. Nested
+  compositor submit evidence cannot prove that its outer compositor displayed
+  the buffer. Direct mode waits for DRM VBlank, but only physical hardware can
+  turn that into a panel/touch latency claim.
+- Core `wl_touch` does not carry finger pressure; tablet-v2 transports stylus
+  pressure. Physical calibration and touch/stylus coexistence remain unverified.
+- The VM proves libseat pause/resume, kernel freezer suspend/resume, connector
+  removal/reconnect, two simultaneous VirtIO outputs, and live mode/scale/
+  rotation. Full platform sleep/wake, physical hotplug, another real DRM device,
+  target GPU/panel behavior, memory pressure, latency, thermals, and physical
+  touch remain unverified under the user's hardware waiver.
+- The prototype service processes have distinct Unix identities, executables,
+  owner-managed sockets, peer checks, scoped credentials/capabilities, and
+  zero effective child capabilities. Fine-grained MAC policy and production
+  secret rotation remain hardening work.
+- HMAC manifests provide prototype authenticated rollback/install control, not
+  public-key distribution or a production permanent-host update system. A
+  production image should use distro/immutable-image signing for the host and
+  asymmetric revision signatures.
+- XWayland is deliberately opt-in and bounded; it is compatibility, not a
+  promise to integrate every legacy application or protected media stack.
+- Provider frames are functional image updates, not zero-copy decoded video;
+  protected playback, camera capture ownership, and secure scanout require a
+  concrete provider/device integration.
+
+The Linux integration prototype envelope is complete at virtual-device scope.
+The remaining items above are physical-device evidence or production/optional
+compatibility work, not claims inferred from the VM. Physical touch-device
+verification is explicitly waived because no target is available.

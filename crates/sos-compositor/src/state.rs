@@ -12,7 +12,7 @@ use nix::sys::socket::{getsockopt, sockopt::PeerCredentials};
 use smithay::{
     backend::renderer::element::RenderElementStates,
     desktop::{PopupManager, Space, Window, WindowSurfaceType},
-    input::{keyboard::Keycode, Seat, SeatState},
+    input::{keyboard::Keycode, pointer::CursorImageStatus, Seat, SeatState},
     reexports::{
         calloop::{generic::Generic, EventLoop, Interest, Mode, PostAction},
         wayland_server::{
@@ -24,19 +24,24 @@ use smithay::{
     utils::{Clock, Logical, Monotonic, Point},
     wayland::{
         compositor::{CompositorClientState, CompositorState},
+        input_method::{InputMethodManagerState, PopupSurface as InputMethodPopupSurface},
         output::OutputManagerState,
         presentation::PresentationState,
         selection::data_device::DataDeviceState,
         shell::xdg::XdgShellState,
         shm::ShmState,
         socket::ListeningSocketSource,
+        tablet_manager::TabletManagerState,
         text_input::TextInputManagerState,
+        xwayland_shell::XWaylandShellState,
     },
 };
 
 use crate::{
     control::ControlCommand,
+    input::TouchLifecycle,
     policy::{ClientRole, SurfacePolicy},
+    recovery::RecoveryUi,
     CompositorData,
 };
 
@@ -51,13 +56,20 @@ pub struct SosCompositor {
     pub suppressed_keyboard_keys: HashSet<Keycode>,
     pub pressed_pointer_buttons: HashSet<u32>,
     pub suppressed_pointer_buttons: HashSet<u32>,
+    pub touch_lifecycle: TouchLifecycle,
     pub quiesced_input_events: u64,
+    pub observed_input_classes: HashSet<&'static str>,
+    pub cursor_image: CursorImageStatus,
     pub surface_roles: HashMap<ObjectId, ClientRole>,
     pub shell_events: Option<(u32, std::sync::mpsc::Sender<CompositorEvent>)>,
     pub output_size: (i32, i32),
+    pub recovery_ui: RecoveryUi,
+    pub recovery_button_pressed: bool,
 
     pub compositor_state: CompositorState,
     pub xdg_shell_state: XdgShellState,
+    pub xwayland_shell_state: XWaylandShellState,
+    pub xwm: Option<smithay::xwayland::X11Wm>,
     pub shm_state: ShmState,
     // These values own the advertised protocol globals for the compositor lifetime.
     #[allow(dead_code)]
@@ -66,6 +78,11 @@ pub struct SosCompositor {
     pub presentation_state: PresentationState,
     pub seat_state: SeatState<SosCompositor>,
     pub data_device_state: DataDeviceState,
+    #[allow(dead_code)]
+    pub tablet_manager_state: TabletManagerState,
+    #[allow(dead_code)]
+    pub input_method_manager_state: InputMethodManagerState,
+    pub input_method_popups: Vec<InputMethodPopupSurface>,
     #[allow(dead_code)]
     pub text_input_manager_state: TextInputManagerState,
     pub popups: PopupManager,
@@ -82,16 +99,29 @@ impl SosCompositor {
         let display_handle = display.handle();
         let compositor_state = CompositorState::new::<Self>(&display_handle);
         let xdg_shell_state = XdgShellState::new::<Self>(&display_handle);
+        let xwayland_shell_state = XWaylandShellState::new::<Self>(&display_handle);
         let shm_state = ShmState::new::<Self>(&display_handle, vec![]);
         let output_manager_state = OutputManagerState::new_with_xdg_output::<Self>(&display_handle);
         let presentation_state = PresentationState::new::<Self>(&display_handle, clock.id() as u32);
         let mut seat_state = SeatState::new();
         let data_device_state = DataDeviceState::new::<Self>(&display_handle);
+        let tablet_manager_state = TabletManagerState::new::<Self>(&display_handle);
+        let input_method_manager_state =
+            InputMethodManagerState::new::<Self, _>(&display_handle, |client| {
+                let Some(data) = client.get_data::<ClientState>() else {
+                    return false;
+                };
+                std::fs::read_link(format!("/proc/{}/exe", data.pid))
+                    .ok()
+                    .and_then(|path| path.file_name().map(|name| name.to_owned()))
+                    .is_some_and(|name| name == "sos-input-method")
+            });
         let text_input_manager_state = TextInputManagerState::new::<Self>(&display_handle);
         let popups = PopupManager::default();
         let mut seat = seat_state.new_wl_seat(&display_handle, "sos-nested");
         seat.add_keyboard(Default::default(), 200, 25)?;
         seat.add_pointer();
+        seat.add_touch();
         let socket_name =
             Self::init_wayland_listener(display, event_loop, socket_name, display_handle.clone())?;
 
@@ -106,17 +136,27 @@ impl SosCompositor {
             suppressed_keyboard_keys: HashSet::new(),
             pressed_pointer_buttons: HashSet::new(),
             suppressed_pointer_buttons: HashSet::new(),
+            touch_lifecycle: TouchLifecycle::default(),
             quiesced_input_events: 0,
+            observed_input_classes: HashSet::new(),
+            cursor_image: CursorImageStatus::default_named(),
             surface_roles: HashMap::new(),
             shell_events: None,
             output_size: (1280, 800),
+            recovery_ui: RecoveryUi::from_environment(),
+            recovery_button_pressed: false,
             compositor_state,
             xdg_shell_state,
+            xwayland_shell_state,
+            xwm: None,
             shm_state,
             output_manager_state,
             presentation_state,
             seat_state,
             data_device_state,
+            tablet_manager_state,
+            input_method_manager_state,
+            input_method_popups: Vec::new(),
             text_input_manager_state,
             popups,
             seat,

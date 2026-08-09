@@ -1,12 +1,13 @@
-// The direct backend is intentionally a single-seat, single-GPU implementation
+// The direct backend is intentionally a single-seat implementation
 // adapted from Smithay's MIT-licensed Anvil udev backend at tag v0.7.0. It keeps
 // SOS policy independent from KMS and releases an activation fence only from the
 // VBlank event corresponding to the queued shell buffer.
 
-use std::{collections::HashMap, path::Path, time::Duration};
+use std::{collections::HashMap, fs, path::Path, time::Duration};
 
 use anyhow::{bail, Context as _, Result};
 use compositor_control_protocol::{PresentationClock, PresentationEvidence};
+use serde::Deserialize;
 use smithay::{
     backend::{
         allocator::{
@@ -24,7 +25,11 @@ use smithay::{
         input::{Device as _, InputEvent},
         libinput::{LibinputInputBackend, LibinputSessionInterface},
         renderer::{
-            element::{surface::WaylandSurfaceRenderElement, RenderElementStates},
+            element::{
+                memory::{MemoryRenderBuffer, MemoryRenderBufferRenderElement},
+                surface::{render_elements_from_surface_tree, WaylandSurfaceRenderElement},
+                Kind, RenderElementStates,
+            },
             gles::GlesRenderer,
             ImportEgl, ImportMemWl,
         },
@@ -35,19 +40,20 @@ use smithay::{
         space::{space_render_elements, SpaceRenderElements},
         utils::OutputPresentationFeedback,
     },
-    output::{Mode, Output, PhysicalProperties, Subpixel},
+    output::{Mode, Output, PhysicalProperties, Scale, Subpixel},
     reexports::{
         calloop::{
             timer::{TimeoutAction, Timer},
-            EventLoop,
+            EventLoop, LoopHandle, RegistrationToken,
         },
         drm::control::{connector, crtc, ModeTypeFlags},
         input::Libinput,
         rustix::fs::OFlags,
         wayland_protocols::wp::presentation_time::server::wp_presentation_feedback,
-        wayland_server::protocol::wl_surface::WlSurface,
+        wayland_server::{protocol::wl_surface::WlSurface, Resource as _},
     },
     utils::{DeviceFd, Monotonic, Time, Transform},
+    wayland::compositor,
     wayland::presentation::Refresh,
 };
 use smithay_drm_extras::drm_scanner::{DrmScanEvent, DrmScanner};
@@ -57,6 +63,15 @@ use crate::{mark_backend_ready, policy::QueuedRevision, state::SosCompositor, Co
 const FRAME_INTERVAL: Duration = Duration::from_millis(8);
 const CLEAR_COLOR: [f32; 4] = [0.025, 0.03, 0.035, 1.0];
 const COLOR_FORMATS: [Fourcc; 2] = [Fourcc::Argb8888, Fourcc::Abgr8888];
+const CURSOR_WIDTH: i32 = 18;
+const CURSOR_HEIGHT: i32 = 24;
+
+smithay::backend::renderer::element::render_elements! {
+    DirectRenderElement<=GlesRenderer>;
+    Space=SpaceRenderElements<GlesRenderer, WaylandSurfaceRenderElement<GlesRenderer>>,
+    CursorSurface=WaylandSurfaceRenderElement<GlesRenderer>,
+    Cursor=MemoryRenderBufferRenderElement<GlesRenderer>,
+}
 
 type DirectOutput = DrmOutput<
     GbmAllocator<DrmDeviceFd>,
@@ -74,9 +89,11 @@ struct OutputData {
     output: Output,
     drm_output: DirectOutput,
     frame_pending: bool,
+    needs_initial_damage: bool,
 }
 
 struct DeviceData {
+    event_token: RegistrationToken,
     renderer: GlesRenderer,
     manager: DrmOutputManager<
         GbmAllocator<DrmDeviceFd>,
@@ -88,9 +105,28 @@ struct DeviceData {
     outputs: HashMap<crtc::Handle, OutputData>,
 }
 
+#[derive(Clone, Debug, PartialEq)]
+struct OutputConfig {
+    requested_size: Option<(i32, i32)>,
+    rotation: u16,
+    scale: f64,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct OutputConfigFile {
+    mode: Option<String>,
+    rotation: Option<u16>,
+    scale: Option<f64>,
+}
+
 pub struct DirectBackend {
     session: LibSeatSession,
     devices: HashMap<DrmNode, DeviceData>,
+    cursor_buffer: MemoryRenderBuffer,
+    initial_damage_buffer: MemoryRenderBuffer,
+    session_paused: bool,
+    output_config: OutputConfig,
 }
 
 pub fn init_direct(
@@ -140,6 +176,7 @@ pub fn init_direct(
             SessionEvent::PauseSession => {
                 libinput.suspend();
                 if let Some(direct) = &mut data.direct {
+                    direct.session_paused = true;
                     for device in direct.devices.values_mut() {
                         device.manager.pause();
                         for output in device.outputs.values_mut() {
@@ -159,24 +196,35 @@ pub fn init_direct(
                             tracing::error!(%error, "could not reactivate DRM device");
                         }
                     }
+                    direct.session_paused = false;
                 }
                 tracing::info!("direct session activated");
             }
         })
         .map_err(|_| anyhow::anyhow!("insert libseat event source"))?;
 
+    let loop_handle = event_loop.handle();
+    let output_config = load_output_config()?;
     data.direct = Some(DirectBackend {
         session,
         devices: HashMap::new(),
+        cursor_buffer: default_cursor_buffer(),
+        initial_damage_buffer: initial_damage_buffer(),
+        session_paused: false,
+        output_config,
     });
     for (device_id, path) in devices {
         let node = DrmNode::from_dev_id(device_id).context("identify DRM node")?;
-        add_device(event_loop, data, node, &path)?;
+        add_device(&loop_handle, data, node, &path)?;
+    }
+    if data.state.space.outputs().next().is_none() {
+        bail!("no connected desktop DRM output was found");
     }
 
+    let udev_loop_handle = event_loop.handle();
     event_loop
         .handle()
-        .insert_source(udev, |event, _, data| match event {
+        .insert_source(udev, move |event, _, data| match event {
             UdevEvent::Added { device_id, path } => {
                 let Ok(node) = DrmNode::from_dev_id(device_id) else {
                     return;
@@ -188,14 +236,29 @@ pub fn init_direct(
                 {
                     return;
                 }
-                tracing::error!(?node, path = %path.display(), "DRM hot-add requires compositor restart");
+                if let Err(error) = add_device(&udev_loop_handle, data, node, &path) {
+                    tracing::error!(%error, ?node, path = %path.display(), "could not hot-add DRM device");
+                } else {
+                    tracing::info!(?node, path = %path.display(), "hot-added DRM device");
+                }
             }
             UdevEvent::Changed { device_id } => {
-                tracing::warn!(?device_id, "DRM connector change requires compositor restart");
+                let Ok(node) = DrmNode::from_dev_id(device_id) else {
+                    return;
+                };
+                let result = refresh_output_config(data)
+                    .and_then(|changed| (!changed).then(|| scan_connectors(data, node)).transpose())
+                    .map(|_| ());
+                if let Err(error) = result {
+                    tracing::error!(%error, ?node, "could not apply DRM connector hotplug");
+                }
             }
             UdevEvent::Removed { device_id } => {
-                tracing::error!(?device_id, "active DRM device was removed");
-                data.loop_signal.stop();
+                let Ok(node) = DrmNode::from_dev_id(device_id) else {
+                    return;
+                };
+                remove_device(&udev_loop_handle, data, node);
+                tracing::info!(?node, "hot-removed DRM device; waiting for a replacement");
             }
         })
         .map_err(|_| anyhow::anyhow!("insert udev event source"))?;
@@ -214,15 +277,12 @@ pub fn init_direct(
 }
 
 fn add_device(
-    event_loop: &mut EventLoop<CompositorData>,
+    loop_handle: &LoopHandle<'_, CompositorData>,
     data: &mut CompositorData,
     node: DrmNode,
     path: &Path,
 ) -> Result<()> {
     let direct = data.direct.as_mut().context("direct backend is missing")?;
-    if !direct.devices.is_empty() {
-        bail!("direct backend currently supports exactly one DRM device");
-    }
     let fd = direct
         .session
         .open(
@@ -232,8 +292,7 @@ fn add_device(
         .with_context(|| format!("open DRM device through libseat: {}", path.display()))?;
     let fd = DrmDeviceFd::new(DeviceFd::from(fd));
     let (drm, notifier) = DrmDevice::new(fd.clone(), true).context("initialize DRM device")?;
-    event_loop
-        .handle()
+    let event_token = loop_handle
         .insert_source(notifier, move |event, metadata, data| match event {
             DrmEvent::VBlank(crtc) => finish_frame(data, node, crtc, metadata.take()),
             DrmEvent::Error(error) => {
@@ -277,6 +336,7 @@ fn add_device(
     direct.devices.insert(
         node,
         DeviceData {
+            event_token,
             renderer,
             manager,
             scanner: DrmScanner::new(),
@@ -285,6 +345,25 @@ fn add_device(
     );
     scan_connectors(data, node)?;
     Ok(())
+}
+
+fn remove_device(
+    loop_handle: &LoopHandle<'_, CompositorData>,
+    data: &mut CompositorData,
+    node: DrmNode,
+) {
+    let Some(mut device) = data
+        .direct
+        .as_mut()
+        .and_then(|direct| direct.devices.remove(&node))
+    else {
+        return;
+    };
+    for output in device.outputs.drain().map(|(_, output)| output.output) {
+        data.state.space.unmap_output(&output);
+    }
+    loop_handle.remove(device.event_token);
+    update_output_layout(&mut data.state);
 }
 
 fn scan_connectors(data: &mut CompositorData, node: DrmNode) -> Result<()> {
@@ -311,15 +390,58 @@ fn scan_connectors(data: &mut CompositorData, node: DrmNode) -> Result<()> {
             } => {
                 tracing::warn!(connector = ?connector.handle(), "connected DRM output has no CRTC");
             }
-            DrmScanEvent::Disconnected { .. } => {
-                bail!("DRM output disconnected; restart the compositor after reconnecting it")
+            DrmScanEvent::Disconnected {
+                connector,
+                crtc: Some(crtc),
+            } => {
+                disconnect_output(data, node, crtc);
+                tracing::info!(connector = ?connector.handle(), ?crtc, "disconnected DRM output");
             }
+            DrmScanEvent::Disconnected {
+                connector,
+                crtc: None,
+            } => tracing::info!(
+                connector = ?connector.handle(),
+                "disconnected unassigned DRM connector"
+            ),
         }
     }
-    if data.state.space.outputs().next().is_none() {
-        bail!("no connected desktop DRM output was found");
-    }
     Ok(())
+}
+
+fn refresh_output_config(data: &mut CompositorData) -> Result<bool> {
+    let next = load_output_config()?;
+    let direct = data.direct.as_mut().context("direct backend is missing")?;
+    if direct.output_config == next {
+        return Ok(false);
+    }
+    tracing::info!(?next, "applying changed direct output configuration");
+    direct.output_config = next;
+    let nodes = direct.devices.keys().copied().collect::<Vec<_>>();
+    for device in direct.devices.values_mut() {
+        for output in device.outputs.drain().map(|(_, output)| output.output) {
+            data.state.space.unmap_output(&output);
+        }
+        device.scanner = DrmScanner::new();
+    }
+    update_output_layout(&mut data.state);
+    for node in nodes {
+        scan_connectors(data, node)?;
+    }
+    Ok(true)
+}
+
+fn disconnect_output(data: &mut CompositorData, node: DrmNode, crtc: crtc::Handle) {
+    let output = data
+        .direct
+        .as_mut()
+        .and_then(|direct| direct.devices.get_mut(&node))
+        .and_then(|device| device.outputs.remove(&crtc))
+        .map(|output| output.output);
+    if let Some(output) = output {
+        data.state.space.unmap_output(&output);
+        update_output_layout(&mut data.state);
+    }
 }
 
 fn connect_output(
@@ -328,13 +450,26 @@ fn connect_output(
     connector: connector::Info,
     crtc: crtc::Handle,
 ) -> Result<()> {
-    if data.state.space.outputs().next().is_some() {
-        bail!("direct backend currently supports exactly one connected output");
-    }
-    let mode_index = connector
-        .modes()
-        .iter()
-        .position(|mode| mode.mode_type().contains(ModeTypeFlags::PREFERRED))
+    let config = data
+        .direct
+        .as_ref()
+        .context("direct backend is missing")?
+        .output_config
+        .clone();
+    let requested_size = config.requested_size;
+    let mode_index = requested_size
+        .and_then(|size| {
+            connector
+                .modes()
+                .iter()
+                .position(|mode| Mode::from(*mode).size == size.into())
+        })
+        .or_else(|| {
+            connector
+                .modes()
+                .iter()
+                .position(|mode| mode.mode_type().contains(ModeTypeFlags::PREFERRED))
+        })
         .unwrap_or(0);
     let drm_mode = *connector
         .modes()
@@ -357,15 +492,21 @@ fn connect_output(
         },
     );
     output.set_preferred(mode);
+    let transform = match config.rotation {
+        90 => Transform::_90,
+        180 => Transform::_180,
+        270 => Transform::_270,
+        _ => Transform::Normal,
+    };
+    let scale = config.scale;
     output.change_current_state(
         Some(mode),
-        Some(Transform::Normal),
-        None,
+        Some(transform),
+        Some(Scale::Fractional(scale)),
         Some((0, 0).into()),
     );
     let _global = output.create_global::<SosCompositor>(&data.display_handle);
     data.state.space.map_output(&output, (0, 0));
-    data.state.output_size = mode.size.into();
 
     let direct = data.direct.as_mut().context("direct backend is missing")?;
     let device = direct
@@ -375,10 +516,7 @@ fn connect_output(
     let planes = device.manager.device().planes(&crtc)?;
     let drm_output = device
         .manager
-        .initialize_output::<
-            _,
-            SpaceRenderElements<GlesRenderer, WaylandSurfaceRenderElement<GlesRenderer>>,
-        >(
+        .initialize_output::<_, DirectRenderElement>(
             crtc,
             drm_mode,
             &[connector.handle()],
@@ -388,24 +526,114 @@ fn connect_output(
             &DrmOutputRenderElements::default(),
         )
         .context("initialize direct KMS output")?;
+    // `initialize_output` performs a validation commit. Reset its swapchain so
+    // the first compositor frame has age zero and damages the complete CRTC,
+    // even when a newly hot-plugged output is temporarily outside the shell's
+    // last acknowledged size.
+    drm_output.reset_buffers();
     device.outputs.insert(
         crtc,
         OutputData {
             output,
             drm_output,
             frame_pending: false,
+            needs_initial_damage: true,
         },
     );
+    update_output_layout(&mut data.state);
     tracing::info!(
         output = name,
         width = mode.size.w,
         height = mode.size.h,
+        scale,
+        ?transform,
         "initialized direct KMS output"
     );
     Ok(())
 }
 
+fn load_output_config() -> Result<OutputConfig> {
+    let mut file = OutputConfigFile::default();
+    if let Some(path) = std::env::var_os("SOS_OUTPUT_CONFIG_FILE") {
+        let bytes = fs::read(&path)
+            .with_context(|| format!("read output configuration {}", Path::new(&path).display()))?;
+        if bytes.len() > 4096 {
+            bail!("output configuration exceeds 4096 bytes");
+        }
+        file = serde_json::from_slice(&bytes).context("parse output configuration")?;
+    }
+    let mode = std::env::var("SOS_OUTPUT_MODE").ok().or(file.mode);
+    let requested_size = mode.as_deref().map(parse_output_mode).transpose()?;
+    let rotation = std::env::var("SOS_OUTPUT_ROTATION")
+        .ok()
+        .map(|value| value.parse::<u16>().context("parse SOS_OUTPUT_ROTATION"))
+        .transpose()?
+        .or(file.rotation)
+        .unwrap_or(0);
+    if !matches!(rotation, 0 | 90 | 180 | 270) {
+        bail!("output rotation must be 0, 90, 180, or 270");
+    }
+    let scale = std::env::var("SOS_OUTPUT_SCALE")
+        .ok()
+        .map(|value| value.parse::<f64>().context("parse SOS_OUTPUT_SCALE"))
+        .transpose()?
+        .or(file.scale)
+        .unwrap_or(1.0);
+    if !scale.is_finite() || !(1.0..=4.0).contains(&scale) {
+        bail!("output scale must be finite and between 1.0 and 4.0");
+    }
+    Ok(OutputConfig {
+        requested_size,
+        rotation,
+        scale,
+    })
+}
+
+fn parse_output_mode(value: &str) -> Result<(i32, i32)> {
+    let (width, height) = value
+        .split_once('x')
+        .context("output mode must be WIDTHxHEIGHT")?;
+    let size = (
+        width.parse::<i32>().context("parse output mode width")?,
+        height.parse::<i32>().context("parse output mode height")?,
+    );
+    if size.0 <= 0 || size.1 <= 0 {
+        bail!("output mode dimensions must be positive");
+    }
+    Ok(size)
+}
+
+fn update_output_layout(state: &mut SosCompositor) {
+    let mut outputs = state.space.outputs().cloned().collect::<Vec<_>>();
+    outputs.sort_by_key(Output::name);
+    let mut x = 0;
+    let mut height = 0;
+    for output in outputs {
+        state.space.map_output(&output, (x, 0));
+        if let Some(geometry) = state.space.output_geometry(&output) {
+            tracing::info!(
+                output = output.name(),
+                x,
+                width = geometry.size.w,
+                height = geometry.size.h,
+                "positioned direct output"
+            );
+            x += geometry.size.w;
+            height = height.max(geometry.size.h);
+        }
+    }
+    state.output_size = (x, height);
+    state.reconfigure_for_output_layout();
+}
+
 fn render_all(data: &mut CompositorData) {
+    if data
+        .direct
+        .as_ref()
+        .is_none_or(|direct| direct.session_paused)
+    {
+        return;
+    }
     let targets = data
         .direct
         .as_ref()
@@ -442,12 +670,48 @@ fn render_output(data: &mut CompositorData, node: DrmNode, crtc: crtc::Handle) -
     if output_data.frame_pending {
         return Ok(());
     }
-    let elements = space_render_elements(
+    let mut elements = if output_data.needs_initial_damage {
+        let marker = MemoryRenderBufferRenderElement::from_buffer(
+            &mut device.renderer,
+            (0.0, 0.0),
+            &direct.initial_damage_buffer,
+            None,
+            None,
+            None,
+            Kind::Unspecified,
+        )
+        .context("upload initial output damage marker")?;
+        vec![DirectRenderElement::Cursor(marker)]
+    } else {
+        Vec::new()
+    };
+    elements.extend(cursor_render_elements(
         &mut device.renderer,
-        [&state.space],
+        state,
         &output_data.output,
-        1.0,
-    )?;
+        &direct.cursor_buffer,
+    ));
+    if state.policy.shell_mapped() {
+        elements.extend(input_method_render_elements(
+            &mut device.renderer,
+            state,
+            &output_data.output,
+        ));
+        elements.extend(
+            space_render_elements(
+                &mut device.renderer,
+                [&state.space],
+                &output_data.output,
+                1.0,
+            )?
+            .into_iter()
+            .map(DirectRenderElement::Space),
+        );
+    } else if let Some(element) =
+        recovery_render_element(&mut device.renderer, state, &output_data.output)
+    {
+        elements.push(DirectRenderElement::Cursor(element));
+    }
     let result = output_data
         .drm_output
         .render_frame(
@@ -457,6 +721,14 @@ fn render_output(data: &mut CompositorData, node: DrmNode, crtc: crtc::Handle) -
             FrameFlags::DEFAULT,
         )
         .map_err(|error| anyhow::anyhow!("prepare direct frame: {error}"))?;
+    if output_data.needs_initial_damage {
+        tracing::info!(
+            output = output_data.output.name(),
+            empty = result.is_empty,
+            elements = elements.len(),
+            "prepared initial direct output frame"
+        );
+    }
     send_frame_callbacks(state, &output_data.output);
     if result.is_empty {
         return Ok(());
@@ -473,10 +745,163 @@ fn render_output(data: &mut CompositorData, node: DrmNode, crtc: crtc::Handle) -
         .map_err(|error| anyhow::anyhow!("queue direct frame: {error}"))?;
     state.policy.record_frame_queued(queued_revision.as_ref());
     output_data.frame_pending = true;
+    output_data.needs_initial_damage = false;
     state.space.refresh();
     state.popups.cleanup();
     let _ = data.display_handle.flush_clients();
     Ok(())
+}
+
+fn recovery_render_element(
+    renderer: &mut GlesRenderer,
+    state: &SosCompositor,
+    output: &Output,
+) -> Option<MemoryRenderBufferRenderElement<GlesRenderer>> {
+    let geometry = state.space.output_geometry(output)?;
+    let buffer = state.recovery_ui.buffer();
+    let location = (
+        f64::from(geometry.loc.x + (geometry.size.w - crate::recovery::WIDTH) / 2),
+        f64::from(geometry.loc.y + (geometry.size.h - crate::recovery::HEIGHT) / 2),
+    );
+    MemoryRenderBufferRenderElement::from_buffer(
+        renderer,
+        location,
+        &buffer,
+        None,
+        None,
+        None,
+        Kind::Unspecified,
+    )
+    .map_err(|error| tracing::warn!(%error, "could not upload recovery interface"))
+    .ok()
+}
+
+fn input_method_render_elements(
+    renderer: &mut GlesRenderer,
+    state: &SosCompositor,
+    output: &Output,
+) -> Vec<DirectRenderElement> {
+    let Some(output_geometry) = state.space.output_geometry(output) else {
+        return Vec::new();
+    };
+    state
+        .input_method_popups
+        .iter()
+        .filter(|popup| popup.alive())
+        .flat_map(|popup| {
+            let parent_location = popup
+                .get_parent()
+                .map(|parent| parent.location.loc)
+                .unwrap_or_default();
+            let location = parent_location + popup.location() - output_geometry.loc;
+            render_elements_from_surface_tree(
+                renderer,
+                popup.wl_surface(),
+                location.to_physical_precise_round(1.0),
+                1.0,
+                1.0,
+                Kind::Unspecified,
+            )
+            .into_iter()
+            .map(DirectRenderElement::CursorSurface)
+        })
+        .collect()
+}
+
+fn cursor_render_elements(
+    renderer: &mut GlesRenderer,
+    state: &SosCompositor,
+    output: &Output,
+    fallback: &MemoryRenderBuffer,
+) -> Vec<DirectRenderElement> {
+    let Some(output_geometry) = state.space.output_geometry(output) else {
+        return Vec::new();
+    };
+    let pointer_location = state
+        .seat
+        .get_pointer()
+        .expect("seat has a pointer")
+        .current_location()
+        - output_geometry.loc.to_f64();
+
+    match &state.cursor_image {
+        smithay::input::pointer::CursorImageStatus::Hidden => Vec::new(),
+        smithay::input::pointer::CursorImageStatus::Surface(surface) if surface.is_alive() => {
+            let hotspot = compositor::with_states(surface, |states| {
+                states
+                    .data_map
+                    .get::<smithay::input::pointer::CursorImageSurfaceData>()
+                    .map(|attributes| attributes.lock().unwrap().hotspot)
+                    .unwrap_or_default()
+            });
+            let location = (
+                pointer_location.x.round() as i32 - hotspot.x,
+                pointer_location.y.round() as i32 - hotspot.y,
+            );
+            render_elements_from_surface_tree(renderer, surface, location, 1.0, 1.0, Kind::Cursor)
+                .into_iter()
+                .map(DirectRenderElement::CursorSurface)
+                .collect()
+        }
+        _ => MemoryRenderBufferRenderElement::from_buffer(
+            renderer,
+            (pointer_location.x.round(), pointer_location.y.round()),
+            fallback,
+            None,
+            None,
+            None,
+            Kind::Cursor,
+        )
+        .map(|element| vec![DirectRenderElement::Cursor(element)])
+        .unwrap_or_else(|error| {
+            tracing::warn!(%error, "could not upload compositor cursor");
+            Vec::new()
+        }),
+    }
+}
+
+fn default_cursor_buffer() -> MemoryRenderBuffer {
+    MemoryRenderBuffer::from_slice(
+        &default_cursor_pixels(),
+        Fourcc::Argb8888,
+        (CURSOR_WIDTH, CURSOR_HEIGHT),
+        1,
+        Transform::Normal,
+        None,
+    )
+}
+
+fn initial_damage_buffer() -> MemoryRenderBuffer {
+    MemoryRenderBuffer::from_slice(
+        &[8, 8, 8, 255],
+        Fourcc::Argb8888,
+        (1, 1),
+        1,
+        Transform::Normal,
+        None,
+    )
+}
+
+fn default_cursor_pixels() -> Vec<u8> {
+    let mut pixels = vec![0_u8; (CURSOR_WIDTH * CURSOR_HEIGHT * 4) as usize];
+    for y in 0..CURSOR_HEIGHT {
+        for x in 0..CURSOR_WIDTH {
+            let arrow_edge = y.min(17) / 2;
+            let in_head = y <= 17 && x <= arrow_edge;
+            let in_tail = (10..=22).contains(&y) && (5..=8).contains(&x);
+            if !in_head && !in_tail {
+                continue;
+            }
+            let border = x == 0
+                || y == 0
+                || (in_head && x == arrow_edge)
+                || (in_tail && (x == 5 || x == 8 || y == 22));
+            let color = if border { 0 } else { 255 };
+            let offset = ((y * CURSOR_WIDTH + x) * 4) as usize;
+            pixels[offset..offset + 4].copy_from_slice(&[color, color, color, 255]);
+        }
+    }
+    pixels
 }
 
 fn send_frame_callbacks(state: &mut SosCompositor, output: &Output) {
@@ -609,4 +1034,18 @@ fn take_presentation_feedback(
         }
     });
     feedback
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{default_cursor_pixels, CURSOR_HEIGHT, CURSOR_WIDTH};
+
+    #[test]
+    fn fallback_cursor_has_a_stable_nonempty_extent() {
+        let pixels = default_cursor_pixels();
+        assert_eq!(pixels.len(), (CURSOR_WIDTH * CURSOR_HEIGHT * 4) as usize);
+        let opaque = pixels.chunks_exact(4).filter(|pixel| pixel[3] != 0).count();
+        assert!(opaque > 40);
+        assert!(opaque < (CURSOR_WIDTH * CURSOR_HEIGHT) as usize);
+    }
 }

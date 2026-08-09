@@ -7,8 +7,8 @@ Before=display-manager.service getty@tty1.service
 
 [Service]
 Type=exec
-User=sos
-Group=sos
+User=sos-compositor
+Group=sos-ipc
 PAMName=login
 TTYPath=/dev/tty1
 StandardInput=tty-force
@@ -20,9 +20,9 @@ TTYVTDisallocate=yes
 UtmpIdentifier=tty1
 UtmpMode=user
 RuntimeDirectory=sos
-RuntimeDirectoryMode=0700
+RuntimeDirectoryMode=0770
 StateDirectory=sos
-StateDirectoryMode=0700
+StateDirectoryMode=0750
 LoadCredential=shell-token:/etc/sos/shell-token
 Environment=XDG_SESSION_TYPE=wayland
 Environment=XDG_SESSION_CLASS=user
@@ -34,19 +34,25 @@ Environment=RUST_LOG=sos_compositor=info
 ExecStart=/usr/local/libexec/sos/sos-linux-session run \
   --root /var/lib/sos/revisions \
   --runtime-dir /run/sos \
-  --authority-file /var/lib/sos/authority.json \
+  --authority-file /var/lib/sos/provider/authority.json \
   --shell-token-file %d/shell-token \
   --compositor /usr/local/libexec/sos/sos-compositor \
   --provider /usr/local/libexec/sos/sos-provider-state-service \
   --supervisor /usr/local/libexec/sos/sos-revision-supervisor \
   --host /usr/local/libexec/sos/sos-experience-host \
+  --compositor-user sos-compositor \
+  --provider-user sos-provider \
+  --supervisor-user sos-supervisor \
+  --host-user sos-host \
   --timeout-ms 30000
 Restart=on-failure
 RestartSec=250ms
 TimeoutStopSec=8s
 KillMode=mixed
-UMask=0077
+UMask=0007
 NoNewPrivileges=yes
+CapabilityBoundingSet=CAP_CHOWN CAP_SETUID CAP_SETGID CAP_KILL
+AmbientCapabilities=CAP_CHOWN CAP_SETUID CAP_SETGID CAP_KILL
 PrivateTmp=yes
 ProtectSystem=strict
 ProtectHome=yes
@@ -60,6 +66,17 @@ RestrictRealtime=yes
 LockPersonality=yes
 RestrictAddressFamilies=AF_UNIX AF_NETLINK
 SystemCallArchitectures=native
+SystemCallFilter=~@mount @swap @obsolete @raw-io
+MemoryAccounting=yes
+MemoryHigh=1280M
+MemoryMax=1536M
+TasksAccounting=yes
+TasksMax=256
+CPUAccounting=yes
+CPUQuota=300%
+IOAccounting=yes
+LimitNOFILE=4096
+LimitNPROC=512
 ReadWritePaths=/var/lib/sos /run/sos
 
 [Install]

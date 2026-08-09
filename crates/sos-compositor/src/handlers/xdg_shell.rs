@@ -221,6 +221,26 @@ pub fn handle_commit(popups: &mut PopupManager, space: &Space<Window>, surface: 
 }
 
 impl SosCompositor {
+    #[cfg(feature = "direct-backend")]
+    pub(crate) fn reconfigure_for_output_layout(&mut self) {
+        let windows = self.space.elements().cloned().collect::<Vec<_>>();
+        for window in windows {
+            let Some(toplevel) = window.toplevel().cloned() else {
+                continue;
+            };
+            let role =
+                Self::client_role(toplevel.wl_surface()).unwrap_or(ClientRole::Compatibility);
+            self.apply_fixed_size(&toplevel);
+            if role == ClientRole::Compatibility {
+                self.space.map_element(
+                    window,
+                    compatibility_location(self.output_size, COMPATIBILITY_SIZE),
+                    false,
+                );
+            }
+        }
+    }
+
     fn apply_fixed_size(&mut self, surface: &ToplevelSurface) {
         let role = Self::client_role(surface.wl_surface()).unwrap_or(ClientRole::Compatibility);
         let size: Size<i32, Logical> = match role {

@@ -245,6 +245,15 @@ impl RevisionSupervisor {
         Ok(())
     }
 
+    pub fn restart_host(&mut self) -> Result<SupervisorEvent> {
+        let (revision_id, failed_host_pid, host_pid) = self.restart_current_host()?;
+        Ok(SupervisorEvent::HostRestarted {
+            revision_id,
+            failed_host_pid,
+            host_pid,
+        })
+    }
+
     fn restart_current_host(&mut self) -> Result<(String, u32, u32)> {
         let failed_host_pid = self
             .host

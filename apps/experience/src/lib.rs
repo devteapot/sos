@@ -10,8 +10,14 @@ mod compositor_fence;
 #[cfg(all(target_os = "linux", feature = "linux-host"))]
 mod linux;
 #[cfg(all(target_os = "linux", feature = "linux-host"))]
+mod linux_accessibility;
+#[cfg(all(target_os = "linux", feature = "linux-host"))]
 mod linux_input;
-#[cfg(all(test, not(target_os = "android")))]
+#[cfg(any(
+    target_os = "android",
+    all(target_os = "linux", feature = "linux-host"),
+    all(test, not(target_os = "android"))
+))]
 #[allow(dead_code)]
 #[path = "android/pointer_input.rs"]
 mod pointer_input;
@@ -20,6 +26,8 @@ mod pointer_input;
     all(target_os = "linux", feature = "linux-host")
 ))]
 mod scene_surface;
+#[cfg(all(target_os = "linux", feature = "linux-host"))]
+mod shader_paint;
 
 #[cfg(all(target_os = "linux", feature = "linux-host"))]
 pub use linux::run as run_linux_host;

@@ -4,9 +4,11 @@ mod direct;
 mod handlers;
 mod input;
 pub mod policy;
+mod recovery;
 mod state;
 #[cfg(feature = "nested-backend")]
 mod winit;
+mod xwayland;
 
 use std::{collections::BTreeMap, env, fs, io::Write as _, path::PathBuf};
 
@@ -39,6 +41,9 @@ pub fn run() -> Result<()> {
     }
     let control_socket = PathBuf::from(options.required("--control-socket")?);
     let ready_file = options.optional("--ready-file").map(PathBuf::from);
+    let xwayland_display_file = options
+        .optional("--xwayland-display-file")
+        .map(PathBuf::from);
     let shell_token = match (
         options.optional("--shell-token"),
         options.optional("--shell-token-file"),
@@ -61,9 +66,10 @@ pub fn run() -> Result<()> {
         "--shell-token-file",
         "--ready-file",
         "--backend",
+        "--xwayland-display-file",
     ])?;
 
-    let mut event_loop: EventLoop<CompositorData> = EventLoop::try_new()?;
+    let mut event_loop: EventLoop<'static, CompositorData> = EventLoop::try_new()?;
     let display: Display<SosCompositor> = Display::new()?;
     let display_handle = display.handle();
     let loop_signal = event_loop.get_signal();
@@ -97,6 +103,9 @@ pub fn run() -> Result<()> {
         "drm" => bail!("DRM backend was not compiled in; enable direct-backend"),
         other => bail!("unsupported compositor backend: {other}"),
     };
+    if let Some(display_file) = xwayland_display_file {
+        xwayland::start(&mut event_loop, &mut data, display_file)?;
+    }
 
     println!(
         "sos_compositor_ready wayland_display={} control_socket={} backend={} evidence={}",
@@ -108,6 +117,7 @@ pub fn run() -> Result<()> {
     event_loop.run(None, &mut data, |data| {
         data.state.space.refresh();
         data.state.popups.cleanup();
+        data.state.input_method_popups.retain(|popup| popup.alive());
         if let Err(error) = data.display_handle.flush_clients() {
             tracing::warn!(%error, "could not flush Wayland clients");
         }
@@ -189,5 +199,5 @@ impl Options {
 }
 
 fn usage() -> &'static str {
-    "usage: sos-compositor --socket NAME --control-socket PATH (--shell-token TOKEN | --shell-token-file PATH) [--ready-file PATH] [--backend nested|drm]"
+    "usage: sos-compositor --socket NAME --control-socket PATH (--shell-token TOKEN | --shell-token-file PATH) [--ready-file PATH] [--backend nested|drm] [--xwayland-display-file PATH]"
 }

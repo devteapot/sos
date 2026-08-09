@@ -10,7 +10,9 @@ use service_protocol::{
     StateResource, TransactionRecord, TransactionStatus,
 };
 
-pub use system_session::{run_system_session, SystemSessionOptions};
+pub use system_session::{
+    run_host_proxy, run_system_session, ServiceIdentity, SystemSessionOptions,
+};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum BootstrapOutcome {

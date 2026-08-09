@@ -605,11 +605,14 @@ cleanup_linux_processes() {
 
 linux_run() {
   local windowed=false
+  local host_timeout_ms="${SOS_LINUX_HOST_TIMEOUT_MS:-30000}"
   if [[ "${1:-}" == "--windowed" ]]; then
     windowed=true
     shift
   fi
   [[ "$#" -eq 0 ]] || fail "usage: ./tools/sosctl linux-run [--windowed]"
+  [[ "$host_timeout_ms" =~ ^[1-9][0-9]*$ ]] || \
+    fail "SOS_LINUX_HOST_TIMEOUT_MS must be a positive integer"
   require_wayland_session
   build_linux_session
   mkdir -p "$LINUX_REVISION_ROOT"
@@ -651,6 +654,7 @@ linux_run() {
     --root "$LINUX_REVISION_ROOT"
     --host-executable "$LINUX_HOST"
     --service-socket "$LINUX_PROVIDER_SOCKET"
+    --timeout-ms "$host_timeout_ms"
     --host-arg --service-socket
     --host-arg "$LINUX_PROVIDER_SOCKET"
   )

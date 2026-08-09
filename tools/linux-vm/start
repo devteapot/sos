@@ -14,6 +14,7 @@ vm_vars="$vm_cache_root/$vm_name-vars.fd"
 vm_pid_file="$vm_cache_root/$vm_name.pid"
 vm_qemu_log="$vm_cache_root/$vm_name-qemu.log"
 vm_serial_log="$vm_cache_root/$vm_name-serial.log"
+vm_qmp_socket="$vm_cache_root/$vm_name-qmp.sock"
 
 fail() {
   printf 'error: %s\n' "$*" >&2
@@ -26,6 +27,11 @@ fail() {
 [[ "$vm_vnc_display" =~ ^[0-9]+$ && "$vm_vnc_display" -le 99 ]] || \
   fail "VNC display must be an integer from 0 through 99"
 [[ ! -e "$vm_pid_file" ]] || fail "VM PID file already exists: $vm_pid_file"
+if [[ -S "$vm_qmp_socket" ]]; then
+  rm -- "$vm_qmp_socket"
+elif [[ -e "$vm_qmp_socket" ]]; then
+  fail "QMP path exists and is not a socket: $vm_qmp_socket"
+fi
 for vm_input in "$vm_overlay" "$vm_seed" "$vm_vars"; do
   [[ -f "$vm_input" ]] || fail "VM input not found: $vm_input"
 done
@@ -61,7 +67,7 @@ command -v "$vm_qemu" >/dev/null 2>&1 || fail "required command not found: $vm_q
   -device virtio-blk-pci,drive=system \
   -drive "if=none,format=raw,readonly=on,id=seed,file=$vm_seed" \
   -device virtio-blk-pci,drive=seed \
-  -device virtio-gpu-pci \
+  -device virtio-gpu-pci,id=sos-gpu,max_outputs=2 \
   -device qemu-xhci \
   -device usb-kbd \
   -device usb-tablet \
@@ -70,6 +76,7 @@ command -v "$vm_qemu" >/dev/null 2>&1 || fail "required command not found: $vm_q
   -netdev "user,id=vmnet,hostfwd=tcp:127.0.0.1:$vm_ssh_port-:22" \
   -display "vnc=127.0.0.1:$vm_vnc_display" \
   -serial "file:$vm_serial_log" \
+  -qmp "unix:$vm_qmp_socket,server=on,wait=off" \
   -D "$vm_qemu_log" \
   -pidfile "$vm_pid_file" \
   -daemonize
@@ -82,4 +89,5 @@ kill -0 "$vm_pid" 2>/dev/null || fail "QEMU exited during startup; inspect $vm_q
 printf 'Started %s with QEMU PID %s.\n' "$vm_name" "$vm_pid"
 printf 'Connect with: ssh -p %s sos@127.0.0.1\n' "$vm_ssh_port"
 printf 'Open the console with: remote-viewer vnc://127.0.0.1:%s\n' "$((5900 + vm_vnc_display))"
+printf 'Control QMP with: ./tools/linux-vm/qmp query-status\n'
 printf 'Shut the guest down cleanly, or terminate QEMU with: ./tools/linux-vm/stop\n'

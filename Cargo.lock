@@ -1559,6 +1559,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "encoding_rs"
+version = "0.8.35"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "75030f3c4f45dafd7586dd6780965a8c7e8e285a5ecb86713e63a79c5b2766f3"
+dependencies = [
+ "cfg-if",
+]
+
+[[package]]
 name = "endi"
 version = "1.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1853,6 +1862,12 @@ checksum = "0a7299a780854a6d391be2ae1c8521c9368471b559dbfd6a8dbd9f407eaff100"
 dependencies = [
  "bytemuck",
 ]
+
+[[package]]
+name = "font8x8"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "875488b8711a968268c7cf5d139578713097ca4635a76044e8fe8eedf831d07e"
 
 [[package]]
 name = "fontconfig-parser"
@@ -2382,7 +2397,6 @@ dependencies = [
 [[package]]
 name = "gpui_linux"
 version = "0.1.0"
-source = "git+https://github.com/zed-industries/zed?rev=5688167d224b5eca54875d49afb8bfd73a07915a#5688167d224b5eca54875d49afb8bfd73a07915a"
 dependencies = [
  "anyhow",
  "ashpd",
@@ -3314,6 +3328,16 @@ name = "linebender_resource_handle"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d4a5ff6bcca6c4867b1c4fd4ef63e4db7436ef363e0ad7531d1558856bae64f4"
+
+[[package]]
+name = "linux-input-method"
+version = "0.1.0"
+dependencies = [
+ "tempfile",
+ "wayland-client",
+ "wayland-protocols",
+ "wayland-protocols-misc",
+]
 
 [[package]]
 name = "linux-raw-sys"
@@ -4647,6 +4671,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "providers-linux"
+version = "0.1.0"
+dependencies = [
+ "experience-ir",
+ "providers-fake",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "thiserror 2.0.19",
+]
+
+[[package]]
 name = "psm"
 version = "0.1.32"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5029,6 +5066,7 @@ version = "0.1.0"
 dependencies = [
  "experience-host-protocol",
  "experience-ir",
+ "naga 29.0.4",
  "provider-state-service",
  "providers-fake",
  "runtime-luau",
@@ -5062,6 +5100,7 @@ dependencies = [
  "async-channel 2.5.0",
  "experience-ir",
  "mlua",
+ "naga 29.0.4",
  "providers-fake",
  "serde",
  "serde_json",
@@ -5591,6 +5630,7 @@ dependencies = [
  "drm",
  "drm-ffi",
  "drm-fourcc",
+ "encoding_rs",
  "errno",
  "gbm",
  "gl_generator",
@@ -5603,6 +5643,7 @@ dependencies = [
  "profiling",
  "rand",
  "rustix 1.1.4",
+ "scopeguard",
  "sha2 0.10.9",
  "smallvec",
  "tempfile",
@@ -5619,6 +5660,7 @@ dependencies = [
  "wayland-server",
  "wayland-sys",
  "winit",
+ "x11rb",
  "xkbcommon",
 ]
 
@@ -5694,7 +5736,9 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "compositor-control-protocol",
+ "font8x8",
  "nix 0.31.3",
+ "serde",
  "serde_json",
  "smithay",
  "smithay-drm-extras",
@@ -5715,11 +5759,15 @@ dependencies = [
  "experience-ir",
  "gpui",
  "gpui-mobile",
+ "gpui_linux",
  "gpui_platform",
+ "image",
  "jni",
  "log",
+ "pollster 0.4.0",
  "provider-state-service",
  "providers-fake",
+ "providers-linux",
  "runtime-luau",
  "serde",
  "serde_json",
@@ -5727,6 +5775,7 @@ dependencies = [
  "sha2 0.10.9",
  "tempfile",
  "unicode-segmentation",
+ "wgpu",
 ]
 
 [[package]]
@@ -6817,6 +6866,7 @@ checksum = "6e9567599ef23e09b8dad6e429e5738d4509dfc46b3b21f32841a304d16b29c8"
 dependencies = [
  "bitflags 2.13.1",
  "wayland-backend",
+ "wayland-client",
  "wayland-protocols",
  "wayland-scanner",
  "wayland-server",

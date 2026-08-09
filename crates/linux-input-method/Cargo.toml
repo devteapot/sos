@@ -1,0 +1,15 @@
+[package]
+name = "linux-input-method"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "sos-input-method"
+path = "src/main.rs"
+
+[dependencies]
+tempfile = "3"
+wayland-client = "0.31"
+wayland-protocols = { version = "0.32", features = ["client"] }
+wayland-protocols-misc = { version = "0.3", features = ["client"] }

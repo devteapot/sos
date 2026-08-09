@@ -11,10 +11,10 @@ use std::{
 use experience_ir::{
     validate_scene, Align, Animation, AnimationKind, ClipRect, Content, ExperienceModel, Flow,
     GlyphRun, HitRegion, ImageContent, Interaction, Justify, Layout, LayoutPosition, LayoutProgram,
-    PaintOp, PaintPoint, PointerCapture, ProviderEffect, Scene, SceneEvent, SceneNode,
-    SemanticRole, Semantics, TextContent, TextSession, Transform2D, EXPERIENCE_API_VERSION,
-    MAX_CHILDREN, MAX_EFFECTS, MAX_EFFECT_PAYLOAD_BYTES, MAX_GLYPH_RUNS, MAX_HIT_REGIONS,
-    MAX_PAINT_DEPTH, MAX_PAINT_OPS, MAX_PAINT_POINTS, MAX_REVISION_ASSETS,
+    PaintOp, PaintPoint, PointerCapture, ProviderEffect, ProviderSurfaceContent, Scene, SceneEvent,
+    SceneNode, SemanticRole, Semantics, TextContent, TextSession, Transform2D,
+    EXPERIENCE_API_VERSION, MAX_CHILDREN, MAX_EFFECTS, MAX_EFFECT_PAYLOAD_BYTES, MAX_GLYPH_RUNS,
+    MAX_HIT_REGIONS, MAX_PAINT_DEPTH, MAX_PAINT_OPS, MAX_PAINT_POINTS, MAX_REVISION_ASSETS,
     MAX_REVISION_ASSET_BYTES, MAX_REVISION_ASSET_TOTAL_BYTES, MAX_SCENE_DEPTH, MAX_SCENE_NODES,
     MAX_STATE_BYTES, MAX_TEXT_BYTES,
 };
@@ -49,6 +49,7 @@ pub struct LuauRuntime {
     deadline: Rc<Cell<Option<Instant>>>,
     assets: Vec<RevisionAsset>,
     asset_paths: HashMap<String, String>,
+    shader_paths: HashMap<String, String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -226,6 +227,16 @@ pub enum WorkerResult {
         error: String,
         worker_us: u64,
     },
+    ModelRefreshed {
+        request_id: u64,
+        scene: Scene,
+        worker_us: u64,
+    },
+    ModelRefreshRejected {
+        request_id: u64,
+        error: String,
+        worker_us: u64,
+    },
 }
 
 enum WorkerCommand {
@@ -249,6 +260,11 @@ enum WorkerCommand {
         model: ExperienceModel,
         state: JsonValue,
         event: SceneEvent,
+    },
+    RefreshModel {
+        request_id: u64,
+        model: ExperienceModel,
+        state: JsonValue,
     },
     Shutdown,
 }
@@ -525,6 +541,28 @@ impl RuntimeWorker {
                             };
                             let _ = results_tx.send_blocking(result);
                         }
+                        WorkerCommand::RefreshModel {
+                            request_id,
+                            model,
+                            state,
+                        } => {
+                            let started = Instant::now();
+                            let result = active_runtime.render(&model, &state);
+                            let worker_us = micros(started.elapsed());
+                            let result = match result {
+                                Ok(scene) => WorkerResult::ModelRefreshed {
+                                    request_id,
+                                    scene,
+                                    worker_us,
+                                },
+                                Err(error) => WorkerResult::ModelRefreshRejected {
+                                    request_id,
+                                    error: error.to_string(),
+                                    worker_us,
+                                },
+                            };
+                            let _ = results_tx.send_blocking(result);
+                        }
                         WorkerCommand::Shutdown => break,
                     }
                 }
@@ -643,6 +681,21 @@ impl RuntimeWorker {
             .map_err(|_| "runtime worker is unavailable".into())
     }
 
+    pub fn refresh_model(
+        &self,
+        request_id: u64,
+        model: ExperienceModel,
+        state: JsonValue,
+    ) -> Result<(), String> {
+        self.commands
+            .send_blocking(WorkerCommand::RefreshModel {
+                request_id,
+                model,
+                state,
+            })
+            .map_err(|_| "runtime worker is unavailable".into())
+    }
+
     pub fn shutdown(mut self) -> Result<(), String> {
         let _ = self.commands.send_blocking(WorkerCommand::Shutdown);
         self.commands.close();
@@ -720,6 +773,11 @@ impl LuauRuntime {
             (lua.create_registry_value(result)?, assets, asset_paths)
         };
         merge_revision_assets(&mut assets, &mut asset_paths, sidecars)?;
+        let shader_paths = assets
+            .iter()
+            .filter(|asset| asset.kind == "shader")
+            .map(|asset| (asset.id.clone(), asset.path.clone()))
+            .collect();
 
         Ok(Self {
             lua,
@@ -727,6 +785,7 @@ impl LuauRuntime {
             deadline,
             assets,
             asset_paths,
+            shader_paths,
         })
     }
 
@@ -801,6 +860,7 @@ impl LuauRuntime {
             root: Decoder {
                 nodes: 0,
                 asset_paths: &self.asset_paths,
+                shader_paths: &self.shader_paths,
             }
             .node(value, 1)?,
         };
@@ -984,9 +1044,9 @@ fn validate_revision_asset_bytes(kind: &str, bytes: &[u8]) -> Result<(), Runtime
                 || bytes.starts_with(b"wOFF")
                 || bytes.starts_with(b"wOF2")
         }
-        "shader" => std::str::from_utf8(bytes).is_ok_and(|text| {
-            text.contains("@vertex") || text.contains("@fragment") || text.contains("@compute")
-        }),
+        "shader" => std::str::from_utf8(bytes)
+            .ok()
+            .is_some_and(validate_shader_asset),
         _ => false,
     };
     if !valid {
@@ -995,6 +1055,43 @@ fn validate_revision_asset_bytes(kind: &str, bytes: &[u8]) -> Result<(), Runtime
         )));
     }
     Ok(())
+}
+
+/// A shader paint has no bindings and no compute entry point. The stable host
+/// supplies a three-vertex fullscreen draw into a bounded RGBA target, which
+/// keeps revision WGSL from acquiring buffers, textures, or storage authority.
+fn validate_shader_asset(source: &str) -> bool {
+    let Ok(module) = naga::front::wgsl::parse_str(source) else {
+        return false;
+    };
+    if module
+        .global_variables
+        .iter()
+        .any(|(_, global)| global.binding.is_some())
+    {
+        return false;
+    }
+    let has_vertex = module
+        .entry_points
+        .iter()
+        .any(|entry| entry.name == "vs_main" && entry.stage == naga::ShaderStage::Vertex);
+    let has_fragment = module
+        .entry_points
+        .iter()
+        .any(|entry| entry.name == "fs_main" && entry.stage == naga::ShaderStage::Fragment);
+    let has_compute = module
+        .entry_points
+        .iter()
+        .any(|entry| entry.stage == naga::ShaderStage::Compute);
+    has_vertex
+        && has_fragment
+        && !has_compute
+        && naga::valid::Validator::new(
+            naga::valid::ValidationFlags::all(),
+            naga::valid::Capabilities::empty(),
+        )
+        .validate(&module)
+        .is_ok()
 }
 
 fn validate_svg_asset(data: &str) -> Result<(), RuntimeError> {
@@ -1035,7 +1132,13 @@ fn decode_effects(table: Option<Table>, lua: &Lua) -> Result<Vec<ProviderEffect>
         let effect = effect?;
         let provider = required_bounded_string(&effect, "provider", 128)?;
         let action = required_bounded_string(&effect, "action", 128)?;
-        if (provider.as_str(), action.as_str()) != ("notes", "attach_to_event") {
+        if !matches!(
+            (provider.as_str(), action.as_str()),
+            ("notes", "attach_to_event")
+                | ("notes", "write")
+                | ("calendar", "append")
+                | ("music", "command")
+        ) {
             return Err(RuntimeError::Invalid(format!(
                 "provider action is not allowed: {provider}.{action}"
             )));
@@ -1076,6 +1179,7 @@ fn run_bounded<T>(
 struct Decoder<'a> {
     nodes: usize,
     asset_paths: &'a HashMap<String, String>,
+    shader_paths: &'a HashMap<String, String>,
 }
 
 impl Decoder<'_> {
@@ -1105,7 +1209,7 @@ impl Decoder<'_> {
             id: bounded_optional_string(table, "id", 256)?,
             layout: decode_layout(table.get::<Option<Table>>("layout")?)?,
             content: decode_content(table.get::<Option<Table>>("content")?, self.asset_paths)?,
-            paint: decode_paint(table.get::<Option<Table>>("paint")?)?,
+            paint: decode_paint(table.get::<Option<Table>>("paint")?, self.shader_paths)?,
             interaction: decode_interaction(table.get::<Option<Table>>("interaction")?)?,
             animation: decode_animation(table.get::<Option<Table>>("animation")?)?,
             semantics: decode_semantics(table.get::<Option<Table>>("semantics")?)?,
@@ -1210,6 +1314,9 @@ fn decode_content(
             };
             Content::Image(ImageContent { asset })
         }
+        "provider_surface" => Content::ProviderSurface(ProviderSurfaceContent {
+            surface: required_bounded_string(&table, "surface", 128)?,
+        }),
         other => {
             return Err(RuntimeError::Invalid(format!(
                 "unknown content kind: {other}"
@@ -1219,21 +1326,30 @@ fn decode_content(
     Ok(Some(content))
 }
 
-fn decode_paint(table: Option<Table>) -> Result<Vec<PaintOp>, RuntimeError> {
+fn decode_paint(
+    table: Option<Table>,
+    shader_paths: &HashMap<String, String>,
+) -> Result<Vec<PaintOp>, RuntimeError> {
     let Some(table) = table else {
         return Ok(Vec::new());
     };
-    PaintDecoder::default().operations(table, 1)
+    PaintDecoder {
+        operations: 0,
+        points: 0,
+        glyph_runs: 0,
+        shader_paths,
+    }
+    .operations(table, 1)
 }
 
-#[derive(Default)]
-struct PaintDecoder {
+struct PaintDecoder<'a> {
     operations: usize,
     points: usize,
     glyph_runs: usize,
+    shader_paths: &'a HashMap<String, String>,
 }
 
-impl PaintDecoder {
+impl PaintDecoder<'_> {
     fn operations(&mut self, table: Table, depth: usize) -> Result<Vec<PaintOp>, RuntimeError> {
         if depth > MAX_PAINT_DEPTH {
             return Err(RuntimeError::Invalid("paint list is too deep".into()));
@@ -1315,6 +1431,21 @@ impl PaintDecoder {
                     line_height: optional_scene_number(&operation, "line_height")?,
                     max_width: optional_scene_number(&operation, "max_width")?,
                     runs,
+                }
+            }
+            "shader" => {
+                let asset_id = required_bounded_string(&operation, "asset", 128)?;
+                let asset = self.shader_paths.get(&asset_id).cloned().ok_or_else(|| {
+                    RuntimeError::Invalid(format!(
+                        "shader asset is not declared by this revision: {asset_id}"
+                    ))
+                })?;
+                PaintOp::Shader {
+                    asset,
+                    x: scene_number(&operation, "x")?,
+                    y: scene_number(&operation, "y")?,
+                    width: required_dimension(&operation, "width")?,
+                    height: required_dimension(&operation, "height")?,
                 }
             }
             "layer" => {
@@ -1738,7 +1869,11 @@ mod tests {
             r#"return {
                 api_version = 3,
                 render = function()
-                    return { id = "hero", content = { kind = "image", asset = "hero" } }
+                    return {
+                        id = "hero",
+                        content = { kind = "image", asset = "hero" },
+                        paint = {{ kind = "shader", asset = "glow", x = 0, y = 0, width = 32, height = 16 }},
+                    }
                 end,
             }"#,
             vec![
@@ -1755,7 +1890,7 @@ mod tests {
                 RevisionAssetInput {
                     id: "glow".into(),
                     kind: "shader".into(),
-                    bytes: b"@fragment fn fragment_main() {}".to_vec(),
+                    bytes: test_shader().as_bytes().to_vec(),
                 },
             ],
         )
@@ -1768,6 +1903,24 @@ mod tests {
             panic!("expected sidecar image")
         };
         assert!(image.asset.ends_with(".png"));
+        assert!(matches!(
+            &scene.root.paint[0],
+            PaintOp::Shader { asset, width, height, .. }
+                if asset.ends_with(".wgsl") && *width == 32.0 && *height == 16.0
+        ));
+    }
+
+    fn test_shader() -> &'static str {
+        r#"
+            @vertex fn vs_main(@builtin(vertex_index) index: u32) -> @builtin(position) vec4<f32> {
+                let x = f32((index << 1u) & 2u);
+                let y = f32(index & 2u);
+                return vec4<f32>(x * 2.0 - 1.0, 1.0 - y * 2.0, 0.0, 1.0);
+            }
+            @fragment fn fs_main() -> @location(0) vec4<f32> {
+                return vec4<f32>(0.2, 0.5, 0.9, 1.0);
+            }
+        "#
     }
 
     #[test]
@@ -2111,6 +2264,8 @@ mod tests {
                 artist: "Artist".into(),
                 playing: true,
             },
+            system: experience_ir::SystemState::default(),
+            surfaces: Vec::new(),
         }
     }
 }

@@ -5,9 +5,9 @@ Date: 2026-08-09
 SOS now has a minimal Smithay compositor with a nested development backend and
 a direct DRM/GBM/libinput backend. Both keep Wayland beneath the generated
 presentation layer while SOS owns client identity, surface ordering, focus,
-input quiescing, and revision evidence. The direct backend has passed in the
-reference Debian VM; it is not yet boot-session packaging or physical-hardware
-evidence.
+input quiescing, and revision evidence. The direct backend and boot-owned
+logind/tty session pass in the reference Debian VM. This remains virtual-device,
+not physical-hardware, evidence.
 
 ## Boundary
 
@@ -24,7 +24,7 @@ permanent sos-experience-host PID
 authenticated shell wl_surface
     |
 sos-compositor (Smithay 0.7.0)
-    | one shell + one fixed compatibility toplevel
+    | one shell + bounded Wayland/X11 compatibility toplevels
     | shared focus/input/activation policy
     +-- nested winit submit -> outer development compositor
     `-- libseat + udev + DRM/GBM + libinput -> KMS output
@@ -43,12 +43,12 @@ compatibility clients. This is a development-session authenticator. A
 production session must also isolate service users/credentials so another
 same-UID process cannot inspect launch credentials.
 
-The policy currently admits one fullscreen shell toplevel and one 720 by 520
-compatibility toplevel at the deterministic 1280 by 800 test location (280,
-140). The compatibility surface is kept above the single shell surface. It is
-not embedded into GPUI or exposed as a raw generated node. Popups are
-constrained to the output; XWayland, layer shell, arbitrary placement, and
-multiple compatibility clients are intentionally outside this gate.
+The policy admits one fullscreen shell, one fixed-policy native Wayland
+compatibility toplevel, and—only when explicitly enabled—up to eight bounded
+rootless XWayland windows. Compatibility surfaces stay above the shell. They
+are not embedded into GPUI or exposed as raw generated nodes. Popups and X11
+configure requests are constrained to the aggregate output layout; layer shell
+and arbitrary placement remain outside this gate.
 
 ## Activation fence
 
@@ -126,10 +126,18 @@ recovery, and maps `weston-simple-shm` as the compatibility client. It requires:
 - three compositor submit fences: boot, activation, and recovered boot;
 - native XTest -> Weston -> Smithay -> `wl_keyboard` delivery, exact persisted
   `wayland` text replacement, and Enter submission;
+- restricted input-method-v2 attach, pinyin preedit/candidates/selection/CJK
+  commit, dead key composition, keyboard grab, popup, and cursor rectangle;
+- Wayland clipboard copy/cut/paste ownership through the native editor;
+- live Linux-provider note and video-frame mutation, system/resource model
+  refresh, and worker rerender without another revision presentation;
+- semantic snapshot, next/previous traversal, focus, activation, scrolling,
+  selection, copy/cut/paste, status waits, and service recovery after host kill;
 - at least one compositor-owned backend event suppressed while activation is
   quiesced;
 - a new authenticated PID after forced host failure;
-- shell and compatibility role classification plus fixed placement.
+- shell/native-compatibility role classification and fixed placement;
+- an opt-in real `Xwayland` process and bounded rootless `xmessage` window.
 
 Expected leading output:
 
@@ -186,17 +194,49 @@ metadata, not a fabricated counter. The compositor presented its recovery view
 both before boot and between the killed/restarted hosts, and the separate
 compatibility client mapped at `(280, 140)`.
 
-The current direct backend is intentionally one seat, one DRM device, and one
-connected output. Its recovery view is a compositor-owned solid color. Hotplug
-requires restart; cursor rendering and direct-session injected input evidence
-are still open. Relative mouse motion now shares the absolute tablet path, but
-the nested injection is not direct libinput or physical-device evidence.
+The direct backend remains intentionally one seat, but accepts multiple DRM
+devices and simultaneous connected outputs. It lays sorted outputs out
+horizontally, resizes the shell to their aggregate logical geometry, and
+survives connector and whole-device removal/addition. `SOS_OUTPUT_MODE`,
+`SOS_OUTPUT_SCALE`, and `SOS_OUTPUT_ROTATION` set boot configuration. A bounded
+JSON file selected by `SOS_OUTPUT_CONFIG_FILE` can change those values on a DRM
+udev event; the backend recreates outputs without restarting the compositor.
+The direct VM gate changes Virtual-1 to 1024x768, 1.25 scale, and 180-degree
+rotation, then hot-adds Virtual-2 and requires a nonempty first frame and page
+flip on that second CRTC. The render graph composites either a live client
+cursor surface with its hotspot or a deterministic compositor-owned fallback
+above the shell.
+
+The direct verifier creates kernel `uinput` devices named `SOS Gate Keyboard`,
+`SOS Gate Relative Pointer`, and `SOS Gate Multitouch`. Direct libinput reports
+their add/remove events and the compositor records keyboard, relative motion,
+button, and two-slot touch classes. It holds one modifier, one button, and two
+contacts through a successful activation and through an injected
+before-promotion authority failure. Both paths require `keys=1 buttons=1
+touches=2` at quiesce and suppressed releases after presentation or abort.
+Revision `250b1573…` activated in PID 8641 and recovered after the exact host
+kill in PID 8888 with DRM page-flip evidence.
+
+Activation quiescing includes touch. Existing contacts receive one
+`wl_touch.cancel`, their physical motion/release is suppressed across either a
+successful presentation or an aborted candidate, and contacts that begin and
+end while quiesced never enter the client epoch. A fresh down may reuse a
+released slot. Smithay keeps each slot focused on its down target, which is the
+Wayland-level capture behavior. The pinned GPUI Wayland client binds
+`wl_touch` and forwards down/move/up/cancel into the shared bounded Scene
+raw-pointer router, including multi-touch,
+surface capture, cancellation, gesture arbitration, and pointer-count updates.
+The first direct run exposed a mutable-client borrow across the touch callback;
+dispatching callbacks/frames after releasing that borrow fixed the crash.
+Core `wl_touch` has no pressure field, so finger samples explicitly report
+pressure unavailable. A separate pressure stylus is carried through
+tablet-v2; the direct VM gate observes normalized nonzero Scene pressure.
 The VM's software GBM/EGL stack lacks `EGL_WL_bind_wayland_display`, so the
 compositor uses its advertised `wl_shm` path for clients. None of this run is a
 physical display, latency, touch, GPU-performance, suspend/resume, or thermal
 claim.
 
-## Source pin and remaining gate
+## Source pin and remaining boundary
 
 The crate pins `smithay = 0.7.0`. Its state, input, and nested-winit setup were
 reduced from the upstream MIT-licensed `smallvil` and `anvil` examples at tag
@@ -208,9 +248,13 @@ in `crates/sos-compositor/SMITHAY-LICENSE.txt`. See the
 Boot-to-SOS packaging now passes in the same VM: a systemd/PAM service owns the
 active logind tty1 session, waits for the recovery page flip before provider and
 host startup, receives its token through systemd credentials, and recovers both
-host and whole-session failures without seatd. The next gate is deterministic
-cursor plus direct injected pointer/touch evidence. Native Linux keyboard text
-editing is proven in the nested Wayland path; an actual input-method-v2 process
-and non-Latin preedit/commit remain open, along with clipboard, accessibility,
-service-identity separation, hotplug/multiple outputs, XWayland, and
-physical-device performance.
+host and whole-session failures without seatd. The nested campaign additionally
+proves the restricted input-method-v2 client, non-Latin candidate/preedit/
+commit, dead key, cursor rectangles, Wayland clipboard, Linux semantic service,
+live provider/media refresh, and focus/state recovery. The direct recovery
+layer is a readable compositor-owned panel with restart, rollback, safe-mode,
+and provider-disable controls. Multi-output, runtime mode/scale/rotation,
+rootless XWayland, tablet pressure, and executable bounded shaders now have VM
+or software-renderer evidence. Physical touch calibration, a physical panel,
+real GPU performance, full platform sleep/wake, latency, memory-pressure, and
+thermal evidence remain outside the waived hardware gate.

@@ -1,4 +1,4 @@
-use experience_ir::{CalendarEvent, ExperienceModel, Music, Note, Weather};
+use experience_ir::{CalendarEvent, ExperienceModel, Music, Note, SystemState, Weather};
 
 pub mod state_service;
 
@@ -44,6 +44,13 @@ pub fn snapshot() -> ExperienceModel {
             artist: "Tycho".into(),
             playing: true,
         },
+        system: SystemState {
+            unix_time_ms: 0,
+            timezone: "UTC".into(),
+            online_interfaces: vec!["synthetic0".into()],
+            ..SystemState::default()
+        },
+        surfaces: Vec::new(),
     }
 }
 

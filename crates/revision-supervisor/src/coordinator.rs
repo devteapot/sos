@@ -286,6 +286,10 @@ impl CoordinatedSupervisor {
         self.supervisor.shutdown().map_err(Into::into)
     }
 
+    pub fn restart_host(&mut self) -> Result<SupervisorEvent, CoordinationError> {
+        self.supervisor.restart_host().map_err(Into::into)
+    }
+
     fn validate_binding(
         &self,
         transaction: &TransactionRecord,

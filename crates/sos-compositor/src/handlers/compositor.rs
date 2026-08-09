@@ -11,6 +11,7 @@ use smithay::{
             get_parent, is_sync_subsurface, CompositorClientState, CompositorHandler,
             CompositorState,
         },
+        seat::WaylandFocus as _,
         shm::{ShmHandler, ShmState},
     },
 };
@@ -23,10 +24,14 @@ impl CompositorHandler for SosCompositor {
     }
 
     fn client_compositor_state<'a>(&self, client: &'a Client) -> &'a CompositorClientState {
-        &client
-            .get_data::<ClientState>()
-            .expect("all accepted clients carry compositor state")
-            .compositor_state
+        if let Some(data) = client.get_data::<ClientState>() {
+            &data.compositor_state
+        } else {
+            &client
+                .get_data::<smithay::xwayland::XWaylandClientData>()
+                .expect("accepted clients carry compositor or XWayland state")
+                .compositor_state
+        }
     }
 
     fn commit(&mut self, surface: &WlSurface) {
@@ -42,8 +47,8 @@ impl CompositorHandler for SosCompositor {
             }
             if let Some(window) = self.space.elements().find(|window| {
                 window
-                    .toplevel()
-                    .is_some_and(|top| top.wl_surface() == &root)
+                    .wl_surface()
+                    .is_some_and(|surface| surface.as_ref() == &root)
             }) {
                 window.on_commit();
             }

@@ -3,6 +3,7 @@ use std::{
     fs,
     io::{self, BufRead, BufReader, Write},
     path::{Path, PathBuf},
+    sync::{Arc, Mutex},
     thread,
     time::{Duration, Instant},
 };
@@ -19,6 +20,7 @@ use gpui::{
     WindowBounds, WindowOptions,
 };
 use provider_state_service::ServiceClient;
+use providers_linux::{load_grants, ProviderContext, ProviderFrame, ProviderHub, ProviderSnapshot};
 use runtime_luau::{
     load_revision_assets, RevisionAssetInput, RuntimeWorker, WorkerReady, WorkerResult,
 };
@@ -32,13 +34,75 @@ use sha2::{Digest, Sha256};
 
 use crate::assets::{self, SosAssets, ALBUM_ASSET};
 use crate::compositor_fence::{CompositorFence, FenceEvent};
+use crate::linux_accessibility::{self, Action as AccessibilityAction};
 use crate::linux_input::{self, NativeTextInput};
+use crate::pointer_input;
 use crate::scene_surface;
 
 #[derive(Clone, Debug)]
 struct Options {
     service_socket: Option<PathBuf>,
     windowed: bool,
+}
+
+#[derive(Clone, Debug)]
+struct ProviderUpdate {
+    generation: String,
+    revision_id: String,
+    model: ExperienceModel,
+    frames: Vec<ProviderFrame>,
+}
+
+#[derive(Clone, Debug)]
+struct LinuxProviderAccess {
+    hub: ProviderHub,
+    grant_path: PathBuf,
+    allow_development_wildcard: bool,
+    active_revision: Arc<Mutex<String>>,
+}
+
+impl LinuxProviderAccess {
+    fn context(&self, revision_id: &str) -> Result<ProviderContext> {
+        load_grants(
+            &self.grant_path,
+            revision_id,
+            self.allow_development_wildcard,
+        )
+        .with_context(|| format!("load provider grants {}", self.grant_path.display()))
+    }
+
+    fn snapshot(&self, revision_id: &str) -> Result<ProviderSnapshot> {
+        self.hub
+            .snapshot_with_frames(&self.context(revision_id)?)
+            .with_context(|| format!("read Linux provider snapshot for revision {revision_id}"))
+    }
+
+    fn execute_effects(
+        &self,
+        revision_id: &str,
+        effects: &[experience_ir::ProviderEffect],
+    ) -> std::result::Result<(), String> {
+        let context = self
+            .context(revision_id)
+            .map_err(|error| error.to_string())?;
+        for effect in effects {
+            self.hub
+                .execute_effect(&context, effect)
+                .map_err(|error| error.to_string())?;
+        }
+        Ok(())
+    }
+
+    fn activate(&self, revision_id: &str) {
+        *self.active_revision.lock().expect("provider revision lock") = revision_id.into();
+    }
+
+    fn active_revision(&self) -> String {
+        self.active_revision
+            .lock()
+            .expect("provider revision lock")
+            .clone()
+    }
 }
 
 #[derive(Debug)]
@@ -62,12 +126,16 @@ struct LoadedRevision {
 struct PreparingRevision {
     prepare_request_id: u64,
     revision: LoadedRevision,
+    model: ExperienceModel,
+    provider_frames: Vec<ProviderFrame>,
 }
 
 #[derive(Clone, Debug)]
 struct PreparedRevision {
     prepare_request_id: u64,
     revision: LoadedRevision,
+    model: ExperienceModel,
+    provider_frames: Vec<ProviderFrame>,
 }
 
 #[derive(Clone, Debug)]
@@ -128,7 +196,10 @@ struct DurableState {
 }
 
 pub fn run() -> Result<()> {
+    pointer_input::install();
     let options = parse_options(std::env::args().skip(1))?;
+    let accessibility =
+        linux_accessibility::start_from_environment().map_err(|error| anyhow::anyhow!(error))?;
     let (first_request, reader) = read_first_request()?;
     let HostRequest::Boot {
         request_id,
@@ -153,7 +224,7 @@ pub fn run() -> Result<()> {
             revision.revision_id
         );
     }
-    let model = providers_fake::snapshot();
+    let (model, provider_updates, provider_access) = start_provider_updates(&revision.revision_id)?;
     let (worker, ready) = RuntimeWorker::start_with_assets(
         revision.source.clone(),
         model.clone(),
@@ -206,6 +277,9 @@ pub fn run() -> Result<()> {
                             request_id,
                             protocol_rx,
                             results,
+                            provider_updates,
+                            provider_access,
+                            accessibility,
                             options.service_socket,
                             compositor_fence,
                             cx,
@@ -249,6 +323,12 @@ pub(super) struct LinuxExperienceHost {
     surface_gestures: HashMap<String, GestureSession>,
     surface_taps: HashMap<String, (String, Instant)>,
     status: Option<(String, bool)>,
+    provider_refresh: Option<(u64, ExperienceModel)>,
+    queued_provider_model: Option<ExperienceModel>,
+    next_provider_request_id: u64,
+    provider_access: Option<LinuxProviderAccess>,
+    accessibility: Option<linux_accessibility::Service>,
+    semantic_focus: Option<String>,
 }
 
 impl LinuxExperienceHost {
@@ -261,6 +341,9 @@ impl LinuxExperienceHost {
         boot_request_id: u64,
         protocol: async_channel::Receiver<ProtocolInput>,
         results: async_channel::Receiver<WorkerResult>,
+        provider_updates: async_channel::Receiver<ProviderUpdate>,
+        provider_access: Option<LinuxProviderAccess>,
+        accessibility: Option<linux_accessibility::Service>,
         service_socket: Option<PathBuf>,
         compositor_fence: Option<CompositorFence>,
         cx: &mut Context<Self>,
@@ -268,6 +351,7 @@ impl LinuxExperienceHost {
         let (action_commits, action_results) = async_channel::unbounded();
         Self::attach_protocol(protocol, cx);
         Self::attach_worker_results(results, cx);
+        Self::attach_provider_updates(provider_updates, cx);
         Self::attach_action_results(action_results, cx);
         if let Some(fence) = &compositor_fence {
             Self::attach_compositor_events(fence.events(), cx);
@@ -304,6 +388,12 @@ impl LinuxExperienceHost {
             surface_gestures: HashMap::new(),
             surface_taps: HashMap::new(),
             status: Some(("Booting committed SOS revision…".into(), true)),
+            provider_refresh: None,
+            queued_provider_model: None,
+            next_provider_request_id: 1,
+            provider_access,
+            accessibility,
+            semantic_focus: None,
         }
     }
 
@@ -341,6 +431,68 @@ impl LinuxExperienceHost {
             }
         })
         .detach();
+    }
+
+    fn attach_provider_updates(
+        updates: async_channel::Receiver<ProviderUpdate>,
+        cx: &mut Context<Self>,
+    ) {
+        cx.spawn(async move |this, cx| {
+            while let Ok(update) = updates.recv().await {
+                if this
+                    .update(cx, |this, cx| {
+                        if update.revision_id != this.active_revision_id {
+                            eprintln!(
+                                "sos_provider_event_dropped event_revision={} active_revision={}",
+                                update.revision_id, this.active_revision_id
+                            );
+                            return;
+                        }
+                        eprintln!(
+                            "sos_provider_event generation={} revision_id={}",
+                            update.generation, this.active_revision_id
+                        );
+                        assets::install_provider_frames(&update.frames);
+                        this.request_model_refresh(update.model, cx);
+                    })
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        })
+        .detach();
+    }
+
+    fn request_model_refresh(&mut self, model: ExperienceModel, cx: &mut Context<Self>) {
+        if self.provider_refresh.is_some()
+            || self.action_in_flight
+            || self.preparing.is_some()
+            || self.prepared.is_some()
+            || self.pending_commit.is_some()
+            || self.pending_presentation.is_some()
+        {
+            self.queued_provider_model = Some(model);
+            return;
+        }
+        let request_id = self.next_provider_request_id;
+        self.next_provider_request_id = self.next_provider_request_id.wrapping_add(1).max(1);
+        match self
+            .worker
+            .refresh_model(request_id, model.clone(), self.state.clone())
+        {
+            Ok(()) => self.provider_refresh = Some((request_id, model)),
+            Err(error) => {
+                self.status = Some((format!("Provider refresh could not start: {error}"), false));
+                cx.notify();
+            }
+        }
+    }
+
+    fn dispatch_queued_provider_model(&mut self, cx: &mut Context<Self>) {
+        if let Some(model) = self.queued_provider_model.take() {
+            self.request_model_refresh(model, cx);
+        }
     }
 
     fn attach_action_results(
@@ -479,11 +631,21 @@ impl LinuxExperienceHost {
                             return;
                         }
                     };
+                let (candidate_model, provider_frames) = match &self.provider_access {
+                    Some(access) => match access.snapshot(&revision.revision_id) {
+                        Ok(snapshot) => (snapshot.model, snapshot.frames),
+                        Err(error) => {
+                            reject(request_id, revision_id, error.to_string());
+                            return;
+                        }
+                    },
+                    None => (self.model.clone(), Vec::new()),
+                };
                 if let Err(error) = self.worker.prepare_candidate_with_assets(
                     request_id,
                     revision.source.clone(),
                     revision.assets.clone(),
-                    self.model.clone(),
+                    candidate_model.clone(),
                     revision.state.clone(),
                     revision.schema_version,
                     Instant::now(),
@@ -494,6 +656,8 @@ impl LinuxExperienceHost {
                 self.preparing = Some(PreparingRevision {
                     prepare_request_id: request_id,
                     revision,
+                    model: candidate_model,
+                    provider_frames,
                 });
                 self.status = Some(("Preparing Luau revision…".into(), true));
                 cx.notify();
@@ -671,6 +835,8 @@ impl LinuxExperienceHost {
                 self.prepared = Some(PreparedRevision {
                     prepare_request_id: request_id,
                     revision: preparing.revision,
+                    model: preparing.model,
+                    provider_frames: preparing.provider_frames,
                 });
                 self.status = Some((
                     "Revision prepared; accepted scene remains active".into(),
@@ -732,10 +898,15 @@ impl LinuxExperienceHost {
                     );
                 }
                 assets::install(&revision_assets);
+                assets::install_provider_frames(&commit.revision.provider_frames);
                 self.scene = scene;
                 self.state = state;
                 self.state_schema_version = state_schema_version;
                 self.active_revision_id = revision_id;
+                self.model = commit.revision.model;
+                if let Some(access) = &self.provider_access {
+                    access.activate(&self.active_revision_id);
+                }
                 self.active_source_sha256 = commit.revision.revision.source_sha256;
                 self.pending_presentation = Some(PendingPresentation {
                     request_id: commit.present_request_id,
@@ -754,6 +925,47 @@ impl LinuxExperienceHost {
                     "sos_revision_committed revision_id={} worker_total_us={}",
                     self.active_revision_id, timings.worker_total_us
                 );
+                cx.notify();
+            }
+            WorkerResult::ModelRefreshed {
+                request_id,
+                scene,
+                worker_us,
+            } => {
+                let Some((expected, model)) = self.provider_refresh.take() else {
+                    return;
+                };
+                if expected != request_id {
+                    self.provider_refresh = Some((expected, model));
+                    return;
+                }
+                self.model = model;
+                self.scene = scene;
+                self.status = None;
+                eprintln!(
+                    "sos_provider_model_refreshed request_id={request_id} worker_us={worker_us} revision_id={}",
+                    self.active_revision_id
+                );
+                self.dispatch_queued_provider_model(cx);
+                cx.notify();
+            }
+            WorkerResult::ModelRefreshRejected {
+                request_id,
+                error,
+                worker_us,
+            } => {
+                if self
+                    .provider_refresh
+                    .as_ref()
+                    .is_some_and(|(expected, _)| *expected == request_id)
+                {
+                    self.provider_refresh = None;
+                }
+                self.status = Some((format!("Provider update rejected: {error}"), false));
+                eprintln!(
+                    "sos_provider_model_rejected request_id={request_id} worker_us={worker_us} error={error}"
+                );
+                self.dispatch_queued_provider_model(cx);
                 cx.notify();
             }
             WorkerResult::ActionCompleted {
@@ -788,6 +1000,7 @@ impl LinuxExperienceHost {
                 let revision_id = self.active_revision_id.clone();
                 let source_sha256 = self.active_source_sha256.clone();
                 let schema_version = self.state_schema_version;
+                let provider_access = self.provider_access.clone();
                 let sender = self.action_commits.clone();
                 thread::Builder::new()
                     .name("sos-action-commit".into())
@@ -800,6 +1013,7 @@ impl LinuxExperienceHost {
                             schema_version,
                             &state,
                             &effects,
+                            provider_access.as_ref(),
                         );
                         let _ = sender.send_blocking(ActionCommitResult {
                             request_id,
@@ -1006,6 +1220,112 @@ impl LinuxExperienceHost {
             }
         }
         self.pending_input_events.push_back(event);
+    }
+
+    fn handle_accessibility_action(
+        &mut self,
+        action: AccessibilityAction,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match action.kind.as_str() {
+            "next" | "previous" => {
+                let ids = semantic_ids(&self.scene);
+                if ids.is_empty() {
+                    return;
+                }
+                let current = self
+                    .semantic_focus
+                    .as_ref()
+                    .and_then(|focused| ids.iter().position(|id| id == focused));
+                let index = if action.kind == "next" {
+                    current.map_or(0, |index| (index + 1) % ids.len())
+                } else {
+                    current
+                        .and_then(|index| index.checked_sub(1))
+                        .unwrap_or(ids.len() - 1)
+                };
+                self.semantic_focus = Some(ids[index].clone());
+                self.status = Some((format!("Accessibility focus: {}", ids[index]), true));
+            }
+            "focus" => {
+                self.semantic_focus = Some(action.target.clone());
+                if let Some(input) = self.inputs.get(&action.target).cloned() {
+                    window.defer(cx, move |window, cx| {
+                        input.update(cx, |input, input_cx| input.activate(window, input_cx));
+                    });
+                }
+            }
+            "activate" => {
+                if let Some(scene_action) = node_by_id(&self.scene.root, &action.target)
+                    .and_then(|node| node.interaction.tap_action.clone())
+                {
+                    self.queue_input_event(
+                        SceneEvent {
+                            action: scene_action,
+                            target: Some(action.target.clone()),
+                            ..Default::default()
+                        },
+                        cx,
+                    );
+                }
+            }
+            "scroll_forward" | "scroll_backward" => self.queue_input_event(
+                SceneEvent {
+                    action: "accessibility_scroll".into(),
+                    target: Some(action.target.clone()),
+                    delta_y: Some(if action.kind == "scroll_forward" {
+                        1.0
+                    } else {
+                        -1.0
+                    }),
+                    phase: Some("update".into()),
+                    ..Default::default()
+                },
+                cx,
+            ),
+            "set_value" => {
+                if let Some(input) = self.inputs.get(&action.target).cloned() {
+                    let value = action.value.clone();
+                    window.defer(cx, move |window, cx| {
+                        input.update(cx, |input, input_cx| {
+                            input.accessibility_set_value(&value, window, input_cx)
+                        });
+                    });
+                }
+            }
+            "set_selection" => {
+                let selection = action
+                    .value
+                    .split_once(':')
+                    .and_then(|(start, end)| Some((start.parse().ok()?, end.parse().ok()?)));
+                if let (Some((start, end)), Some(input)) =
+                    (selection, self.inputs.get(&action.target).cloned())
+                {
+                    window.defer(cx, move |_, cx| {
+                        input.update(cx, |input, input_cx| {
+                            input.accessibility_set_selection(start, end, input_cx)
+                        });
+                    });
+                }
+            }
+            "copy" | "cut" | "paste" => {
+                if let Some(input) = self.inputs.get(&action.target).cloned() {
+                    let kind = action.kind.clone();
+                    window.defer(cx, move |window, cx| {
+                        input.update(cx, |input, input_cx| {
+                            input.accessibility_clipboard_action(&kind, window, input_cx)
+                        });
+                    });
+                }
+            }
+            _ => return,
+        }
+        eprintln!(
+            "sos_accessibility_action kind={} target={}",
+            action.kind, action.target
+        );
+        cx.notify();
     }
 
     fn dispatch_pending_input_event(&mut self, cx: &mut Context<Self>) {
@@ -1393,6 +1713,32 @@ impl LinuxExperienceHost {
             };
             element = element.child(img(path).size_full());
         }
+        if let Some(Content::ProviderSurface(surface)) = &node.content {
+            if let Some(path) = assets::provider_surface_path(&surface.surface) {
+                element = element.child(img(path).size_full());
+            } else {
+                let protected = self
+                    .model
+                    .surfaces
+                    .iter()
+                    .find(|candidate| candidate.id == surface.surface)
+                    .is_some_and(|candidate| candidate.protected);
+                element = element.child(
+                    div()
+                        .size_full()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .bg(rgb(0x171A20))
+                        .text_color(rgb(0xD5D9E0))
+                        .child(if protected {
+                            "Protected surface unavailable: no secure Linux scanout path"
+                        } else {
+                            "Provider surface unavailable"
+                        }),
+                );
+            }
+        }
         let uses_surface = node
             .paint
             .iter()
@@ -1470,6 +1816,14 @@ impl scene_surface::SceneSurfaceHost for LinuxExperienceHost {
         true
     }
 
+    fn record_scene_surface(
+        surface_id: &str,
+        bounds: gpui::Bounds<gpui::Pixels>,
+        interaction: &Interaction,
+    ) {
+        pointer_input::record_surface(surface_id, bounds, interaction);
+    }
+
     fn scene_surface_down(
         &mut self,
         surface_id: String,
@@ -1514,6 +1868,22 @@ impl scene_surface::SceneSurfaceHost for LinuxExperienceHost {
 
 impl Render for LinuxExperienceHost {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if let Some(accessibility) = self.accessibility.clone() {
+            while let Some(action) = accessibility.try_action() {
+                self.handle_accessibility_action(action, window, cx);
+            }
+            accessibility.publish(
+                &self.scene,
+                self.semantic_focus.clone(),
+                self.status.as_ref().map(|status| status.0.clone()),
+            );
+        }
+        for sample in pointer_input::take_samples() {
+            for event in pointer_input::route(sample) {
+                self.queue_input_event(event, cx);
+            }
+        }
+        pointer_input::begin_frame();
         assets::install_fonts(window);
         let scene = self.scene.clone();
         let content = self.render_node(&scene.root, SharedString::from("root"), window, cx);
@@ -1557,6 +1927,115 @@ impl Render for LinuxExperienceHost {
         }
         root
     }
+}
+
+fn node_by_id<'a>(node: &'a SceneNode, id: &str) -> Option<&'a SceneNode> {
+    if node.id.as_deref() == Some(id) {
+        return Some(node);
+    }
+    node.children.iter().find_map(|child| node_by_id(child, id))
+}
+
+fn semantic_ids(scene: &Scene) -> Vec<String> {
+    fn visit(node: &SceneNode, output: &mut Vec<String>) {
+        if let Some(id) = node
+            .id
+            .as_ref()
+            .filter(|_| node.semantics.is_some() || node.layout.scroll_y)
+        {
+            output.push(id.clone());
+        }
+        for child in &node.children {
+            visit(child, output);
+        }
+    }
+    let mut ids = Vec::new();
+    visit(&scene.root, &mut ids);
+    ids
+}
+
+fn start_provider_updates(
+    revision_id: &str,
+) -> Result<(
+    ExperienceModel,
+    async_channel::Receiver<ProviderUpdate>,
+    Option<LinuxProviderAccess>,
+)> {
+    let (sender, receiver) = async_channel::bounded(1);
+    let providers_disabled = ["SOS_SAFE_MODE_FILE", "SOS_PROVIDER_DISABLE_FILE"]
+        .into_iter()
+        .filter_map(std::env::var_os)
+        .map(PathBuf::from)
+        .any(|path| path.exists());
+    if providers_disabled {
+        eprintln!("sos_provider_safe_mode synthetic_model=true");
+        drop(sender);
+        return Ok((providers_fake::snapshot(), receiver, None));
+    }
+    let Some(root) = std::env::var_os("SOS_LINUX_PROVIDER_ROOT").map(PathBuf::from) else {
+        drop(sender);
+        return Ok((providers_fake::snapshot(), receiver, None));
+    };
+    let hub = ProviderHub::open(&root)
+        .with_context(|| format!("open Linux provider root {}", root.display()))?;
+    let grant_path = std::env::var_os("SOS_PROVIDER_GRANTS")
+        .map(PathBuf::from)
+        .context("SOS_LINUX_PROVIDER_ROOT requires SOS_PROVIDER_GRANTS")?;
+    let access = LinuxProviderAccess {
+        hub,
+        grant_path,
+        allow_development_wildcard: std::env::var_os("SOS_PROVIDER_DEVELOPMENT_GRANTS").as_deref()
+            == Some(std::ffi::OsStr::new("1")),
+        active_revision: Arc::new(Mutex::new(revision_id.into())),
+    };
+    let snapshot = access.snapshot(revision_id)?;
+    assets::install_provider_frames(&snapshot.frames);
+    let model = snapshot.model;
+    let hub = access.hub.clone();
+    let generation = hub.generation().context("fingerprint Linux providers")?;
+    let watcher_access = access.clone();
+    thread::Builder::new()
+        .name("sos-provider-events".into())
+        .spawn(move || {
+            let mut generation = generation;
+            let mut revision_id = watcher_access.active_revision();
+            while !sender.is_closed() {
+                thread::sleep(Duration::from_millis(250));
+                let next_revision_id = watcher_access.active_revision();
+                let next = match hub.generation() {
+                    Ok(next) if next != generation || next_revision_id != revision_id => next,
+                    Ok(_) => continue,
+                    Err(error) => {
+                        eprintln!(
+                            "sos_provider_unavailable revision_id={next_revision_id} error={error}"
+                        );
+                        continue;
+                    }
+                };
+                match watcher_access.snapshot(&next_revision_id) {
+                    Ok(snapshot) => {
+                        generation = next.clone();
+                        revision_id = next_revision_id.clone();
+                        if sender
+                            .send_blocking(ProviderUpdate {
+                                generation: format!("{revision_id}:{next}"),
+                                revision_id: revision_id.clone(),
+                                model: snapshot.model,
+                                frames: snapshot.frames,
+                            })
+                            .is_err()
+                        {
+                            break;
+                        }
+                    }
+                    Err(error) => eprintln!(
+                        "sos_provider_unavailable revision_id={next_revision_id} error={error}"
+                    ),
+                }
+            }
+        })
+        .context("start Linux provider subscription thread")?;
+    Ok((model, receiver, Some(access)))
 }
 
 fn parse_options(args: impl Iterator<Item = String>) -> Result<Options> {
@@ -1676,6 +2155,7 @@ fn read_verified_file(directory: &Path, identity: &FileIdentity) -> Result<Vec<u
     Ok(bytes)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn commit_action(
     socket: &Path,
     request_id: u64,
@@ -1684,6 +2164,7 @@ fn commit_action(
     schema_version: u64,
     state: &JsonValue,
     effects: &[experience_ir::ProviderEffect],
+    provider_access: Option<&LinuxProviderAccess>,
 ) -> std::result::Result<StateResource, String> {
     let client = ServiceClient::new(socket, Duration::from_secs(2));
     let current = get_service_state(&client, 1)?;
@@ -1693,10 +2174,17 @@ fn commit_action(
     {
         return Err("authority does not match the active experience revision".into());
     }
-    let actions = effects
-        .iter()
-        .map(provider_action)
-        .collect::<std::result::Result<Vec<_>, _>>()?;
+    let mut actions = Vec::new();
+    let mut linux_effects = Vec::new();
+    for effect in effects {
+        match provider_action(effect)? {
+            Some(action) => actions.push(action),
+            None => linux_effects.push(effect.clone()),
+        }
+    }
+    if !linux_effects.is_empty() && provider_access.is_none() {
+        return Err("Linux provider effect requires configured provider access".into());
+    }
     let transaction_id = format!("host-{}-{request_id}", std::process::id());
     let draft = PromotionDraft {
         transaction_id: transaction_id.clone(),
@@ -1715,6 +2203,21 @@ fn commit_action(
             draft,
         },
     )?)?;
+
+    if let Some(access) = provider_access {
+        if let Err(error) = access.execute_effects(revision_id, &linux_effects) {
+            let _ = call_service(
+                &client,
+                &ServiceRequest::Abort {
+                    request_id: 6,
+                    transaction_id: transaction_id.clone(),
+                },
+            );
+            return Err(format!(
+                "Linux provider effect failed before promotion: {error}"
+            ));
+        }
+    }
 
     let promoted = call_service(
         &client,
@@ -1795,7 +2298,7 @@ fn expect_transaction(
 
 fn provider_action(
     effect: &experience_ir::ProviderEffect,
-) -> std::result::Result<ProviderAction, String> {
+) -> std::result::Result<Option<ProviderAction>, String> {
     match (effect.provider.as_str(), effect.action.as_str()) {
         ("notes", "attach_to_event") => {
             let note_id = effect
@@ -1808,11 +2311,12 @@ fn provider_action(
                 .get("event_title")
                 .and_then(JsonValue::as_str)
                 .ok_or_else(|| "notes.attach_to_event omitted event_title".to_owned())?;
-            Ok(ProviderAction::Notes(NotesAction::AttachToEvent {
+            Ok(Some(ProviderAction::Notes(NotesAction::AttachToEvent {
                 note_id: note_id.into(),
                 event_title: event_title.into(),
-            }))
+            })))
         }
+        ("notes", "write") | ("calendar", "append") | ("music", "command") => Ok(None),
         (provider, action) => Err(format!("unsupported provider effect: {provider}.{action}")),
     }
 }
@@ -1910,10 +2414,19 @@ mod tests {
         };
         assert_eq!(
             provider_action(&effect).unwrap(),
-            ProviderAction::Notes(NotesAction::AttachToEvent {
+            Some(ProviderAction::Notes(NotesAction::AttachToEvent {
                 note_id: "note-1".into(),
                 event_title: "Design review".into(),
+            }))
+        );
+        assert_eq!(
+            provider_action(&experience_ir::ProviderEffect {
+                provider: "notes".into(),
+                action: "write".into(),
+                payload: JsonValue::Null,
             })
+            .unwrap(),
+            None
         );
         assert!(provider_action(&experience_ir::ProviderEffect {
             provider: "shell".into(),
@@ -2014,11 +2527,29 @@ mod tests {
 
     #[test]
     fn provider_effect_commits_over_socket_and_survives_service_restart() {
+        use std::os::unix::fs::PermissionsExt as _;
+
         let temporary = tempfile::tempdir().unwrap();
         let state_file = temporary.path().join("authority.json");
         let socket = temporary.path().join("provider.sock");
         let revision_id = "b".repeat(64);
         let source_sha256 = "a".repeat(64);
+        let grant_path = temporary.path().join("grants.json");
+        fs::write(
+            &grant_path,
+            serde_json::to_vec(&serde_json::json!({
+                revision_id.clone(): ["notes_write"]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        fs::set_permissions(&grant_path, fs::Permissions::from_mode(0o600)).unwrap();
+        let provider_access = LinuxProviderAccess {
+            hub: ProviderHub::open(temporary.path().join("linux-providers")).unwrap(),
+            grant_path,
+            allow_development_wildcard: false,
+            active_revision: Arc::new(Mutex::new(revision_id.clone())),
+        };
         let mut authority = provider_state_service::Authority::open(&state_file).unwrap();
         authority
             .stage(PromotionDraft {
@@ -2044,18 +2575,33 @@ mod tests {
             &source_sha256,
             1,
             &state,
-            &[experience_ir::ProviderEffect {
-                provider: "notes".into(),
-                action: "attach_to_event".into(),
-                payload: serde_json::json!({
-                    "note_id": "note-1",
-                    "event_title": "Design review"
-                }),
-            }],
+            &[
+                experience_ir::ProviderEffect {
+                    provider: "notes".into(),
+                    action: "attach_to_event".into(),
+                    payload: serde_json::json!({
+                        "note_id": "note-1",
+                        "event_title": "Design review"
+                    }),
+                },
+                experience_ir::ProviderEffect {
+                    provider: "notes".into(),
+                    action: "write".into(),
+                    payload: serde_json::json!({
+                        "name": "from-generated-action",
+                        "content": "# Generated action\nCapability checked."
+                    }),
+                },
+            ],
+            Some(&provider_access),
         )
         .unwrap();
         assert_eq!(committed.revision, 2);
         assert_eq!(committed.state, state);
+        assert!(temporary
+            .path()
+            .join("linux-providers/notes/from-generated-action.md")
+            .exists());
         let client = ServiceClient::new(&socket, Duration::from_secs(1));
         client
             .call(&ServiceRequest::Shutdown { request_id: 99 })

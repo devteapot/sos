@@ -1,20 +1,85 @@
 // Input forwarding is adapted from Smithay's MIT-licensed `smallvil` example
 // at tag v0.7.0, with SOS focus ordering and activation quiescing.
 
+use std::collections::HashSet;
+
 use smithay::{
     backend::input::{
-        AbsolutePositionEvent, Axis, AxisSource, ButtonState, Event, InputBackend, InputEvent,
-        KeyState, KeyboardKeyEvent, PointerAxisEvent, PointerButtonEvent, PointerMotionEvent,
+        AbsolutePositionEvent, Axis, AxisSource, ButtonState, Device as _, Event, InputBackend,
+        InputEvent, KeyState, KeyboardKeyEvent, PointerAxisEvent, PointerButtonEvent,
+        PointerMotionEvent, ProximityState, TabletToolButtonEvent, TabletToolEvent,
+        TabletToolProximityEvent, TabletToolTipEvent, TabletToolTipState, TouchEvent, TouchSlot,
     },
     input::{
         keyboard::FilterResult,
         pointer::{AxisFrame, ButtonEvent, MotionEvent, RelativeMotionEvent},
+        touch::{DownEvent, MotionEvent as TouchMotion, UpEvent},
     },
     reexports::wayland_server::protocol::wl_surface::WlSurface,
     utils::SERIAL_COUNTER,
+    wayland::{
+        seat::WaylandFocus as _,
+        tablet_manager::{TabletDescriptor, TabletHandle, TabletSeatTrait, TabletToolHandle},
+    },
 };
 
 use crate::{policy::ClientRole, state::SosCompositor};
+
+type LogicalPoint = smithay::utils::Point<f64, smithay::utils::Logical>;
+type TabletTarget = (
+    LogicalPoint,
+    Option<(WlSurface, LogicalPoint)>,
+    TabletHandle,
+    TabletToolHandle,
+);
+
+#[derive(Default)]
+pub(crate) struct TouchLifecycle {
+    active: HashSet<TouchSlot>,
+    suppressed: HashSet<TouchSlot>,
+}
+
+impl TouchLifecycle {
+    fn begin_quiesce(&mut self) -> usize {
+        let active = self.active.len();
+        self.suppressed.extend(self.active.drain());
+        active
+    }
+
+    fn observe_quiesced_down(&mut self, slot: TouchSlot) {
+        self.suppressed.insert(slot);
+    }
+
+    fn observe_quiesced_up(&mut self, slot: TouchSlot) {
+        self.active.remove(&slot);
+        self.suppressed.remove(&slot);
+    }
+
+    fn begin_contact(&mut self, slot: TouchSlot) {
+        self.suppressed.remove(&slot);
+        self.active.insert(slot);
+    }
+
+    fn can_forward_motion(&self, slot: TouchSlot) -> bool {
+        self.active.contains(&slot) && !self.suppressed.contains(&slot)
+    }
+
+    fn end_contact(&mut self, slot: TouchSlot) -> bool {
+        if self.suppressed.remove(&slot) {
+            self.active.remove(&slot);
+            false
+        } else {
+            self.active.remove(&slot)
+        }
+    }
+
+    fn cancel(&mut self) -> bool {
+        let had_active = !self.active.is_empty();
+        self.active.clear();
+        self.suppressed.clear();
+        had_active
+    }
+}
 
 impl SosCompositor {
     pub fn begin_input_quiesce(&mut self) {
@@ -71,9 +136,16 @@ impl SosCompositor {
             );
         }
         pointer.frame(self);
+
+        let touch = self.seat.get_touch().expect("seat has touch");
+        let active_touches = self.touch_lifecycle.begin_quiesce();
+        if active_touches != 0 {
+            touch.cancel(self);
+        }
         tracing::info!(
             keys = pressed_keys.len(),
             buttons = pressed_buttons.len(),
+            touches = active_touches,
             "detached focused input for revision quiesce"
         );
     }
@@ -107,6 +179,45 @@ impl SosCompositor {
     }
 
     pub fn process_input_event<I: InputBackend>(&mut self, event: InputEvent<I>) {
+        match &event {
+            InputEvent::DeviceAdded { device }
+                if device.has_capability(smithay::backend::input::DeviceCapability::TabletTool) =>
+            {
+                self.seat
+                    .tablet_seat()
+                    .add_tablet::<Self>(&self.display_handle, &TabletDescriptor::from(device));
+            }
+            InputEvent::DeviceRemoved { device }
+                if device.has_capability(smithay::backend::input::DeviceCapability::TabletTool) =>
+            {
+                self.seat
+                    .tablet_seat()
+                    .remove_tablet(&TabletDescriptor::from(device));
+            }
+            _ => {}
+        }
+        let input_class = match &event {
+            InputEvent::Keyboard { .. } => Some("keyboard"),
+            InputEvent::PointerMotion { .. } => Some("relative_pointer"),
+            InputEvent::PointerMotionAbsolute { .. } => Some("absolute_pointer"),
+            InputEvent::PointerButton { .. } => Some("pointer_button"),
+            InputEvent::PointerAxis { .. } => Some("pointer_axis"),
+            InputEvent::TouchDown { .. }
+            | InputEvent::TouchMotion { .. }
+            | InputEvent::TouchUp { .. }
+            | InputEvent::TouchCancel { .. }
+            | InputEvent::TouchFrame { .. } => Some("touch"),
+            InputEvent::TabletToolAxis { .. }
+            | InputEvent::TabletToolProximity { .. }
+            | InputEvent::TabletToolTip { .. }
+            | InputEvent::TabletToolButton { .. } => Some("tablet_pressure"),
+            _ => None,
+        };
+        if let Some(input_class) =
+            input_class.filter(|value| self.observed_input_classes.insert(*value))
+        {
+            tracing::info!(input_class, "observed native compositor input");
+        }
         if self.policy.input_quiesced() {
             self.quiesced_input_events = self.quiesced_input_events.saturating_add(1);
             match event {
@@ -139,6 +250,15 @@ impl SosCompositor {
                         self.suppressed_pointer_buttons.remove(&event.button_code());
                     }
                 },
+                InputEvent::TouchDown { event, .. } => {
+                    self.touch_lifecycle.observe_quiesced_down(event.slot());
+                }
+                InputEvent::TouchUp { event, .. } => {
+                    self.touch_lifecycle.observe_quiesced_up(event.slot());
+                }
+                InputEvent::TouchCancel { .. } => {
+                    self.touch_lifecycle.cancel();
+                }
                 _ => {}
             }
             tracing::debug!("input quiesced for revision activation");
@@ -160,7 +280,7 @@ impl SosCompositor {
                     if released {
                         self.suppressed_keyboard_keys.remove(&event.key_code());
                     }
-                    tracing::debug!(
+                    tracing::info!(
                         key = u32::from(event.key_code()),
                         ?released,
                         "suppressed key held across activation"
@@ -239,6 +359,25 @@ impl SosCompositor {
                 pointer.frame(self);
             }
             InputEvent::PointerButton { event, .. } => {
+                if event.button_code() == 0x110 && !self.policy.shell_mapped() {
+                    if event.state() == ButtonState::Pressed {
+                        let location = self
+                            .seat
+                            .get_pointer()
+                            .expect("seat has a pointer")
+                            .current_location();
+                        if self
+                            .recovery_ui
+                            .click((location.x, location.y), self.output_size)
+                        {
+                            self.recovery_button_pressed = true;
+                            return;
+                        }
+                    } else if self.recovery_button_pressed {
+                        self.recovery_button_pressed = false;
+                        return;
+                    }
+                }
                 match event.state() {
                     ButtonState::Pressed => {
                         self.pressed_pointer_buttons.insert(event.button_code());
@@ -246,7 +385,7 @@ impl SosCompositor {
                     ButtonState::Released => {
                         self.pressed_pointer_buttons.remove(&event.button_code());
                         if self.suppressed_pointer_buttons.remove(&event.button_code()) {
-                            tracing::debug!(
+                            tracing::info!(
                                 button = event.button_code(),
                                 "suppressed release for button held across activation"
                             );
@@ -263,29 +402,28 @@ impl SosCompositor {
                         .element_under(pointer.current_location())
                         .map(|(window, _)| window.clone());
                     if let Some(window) = focused {
-                        let surface = window
-                            .toplevel()
-                            .expect("mapped window is XDG")
-                            .wl_surface()
-                            .clone();
-                        if Self::client_role(&surface) == Some(ClientRole::Compatibility) {
+                        let Some(surface) = window.wl_surface().map(|surface| surface.into_owned())
+                        else {
+                            return;
+                        };
+                        if window.is_x11()
+                            || Self::client_role(&surface) == Some(ClientRole::Compatibility)
+                        {
                             self.space.raise_element(&window, false);
                         }
                         self.space.elements().for_each(|candidate| {
                             candidate.set_activated(candidate == &window);
-                            candidate
-                                .toplevel()
-                                .expect("mapped window is XDG")
-                                .send_pending_configure();
+                            if let Some(toplevel) = candidate.toplevel() {
+                                toplevel.send_pending_configure();
+                            }
                         });
                         keyboard.set_focus(self, Some(surface), serial);
                     } else {
                         self.space.elements().for_each(|window| {
                             window.set_activated(false);
-                            window
-                                .toplevel()
-                                .expect("mapped window is XDG")
-                                .send_pending_configure();
+                            if let Some(toplevel) = window.toplevel() {
+                                toplevel.send_pending_configure();
+                            }
                         });
                         keyboard.set_focus(self, Option::<WlSurface>::None, serial);
                     }
@@ -334,7 +472,244 @@ impl SosCompositor {
                 pointer.axis(self, frame);
                 pointer.frame(self);
             }
+            InputEvent::TouchDown { event, .. } => {
+                let Some(position) = self.touch_position(&event) else {
+                    return;
+                };
+                let slot = event.slot();
+                // A fresh down means libinput has reused this slot for a new
+                // contact; an older activation-boundary suppression no longer
+                // applies to it.
+                self.touch_lifecycle.begin_contact(slot);
+                tracing::info!(slot = i32::from(slot), "began native touch contact");
+                let touch = self.seat.get_touch().expect("seat has touch");
+                touch.down(
+                    self,
+                    self.surface_under(position),
+                    &DownEvent {
+                        slot,
+                        location: position,
+                        serial: SERIAL_COUNTER.next_serial(),
+                        time: event.time_msec(),
+                    },
+                );
+            }
+            InputEvent::TouchMotion { event, .. } => {
+                let slot = event.slot();
+                if !self.touch_lifecycle.can_forward_motion(slot) {
+                    return;
+                }
+                let Some(position) = self.touch_position(&event) else {
+                    return;
+                };
+                let touch = self.seat.get_touch().expect("seat has touch");
+                touch.motion(
+                    self,
+                    self.surface_under(position),
+                    &TouchMotion {
+                        slot,
+                        location: position,
+                        time: event.time_msec(),
+                    },
+                );
+            }
+            InputEvent::TouchUp { event, .. } => {
+                let slot = event.slot();
+                tracing::info!(slot = i32::from(slot), "ended native touch contact");
+                if !self.touch_lifecycle.end_contact(slot) {
+                    tracing::info!(
+                        slot = i32::from(slot),
+                        "suppressed touch release held across activation"
+                    );
+                    return;
+                }
+                let touch = self.seat.get_touch().expect("seat has touch");
+                touch.up(
+                    self,
+                    &UpEvent {
+                        slot,
+                        serial: SERIAL_COUNTER.next_serial(),
+                        time: event.time_msec(),
+                    },
+                );
+            }
+            InputEvent::TouchCancel { .. } => {
+                tracing::info!("cancelled native touch contacts");
+                let had_active_touches = self.touch_lifecycle.cancel();
+                if had_active_touches {
+                    let touch = self.seat.get_touch().expect("seat has touch");
+                    touch.cancel(self);
+                }
+            }
+            InputEvent::TouchFrame { .. } => {
+                let touch = self.seat.get_touch().expect("seat has touch");
+                touch.frame(self);
+            }
+            InputEvent::TabletToolProximity { event } => {
+                let Some((position, focus, tablet, tool)) = self.tablet_target(&event) else {
+                    return;
+                };
+                match event.state() {
+                    ProximityState::In => {
+                        if let Some(focus) = focus {
+                            tool.proximity_in(
+                                position,
+                                focus,
+                                &tablet,
+                                SERIAL_COUNTER.next_serial(),
+                                event.time_msec(),
+                            );
+                        }
+                    }
+                    ProximityState::Out => tool.proximity_out(event.time_msec()),
+                }
+            }
+            InputEvent::TabletToolAxis { event } => {
+                let Some((position, focus, tablet, tool)) = self.tablet_target(&event) else {
+                    return;
+                };
+                Self::queue_tablet_axes(&tool, &event);
+                tool.motion(
+                    position,
+                    focus,
+                    &tablet,
+                    SERIAL_COUNTER.next_serial(),
+                    event.time_msec(),
+                );
+            }
+            InputEvent::TabletToolTip { event } => {
+                let Some((position, focus, tablet, tool)) = self.tablet_target(&event) else {
+                    return;
+                };
+                Self::queue_tablet_axes(&tool, &event);
+                tool.motion(
+                    position,
+                    focus,
+                    &tablet,
+                    SERIAL_COUNTER.next_serial(),
+                    event.time_msec(),
+                );
+                match event.tip_state() {
+                    TabletToolTipState::Down => {
+                        tool.tip_down(SERIAL_COUNTER.next_serial(), event.time_msec())
+                    }
+                    TabletToolTipState::Up => tool.tip_up(event.time_msec()),
+                }
+            }
+            InputEvent::TabletToolButton { event } => {
+                let Some((_position, _focus, _tablet, tool)) = self.tablet_target(&event) else {
+                    return;
+                };
+                tool.button(
+                    event.button(),
+                    event.button_state(),
+                    SERIAL_COUNTER.next_serial(),
+                    event.time_msec(),
+                );
+            }
             _ => {}
         }
+    }
+
+    fn tablet_target<I, E>(&mut self, event: &E) -> Option<TabletTarget>
+    where
+        I: InputBackend,
+        E: TabletToolEvent<I>,
+    {
+        let position = self.touch_position(event)?;
+        let focus = self.surface_under(position);
+        let tablet_seat = self.seat.tablet_seat();
+        let tablet = tablet_seat.add_tablet::<Self>(
+            &self.display_handle,
+            &TabletDescriptor::from(&event.device()),
+        );
+        let display_handle = self.display_handle.clone();
+        let tool = tablet_seat.add_tool(self, &display_handle, &event.tool());
+        Some((position, focus, tablet, tool))
+    }
+
+    fn queue_tablet_axes<I, E>(tool: &TabletToolHandle, event: &E)
+    where
+        I: InputBackend,
+        E: TabletToolEvent<I>,
+    {
+        if event.pressure_has_changed() {
+            let pressure = event.pressure().clamp(0.0, 1.0);
+            tool.pressure(pressure);
+            tracing::info!(pressure, "forwarded native tablet pressure");
+        }
+        if event.distance_has_changed() {
+            tool.distance(event.distance().clamp(0.0, 1.0));
+        }
+        if event.tilt_has_changed() {
+            tool.tilt(event.tilt());
+        }
+        if event.rotation_has_changed() {
+            tool.rotation(event.rotation());
+        }
+        if event.slider_has_changed() {
+            tool.slider_position(event.slider_position().clamp(-1.0, 1.0));
+        }
+        if event.wheel_has_changed() {
+            tool.wheel(event.wheel_delta(), event.wheel_delta_discrete());
+        }
+    }
+
+    fn touch_position<I, E>(
+        &self,
+        event: &E,
+    ) -> Option<smithay::utils::Point<f64, smithay::utils::Logical>>
+    where
+        I: InputBackend,
+        E: AbsolutePositionEvent<I>,
+    {
+        let output = self.space.outputs().next()?;
+        let geometry = self.space.output_geometry(output)?;
+        Some(event.position_transformed(geometry.size) + geometry.loc.to_f64())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use smithay::backend::input::TouchSlot;
+
+    use super::TouchLifecycle;
+
+    fn slot(id: u32) -> TouchSlot {
+        Some(id).into()
+    }
+
+    #[test]
+    fn held_touch_slots_are_cancelled_and_suppressed_until_release() {
+        let mut lifecycle = TouchLifecycle::default();
+        lifecycle.begin_contact(slot(2));
+        lifecycle.begin_contact(slot(7));
+
+        assert_eq!(lifecycle.begin_quiesce(), 2);
+        assert!(!lifecycle.can_forward_motion(slot(2)));
+        assert!(!lifecycle.end_contact(slot(2)));
+        assert!(!lifecycle.can_forward_motion(slot(7)));
+        assert!(!lifecycle.end_contact(slot(7)));
+    }
+
+    #[test]
+    fn fresh_down_reuses_a_suppressed_slot_as_a_new_contact() {
+        let mut lifecycle = TouchLifecycle::default();
+        lifecycle.begin_contact(slot(4));
+        lifecycle.begin_quiesce();
+        lifecycle.begin_contact(slot(4));
+
+        assert!(lifecycle.can_forward_motion(slot(4)));
+        assert!(lifecycle.end_contact(slot(4)));
+    }
+
+    #[test]
+    fn contact_started_and_released_while_quiesced_never_leaks() {
+        let mut lifecycle = TouchLifecycle::default();
+        lifecycle.observe_quiesced_down(slot(9));
+        assert!(!lifecycle.can_forward_motion(slot(9)));
+
+        lifecycle.observe_quiesced_up(slot(9));
+        assert!(!lifecycle.can_forward_motion(slot(9)));
     }
 }

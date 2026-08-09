@@ -1815,3 +1815,549 @@ through the direct booted Debian session, including held input across both
 successful and aborted activation. Then attach an input-method-v2 process and
 prove non-Latin preedit/commit; clipboard and accessibility remain separate
 gates.
+
+## 2026-08-09 — Add the direct cursor render path and native Wayland touch lifecycle
+
+**Goal:** Implement the source side of the next direct-input gate without
+claiming desktop-only checks as hardware evidence: render a compositor-owned
+cursor in the DRM graph, forward libinput touch slots through `wl_touch`, and
+make touch cancellation obey the existing revision activation fence.
+
+**Changed:** The Smithay seat now advertises touch and the shared backend input
+router maps absolute libinput/winit touch coordinates into output space. It
+forwards each slot as `wl_touch` down, motion, up, and frame events; Smithay
+retains the down target per slot, providing Wayland capture, and a backend
+cancel terminates the whole active sequence. A small `TouchLifecycle` owns the
+active/suppressed sets. Entering quiesce sends one client cancel for all active
+contacts, moves their slots to suppression, ignores held motion/release across
+both the successful-presentation and abort-resume paths, and prevents contacts
+that begin while quiesced from leaking into the next input epoch. A fresh down
+explicitly starts a new contact even when libinput reuses a prior slot.
+
+The direct DRM renderer now prepends a cursor element above Space content. It
+honors a live Wayland cursor surface and its hotspot when the client supplies
+one, hides it on an explicit hidden request, and otherwise uploads a stable
+18x24 black/white compositor-owned fallback. Cursor motion participates in the
+existing frame/damage path and does not change the shell presentation-fence
+identity.
+
+**Evidence:** `cargo test --workspace --lib --bins --tests --locked
+--no-fail-fast` passes all 104 default-feature tests. The compositor's 8 tests
+include three production `TouchLifecycle` cases for held contacts, slot reuse,
+and a contact wholly contained by quiesce.
+`PKG_CONFIG_PATH=/tmp/sos-pkgconfig cargo check -p sos-compositor --locked
+--all-features --all-targets` compiles the direct render/touch code, and the
+same environment with `cargo clippy -p sos-compositor --locked --all-features
+--all-targets -- -D warnings` passes. `cargo fmt --all -- --check` and
+`git diff --check` pass. The temporary pkg-config files supplied compile
+metadata only for runtime libraries already present on this ARM64 host; they
+are outside the repository and are not runtime or device evidence.
+
+**Failures and fixes:** The normal direct-feature check initially stopped in
+`libudev-sys` and `libseat-sys` because this host has versioned runtime shared
+objects but no development `.pc` files. Temporary compile-only pkg-config
+metadata allowed Rust type checking and exposed no direct-path errors. An
+all-feature test link still cannot resolve the unversioned `-lgbm`, `-lseat`,
+`-ludev`, and `-linput` development symlinks, so only the default-feature tests
+ran here. The first lifecycle tests duplicated set operations rather than
+exercising production code; extracting `TouchLifecycle` made those tests cover
+the actual quiesce decisions.
+
+**Decision / remaining risk / next gate:** Cursor and compositor-side
+`wl_touch` implementation are ready for the Debian direct-session campaign,
+but this gate is not complete. Run VM input devices through direct libinput and
+capture visible cursor, relative pointer, physical-keyboard-shaped, multi-slot
+touch, successful activation, and aborted activation evidence. Upstream GPUI's
+current Wayland client does not bind `wl_touch`; after the compositor campaign,
+add that client/host seam and reuse the bounded Scene raw-pointer router for
+multi-touch, capture, cancellation, and gesture arbitration. Core `wl_touch`
+has no pressure event, so pressure must use tablet-v2 or another explicitly
+bounded native channel when hardware exposes it. Physical touch, latency,
+thermals, and target-device behavior remain unproven.
+
+## 2026-08-09 — Complete direct libinput and the Linux `wl_touch` Scene adapter
+
+**Goal:** Close the direct-input gate in the disposable VM, including real
+libinput classification, multi-touch delivery to Scene, and devices held across
+both successful and aborted activation. Physical-device testing is explicitly
+waived because no Linux touch target is available.
+
+**Changed:** Pinned the GPUI Linux Wayland client in `vendor/gpui-linux`, bound
+`wl_touch`, and forwarded down/move/up/cancel with stable slot IDs and pointer
+counts into the shared bounded multi-pointer/capture/gesture router. Added
+one-time compositor input-class evidence and `tools/linux-vm/inject-uinput`,
+which creates kernel keyboard, relative-pointer, and direct two-slot
+touchscreen devices, supplies distinct coordinates and evdev pressure, holds a
+modifier/button/two contacts, and removes all three devices cleanly. The direct
+verifier repeats that lifecycle through ordinary presentation and an injected
+provider `before_promotion` failure.
+
+**Evidence:** `tools/linux-vm/verify-direct-session` passed in the Debian 13.6
+ARM64/KVM guest. Libinput added/removed all three `SOS Gate` devices and the
+compositor recorded keyboard, relative-pointer, pointer-button, and touch
+classes. Both successful and aborted activation logged `keys=1 buttons=1
+touches=2`; later releases for the key, button, slot 0, and slot 1 were
+suppressed. Static input revision
+`250b157308407df4ed48c8e45351e69a0d82534ba001b6ff214c6a3348c0a326`
+activated in unchanged PID 8641 and recovered after host kill in PID 8888.
+Boot, activation, and recovery all used `drm_page_flip` evidence.
+
+**Failures and fixes:** The first two-contact run crashed at GPUI's `RefCell
+already mutably borrowed`: touch dispatch called the raw callback and
+`window.frame()` while holding the Wayland client borrow. Building an
+event/window list under the borrow and dispatching afterward fixed it. Held F12
+and an animated fixture could manufacture a render/repeat storm and starve the
+five-second acknowledgement; a non-repeating modifier and checked-in static
+fixture isolate lifecycle behavior. The verifier's expected-failure command
+also triggered its global `ERR` trap under `set +e`; an `if` condition retained
+the assertion without aborting cleanup.
+
+**Decision / remaining risk:** The VM direct-input gate is complete. Wayland
+capture, cancellation, multi-touch, gesture routing, device hotplug, and held
+success/abort behavior are proven through direct libinput. Core `wl_touch`
+cannot carry pressure, so injected evdev pressure does not reach Scene; use
+tablet-v2 or a bounded extension when required. Physical touch, panel latency,
+vendor GPU, memory/thermal behavior, and actual-device rotation remain
+unproven by explicit waiver.
+
+## 2026-08-09 — Complete Linux IME, clipboard, and semantic accessibility
+
+**Goal:** Turn native keyboard editing into a complete Linux text/semantic
+slice and preserve it across activation and host recovery.
+
+**Changed:** Added `sos-input-method` as the only executable admitted to the
+compositor's input-method-v2 global. It implements bounded deterministic pinyin
+composition/candidates, keyboard grab, candidate selection, CJK commit, dead
+acute composition, popup rendering, and cursor rectangles. GPUI copy/cut/paste
+now owns/consumes Wayland data sources/offers. Added an SOS-owned Unix semantic
+service with snapshots/waits, hierarchy/focus traversal, activation, scrolling,
+editable value/UTF-16 selection, clipboard actions, live status generations,
+and refused stale-socket recovery.
+
+**Evidence:** `tools/linux-compositor/verify-nested` observed cursor rectangle
+`242,268 0x28`, pinyin candidates `["你好","你号"]`, selected/committed
+`你号`, committed a dead acute sequence, and proved 7-byte Wayland copy, cut,
+and paste ownership. The semantic snapshot exposed editable `note-draft`,
+accepted focus/selection/copy, advanced generation, and returned after exact
+host `SIGKILL` recovery. Three input-method tests and Linux host tests cover
+composition cancellation, dead keys, candidates, multilingual UTF-16 offsets,
+and semantic hierarchy.
+
+**Failures and fixes:** Clipboard state changed correctly but the evidence grep
+raced buffered stdout; operation evidence now uses stderr. The input-method
+global originally admitted arbitrary clients; it now checks
+`/proc/<peer-pid>/exe` for exact basename `sos-input-method`.
+
+**Decision:** The prototype has an actual Linux IME, clipboard, and
+automation-facing semantic service. It is SOS-owned rather than an AT-SPI
+desktop bridge, which is intentional for the boot-owned environment.
+
+## 2026-08-09 — Replace the Linux fixture model with capability-scoped providers
+
+**Goal:** Supply real Linux data, live updates, and generated read/write actions
+without allowing a candidate to inherit the accepted revision's authority.
+
+**Changed:** Added Markdown notes, iCalendar, JSON/MPRIS music, network,
+battery, and AC adapters. The host fingerprints the provider root every 250 ms
+and rerenders the accepted VM without a revision install. Runtime effects now
+allow `notes.write`, `calendar.append`, and `music.command` alongside durable
+`notes.attach_to_event`. Writes use safe descendants and atomic rename; errors
+distinguish denial, cancellation, invalid path, temporary unavailability, I/O,
+and JSON failures.
+
+Private manifests are at most 64 KiB and keyed by exact revision; wildcard
+grants require `SOS_PROVIDER_DEVELOPMENT_GRANTS=1`. Candidate preparation loads
+that candidate's snapshot before render. Commit switches subscription context,
+and stale prior-revision events are dropped. Real effects are validated after
+durable staging; capability/effect failure aborts before state promotion.
+
+**Evidence:** Five provider tests prove three resource domains, live generation,
+scoped/wildcard grants, denial/cancellation, path escape rejection, and typed
+note/calendar writes. The Linux host integration combines durable attach with
+an actual generated Markdown write and survives service restart. The nested
+campaign mutates `notes/demo.md`, observes provider event/model refresh, and
+proves the revision-frame count does not change.
+
+**Failure and fix:** The initial adapter retained boot-revision grants for the
+process lifetime. Candidate-specific snapshots, active-revision watcher state,
+and revision-tagged events close that data/capability leak.
+
+**Decision / remaining risk:** Real reads, live subscriptions, typed writes/
+commands, cancellation/unavailability, and per-revision capabilities are in
+place. File/calendar writes are idempotent by target name. MPRIS still needs
+provider-owned durable idempotency receipts for production exactly-once crash
+semantics.
+
+## 2026-08-09 — Add user-operable recovery, lifecycle handling, and prototype security
+
+**Goal:** Replace the solid fallback with permanent recovery controls, close VM
+lifecycle behavior, and enforce a minimum authenticated revision/provider
+boundary before real data is enabled.
+
+**Changed:** The direct compositor now renders a 720x420 bitmap-font recovery
+panel with current/previous revision, failure, progress, safe/provider flags,
+and restart/rollback/safe-mode/provider-disable hit targets. The lifecycle
+owner binds its datagram action channel, atomically publishes status, restarts
+the host, coordinates rollback through provider authority, and persists flags.
+`RevisionStore::set_current` maintains `previous`; the supervisor has explicit
+restart control.
+
+DRM rescans connectors on change, unmaps/reconnects its single output, and
+supports configured mode, scale, and rotation. Existing libseat pause/activate
+suspends/reactivates libinput and DRM managers. The systemd unit adds empty
+capabilities, no-new-privileges, system/home/kernel protections, restricted
+address families/syscalls, CPU/memory/task/FD limits, and accounting. Optional
+HMAC-SHA256 detached manifests authenticate revisions using private bounded key
+files.
+
+**Evidence:** The final `tools/linux-vm/verify-boot-session` activated
+`552f0696…` in PID 880, sent two recovery-socket rollbacks to move to the
+previous revision and back in that same PID, recovered a host kill in PID 1237,
+killed the provider to restart lifecycle PID 769 as 1377, booted host PID 1467
+on durable authority, and restored GNOME/seatd. All five revision presentations
+and the restarted session used DRM page flips. Recovery buttons and a standard
+HMAC vector have unit tests; `systemd-analyze verify` passes in the campaign.
+
+**Failures and fixes:** The strengthened campaign found `recovery.json` was
+only published at boot/action and stale after ordinary activation. The owner
+now detects current/previous/flag changes and republishes atomically. The first
+verifier wait sampled the prior record; it now waits for the exact pair before
+invoking rollback.
+
+**Decision / remaining risk:** Recovery is user-operable, child/host failures
+recover, input hotplug is exercised, and connector/suspend code is present. The
+processes still share Unix UID `sos` despite separate PIDs/executables/protocol
+identities and scoped credentials; mutually distrusting users remain production
+hardening. HMAC is prototype authentication, not public-key update
+distribution. Lifecycle-owner `SIGKILL`, output hotplug, real suspend/resume,
+target GPU/touch, latency, memory pressure, and thermals are not claimed.
+
+## 2026-08-09 — Linux integration prototype envelope decision
+
+**Evidence:** The final matrix is `cargo test --workspace --lib --bins --tests
+--locked --no-fail-fast`, strict workspace/all-target clippy, direct all-feature
+compositor check/clippy with compile-only pkg-config metadata, `cargo fmt --all
+-- --check`, ShellCheck, `git diff --check`, and passing nested, direct, and
+boot-owned campaigns. Full workspace doctests additionally encounter two
+pre-existing `vendor/gpui-mobile` examples that omit imports/types; ordinary
+unit/integration targets are the documented green matrix.
+
+**Decision:** The Linux integration prototype is complete within the explicit
+single-display/virtual-device scope. Executable WGSL, video/protected/camera
+surfaces, simultaneous multiple outputs, XWayland, and arbitrary legacy apps
+remain subsequent milestones. With no Linux touch target and the user's device
+waiver, do not promote VM evidence to physical touch, GPU, latency, suspend,
+memory, or thermal evidence. The next credible gate requires target hardware.
+
+## 2026-08-09 — Separate Linux service identities and recover lifecycle-owner death
+
+**Goal:** Remove the shared development UID and make an uncatchable lifecycle-
+owner death recover without accepting an abandoned PAM process tree.
+
+**Changed:** The boot session now has distinct `sos-compositor`, `sos-provider`,
+`sos-supervisor`, and `sos-host` Unix identities in shared `sos-ipc` group. The
+PAM/logind session uses the compositor identity because logind authorizes DRM/
+libinput to the active session UID. Only the lifecycle owner retains bounded
+`CHOWN`, `SETUID`, `SETGID`, and `KILL` capabilities; each role child clears all
+effective, permitted, inheritable, and ambient capabilities before exec.
+Compositor and host receive separate owner-only runtime credential copies and
+caches. A peer-credential-checked broker launches the host under its own UID
+while preserving the supervisor's line protocol. Provider and supervisor set
+permissions and recover sockets they own.
+
+The lifecycle owner persists exact executable, PID, and `/proc` start-time
+records. A replacement validates that registry, terminates only matching SOS
+processes, and records whether it reaped survivors or logind/kernel cleanup had
+already removed them. Supervisor readiness now requires a fresh socket inode,
+not the abandoned path.
+
+**Evidence:** `tools/linux-vm/verify-boot-session` passed on Debian 13 ARM64 KVM
+with session 1, initial owner PID 768, same-process activation PID 882, isolated
+host recovery PID 1380, provider-failure owner PID 1480/host PID 1549, and
+lifecycle-owner-`SIGKILL` recovery PID 1724. `NRestarts=2`; revision
+`552f0696…` and provider authority survived both full-session restarts, and all
+accepted presentations used DRM page flips. The campaign asserted each Unix
+owner, zero `CapEff` for compositor/provider/supervisor/host children, private
+credential ownership, disappearance of every old-tree PID, and restoration of
+GNOME/seatd. `cargo test -p revision-supervisor -p provider-state-service
+--locked`, Linux-session tests, strict targeted clippy, ShellCheck, and
+`git diff --check` pass.
+
+**Failures and fixes:** A supervisor account could not traverse the controller's
+`0700` home, so immutable inputs are staged in a supervisor-owned directory.
+Logind rejected a compositor UID different from the PAM seat owner; the session
+therefore uses the compositor identity. Ambient lifecycle capabilities leaked
+to same-UID children until pre-exec capability clearing was added. The first
+host broker buffered the line protocol and serialized accept handling; explicit
+line flushing and per-connection workers fixed timeout and shutdown hangs.
+Provider/supervisor socket chmod and stale unlink initially crossed ownership
+boundaries; each daemon now owns those operations. A stale supervisor pathname
+also produced false readiness; inode replacement closes that race.
+
+**Decision / next gate:** The minimum prototype identity boundary and lifecycle-
+owner crash gate are complete in the VM. This supersedes the shared-UID and
+owner-`SIGKILL` risks in the preceding entries. Public-key update signing and
+production sandbox policy remain later hardening. Continue with actual suspend/
+resume and display/input hotplug lifecycle evidence; the overall envelope is
+not complete yet.
+
+## 2026-08-09 — Boot-session pause/resume and DRM connector lifecycle gate
+
+**Goal / hypothesis:** The packaged PAM/logind-owned compositor must remain the
+same process while its seat is deactivated, Linux freezes/resumes the session,
+and the active display connector disappears and returns. The direct backend
+must also tolerate complete DRM-device udev removal/addition even though the
+available QEMU display model may not expose that operation.
+
+**Changed:** `crates/sos-compositor/src/direct.rs` now records the libseat pause
+state and suppresses its repaint timer until DRM managers have reactivated.
+The direct backend can remove a DRM device, unregister its calloop notifier,
+unmap its outputs, wait with no output, and construct a newly added DRM device
+without restarting. `tools/linux-vm/start`, `qmp`, and `verify-boot-session`
+provide deterministic VM control and a packaged-session lifecycle campaign.
+The verifier switches away from tty1 to exercise the production libseat pause
+boundary, runs Linux `pm_test=freezer`, returns to tty1, and writes `off`/`on`
+to the virtio DRM connector status with a card uevent. It asserts pause,
+activation, connector disconnect/reinitialization, and an unchanged systemd
+MainPID before continuing the full activation/recovery campaign. Developer
+`linux-run` now uses a 30-second cold-start host deadline (overridable through
+`SOS_LINUX_HOST_TIMEOUT_MS`) rather than the brittle five-second daemon default.
+
+**Evidence:**
+
+- `PKG_CONFIG_PATH=/tmp/sos-pkgconfig cargo check -p sos-compositor --features direct-backend --all-targets --locked`
+- `PKG_CONFIG_PATH=/tmp/sos-pkgconfig cargo clippy -p sos-compositor --features direct-backend --all-targets --locked -- -D warnings`
+- `shellcheck tools/sosctl tools/linux-vm/start tools/linux-vm/stop tools/linux-vm/verify-boot-session tools/linux-vm/verify-direct-session tools/linux-vm/verify-lifecycle`
+- `tools/linux-vm/verify-boot-session` completed with
+  `linux_boot_session_passed session=1 main_pid=777 activation_pid=893 recovered_host_pid=1444 restarted_main_pid=1546 restarted_host_pid=1605 lifecycle_recovered_main_pid=1774 revision_id=552f06968bbc5c69de3db581454f60d4303289f304eaaf47a6e9dc3200297cdb nrestarts=2 identities=separated evidence=drm_page_flip`.
+- The boot recorded `PM: suspend entry (s2idle)`, `PM: suspend debug: Waiting
+  for 5 second(s).`, `PM: suspend exit`, `direct session paused`, `direct
+  session activated`, `disconnected DRM output`, and a later `initialized
+  direct KMS output` while the asserted lifecycle MainPID was unchanged.
+
+**Failures / fixes / rejected evidence:** A raw `systemctl suspend` reached
+`s2idle`, but this aarch64 QEMU `virt` machine has no supported platform wake
+source; QMP explicitly returned `wake-up from suspend is not supported by this
+guest`. An RTC alarm was also unsupported. `pm_test=devices` did return from the
+kernel but QEMU's virtio-net receive path did not recover, so it is retained as
+a VM-driver failure rather than passing evidence. The first production-ordered
+pause exposed a real SOS bug: the periodic repaint ran against a paused DRM
+surface, received `Device is currently paused`, and stopped the compositor.
+Suppressing repaint while `session_paused` fixed it. Connector status writes
+alone did not reach the udev DRM monitor; emitting `change` on the DRM card made
+the disconnect/reconnect deterministic. Complete QMP GPU removal was rejected
+by QEMU (`virtio-gpu-pci does not support hotplugging`), even behind a PCIe root
+port, so only the code path is compiled here; it is not claimed as VM evidence.
+
+**Decision / remaining risk / next gate:** Linux-owned pause/resume and output
+connector hotplug are prototype-gated in the VM, and input add/remove remains
+covered by the uinput direct-session campaign. Full platform sleep, DRM-device
+replacement, mode/rotation changes on real KMS hardware, and thermal behavior
+still require suitable hardware; none are relabeled as physical evidence.
+Proceed to native pressure transport and the remaining render/surface
+compatibility work.
+
+## 2026-08-09 — Standard tablet-v2 pressure reaches Linux Scene input
+
+**Goal:** Preserve native pressure where libinput exposes it instead of mapping
+every Linux pointer sample to pressure `1.0`, while retaining the existing
+multi-touch capture/cancel and activation-boundary behavior.
+
+**Changed:** The compositor advertises `zwp_tablet_manager_v2`, creates tablet
+and tool objects from libinput descriptors, and forwards proximity, tip,
+motion, button, and normalized pressure/axis frames to the focused shell
+surface. The vendored Linux GPUI platform binds tablet-v2, batches tool motion
+and pressure until protocol `frame`, converts tool down/move/up/cancel into its
+bounded raw-pointer callback, and marks ordinary `wl_touch` pressure as
+unavailable. The Scene router now uses the supplied Linux pressure when present
+and retains its `1.0` fallback only for standard `wl_touch`. The uinput gate
+creates an independent pressure stylus with correct axis resolution and proves
+nonzero normalized samples. Stylus input is sequenced after held touchscreen
+contacts because libinput intentionally cancels touch for pen palm rejection.
+
+**Evidence:** `tools/linux-vm/verify-direct-session` passed with activation PID
+8236, recovered host PID 8533, revision `250b1573…`, and DRM page-flip evidence.
+The asserted log included native keyboard, relative pointer/button, two active
+touch slots across successful and aborted activation, tablet-pressure class,
+and pressure values `0.621915…` and `0.874629…`; all four uinput devices were
+then removed cleanly. Direct compositor and Linux-host check/clippy plus Python
+syntax, ShellCheck, formatting, and `git diff --check` pass.
+
+**Failure / fix:** The first stylus descriptor lacked X/Y resolution, so
+libinput rejected it as missing tablet capabilities. `UI_ABS_SETUP` with
+nonzero resolution fixed classification. Running the stylus concurrently with
+the two-finger touchscreen caused two libinput `TouchCancel` events by design;
+separating the pressure phase from the held-touch phase preserves both the palm
+rejection behavior and the activation-boundary proof.
+
+**Decision / risk / next gate:** Linux pressure is end-to-end through the
+standard tablet-v2 path; finger pressure remains unavailable because neither
+libinput touch events nor `wl_touch` define it. Actual pressure calibration and
+touch/stylus coexistence remain physical-device work and are not claimed from
+uinput. Continue with executable WGSL and specialized surface integration.
+
+## 2026-08-09 — Revision WGSL becomes a bounded executable paint operation
+
+**Goal:** Turn already packaged WGSL sidecars into a real Linux paint primitive
+without granting a revision general GPU resource authority.
+
+**Changed:** Scene ABI v3 now includes a bounded `shader` paint operation that
+resolves only a shader declared by the same revision. Supervisor installation
+and runtime activation both parse and validate WGSL with Naga, require
+resource-free `vs_main` and `fs_main` entry points, and reject bindings and
+compute. The Linux stable host caches execution results from a dedicated wgpu
+device, draws one fullscreen triangle into a maximum 1024-by-1024 offscreen
+RGBA target, reads the result into a GPUI `RenderImage`, and composites it with
+the retained scene. Asset IDs, rather than arbitrary paths, remain the Luau
+authority boundary.
+
+**Evidence:** `cargo check -p sos-experience --features linux-host` passed.
+`cargo test -p sos-experience --features linux-host
+shader_paint::tests::executes_validated_fragment_shader_into_rgba_pixels`
+executed the fragment program under Mesa software rendering and asserted all
+256 output bytes for an 8-by-8 target. The runtime sidecar/paint decode test and
+the supervisor content-addressed sidecar installation test also pass.
+
+**Failure / fix:** The first pixel assertion treated the fragment's linear
+green value as an unencoded byte; the `Rgba8UnormSrgb` target correctly encoded
+linear `0.25` near byte 137. The test now asserts the sRGB result. Mesa also
+reported and rejected an unavailable Freedreno render node before wgpu selected
+a working fallback; that diagnostic is not counted as hardware-GPU evidence.
+
+**Decision / risk / next gate:** Static resource-free custom shaders are now
+executable without buffers, textures, network, or compute authority. Animated
+uniforms and sampled revision images are intentionally absent from this first
+safe contract. Proceed to explicit video/camera/protected-surface integration.
+
+## 2026-08-09 — Simultaneous KMS outputs and bounded rootless XWayland
+
+**Goal:** Close the optional display/legacy compatibility slice without
+granting generated revisions raw window-system authority.
+
+**Changed:** The direct compositor no longer rejects a second DRM device or
+connected output. It owns a DRM manager/renderer/output set per device, maps
+sorted outputs horizontally, updates aggregate shell geometry on every
+connect/disconnect, and supplies a one-frame damage marker when a new head is
+outside the shell's prior acknowledged size. QEMU exposes two VirtIO heads.
+The compositor can also start an explicitly enabled rootless XWayland server,
+publish its private display number, and map at most eight X11 windows under
+bounded location/size/configure policy. X11 and XDG compatibility focus share
+the compositor's trusted input policy.
+
+**Evidence:** `tools/linux-vm/verify-direct-session` enabled Virtual-2, required
+`empty=false` initial damage and a Virtual-2 page flip, disabled it again, and
+completed activation/recovery with revision `250b1573…` in host PIDs 8324 and
+8629 using only `drm_page_flip` evidence. The nested campaign started the real
+`Xwayland` binary, mapped `xmessage`, and passed with activation PID 2237187,
+recovery PID 2237457, and `nested_backend_submit` evidence. Direct/all-target
+check and strict clippy passed with the compile-only pkg-config metadata.
+
+**Failures / fixes / rejected evidence:** Smithay's validation commit left the
+new head with no first damage when the existing shell still covered only head
+one; resetting its swapchain and drawing the bounded initial marker produced a
+real flip. Combining Virtual-2 hot-add after the kernel freezer or primary-head
+reconnect was rejected: QEMU initialized head two but withheld its vblank in
+those orderings. The independent direct multi-output gate is retained; the boot
+campaign owns suspend and primary reconnect evidence.
+
+**Decision / remaining risk:** Simultaneous outputs and bounded XWayland are
+implemented at VM prototype scope. Physical multi-panel timing, another real
+DRM device, arbitrary legacy applications, and production X11 isolation remain
+hardware/compatibility work rather than claims from this gate.
+
+## 2026-08-09 — Specialized surfaces and the final Linux platform adapters
+
+**Goal:** Close the remaining product-visible media/system and lifecycle
+contracts, then exercise them with the existing IME, accessibility, recovery,
+activation, and isolation envelope.
+
+**Changed:** Scene ABI v3 gained declared `video`/`camera` provider surfaces and
+a `provider_surface` content facet. The Linux provider accepts bounded atomic
+PNG/JPEG/WebP frames under separate video/camera grants, hashes them into the
+host asset source, and pushes replacements through the live provider event
+stream. Protected surfaces require their own grant but always report
+`protected_unavailable`; bytes are never mapped because SOS has no secure
+scanout path. Android renders an explicit unavailable placeholder.
+
+The real model now also carries capability-scoped Unix time/timezone, online
+interfaces, PipeWire default-sink volume/mute, battery/AC, connected DRM heads,
+and input event devices. Their stable state participates in provider generation
+fingerprints while wall-clock movement alone does not force a 4 Hz rerender.
+The provider authority isolates a disconnected client write failure instead of
+exiting. The direct compositor gained a 4 KiB, strict JSON output configuration
+file and recreates KMS outputs on udev change when mode, rotation, or scale
+changes. The semantic verifier now covers next/previous, activation, scroll,
+focus, selection, and accessibility-originated copy/cut/paste.
+
+**Evidence:** Seven `providers-linux` tests cover resource reads/actions,
+grants, cancellation, paths, system parsing, ready/protected surfaces, and live
+generation. The provider daemon test deliberately abandons a request before
+its response, then completes a durable promotion and clean shutdown. The final
+nested campaign generated a real 160x90 GStreamer test frame, rendered it,
+atomically replaced it with a different frame/SHA-256 without revision
+activation, exercised the full semantic/IME/clipboard path and XWayland, then
+recovered the host. It passed at revision `b4718a74…` in PIDs 2294261/2294703
+with three `nested_backend_submit` fences.
+
+The direct VM campaign changed Virtual-1 live to 1024x768, scale 1.25, rotation
+180, page-flipped Virtual-2, transported keyboard/pointer/two-touch/tablet
+pressure across successful and aborted activation, and passed at revision
+`250b1573…` in PIDs 2959/3268. The boot campaign then passed kernel freezer
+suspend/resume, connector reconnect, two recovery rollbacks, host/provider/
+lifecycle-owner failure, clean restoration, separated identities, and revision
+`b4718a74…` in owner PID 771 and host PIDs 985/1607/1770; replacement owner PID
+1945 retained durable authority. Every accepted direct presentation used
+`drm_page_flip` evidence and systemd reported two service restarts.
+
+**Failures / fixes:** The first live-frame verifier observed an older provider
+refresh and checked before the replacement arrived; comparing the before/after
+content hash made the gate causal. A semantic `cut` initially updated the host
+recursively while GPUI was rendering it, causing a recoverable host panic.
+Deferring native editor operations until the current GPUI effect cycle returns
+removed the reentrancy, and the complete campaign then passed. The XWayland
+campaign also exposed a disconnected provider client taking down authority;
+scoping response-write errors to that connection fixed it and gained a daemon
+regression.
+
+**Decision / remaining risk:** All requested Linux prototype adapters are now
+implemented and integrated. Provider media is a functional frame boundary, not
+zero-copy decode/capture or protected playback. Physical touch calibration,
+real GPU/panel latency, full platform sleep/wake, physical hotplug, memory
+pressure, and thermal measurements remain unclaimed; physical touch verification
+is explicitly waived because no device is available. Production asymmetric
+signing, MAC policy, and broad legacy compatibility remain subsequent work.
+
+## 2026-08-09 — Final Linux envelope regression matrix
+
+**Goal:** Recheck the complete shared graph and both platform adapters after all
+Linux-envelope changes, rather than accepting only focused campaign results.
+
+**Evidence:** `cargo test --workspace --lib --bins --tests --locked
+--no-fail-fast` passed every ordinary unit/integration target. The Linux-host
+feature suite passed 12 tests, including real provider-state restart and actual
+8x8 WGSL pixel execution. Strict workspace/all-target clippy, Linux-host
+all-target clippy, and direct-compositor all-target clippy with
+`PKG_CONFIG_PATH=/tmp/sos-pkgconfig` all passed with `-D warnings`.
+`./tools/sosctl m1-check` cross-checked the shared ABI/Android fallback for
+ARM64 Android. `cargo fmt --all -- --check`, ShellCheck for every changed shell
+tool, Python bytecode validation for `qmp`/`inject-uinput`, and `git diff
+--check` passed. The final nested, direct, and boot campaigns are the exact
+passing runs recorded in the preceding entry.
+
+**Failures / fixes / rejected evidence:** Strict clippy caught a collapsible
+provider-surface validation match, unit-valued deferred calls, and an overly
+complex shader-cache type; all were simplified. The Android cross-check caught
+new model-refresh worker variants missing from its exhaustive result handler
+and Linux-only shader/provider symbols producing target warnings. Android now
+accepts model refresh results and renders provider surfaces as explicitly
+unavailable, while Linux-only registries are target-gated. A local
+`systemd-analyze verify` attempt was rejected because the development host
+cannot read an unrelated system unit and does not install SOS under
+`/usr/local/libexec`; the boot campaign's verify runs inside the disposable VM
+after installing the exact unit and binaries and passed there.
+
+**Decision:** The source, functional campaigns, strict lint, cross-platform
+compile boundary, and chronological documentation agree. The Linux integration
+prototype is complete under the explicit virtual-device scope and physical
+touch-device waiver; no desktop/VM result is promoted to physical latency,
+thermal, GPU-performance, or touch evidence.

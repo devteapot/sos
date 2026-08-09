@@ -28,8 +28,14 @@ return {
 }
 ```
 
-`model` currently contains synthetic `greeting`, `date`, `weather`, `calendar`,
-`notes`, and `music` values. `state` is JSON-like durable experience state.
+`model` contains `greeting`, `date`, `weather`, `calendar`, `notes`, `music`,
+`system`, and `surfaces` values. Android and unconfigured development sessions
+use the deterministic fixture provider. A configured Linux host replaces the
+resource domains with file/iCalendar/MPRIS-backed data and capability-scoped
+system/media snapshots, then pushes live changes into the accepted VM without
+installing a revision. `system` includes time/timezone, online interfaces,
+battery/AC, audio volume/mute, connected DRM displays, and input devices.
+`state` is JSON-like durable experience state.
 `render` returns the root scene node. `update` may mutate and return state, or
 return a typed effect envelope:
 
@@ -44,9 +50,20 @@ return {
 }
 ```
 
-The only provider action currently allowed is
-`notes.attach_to_event(note_id, event_title)`. Provider failure rejects the
-whole UI-state transition.
+The effect allowlist is:
+
+- `notes.attach_to_event(note_id, event_title)` for the durable prototype
+  authority;
+- `notes.write(name, content)` for an atomically replaced Markdown note;
+- `calendar.append(name, time, title, detail)` for an iCalendar event;
+- `music.command(command)` where command is `play-pause`, `next`, or
+  `previous` through MPRIS/playerctl.
+
+Linux loads a private capability manifest for the candidate revision before it
+is allowed to render. A provider effect is validated and staged with the state
+promotion, executed only through the trusted adapter, and rejected on missing
+grant, cancellation, invalid path/payload, or temporary provider failure.
+Luau never receives provider credentials or a provider object.
 
 ## Scene nodes
 
@@ -125,6 +142,8 @@ content = {
     submit_action = "save_note",
     autofocus = true,
 }
+
+content = { kind = "provider_surface", surface = "camera-preview" }
 ```
 
 `text_session` is a host-owned editing session and requires a stable node ID.
@@ -137,9 +156,22 @@ Supervisor manifest format 3 additionally packages `svg`, `png`, `jpeg`,
 individual byte-length/SHA-256 identities. The runtime re-verifies them and
 admits them to the same candidate asset set; images enter the host asset source
 and fonts enter GPUI's text system. A glyph run selects a loaded font with
-`font_family`. Shader files are accepted revision resources, not executable
-paint operations yet. Old revision assets are removed from the active registry.
-Arbitrary paths and URLs remain rejected.
+`font_family`. A `shader` paint resolves a declared shader ID, executes its
+resource-free `vs_main`/`fs_main` entry points into a host-capped (maximum
+1024 by 1024) RGBA target, and composites that target into the scene. Naga
+validation rejects bindings, compute entry points, malformed modules, and
+missing entry points at install and activation. Old revision assets are removed
+from the active registry. Arbitrary paths and URLs remain rejected.
+
+`provider_surface` resolves only a surface declared in the current provider
+snapshot. On Linux, a `ready` video/camera surface maps a provider-owned,
+signature-checked PNG/JPEG/WebP frame through a content-addressed host asset;
+an atomic provider update changes that path and rerenders without revision
+activation. Read grants are separate for video and camera. A protected surface
+also requires its explicit grant but reports `protected_unavailable` and never
+maps bytes because the prototype does not claim a secure scanout path. The
+Android host renders an explicit unavailable placeholder for this Linux
+integration primitive.
 
 ### Paint and interaction
 
@@ -160,6 +192,8 @@ Paint and hit testing are facets of any node, not a `canvas` escape-hatch type:
               { text = "13:00 ", color = 0xA995FF, weight = 700 },
               { text = "Lunch", color = 0xFFFFFF, weight = 400 },
           } },
+        { kind = "shader", asset = "aurora", x = 24, y = 220,
+          width = 256, height = 96 },
         { kind = "layer", opacity = 0.8,
           clip = { x = 8, y = 8, width = 180, height = 70 },
           transform = { translate_x = 4, translate_y = 2,
@@ -226,14 +260,20 @@ focus, set-text, UTF-16 selection, copy/cut/paste, and forward/backward scroll
 actions. A `scroll_y` node automatically publishes its offset, range, viewport,
 and moving descendant bounds to TalkBack.
 
+Linux publishes the same tree through the SOS-owned mode-0600 Unix semantic
+service selected by `SOS_ACCESSIBILITY_SOCKET`. Its bounded newline-JSON API
+supports snapshots/waits, hierarchy traversal and semantic focus, activation,
+scrolling, editable value and UTF-16 selection, and copy/cut/paste. It is also
+the automation-facing semantic API and reconnects after host crash recovery.
+
 `text_session` uses a host-owned Android `InputConnection`. Commit,
 set-composing-text/region, finish-composition, deletion, selection, printable
 key events, and editor submission carry the complete text, UTF-16 selection,
 and marked range into the keyed GPUI editor. JNI updates wake a host frame, and
 the containing scroll area receives the IME inset so the focused field can be
-revealed. A future native SOS environment keeps this semantic/editing contract
-and replaces the Android adapter only if it also replaces Android's TalkBack
-and input-method services.
+revealed. Linux keeps this semantic/editing contract and supplies its own
+Wayland input-method-v2 client and semantic service instead of Android's
+TalkBack and input-method services.
 
 ## Validation and authority boundary
 
@@ -264,8 +304,8 @@ with capture policy, accessible scrolling/selection, complete Android marked
 text transport, and supervisor-packaged sidecars. Further depth should focus on
 richer path/clip primitives, declarative animation timelines, more than the
 current two-pointer transform recognizer, platform conformance across IME and
-accessibility implementations, and a safe shader paint operation for already
-validated shader assets.
+accessibility implementations, and richer time-varying shader inputs beyond
+the current deterministic, resource-free shader target.
 
 The key execution rule is retained: Luau builds or updates bounded structures;
 Rust/GPUI performs frame-critical layout, paint, animation, text, and input.

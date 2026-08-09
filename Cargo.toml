@@ -4,14 +4,17 @@ members = [
     "crates/compositor-control-protocol",
     "crates/experience-host-protocol",
     "crates/experience-ir",
+    "crates/linux-input-method",
     "crates/linux-session",
     "crates/providers-fake",
     "crates/provider-state-service",
+    "crates/providers-linux",
     "crates/revision-supervisor",
     "crates/runtime-luau",
     "crates/service-protocol",
     "crates/sos-compositor",
 ]
+exclude = ["vendor/gpui-linux"]
 resolver = "2"
 
 [workspace.package]
@@ -25,6 +28,7 @@ compositor-control-protocol = { path = "crates/compositor-control-protocol" }
 experience-host-protocol = { path = "crates/experience-host-protocol" }
 experience-ir = { path = "crates/experience-ir" }
 providers-fake = { path = "crates/providers-fake" }
+providers-linux = { path = "crates/providers-linux" }
 runtime-luau = { path = "crates/runtime-luau" }
 log = "0.4"
 provider-state-service = { path = "crates/provider-state-service" }
@@ -36,6 +40,9 @@ thiserror = "2"
 
 [patch.crates-io]
 async-task = { git = "https://github.com/smol-rs/async-task.git", rev = "b4486cd71e4e94fbda54ce6302444de14f4d190e" }
+
+[patch."https://github.com/zed-industries/zed"]
+gpui_linux = { path = "vendor/gpui-linux" }
 
 [profile.release]
 opt-level = "z"
