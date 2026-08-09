@@ -2504,3 +2504,36 @@ hardware scope. The next gate is one credentialed live-model prompt entered in
 the booted distro. Visual screenshot feedback/repair, asset generation,
 transcript compaction, physical input/hardware behavior, latency, thermal, and
 GPU measurements remain unverified.
+
+## 2026-08-09 — Empty native text-field hit-test repair
+
+**Goal / hypothesis:** Explain and repair the Linux experience-host panic seen
+when clicking an empty agent prompt in a windowed Linux VM. The reported failure
+was `end byte index 25 is out of bounds` for empty content at
+`apps/experience/src/linux_input.rs:405` on revision `b0d20599…`.
+
+**Changed:** Linux and Android native text input now constrain the shaped-line
+hit-test index to the editable content length and a UTF-8 character boundary.
+This prevents placeholder glyphs from creating a nonzero selection in empty
+content. Added a Linux regression test for the observed placeholder index 25,
+plus multibyte boundary and oversized-index cases.
+
+**Evidence:** Source inspection showed that empty inputs shape their placeholder
+but the Linux click path passed that display layout's index directly into the
+content selection; the next GPUI UTF-16 selection query then sliced the empty
+content at byte 25. The pinned GPUI input example already treats display and
+editable offsets separately. The targeted regression passed as
+`linux_input::tests::placeholder_layout_cannot_move_an_empty_input_selection`.
+`cargo test -p sos-experience --features linux-host` passed all 14 tests;
+`cargo clippy -p sos-experience --all-targets --features linux-host -- -D warnings`
+passed; and `./tools/sosctl m1-check` passed the release ARM64 Android compile
+boundary. The first targeted invocation used `--exact` without the module path
+and selected zero tests; it was rejected and rerun with a matching selector.
+
+**Decision / remaining risk / next gate:** Repair both native hosts because they
+shared the faulty placeholder hit-test logic. These automated desktop and
+cross-compile results do not establish VM interaction or Android hardware
+behavior. The next gate is to rebuild/restart
+`./tools/sosctl linux-run --windowed` on the macOS-hosted VM and click, type into,
+select within, and clear the empty agent prompt without a host restart; physical
+Android input remains a separate gate.

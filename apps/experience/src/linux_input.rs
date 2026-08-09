@@ -376,8 +376,22 @@ impl NativeTextInput {
         } else if position.y > bounds.bottom() {
             self.content.len()
         } else {
-            line.closest_index_for_x(position.x - bounds.left())
+            Self::editable_index_from_layout(
+                &self.content,
+                line.closest_index_for_x(position.x - bounds.left()),
+            )
         }
+    }
+
+    fn editable_index_from_layout(content: &str, layout_index: usize) -> usize {
+        // Empty inputs shape their placeholder for display. That layout must not
+        // contribute an offset to the editable (empty) content. Clamp generally
+        // as a defensive boundary between shaped display text and stored text.
+        let mut index = layout_index.min(content.len());
+        while !content.is_char_boundary(index) {
+            index -= 1;
+        }
+        index
     }
 
     fn offset_from_utf16_in(text: &str, offset: usize) -> usize {
@@ -784,5 +798,12 @@ mod tests {
         assert_eq!(NativeTextInput::offset_from_utf16_in(text, 5), 11);
         assert_eq!(NativeTextInput::offset_from_utf16_in(text, 6), 14);
         assert_eq!(NativeTextInput::range_from_utf16_in(text, &(1..3)), 1..5);
+    }
+
+    #[test]
+    fn placeholder_layout_cannot_move_an_empty_input_selection() {
+        assert_eq!(NativeTextInput::editable_index_from_layout("", 25), 0);
+        assert_eq!(NativeTextInput::editable_index_from_layout("é", 1), 0);
+        assert_eq!(NativeTextInput::editable_index_from_layout("é", 25), 2);
     }
 }

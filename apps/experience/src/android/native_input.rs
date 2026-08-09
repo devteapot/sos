@@ -633,7 +633,21 @@ impl NativeTextInput {
         if position.y > bounds.bottom() {
             return self.content.len();
         }
-        line.closest_index_for_x(position.x - bounds.left())
+        Self::editable_index_from_layout(
+            &self.content,
+            line.closest_index_for_x(position.x - bounds.left()),
+        )
+    }
+
+    fn editable_index_from_layout(content: &str, layout_index: usize) -> usize {
+        // Empty inputs shape their placeholder for display. That layout must not
+        // contribute an offset to the editable (empty) content. Clamp generally
+        // as a defensive boundary between shaped display text and stored text.
+        let mut index = layout_index.min(content.len());
+        while !content.is_char_boundary(index) {
+            index -= 1;
+        }
+        index
     }
 
     fn offset_from_utf16(&self, offset: usize) -> usize {
