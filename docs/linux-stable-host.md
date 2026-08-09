@@ -106,6 +106,59 @@ The authenticated Smithay shell, compatibility-surface policy, input fence,
 crash recovery, and compositor-owned submit evidence are in
 [`linux-compositor.md`](linux-compositor.md).
 
+## Select SOS from the GDM login screen
+
+SOS can be installed as a selectable Wayland session without replacing GNOME
+or changing the machine's default systemd target:
+
+```sh
+sudo apt-get install \
+  libgbm-dev libinput-dev libseat-dev libudev-dev libwayland-dev \
+  libxkbcommon-dev libxkbcommon-x11-dev
+./tools/install-linux-login-session install
+```
+
+Log out after installation. On GDM, select the session menu on the login screen,
+choose **SOS**, and authenticate normally. GDM's PAM/logind session remains the
+seat owner, but `sos-compositor` replaces GNOME as the session compositor and
+the experience host is its only ordinary desktop surface. Press
+`Ctrl+Alt+Backspace` to end SOS cleanly and return to GDM. Choose GNOME from the
+same session menu on the next login to return to the conventional desktop.
+
+The installer builds the direct compositor and Linux host in release mode,
+installs the five session binaries and launcher below `/usr/local/libexec/sos`,
+installs the default experience below `/usr/share/sos`, and adds
+`/usr/share/wayland-sessions/sos.desktop`. It does not stop or reconfigure GDM,
+change the default boot target, create service users, or enable the appliance
+units. The first SOS login creates the authenticated user's private revision,
+authority, recovery, and shell-token state below
+`${XDG_STATE_HOME:-$HOME/.local/state}/sos`; each login receives a fresh private
+runtime directory below `XDG_RUNTIME_DIR`.
+
+```text
+GDM authentication (login user owns the active logind seat)
+    -> sos-login-session
+        -> sos-linux-session run-user
+            -> sos-compositor --backend drm
+            -> provider/state authority
+            -> revision supervisor
+                -> permanent SOS experience host
+```
+
+This path intentionally differs from the boot-owned appliance session's
+multi-UID isolation. A process launched from a display-manager session must keep
+the authenticated UID that logind authorizes for DRM and input. `run-user`
+therefore rejects root, rejects explicit service-account overrides, and requires
+the compositor, provider, supervisor, and host to use the current effective UID
+and GID. Its per-user directories and shell token are private, but processes in
+that login account are not security-isolated from one another. Use the system
+session below when the separate service identities are required.
+
+The selectable-session packaging and identity policy have desktop build and
+static packaging evidence only. They have not yet completed an interactive GDM
+login, DRM page flip, input, logout, suspend/resume, or physical-hardware gate.
+Keep another login session and a text console available during the first test.
+
 ## Boot-owned direct session
 
 The packaged session is deliberately one logind session with one Rust lifecycle

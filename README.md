@@ -141,6 +141,20 @@ and a direct Debian-VM backend. The nested gate is safe to run on a workstation:
 ./tools/linux-compositor/verify-nested
 ```
 
+To add **SOS** as a full-desktop choice in GDM without removing GNOME or changing
+the default boot target:
+
+```sh
+./tools/install-linux-login-session install
+```
+
+Log out, choose SOS from GDM's session menu, and authenticate normally. SOS then
+owns the Wayland session and display; `Ctrl+Alt+Backspace` logs out to GDM. This
+selectable-session path shares the authenticated UID across its components and
+does not provide the appliance session's separate service-identity boundary.
+See [`docs/linux-stable-host.md`](docs/linux-stable-host.md) for installation,
+state locations, and current evidence limits.
+
 Inside the disposable reference VM, the direct gate temporarily releases GDM,
 owns the VirtIO DRM output and libinput seat through libseat/seatd, and accepts
 revisions only after the matching KMS page-flip event:

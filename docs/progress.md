@@ -2636,3 +2636,94 @@ original windowed stop/start sequence in the live VM, then start the
 credentialed resident agent and issue one Luau-composer prompt. That VM result
 will establish the developer restart and live-provider gate only, not physical
 display, latency, thermal, or GPU behavior.
+
+## 2026-08-09 — First credentialed subscription model changes the live experience
+
+**Goal / hypothesis:** Exercise the newly wired Pi `openai-codex` subscription
+path from the visible Luau composer after restarting the windowed VM session,
+and determine whether a live model completion can author and render a new SOS
+experience without an API key.
+
+**Environment / evidence:** The user completed Pi's device-code login, ran the
+windowed Linux session and resident agent, and entered “Let's add a table with
+the running processes on this machine” through the Luau chat. The resulting
+live frame shows a new “RUNNING PROCESSES” table above the preserved composer,
+an assistant completion, and agent status `Ready`. The table truthfully reports
+that process information is unavailable in the current provider snapshot rather
+than inventing rows. The external evidence image
+`Screenshot 2026-08-09 at 18.29.43.png` is 584,610 bytes, 2784x1904 RGBA PNG,
+SHA-256 `35edc80055050c6e552027cfd295fa53c553d2f2aa0463d71f7634948e37ef60`;
+the raw image remains outside Git.
+
+**Decision / remaining risk / next gate:** The credentialed ChatGPT subscription
+request, bounded authoring loop, completion return, and visible live redesign
+work together in the VM. This is not evidence that SOS exposes arbitrary host
+state: the resident author receives only the active source and typed provider
+snapshot, and deliberately has no shell, process, filesystem, or general
+network tool. The screenshot does not record the exact selected model, revision
+IDs, service logs, or DRM page-flip evidence, so those remain unclaimed. If live
+process data is a desired product capability, the next design gate is a trusted,
+read-only, capability-scoped system/process provider with explicit schema,
+redaction, refresh, and grant policy—not broader agent access.
+
+## 2026-08-09 — Package SOS as a selectable GDM Wayland session
+
+**Goal / hypothesis:** Make SOS available from the normal login screen as the
+complete desktop GUI while preserving GNOME as a fallback. Reuse GDM's
+authenticated PAM/logind session so the direct compositor owns the active seat,
+without weakening or replacing the existing boot-owned multi-UID appliance
+path.
+
+**Changed:** Added `sos-linux-session run-user`, which rejects root and explicit
+service-user overrides, requires every component identity to equal the current
+effective UID/GID, and avoids unnecessary same-identity credential changes.
+The isolated `run` command retains its four-distinct-UID requirement. Added the
+GDM entry `packaging/wayland-sessions/sos.desktop`, the per-user
+`packaging/libexec/sos-login-session` lifecycle/bootstrap launcher, and
+`tools/install-linux-login-session`. The launcher creates private persistent
+state and a shell token below `XDG_STATE_HOME`, allocates a new runtime directory
+for every login, forces the logind libseat backend, and starts the direct
+compositor as the authenticated user. A launcher-scoped
+`SOS_ALLOW_SESSION_EXIT=1` enables `Ctrl+Alt+Backspace`; the compositor consumes
+the chord, exits cleanly, and shared-user lifecycle mode treats that exit as a
+logout rather than a failed appliance component. Updated the Linux host and
+README documentation with the install procedure, identity boundary, escape
+path, and evidence limits.
+
+**Evidence:** `cargo test -p sos-compositor -p sos-linux-session --all-targets`
+passes the compositor's prior nine tests, the Linux-session authority and
+authoring suites, two new identity-policy tests, and the new scoped logout-chord
+test. `cargo fmt --all -- --check`, `bash -n` and `shellcheck` on both new shell
+files, `desktop-file-validate packaging/wayland-sessions/sos.desktop`, and
+`git diff --check` pass. The exact release build from the installer advanced to
+the direct-backend native dependencies, then failed in `libudev-sys` because
+this development host has no `libudev.pc`; `pkg-config` also reports `gbm`,
+`libinput`, and `libseat` absent. The installer now rejects these omissions
+before starting a long Rust build and prints the Debian/Ubuntu package command;
+an expected-failure installer invocation confirmed that preflight. The exact
+five-binary `cargo build --locked --release` command then passed in 2 minutes 1
+second in a source-only disposable `/tmp/sos-login-build.*` copy on the
+provisioned Debian 13 ARM64 VM, where all seven required `pkg-config` modules are
+present. The temporary tree and generated binaries were removed after the build
+and are not retained as runtime evidence.
+
+**Failures and fixes:** Reusing the appliance's distinct service UIDs from a GDM
+login was rejected because logind grants DRM/input devices to the authenticated
+session UID; a setuid launcher would have introduced an unnecessarily broad
+privilege boundary. The first desktop entry included `DesktopNames`, which the
+host's validator rejected, so the launcher now exports the SOS desktop variables
+and the non-portable key was removed. ShellCheck could not infer trap callback
+reachability; narrow annotations document those callbacks. The initial design
+also lacked a path back to GDM, fixed with the selectable-session-only logout
+chord and clean-exit handling. The first direct release-build attempt lacked an
+early native-library check and failed late at `libudev-sys`; the new preflight
+reports all missing direct-session modules and the packages that provide them.
+
+**Decision / remaining risk / next gate:** Keep both modes: selectable GDM login
+for reversible development and the systemd target for the isolated appliance.
+This is desktop build/static packaging evidence, not an interactive GDM, DRM,
+input, logout, suspend, latency, thermal, or physical-device result. The next
+gate is to install it in the Debian reference VM, choose SOS through GDM, require
+logind seat ownership plus a DRM page flip, inject the logout chord, confirm the
+greeter returns, and then repeat on physical hardware without promoting VM
+measurements to hardware evidence.

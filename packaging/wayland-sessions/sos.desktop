@@ -1,0 +1,7 @@
+[Desktop Entry]
+Name=SOS
+Comment=Log in to the full-screen SOS experience
+Exec=/usr/local/libexec/sos/sos-login-session
+TryExec=/usr/local/libexec/sos/sos-login-session
+Type=Application
+X-GDM-SessionRegisters=true

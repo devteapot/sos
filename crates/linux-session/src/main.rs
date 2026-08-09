@@ -3,7 +3,7 @@ use std::{collections::BTreeMap, env, path::PathBuf, time::Duration};
 use anyhow::{bail, Context as _, Result};
 use sos_linux_session::{
     bootstrap_authority, run_host_proxy, run_system_session, shutdown_authority, stage_revision,
-    BootstrapOutcome, ServiceIdentity, SystemSessionOptions,
+    BootstrapOutcome, ServiceIdentity, SessionIdentityMode, SystemSessionOptions,
 };
 
 fn main() {
@@ -62,7 +62,8 @@ fn run() -> Result<()> {
             let service_socket = PathBuf::from(options.required("--service-socket")?);
             shutdown_authority(&service_socket, timeout)?;
         }
-        "run" => {
+        "run" | "run-user" => {
+            let shared_login_user = command == "run-user";
             options.ensure_only(&[
                 "--root",
                 "--runtime-dir",
@@ -79,6 +80,19 @@ fn run() -> Result<()> {
                 "--host-user",
                 "--timeout-ms",
             ])?;
+            let shared_identity = shared_login_user
+                .then(ServiceIdentity::current)
+                .transpose()?;
+            let resolve_identity = |option: &str| -> Result<ServiceIdentity> {
+                if let Some(identity) = &shared_identity {
+                    if options.optional(option).is_some() {
+                        bail!("{option} is not accepted by run-user");
+                    }
+                    Ok(identity.clone())
+                } else {
+                    ServiceIdentity::resolve(options.required(option)?)
+                }
+            };
             run_system_session(SystemSessionOptions {
                 revision_root: PathBuf::from(options.required("--root")?),
                 runtime_directory: PathBuf::from(options.required("--runtime-dir")?),
@@ -89,14 +103,15 @@ fn run() -> Result<()> {
                 provider_executable: PathBuf::from(options.required("--provider")?),
                 supervisor_executable: PathBuf::from(options.required("--supervisor")?),
                 host_executable: PathBuf::from(options.required("--host")?),
-                compositor_identity: ServiceIdentity::resolve(
-                    options.required("--compositor-user")?,
-                )?,
-                provider_identity: ServiceIdentity::resolve(options.required("--provider-user")?)?,
-                supervisor_identity: ServiceIdentity::resolve(
-                    options.required("--supervisor-user")?,
-                )?,
-                host_identity: ServiceIdentity::resolve(options.required("--host-user")?)?,
+                compositor_identity: resolve_identity("--compositor-user")?,
+                provider_identity: resolve_identity("--provider-user")?,
+                supervisor_identity: resolve_identity("--supervisor-user")?,
+                host_identity: resolve_identity("--host-user")?,
+                identity_mode: if shared_login_user {
+                    SessionIdentityMode::SharedLoginUser
+                } else {
+                    SessionIdentityMode::IsolatedServices
+                },
                 startup_timeout: timeout,
             })?;
         }
@@ -148,5 +163,5 @@ impl Options {
 }
 
 fn usage() -> &'static str {
-    "usage:\n  sos-linux-session bootstrap --root DIR --service-socket PATH [--timeout-ms N]\n  sos-linux-session stage --root DIR --revision ID --service-socket PATH [--timeout-ms N]\n  sos-linux-session shutdown --service-socket PATH [--timeout-ms N]\n  sos-linux-session run --root DIR --runtime-dir DIR --authority-file FILE --shell-token-file FILE --agent-socket PATH --compositor FILE --provider FILE --supervisor FILE --host FILE --compositor-user USER --provider-user USER --supervisor-user USER --host-user USER [--timeout-ms N]"
+    "usage:\n  sos-linux-session bootstrap --root DIR --service-socket PATH [--timeout-ms N]\n  sos-linux-session stage --root DIR --revision ID --service-socket PATH [--timeout-ms N]\n  sos-linux-session shutdown --service-socket PATH [--timeout-ms N]\n  sos-linux-session run --root DIR --runtime-dir DIR --authority-file FILE --shell-token-file FILE --agent-socket PATH --compositor FILE --provider FILE --supervisor FILE --host FILE --compositor-user USER --provider-user USER --supervisor-user USER --host-user USER [--timeout-ms N]\n  sos-linux-session run-user --root DIR --runtime-dir DIR --authority-file FILE --shell-token-file FILE --agent-socket PATH --compositor FILE --provider FILE --supervisor FILE --host FILE [--timeout-ms N]"
 }

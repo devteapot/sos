@@ -11,7 +11,7 @@ use smithay::{
         TabletToolProximityEvent, TabletToolTipEvent, TabletToolTipState, TouchEvent, TouchSlot,
     },
     input::{
-        keyboard::FilterResult,
+        keyboard::{FilterResult, Keysym, ModifiersState},
         pointer::{AxisFrame, ButtonEvent, MotionEvent, RelativeMotionEvent},
         touch::{DownEvent, MotionEvent as TouchMotion, UpEvent},
     },
@@ -32,6 +32,19 @@ type TabletTarget = (
     TabletHandle,
     TabletToolHandle,
 );
+
+fn is_session_exit_shortcut(
+    enabled: bool,
+    state: KeyState,
+    modifiers: &ModifiersState,
+    keysym: Keysym,
+) -> bool {
+    enabled
+        && state == KeyState::Pressed
+        && modifiers.ctrl
+        && modifiers.alt
+        && keysym == Keysym::BackSpace
+}
 
 #[derive(Default)]
 pub(crate) struct TouchLifecycle {
@@ -289,15 +302,34 @@ impl SosCompositor {
                 }
                 let serial = SERIAL_COUNTER.next_serial();
                 let time = Event::time_msec(&event);
+                let state = event.state();
+                let key_code = event.key_code();
+                let session_exit_enabled = self.session_exit_enabled;
                 let keyboard = self.seat.get_keyboard().expect("seat has a keyboard");
-                keyboard.input::<(), _>(
+                let session_exit = keyboard.input::<bool, _>(
                     self,
-                    event.key_code(),
-                    event.state(),
+                    key_code,
+                    state,
                     serial,
                     time,
-                    |_, _, _| FilterResult::Forward,
+                    |_, modifiers, key| {
+                        if is_session_exit_shortcut(
+                            session_exit_enabled,
+                            state,
+                            modifiers,
+                            key.modified_sym(),
+                        ) {
+                            FilterResult::Intercept(true)
+                        } else {
+                            FilterResult::Forward
+                        }
+                    },
                 );
+                if session_exit == Some(true) {
+                    self.suppressed_keyboard_keys.insert(key_code);
+                    self.session_exit_requested = true;
+                    tracing::info!("selectable SOS login session requested logout");
+                }
             }
             InputEvent::PointerMotion { event, .. } => {
                 let Some(output) = self.space.outputs().next() else {
@@ -671,9 +703,12 @@ impl SosCompositor {
 
 #[cfg(test)]
 mod tests {
-    use smithay::backend::input::TouchSlot;
+    use smithay::{
+        backend::input::{KeyState, TouchSlot},
+        input::keyboard::{Keysym, ModifiersState},
+    };
 
-    use super::TouchLifecycle;
+    use super::{is_session_exit_shortcut, TouchLifecycle};
 
     fn slot(id: u32) -> TouchSlot {
         Some(id).into()
@@ -711,5 +746,41 @@ mod tests {
 
         lifecycle.observe_quiesced_up(slot(9));
         assert!(!lifecycle.can_forward_motion(slot(9)));
+    }
+
+    #[test]
+    fn selectable_session_exit_requires_the_complete_chord() {
+        let modifiers = ModifiersState {
+            ctrl: true,
+            alt: true,
+            ..Default::default()
+        };
+        assert!(is_session_exit_shortcut(
+            true,
+            KeyState::Pressed,
+            &modifiers,
+            Keysym::BackSpace,
+        ));
+        assert!(!is_session_exit_shortcut(
+            false,
+            KeyState::Pressed,
+            &modifiers,
+            Keysym::BackSpace,
+        ));
+        assert!(!is_session_exit_shortcut(
+            true,
+            KeyState::Released,
+            &modifiers,
+            Keysym::BackSpace,
+        ));
+        assert!(!is_session_exit_shortcut(
+            true,
+            KeyState::Pressed,
+            &ModifiersState {
+                ctrl: true,
+                ..Default::default()
+            },
+            Keysym::BackSpace,
+        ));
     }
 }

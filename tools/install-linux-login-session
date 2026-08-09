@@ -1,0 +1,72 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+sos_install_repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$sos_install_repo_root"
+
+sos_install_fail() {
+  printf 'error: %s\n' "$*" >&2
+  exit 1
+}
+
+[[ "$#" -eq 1 && "$1" == install ]] || \
+  sos_install_fail "usage: tools/install-linux-login-session install"
+[[ "$(id -u)" -ne 0 ]] || sos_install_fail "run this command as a normal user; it invokes sudo only for installation"
+for sos_install_command in cargo install pkg-config sudo; do
+  command -v "$sos_install_command" >/dev/null 2>&1 || \
+    sos_install_fail "required command not found: $sos_install_command"
+done
+[[ -d /usr/share/wayland-sessions ]] || \
+  sos_install_fail "/usr/share/wayland-sessions is missing; install a Wayland-capable display manager first"
+
+sos_install_missing_modules=()
+for sos_install_module in gbm libinput libseat libudev wayland-client xkbcommon xkbcommon-x11; do
+  if ! pkg-config --exists "$sos_install_module"; then
+    sos_install_missing_modules+=("$sos_install_module")
+  fi
+done
+if [[ "${#sos_install_missing_modules[@]}" -ne 0 ]]; then
+  printf 'error: missing native development modules: %s\n' \
+    "${sos_install_missing_modules[*]}" >&2
+  printf '%s\n' \
+    'On Debian/Ubuntu install them with:' \
+    '  sudo apt-get install libgbm-dev libinput-dev libseat-dev libudev-dev libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev' >&2
+  exit 1
+fi
+
+cargo build --locked --release \
+  -p sos-compositor --features direct-backend --bin sos-compositor \
+  -p sos-experience --features linux-host --bin sos-experience-host \
+  -p revision-supervisor --bin sos-revision-supervisor \
+  -p provider-state-service --bin sos-provider-state-service \
+  -p sos-linux-session --bin sos-linux-session
+
+sos_install_bin_dir=/usr/local/libexec/sos
+sudo install -d -o root -g root -m 0755 \
+  "$sos_install_bin_dir" \
+  /usr/share/sos/experiences \
+  /usr/share/doc/sos \
+  /usr/share/wayland-sessions
+for sos_install_binary in \
+  sos-compositor \
+  sos-experience-host \
+  sos-provider-state-service \
+  sos-revision-supervisor \
+  sos-linux-session; do
+  sudo install -o root -g root -m 0755 \
+    "target/release/$sos_install_binary" "$sos_install_bin_dir/$sos_install_binary"
+done
+sudo install -o root -g root -m 0755 \
+  packaging/libexec/sos-login-session "$sos_install_bin_dir/sos-login-session"
+sudo install -o root -g root -m 0644 \
+  packaging/wayland-sessions/sos.desktop /usr/share/wayland-sessions/sos.desktop
+sudo install -o root -g root -m 0644 \
+  experiences/default.luau /usr/share/sos/experiences/default.luau
+sudo install -o root -g root -m 0644 \
+  docs/linux-stable-host.md /usr/share/doc/sos/linux-stable-host.md
+
+printf '%s\n' \
+  'SOS login session installed.' \
+  'Log out, select SOS from the login screen session menu, and log in.' \
+  'Selecting the previous desktop session returns to GNOME on the next login.'

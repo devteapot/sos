@@ -65,6 +65,8 @@ pub struct SosCompositor {
     pub output_size: (i32, i32),
     pub recovery_ui: RecoveryUi,
     pub recovery_button_pressed: bool,
+    pub session_exit_enabled: bool,
+    pub session_exit_requested: bool,
 
     pub compositor_state: CompositorState,
     pub xdg_shell_state: XdgShellState,
@@ -145,6 +147,8 @@ impl SosCompositor {
             output_size: (1280, 800),
             recovery_ui: RecoveryUi::from_environment(),
             recovery_button_pressed: false,
+            session_exit_enabled: std::env::var("SOS_ALLOW_SESSION_EXIT").as_deref() == Ok("1"),
+            session_exit_requested: false,
             compositor_state,
             xdg_shell_state,
             xwayland_shell_state,
@@ -161,6 +165,10 @@ impl SosCompositor {
             popups,
             seat,
         })
+    }
+
+    pub fn take_session_exit_request(&mut self) -> bool {
+        std::mem::take(&mut self.session_exit_requested)
     }
 
     fn init_wayland_listener(

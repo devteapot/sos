@@ -13,7 +13,7 @@ use service_protocol::{
 
 pub use authoring::{run_authoring_broker, AuthoringBrokerOptions};
 pub use system_session::{
-    run_host_proxy, run_system_session, ServiceIdentity, SystemSessionOptions,
+    run_host_proxy, run_system_session, ServiceIdentity, SessionIdentityMode, SystemSessionOptions,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]

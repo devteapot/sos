@@ -1,0 +1,131 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+sos_login_fail() {
+  printf 'sos_login_session_failed error=%s\n' "$*" >&2
+  exit 1
+}
+
+[[ "$(id -u)" -ne 0 ]] || sos_login_fail "refusing to run a selectable desktop session as root"
+[[ -n "${HOME:-}" && "$HOME" == /* ]] || sos_login_fail "HOME must be an absolute path"
+[[ -n "${XDG_RUNTIME_DIR:-}" && "$XDG_RUNTIME_DIR" == /* ]] || \
+  sos_login_fail "XDG_RUNTIME_DIR must be an absolute path supplied by the display manager"
+[[ -d "$XDG_RUNTIME_DIR" && -O "$XDG_RUNTIME_DIR" ]] || \
+  sos_login_fail "XDG_RUNTIME_DIR must exist and belong to the login user"
+
+sos_login_bin_dir="${SOS_INSTALL_ROOT:-/usr/local/libexec/sos}"
+sos_login_default_source="${SOS_DEFAULT_EXPERIENCE:-/usr/share/sos/experiences/default.luau}"
+sos_login_agent_socket="${SOS_AGENT_SOCKET:-/run/sos-agent/agent.sock}"
+sos_login_state_home="${XDG_STATE_HOME:-$HOME/.local/state}"
+for sos_login_path in \
+  "$sos_login_bin_dir" \
+  "$sos_login_default_source" \
+  "$sos_login_agent_socket" \
+  "$sos_login_state_home"; do
+  [[ "$sos_login_path" == /* ]] || sos_login_fail "session paths must be absolute: $sos_login_path"
+done
+
+sos_login_session_bin="$sos_login_bin_dir/sos-linux-session"
+sos_login_compositor_bin="$sos_login_bin_dir/sos-compositor"
+sos_login_provider_bin="$sos_login_bin_dir/sos-provider-state-service"
+sos_login_supervisor_bin="$sos_login_bin_dir/sos-revision-supervisor"
+sos_login_host_bin="$sos_login_bin_dir/sos-experience-host"
+for sos_login_executable in \
+  "$sos_login_session_bin" \
+  "$sos_login_compositor_bin" \
+  "$sos_login_provider_bin" \
+  "$sos_login_supervisor_bin" \
+  "$sos_login_host_bin"; do
+  [[ -x "$sos_login_executable" ]] || sos_login_fail "missing executable: $sos_login_executable"
+done
+[[ -r "$sos_login_default_source" ]] || \
+  sos_login_fail "missing default experience: $sos_login_default_source"
+
+umask 077
+sos_login_state_dir="$sos_login_state_home/sos"
+sos_login_revision_root="$sos_login_state_dir/revisions"
+sos_login_authority_file="$sos_login_state_dir/provider/authority.json"
+sos_login_token_file="$sos_login_state_dir/shell-token"
+install -d -m 0700 "$sos_login_state_home" "$sos_login_state_dir" "$sos_login_revision_root"
+
+if [[ ! -f "$sos_login_token_file" ]]; then
+  sos_login_token_tmp="$sos_login_state_dir/.shell-token.$$"
+  od -An -N32 -tx1 /dev/urandom | tr -d ' \n' >"$sos_login_token_tmp"
+  chmod 0600 "$sos_login_token_tmp"
+  mv -n -- "$sos_login_token_tmp" "$sos_login_token_file"
+  rm -f -- "$sos_login_token_tmp"
+fi
+chmod 0600 "$sos_login_token_file"
+
+sos_login_current="$($sos_login_supervisor_bin status --root "$sos_login_revision_root")"
+if [[ "$sos_login_current" == none ]]; then
+  sos_login_initial_state="$sos_login_state_dir/.initial-state.$$"
+  printf '{}\n' >"$sos_login_initial_state"
+  sos_login_revision="$($sos_login_supervisor_bin install \
+    --root "$sos_login_revision_root" \
+    --source "$sos_login_default_source" \
+    --state "$sos_login_initial_state" \
+    --schema 1 \
+    --api 3)"
+  rm -f -- "$sos_login_initial_state"
+  "$sos_login_supervisor_bin" bootstrap \
+    --root "$sos_login_revision_root" \
+    --revision "$sos_login_revision" >/dev/null
+  printf 'sos_login_session_initialized revision_id=%s\n' "$sos_login_revision"
+fi
+
+sos_login_runtime="$(mktemp -d "$XDG_RUNTIME_DIR/sos-session.XXXXXX")"
+sos_login_child=""
+# ShellCheck cannot infer that EXIT invokes this callback.
+# shellcheck disable=SC2317
+sos_login_cleanup() {
+  if [[ -n "$sos_login_child" ]] && kill -0 "$sos_login_child" 2>/dev/null; then
+    kill -TERM "$sos_login_child" 2>/dev/null || true
+    wait "$sos_login_child" 2>/dev/null || true
+  fi
+  if [[ "$sos_login_runtime" == "$XDG_RUNTIME_DIR"/sos-session.* && -d "$sos_login_runtime" ]]; then
+    rm -r -- "$sos_login_runtime"
+  fi
+}
+# ShellCheck cannot infer that the signal traps invoke this callback.
+# shellcheck disable=SC2317
+sos_login_forward_stop() {
+  if [[ -n "$sos_login_child" ]]; then
+    kill -TERM "$sos_login_child" 2>/dev/null || true
+  fi
+}
+trap sos_login_cleanup EXIT
+trap sos_login_forward_stop HUP INT TERM
+
+export XDG_SESSION_TYPE=wayland
+export XDG_SESSION_DESKTOP=SOS
+export XDG_CURRENT_DESKTOP=SOS
+export DESKTOP_SESSION=sos
+export LIBSEAT_BACKEND=logind
+export SOS_ALLOW_SESSION_EXIT=1
+unset DISPLAY WAYLAND_DISPLAY
+
+"$sos_login_session_bin" run-user \
+  --root "$sos_login_revision_root" \
+  --runtime-dir "$sos_login_runtime" \
+  --authority-file "$sos_login_authority_file" \
+  --shell-token-file "$sos_login_token_file" \
+  --agent-socket "$sos_login_agent_socket" \
+  --compositor "$sos_login_compositor_bin" \
+  --provider "$sos_login_provider_bin" \
+  --supervisor "$sos_login_supervisor_bin" \
+  --host "$sos_login_host_bin" \
+  --timeout-ms 30000 &
+sos_login_child=$!
+
+set +e
+wait "$sos_login_child"
+sos_login_status=$?
+if kill -0 "$sos_login_child" 2>/dev/null; then
+  wait "$sos_login_child"
+  sos_login_status=$?
+fi
+set -e
+sos_login_child=""
+exit "$sos_login_status"

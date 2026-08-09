@@ -48,6 +48,26 @@ impl ServiceIdentity {
             gid: user.gid,
         })
     }
+
+    pub fn current() -> Result<Self> {
+        let uid = Uid::effective();
+        if uid.is_root() {
+            bail!("the selectable SOS login session must not run as root");
+        }
+        let user = User::from_uid(uid)?
+            .with_context(|| format!("Linux login account does not exist for UID {uid}"))?;
+        Ok(Self {
+            name: user.name,
+            uid,
+            gid: Gid::effective(),
+        })
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SessionIdentityMode {
+    IsolatedServices,
+    SharedLoginUser,
 }
 
 #[derive(Clone, Debug)]
@@ -65,6 +85,7 @@ pub struct SystemSessionOptions {
     pub provider_identity: ServiceIdentity,
     pub supervisor_identity: ServiceIdentity,
     pub host_identity: ServiceIdentity,
+    pub identity_mode: SessionIdentityMode,
     pub startup_timeout: Duration,
 }
 
@@ -149,16 +170,37 @@ fn validate_options(options: &SystemSessionOptions) -> Result<()> {
         &options.supervisor_identity,
         &options.host_identity,
     ];
-    for (index, identity) in identities.iter().enumerate() {
-        if identities[..index]
-            .iter()
-            .any(|other| other.uid == identity.uid)
-        {
-            bail!(
-                "Linux component service identities must use distinct UIDs; {} reuses {}",
-                identity.name,
-                identity.uid
-            );
+    validate_identities(options.identity_mode, identities)
+}
+
+fn validate_identities(mode: SessionIdentityMode, identities: [&ServiceIdentity; 4]) -> Result<()> {
+    match mode {
+        SessionIdentityMode::IsolatedServices => {
+            for (index, identity) in identities.iter().enumerate() {
+                if identities[..index]
+                    .iter()
+                    .any(|other| other.uid == identity.uid)
+                {
+                    bail!(
+                        "Linux component service identities must use distinct UIDs; {} reuses {}",
+                        identity.name,
+                        identity.uid
+                    );
+                }
+            }
+        }
+        SessionIdentityMode::SharedLoginUser => {
+            let current = ServiceIdentity::current()?;
+            if identities
+                .iter()
+                .any(|identity| identity.uid != current.uid || identity.gid != current.gid)
+            {
+                bail!(
+                    "selectable login-session components must all use the current UID {} and GID {}",
+                    current.uid,
+                    current.gid
+                );
+            }
         }
     }
     Ok(())
@@ -443,6 +485,13 @@ fn start_and_monitor(
             ("supervisor", processes.supervisor.as_mut().unwrap()),
         ] {
             if let Some(status) = child.try_wait()? {
+                if name == "compositor"
+                    && status.success()
+                    && options.identity_mode == SessionIdentityMode::SharedLoginUser
+                {
+                    println!("linux_login_session_stopped reason=user_logout");
+                    return Ok(());
+                }
                 bail!("system session component exited component={name} status={status}");
             }
             if !process_is_running(child.id()) {
@@ -506,9 +555,12 @@ fn wait_for_socket(
 
 fn role_command(executable: &Path, identity: &ServiceIdentity) -> Command {
     let mut command = Command::new(executable);
-    command
-        .gid(identity.gid.as_raw())
-        .uid(identity.uid.as_raw());
+    if identity.gid != Gid::effective() {
+        command.gid(identity.gid.as_raw());
+    }
+    if identity.uid != Uid::effective() {
+        command.uid(identity.uid.as_raw());
+    }
     // The lifecycle owner needs four narrowly bounded capabilities to create
     // role-owned files, change child credentials, and reap an abandoned tree.
     // Ambient capabilities otherwise survive exec when the compositor child
@@ -1224,4 +1276,52 @@ fn terminate_child(name: &str, slot: &mut Option<Child>) {
     );
     let _ = child.kill();
     let _ = child.wait();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn identity(name: &str, uid: u32) -> ServiceIdentity {
+        ServiceIdentity {
+            name: name.into(),
+            uid: Uid::from_raw(uid),
+            gid: Gid::from_raw(uid),
+        }
+    }
+
+    #[test]
+    fn isolated_mode_rejects_a_reused_uid() {
+        let compositor = identity("compositor", 10_001);
+        let provider = identity("provider", 10_002);
+        let supervisor = identity("supervisor", 10_003);
+        let host = identity("host", 10_002);
+        let error = validate_identities(
+            SessionIdentityMode::IsolatedServices,
+            [&compositor, &provider, &supervisor, &host],
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("must use distinct UIDs"));
+    }
+
+    #[test]
+    fn shared_mode_accepts_only_the_current_login_identity() {
+        if Uid::effective().is_root() {
+            return;
+        }
+        let current = ServiceIdentity::current().unwrap();
+        validate_identities(
+            SessionIdentityMode::SharedLoginUser,
+            [&current, &current, &current, &current],
+        )
+        .unwrap();
+
+        let other = identity("other", current.uid.as_raw().saturating_add(1));
+        let error = validate_identities(
+            SessionIdentityMode::SharedLoginUser,
+            [&current, &current, &current, &other],
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("must all use the current UID"));
+    }
 }
