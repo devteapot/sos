@@ -1727,3 +1727,91 @@ evidence, not new device-behavior evidence; no APK was installed or launched as
 part of this gate. Resume the Linux input gate: deterministic compositor-owned
 cursor rendering plus injected keyboard, pointer, and touch events across a
 quiesced revision activation.
+
+## 2026-08-09 — Route native Wayland editing and quiesce input before activation
+
+**Goal:** Replace the Linux display-only text field with a native GPUI editing
+session driven through the Wayland seat, and move input quiescing ahead of the
+provider/state commit so no old-scene event can cross revision activation. The
+functional gate must inject real nested-seat events and retain the existing
+same-PID activation, compositor presentation, and crash-recovery guarantees. It
+does not claim direct-libinput or physical-device behavior.
+
+**Changed:** Added the Linux `NativeTextInput` entity and retained element with
+focus, UTF-8/UTF-16 range conversion, grapheme cursor/deletion boundaries,
+selection, marked text, bounded replacement, clipboard actions, mouse
+selection, explicit Enter submission, and persisted `text_changed`,
+`focus_changed`, and submit events. The compositor now advertises
+`zwp_text_input_manager_v3`; ordinary keyboard character delivery remains the
+native `wl_keyboard` path. Relative mouse motion now updates the same Smithay
+pointer path as absolute tablet motion instead of being ignored.
+
+Extended the host protocol with a revision-bound quiesce acknowledgement and
+the compositor protocol with quiesce/resume requests and acknowledgements. The
+coordinator order is now prepare candidate,
+quiesce and await compositor acknowledgement, promote provider/state authority,
+commit/present the retained VM, atomically advance the pointer, then clear the
+journal. The compositor detaches keyboard/pointer focus, releases input the old
+scene observed as pressed, intercepts backend events, suppresses the later
+release of keys/buttons held across the boundary, and restores only a still-live
+authenticated shell focus after the candidate frame is presented. The host
+also clears its bounded queued-event and gesture epoch at acknowledgement.
+Abort resumes the exact revision fence before candidate discard; control loss
+clears quiescing without refocusing the stale shell. The supervisor test host
+now rejects presentation unless the matching candidate was quiesced, so all
+supervisor/coordinator integration tests enforce the new ordering.
+
+`tools/linux-compositor/verify-nested` now uses XTest to inject through Xvfb,
+outer Weston, the nested winit backend, Smithay, and the inner Wayland seat. It
+establishes focus, injects F12 events across activation, requires a positive
+compositor suppression count, then sends Ctrl+A, `wayland`, and Enter to the
+autofocused candidate text session. It waits for both the exact durable draft
+and submit state before continuing through host kill/recovery and compatibility
+surface checks. Python and `libXtst` are harness-only; neither enters the SOS
+runtime or product boundary.
+
+**Evidence:** `./tools/linux-compositor/verify-nested` passed on the ARM64 Ubuntu
+24.04 development host. Revision
+`552f06968bbc5c69de3db581454f60d4303289f304eaaf47a6e9dc3200297cdb`
+activated in unchanged PID 1961044, exactly 100 native keyboard events were
+suppressed while the candidate fence was active, and the durable authority
+recorded `draft="wayland"` plus the Enter-driven saved state. Killing that host
+recovered the committed revision in newly authenticated PID 1961271 without
+restarting the compositor. Boot, activation, and recovery used nested
+commit/submit pairs 1/943, 17/954, and 63/1005; pointer and authority matched.
+
+`cargo test --workspace --lib --bins --tests --locked --no-fail-fast` passes all
+101 default-feature tests. The Linux-host focused run adds the native UTF-16
+editing, compositor-control, and provider/socket tests and passes all 10 in that
+crate configuration. `cargo clippy --locked --all-targets -p sos-experience
+--features linux-host -p sos-compositor -p revision-supervisor -p
+compositor-control-protocol -p experience-host-protocol -- -D warnings`,
+`cargo fmt --all -- --check`, ShellCheck, and `git diff --check` pass.
+`./tools/sosctl m1-check` also passes the locked ARM64 Android release check in
+0.59 seconds. No raw render, disk, or input-capture artifact was added to Git.
+
+**Failures and fixes:** The first two injected runs proved compositor suppression
+(110 and 92 events) and exact text replacement, but printable `x` spam continued
+briefly after the fence and saturated the host's intentional 64-event queue.
+The first run therefore delayed the exact replacement; switching the fence
+stimulus to non-editing F12 retained native delivery without manufacturing an
+application backlog. The second run exposed that Linux Return was not mapped to
+the text session's submit action; an explicit scoped Enter binding fixed it.
+Review also found that held keys could otherwise deliver an unmatched release
+after resume, a control disconnect could briefly restore focus to a stale shell,
+and discarding the worker before compositor resume made a resume failure
+unretryable. Suppressed-key tracking, no-restore disconnect cleanup, and
+resume-before-discard ordering fixed those cases. A local `--all-features`
+compositor check could not start because this development host lacks the
+`libudev.pc` and `libseat.pc` development packages; default/nested compilation
+passes here, while the prior direct Debian VM run remains the latest direct
+build/runtime evidence.
+
+**Decision / next gate:** The native Linux keyboard editing and nested
+compositor-owned activation-quiesce functional gate is complete. Do not promote
+this to direct-libinput, touch, physical keyboard, or IME evidence. Next render a
+deterministic compositor cursor and inject relative pointer plus touch lifecycles
+through the direct booted Debian session, including held input across both
+successful and aborted activation. Then attach an input-method-v2 process and
+prove non-Latin preedit/commit; clipboard and accessibility remain separate
+gates.

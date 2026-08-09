@@ -21,6 +21,10 @@ pub enum HostRequest {
         revision_path: PathBuf,
         experience_api_version: u32,
     },
+    QuiesceInput {
+        request_id: u64,
+        revision_id: String,
+    },
     Present {
         request_id: u64,
         revision_id: String,
@@ -43,6 +47,7 @@ impl HostRequest {
         match self {
             Self::Boot { request_id, .. }
             | Self::Prepare { request_id, .. }
+            | Self::QuiesceInput { request_id, .. }
             | Self::Present { request_id, .. }
             | Self::Confirm { request_id, .. }
             | Self::Discard { request_id, .. }
@@ -55,6 +60,10 @@ impl HostRequest {
 #[serde(tag = "event", rename_all = "snake_case")]
 pub enum HostEvent {
     Prepared {
+        request_id: u64,
+        revision_id: String,
+    },
+    InputQuiesced {
         request_id: u64,
         revision_id: String,
     },
@@ -84,6 +93,7 @@ impl HostEvent {
     pub fn request_id(&self) -> u64 {
         match self {
             Self::Prepared { request_id, .. }
+            | Self::InputQuiesced { request_id, .. }
             | Self::Presented { request_id, .. }
             | Self::Confirmed { request_id, .. }
             | Self::Discarded { request_id, .. }
@@ -110,6 +120,25 @@ mod tests {
             r#"{"action":"prepare","request_id":7,"revision_id":"abc","revision_path":"/var/lib/sos/revisions/abc","experience_api_version":3}"#
         );
         assert_eq!(request.request_id(), 7);
+
+        let quiesce = HostRequest::QuiesceInput {
+            request_id: 8,
+            revision_id: "abc".into(),
+        };
+        assert_eq!(
+            serde_json::to_string(&quiesce).unwrap(),
+            r#"{"action":"quiesce_input","request_id":8,"revision_id":"abc"}"#
+        );
+        assert_eq!(quiesce.request_id(), 8);
+
+        let quiesced = HostEvent::InputQuiesced {
+            request_id: 8,
+            revision_id: "abc".into(),
+        };
+        assert_eq!(
+            serde_json::from_str::<HostEvent>(&serde_json::to_string(&quiesced).unwrap()).unwrap(),
+            quiesced
+        );
 
         let event = HostEvent::Rejected {
             request_id: 7,

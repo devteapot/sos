@@ -36,6 +36,18 @@ pub enum ControlCommand {
         revision_id: String,
         reply: mpsc::Sender<std::result::Result<u64, String>>,
     },
+    QuiesceInput {
+        pid: u32,
+        request_id: u64,
+        revision_id: String,
+        reply: mpsc::Sender<std::result::Result<bool, String>>,
+    },
+    ResumeInput {
+        pid: u32,
+        request_id: u64,
+        revision_id: String,
+        reply: mpsc::Sender<std::result::Result<bool, String>>,
+    },
     Disconnected {
         pid: u32,
     },
@@ -169,6 +181,46 @@ fn serve_shell_connection(
             write_event(&mut stream, &event)?;
         }
         match read_request(&mut reader) {
+            Ok(Some(CompositorRequest::QuiesceInput {
+                request_id,
+                revision_id,
+            })) => {
+                let (reply, reply_rx) = mpsc::channel();
+                commands.send(ControlCommand::QuiesceInput {
+                    pid,
+                    request_id,
+                    revision_id: revision_id.clone(),
+                    reply,
+                })?;
+                let event = match reply_rx.recv_timeout(CONTROL_TIMEOUT)? {
+                    Ok(_) => CompositorEvent::InputQuiesced {
+                        request_id,
+                        revision_id,
+                    },
+                    Err(error) => CompositorEvent::Rejected { request_id, error },
+                };
+                write_event(&mut stream, &event)?;
+            }
+            Ok(Some(CompositorRequest::ResumeInput {
+                request_id,
+                revision_id,
+            })) => {
+                let (reply, reply_rx) = mpsc::channel();
+                commands.send(ControlCommand::ResumeInput {
+                    pid,
+                    request_id,
+                    revision_id: revision_id.clone(),
+                    reply,
+                })?;
+                let event = match reply_rx.recv_timeout(CONTROL_TIMEOUT)? {
+                    Ok(_) => CompositorEvent::InputResumed {
+                        request_id,
+                        revision_id,
+                    },
+                    Err(error) => CompositorEvent::Rejected { request_id, error },
+                };
+                write_event(&mut stream, &event)?;
+            }
             Ok(Some(CompositorRequest::ArmPresentation {
                 request_id,
                 revision_id,

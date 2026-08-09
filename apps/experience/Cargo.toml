@@ -35,6 +35,7 @@ unicode-segmentation = "1.12"
 experience-ir.workspace = true
 providers-fake.workspace = true
 runtime-luau.workspace = true
+unicode-segmentation = "1.12"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 anyhow = "1"

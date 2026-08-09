@@ -15,8 +15,8 @@ use experience_ir::{
 };
 use gpui::{
     div, img, prelude::*, px, relative, rgb, size, Animation as GpuiAnimation, AnimationExt as _,
-    AnyElement, App, Bounds, Context, MouseButton, Render, SharedString, Window, WindowBounds,
-    WindowOptions,
+    AnyElement, App, Bounds, Context, Entity, MouseButton, Render, SharedString, Window,
+    WindowBounds, WindowOptions,
 };
 use provider_state_service::ServiceClient;
 use runtime_luau::{
@@ -32,6 +32,7 @@ use sha2::{Digest, Sha256};
 
 use crate::assets::{self, SosAssets, ALBUM_ASSET};
 use crate::compositor_fence::{CompositorFence, FenceEvent};
+use crate::linux_input::{self, NativeTextInput};
 use crate::scene_surface;
 
 #[derive(Clone, Debug)]
@@ -141,6 +142,9 @@ pub fn run() -> Result<()> {
     let revision = load_revision(&revision_id, &revision_path, experience_api_version)?;
     let compositor_fence = CompositorFence::from_environment()?;
     if let Some(fence) = &compositor_fence {
+        fence
+            .quiesce_input(request_id, &revision.revision_id)
+            .context("quiesce input for compositor boot presentation")?;
         let after_commit_sequence = fence
             .arm(request_id, &revision.revision_id)
             .context("arm boot presentation with SOS compositor")?;
@@ -178,6 +182,7 @@ pub fn run() -> Result<()> {
     gpui_platform::application()
         .with_assets(SosAssets)
         .run(move |cx: &mut App| {
+            linux_input::bind_keys(cx);
             let restore_bounds = Bounds::centered(None, size(px(900.), px(700.)), cx);
             let window_bounds = if windowed {
                 WindowBounds::Windowed(restore_bounds)
@@ -234,8 +239,11 @@ pub(super) struct LinuxExperienceHost {
     pending_commit: Option<PendingCommit>,
     pending_presentation: Option<PendingPresentation>,
     last_presented_revision: Option<String>,
+    input_quiesced_revision: Option<String>,
     action_in_flight: bool,
     pending_input_events: VecDeque<SceneEvent>,
+    inputs: HashMap<String, Entity<NativeTextInput>>,
+    active_input_id: Option<String>,
     action_commits: async_channel::Sender<ActionCommitResult>,
     next_action_request_id: u64,
     surface_gestures: HashMap<String, GestureSession>,
@@ -264,6 +272,9 @@ impl LinuxExperienceHost {
         if let Some(fence) = &compositor_fence {
             Self::attach_compositor_events(fence.events(), cx);
         }
+        let boot_quiesced_revision = compositor_fence
+            .as_ref()
+            .map(|_| revision.revision_id.clone());
         assets::install(&ready.assets);
         Self {
             model,
@@ -283,8 +294,11 @@ impl LinuxExperienceHost {
                 revision_id: revision.revision_id,
             }),
             last_presented_revision: None,
+            input_quiesced_revision: boot_quiesced_revision,
             action_in_flight: false,
             pending_input_events: VecDeque::new(),
+            inputs: HashMap::new(),
+            active_input_id: None,
             action_commits,
             next_action_request_id: 1,
             surface_gestures: HashMap::new(),
@@ -396,6 +410,7 @@ impl LinuxExperienceHost {
                     return;
                 }
                 self.last_presented_revision = Some(presented.revision_id.clone());
+                self.input_quiesced_revision = None;
                 self.status = None;
                 eprintln!(
                     "sos_revision_frame revision_id={} evidence={} commit_sequence={} submit_sequence={}",
@@ -483,6 +498,59 @@ impl LinuxExperienceHost {
                 self.status = Some(("Preparing Luau revision…".into(), true));
                 cx.notify();
             }
+            HostRequest::QuiesceInput {
+                request_id,
+                revision_id,
+            } => {
+                if self
+                    .prepared
+                    .as_ref()
+                    .map(|prepared| prepared.revision.revision_id.as_str())
+                    != Some(revision_id.as_str())
+                {
+                    reject(request_id, revision_id, "prepared revision does not match");
+                    return;
+                }
+                if self.input_quiesced_revision.as_deref() == Some(&revision_id) {
+                    emit(&HostEvent::InputQuiesced {
+                        request_id,
+                        revision_id,
+                    });
+                    return;
+                }
+                if self.input_quiesced_revision.is_some() {
+                    reject(
+                        request_id,
+                        revision_id,
+                        "input is quiesced for another revision",
+                    );
+                    return;
+                }
+                if let Some(fence) = &self.compositor_fence {
+                    if let Err(error) = fence.quiesce_input(request_id, &revision_id) {
+                        reject(request_id, revision_id, error.to_string());
+                        return;
+                    }
+                    eprintln!(
+                        "sos_compositor_input_quiesced request_id={request_id} revision_id={revision_id}"
+                    );
+                } else {
+                    eprintln!(
+                        "sos_host_input_quiesced request_id={request_id} revision_id={revision_id} evidence=host_dispatch_only"
+                    );
+                }
+                let dropped_events = self.pending_input_events.len();
+                self.pending_input_events.clear();
+                self.surface_gestures.clear();
+                self.input_quiesced_revision = Some(revision_id.clone());
+                eprintln!(
+                    "sos_input_epoch_closed request_id={request_id} revision_id={revision_id} dropped_events={dropped_events}"
+                );
+                emit(&HostEvent::InputQuiesced {
+                    request_id,
+                    revision_id,
+                });
+            }
             HostRequest::Present {
                 request_id,
                 revision_id,
@@ -494,6 +562,15 @@ impl LinuxExperienceHost {
                 if prepared.revision.revision_id != revision_id {
                     self.prepared = Some(prepared);
                     reject(request_id, revision_id, "prepared revision does not match");
+                    return;
+                }
+                if self.input_quiesced_revision.as_deref() != Some(&revision_id) {
+                    self.prepared = Some(prepared);
+                    reject(
+                        request_id,
+                        revision_id,
+                        "input is not quiesced for revision",
+                    );
                     return;
                 }
                 if let Err(error) = self.worker.commit_candidate(prepared.prepare_request_id) {
@@ -532,6 +609,17 @@ impl LinuxExperienceHost {
                     self.prepared = Some(prepared);
                     reject(request_id, revision_id, "prepared revision does not match");
                     return;
+                }
+                let was_quiesced = self.input_quiesced_revision.as_deref() == Some(&revision_id);
+                if was_quiesced {
+                    if let Some(fence) = &self.compositor_fence {
+                        if let Err(error) = fence.resume_input(request_id, &revision_id) {
+                            self.prepared = Some(prepared);
+                            reject(request_id, revision_id, error.to_string());
+                            return;
+                        }
+                    }
+                    self.input_quiesced_revision = None;
                 }
                 match self.worker.discard_candidate(prepared.prepare_request_id) {
                     Ok(()) => {
@@ -776,6 +864,83 @@ impl LinuxExperienceHost {
         self.dispatch_event(
             SceneEvent {
                 action,
+                ..Default::default()
+            },
+            cx,
+        );
+    }
+
+    pub(super) fn native_input_changed(
+        &mut self,
+        node_id: String,
+        state_key: String,
+        value: String,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.state.is_object() {
+            self.state = serde_json::json!({});
+        }
+        if let Some(object) = self.state.as_object_mut() {
+            object.insert(state_key, JsonValue::String(value.clone()));
+        }
+        eprintln!(
+            "sos_linux_text_changed node_id={} bytes={}",
+            node_id,
+            value.len()
+        );
+        self.queue_input_event(
+            SceneEvent {
+                action: "text_changed".into(),
+                target: Some(node_id),
+                value: Some(value),
+                ..Default::default()
+            },
+            cx,
+        );
+    }
+
+    pub(super) fn native_input_focus_changed(
+        &mut self,
+        node_id: String,
+        focused: bool,
+        cx: &mut Context<Self>,
+    ) {
+        if focused {
+            self.active_input_id = Some(node_id.clone());
+        } else if self.active_input_id.as_deref() == Some(&node_id) {
+            self.active_input_id = None;
+        }
+        eprintln!("sos_linux_text_focus node_id={node_id} focused={focused}");
+        self.queue_input_event(
+            SceneEvent {
+                action: "focus_changed".into(),
+                target: Some(node_id),
+                focused: Some(focused),
+                ..Default::default()
+            },
+            cx,
+        );
+    }
+
+    pub(super) fn native_input_submitted(
+        &mut self,
+        node_id: String,
+        action: String,
+        value: String,
+        cx: &mut Context<Self>,
+    ) {
+        eprintln!(
+            "sos_linux_text_submitted node_id={} action={} bytes={}",
+            node_id,
+            action,
+            value.len()
+        );
+        self.queue_input_event(
+            SceneEvent {
+                action,
+                target: Some(node_id),
+                value: Some(value),
+                focused: Some(true),
                 ..Default::default()
             },
             cx,
@@ -1087,6 +1252,7 @@ impl LinuxExperienceHost {
         &mut self,
         node: &SceneNode,
         path: SharedString,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let element_id = node.id.clone().unwrap_or_else(|| path.to_string());
@@ -1178,16 +1344,46 @@ impl LinuxExperienceHost {
                 .child(SharedString::from(text.value.clone()));
         }
         if let Some(Content::TextSession(input)) = &node.content {
-            let text = if input.value.is_empty() {
-                input.placeholder.clone()
+            let created = !self.inputs.contains_key(&element_id);
+            let native = if let Some(native) = self.inputs.get(&element_id) {
+                native.clone()
             } else {
-                input.value.clone()
+                let host = cx.weak_entity();
+                let native = cx.new(|input_cx| {
+                    NativeTextInput::new(
+                        element_id.clone(),
+                        input.state_key.clone(),
+                        input.value.clone(),
+                        input.placeholder.clone(),
+                        input.submit_action.clone(),
+                        host,
+                        window,
+                        input_cx,
+                    )
+                });
+                self.inputs.insert(element_id.clone(), native.clone());
+                native
             };
+            let should_activate = (created && input.autofocus)
+                || self.active_input_id.as_deref() == Some(element_id.as_str());
+            native.update(cx, |native, native_cx| {
+                native.sync(
+                    &input.state_key,
+                    &input.value,
+                    &input.placeholder,
+                    input.submit_action.as_deref(),
+                    window,
+                    native_cx,
+                );
+                if should_activate {
+                    native.activate(window, native_cx);
+                }
+            });
             element = element
                 .border_1()
                 .border_color(rgb(0x98A29B))
                 .p(px(8.))
-                .child(SharedString::from(text));
+                .child(native);
         }
         if let Some(Content::Image(image)) = &node.content {
             let path = if image.asset == "album-orbit" {
@@ -1218,7 +1414,7 @@ impl LinuxExperienceHost {
         }
         for (index, child) in node.children.iter().enumerate() {
             let child_path = SharedString::from(format!("{path}-{index}"));
-            element = element.child(self.render_node(child, child_path, cx));
+            element = element.child(self.render_node(child, child_path, window, cx));
         }
         let surface_owns_tap = uses_surface && node.interaction.tap_action.is_some();
         let mut rendered = if let Some(action) = node
@@ -1320,7 +1516,7 @@ impl Render for LinuxExperienceHost {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         assets::install_fonts(window);
         let scene = self.scene.clone();
-        let content = self.render_node(&scene.root, SharedString::from("root"), cx);
+        let content = self.render_node(&scene.root, SharedString::from("root"), window, cx);
         let mut root = div()
             .flex()
             .flex_col()

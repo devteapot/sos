@@ -144,6 +144,22 @@ impl ExperienceHost {
         }
     }
 
+    pub fn quiesce_input(&mut self, revision_id: &str) -> Result<()> {
+        let request_id = self.request_id();
+        let event = self.call(HostRequest::QuiesceInput {
+            request_id,
+            revision_id: revision_id.into(),
+        })?;
+        match event {
+            HostEvent::InputQuiesced {
+                request_id: received,
+                revision_id: received_revision,
+            } if received == request_id && received_revision == revision_id => Ok(()),
+            HostEvent::Rejected { error, .. } => Err(Error::HostRejected(error)),
+            _ => Err(Error::InvalidHostEvent),
+        }
+    }
+
     pub fn discard(&mut self, revision_id: &str) -> Result<()> {
         let request_id = self.request_id();
         let event = self.call(HostRequest::Discard {

@@ -9,6 +9,8 @@ mod assets;
 mod compositor_fence;
 #[cfg(all(target_os = "linux", feature = "linux-host"))]
 mod linux;
+#[cfg(all(target_os = "linux", feature = "linux-host"))]
+mod linux_input;
 #[cfg(all(test, not(target_os = "android")))]
 #[allow(dead_code)]
 #[path = "android/pointer_input.rs"]

@@ -3,6 +3,7 @@ mod xdg_shell;
 
 use smithay::{
     delegate_data_device, delegate_output, delegate_presentation, delegate_seat,
+    delegate_text_input_manager,
     input::{Seat, SeatHandler, SeatState},
     reexports::wayland_server::{protocol::wl_surface::WlSurface, Resource as _},
     wayland::{
@@ -42,6 +43,7 @@ impl SeatHandler for SosCompositor {
 }
 
 delegate_seat!(SosCompositor);
+delegate_text_input_manager!(SosCompositor);
 
 impl SelectionHandler for SosCompositor {
     type SelectionUserData = ();

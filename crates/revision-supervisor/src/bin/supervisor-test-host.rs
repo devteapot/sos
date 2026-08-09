@@ -10,6 +10,7 @@ use revision_supervisor::{HostEvent, HostRequest};
 fn main() {
     let stdin = io::stdin();
     let mut prepared: Option<(String, String)> = None;
+    let mut quiesced_revision: Option<String> = None;
     for line in stdin.lock().lines() {
         let request: HostRequest = serde_json::from_str(&line.expect("read host request"))
             .expect("deserialize host request");
@@ -66,6 +67,24 @@ fn main() {
                     });
                 }
             }
+            HostRequest::QuiesceInput {
+                request_id,
+                revision_id,
+            } => {
+                if prepared.as_ref().map(|(revision, _)| revision) != Some(&revision_id) {
+                    emit(HostEvent::Rejected {
+                        request_id,
+                        revision_id,
+                        error: "cannot quiesce without the matching prepared revision".into(),
+                    });
+                } else {
+                    quiesced_revision = Some(revision_id.clone());
+                    emit(HostEvent::InputQuiesced {
+                        request_id,
+                        revision_id,
+                    });
+                }
+            }
             HostRequest::Present {
                 request_id,
                 revision_id,
@@ -84,9 +103,16 @@ fn main() {
                         revision_id,
                         error: "prepared revision mismatch".into(),
                     });
+                } else if quiesced_revision.as_deref() != Some(&revision_id) {
+                    emit(HostEvent::Rejected {
+                        request_id,
+                        revision_id,
+                        error: "input was not quiesced for prepared revision".into(),
+                    });
                 } else if mode == "exit-before-present" {
                     process::exit(42);
                 } else {
+                    quiesced_revision = None;
                     emit(HostEvent::Presented {
                         request_id,
                         revision_id,
@@ -106,6 +132,9 @@ fn main() {
                 revision_id,
             } => {
                 prepared = None;
+                if quiesced_revision.as_deref() == Some(&revision_id) {
+                    quiesced_revision = None;
+                }
                 emit(HostEvent::Discarded {
                     request_id,
                     revision_id,

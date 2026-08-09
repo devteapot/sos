@@ -49,6 +49,14 @@ pub enum CompositorRequest {
         token: String,
         pid: u32,
     },
+    QuiesceInput {
+        request_id: u64,
+        revision_id: String,
+    },
+    ResumeInput {
+        request_id: u64,
+        revision_id: String,
+    },
     ArmPresentation {
         request_id: u64,
         revision_id: String,
@@ -86,9 +94,10 @@ impl PresentationEvidence {
 impl CompositorRequest {
     pub fn request_id(&self) -> u64 {
         match self {
-            Self::RegisterShell { request_id, .. } | Self::ArmPresentation { request_id, .. } => {
-                *request_id
-            }
+            Self::RegisterShell { request_id, .. }
+            | Self::QuiesceInput { request_id, .. }
+            | Self::ResumeInput { request_id, .. }
+            | Self::ArmPresentation { request_id, .. } => *request_id,
         }
     }
 }
@@ -104,6 +113,14 @@ pub enum CompositorEvent {
         request_id: u64,
         revision_id: String,
         after_commit_sequence: u64,
+    },
+    InputQuiesced {
+        request_id: u64,
+        revision_id: String,
+    },
+    InputResumed {
+        request_id: u64,
+        revision_id: String,
     },
     Presented {
         request_id: u64,
@@ -123,6 +140,8 @@ impl CompositorEvent {
         match self {
             Self::Registered { request_id, .. }
             | Self::Armed { request_id, .. }
+            | Self::InputQuiesced { request_id, .. }
+            | Self::InputResumed { request_id, .. }
             | Self::Presented { request_id, .. }
             | Self::Rejected { request_id, .. } => *request_id,
         }
@@ -145,6 +164,26 @@ mod tests {
             r#"{"action":"arm_presentation","request_id":9,"revision_id":"abc"}"#
         );
         assert_eq!(request.request_id(), 9);
+
+        let quiesce = CompositorRequest::QuiesceInput {
+            request_id: 8,
+            revision_id: "abc".into(),
+        };
+        assert_eq!(
+            serde_json::to_string(&quiesce).unwrap(),
+            r#"{"action":"quiesce_input","request_id":8,"revision_id":"abc"}"#
+        );
+        assert_eq!(quiesce.request_id(), 8);
+
+        let resumed = CompositorEvent::InputResumed {
+            request_id: 8,
+            revision_id: "abc".into(),
+        };
+        assert_eq!(
+            serde_json::from_str::<CompositorEvent>(&serde_json::to_string(&resumed).unwrap())
+                .unwrap(),
+            resumed
+        );
 
         let event = CompositorEvent::Presented {
             request_id: 9,

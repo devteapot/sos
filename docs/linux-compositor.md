@@ -17,7 +17,7 @@ revision supervisor
     v
 permanent sos-experience-host PID
     | authenticated bounded control protocol
-    | register_shell / arm_presentation <- compositor evidence
+    | register_shell / quiesce_input / arm_presentation <- compositor evidence
     |
     | Luau -> Scene ABI v3 -> retained GPUI
     v
@@ -52,12 +52,20 @@ multiple compatibility clients are intentionally outside this gate.
 
 ## Activation fence
 
-At `present`, the host first asks the Luau worker to commit the already prepared
-VM. When the worker confirms that commit, it performs this handoff on the GPUI
-event thread:
+Input quiescing begins before the provider/state authority changes. After the
+candidate VM is prepared, the supervisor asks the permanent host to quiesce the
+exact candidate revision and waits for the compositor acknowledgement. The
+compositor removes keyboard and pointer focus, sends releases for keys/buttons
+that the old scene saw pressed, drops subsequent backend events, and suppresses
+the eventual release of any device held across the boundary. The host clears
+its bounded pending-event and gesture queues. Only then may the coordinator
+promote provider/state authority.
 
-1. Ask the compositor to arm the exact request/revision pair and wait for its
-   current shell-commit sequence.
+At `present`, the host asks the Luau worker to commit the prepared VM. When the
+worker confirms that commit, it performs this handoff on the GPUI event thread:
+
+1. Ask the already-quiesced compositor to arm the exact request/revision pair
+   and wait for its current shell-commit sequence.
 2. Install the worker-confirmed retained scene and assets in the same host.
 3. Request the new GPUI frame.
 4. Let the compositor tag the first later root shell commit.
@@ -68,6 +76,12 @@ event thread:
    sequence, and typed evidence to the host.
 7. Only then emit the supervisor's `presented`; `confirm` still proves the host
    loop responds before `current` advances.
+
+If authority promotion aborts before presentation, `discard` resumes the exact
+revision-bound compositor fence before discarding the candidate VM. A control
+disconnect clears the fence without restoring focus to the unauthenticated
+stale shell. Successful presentation restores focus only to the still-live
+surface that owned it before quiescing.
 
 Arming at the actual retained-scene handoff matters. Arming in the earlier
 supervisor request handler would permit an animated frame from the old scene to
@@ -110,6 +124,10 @@ recovery, and maps `weston-simple-shm` as the compatibility client. It requires:
 - exact authority/current-pointer agreement;
 - no `gpui_next_frame` fallback;
 - three compositor submit fences: boot, activation, and recovered boot;
+- native XTest -> Weston -> Smithay -> `wl_keyboard` delivery, exact persisted
+  `wayland` text replacement, and Enter submission;
+- at least one compositor-owned backend event suppressed while activation is
+  quiesced;
 - a new authenticated PID after forced host failure;
 - shell and compatibility role classification plus fixed placement.
 
@@ -170,7 +188,9 @@ compatibility client mapped at `(280, 140)`.
 
 The current direct backend is intentionally one seat, one DRM device, and one
 connected output. Its recovery view is a compositor-owned solid color. Hotplug
-requires restart; cursor rendering and injected input evidence are still open.
+requires restart; cursor rendering and direct-session injected input evidence
+are still open. Relative mouse motion now shares the absolute tablet path, but
+the nested injection is not direct libinput or physical-device evidence.
 The VM's software GBM/EGL stack lacks `EGL_WL_bind_wayland_display`, so the
 compositor uses its advertised `wl_shm` path for clients. None of this run is a
 physical display, latency, touch, GPU-performance, suspend/resume, or thermal
@@ -189,6 +209,8 @@ Boot-to-SOS packaging now passes in the same VM: a systemd/PAM service owns the
 active logind tty1 session, waits for the recovery page flip before provider and
 host startup, receives its token through systemd credentials, and recovers both
 host and whole-session failures without seatd. The next gate is deterministic
-cursor plus injected keyboard/pointer/touch evidence. Native Linux text
-editing/IME, clipboard, accessibility, service-identity separation,
-hotplug/multiple outputs, XWayland, and physical-device performance remain open.
+cursor plus direct injected pointer/touch evidence. Native Linux keyboard text
+editing is proven in the nested Wayland path; an actual input-method-v2 process
+and non-Latin preedit/commit remain open, along with clipboard, accessibility,
+service-identity separation, hotplug/multiple outputs, XWayland, and
+physical-device performance.

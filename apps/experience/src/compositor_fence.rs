@@ -36,6 +36,16 @@ pub enum FenceEvent {
 }
 
 enum FenceCommand {
+    QuiesceInput {
+        request_id: u64,
+        revision_id: String,
+        reply: mpsc::Sender<std::result::Result<(), String>>,
+    },
+    ResumeInput {
+        request_id: u64,
+        revision_id: String,
+        reply: mpsc::Sender<std::result::Result<(), String>>,
+    },
     Arm {
         request_id: u64,
         revision_id: String,
@@ -149,6 +159,36 @@ impl CompositorFence {
             .map_err(anyhow::Error::msg)
     }
 
+    pub fn quiesce_input(&self, request_id: u64, revision_id: &str) -> Result<()> {
+        let (reply_tx, reply_rx) = mpsc::channel();
+        self.commands
+            .send(FenceCommand::QuiesceInput {
+                request_id,
+                revision_id: revision_id.into(),
+                reply: reply_tx,
+            })
+            .context("compositor fence thread is unavailable")?;
+        reply_rx
+            .recv_timeout(CONTROL_TIMEOUT)
+            .context("timed out quiescing compositor input")?
+            .map_err(anyhow::Error::msg)
+    }
+
+    pub fn resume_input(&self, request_id: u64, revision_id: &str) -> Result<()> {
+        let (reply_tx, reply_rx) = mpsc::channel();
+        self.commands
+            .send(FenceCommand::ResumeInput {
+                request_id,
+                revision_id: revision_id.into(),
+                reply: reply_tx,
+            })
+            .context("compositor fence thread is unavailable")?;
+        reply_rx
+            .recv_timeout(CONTROL_TIMEOUT)
+            .context("timed out resuming compositor input")?
+            .map_err(anyhow::Error::msg)
+    }
+
     pub fn events(&self) -> async_channel::Receiver<FenceEvent> {
         self.events.clone()
     }
@@ -161,54 +201,73 @@ fn run_io(
     events: &async_channel::Sender<FenceEvent>,
 ) -> Result<()> {
     loop {
-        if let Ok(FenceCommand::Arm {
-            request_id,
-            revision_id,
-            reply,
-        }) = commands.try_recv()
-        {
+        if let Ok(command) = commands.try_recv() {
             stream.set_read_timeout(Some(CONTROL_TIMEOUT))?;
-            write_request(
-                &mut stream,
-                &CompositorRequest::ArmPresentation {
+            match command {
+                FenceCommand::QuiesceInput {
                     request_id,
-                    revision_id: revision_id.clone(),
-                },
-            )?;
-            let armed = loop {
-                let event = read_event(&mut reader)?
-                    .context("compositor closed while arming presentation fence")?;
-                match event {
-                    CompositorEvent::Armed {
-                        request_id: received,
-                        revision_id: received_revision,
-                        after_commit_sequence,
-                    } if received == request_id && received_revision == revision_id => {
-                        break Ok(after_commit_sequence);
-                    }
-                    CompositorEvent::Rejected {
-                        request_id: received,
-                        error,
-                    } if received == request_id => break Err(error),
-                    CompositorEvent::Presented {
-                        request_id,
-                        revision_id,
-                        commit_sequence,
-                        submit_sequence,
-                        evidence,
-                    } => {
-                        events.send_blocking(FenceEvent::Presented(Presented {
+                    revision_id,
+                    reply,
+                } => {
+                    write_request(
+                        &mut stream,
+                        &CompositorRequest::QuiesceInput {
                             request_id,
-                            revision_id,
-                            commit_sequence,
-                            submit_sequence,
-                            evidence,
-                        }))?;
-                    }
-                    event => bail!("unexpected compositor arm event: {event:?}"),
+                            revision_id: revision_id.clone(),
+                        },
+                    )?;
+                    let result =
+                        wait_for_ack(&mut reader, events, request_id, &revision_id, |event| {
+                            matches!(event, CompositorEvent::InputQuiesced { .. })
+                        })
+                        .map(|_| ());
+                    let _ = reply.send(result);
                 }
-            };
-            let _ = reply.send(armed);
+                FenceCommand::ResumeInput {
+                    request_id,
+                    revision_id,
+                    reply,
+                } => {
+                    write_request(
+                        &mut stream,
+                        &CompositorRequest::ResumeInput {
+                            request_id,
+                            revision_id: revision_id.clone(),
+                        },
+                    )?;
+                    let result =
+                        wait_for_ack(&mut reader, events, request_id, &revision_id, |event| {
+                            matches!(event, CompositorEvent::InputResumed { .. })
+                        })
+                        .map(|_| ());
+                    let _ = reply.send(result);
+                }
+                FenceCommand::Arm {
+                    request_id,
+                    revision_id,
+                    reply,
+                } => {
+                    write_request(
+                        &mut stream,
+                        &CompositorRequest::ArmPresentation {
+                            request_id,
+                            revision_id: revision_id.clone(),
+                        },
+                    )?;
+                    let result =
+                        wait_for_ack(&mut reader, events, request_id, &revision_id, |event| {
+                            matches!(event, CompositorEvent::Armed { .. })
+                        })
+                        .map(|event| match event {
+                            CompositorEvent::Armed {
+                                after_commit_sequence,
+                                ..
+                            } => after_commit_sequence,
+                            _ => unreachable!("arm acknowledgement was matched"),
+                        });
+                    let _ = reply.send(result);
+                }
+            }
             stream.set_read_timeout(Some(EVENT_POLL_INTERVAL))?;
         }
 
@@ -235,6 +294,59 @@ fn run_io(
                 ) => {}
             Err(error) => return Err(error.into()),
         }
+    }
+}
+
+fn wait_for_ack(
+    reader: &mut BufReader<UnixStream>,
+    events: &async_channel::Sender<FenceEvent>,
+    request_id: u64,
+    revision_id: &str,
+    matches_ack: impl Fn(&CompositorEvent) -> bool,
+) -> std::result::Result<CompositorEvent, String> {
+    loop {
+        let event = read_event(reader)
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| "compositor closed while awaiting control acknowledgement".to_owned())?;
+        match event {
+            CompositorEvent::Rejected {
+                request_id: received,
+                error,
+            } if received == request_id => return Err(error),
+            CompositorEvent::Presented {
+                request_id,
+                revision_id,
+                commit_sequence,
+                submit_sequence,
+                evidence,
+            } => events
+                .send_blocking(FenceEvent::Presented(Presented {
+                    request_id,
+                    revision_id,
+                    commit_sequence,
+                    submit_sequence,
+                    evidence,
+                }))
+                .map_err(|error| error.to_string())?,
+            event
+                if event.request_id() == request_id
+                    && event_revision(&event) == Some(revision_id)
+                    && matches_ack(&event) =>
+            {
+                return Ok(event)
+            }
+            event => return Err(format!("unexpected compositor control event: {event:?}")),
+        }
+    }
+}
+
+fn event_revision(event: &CompositorEvent) -> Option<&str> {
+    match event {
+        CompositorEvent::Armed { revision_id, .. }
+        | CompositorEvent::InputQuiesced { revision_id, .. }
+        | CompositorEvent::InputResumed { revision_id, .. }
+        | CompositorEvent::Presented { revision_id, .. } => Some(revision_id),
+        CompositorEvent::Registered { .. } | CompositorEvent::Rejected { .. } => None,
     }
 }
 
@@ -269,7 +381,7 @@ mod tests {
     use std::os::unix::net::UnixListener;
 
     #[test]
-    fn registers_arms_and_forwards_presented_evidence() {
+    fn registers_quiesces_arms_and_forwards_presented_evidence() {
         let directory = tempfile::tempdir().unwrap();
         let socket = directory.path().join("control.sock");
         let listener = UnixListener::bind(&socket).unwrap();
@@ -289,6 +401,21 @@ mod tests {
             write_event_for_test(
                 &mut stream,
                 &CompositorEvent::Registered { request_id, pid },
+            );
+            let quiesce = read_request_for_test(&mut reader);
+            let CompositorRequest::QuiesceInput {
+                request_id,
+                revision_id,
+            } = quiesce
+            else {
+                panic!("expected input quiesce")
+            };
+            write_event_for_test(
+                &mut stream,
+                &CompositorEvent::InputQuiesced {
+                    request_id,
+                    revision_id,
+                },
             );
             let arm = read_request_for_test(&mut reader);
             let CompositorRequest::ArmPresentation {
@@ -320,6 +447,7 @@ mod tests {
 
         let fence = CompositorFence::connect(&socket, "secret".into()).unwrap();
         let revision = "a".repeat(64);
+        fence.quiesce_input(6, &revision).unwrap();
         assert_eq!(fence.arm(7, &revision).unwrap(), 5);
         let FenceEvent::Presented(presented) =
             fence.events().recv_blocking().expect("presentation event")

@@ -4,7 +4,7 @@ set -euo pipefail
 
 gate_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$gate_root"
-for gate_command in cargo sed weston weston-simple-shm Xvfb; do
+for gate_command in cargo jq python3 sed weston weston-simple-shm Xvfb; do
   command -v "$gate_command" >/dev/null 2>&1 || {
     printf 'error: required command not found: %s\n' "$gate_command" >&2
     exit 1
@@ -23,6 +23,7 @@ gate_weston_pid=""
 gate_compositor_pid=""
 gate_session_pid=""
 gate_compatibility_pid=""
+gate_input_pid=""
 
 cleanup_nested_gate() {
   if [[ -n "$gate_session_pid" ]] && kill -0 "$gate_session_pid" 2>/dev/null; then
@@ -31,6 +32,7 @@ cleanup_nested_gate() {
     wait "$gate_session_pid" 2>/dev/null || true
   fi
   for gate_pid in \
+    "$gate_input_pid" \
     "$gate_compatibility_pid" \
     "$gate_compositor_pid" \
     "$gate_weston_pid" \
@@ -62,6 +64,75 @@ report_nested_gate_failure() {
   exit "$gate_status"
 }
 trap 'report_nested_gate_failure "$LINENO"' ERR
+
+inject_x11_input() {
+  DISPLAY="$gate_display" python3 - "$@" <<'PY'
+import ctypes
+import os
+import sys
+import time
+
+x11 = ctypes.CDLL("libX11.so.6")
+xtst = ctypes.CDLL("libXtst.so.6")
+x11.XOpenDisplay.argtypes = [ctypes.c_char_p]
+x11.XOpenDisplay.restype = ctypes.c_void_p
+x11.XStringToKeysym.argtypes = [ctypes.c_char_p]
+x11.XStringToKeysym.restype = ctypes.c_ulong
+x11.XKeysymToKeycode.argtypes = [ctypes.c_void_p, ctypes.c_ulong]
+x11.XKeysymToKeycode.restype = ctypes.c_uint
+x11.XFlush.argtypes = [ctypes.c_void_p]
+x11.XCloseDisplay.argtypes = [ctypes.c_void_p]
+xtst.XTestFakeKeyEvent.argtypes = [ctypes.c_void_p, ctypes.c_uint, ctypes.c_int, ctypes.c_ulong]
+xtst.XTestFakeButtonEvent.argtypes = [ctypes.c_void_p, ctypes.c_uint, ctypes.c_int, ctypes.c_ulong]
+xtst.XTestFakeMotionEvent.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_ulong]
+
+display_name = os.environ["DISPLAY"].encode()
+display = x11.XOpenDisplay(display_name)
+if not display:
+    raise SystemExit(f"could not open X display {display_name.decode()}")
+
+def keycode(name):
+    keysym = x11.XStringToKeysym(name.encode())
+    code = x11.XKeysymToKeycode(display, keysym)
+    if not keysym or not code:
+        raise SystemExit(f"X11 key is unavailable: {name}")
+    return code
+
+def key(name, pressed):
+    if not xtst.XTestFakeKeyEvent(display, keycode(name), int(pressed), 0):
+        raise SystemExit(f"could not inject X11 key: {name}")
+
+def tap(name):
+    key(name, True)
+    key(name, False)
+
+try:
+    mode = sys.argv[1]
+    if mode == "click":
+        x, y = int(sys.argv[2]), int(sys.argv[3])
+        xtst.XTestFakeMotionEvent(display, -1, x, y, 0)
+        xtst.XTestFakeButtonEvent(display, 1, 1, 0)
+        xtst.XTestFakeButtonEvent(display, 1, 0, 0)
+    elif mode == "spam":
+        name, count = sys.argv[2], int(sys.argv[3])
+        for _ in range(count):
+            tap(name)
+            x11.XFlush(display)
+            time.sleep(0.001)
+    elif mode == "replace":
+        key("Control_L", True)
+        tap("a")
+        key("Control_L", False)
+        for character in sys.argv[2]:
+            tap(character)
+        tap("Return")
+    else:
+        raise SystemExit(f"unknown injection mode: {mode}")
+    x11.XFlush(display)
+finally:
+    x11.XCloseDisplay(display)
+PY
+}
 
 cargo build --locked \
   -p sos-compositor --bin sos-compositor \
@@ -141,6 +212,13 @@ for _ in {1..10000}; do
 done
 [[ -S "$gate_revision_root/run/supervisor.sock" ]]
 
+# Establish compositor keyboard focus, then keep native events flowing while
+# the coordinator crosses its explicit input-quiesce boundary.
+inject_x11_input click 640 400
+inject_x11_input spam F12 500 >"$gate_run_dir/input-inject.log" 2>&1 &
+gate_input_pid=$!
+sleep 0.02
+
 gate_status_before="$(
   SOS_LINUX_REVISION_ROOT="$gate_revision_root" ./tools/sosctl linux-status
 )"
@@ -151,6 +229,34 @@ gate_activation="$(
   SOS_LINUX_REVISION_ROOT="$gate_revision_root" \
     ./tools/sosctl linux-script experiences/daily-flow.luau
 )"
+if kill -0 "$gate_input_pid" 2>/dev/null; then
+  kill "$gate_input_pid"
+fi
+wait "$gate_input_pid" 2>/dev/null || true
+gate_input_pid=""
+grep -Eq 'finished compositor input quiesce suppressed_events=[1-9][0-9]* restore_shell_focus=true' \
+  "$gate_run_dir/compositor.log"
+gate_suppressed_events="$(
+  sed -n \
+    's/.*finished compositor input quiesce suppressed_events=\([1-9][0-9]*\).*/\1/p' \
+    "$gate_run_dir/compositor.log"
+)"
+[[ -n "$gate_suppressed_events" ]]
+
+# The candidate autofocuses its native GPUI text session. These events enter
+# through XTest, the outer Weston seat, Smithay, and the inner wl_keyboard.
+sleep 0.2
+inject_x11_input replace wayland
+for _ in {1..1000}; do
+  if [[ "$(jq -r '.current.state.draft // empty' "$gate_revision_root/authority.json")" == wayland ]] && \
+    [[ "$(jq -r '.current.state.last_saved // false' "$gate_revision_root/authority.json")" == true ]]; then
+    break
+  fi
+  kill -0 "$gate_session_pid" 2>/dev/null
+  sleep 0.01
+done
+[[ "$(jq -r '.current.state.draft // empty' "$gate_revision_root/authority.json")" == wayland ]]
+[[ "$(jq -r '.current.state.last_saved // false' "$gate_revision_root/authority.json")" == true ]]
 gate_status_after="$(
   SOS_LINUX_REVISION_ROOT="$gate_revision_root" ./tools/sosctl linux-status
 )"
@@ -226,6 +332,9 @@ printf 'linux_nested_compositor_passed activation_pid=%s restarted_pid=%s revisi
   "$gate_pid_after" "$gate_restarted_pid" "$gate_current_revision"
 printf 'activation=%s\n' "$gate_activation"
 printf 'authority_revision=%s\n' "$gate_authority_revision"
+printf 'native_text=%s input_quiesce_suppressed_events=%s\n' \
+  "$(jq -r '.current.state.draft' "$gate_revision_root/authority.json")" \
+  "$gate_suppressed_events"
 grep -E \
   'authenticated SOS shell|mapped fixed-policy|presented armed shell revision' \
   "$gate_run_dir/compositor.log"

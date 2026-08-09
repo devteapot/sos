@@ -31,7 +31,7 @@ pub struct SurfacePolicy {
     shell_commit_sequence: u64,
     submit_sequence: u64,
     pending: Option<ArmedPresentation>,
-    input_quiesced: bool,
+    quiesced_revision: Option<String>,
 }
 
 impl SurfacePolicy {
@@ -53,7 +53,7 @@ impl SurfacePolicy {
         if self.shell_pid == Some(pid) {
             self.shell_pid = None;
             self.pending = None;
-            self.input_quiesced = false;
+            self.quiesced_revision = None;
         }
     }
 
@@ -96,8 +96,9 @@ impl SurfacePolicy {
         if self.pending.is_some() {
             bail!("another shell presentation is already armed");
         }
-        if revision_id.len() != 64 || !revision_id.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-            bail!("revision ID is not a SHA-256 identity");
+        self.validate_revision(&revision_id)?;
+        if self.quiesced_revision.as_deref() != Some(&revision_id) {
+            bail!("input is not quiesced for the armed revision");
         }
         let after_commit_sequence = self.shell_commit_sequence;
         self.pending = Some(ArmedPresentation {
@@ -107,8 +108,46 @@ impl SurfacePolicy {
             target_commit_sequence: None,
             queued_submit_sequence: None,
         });
-        self.input_quiesced = true;
         Ok(after_commit_sequence)
+    }
+
+    pub fn quiesce_input(&mut self, pid: u32, revision_id: String) -> Result<bool> {
+        if self.shell_pid != Some(pid) {
+            bail!("input quiesce is not owned by the registered shell");
+        }
+        self.validate_revision(&revision_id)?;
+        match self.quiesced_revision.as_deref() {
+            Some(current) if current == revision_id => Ok(false),
+            Some(_) => bail!("input is already quiesced for another revision"),
+            None => {
+                self.quiesced_revision = Some(revision_id);
+                Ok(true)
+            }
+        }
+    }
+
+    pub fn resume_input(&mut self, pid: u32, revision_id: &str) -> Result<bool> {
+        if self.shell_pid != Some(pid) {
+            bail!("input resume is not owned by the registered shell");
+        }
+        if self.pending.is_some() {
+            bail!("cannot resume input while presentation is armed");
+        }
+        match self.quiesced_revision.as_deref() {
+            Some(current) if current == revision_id => {
+                self.quiesced_revision = None;
+                Ok(true)
+            }
+            Some(_) => bail!("quiesced revision does not match input resume"),
+            None => Ok(false),
+        }
+    }
+
+    fn validate_revision(&self, revision_id: &str) -> Result<()> {
+        if revision_id.len() != 64 || !revision_id.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            bail!("revision ID is not a SHA-256 identity");
+        }
+        Ok(())
     }
 
     pub fn record_shell_commit(&mut self) -> u64 {
@@ -167,7 +206,7 @@ impl SurfacePolicy {
             .pending
             .take()
             .expect("pending presentation was checked");
-        self.input_quiesced = false;
+        self.quiesced_revision = None;
         debug_assert_eq!(pending.revision_id, queued.revision_id);
         Some(queued)
     }
@@ -179,7 +218,7 @@ impl SurfacePolicy {
     }
 
     pub fn input_quiesced(&self) -> bool {
-        self.input_quiesced
+        self.quiesced_revision.is_some()
     }
 
     pub fn shell_mapped(&self) -> bool {
@@ -214,6 +253,7 @@ mod tests {
     fn input_stays_quiesced_until_an_armed_commit_is_submitted() {
         let mut policy = SurfacePolicy::default();
         policy.register_shell(41).unwrap();
+        policy.quiesce_input(41, REVISION.into()).unwrap();
         assert_eq!(policy.arm(41, 7, REVISION.into()).unwrap(), 0);
         assert!(policy.input_quiesced());
         assert!(policy.record_successful_submit(true).is_none());
@@ -231,6 +271,7 @@ mod tests {
     fn direct_queue_does_not_release_input_until_matching_presentation() {
         let mut policy = SurfacePolicy::default();
         policy.register_shell(41).unwrap();
+        policy.quiesce_input(41, REVISION.into()).unwrap();
         policy.arm(41, 7, REVISION.into()).unwrap();
         policy.record_shell_commit();
 
@@ -244,6 +285,19 @@ mod tests {
         assert!(policy.input_quiesced());
 
         assert_eq!(policy.record_presented(queued).unwrap().request_id, 7);
+        assert!(!policy.input_quiesced());
+    }
+
+    #[test]
+    fn input_quiesce_is_revision_bound_and_abortable_before_arm() {
+        let mut policy = SurfacePolicy::default();
+        policy.register_shell(41).unwrap();
+        assert!(policy.quiesce_input(42, REVISION.into()).is_err());
+        assert!(policy.quiesce_input(41, REVISION.into()).unwrap());
+        assert!(policy.input_quiesced());
+        assert!(!policy.quiesce_input(41, REVISION.into()).unwrap());
+        assert!(policy.resume_input(41, &"b".repeat(64)).is_err());
+        assert!(policy.resume_input(41, REVISION).unwrap());
         assert!(!policy.input_quiesced());
     }
 

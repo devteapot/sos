@@ -1,14 +1,18 @@
 // The Wayland state setup follows Smithay's MIT-licensed `smallvil` example at
 // tag v0.7.0, reduced to the protocols and policy SOS exercises here.
 
-use std::{collections::HashMap, ffi::OsString, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    ffi::OsString,
+    sync::Arc,
+};
 
 use compositor_control_protocol::{CompositorEvent, PresentationEvidence};
 use nix::sys::socket::{getsockopt, sockopt::PeerCredentials};
 use smithay::{
     backend::renderer::element::RenderElementStates,
     desktop::{PopupManager, Space, Window, WindowSurfaceType},
-    input::{Seat, SeatState},
+    input::{keyboard::Keycode, Seat, SeatState},
     reexports::{
         calloop::{generic::Generic, EventLoop, Interest, Mode, PostAction},
         wayland_server::{
@@ -26,6 +30,7 @@ use smithay::{
         shell::xdg::XdgShellState,
         shm::ShmState,
         socket::ListeningSocketSource,
+        text_input::TextInputManagerState,
     },
 };
 
@@ -42,6 +47,11 @@ pub struct SosCompositor {
     pub space: Space<Window>,
     pub policy: SurfacePolicy,
     pub shell_surface: Option<WlSurface>,
+    pub quiesced_keyboard_focus: Option<WlSurface>,
+    pub suppressed_keyboard_keys: HashSet<Keycode>,
+    pub pressed_pointer_buttons: HashSet<u32>,
+    pub suppressed_pointer_buttons: HashSet<u32>,
+    pub quiesced_input_events: u64,
     pub surface_roles: HashMap<ObjectId, ClientRole>,
     pub shell_events: Option<(u32, std::sync::mpsc::Sender<CompositorEvent>)>,
     pub output_size: (i32, i32),
@@ -56,6 +66,8 @@ pub struct SosCompositor {
     pub presentation_state: PresentationState,
     pub seat_state: SeatState<SosCompositor>,
     pub data_device_state: DataDeviceState,
+    #[allow(dead_code)]
+    pub text_input_manager_state: TextInputManagerState,
     pub popups: PopupManager,
     pub seat: Seat<Self>,
 }
@@ -75,6 +87,7 @@ impl SosCompositor {
         let presentation_state = PresentationState::new::<Self>(&display_handle, clock.id() as u32);
         let mut seat_state = SeatState::new();
         let data_device_state = DataDeviceState::new::<Self>(&display_handle);
+        let text_input_manager_state = TextInputManagerState::new::<Self>(&display_handle);
         let popups = PopupManager::default();
         let mut seat = seat_state.new_wl_seat(&display_handle, "sos-nested");
         seat.add_keyboard(Default::default(), 200, 25)?;
@@ -89,6 +102,11 @@ impl SosCompositor {
             space: Space::default(),
             policy: SurfacePolicy::default(),
             shell_surface: None,
+            quiesced_keyboard_focus: None,
+            suppressed_keyboard_keys: HashSet::new(),
+            pressed_pointer_buttons: HashSet::new(),
+            suppressed_pointer_buttons: HashSet::new(),
+            quiesced_input_events: 0,
             surface_roles: HashMap::new(),
             shell_events: None,
             output_size: (1280, 800),
@@ -99,6 +117,7 @@ impl SosCompositor {
             presentation_state,
             seat_state,
             data_device_state,
+            text_input_manager_state,
             popups,
             seat,
         })
@@ -190,8 +209,70 @@ impl SosCompositor {
                     let _ = reply.send(result);
                 }
             }
+            ControlCommand::QuiesceInput {
+                pid,
+                request_id,
+                revision_id,
+                reply,
+            } => {
+                let result = self
+                    .policy
+                    .quiesce_input(pid, revision_id.clone())
+                    .map_err(|error| error.to_string());
+                match result {
+                    Ok(changed) => {
+                        if changed {
+                            self.begin_input_quiesce();
+                        }
+                        tracing::info!(
+                            pid,
+                            request_id,
+                            revision_id,
+                            changed,
+                            "quiesced compositor input for revision"
+                        );
+                        let _ = reply.send(Ok(changed));
+                    }
+                    Err(error) => {
+                        let _ = reply.send(Err(error));
+                    }
+                }
+            }
+            ControlCommand::ResumeInput {
+                pid,
+                request_id,
+                revision_id,
+                reply,
+            } => {
+                let result = self
+                    .policy
+                    .resume_input(pid, &revision_id)
+                    .map_err(|error| error.to_string());
+                match result {
+                    Ok(changed) => {
+                        if changed {
+                            self.end_input_quiesce(true);
+                        }
+                        tracing::info!(
+                            pid,
+                            request_id,
+                            revision_id,
+                            changed,
+                            "resumed compositor input after revision abort"
+                        );
+                        let _ = reply.send(Ok(changed));
+                    }
+                    Err(error) => {
+                        let _ = reply.send(Err(error));
+                    }
+                }
+            }
             ControlCommand::Disconnected { pid } => {
+                let was_quiesced = self.policy.input_quiesced();
                 self.policy.unregister_shell(pid);
+                if was_quiesced {
+                    self.end_input_quiesce(false);
+                }
                 if self.shell_events.as_ref().map(|(owner, _)| *owner) == Some(pid) {
                     self.shell_events = None;
                 }
@@ -218,6 +299,7 @@ impl SosCompositor {
         presented: crate::policy::QueuedRevision,
         evidence: PresentationEvidence,
     ) {
+        self.end_input_quiesce(true);
         let event = CompositorEvent::Presented {
             request_id: presented.request_id,
             revision_id: presented.revision_id.clone(),
