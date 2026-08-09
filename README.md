@@ -136,8 +136,14 @@ composition and local behavior.
 Build, install, and launch the ARM64 APK:
 
 ```sh
+./tools/sosctl m1-check
 ./tools/sosctl m1-run
 ```
+
+`m1-check` needs the SDK, NDK, Java, and Rust Android target but not a connected
+device. On an ARM64 Linux workstation it automatically combines native LLVM
+with the NDK sysroot because Google's Linux NDK executables are x86-64; on
+other hosts it uses `cargo-ndk`.
 
 Replace only the experience source while the same process and APK stay alive:
 

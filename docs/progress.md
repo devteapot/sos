@@ -1663,3 +1663,67 @@ coordinates, touch lifecycle, and input quiescing across activation. Native
 Linux text editing/IME, clipboard, accessibility, service-identity separation,
 uncatchable lifecycle-owner recovery, hotplug, multiple outputs, XWayland,
 suspend/resume, and physical GPU/touch performance remain open.
+
+## 2026-08-09 — Repair the ARM64-host Android NDK compilation gate
+
+**Goal:** Re-run the Android regression that the boot-session slice could not
+reach, repair the local NDK path rather than relying on the earlier Android
+result, and prove both target compilation and production of the packaged ARM64
+library. The check must be usable without a phone or manually exported SDK,
+NDK, or Java paths.
+
+**Changed:** `tools/sosctl` now discovers the distro SDK at
+`/usr/lib/android-sdk` and the active Linux Java installation when the Android
+environment variables are unset. Added `./tools/sosctl m1-check`, which checks
+the locked `sos-experience` Android release with `gate-strict` without requiring
+ADB. On an ARM64 Linux host it uses native Clang/Clang++, `llvm-ar-18`, and the
+NDK sysroot for C/C++ build scripts, then sends the final Rust link through the
+existing Android linker wrapper. `m1-build` now calls the same helper so the
+check and artifact paths cannot drift. The linker wrapper discovers the NDK's
+Clang runtime-version directory instead of hard-coding version 21 and resolves
+native Clang from `PATH` (or `SOS_ANDROID_CLANG`). The README records the new
+device-independent command and why ARM64 Linux cannot execute the distributed
+x86-64 NDK host binaries.
+
+**Evidence:** With `ANDROID_HOME`, `ANDROID_SDK_ROOT`, `ANDROID_NDK_HOME`,
+`ANDROID_NDK_ROOT`, and `JAVA_HOME` explicitly removed from the environment,
+`./tools/sosctl m1-check` passes for `aarch64-linux-android` with the locked
+release profile and `gate-strict`. A clean explicit cross-check compiled the
+complete graph, including the formerly failing `psm` build script, in 11.09
+seconds. A full locked release build then compiled and linked
+`target/aarch64-linux-android/release/libsos_experience.so` in 36.12 seconds.
+The result is a stripped 14,640,824-byte AArch64 ELF with SHA-256
+`a6e124af13da86c3d765ba8dba9708b6fb9f30e37feb19dc0a77b3e4d1435379`;
+its dynamic dependencies include Android `liblog`, `libandroid`, libc, and the
+packaged `libc++_shared.so` rather than host libraries.
+
+The same unset-environment invocation of `./tools/sosctl m1-build` identified
+Rust 1.95.0, cargo-ndk 4.1.2, SDK `/usr/lib/android-sdk`, NDK r29
+(`29.0.14206865`), Java 17, and the connected SM-A336B/API 35, then completed
+Gradle `assembleDebug` successfully. The ignored
+`artifacts/sos-experience.apk` is 36,849,469 bytes with SHA-256
+`714d51afee7c133dc9676c473a3b3febd580b6446f2e342fcec27fa0f94123fa`.
+The revision copy
+`artifacts/sos-experience-4c966660fd93-dirty.apk` is byte-identical; the dirty
+suffix records that the toolchain repair itself was not yet committed.
+Archive inspection confirms its manifest, DEX, the exact 14,640,824-byte SOS
+ARM64 library, and the 9,290,184-byte NDK `libc++_shared.so`. ShellCheck passes
+for both changed scripts, and `apksigner verify --verbose` confirms one APK
+Signature Scheme v2 signer. Generated JNI libraries, APKs, Gradle output, and
+the writable SDK overlay remain ignored and were not added to Git.
+
+**Failure and fix:** The earlier `ToolNotFound` was reported as a missing NDK
+sysroot, but the NDK had become available at the system SDK path. The remaining
+problem was discovery and execution: no Android variables pointed Cargo at it,
+and Google's Linux NDK compiler is x86-64 while this workstation is ARM64.
+Making distro SDK/JDK discovery explicit and applying the already-proven native
+LLVM plus NDK-sysroot configuration to standalone checks fixed the failure. A
+plain target Cargo invocation remains intentionally unsupported on this host
+because it would again select a host compiler for C/C++ dependencies.
+
+**Decision / next gate:** The current Linux changes have a fresh Android compile
+and link regression, and the standard APK path is repaired. This is build
+evidence, not new device-behavior evidence; no APK was installed or launched as
+part of this gate. Resume the Linux input gate: deterministic compositor-owned
+cursor rendering plus injected keyboard, pointer, and touch events across a
+quiesced revision activation.

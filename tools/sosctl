@@ -40,12 +40,20 @@ resolve_android_environment() {
   local sdk_candidate="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-}}"
   if [[ -z "$sdk_candidate" && -d "${HOME}/Library/Android/sdk" ]]; then
     sdk_candidate="${HOME}/Library/Android/sdk"
+  elif [[ -z "$sdk_candidate" && -d /usr/lib/android-sdk ]]; then
+    sdk_candidate="/usr/lib/android-sdk"
   fi
   [[ -n "$sdk_candidate" && -d "$sdk_candidate" ]] || fail "Android SDK not found; set ANDROID_SDK_ROOT"
 
   local java_candidate="${JAVA_HOME:-}"
   if [[ -z "$java_candidate" || ! -x "$java_candidate/bin/java" ]]; then
-    java_candidate="/Applications/Android Studio.app/Contents/jbr/Contents/Home"
+    if [[ "$(uname -s)" == "Darwin" ]]; then
+      java_candidate="/Applications/Android Studio.app/Contents/jbr/Contents/Home"
+    elif command -v java >/dev/null 2>&1; then
+      java_candidate="$(dirname "$(dirname "$(readlink -f "$(command -v java)")")")"
+    else
+      java_candidate=""
+    fi
   fi
   [[ -x "$java_candidate/bin/java" ]] || fail "Java not found; set JAVA_HOME or install Android Studio"
 
@@ -61,6 +69,64 @@ resolve_android_environment() {
   export ANDROID_NDK_ROOT="$ndk_candidate"
   export JAVA_HOME="$java_candidate"
   export PATH="$JAVA_HOME/bin:$ANDROID_HOME/platform-tools:$ANDROID_HOME/cmdline-tools/latest/bin:${HOME}/.cargo/bin:$PATH"
+}
+
+require_android_rust_target() {
+  rustup target list --installed | grep -qx 'aarch64-linux-android' || \
+    fail "Rust target aarch64-linux-android is not installed"
+}
+
+run_native_arm64_android_cargo() {
+  [[ "$(uname -s)" == "Linux" && "$(uname -m)" == "aarch64" ]] || \
+    fail "native ARM64 Android Cargo wrapper used on an unsupported host"
+
+  for command_name in cargo clang clang++ llvm-ar-18; do
+    require_command "$command_name"
+  done
+
+  local ndk_sysroot="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/sysroot"
+  [[ -d "$ndk_sysroot" ]] || fail "Android NDK sysroot not found: $ndk_sysroot"
+
+  CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$SOS_ROOT/tools/android-clang-linker" \
+  CC_aarch64_linux_android="$(command -v clang)" \
+  CXX_aarch64_linux_android="$(command -v clang++)" \
+  AR_aarch64_linux_android="$(command -v llvm-ar-18)" \
+  CFLAGS_aarch64_linux_android="--target=aarch64-linux-android31 --sysroot=$ndk_sysroot" \
+  CXXFLAGS_aarch64_linux_android="--target=aarch64-linux-android31 --sysroot=$ndk_sysroot" \
+    cargo "$@"
+}
+
+check_android_compilation() {
+  [[ "$#" -eq 0 ]] || fail "usage: ./tools/sosctl m1-check"
+  resolve_android_environment
+  for command_name in cargo rustup; do
+    require_command "$command_name"
+  done
+  require_android_rust_target
+
+  info "checking the SOS GPUI host and embedded Luau runtime for ARM64 Android"
+  if [[ "$(uname -s)" == "Linux" && "$(uname -m)" == "aarch64" ]]; then
+    (
+      cd "$SOS_ROOT"
+      run_native_arm64_android_cargo \
+        check \
+        -p sos-experience \
+        --target aarch64-linux-android \
+        --release \
+        --locked \
+        --no-default-features \
+        --features gate-strict
+    )
+  else
+    require_command cargo-ndk
+    (
+      cd "$SOS_ROOT"
+      cargo ndk \
+        -t arm64-v8a \
+        -P 31 \
+        check -p sos-experience --release --locked --no-default-features --features gate-strict
+    )
+  fi
 }
 
 require_command() {
@@ -96,7 +162,7 @@ doctor() {
   [[ "$target_abis" == *"arm64-v8a"* ]] || fail "device must support arm64-v8a (found $target_abis)"
   [[ -d "$ANDROID_HOME/platforms/android-34" ]] || fail "Android platform 34 is not installed"
   [[ -d "$ANDROID_HOME/build-tools/34.0.0" ]] || fail "Android build tools 34.0.0 are not installed"
-  rustup target list --installed | grep -qx 'aarch64-linux-android' || fail "Rust target aarch64-linux-android is not installed"
+  require_android_rust_target
 
   info "host toolchain is ready"
   printf '    Rust:       %s\n' "$(rustc --version)"
@@ -218,28 +284,20 @@ build_experience_apk() {
     # Google's Linux NDK host tools are x86-64. On a native ARM64 workstation,
     # compile C/C++ dependencies with the system LLVM toolchain and link through
     # the repository wrapper, which supplies the NDK sysroot and runtime.
-    for command_name in clang clang++ llvm-ar-18; do
-      require_command "$command_name"
-    done
     local ndk_sysroot="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/sysroot"
     local ndk_libcxx="$ndk_sysroot/usr/lib/aarch64-linux-android/libc++_shared.so"
     [[ -d "$ndk_sysroot" ]] || fail "Android NDK sysroot not found: $ndk_sysroot"
     [[ -f "$ndk_libcxx" ]] || fail "Android NDK libc++ not found: $ndk_libcxx"
     (
       cd "$SOS_ROOT"
-      CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$SOS_ROOT/tools/android-clang-linker" \
-      CC_aarch64_linux_android="$(command -v clang)" \
-      CXX_aarch64_linux_android="$(command -v clang++)" \
-      AR_aarch64_linux_android="$(command -v llvm-ar-18)" \
-      CFLAGS_aarch64_linux_android="--target=aarch64-linux-android31 --sysroot=$ndk_sysroot" \
-      CXXFLAGS_aarch64_linux_android="--target=aarch64-linux-android31 --sysroot=$ndk_sysroot" \
-        cargo build \
-          -p sos-experience \
-          --target aarch64-linux-android \
-          --release \
-          --locked \
-          --no-default-features \
-          --features gate-strict
+      run_native_arm64_android_cargo \
+        build \
+        -p sos-experience \
+        --target aarch64-linux-android \
+        --release \
+        --locked \
+        --no-default-features \
+        --features gate-strict
     )
     cp "$SOS_ROOT/target/aarch64-linux-android/release/libsos_experience.so" \
       "$M1_JNI_DIR/libsos_experience.so"
@@ -679,6 +737,7 @@ Commands:
   logs                Follow logs from the running example process.
   run [--no-follow]   Doctor, build, install, launch, and follow logs.
   m1-build            Build the SOS GPUI + Luau ARM64 APK.
+  m1-check            Cross-check the SOS GPUI + Luau ARM64 Android target.
   m1-install          Install it with adb install -r (preserves app data).
   m1-launch           Launch the installed SOS experience.
   m1-logs             Follow logs from the SOS experience process.
@@ -730,6 +789,9 @@ case "$command_name" in
   m1-build)
     doctor
     build_experience_apk
+    ;;
+  m1-check)
+    check_android_compilation "$@"
     ;;
   m1-install)
     install_experience_apk
