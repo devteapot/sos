@@ -1,0 +1,66 @@
+[Unit]
+Description=SOS direct Wayland system session
+Documentation=file:/usr/share/doc/sos/linux-stable-host.md
+After=local-fs.target systemd-logind.service systemd-user-sessions.service
+Conflicts=display-manager.service getty@tty1.service
+Before=display-manager.service getty@tty1.service
+
+[Service]
+Type=exec
+User=sos
+Group=sos
+PAMName=login
+TTYPath=/dev/tty1
+StandardInput=tty-force
+StandardOutput=journal
+StandardError=journal
+TTYReset=yes
+TTYVHangup=yes
+TTYVTDisallocate=yes
+UtmpIdentifier=tty1
+UtmpMode=user
+RuntimeDirectory=sos
+RuntimeDirectoryMode=0700
+StateDirectory=sos
+StateDirectoryMode=0700
+LoadCredential=shell-token:/etc/sos/shell-token
+Environment=XDG_SESSION_TYPE=wayland
+Environment=XDG_SESSION_CLASS=user
+Environment=XDG_SEAT=seat0
+Environment=XDG_VTNR=1
+Environment=XDG_RUNTIME_DIR=/run/sos
+Environment=LIBSEAT_BACKEND=logind
+Environment=RUST_LOG=sos_compositor=info
+ExecStart=/usr/local/libexec/sos/sos-linux-session run \
+  --root /var/lib/sos/revisions \
+  --runtime-dir /run/sos \
+  --authority-file /var/lib/sos/authority.json \
+  --shell-token-file %d/shell-token \
+  --compositor /usr/local/libexec/sos/sos-compositor \
+  --provider /usr/local/libexec/sos/sos-provider-state-service \
+  --supervisor /usr/local/libexec/sos/sos-revision-supervisor \
+  --host /usr/local/libexec/sos/sos-experience-host \
+  --timeout-ms 30000
+Restart=on-failure
+RestartSec=250ms
+TimeoutStopSec=8s
+KillMode=mixed
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+LockPersonality=yes
+RestrictAddressFamilies=AF_UNIX AF_NETLINK
+SystemCallArchitectures=native
+ReadWritePaths=/var/lib/sos /run/sos
+
+[Install]
+WantedBy=sos-session.target

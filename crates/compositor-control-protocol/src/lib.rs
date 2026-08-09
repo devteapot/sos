@@ -1,7 +1,45 @@
+use std::{
+    fs::File,
+    io::{self, Read as _},
+    path::Path,
+};
+
 use serde::{Deserialize, Serialize};
 
 pub const MAX_CONTROL_LINE_BYTES: usize = 8 * 1024;
 pub const MAX_SHELL_TOKEN_BYTES: usize = 256;
+
+pub fn valid_shell_token(token: &str) -> bool {
+    !token.is_empty()
+        && token.len() <= MAX_SHELL_TOKEN_BYTES
+        && !token.bytes().any(|byte| matches!(byte, b'\r' | b'\n'))
+}
+
+pub fn read_shell_token_file(path: &Path) -> io::Result<String> {
+    let mut bytes = Vec::with_capacity(MAX_SHELL_TOKEN_BYTES + 1);
+    File::open(path)?
+        .take((MAX_SHELL_TOKEN_BYTES + 1) as u64)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() > MAX_SHELL_TOKEN_BYTES {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "compositor shell token exceeds its bound",
+        ));
+    }
+    let token = String::from_utf8(bytes).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "compositor shell token is not valid UTF-8",
+        )
+    })?;
+    if !valid_shell_token(&token) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "invalid compositor shell token",
+        ));
+    }
+    Ok(token)
+}
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(tag = "action", rename_all = "snake_case")]
@@ -94,6 +132,7 @@ impl CompositorEvent {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
 
     #[test]
     fn control_wire_is_bounded_newline_json() {
@@ -125,5 +164,25 @@ mod tests {
             event
         );
         assert_eq!(event.request_id(), 9);
+    }
+
+    #[test]
+    fn credential_file_preserves_exact_bounded_token() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("shell-token");
+        fs::write(&path, "credential-secret").unwrap();
+        assert_eq!(read_shell_token_file(&path).unwrap(), "credential-secret");
+
+        fs::write(&path, "credential-secret\n").unwrap();
+        assert_eq!(
+            read_shell_token_file(&path).unwrap_err().kind(),
+            io::ErrorKind::InvalidData
+        );
+
+        fs::write(&path, vec![b'x'; MAX_SHELL_TOKEN_BYTES + 1]).unwrap();
+        assert_eq!(
+            read_shell_token_file(&path).unwrap_err().kind(),
+            io::ErrorKind::InvalidData
+        );
     }
 }

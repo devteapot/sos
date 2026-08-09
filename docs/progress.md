@@ -1532,3 +1532,134 @@ session. Add deterministic cursor rendering and injected keyboard/pointer/touch
 evidence there. Native text editing/IME, clipboard, accessibility, hotplug,
 multiple outputs, XWayland, suspend/resume, and physical-device performance
 remain open; no VM result completes those gates.
+
+## 2026-08-09 — Boot the direct compositor as the Debian system session
+
+**Goal:** Replace the SSH-launched seatd proof with an unattended boot contract
+in the disposable Debian 13 VM. Require a PAM/logind active session on tty1,
+start the recovery compositor before provider/supervisor/host, deliver the shell
+secret without putting its value in process arguments or environment variables,
+recover component failures on the committed revision, and restore the VM to
+GNOME after the evidence run. Do not turn the VM result into a physical-device
+or latency claim.
+
+**Changed:** Added `sos-linux-session run` as the single Rust lifecycle owner
+for the direct session. It validates absolute executable/state/credential paths,
+starts the compositor with `LIBSEAT_BACKEND=logind`, waits for Wayland/control
+sockets and a page-flip readiness record, starts and bootstraps durable provider
+authority, then starts the coordinated supervisor and permanent GPUI host. It
+monitors every child, handles TERM/INT/HUP, shuts the supervisor and authority
+down in order, reaps children, and fails the session if a component exits. On a
+restart it removes only a Unix supervisor socket that first refused a connection;
+a live listener or non-socket path remains fatal. GPU cache paths are explicitly
+under `/var/lib/sos` because PAM intentionally supplies the login user's normal
+home/runtime environment.
+
+Added `packaging/systemd/sos-session.target`, `sos-session.service`, and the
+`sysusers.d` declaration. The service conflicts with GDM/tty1 getty, opens a
+`PAMName=login` session bound to `/dev/tty1`, creates private runtime/state
+directories, requests logind rather than seatd, applies read-only system/home
+and kernel hardening, and restarts after lifecycle failure. `pam_systemd` moves
+the tree into active `session-N.scope`, so the Rust owner—not assumptions about
+the now-empty service cgroup—owns child termination. The development VM uses its
+existing `sos` account; creating the packaged system identity remains a
+package-installation concern rather than evidence from this run.
+
+The compositor and host now accept an exact bounded shell token from a file.
+The packaged unit uses `LoadCredential=shell-token:/etc/sos/shell-token` and
+passes `%d/shell-token`; the root source is mode `0400`. Shared parsing rejects
+empty, newline-bearing, non-UTF-8, or greater-than-256-byte credentials. The
+compositor writes an exclusive readiness file only after the first backend
+presentation (`drm_page_flip` directly, backend submit when nested), so the
+generated shell cannot race ahead of the recovery view. Direct page-flip logging
+now keeps only recovery transitions and armed frames at info level and moves
+unchanged flips to trace, avoiding unbounded journald noise.
+
+Added host-side `tools/linux-vm/verify-boot-session`. It refuses non-virtual or
+non-Debian-13 guests and any pre-existing product paths, synchronizes/builds the
+current worktree, installs and verifies the disposable unit, seeds an immutable
+boot revision, disables seatd, selects `sos-session.target`, and reboots. After
+testing activation, host recovery, and a provider-triggered systemd restart, it
+selects `graphical.target`, re-enables seatd, reboots into GDM, and deletes only
+the exact unit, binary, credential, and state paths it previously proved absent.
+The direct and boot verifiers were updated for the significant-page-flip log,
+and the nested verifier's bounded supervisor wait was raised from 20 to 100
+seconds so a clean GPUI rebuild is not mistaken for a runtime failure.
+
+**Evidence:**
+`SOS_LINUX_VM_GUEST_ROOT=/home/sos/sos-direct ./tools/linux-vm/verify-boot-session`
+passes in the retained ARM64 Debian 13.6 KVM guest on kernel
+`6.12.100+deb13-arm64`. seatd was disabled. logind reported
+active Wayland session 1 on seat0/tty1 with lifecycle PID 770 as leader. The
+boot host PID 883 activated revision
+`552f06968bbc5c69de3db581454f60d4303289f304eaaf47a6e9dc3200297cdb`
+without changing PID; boot and activation used commit/submit pairs 1/3 and
+43/11. Killing PID 883 recovered the committed revision in PID 1089 with pair
+50/19. Killing the exact provider made the lifecycle owner fail, systemd's
+restart counter reach one, and a new lifecycle PID 1222 remove the refused stale
+supervisor socket and boot host PID 1312 with another pair 1/3. Pointer and
+authority matched after both recovery levels. The verifier confirmed the
+credential source was `0400 root:root`, the token value appeared in none of the
+lifecycle/compositor/supervisor/host command lines or environments, and the
+host received only `/run/credentials/sos-session.service/shell-token`. It then
+rebooted to GNOME with GDM and seatd active and left no installed SOS product
+paths.
+
+The updated SSH/seatd direct regression passes with activation PID 2656,
+recovered PID 2794, and DRM pairs 1/3, 10/7, and 16/13. The ARM64 Ubuntu nested
+regression passes with activation PID 1871851, recovered PID 1872036, fixed
+compatibility placement, and nested pairs 1/936, 11/944, and 17/973. In the
+Debian VM, `cargo test --workspace --all-features --lib --bins --tests --locked`
+passes all 106 non-documentation tests and
+`cargo clippy --workspace --all-features --all-targets --locked -- -D warnings`
+passes. Formatting, ShellCheck, `git diff --check`, locked client/nested/direct
+builds, and the unit's `systemd-analyze verify` pass. No VM image, journal, or
+generated render artifact was added to Git.
+
+**Failures and fixes:** A minimal transient PAM/tty1 probe first proved that
+logind created an active seat0 session; a full transient compositor then opened
+DRM/input through logind and produced a recovery VBlank. The first packaged run
+was healthy but its verifier appeared stuck because every unchanged page flip
+was logged at info and repeatedly scanning the growing journal was expensive;
+transition/armed-only info logging fixed the operational issue. The next scan
+looked under `_SYSTEMD_UNIT=sos-session.service`, but PAM correctly moved the
+processes to `session-N.scope`; querying their inherited `sos-linux-session`
+journal identifier fixed the evidence boundary. With shell `pipefail`, early
+`grep -q` exits then surfaced journalctl's SIGPIPE as status 141; bounded full
+consumption fixed that harness bug. The first service-restart assertion reused
+the previous boot's ready line and raced the new compositor; comparing ready-line
+counts now waits for the restarted host's own fence. PAM's protected-home setup
+also exposed Mesa shader-cache warnings, fixed by setting child HOME/XDG cache
+paths to the writable state directory. A clean nested rerun exceeded its old
+20-second build-inclusive wait; the increased bounded wait passed without
+changing runtime semantics.
+
+An attempted `PrivatePIDs=yes` hardening was rejected. It would have made the
+lifecycle owner PID 1 in a private namespace so the kernel could reap every
+descendant after an uncatchable owner death, but systemd 257 failed at its
+`NAMESPACE` exec step with this PAM/tty service before SOS ran. The passing unit
+was restored. Component failure and graceful stop are proven; lifecycle-owner
+`SIGKILL` recovery remains an explicit split-unit/reaper design gate.
+
+An Android `cargo check --target aarch64-linux-android --release --locked
+--no-default-features --features gate-strict` was attempted but could not reach
+project code because this machine currently lacks `aarch64-linux-android-clang`
+and the NDK sysroot; `psm` stopped in its build script with `ToolNotFound`. The
+changed host fence is Linux-feature-gated, and the prior direct-slice Android
+gate remains the latest successful Android evidence, but this run does not claim
+a fresh Android regression.
+
+**Decision:** The Debian VM boot-session ownership gate is complete. Keep one
+PAM/logind session and one explicit Rust lifecycle owner; keep generated Luau
+outside process, credential, seat, and DRM authority; and require the recovery
+view's page flip before starting the permanent host. systemd credential delivery
+is materially better than an inline token but does not yet establish mutually
+distrusting same-UID services. VM VBlank remains functional evidence, not a
+physical performance measurement.
+
+**Open risks / next gate:** Render a deterministic compositor-owned cursor and
+inject keyboard, pointer, and touch events through the booted VM, proving focus,
+coordinates, touch lifecycle, and input quiescing across activation. Native
+Linux text editing/IME, clipboard, accessibility, service-identity separation,
+uncatchable lifecycle-owner recovery, hotplug, multiple outputs, XWayland,
+suspend/resume, and physical GPU/touch performance remain open.

@@ -1,11 +1,13 @@
 # Linux stable-host vertical slice
 
-Date: 2026-08-08
+Date: 2026-08-09
 
-SOS now has a real Linux presentation host. It is an ordinary native Wayland
-client today; it is not yet the Wayland compositor. This deliberately proves
-the generated experience, permanent-host lifecycle, and local service boundary
-before adding session ownership, DRM/KMS, and compatibility-client policy.
+SOS now has both a real Linux presentation host and a minimal trusted Wayland
+compositor. The host can remain an ordinary client for desktop development, or
+the Debian reference VM can boot directly into a systemd/PAM session where SOS
+owns tty1, seat0, DRM/KMS, libinput, surface policy, and presentation evidence.
+Both paths preserve the same generated experience, permanent-host lifecycle,
+and local provider/state boundary.
 
 ## Current process and presentation boundary
 
@@ -92,15 +94,68 @@ then supplies the stable transaction ID to the coordinated supervisor. Set
 `SOS_LINUX_REVISION_ROOT` to use a disposable or isolated revision store. Use
 the supervisor's `install --asset ID:KIND:FILE` interface described in
 [`revision-supervisor.md`](revision-supervisor.md) when testing v3 sidecars.
-The shell helper is development orchestration; a later appliance/session
-manager must own the same lifecycle without granting generated code process
-authority.
+The shell helper remains development orchestration. The boot-owned appliance
+path below implements the same lifecycle without granting generated code
+process authority.
 
 The reproducible Debian 13 guest definition, provisioning command, and nested
 acceptance gate are in [`linux-vm.md`](linux-vm.md).
 The authenticated Smithay shell, compatibility-surface policy, input fence,
 crash recovery, and compositor-owned submit evidence are in
 [`linux-compositor.md`](linux-compositor.md).
+
+## Boot-owned direct session
+
+The packaged session is deliberately one logind session with one Rust lifecycle
+owner:
+
+```text
+sos-session.target
+    -> sos-session.service (PAM login on tty1, active logind session)
+        -> sos-linux-session run
+            -> sos-compositor --backend drm
+            -> sos-provider-state-service
+            -> sos-revision-supervisor
+                -> permanent sos-experience-host
+```
+
+[`sos-session.service`](../packaging/systemd/sos-session.service) creates
+private `/run/sos` and `/var/lib/sos` directories, conflicts with the display
+manager and tty1 getty, and asks libseat explicitly for its logind backend. The
+PAM session is important: merely starting a user process from SSH does not make
+it the active seat owner. `pam_systemd` moves the process tree into the active
+`session-N.scope`; `sos-linux-session run` therefore remains the explicit owner
+that starts, monitors, gracefully stops, and reaps every child. An unexpected
+provider, supervisor, or compositor exit fails the lifecycle owner and lets
+systemd restart the whole session on durable authority and the committed
+revision. A refused stale supervisor socket is removed only after proving that
+no process is listening on it.
+
+One recovery edge remains explicit: an uncatchable death of the lifecycle owner
+itself is not equivalent to a child failure because the active PAM tree lives in
+`session-N.scope`, outside the service cgroup. `PrivatePIDs=yes` was tested as a
+kernel-reaping fallback, but systemd 257 failed its namespace exec step for this
+PAM/tty topology before SOS started. The current gate covers child failure and
+normal service stop; production should split seat ownership from the other
+systemd-managed processes or add another independently supervised reaper before
+claiming lifecycle-owner `SIGKILL` recovery.
+
+Startup is presentation-ordered rather than socket-ordered. The compositor
+creates an exclusive readiness record only after its recovery view reaches a
+DRM page flip. Only then does the lifecycle owner start authority and the
+supervisor/host. This keeps the trusted recovery surface present before any
+generated shell can connect. Routine unchanged page flips are trace-level;
+recovery transitions and armed revision frames remain info-level evidence so a
+long-running session does not flood journald.
+
+The shell-token source is a root-owned `0400` file. systemd copies it into the
+service's private credential directory with `LoadCredential=`, and the
+compositor and host receive only the credential path. The bounded parser rejects
+empty, oversized, non-UTF-8, or newline-bearing credentials. The secret is not
+present in the lifecycle owner, compositor, supervisor, or host command lines
+or environment values. This is protected delivery for the current appliance
+unit, not proof of mutually distrusting same-UID providers; production service
+identity separation remains a later hardening step.
 
 The executable link on Debian/Ubuntu requires the XKB development libraries in
 addition to the usual Rust/GPUI Linux prerequisites:
@@ -168,6 +223,17 @@ worker total. The exact authority revision and supervisor pointer matched after
 the GPUI frame and confirmation. This completes the functional client-host VM
 gate, not a GPU, compositor-presentation, or latency gate.
 
+The boot-session gate then rebooted that same VM with `sos-session.target` as
+its default while seatd was disabled. logind reported active Wayland session 1
+on seat0/tty1 with lifecycle PID 770 as its leader. The host booted in PID 883,
+activated `552f0696…` in that same PID, and recovered the killed host in PID
+1089. Boot, activation, and recovered boot produced DRM-backed commit/submit
+pairs 1/3, 43/11, and 50/19. Killing the provider failed the lifecycle owner;
+systemd restarted it once as PID 1222, removed the refused stale supervisor
+socket, and booted the committed revision in host PID 1312 with a new 1/3
+page-flip fence. The verifier then rebooted to `graphical.target`, confirmed GDM and
+seatd, and removed its exact units, binaries, credential, and state.
+
 ## Honest boundaries and next gate
 
 - An ordinary `linux-run` still uses GPUI's next-frame callback. The nested
@@ -193,12 +259,13 @@ gate, not a GPU, compositor-presentation, or latency gate.
 - Both compositor backends quiesce forwarded input from arming through their
   evidence boundary. Direct libinput is wired to the shared router, but cursor,
   touch/multi-pointer policy and injected input evidence remain open.
-- The direct path is an SSH-launched seatd session in a VM. It does not prove
-  boot-to-SOS, logind/virtual-terminal handoff, physical touch, GPU performance,
-  thermals, suspend/resume, or any hardware/latency gate.
+- The direct path now proves unattended boot-to-SOS and logind/tty1 ownership in
+  the Debian VM without seatd. It does not prove physical touch, vendor GPU
+  behavior, thermals, suspend/resume, or any hardware/latency gate.
 
-The nested and direct Smithay functional slices are complete. The next
-architectural slice packages the direct backend as the Debian VM's boot session:
-systemd/logind active-VT ownership, ordered services, protected credential
-delivery, and recovery without SSH. Physical hardware comes only after that
-session is stable.
+The client-host, nested compositor, direct DRM, and boot-session ownership
+slices are complete. The next clean Linux gate is deterministic input evidence:
+render a compositor-owned cursor and inject keyboard, pointer, and touch events
+through the VM devices while proving focus, coordinates, touch lifecycle, and
+activation quiescing. Native text editing/IME and clipboard should follow as a
+separate protocol slice. Physical performance remains later hardware work.

@@ -2,7 +2,8 @@ use std::{collections::BTreeMap, env, path::PathBuf, time::Duration};
 
 use anyhow::{bail, Context as _, Result};
 use sos_linux_session::{
-    bootstrap_authority, shutdown_authority, stage_revision, BootstrapOutcome,
+    bootstrap_authority, run_system_session, shutdown_authority, stage_revision, BootstrapOutcome,
+    SystemSessionOptions,
 };
 
 fn main() {
@@ -23,11 +24,11 @@ fn run() -> Result<()> {
             .parse()
             .context("--timeout-ms must be an integer")?,
     );
-    let service_socket = PathBuf::from(options.required("--service-socket")?);
     match command.as_str() {
         "bootstrap" => {
             options.ensure_only(&["--root", "--service-socket", "--timeout-ms"])?;
             let root = PathBuf::from(options.required("--root")?);
+            let service_socket = PathBuf::from(options.required("--service-socket")?);
             match bootstrap_authority(&root, &service_socket, timeout)? {
                 BootstrapOutcome::Initialized {
                     transaction_id,
@@ -50,6 +51,7 @@ fn run() -> Result<()> {
             options.ensure_only(&["--root", "--revision", "--service-socket", "--timeout-ms"])?;
             let root = PathBuf::from(options.required("--root")?);
             let revision_id = options.required("--revision")?;
+            let service_socket = PathBuf::from(options.required("--service-socket")?);
             println!(
                 "{}",
                 stage_revision(&root, revision_id, &service_socket, timeout)?
@@ -57,7 +59,32 @@ fn run() -> Result<()> {
         }
         "shutdown" => {
             options.ensure_only(&["--service-socket", "--timeout-ms"])?;
+            let service_socket = PathBuf::from(options.required("--service-socket")?);
             shutdown_authority(&service_socket, timeout)?;
+        }
+        "run" => {
+            options.ensure_only(&[
+                "--root",
+                "--runtime-dir",
+                "--authority-file",
+                "--shell-token-file",
+                "--compositor",
+                "--provider",
+                "--supervisor",
+                "--host",
+                "--timeout-ms",
+            ])?;
+            run_system_session(SystemSessionOptions {
+                revision_root: PathBuf::from(options.required("--root")?),
+                runtime_directory: PathBuf::from(options.required("--runtime-dir")?),
+                authority_file: PathBuf::from(options.required("--authority-file")?),
+                shell_token_file: PathBuf::from(options.required("--shell-token-file")?),
+                compositor_executable: PathBuf::from(options.required("--compositor")?),
+                provider_executable: PathBuf::from(options.required("--provider")?),
+                supervisor_executable: PathBuf::from(options.required("--supervisor")?),
+                host_executable: PathBuf::from(options.required("--host")?),
+                startup_timeout: timeout,
+            })?;
         }
         _ => bail!(usage()),
     }
@@ -103,5 +130,5 @@ impl Options {
 }
 
 fn usage() -> &'static str {
-    "usage:\n  sos-linux-session bootstrap --root DIR --service-socket PATH [--timeout-ms N]\n  sos-linux-session stage --root DIR --revision ID --service-socket PATH [--timeout-ms N]\n  sos-linux-session shutdown --service-socket PATH [--timeout-ms N]"
+    "usage:\n  sos-linux-session bootstrap --root DIR --service-socket PATH [--timeout-ms N]\n  sos-linux-session stage --root DIR --revision ID --service-socket PATH [--timeout-ms N]\n  sos-linux-session shutdown --service-socket PATH [--timeout-ms N]\n  sos-linux-session run --root DIR --runtime-dir DIR --authority-file FILE --shell-token-file FILE --compositor FILE --provider FILE --supervisor FILE --host FILE [--timeout-ms N]"
 }

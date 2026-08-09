@@ -130,7 +130,7 @@ SOS_COMPOSITOR_TOKEN="$gate_token" \
 SOS_LINUX_REVISION_ROOT="$gate_revision_root" \
   ./tools/sosctl linux-run --windowed >"$gate_run_dir/session.log" 2>&1 &
 gate_session_pid=$!
-for _ in {1..2000}; do
+for _ in {1..10000}; do
   [[ -S "$gate_revision_root/run/supervisor.sock" ]] && break
   kill -0 "$gate_session_pid" 2>/dev/null || {
     sed -n '1,300p' "$gate_run_dir/session.log"

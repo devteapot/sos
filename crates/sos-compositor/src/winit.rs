@@ -23,7 +23,7 @@ use smithay::{
     wayland::presentation::Refresh,
 };
 
-use crate::{state::SosCompositor, CompositorData};
+use crate::{mark_backend_ready, state::SosCompositor, CompositorData};
 
 pub fn init_winit(
     event_loop: &mut EventLoop<CompositorData>,
@@ -58,80 +58,76 @@ pub fn init_winit(
 
     event_loop
         .handle()
-        .insert_source(winit, move |event, _, data| {
-            let display = &mut data.display_handle;
-            let state = &mut data.state;
-            match event {
-                WinitEvent::Resized { size, .. } => {
-                    state.output_size = size.into();
-                    output.change_current_state(
-                        Some(Mode {
-                            size,
-                            refresh: 60_000,
-                        }),
-                        None,
-                        None,
-                        None,
-                    );
-                }
-                WinitEvent::Input(event) => state.process_input_event(event),
-                WinitEvent::Redraw => {
-                    let redraw = (|| -> Result<_, String> {
-                        let size = backend.window_size();
-                        let result = {
-                            let (renderer, mut framebuffer) = backend
-                                .bind()
-                                .map_err(|error| format!("bind nested framebuffer: {error}"))?;
-                            render_output::<_, WaylandSurfaceRenderElement<GlesRenderer>, _, _>(
-                                &output,
-                                renderer,
-                                &mut framebuffer,
-                                1.0,
-                                0,
-                                [&state.space],
-                                &[],
-                                &mut damage_tracker,
-                                [0.025, 0.03, 0.035, 1.0],
-                            )
-                            .map_err(|error| format!("render nested output: {error}"))?
-                        };
-                        let damage = result
-                            .damage
-                            .cloned()
-                            .unwrap_or_else(|| vec![Rectangle::from_size(size)]);
-                        backend
-                            .submit(Some(&damage))
-                            .map_err(|error| format!("submit nested output: {error}"))?;
-                        Ok(result.states)
-                    })();
-                    let states = match redraw {
-                        Ok(states) => states,
-                        Err(error) => {
-                            tracing::error!(%error, "nested compositor redraw failed");
-                            data.loop_signal.stop();
-                            return;
-                        }
-                    };
-
-                    let shell_rendered = state.shell_rendered(&states);
-                    state.publish_successful_submit(shell_rendered);
-                    present_client_feedback(state, &state.space, &output, &states);
-                    state.space.elements().for_each(|window| {
-                        window.send_frame(
-                            &output,
-                            state.clock.now(),
-                            Some(Duration::ZERO),
-                            |_, _| Some(output.clone()),
-                        );
-                    });
-                    state.space.refresh();
-                    state.popups.cleanup();
-                    let _ = display.flush_clients();
-                    backend.window().request_redraw();
-                }
-                WinitEvent::CloseRequested => data.loop_signal.stop(),
-                _ => {}
+        .insert_source(winit, move |event, _, data| match event {
+            WinitEvent::Resized { size, .. } => {
+                let state = &mut data.state;
+                state.output_size = size.into();
+                output.change_current_state(
+                    Some(Mode {
+                        size,
+                        refresh: 60_000,
+                    }),
+                    None,
+                    None,
+                    None,
+                );
             }
+            WinitEvent::Input(event) => data.state.process_input_event(event),
+            WinitEvent::Redraw => {
+                let state = &mut data.state;
+                let redraw = (|| -> Result<_, String> {
+                    let size = backend.window_size();
+                    let result = {
+                        let (renderer, mut framebuffer) = backend
+                            .bind()
+                            .map_err(|error| format!("bind nested framebuffer: {error}"))?;
+                        render_output::<_, WaylandSurfaceRenderElement<GlesRenderer>, _, _>(
+                            &output,
+                            renderer,
+                            &mut framebuffer,
+                            1.0,
+                            0,
+                            [&state.space],
+                            &[],
+                            &mut damage_tracker,
+                            [0.025, 0.03, 0.035, 1.0],
+                        )
+                        .map_err(|error| format!("render nested output: {error}"))?
+                    };
+                    let damage = result
+                        .damage
+                        .cloned()
+                        .unwrap_or_else(|| vec![Rectangle::from_size(size)]);
+                    backend
+                        .submit(Some(&damage))
+                        .map_err(|error| format!("submit nested output: {error}"))?;
+                    Ok(result.states)
+                })();
+                let states = match redraw {
+                    Ok(states) => states,
+                    Err(error) => {
+                        tracing::error!(%error, "nested compositor redraw failed");
+                        data.loop_signal.stop();
+                        return;
+                    }
+                };
+
+                let shell_rendered = state.shell_rendered(&states);
+                state.publish_successful_submit(shell_rendered);
+                present_client_feedback(state, &state.space, &output, &states);
+                state.space.elements().for_each(|window| {
+                    window.send_frame(&output, state.clock.now(), Some(Duration::ZERO), |_, _| {
+                        Some(output.clone())
+                    });
+                });
+                state.space.refresh();
+                state.popups.cleanup();
+                mark_backend_ready(data, "nested_backend_submit");
+                let _ = data.display_handle.flush_clients();
+                backend.window().request_redraw();
+            }
+            WinitEvent::CloseRequested => data.loop_signal.stop(),
+            _ => {}
         })
         .map_err(|_| anyhow::anyhow!("insert nested winit backend source"))?;
     Ok(())

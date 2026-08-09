@@ -10,12 +10,13 @@ use std::{
 
 use anyhow::{bail, Context as _, Result};
 use compositor_control_protocol::{
-    CompositorEvent, CompositorRequest, PresentationEvidence, MAX_CONTROL_LINE_BYTES,
-    MAX_SHELL_TOKEN_BYTES,
+    read_shell_token_file, valid_shell_token, CompositorEvent, CompositorRequest,
+    PresentationEvidence, MAX_CONTROL_LINE_BYTES,
 };
 
 const CONTROL_SOCKET_ENV: &str = "SOS_COMPOSITOR_CONTROL";
 const SHELL_TOKEN_ENV: &str = "SOS_COMPOSITOR_TOKEN";
+const SHELL_TOKEN_FILE_ENV: &str = "SOS_COMPOSITOR_TOKEN_FILE";
 const CONTROL_TIMEOUT: Duration = Duration::from_secs(5);
 const EVENT_POLL_INTERVAL: Duration = Duration::from_millis(20);
 
@@ -49,31 +50,39 @@ pub struct CompositorFence {
 
 impl CompositorFence {
     pub fn from_environment() -> Result<Option<Self>> {
-        match (
-            env::var_os(CONTROL_SOCKET_ENV),
-            env::var_os(SHELL_TOKEN_ENV),
-        ) {
-            (None, None) => Ok(None),
-            (Some(_), None) => {
-                bail!("{SHELL_TOKEN_ENV} is required when {CONTROL_SOCKET_ENV} is set")
+        let socket = env::var_os(CONTROL_SOCKET_ENV);
+        let inline_token = env::var_os(SHELL_TOKEN_ENV);
+        let token_file = env::var_os(SHELL_TOKEN_FILE_ENV);
+        if socket.is_none() {
+            if inline_token.is_some() || token_file.is_some() {
+                bail!(
+                    "{CONTROL_SOCKET_ENV} is required when a compositor shell token is configured"
+                );
             }
-            (None, Some(_)) => {
-                bail!("{CONTROL_SOCKET_ENV} is required when {SHELL_TOKEN_ENV} is set")
-            }
-            (Some(socket), Some(token)) => {
-                let token = token
-                    .into_string()
-                    .map_err(|_| anyhow::anyhow!("{SHELL_TOKEN_ENV} is not valid UTF-8"))?;
-                Self::connect(Path::new(&socket), token).map(Some)
-            }
+            return Ok(None);
         }
+        let token = match (inline_token, token_file) {
+            (Some(token), None) => token
+                .into_string()
+                .map_err(|_| anyhow::anyhow!("{SHELL_TOKEN_ENV} is not valid UTF-8"))?,
+            (None, Some(path)) => read_shell_token_file(Path::new(&path)).with_context(|| {
+                format!(
+                    "read compositor shell credential from {}",
+                    Path::new(&path).display()
+                )
+            })?,
+            (Some(_), Some(_)) => {
+                bail!("use exactly one of {SHELL_TOKEN_ENV} and {SHELL_TOKEN_FILE_ENV}")
+            }
+            (None, None) => bail!(
+                "one of {SHELL_TOKEN_ENV} or {SHELL_TOKEN_FILE_ENV} is required when {CONTROL_SOCKET_ENV} is set"
+            ),
+        };
+        Self::connect(Path::new(&socket.unwrap()), token).map(Some)
     }
 
     fn connect(socket_path: &Path, token: String) -> Result<Self> {
-        if token.is_empty()
-            || token.len() > MAX_SHELL_TOKEN_BYTES
-            || token.bytes().any(|byte| matches!(byte, b'\r' | b'\n'))
-        {
+        if !valid_shell_token(&token) {
             bail!("invalid compositor shell token");
         }
         let mut stream = UnixStream::connect(socket_path).with_context(|| {

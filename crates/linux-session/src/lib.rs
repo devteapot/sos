@@ -1,3 +1,5 @@
+mod system_session;
+
 use std::{fs, path::Path, time::Duration};
 
 use anyhow::{bail, Context as _, Result};
@@ -7,6 +9,8 @@ use service_protocol::{
     MigrationProof, PromotionDraft, ResourceQuery, ResourceValue, ResponsePayload, ServiceRequest,
     StateResource, TransactionRecord, TransactionStatus,
 };
+
+pub use system_session::{run_system_session, SystemSessionOptions};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum BootstrapOutcome {

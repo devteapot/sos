@@ -10,7 +10,8 @@ use std::{
 
 use anyhow::{bail, Context as _, Result};
 use compositor_control_protocol::{
-    CompositorEvent, CompositorRequest, MAX_CONTROL_LINE_BYTES, MAX_SHELL_TOKEN_BYTES,
+    valid_shell_token, CompositorEvent, CompositorRequest, MAX_CONTROL_LINE_BYTES,
+    MAX_SHELL_TOKEN_BYTES,
 };
 use nix::sys::socket::{getsockopt, sockopt::PeerCredentials};
 use smithay::reexports::calloop::{
@@ -53,12 +54,7 @@ pub fn init_control(
     socket_path: &Path,
     shell_token: String,
 ) -> Result<ControlSocketGuard> {
-    if shell_token.is_empty()
-        || shell_token.len() > MAX_SHELL_TOKEN_BYTES
-        || shell_token
-            .bytes()
-            .any(|byte| matches!(byte, b'\r' | b'\n'))
-    {
+    if !valid_shell_token(&shell_token) {
         bail!("shell token must contain 1 through {MAX_SHELL_TOKEN_BYTES} non-newline bytes");
     }
     let parent = socket_path

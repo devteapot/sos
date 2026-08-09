@@ -1,0 +1,6 @@
+[Unit]
+Description=SOS operating session
+Requires=multi-user.target sos-session.service
+After=multi-user.target
+Conflicts=graphical.target
+AllowIsolate=yes

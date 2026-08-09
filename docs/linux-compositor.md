@@ -185,9 +185,10 @@ in `crates/sos-compositor/SMITHAY-LICENSE.txt`. See the
 [Smithay repository](https://github.com/Smithay/smithay/tree/v0.7.0) and
 [backend documentation](https://smithay.github.io/smithay/smithay/backend/index.html).
 
-The next gate is boot-to-SOS packaging in the same VM: systemd/logind active-VT
-ownership, ordered provider/supervisor/compositor startup, system-managed shell
-credentials, and a recovery target that does not rely on an SSH-launched seatd
-session. Native Linux text editing/IME, clipboard, accessibility,
-touch/multi-pointer and cursor policy, hotplug/multiple outputs, XWayland, and
-physical-device performance remain open.
+Boot-to-SOS packaging now passes in the same VM: a systemd/PAM service owns the
+active logind tty1 session, waits for the recovery page flip before provider and
+host startup, receives its token through systemd credentials, and recovers both
+host and whole-session failures without seatd. The next gate is deterministic
+cursor plus injected keyboard/pointer/touch evidence. Native Linux text
+editing/IME, clipboard, accessibility, service-identity separation,
+hotplug/multiple outputs, XWayland, and physical-device performance remain open.

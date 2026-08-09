@@ -1,6 +1,6 @@
 # Debian 13 Wayland VM gate
 
-Date: 2026-08-08
+Date: 2026-08-09
 
 This is the reproducible reference environment for the Linux client-host gate.
 It is development infrastructure, not the SOS distribution contract. A result
@@ -136,6 +136,32 @@ through libseat/seatd, proves the recovery view before shell startup, and binds
 boot, activation, and recovered boot to DRM VBlank evidence. Keep the VNC
 console available while developing this path.
 
+After the direct gate, run the boot-session verifier from the host worktree:
+
+```sh
+./tools/linux-vm/verify-boot-session
+```
+
+It synchronizes the current worktree into the already-provisioned `~/sos`
+guest directory, builds and installs disposable system-session binaries, seeds
+one immutable revision, disables seatd, selects `sos-session.target`, and
+reboots the VM. Set `SOS_LINUX_VM_GUEST_ROOT` when the guest worktree uses a
+different absolute path. SSH remains only the test controller; it does not
+launch or own the compositor session.
+
+The verifier requires a clean reference guest with no existing `/var/lib/sos`,
+`/etc/sos`, `/usr/local/libexec/sos`, or SOS unit files. It proves active
+logind seat0/tty1 ownership, a recovery-view page flip before provider startup,
+credential-file delivery without the secret in process arguments or
+environment values, same-PID activation, host recovery, authority/pointer
+agreement, and a full systemd restart after provider failure. It then restores
+`graphical.target`, re-enables seatd, reboots into GNOME, and removes only the
+installation it created. Its leading result is:
+
+```text
+linux_boot_session_passed ... evidence=drm_page_flip
+```
+
 ## Current status
 
 The gate passes in a KVM-accelerated ARM64 Debian 13.6 guest on kernel
@@ -158,8 +184,16 @@ evidence, and the compatibility client mapped at `(280, 140)`. This result does
 not change any physical-hardware or latency claim. The direct gate now passes
 as well: revision `552f0696…` activated in unchanged PID 59723 and recovered in
 PID 59849, with three `drm_page_flip` fences, a compositor recovery frame, and
-monotonic KMS event timestamps. The next gate is packaging the direct path as
-the VM's systemd/logind boot session.
+monotonic KMS event timestamps.
+
+The system-owned boot gate now passes too. With seatd disabled, logind assigned
+seat0/tty1 to active Wayland session 1. Revision `552f0696…` activated without
+changing host PID 883, recovered after `SIGKILL` in PID 1089, then survived a
+provider-triggered systemd restart in lifecycle PID 1222 and host PID 1312.
+All four boot/activation/recovery boundaries used `drm_page_flip`; the service
+restart counter reached one, and the verifier returned the guest to GNOME and
+removed its disposable installation. Deterministic injected input is the next
+VM gate.
 
 References: [Debian Cloud images](https://wiki.debian.org/Cloud),
 [Debian cloud image comparison](https://wiki.debian.org/Cloud/SystemsComparison),

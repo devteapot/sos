@@ -8,9 +8,10 @@ mod state;
 #[cfg(feature = "nested-backend")]
 mod winit;
 
-use std::{collections::BTreeMap, env, path::PathBuf};
+use std::{collections::BTreeMap, env, fs, io::Write as _, path::PathBuf};
 
 use anyhow::{bail, Context as _, Result};
+use compositor_control_protocol::read_shell_token_file;
 use smithay::reexports::{
     calloop::{EventLoop, LoopSignal},
     wayland_server::{Display, DisplayHandle},
@@ -23,6 +24,10 @@ pub struct CompositorData {
     loop_signal: LoopSignal,
     #[cfg(feature = "direct-backend")]
     direct: Option<direct::DirectBackend>,
+    ready_file: Option<PathBuf>,
+    backend_ready: bool,
+    #[cfg(feature = "direct-backend")]
+    last_recovery_view: Option<bool>,
 }
 
 pub fn run() -> Result<()> {
@@ -33,13 +38,30 @@ pub fn run() -> Result<()> {
         bail!("--socket must be a Wayland socket basename such as wayland-sos");
     }
     let control_socket = PathBuf::from(options.required("--control-socket")?);
-    let shell_token = options.required("--shell-token")?.to_owned();
+    let ready_file = options.optional("--ready-file").map(PathBuf::from);
+    let shell_token = match (
+        options.optional("--shell-token"),
+        options.optional("--shell-token-file"),
+    ) {
+        (Some(token), None) => token.to_owned(),
+        (None, Some(path)) => read_shell_token_file(PathBuf::from(path).as_path())
+            .with_context(|| format!("read compositor shell credential {path}"))?,
+        (Some(_), Some(_)) => bail!("use exactly one of --shell-token and --shell-token-file"),
+        (None, None) => bail!("one of --shell-token or --shell-token-file is required"),
+    };
     let backend = options
         .0
         .get("--backend")
         .map(String::as_str)
         .unwrap_or("nested");
-    options.ensure_only(&["--socket", "--control-socket", "--shell-token", "--backend"])?;
+    options.ensure_only(&[
+        "--socket",
+        "--control-socket",
+        "--shell-token",
+        "--shell-token-file",
+        "--ready-file",
+        "--backend",
+    ])?;
 
     let mut event_loop: EventLoop<CompositorData> = EventLoop::try_new()?;
     let display: Display<SosCompositor> = Display::new()?;
@@ -52,6 +74,10 @@ pub fn run() -> Result<()> {
         loop_signal,
         #[cfg(feature = "direct-backend")]
         direct: None,
+        ready_file,
+        backend_ready: false,
+        #[cfg(feature = "direct-backend")]
+        last_recovery_view: None,
     };
     let _control_guard = control::init_control(&mut event_loop, &control_socket, shell_token)?;
     let evidence: &'static str = match backend {
@@ -102,6 +128,26 @@ fn init_tracing() {
     }
 }
 
+fn mark_backend_ready(data: &mut CompositorData, evidence: &str) {
+    if data.backend_ready {
+        return;
+    }
+    if let Some(path) = &data.ready_file {
+        let result = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(path)
+            .and_then(|mut file| writeln!(file, "evidence={evidence}"));
+        if let Err(error) = result {
+            tracing::error!(%error, path = %path.display(), "could not publish compositor readiness");
+            data.loop_signal.stop();
+            return;
+        }
+    }
+    data.backend_ready = true;
+    println!("sos_compositor_presenting evidence={evidence}");
+}
+
 struct Options(BTreeMap<String, String>);
 
 impl Options {
@@ -128,6 +174,10 @@ impl Options {
             .with_context(|| format!("missing required compositor option: {name}\n{}", usage()))
     }
 
+    fn optional(&self, name: &str) -> Option<&str> {
+        self.0.get(name).map(String::as_str)
+    }
+
     fn ensure_only(&self, allowed: &[&str]) -> Result<()> {
         for name in self.0.keys() {
             if !allowed.contains(&name.as_str()) {
@@ -139,5 +189,5 @@ impl Options {
 }
 
 fn usage() -> &'static str {
-    "usage: sos-compositor --socket NAME --control-socket PATH --shell-token TOKEN [--backend nested|drm]"
+    "usage: sos-compositor --socket NAME --control-socket PATH (--shell-token TOKEN | --shell-token-file PATH) [--ready-file PATH] [--backend nested|drm]"
 }

@@ -110,7 +110,7 @@ for _ in {1..1000}; do
   if [[ -S "$vm_runtime_dir/wayland-sos" \
     && -S "$vm_control_socket" \
     && -s "$vm_run_dir/compositor.out" ]] \
-    && grep -q 'completed DRM page flip.*recovery_view=true' "$vm_run_dir/compositor.log"; then
+    && grep -q 'completed significant DRM page flip.*recovery_view=true' "$vm_run_dir/compositor.log"; then
     break
   fi
   if ! kill -0 "$vm_compositor_pid" 2>/dev/null; then
@@ -120,7 +120,7 @@ for _ in {1..1000}; do
 done
 grep -q 'sos_compositor_ready.*backend=drm.*evidence=drm_page_flip' \
   "$vm_run_dir/compositor.out"
-grep -q 'completed DRM page flip.*recovery_view=true' "$vm_run_dir/compositor.log"
+grep -q 'completed significant DRM page flip.*recovery_view=true' "$vm_run_dir/compositor.log"
 grep -q 'initialized direct DRM/libinput session seat="seat0"' \
   "$vm_run_dir/compositor.log"
 
@@ -212,5 +212,5 @@ printf 'linux_direct_session_passed activation_pid=%s restarted_pid=%s revision_
 printf 'activation=%s\n' "$vm_activation"
 printf 'authority_revision=%s\n' "$vm_authority_revision"
 grep -E \
-  'completed DRM page flip.*recovery_view=true|presented armed shell revision' \
+  'completed significant DRM page flip.*recovery_view=true|presented armed shell revision' \
   "$vm_run_dir/compositor.log"

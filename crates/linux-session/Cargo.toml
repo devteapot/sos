@@ -7,10 +7,13 @@ publish = false
 
 [dependencies]
 anyhow = "1"
+compositor-control-protocol.workspace = true
+nix = { version = "0.31", features = ["signal"] }
 provider-state-service.workspace = true
 revision-supervisor = { path = "../revision-supervisor" }
 serde_json.workspace = true
 service-protocol.workspace = true
+signal-hook = "0.3"
 
 [dev-dependencies]
 tempfile = "3"

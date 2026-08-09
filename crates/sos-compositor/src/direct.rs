@@ -52,7 +52,7 @@ use smithay::{
 };
 use smithay_drm_extras::drm_scanner::{DrmScanEvent, DrmScanner};
 
-use crate::{policy::QueuedRevision, state::SosCompositor, CompositorData};
+use crate::{mark_backend_ready, policy::QueuedRevision, state::SosCompositor, CompositorData};
 
 const FRAME_INTERVAL: Duration = Duration::from_millis(8);
 const CLEAR_COLOR: [f32; 4] = [0.025, 0.03, 0.035, 1.0];
@@ -555,15 +555,27 @@ fn finish_frame(
         .revision
         .and_then(|queued| data.state.policy.record_presented(queued));
     let recovery_view = !data.state.policy.shell_mapped();
-    tracing::info!(
-        output = output_data.output.name(),
-        output_sequence = metadata.sequence,
-        presentation_clock = ?clock,
-        timestamp_seconds = timestamp.as_secs(),
-        timestamp_nanoseconds = timestamp.subsec_nanos(),
-        recovery_view,
-        "completed DRM page flip"
-    );
+    let recovery_changed = data.last_recovery_view != Some(recovery_view);
+    data.last_recovery_view = Some(recovery_view);
+    if recovery_changed || revision.is_some() {
+        tracing::info!(
+            output = output_data.output.name(),
+            output_sequence = metadata.sequence,
+            presentation_clock = ?clock,
+            timestamp_seconds = timestamp.as_secs(),
+            timestamp_nanoseconds = timestamp.subsec_nanos(),
+            recovery_view,
+            "completed significant DRM page flip"
+        );
+    } else {
+        tracing::trace!(
+            output = output_data.output.name(),
+            output_sequence = metadata.sequence,
+            recovery_view,
+            "completed unchanged DRM page flip"
+        );
+    }
+    mark_backend_ready(data, "drm_page_flip");
     if let Some(revision) = revision {
         data.state.publish_presentation(
             revision,
