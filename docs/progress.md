@@ -2937,3 +2937,73 @@ has not been exercised on macOS, and the transient unit deliberately does not
 restart a crashed provider. The next portability gate is a clean macOS run and
 failure injection during install and launch; the next product gate remains the
 full physical-device lifecycle and performance matrix.
+
+## 2026-08-14 — Reproduce the Debian 13 VM gates on Fedora/QEMU 10
+
+**Goal / hypothesis:** Recreate the reference Debian VM on the new Fedora
+x86-64 workstation, provision the current Linux stack, and pass both nested and
+direct compositor gates without treating virtual display evidence as physical
+hardware evidence.
+
+**Code and environment changed:** Fedora 44 provides KVM to the unprivileged
+`carlid` user and runs QEMU 10.2.2 with OVMF. The host packages are
+`qemu-system-x86-core`, `qemu-img`, `cloud-utils-cloud-localds`, `edk2-ovmf`,
+`qemu-device-display-virtio-gpu`, its separate
+`qemu-device-display-virtio-gpu-pci` wrapper, and `virt-viewer`; the Fedora
+package split is now documented. `tools/linux-vm/create` checks for the exact
+VirtIO PCI model before writing generated VM files. On x86-64,
+`tools/linux-vm/start` disables QEMU's implicit legacy VGA so the explicit
+VirtIO GPU is the sole DRM device. `tools/linux-vm/stop` tolerates QEMU removing
+its own PID/control files during an otherwise successful shutdown.
+
+**Immutable input and provisioning evidence:** The ignored base image is
+`.cache/linux-vm-base/debian-13-generic-amd64.qcow2`, 436,404,224 bytes,
+SHA-256 `d4e6f5d1e9f571c198a65b45ab1adae6c5734607614e72f9661d84ce5881e5fc`,
+and official SHA-512
+`f6978100d8031c266d55d7815ceea7fcdeacf28e1e5834fdb9c94ac96880a054a6e6f8681c2d3b0584e0057eaf3ef7353856b85212d04134744faa9b3bb1f24f`.
+`tools/linux-vm/create` verified that digest before creating the 100 GiB
+copy-on-write guest. Cloud-init completed without errors in 6 minutes 46
+seconds; the guest reported Debian 13 amd64, kernel
+`6.12.101+deb13-amd64`, 8 vCPUs, 12 GiB RAM, and a 99 GiB root filesystem.
+The source worktree at `4a815401087eb9f943351483e45caf2b09549401` was
+copied without Git metadata, caches, artifacts, or host build output.
+`tools/linux-vm/provision-debian` installed the pinned dependencies, Rust
+1.95.0, and Node 24.18.0, then linked both compositor backends and the Linux
+session binaries and compiled the agent.
+
+**Gate evidence:** `tools/linux-vm/verify-session` returned
+`linux_nested_session_passed os=debian version=13` with unchanged host PID
+52499 and active revision
+`93357d5643d00a4510a728743e04b0c35ce3439fb6a308c46b1c7f977a3ede84`.
+After correcting the display topology, `tools/linux-vm/verify-direct-session`
+returned `linux_direct_session_passed`, kept activation PID 1801, recovered in
+PID 2100, activated revision
+`250b157308407df4ed48c8e45351e69a0d82534ba001b6ff214c6a3348c0a326`,
+and recorded `drm_page_flip` for recovery, boot, activation, and recovered boot.
+The verifier restored GDM, removed its temporary directory and processes, and
+left no failed units. Bash syntax, ShellCheck 0.11.0, and `git diff --check`
+passed for the three VM lifecycle scripts. A stop/stop/start sequence stopped
+QEMU PID 100371, accepted the second idempotent stop, preserved the disk, and
+started PID 101385; only `card0-Virtual-1` was connected afterward, optional
+`Virtual-2` remained disconnected, and GDM was active.
+
+**Failures and fixes:** Installing only Fedora's core QEMU package let creation
+write an overlay and seed but then failed because `virtio-gpu-pci` was absent;
+the partial generated directory was removed while the verified base image was
+preserved, both split device packages were installed, and creation succeeded.
+The first direct gate then found intended VirtIO outputs on `card0` plus an
+implicit QEMU stdvga output on `card1-Virtual-3`. The legacy `1234:1111` device
+rejected an atomic page flip with `EINVAL`, which ended the compositor before
+the Linux host could connect. Adding x86-only `-vga none` removed that device
+and the unchanged direct gate passed. During the required restart, QEMU removed
+its PID file before `stop` did; plain `rm` turned the successful shutdown into a
+false failure, so cleanup now uses idempotent removal.
+
+**Decision / remaining risk / next gate:** Accept nested GPUI/Wayland and direct
+VirtIO DRM lifecycle evidence for Fedora 44 hosting an x86-64 Debian 13 VM. No
+GNOME user login or VM password is required for these automated gates. This
+does not establish physical GPU, touch, suspend, latency, thermal, or soak
+behavior. The x86 QEMU 10 topology fix leaves the existing ARM path unchanged,
+but that path was not rerun here. The boot-session verifier also remains to be
+repeated on this guest. The provisioned VM is retained and running for that
+next gate.

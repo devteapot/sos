@@ -38,8 +38,8 @@ if kill -0 "$vm_pid" 2>/dev/null; then
     exit 1
   }
 fi
-rm -- "$vm_pid_file"
+rm -f -- "$vm_pid_file"
 if [[ -S "$vm_qmp_socket" ]]; then
-  rm -- "$vm_qmp_socket"
+  rm -f -- "$vm_qmp_socket"
 fi
 printf 'Stopped %s (QEMU PID %s); disk and logs were preserved.\n' "$vm_name" "$vm_pid"

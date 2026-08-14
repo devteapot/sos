@@ -31,8 +31,18 @@ repository.
 The host needs the architecture-matching QEMU system emulator, `qemu-img`,
 `cloud-localds`, UEFI firmware, and read/write KVM access. On a typical
 Debian/Ubuntu host the relevant packages are QEMU, `qemu-utils`,
-`cloud-image-utils`, AAVMF or OVMF, and optionally `virt-viewer`. Then create
-the guest:
+`cloud-image-utils`, AAVMF or OVMF, and optionally `virt-viewer`. Fedora splits
+the required VirtIO GPU and its PCI wrapper from the core emulator; install the
+complete host-side set with:
+
+```sh
+sudo dnf install \
+  qemu-system-x86-core qemu-img cloud-utils-cloud-localds edk2-ovmf \
+  qemu-device-display-virtio-gpu qemu-device-display-virtio-gpu-pci \
+  virt-viewer
+```
+
+Then create the guest:
 
 ```sh
 ./tools/linux-vm/create \

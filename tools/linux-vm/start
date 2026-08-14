@@ -42,6 +42,7 @@ case "$(uname -m)" in
     vm_qemu="qemu-system-aarch64"
     vm_firmware_code="/usr/share/AAVMF/AAVMF_CODE.no-secboot.fd"
     vm_machine_options=(-machine "virt,accel=kvm,gic-version=host" -cpu host)
+    vm_legacy_video_options=()
     ;;
   x86_64)
     vm_qemu="qemu-system-x86_64"
@@ -51,13 +52,17 @@ case "$(uname -m)" in
       vm_firmware_code="/usr/share/OVMF/OVMF_CODE.fd"
     fi
     vm_machine_options=(-machine "q35,accel=kvm" -cpu host)
+    # QEMU 10 may retain q35's default stdvga alongside the explicit VirtIO
+    # GPU. Its bochs DRM device cannot satisfy the compositor's atomic KMS
+    # contract, so expose only the intended VirtIO display device.
+    vm_legacy_video_options=(-vga none)
     ;;
   *) fail "unsupported host architecture: $(uname -m)" ;;
 esac
 command -v "$vm_qemu" >/dev/null 2>&1 || fail "required command not found: $vm_qemu"
 [[ -f "$vm_firmware_code" ]] || fail "UEFI code firmware not found: $vm_firmware_code"
 
-"$vm_qemu" "${vm_machine_options[@]}" \
+"$vm_qemu" "${vm_machine_options[@]}" "${vm_legacy_video_options[@]}" \
   -name "$vm_name" \
   -smp 8 \
   -m 12288 \
