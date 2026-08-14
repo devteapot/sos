@@ -54,6 +54,9 @@ case "$(uname -m)" in
   *) fail "unsupported host architecture: $(uname -m)" ;;
 esac
 require_command "$vm_qemu"
+vm_qemu_device_help="$("$vm_qemu" -device help)"
+grep -Fq 'name "virtio-gpu-pci"' <<<"$vm_qemu_device_help" || \
+  fail "required QEMU device model not found: virtio-gpu-pci"
 [[ -r /dev/kvm && -w /dev/kvm ]] || fail "/dev/kvm is not readable and writable by $(id -un)"
 [[ -f "$vm_firmware_code" ]] || fail "UEFI code firmware not found: $vm_firmware_code"
 [[ -f "$vm_firmware_vars" ]] || fail "UEFI variables firmware not found: $vm_firmware_vars"
