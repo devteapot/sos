@@ -19,6 +19,15 @@ M1_JNI_DIR="$M1_GRADLE_DIR/app/src/main/jniLibs/arm64-v8a"
 M1_GRADLE_APK="$M1_GRADLE_DIR/app/build/outputs/apk/debug/app-debug.apk"
 M1_APK_PATH="$ARTIFACT_DIR/sos-experience.apk"
 M1_DEVICE_STAGING="/data/local/tmp/dev.sos.experience.candidate.luau"
+M1_PROVIDER_PORT="47777"
+M1_PROVIDER_BIN="$SOS_ROOT/target/debug/providerd"
+M1_PROVIDER_STATE="${SOS_ANDROID_PROVIDER_STATE:-$CACHE_ROOT/android-provider-state.json}"
+M1_PROVIDER_PID="${SOS_ANDROID_PROVIDER_PID:-$CACHE_ROOT/android-providerd.pid}"
+M1_PROVIDER_LOG="${SOS_ANDROID_PROVIDER_LOG:-$CACHE_ROOT/android-providerd.log}"
+M1_PROVIDER_UNIT_FILE="${SOS_ANDROID_PROVIDER_UNIT_FILE:-$CACHE_ROOT/android-providerd.unit}"
+M1_RUN_STARTED_PROVIDER_PID=""
+M1_RUN_ADDED_REVERSE=false
+M1_RUN_LAUNCH_COMPLETE=false
 LINUX_REVISION_ROOT="${SOS_LINUX_REVISION_ROOT:-$CACHE_ROOT/linux-revisions-v3}"
 LINUX_SUPERVISOR="$SOS_ROOT/target/debug/sos-revision-supervisor"
 LINUX_HOST="$SOS_ROOT/target/debug/sos-experience-host"
@@ -381,6 +390,256 @@ launch_experience() {
   select_device
   info "launching $M1_ANDROID_PACKAGE"
   adb shell am start -W -n "$M1_ANDROID_PACKAGE/$ANDROID_ACTIVITY"
+}
+
+android_provider_health() {
+  local response=""
+  if ! { exec 9<>"/dev/tcp/127.0.0.1/$M1_PROVIDER_PORT"; } 2>/dev/null; then
+    return 1
+  fi
+  if ! printf '%s\n' '{"kind":"snapshot","request_id":0}' >&9; then
+    exec 9>&- 9<&-
+    return 1
+  fi
+  IFS= read -r -t 1 response <&9 || true
+  exec 9>&- 9<&-
+  [[ "$response" == *'"request_id":0,"ok":true'* ]]
+}
+
+android_provider_port_open() {
+  if { exec 9<>"/dev/tcp/127.0.0.1/$M1_PROVIDER_PORT"; } 2>/dev/null; then
+    exec 9>&- 9<&-
+    return 0
+  fi
+  return 1
+}
+
+managed_android_provider_pid() {
+  if [[ ! -f "$M1_PROVIDER_PID" ]]; then
+    rm -f "$M1_PROVIDER_UNIT_FILE"
+    return 1
+  fi
+
+  local pid="" process_command="" unit="" unit_pid="" unit_state=""
+  IFS= read -r pid < "$M1_PROVIDER_PID" || true
+  if [[ ! "$pid" =~ ^[0-9]+$ ]] || ! kill -0 "$pid" 2>/dev/null; then
+    rm -f "$M1_PROVIDER_PID" "$M1_PROVIDER_UNIT_FILE"
+    return 1
+  fi
+
+  if [[ -f "$M1_PROVIDER_UNIT_FILE" ]]; then
+    IFS= read -r unit < "$M1_PROVIDER_UNIT_FILE" || true
+    if [[ ! "$unit" =~ ^sos-android-providerd-[0-9]+-[0-9]+\.service$ ]]; then
+      printf 'error: invalid managed Android provider unit name: %s\n' "$unit" >&2
+      return 2
+    fi
+    unit_pid="$(systemctl --user show --property=MainPID --value "$unit" 2>/dev/null || true)"
+    unit_state="$(systemctl --user show --property=ActiveState --value "$unit" 2>/dev/null || true)"
+    if [[ "$unit_pid" != "$pid" || "$unit_state" != "active" ]]; then
+      printf 'error: managed Android provider unit %s does not own live PID %s\n' \
+        "$unit" "$pid" >&2
+      return 2
+    fi
+  fi
+
+  process_command="$(ps -p "$pid" -o command= 2>/dev/null || true)"
+  if [[ "$process_command" != *"$M1_PROVIDER_BIN"* ]]; then
+    printf 'error: %s points to unrelated live process %s\n' \
+      "$M1_PROVIDER_PID" "$pid" >&2
+    return 2
+  fi
+  printf '%s\n' "$pid"
+}
+
+stop_android_provider_pid() {
+  local pid="$1"
+  [[ "$pid" =~ ^[0-9]+$ ]] || return 0
+  if kill -0 "$pid" 2>/dev/null; then
+    kill "$pid" 2>/dev/null || true
+    for _ in {1..50}; do
+      kill -0 "$pid" 2>/dev/null || break
+      sleep 0.1
+    done
+    if kill -0 "$pid" 2>/dev/null; then
+      printf 'error: Android provider/state daemon PID %s did not stop\n' "$pid" >&2
+      return 1
+    fi
+  fi
+}
+
+android_provider_systemd_available() {
+  command -v systemd-run >/dev/null 2>&1 && \
+    command -v systemctl >/dev/null 2>&1 && \
+    systemctl --user show-environment >/dev/null 2>&1
+}
+
+stop_android_provider_instance() {
+  local pid="$1" unit=""
+  if [[ -f "$M1_PROVIDER_UNIT_FILE" ]] && android_provider_systemd_available; then
+    IFS= read -r unit < "$M1_PROVIDER_UNIT_FILE" || true
+    if [[ "$unit" =~ ^sos-android-providerd-[0-9]+-[0-9]+\.service$ ]]; then
+      systemctl --user stop "$unit" >/dev/null 2>&1 || true
+      systemctl --user reset-failed "$unit" >/dev/null 2>&1 || true
+    fi
+  fi
+  stop_android_provider_pid "$pid"
+}
+
+stop_android_provider() {
+  local pid="" pid_status=0
+  if pid="$(managed_android_provider_pid)"; then
+    info "stopping Android provider/state daemon (PID $pid)"
+    stop_android_provider_instance "$pid"
+  else
+    pid_status=$?
+    [[ "$pid_status" -eq 1 ]] || return "$pid_status"
+  fi
+  rm -f "$M1_PROVIDER_PID" "$M1_PROVIDER_UNIT_FILE"
+}
+
+build_android_provider() {
+  info "building the Android provider/state daemon"
+  (
+    cd "$SOS_ROOT"
+    cargo build --locked -p providers-fake --bin providerd
+  )
+  [[ -x "$M1_PROVIDER_BIN" ]] || fail "provider daemon build did not produce $M1_PROVIDER_BIN"
+}
+
+start_android_provider() {
+  require_command ps
+
+  stop_android_provider
+  if android_provider_health; then
+    fail "a compatible unmanaged provider is already listening on 127.0.0.1:$M1_PROVIDER_PORT"
+  fi
+  if android_provider_port_open; then
+    fail "TCP port $M1_PROVIDER_PORT is occupied by an unmanaged process"
+  fi
+
+  mkdir -p "$(dirname "$M1_PROVIDER_STATE")" "$(dirname "$M1_PROVIDER_PID")" \
+    "$(dirname "$M1_PROVIDER_LOG")" "$(dirname "$M1_PROVIDER_UNIT_FILE")"
+  : > "$M1_PROVIDER_LOG"
+  local pid="" unit="" unit_state=""
+  if android_provider_systemd_available; then
+    unit="sos-android-providerd-$$-$RANDOM.service"
+    systemd-run --user --quiet --unit="$unit" --service-type=exec \
+      --property="StandardOutput=append:$M1_PROVIDER_LOG" \
+      --property="StandardError=append:$M1_PROVIDER_LOG" \
+      "$M1_PROVIDER_BIN" --state-file "$M1_PROVIDER_STATE"
+    printf '%s\n' "$unit" > "$M1_PROVIDER_UNIT_FILE"
+    for _ in {1..50}; do
+      pid="$(systemctl --user show --property=MainPID --value "$unit" 2>/dev/null || true)"
+      [[ "$pid" =~ ^[1-9][0-9]*$ ]] && break
+      unit_state="$(systemctl --user show --property=ActiveState --value "$unit" 2>/dev/null || true)"
+      [[ "$unit_state" != "failed" ]] || break
+      sleep 0.1
+    done
+    if [[ ! "$pid" =~ ^[1-9][0-9]*$ ]]; then
+      systemctl --user stop "$unit" >/dev/null 2>&1 || true
+      rm -f "$M1_PROVIDER_UNIT_FILE"
+      fail "systemd did not start the Android provider; inspect $M1_PROVIDER_LOG"
+    fi
+  else
+    require_command nohup
+    rm -f "$M1_PROVIDER_UNIT_FILE"
+    nohup "$M1_PROVIDER_BIN" --state-file "$M1_PROVIDER_STATE" \
+      >> "$M1_PROVIDER_LOG" 2>&1 < /dev/null &
+    pid=$!
+  fi
+  printf '%s\n' "$pid" > "$M1_PROVIDER_PID"
+  M1_RUN_STARTED_PROVIDER_PID="$pid"
+
+  for _ in {1..100}; do
+    if ! kill -0 "$pid" 2>/dev/null; then
+      rm -f "$M1_PROVIDER_PID" "$M1_PROVIDER_UNIT_FILE"
+      fail "Android provider/state daemon exited during startup; inspect $M1_PROVIDER_LOG"
+    fi
+    if android_provider_health; then
+      info "Android provider/state daemon is ready (PID $pid)"
+      return 0
+    fi
+    sleep 0.1
+  done
+
+  stop_android_provider_instance "$pid"
+  rm -f "$M1_PROVIDER_PID" "$M1_PROVIDER_UNIT_FILE"
+  fail "Android provider/state daemon did not become ready; inspect $M1_PROVIDER_LOG"
+}
+
+android_reverse_ready() {
+  adb reverse --list | awk -v endpoint="tcp:$M1_PROVIDER_PORT" \
+    '$2 == endpoint && $3 == endpoint { found = 1 } END { exit !found }'
+}
+
+configure_android_provider_reverse() {
+  if android_reverse_ready; then
+    info "ADB reverse tcp:$M1_PROVIDER_PORT is already configured"
+    return 0
+  fi
+  adb reverse "tcp:$M1_PROVIDER_PORT" "tcp:$M1_PROVIDER_PORT" >/dev/null
+  M1_RUN_ADDED_REVERSE=true
+  info "configured ADB reverse tcp:$M1_PROVIDER_PORT"
+}
+
+cleanup_failed_m1_run() {
+  local status=$?
+  trap - EXIT
+  if ! $M1_RUN_LAUNCH_COMPLETE; then
+    if $M1_RUN_ADDED_REVERSE; then
+      adb reverse --remove "tcp:$M1_PROVIDER_PORT" >/dev/null 2>&1 || true
+    fi
+    if [[ -n "$M1_RUN_STARTED_PROVIDER_PID" ]]; then
+      stop_android_provider_instance "$M1_RUN_STARTED_PROVIDER_PID" || true
+      if [[ -f "$M1_PROVIDER_PID" ]] && \
+        [[ "$(< "$M1_PROVIDER_PID")" == "$M1_RUN_STARTED_PROVIDER_PID" ]]; then
+        rm -f "$M1_PROVIDER_PID" "$M1_PROVIDER_UNIT_FILE"
+      fi
+    fi
+  fi
+  exit "$status"
+}
+
+run_experience() (
+  local no_follow=false
+  if [[ "${1:-}" == "--no-follow" ]]; then
+    no_follow=true
+    shift
+  fi
+  [[ "$#" -eq 0 ]] || fail "unexpected m1-run argument: $1"
+
+  trap cleanup_failed_m1_run EXIT
+  doctor
+  build_experience_apk
+  build_android_provider
+  start_android_provider
+  configure_android_provider_reverse
+  install_experience_apk
+  launch_experience
+  M1_RUN_LAUNCH_COMPLETE=true
+  if ! $no_follow; then
+    follow_package_logs "$M1_ANDROID_PACKAGE"
+  fi
+)
+
+stop_experience() {
+  [[ "$#" -eq 0 ]] || fail "usage: ./tools/sosctl m1-stop"
+  require_command adb
+  stop_android_provider
+
+  local device_count=""
+  device_count="$(adb devices | awk 'NR > 1 && $2 == "device" { count += 1 } END { print count + 0 }')"
+  if [[ "$device_count" -eq 0 ]]; then
+    info "no authorized Android device is connected; local provider is stopped"
+    return 0
+  fi
+  select_device
+  info "stopping $M1_ANDROID_PACKAGE"
+  adb shell am force-stop "$M1_ANDROID_PACKAGE"
+  if android_reverse_ready; then
+    adb reverse --remove "tcp:$M1_PROVIDER_PORT" >/dev/null
+    info "removed ADB reverse tcp:$M1_PROVIDER_PORT"
+  fi
 }
 
 trigger_script_reload() {
@@ -861,7 +1120,8 @@ Commands:
   m1-launch           Launch the installed SOS experience.
   m1-logs             Follow logs from the SOS experience process.
   m1-run [--no-follow]
-                      Build, install, launch, and follow logs.
+                      Build, start provider authority, install, launch, and follow logs.
+  m1-stop             Stop SOS, its managed provider, and the ADB reverse mapping.
   script <file>       Transactionally load Luau source; no APK or restart.
   validate <file>     Compile, evaluate, decode, and validate Luau locally.
   agent-apply <file>  Validate, install, await frame, and capture screenshot.
@@ -979,19 +1239,10 @@ case "$command_name" in
     "$SOS_ROOT/tools/linux-agent-e2e"
     ;;
   m1-run)
-    no_follow=false
-    if [[ "${1:-}" == "--no-follow" ]]; then
-      no_follow=true
-      shift
-    fi
-    [[ "$#" -eq 0 ]] || fail "unexpected m1-run argument: $1"
-    doctor
-    build_experience_apk
-    install_experience_apk
-    launch_experience
-    if ! $no_follow; then
-      follow_package_logs "$M1_ANDROID_PACKAGE"
-    fi
+    run_experience "$@"
+    ;;
+  m1-stop)
+    stop_experience "$@"
     ;;
   run)
     no_follow=false

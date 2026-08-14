@@ -184,12 +184,19 @@ Build, install, and launch the ARM64 APK:
 ```sh
 ./tools/sosctl m1-check
 ./tools/sosctl m1-run
+./tools/sosctl m1-stop
 ```
 
 `m1-check` needs the SDK, NDK, Java, and Rust Android target but not a connected
 device. On an ARM64 Linux workstation it automatically combines native LLVM
 with the NDK sysroot because Google's Linux NDK executables are x86-64; on
 other hosts it uses `cargo-ndk`.
+
+`m1-run` builds and starts the workstation provider/state daemon, establishes
+`adb reverse tcp:47777 tcp:47777`, installs the strict APK, and launches it.
+`m1-run --no-follow` leaves the managed daemon running so provider actions keep
+working after the command returns. Use `m1-stop` to stop the app and daemon and
+remove the reverse mapping; durable provider state remains below `.cache/`.
 
 Replace only the experience source while the same process and APK stay alive:
 
