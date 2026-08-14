@@ -2817,3 +2817,123 @@ the captures also do not independently show the GDM selection or logout path.
 Repeat with timestamped supervisor/agent logs and revision IDs, exercise logout
 back to GDM while checking process/runtime cleanup, and separately run the
 physical-hardware, suspend, latency, thermal, and GPU gates.
+
+## 2026-08-14 — Bootstrap a Fedora x86-64 host and smoke-test Android hardware
+
+**Goal / hypothesis:** Prove that a newly provisioned Fedora 44 x86-64 machine
+can reproduce the current strict Android build and render it on the physical
+Samsung SM-A336B, while distinguishing a basic launch/input smoke test from the
+existing hardware and latency gates.
+
+**Environment changed:** The user expanded the Fedora root XFS logical volume
+from 15 GiB to the full 928.9 GiB LVM physical volume. Fedora `android-tools`
+37.0.0 and a targeted Samsung `04e8:6860` udev rule made ADB usable from the
+remote `carlid` session. User-local tooling is JetBrains Runtime 21.0.11 through
+SDKMAN, Rust/Cargo 1.97.1 through rustup, Android target
+`aarch64-linux-android`, `cargo-ndk` 4.1.2, Android command-line tools 22.0,
+Platform Tools 37.0.1, Platform 34 revision 3, Build Tools 34.0.0 and 36.0.0,
+and NDK r29 (`29.0.14206865`). `~/.bashrc.d/android-sdk.sh` exports the
+user-local SDK path. The device reported Android API 36 and
+`arm64-v8a,armeabi-v7a,armeabi`.
+
+**Evidence:** `./tools/sosctl doctor` passed with the physical phone.
+`./tools/sosctl m1-check` completed the locked strict ARM64 Android release
+check in 1 minute 4 seconds. `./tools/sosctl m1-build` linked the optimized
+native host in 39.57 seconds and Gradle 9.4.1 assembled the APK in 38 seconds
+under JBR 21. The clean source revision was `2a77c92fdc12`. Ignored artifact
+`artifacts/sos-experience.apk` is 38,193,731 bytes with SHA-256
+`e4233218ae9dd33ce77dfb016b7ea6a7904272e6a979528f608442e039d44a6f`;
+APK Signature Scheme v2 verification passed with one signer, and archive
+inspection found the SOS host, GPUI Mobile, and NDK C++ ARM64 libraries. After
+provider startup and a cold relaunch, Android reported 917 ms total activity
+launch time. PID 23607 logged remote provider snapshot, external state revision
+0, Mali-G68 Vulkan selection, an 8,442 us runtime-worker initialization, and a
+live SOS window. A controlled ADB-injected scroll on the physical device changed
+the frame SHA-256 while retaining PID 23607 and the foreground activity, with no
+panic, ANR, fatal exception, or script rejection. The visually inspected ignored
+capture
+`artifacts/sos-new-machine-launch-2026-08-14.png` is 179,208 bytes with SHA-256
+`da2665e125f135fe5a98d040457c6c1e2c1fd2d27520477bf50fee4e698a83b0`.
+
+**Failures and fixes:** The remote web/TTY login had no physical-seat ACL even
+though udev tagged the phone for `uaccess`; assigning the specific Samsung USB
+product to `wheel` fixed ADB's `no permissions`, after which the phone-side RSA
+prompt fixed `unauthorized`. The phone contained an APK signed by the previous
+machine, so Android could not replace it with the new debug signer. A verified
+private-data backup was created first, then removed at the user's request before
+the old app and its state were deliberately deleted. A standalone `apksigner`
+invocation initially lacked Java in the non-interactive shell; initializing
+SDKMAN fixed the invocation and signature verification passed. Gradle
+automatically installed Build Tools 36.0.0 in addition to the repository's
+doctor-required 34.0.0. Most importantly, the first strict launch selected
+Vulkan but panicked at `apps/experience/src/android.rs:214` because no provider
+snapshot service was listening. Starting locked `providerd` with ignored state
+at `.cache/android-provider-state.json`, adding
+`adb reverse tcp:47777 tcp:47777`, force-stopping the failed process, and cold
+launching again fixed startup; the daemon logged two successful boot requests.
+
+**Decision / remaining risk / next gate:** Confirm this new machine for a basic
+strict-build, physical-device render, and scroll smoke test. Do not treat it as
+a repeat of the lifecycle, soak, latency, thermal, or durable-state gates. The
+documented `m1-run` path did not yet start `providerd` or establish its ADB
+reverse mapping, so a fresh strict launch was not actually one-command
+reproducible. The following entry addresses that developer-experience gate.
+
+## 2026-08-14 — Make Android `m1-run` own its provider lifecycle
+
+**Goal / hypothesis:** Make the documented strict Android run command complete
+from a stopped state by building and starting the provider authority before the
+APK, preserving it after `--no-follow`, and providing explicit, repeatable
+cleanup without taking ownership of unrelated listeners.
+
+**Code and environment changed:** `tools/sosctl` now builds locked
+`providers-fake`, checks its snapshot protocol on TCP 47777, starts a managed
+daemon with ignored state, PID, log, and unit metadata below `.cache/`, installs
+the matching ADB reverse mapping, and unwinds only resources created by a
+failed run. On a host with a user systemd manager, a transient user service
+keeps the daemon alive after the invoking process exits; other hosts retain a
+`nohup` fallback. A new idempotent `m1-stop` stops the local managed daemon even
+when no phone is connected, and, when one is available, force-stops the app and
+removes the reverse mapping. `README.md` documents the lifecycle.
+
+**Evidence:** `bash -n tools/sosctl`, ShellCheck 0.11.0, `git diff --check`, and
+`cargo fmt --all -- --check` passed. `cargo test --locked -p providers-fake
+--bin providerd` passed both exactly-once/state-promotion tests. With an
+independently started compatible provider on port 47777, `./tools/sosctl m1-run
+--no-follow` exited 1 with an unmanaged-provider diagnostic and preserved that
+process, the existing reverse mapping, and the installed app. From a stopped
+state, the managed command completed in 6.61 seconds; after it returned, PID
+83061 remained owned by the active user unit and served an independent snapshot
+request, while the physical SM-A336B showed the app in the foreground with a
+remote provider snapshot and a live window. A second invocation replaced PID
+83061 with PID 83578, reused the mapping, and cold-launched the app. `m1-stop`
+then removed the provider PID/unit metadata and reverse mapping and stopped the
+app; invoking it again from that stopped state also succeeded.
+
+The final acceptance command, `/usr/bin/time -p ./tools/sosctl m1-run
+--no-follow`, completed in 6.26 seconds. After command exit, transient user unit
+`sos-android-providerd-84497-21178.service` was active with provider PID 84838;
+snapshot request 9001 returned `ok`, `adb reverse --list` contained the exact
+47777 mapping, and Android reported app PID 25104 as the top resumed activity.
+The rebuilt ignored artifact at dirty source revision `2a77c92fdc12` remains
+`artifacts/sos-experience.apk`, 38,193,731 bytes, SHA-256
+`e4233218ae9dd33ce77dfb016b7ea6a7904272e6a979528f608442e039d44a6f`.
+
+**Failures and fixes:** Redirecting a bare Bash `exec` while probing the port
+silenced later diagnostics in the same shell; scoping the file-descriptor open
+kept probe failures quiet without muting the command. A first managed attempt
+used `nohup`; the app booted, but this remote command supervisor reaped provider
+PID 81840 when `m1-run` returned. Moving Linux persistence to the user systemd
+manager made the daemon survive command completion. The compatible-listener
+test also confirmed that the fix rejects an unmanaged authority rather than
+killing or replacing it.
+
+**Decision / remaining risk / next gate:** Accept the one-command strict Android
+run and explicit-stop contract on this Fedora/systemd host and physical phone;
+leave the final provider, reverse mapping, and foreground app running for
+interactive use. This is lifecycle evidence, not a repeat of the latency,
+thermal, suspend, durable-state, or soak gates. The non-systemd `nohup` fallback
+has not been exercised on macOS, and the transient unit deliberately does not
+restart a crashed provider. The next portability gate is a clean macOS run and
+failure injection during install and launch; the next product gate remains the
+full physical-device lifecycle and performance matrix.
