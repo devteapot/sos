@@ -1139,6 +1139,9 @@ fn decode_effects(table: Option<Table>, lua: &Lua) -> Result<Vec<ProviderEffect>
                 | ("calendar", "append")
                 | ("music", "command")
                 | ("agent", "prompt")
+                | ("network", "refresh")
+                | ("network", "connect")
+                | ("network", "disconnect")
         ) {
             return Err(RuntimeError::Invalid(format!(
                 "provider action is not allowed: {provider}.{action}"
@@ -2062,6 +2065,43 @@ mod tests {
     }
 
     #[test]
+    fn returns_the_bounded_network_selection_capability() {
+        let runtime = LuauRuntime::compile(
+            r#"
+                return {
+                    api_version = 3,
+                    render = function() return { id = "root" } end,
+                    update = function(_, state)
+                        return {
+                            state = state,
+                            effects = {{
+                                provider = "network", action = "connect",
+                                payload = { ssid = "SOS Lab", security = "personal" },
+                            }},
+                        }
+                    end,
+                }
+            "#,
+        )
+        .unwrap();
+        let outcome = runtime
+            .update_with_effects(
+                &providers_fake_for_test(),
+                &json!({}),
+                &SceneEvent {
+                    action: "wifi_connect_1".into(),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(outcome.effects.len(), 1);
+        assert_eq!(outcome.effects[0].provider, "network");
+        assert_eq!(outcome.effects[0].action, "connect");
+        assert_eq!(outcome.effects[0].payload["ssid"], "SOS Lab");
+        assert_eq!(outcome.effects[0].payload["security"], "personal");
+    }
+
+    #[test]
     fn runs_an_explicit_bounded_state_schema_migration() {
         let runtime = LuauRuntime::compile(
             r#"
@@ -2305,6 +2345,7 @@ mod tests {
             system: experience_ir::SystemState::default(),
             surfaces: Vec::new(),
             agent: Default::default(),
+            network: Default::default(),
         }
     }
 }

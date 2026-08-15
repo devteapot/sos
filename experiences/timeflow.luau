@@ -40,6 +40,49 @@ local function timeline_item(time, title, detail, last)
     })
 end
 
+local function network_panel(model)
+    local network = model.network or {}
+    local status = "Wi-Fi off"
+    if network.connected then
+        status = (network.validated and "Online · " or "Connected · ")
+            .. (network.connected_ssid or "Wi-Fi")
+    elseif network.wifi_enabled then
+        status = network.activity ~= "" and network.activity or "Choose a network"
+    end
+    local rows = {
+        group("row", { justify = "between", align = "center" }, {
+            group("column", { gap = 3, grow = true }, {
+                text("NETWORK", 11, sage),
+                text(status, 12, network.validated and sage or dim, {
+                    role = "status", label = "Network status", value = status,
+                }, "network-status"),
+            }),
+            group("row", { padding = 9 }, { text("REFRESH", 10, sage) },
+                0x213129, 11, "network-refresh", "wifi_refresh"),
+        }),
+    }
+    if network.error then table.insert(rows, text(network.error, 12, 0xE07A6A)) end
+    for index, item in ipairs(network.networks or {}) do
+        if index > 6 then break end
+        local suffix = item.saved and " · saved" or ""
+        local security = item.security == "open" and "Open" or
+            (item.security == "enterprise" and "Enterprise" or "Secured")
+        local signal = string.rep("●", math.max(1, math.min(4, item.signal_level or 1)))
+        table.insert(rows, group("row", { padding = 10, justify = "between", align = "center" }, {
+            group("column", { gap = 2, grow = true }, {
+                text(item.ssid, 13, cream), text(security .. suffix, 10, dim),
+            }),
+            text(signal, 10, sage),
+        }, 0x213129, 12, "network-" .. tostring(index), "wifi_connect_" .. tostring(index)))
+    end
+    if network.connected then
+        table.insert(rows, group("row", { padding = 9, justify = "center" }, {
+            text("Disconnect", 12, 0xE07A6A),
+        }, 0x213129, 12, "network-disconnect", "wifi_disconnect"))
+    end
+    return group("column", { gap = 8, padding = 14 }, rows, 0x18251F, 16, "network-panel")
+end
+
 local function agent_panel(model, state)
     local agent = model.agent or {}
     local children = {
@@ -117,6 +160,7 @@ local function render(model, state)
             text(note.title, 17, cream), text(note.preview, 13, dim),
         }))
     end
+    table.insert(children, network_panel(model))
     table.insert(children, agent_panel(model, state))
 
     return group("column", { scroll_y = true }, {
@@ -136,6 +180,19 @@ local function update(model, state, event)
                 state = state,
                 effects = {{ provider = "agent", action = "prompt", payload = { prompt = prompt } }},
             }
+        end
+    elseif event.action == "wifi_refresh" then
+        return { state = state, effects = {{ provider = "network", action = "refresh" }} }
+    elseif event.action == "wifi_disconnect" then
+        return { state = state, effects = {{ provider = "network", action = "disconnect" }} }
+    else
+        local index = string.match(event.action or "", "^wifi_connect_(%d+)$")
+        local selected = index and model.network and model.network.networks[tonumber(index)] or nil
+        if selected then
+            return { state = state, effects = {{
+                provider = "network", action = "connect",
+                payload = { ssid = selected.ssid, security = selected.security },
+            }} }
         end
     end
     return state

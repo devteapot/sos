@@ -433,6 +433,38 @@ and service-preservation smoke gates. It does not replace actual audio,
 fingerprint enrollment, Wi-Fi association, calls/data transfer,
 suspend/resume, thermal, or soak tests, which remain open.
 
+### Wi-Fi association and microphone capture baseline
+
+The next physical pass kept the corrected SOS image, enforcing SELinux, and
+non-root ADB unchanged. The owner entered a Wi-Fi credential only on the
+handset. Read-only checks then found IPv4 and the default route on `wlan0`, an
+Android `VALIDATED` Wi-Fi network, successful DNS resolution, a TCP connection
+to `api.openai.com:443`, and a completed TLS request returning the expected
+unauthenticated HTTP `401`. No SSID, BSSID, credential, or assigned address was
+retained in the evidence. Wi-Fi association and data transfer therefore pass;
+this does not yet provide an SOS-authored network setup surface.
+
+Lineage Recorder captured the owner's speech for 41.720 s. The ignored raw
+artifact is
+`evidence-20260815/sos-microphone-baseline.wav`, 7,359,452 bytes, SHA-256
+`344f363a4d4c9c6a945ad2b8af3d10e098d52b08c486ec953a9385f4517a2218`.
+It is 44.1-kHz, signed 16-bit stereo PCM. Read-only sample analysis found
+sustained non-silent signal in 231 of 418 100-ms windows, channel RMS levels
+of -40.00 and -20.76 dBFS, and only 14 clipped samples. This passes actual
+microphone capture, but not playback, speaker, earpiece, Bluetooth audio,
+call audio, or a Luau-authored recording path.
+
+The SOS-native Wi-Fi follow-up is deliberately split at a trust boundary.
+Luau renders redacted Wi-Fi state and can request only refresh, a selected
+scan-row connection, or disconnect. Rust revalidates the selected SSID and
+security class against the latest Android snapshot. The platform-signed Java
+helper alone calls `WifiManager` and presents password/confirmation dialogs.
+The password has save and autofill disabled, is cleared on dismissal, and
+never enters JNI, Luau state, the revision authority, or logs. Local ARM64
+Rust checking, both Luau validators, and the complete Java/Gradle APK build
+pass. Physical scan, permission, association, and policy behavior are the next
+OTA gate and remain unclaimed here.
+
 The lock risk is understood by the device-tree maintainers. The
 [`A336BXXSEGYJ3` blob update](https://github.com/exynos1280/android_device_samsung_a33x/commit/a85c2a9652c93880a1c1474a098a72368d416e21)
 explicitly declined to update bootloader blobs because the newer `sboot.bin`

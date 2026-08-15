@@ -22,6 +22,13 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+    <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />
+    <!-- SOS is platform-signed and is the system HOME on SOS products. This
+         signature permission keeps scan/configuration access inside the
+         trusted permanent host rather than exposing Wi-Fi objects to Luau. -->
+    <uses-permission android:name="android.permission.NETWORK_SETTINGS" />
 
     <!-- Vulkan feature declaration.
          `required="false"` allows the app to fall back to OpenGL ES on

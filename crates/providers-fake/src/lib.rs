@@ -1,4 +1,7 @@
-use experience_ir::{CalendarEvent, ExperienceModel, Music, Note, SystemState, Weather};
+use experience_ir::{
+    CalendarEvent, ExperienceModel, Music, NetworkState, Note, SystemState, Weather, WifiNetwork,
+    WifiSecurity,
+};
 
 pub mod state_service;
 
@@ -52,17 +55,42 @@ pub fn snapshot() -> ExperienceModel {
         },
         surfaces: Vec::new(),
         agent: Default::default(),
+        network: NetworkState {
+            wifi_enabled: true,
+            connected: true,
+            connected_ssid: Some("SOS Lab".into()),
+            validated: true,
+            signal_level: Some(4),
+            networks: vec![
+                WifiNetwork {
+                    ssid: "SOS Lab".into(),
+                    signal_level: 4,
+                    security: WifiSecurity::Personal,
+                    saved: true,
+                },
+                WifiNetwork {
+                    ssid: "Guest".into(),
+                    signal_level: 3,
+                    security: WifiSecurity::Open,
+                    saved: false,
+                },
+            ],
+            activity: "Connected".into(),
+            error: None,
+        },
     }
 }
 
 #[cfg(test)]
 mod tests {
     #[test]
-    fn snapshot_has_all_four_domains() {
+    fn snapshot_has_every_seeded_domain() {
         let model = super::snapshot();
         assert!(!model.calendar.is_empty());
         assert!(!model.notes.is_empty());
         assert!(!model.music.title.is_empty());
         assert!(!model.weather.summary.is_empty());
+        assert!(model.network.connected);
+        assert_eq!(model.network.networks.len(), 2);
     }
 }

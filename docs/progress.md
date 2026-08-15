@@ -3880,3 +3880,106 @@ process-recovery, and service-preservation smoke gates. Actual audio,
 fingerprint enrollment, Wi-Fi association, calls/data transfer,
 suspend/resume, thermal behavior, and a longer soak remain open and must not
 be inferred from this smoke test.
+
+### 2026-08-15 — SM-A336B Wi-Fi association and microphone capture gates
+
+**Hypothesis / goal:** Close the two first functional hardware gaps after the
+corrected SOS HOME bring-up: prove that the physical phone can associate and
+transfer data over Wi-Fi, and prove an actual primary-microphone capture with
+measurable audio rather than inferring either result from service presence.
+This is a hardware baseline only; it does not claim an SOS-authored network or
+recording experience.
+
+**Changed / environment:** No repository code, boot image, partition, root
+state, or SELinux policy changed. The physical SM-A336B remained on the
+corrected SOS Android 16 image at Git revision `245e427`, SELinux enforcing,
+with ADB as UID 2000. The owner entered the Wi-Fi credential directly in
+Android Settings; the SSID, BSSID, credential, and assigned address were not
+copied into logs. Lineage Recorder was used for the microphone capture. Its
+notification permission, initially denied during the test, was granted after
+the application correctly refused to start a foreground recording without it.
+
+**Evidence:** Read-only ADB checks found an IPv4 address on `wlan0`, a default
+route through `wlan0`, and an Android connectivity record with both Wi-Fi and
+`VALIDATED`. DNS resolution for `api.openai.com` succeeded. Toybox `nc`
+connected to `api.openai.com:443`, and the system `curl` completed TLS to
+`https://api.openai.com/v1/models` and received HTTP `401`, the expected
+unauthenticated application response. A raw ICMP probe to `1.1.1.1` did not
+reply; it was rejected as a connectivity criterion because the named-host,
+TCP, TLS, and Android-validation checks all passed.
+
+The owner spoke near the handset while Lineage Recorder captured 41.720 s.
+MediaStore reported a 7,359,452-byte WAV. It was pulled outside Git as
+`evidence-20260815/sos-microphone-baseline.wav`, SHA-256
+`344f363a4d4c9c6a945ad2b8af3d10e098d52b08c486ec953a9385f4517a2218`.
+`file` identified little-endian RIFF/WAVE, signed 16-bit stereo PCM at
+44,100 Hz. A read-only PCM scan measured channel RMS levels of -40.00 and
+-20.76 dBFS, peaks at 0.00 dBFS, 14 total clipped samples, and 231 of 418
+100-ms windows above -45 dBFS. The artifact is not tracked by Git.
+
+**Failures / fixes:** The first Recorder interaction produced a 5.260-second
+capture and was rejected as too short. Denying the notification prompt caused
+Recorder to explain that its required foreground-recording permissions were
+unavailable; granting only the requested notification permission and
+restarting Recorder repaired the path. The accepted second capture is the
+artifact named above. No microphone playback, speaker, earpiece, Bluetooth
+audio, or call-audio claim follows from this recording.
+
+**Decision / next gate:** Physical Wi-Fi association/data transfer and an
+actual microphone capture now pass on the corrected SOS image. The next gate
+is an SOS-native network capability: Luau owns the visible setup journey and
+emits bounded typed effects, while trusted Android code owns Wi-Fi authority
+and keeps credentials out of Luau state, revision source, logs, screenshots,
+and agent context. Audio playback and the remaining hardware matrix stay open.
+
+### 2026-08-15 — SOS-native Wi-Fi capability, local implementation gate
+
+**Hypothesis / goal:** Put ordinary Wi-Fi status, discovery, association, and
+disconnect control inside the permanent SOS experience without giving Luau or
+a future agent direct Android Wi-Fi authority and without allowing a password
+to enter the revision/state protocol.
+
+**Changed / environment:** `ExperienceModel` now has a serializable redacted
+network snapshot and the Luau effect decoder admits only
+`network.refresh`, `network.connect`, and `network.disconnect`. The default and
+Timeflow experiences render the connection/validation state and a bounded
+network list. The Android host verifies a connect selection against its most
+recent trusted scan snapshot before calling the new `GpuiWifi` helper. That
+platform-signed helper owns `WifiManager`, the native password dialog, and the
+confirmation dialog for disconnect. Snapshots contain SSID, coarse signal,
+security class, and saved/connected booleans, but omit BSSID, addresses, and
+credentials. Password input disables save/autofill, is cleared on every exit,
+never crosses JNI, and is not logged. The manifest requests the network-state,
+Wi-Fi-state, Wi-Fi-change, and signature-level `NETWORK_SETTINGS` permissions;
+the SOS APK is already installed as a platform-signed privileged system-ext
+application.
+
+**Evidence:** `cargo test --locked -p experience-ir -p providers-fake
+-p runtime-luau` passed 4 experience-IR, 5 fake-provider/providerd, and 20
+runtime-Luau tests plus doc tests. `./tools/sosctl validate` accepted both
+`experiences/default.luau` (8,927 bytes, 67 nodes) and
+`experiences/timeflow.luau` (8,547 bytes, 69 nodes). The final focused rerun
+passed 21 runtime-Luau tests, including the bounded network-selection effect.
+After correcting one JNI method-name conversion,
+`./tools/sosctl m1-check --abi arm64-v8a` completed.
+`./tools/sosctl m1-build --abi arm64-v8a --home` then compiled the release
+ARM64 Rust library, compiled `GpuiWifi.java`, assembled all 36 Gradle tasks,
+and produced ignored `artifacts/sos-experience.apk`, 38,303,919 bytes,
+SHA-256 `c3d59a8468b24b47a2bf8f463bc102b5cd1ecd96fac72025ff69bcdf4bbfb165`.
+
+**Failures / fixes:** Including the Linux `sos-experience` test target in the
+first focused Cargo command reached the system linker but failed because this
+host lacks `libxkbcommon` and `libxkbcommon-x11`; the portable crates were
+rerun independently and passed, while the actual Android target and APK were
+used for host-specific compilation. The first Android cross-check also found
+that JNI 0.22 does not accept a dynamic Rust `&str` as a method identifier;
+converting it to `JNIString` fixed the type error. Neither failure was a Luau
+validation or Android source failure.
+
+**Decision / remaining risk / next gate:** The architecture and local Android
+build gate pass. Android remains the capability boundary; Luau owns policy and
+presentation, and no Wi-Fi secret is part of mutable experience data. This is
+not yet a hardware claim. The next gate is a full inspected a33x OTA followed
+by on-device permission read-back, scan rendering, saved-network reconnect or
+a deliberately entered native-dialog connection, validation, disconnect
+confirmation, SELinux/ANR/fatal scans, and restoration of the working network.

@@ -1,5 +1,6 @@
 mod accessibility;
 mod native_input;
+mod network;
 mod provider_client;
 #[cfg(feature = "aosp-system")]
 mod revision_client;
@@ -18,7 +19,7 @@ use std::{
 
 use experience_ir::{
     Align, AnimationKind, Content, ExperienceModel, Flow, HitRegion, Interaction, Justify, PaintOp,
-    Scene, SceneEvent, SceneNode, StateEnvelope, TextContent,
+    ProviderEffect, Scene, SceneEvent, SceneNode, StateEnvelope, TextContent, WifiSecurity,
 };
 use gpui::{
     canvas, div, img, prelude::*, px, relative, rgb, Animation as GpuiAnimation, AnimationExt as _,
@@ -215,7 +216,7 @@ impl ExperienceHost {
         #[cfg(feature = "aosp-system")]
         let authority_current = revision_client::current_with_retry()
             .unwrap_or_else(|error| panic!("system revision authority is required: {error}"));
-        let model = match provider_client::snapshot() {
+        let mut model = match provider_client::snapshot() {
             Ok(model) => {
                 log::info!("provider_snapshot_remote transport=tcp");
                 model
@@ -230,6 +231,22 @@ impl ExperienceHost {
                 panic!("strict gate requires provider snapshot: {error}")
             }
         };
+        match network::snapshot() {
+            Ok(snapshot) => {
+                log::info!(
+                    "android_network_snapshot enabled={} connected={} validated={} networks={}",
+                    snapshot.wifi_enabled,
+                    snapshot.connected,
+                    snapshot.validated,
+                    snapshot.networks.len()
+                );
+                model.network = snapshot;
+            }
+            Err(error) => {
+                log::warn!("android_network_snapshot_failed error={error}");
+                model.network.error = Some("Wi-Fi status unavailable".into());
+            }
+        }
         #[cfg(not(feature = "aosp-system"))]
         let (state, remote_state_revision, state_schema_version, remote_source_sha256) =
             match provider_client::load_state() {
@@ -302,6 +319,7 @@ impl ExperienceHost {
         .expect("runtime worker thread must start");
         let results = worker.results();
         Self::attach_worker_channels(ready, results, cx);
+        Self::attach_network_poll(cx);
         log::info!(
             "runtime_worker_spawned ui_thread={:?}",
             thread::current().id()
@@ -364,6 +382,39 @@ impl ExperienceHost {
             }
         })
         .detach();
+    }
+
+    fn attach_network_poll(cx: &mut Context<Self>) {
+        let executor = cx.background_executor().clone();
+        cx.spawn(async move |this, cx| loop {
+            executor.timer(Duration::from_secs(2)).await;
+            let snapshot = network::snapshot();
+            if this
+                .update(cx, |this, cx| match snapshot {
+                    Ok(snapshot) if snapshot != this.model.network => {
+                        this.model.network = snapshot;
+                        this.refresh_model_from_authority();
+                        cx.notify();
+                    }
+                    Ok(_) => {}
+                    Err(error) => log::warn!("android_network_poll_failed error={error}"),
+                })
+                .is_err()
+            {
+                break;
+            }
+        })
+        .detach();
+    }
+
+    fn refresh_model_from_authority(&mut self) {
+        let request_id = self.allocate_request_id();
+        if let Err(error) =
+            self.worker
+                .refresh_model(request_id, self.model.clone(), self.state.clone())
+        {
+            log::warn!("android_model_refresh_start_failed error={error}");
+        }
     }
 
     fn handle_worker_ready(&mut self, result: Result<WorkerReady, String>, cx: &mut Context<Self>) {
@@ -1268,6 +1319,10 @@ impl ExperienceHost {
             } => {
                 self.action_in_flight = false;
                 self.merge_native_input_state(&mut state);
+                let effect_count = effects.len();
+                let (system_effects, provider_effects): (Vec<_>, Vec<_>) = effects
+                    .into_iter()
+                    .partition(|effect| effect.provider == "network");
                 if let Some(expected_revision) = self.remote_state_revision {
                     let source_sha256 = source_sha256(&self.source);
                     let mut committed = provider_client::commit_state(
@@ -1275,7 +1330,7 @@ impl ExperienceHost {
                         self.state_schema_version,
                         &state,
                         &source_sha256,
-                        &effects,
+                        &provider_effects,
                     );
                     if committed.is_err() {
                         if let Ok(current) = provider_client::load_state() {
@@ -1286,7 +1341,7 @@ impl ExperienceHost {
                                     self.state_schema_version,
                                     &state,
                                     &source_sha256,
-                                    &effects,
+                                    &provider_effects,
                                 );
                             }
                         }
@@ -1300,7 +1355,7 @@ impl ExperienceHost {
                                 envelope.revision,
                                 envelope.schema_version,
                                 envelope.source_sha256,
-                                effects.len()
+                                effect_count
                             );
                         }
                         Err(error) => {
@@ -1316,6 +1371,7 @@ impl ExperienceHost {
                 self.accessibility_dirty = true;
                 persist_state(&self.state);
                 self.status = None;
+                self.execute_network_effects(system_effects);
                 log::info!(
                     "experience_action_completed request_id={request_id} worker_us={worker_us}"
                 );
@@ -1354,6 +1410,51 @@ impl ExperienceHost {
                     "experience_model_refresh_rejected request_id={request_id} worker_us={worker_us} error={error}"
                 );
             }
+        }
+    }
+
+    fn execute_network_effects(&mut self, effects: Vec<ProviderEffect>) {
+        for effect in effects {
+            let result = match effect.action.as_str() {
+                "refresh" => network::refresh(),
+                "disconnect" => network::disconnect(),
+                "connect" => {
+                    let ssid = effect.payload.get("ssid").and_then(JsonValue::as_str);
+                    let security = effect.payload.get("security").and_then(JsonValue::as_str);
+                    match (ssid, security) {
+                        (Some(ssid), Some(security)) => self
+                            .model
+                            .network
+                            .networks
+                            .iter()
+                            .find(|network| {
+                                let trusted_security = match network.security {
+                                    WifiSecurity::Open => "open",
+                                    WifiSecurity::Personal => "personal",
+                                    WifiSecurity::Enterprise => "enterprise",
+                                };
+                                network.ssid == ssid && trusted_security == security
+                            })
+                            .map(|selected| network::connect(&selected.ssid, selected.security))
+                            .unwrap_or_else(|| {
+                                Err("network is not present in the trusted scan snapshot".into())
+                            }),
+                        _ => Err("network.connect omitted its bounded selection".into()),
+                    }
+                }
+                _ => Err(format!(
+                    "unsupported trusted network action: {}",
+                    effect.action
+                )),
+            };
+            if let Err(error) = result {
+                self.status = Some((format!("Network action failed: {error}"), false));
+                log::warn!("android_network_action_failed action={}", effect.action);
+            }
+        }
+        if let Ok(snapshot) = network::snapshot() {
+            self.model.network = snapshot;
+            self.refresh_model_from_authority();
         }
     }
 

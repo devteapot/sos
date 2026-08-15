@@ -36,6 +36,41 @@ pub struct ExperienceModel {
     pub surfaces: Vec<ProviderSurface>,
     #[serde(default)]
     pub agent: AgentConversation,
+    #[serde(default)]
+    pub network: NetworkState,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct NetworkState {
+    pub wifi_enabled: bool,
+    pub connected: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub connected_ssid: Option<String>,
+    pub validated: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signal_level: Option<u8>,
+    #[serde(default)]
+    pub networks: Vec<WifiNetwork>,
+    #[serde(default)]
+    pub activity: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WifiNetwork {
+    pub ssid: String,
+    pub signal_level: u8,
+    pub security: WifiSecurity,
+    pub saved: bool,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WifiSecurity {
+    Open,
+    Personal,
+    Enterprise,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
