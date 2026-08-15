@@ -78,3 +78,11 @@ test("the SOS runtime registers Pi's subscription-backed Codex provider", () => 
   assert.equal(provider?.auth.oauth?.isSubscription, true);
   assert.ok(models.getModel("openai-codex", "gpt-5.6-sol"));
 });
+
+test("the SOS runtime registers Pi's OpenRouter provider", () => {
+  const models = createProviderModels("openrouter");
+  const provider = models.getProvider("openrouter");
+
+  assert.equal(provider?.baseUrl, "https://openrouter.ai/api/v1");
+  assert.ok(models.getModel("openrouter", "openai/gpt-5.4-mini"));
+});

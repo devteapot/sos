@@ -4,3 +4,4 @@
 # seapp rule so the assignment is explicit, then add only the two SOS endpoints
 # to the canonical domain's existing network permissions.
 allow priv_app { sos_provider_port sos_revision_port }:tcp_socket name_connect;
+allow priv_app sos_node_exec:file rx_file_perms;

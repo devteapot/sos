@@ -1,0 +1,62 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+SOS_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+NODE_VERSION="v24.19.0"
+NODE_COMMIT="cdc1b38d40cb567b7ad0b39c86addf830a0af0ae"
+NODE_REPOSITORY="https://github.com/nodejs/node.git"
+NODE_PATCH="$SOS_ROOT/aosp/patches/node-android-v24.19.0/0001-fix-modern-ndk-arm64-cross-build.patch"
+NODE_CACHE_ROOT="${SOS_NODE_ANDROID_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/sos-node-android}"
+NODE_SOURCE="$NODE_CACHE_ROOT/node-$NODE_VERSION"
+NODE_OUTPUT="$SOS_ROOT/artifacts/sos-node-android-arm64"
+NODE_CXX_OUTPUT="$SOS_ROOT/artifacts/sos-node-libc++_shared.so"
+ANDROID_NDK="${SOS_ANDROID_NDK:-${ANDROID_NDK_HOME:-$HOME/Android/Sdk/ndk/29.0.14206865}}"
+ANDROID_API="31"
+BUILD_JOBS="${SOS_NODE_JOBS:-12}"
+
+fail() {
+  printf 'error: %s\n' "$*" >&2
+  exit 1
+}
+
+apply_patch_once() {
+  local patch="$1"
+  if git apply --unidiff-zero --reverse --check "$patch" 2>/dev/null; then
+    return
+  fi
+  git apply --unidiff-zero --check "$patch" || fail "Node patch cannot be applied: $patch"
+  git apply --unidiff-zero "$patch"
+}
+
+command -v git >/dev/null 2>&1 || fail "git is required"
+command -v make >/dev/null 2>&1 || fail "make is required"
+[[ -x "$ANDROID_NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip" ]] || \
+  fail "pinned Android NDK is missing: $ANDROID_NDK"
+[[ -f "$NODE_PATCH" ]] || fail "SOS Node patch is missing: $NODE_PATCH"
+
+mkdir -p "$NODE_CACHE_ROOT" "$SOS_ROOT/artifacts"
+if [[ ! -d "$NODE_SOURCE/.git" ]]; then
+  git clone --depth 1 --branch "$NODE_VERSION" "$NODE_REPOSITORY" "$NODE_SOURCE"
+fi
+[[ "$(git -C "$NODE_SOURCE" rev-parse HEAD)" == "$NODE_COMMIT" ]] || \
+  fail "Node source is not the pinned $NODE_COMMIT"
+
+(
+  cd "$NODE_SOURCE"
+  apply_patch_once "$NODE_PATCH"
+  ./android-configure "$ANDROID_NDK" "$ANDROID_API" arm64
+  make -j"$BUILD_JOBS"
+)
+
+install -m 0755 "$NODE_SOURCE/out/Release/node" "$NODE_OUTPUT"
+"$ANDROID_NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip" "$NODE_OUTPUT"
+install -m 0644 \
+  "$ANDROID_NDK/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/aarch64-linux-android/libc++_shared.so" \
+  "$NODE_CXX_OUTPUT"
+"$ANDROID_NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip" "$NODE_CXX_OUTPUT"
+file "$NODE_OUTPUT" | grep -F 'ARM aarch64' >/dev/null || fail "built Node is not ARM64"
+stat --printf='android_node=%n\nbytes=%s\n' "$NODE_OUTPUT"
+sha256sum "$NODE_OUTPUT"
+stat --printf='android_node_cxx=%n\nbytes=%s\n' "$NODE_CXX_OUTPUT"
+sha256sum "$NODE_CXX_OUTPUT"

@@ -11,6 +11,12 @@ PRODUCT_PACKAGES += \
     SosA33xFrameworkOverlay \
     SosShell \
     sos-android-system-authority \
+    sos-node \
+    sos-node-cxx-shared \
+    sos-agent-android-runner \
+    sos-agent-experience-api \
+    sos-agent-example-primary \
+    sos-agent-example-secondary \
     sos-default-experience
 
 SYSTEM_EXT_PRIVATE_SEPOLICY_DIRS += \

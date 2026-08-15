@@ -25,6 +25,8 @@
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
     <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <!-- SOS is platform-signed and is the system HOME on SOS products. This
          signature permission keeps scan/configuration access inside the
          trusted permanent host rather than exposing Wi-Fi objects to Luau. -->
@@ -149,6 +151,17 @@
             android:name="dev.gpui.mobile.GpuiAuthActivity"
             android:exported="false"
             android:theme="@android:style/Theme.Translucent.NoTitleBar"
+        />
+
+        <!-- Native Pi is a real child process, not a WebView. Keep the app in
+             foreground-service state while a provider request or external
+             OAuth browser temporarily backgrounds HOME so Android does not
+             reap that bounded child process. -->
+        <service
+            android:name="dev.gpui.mobile.GpuiAgentService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync"
+            android:stopWithTask="false"
         />
 
     </application>

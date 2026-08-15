@@ -1,4 +1,4 @@
-# Resident Pi agent: first Linux live test
+# Resident Pi agent
 
 The first integration uses `@earendil-works/pi-agent-core` and
 `@earendil-works/pi-ai` 0.84.1 as a resident, unprivileged service. It is an
@@ -89,9 +89,62 @@ IDs are reported if `SOS_AGENT_MODEL` is unknown. The developer service stores
 the Pi conversation separately under `.cache/linux-agent/messages.json`;
 revisions remain in the existing Linux revision store.
 
-The API-key-backed `openai` and `anthropic` providers remain supported. For a
-developer run, set `SOS_AGENT_API_KEY` as before instead of running the OAuth
-login command.
+The API-key-backed `openai`, `openrouter`, and `anthropic` providers remain
+supported. For a developer run, set `SOS_AGENT_API_KEY` as before instead of
+running the OAuth login command. OpenRouter uses Pi's own provider catalog and
+OpenAI-compatible transport; it is not an SOS reimplementation.
+
+## Android native Node path
+
+Android is ARM Linux at the kernel level, but its userspace ABI is Bionic, not
+glibc. A normal Linux ARM64 Node tarball therefore does not run. SOS builds
+Node v24.19.0 from the official source at
+`cdc1b38d40cb567b7ad0b39c86addf830a0af0ae` with NDK r29/API 31 using
+`tools/build-android-node`. The reproducible local patch supplies the missing
+host-toolchain split, modern ARM64 hardware-capability lookup, and Android zlib
+handling. V8's signal-based Wasm trap handler is disabled with Node's own
+bundled Android patch; WebAssembly itself remains enabled.
+
+The OTA places the ARM64/Bionic executable at `/system_ext/bin/sos-node`, its
+NDK C++ runtime at `/system_ext/lib64/libc++_shared.so`, and a single-file Pi
+bundle at `/system_ext/etc/sos-agent/android-runner.cjs`. No WebView executes
+the agent. The platform-signed HOME launches Node as a child in the existing
+privileged-app SELinux domain and exchanges one bounded JSON document over
+anonymous stdin/stdout pipes.
+
+Luau exposes provider selection, but never receives a secret. Direct OpenAI
+and OpenRouter keys and Pi's refreshed Codex OAuth document are encrypted at
+rest by an unlock-bound Android Keystore AES-GCM key. Plaintext is never placed
+in argv, environment variables, a file, logs, screenshots, or a WebView. Pi
+stages a complete source candidate; the Rust HOME independently compiles,
+renders, validates, and transactionally activates it.
+
+Android temporarily promotes HOME to an unexported `dataSync` foreground
+service while native Pi is waiting on a provider or external OAuth browser.
+This is required because Android otherwise treats the long-lived child of a
+backgrounded HOME as a phantom process. The service and its low-importance
+notification stop as soon as the bounded operation completes or is cancelled;
+Pi is not kept alive while idle.
+
+The initial Android surface intentionally offers the three requested live
+choices:
+
+- direct OpenAI API key with `gpt-5.6-luna`;
+- OpenRouter API key with `openai/gpt-5.4-mini`;
+- Codex subscription device-code OAuth with `gpt-5.6-sol`.
+
+Pi's provider registry remains underneath this narrow trusted UI, so extending
+the selection does not require adding provider-specific HTTP code to SOS.
+
+The SM-A336B physical gate passed with SELinux enforcing. Pi's Codex device
+flow stored an encrypted subscription credential, a prompt from the Luau
+composer produced and activated model-generated revision `fe7e19b3e635...`,
+and the generated HOME survived both the final OTA and an independent HOME
+process restart. A one-minute external-browser regression kept the same native
+Node PID and an active foreground service, then cancellation stopped both and
+left the prior credential intact. Direct OpenAI and OpenRouter dialogs were
+also exercised as protected password fields, but no keys were entered and
+their real-provider calls are still an explicit future gate.
 
 ## Boot image wiring
 

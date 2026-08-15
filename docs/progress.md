@@ -4277,3 +4277,164 @@ PackageManager `DEBUGGABLE` flag, and no SOS PID in JDWP before any credential
 or agent test. If those gates pass, continue in order with deterministic agent,
 trusted Wi-Fi, live OpenAI, restart persistence, and final enforcing/crash and
 hardware-regression scans.
+
+### 2026-08-15 — Native Android Pi, Codex subscription, and live rewrite gate
+
+**Hypothesis / goal:** Replace the provisional Android-specific OpenAI request
+client with the same Pi runtime used on Linux, run Pi directly in native
+ARM64/Bionic Node without a WebView, support direct OpenAI and OpenRouter API
+keys plus Codex subscription OAuth, and prove a real model can change the
+physical phone's experience without crossing the trusted revision boundary.
+
+**Changed / environment:** `tools/build-android-node` now reproducibly builds
+official Node v24.19.0 source commit
+`cdc1b38d40cb567b7ad0b39c86addf830a0af0ae` with Android NDK r29 for ARM64 /
+API 31. The pinned patch under `aosp/patches/node-android-v24.19.0` separates
+host and target tools, uses modern NDK ARM64 hardware-capability definitions,
+fixes Android zlib configuration, and applies Node's bundled Android V8 trap-
+handler setting. The ignored runtime artifacts are:
+
+| Artifact | Bytes | SHA-256 |
+| --- | ---: | --- |
+| `artifacts/sos-node-android-arm64` | 91,280,288 | `e1e6cf7de807baea6fa1d2a81bd6da29d777ab08149645431ebbe283bda33607` |
+| `artifacts/sos-node-libc++_shared.so` | 1,373,744 | `fa9e42dff4c2b14bd8dec3f302aef93fcac3827704053801268090b4caa377d0` |
+| `services/sos-agent/dist/android-runner.cjs` | 2,001,174 | `7d9bee75d9912399ea87715c82a51cfb28a3020e244df58685e5cfd5e650157e` |
+
+`services/sos-agent/src/android-runner.ts` is a single bounded stdin/stdout
+request runner over real `@earendil-works/pi-agent-core` and `pi-ai`. It can
+report its catalog, execute the faux provider self-test, perform Pi's
+`openai-codex` device-code login, or run one live authoring prompt. It exposes
+only the existing context, validate, and submit tools. A candidate remains
+staged until Rust independently compiles, renders, validates, and commits it;
+Node cannot directly mutate the revision store. OpenRouter is now registered
+through Pi's provider implementation alongside OpenAI, Anthropic, and Codex.
+
+The a33x product packages Node at `/system_ext/bin/sos-node`, its C++ runtime,
+and the bundle plus exact authoring documents/examples. A dedicated immutable
+`sos_node_exec` file label grants the named platform-signed HOME only read and
+execute access. `GpuiAgent` launches native Node as a child in the existing
+enforcing `priv_app` domain and passes exactly one JSON document over anonymous
+pipes. No WebView, shell, general filesystem tool, writable code path, or ADB
+transport participates.
+
+The trusted Android surface now selects direct OpenAI (`gpt-5.6-luna`), direct
+OpenRouter (`openai/gpt-5.4-mini`), Codex subscription
+(`openai-codex` / `gpt-5.6-sol`), or the deterministic fake. Provider-scoped
+credentials are AES-GCM encrypted under non-exportable, unlock-bound Android
+Keystore alias `sos.agent.credentials.v2`; only ciphertext and IV persist.
+Plaintext is passed to Pi only in the anonymous request pipe and never reaches
+Luau, JNI, argv, environment variables, a credential file, a log, or a
+screenshot. The default, Timeflow, and Daily Flow sources expose all provider
+actions while preserving the required agent composer.
+
+**Local and temporary-device evidence:** `npm test --prefix
+services/sos-agent` passed all 5 tests, including Pi's Codex subscription and
+OpenRouter registrations. The Android bundle's real catalog under native Node
+reported `platform=android`, `arch=arm64`, Node `v24.19.0`, and available
+OpenAI, Anthropic, Codex, and OpenRouter model entries. Native TLS completed.
+The bundle self-test used the exact context, validate, submit order. `cargo
+test -p runtime-luau --locked` passed 22 tests. Final validators accepted
+default at 10,537 bytes / 79 nodes, Timeflow at 10,172 / 81, and Daily Flow at
+14,447 / 72. `./tools/sosctl m1-build --abi arm64-v8a --home` completed all 44
+release tasks. The first inspected native-Pi OTA was 1,277,021,382 bytes,
+SHA-256
+`a515008d154bf1d0e2599d45bd3fb5c7b08781bb8bb602af7bdc56150edbf974`,
+with build increment `sos.dc0062a5a23d.171782b6d5ce`.
+
+**Physical install and real Pi E2E:** That first OTA installed without a wipe
+at `Total xfer: 1.00x`. Android returned boot-complete with enforcing SELinux,
+SOS HOME/on-device authority, no reverse tunnel, UID-2000 ADB, and no SOS JDWP
+process. Selecting Fake and submitting through the Luau composer ran the
+deterministic path and activated updated Daily Flow revision
+`3839f95c7dc6e44efad083bbd06cd41bf3efe57dedf70044b3d0ac9dd6d10c14`,
+source SHA-256
+`e6623bc23473a85d2d74f619e3f1c506a0155b761fef0a684e83448242458690`.
+It reached visible commit in 81.410 ms with 1.844 ms compile, 3.104 ms render,
+and 4.966 ms worker-total time, exposing the new provider controls.
+
+The owner then completed Pi's official Codex device-code authorization. The
+phone reported `Codex subscription ready · gpt-5.6-sol`; its OAuth document
+was stored only through the Keystore boundary. Submitting the existing Daily
+request through the phone's composer launched native `sos-node` PID 5134 under
+the HOME app's enforcing MCS-labelled `priv_app` domain. Real Pi completed in
+about 129 seconds and proposed a visibly different green Daily experience.
+The trusted host logged request 67 with 3,022 us queue, 1,662 us compile,
+2,370 us render, and 4,049 us worker-total time; source-to-visible after host
+receipt was 104,393 us. It activated revision
+`fe7e19b3e63572b6522dcafec548fb4022f44378a6b4ebe0155c0860263de8a4`,
+source SHA-256
+`9b0d8f6022e175b647a88f484247f3d4fcebe8359b8fe49cf11afce4cb64903e`.
+The ignored first live screenshot `sos-pi-codex-live.png` is 181,961 bytes,
+SHA-256
+`4bca0a5adbfac3ac5789fa768fe3bc2c80232c72a0914978dd80882588cc4e37`.
+An independent HOME death changed its PID while the authority PID and generated
+revision remained stable; restart logged `provider=openai-codex
+configured=true`.
+
+**Failure / fix:** The first Codex login attempt uncovered a genuine lifecycle
+bug. Native Node remained healthy for more than 45 seconds from an ADB shell
+and indefinitely while HOME was foreground, but Android reaped the child as a
+phantom process roughly ten seconds after the external browser backgrounded
+HOME. Temporarily setting `settings_enable_monitor_phantom_procs=false`
+isolated that cause; it was immediately deleted and final read-back is `null`.
+Keeping the global mitigation was rejected. The durable change adds an
+unexported `dataSync` `GpuiAgentService` and the two matching foreground-
+service permissions. HOME starts it only for a live provider request or OAuth
+login and stops it in every completion/cancellation path. The first Java build
+failed because this inherited package has no generated `R` namespace; using
+the platform notification icon fixed the release build. A glibc ARM64 Node
+tarball, the old Node-18 nodejs-mobile runtime, a WebView execution model, and
+an ESM bundle with dynamic YAML loading were also rejected: they respectively
+do not target Bionic, miss Pi's Node version floor, weaken the runtime boundary,
+or fail as a self-contained artifact. The CommonJS esbuild bundle is the
+accepted packaging path.
+
+**Final OTA and installed regression evidence:** The foreground-service build
+completed in 3m35s with increment `sos.dc0062a5a23d.b69ae2204b16`.
+`./tools/a33xctl inspect-sos` passed ZIP/signature integrity, VINTF, every live
+PIT ceiling, package/image identity, the complete AVB graph, repaired recovery,
+ARM64/HOME/nondebuggable/no-backup gates, exact Node/libc++/runner/doc/example
+identity, manifest foreground-service assertions, properties, and compiled
+SELinux contexts. The final artifacts are:
+
+| Artifact | Bytes | SHA-256 |
+| --- | ---: | --- |
+| platform-signed SOS APK | 40,704,817 | `f5e8ba397ada9e4614b9d02b96ca2ec135ae66dc7501004a801145789caf2252` |
+| `lineage-23.0-20260815-UNOFFICIAL-sos_a33x.zip` | 1,276,639,235 | `b5da4fdc0a2b448ba989ce41cdac8e11308983addf7ae813256aeca08dff737c` |
+
+From authorized Android, `adb reboot sideload-auto-reboot` entered Recovery's
+automatic sideload target. The exact OTA transferred at `Total xfer: 1.00x`
+and Recovery rebooted Android without touch or data formatting, closing the
+unattended OTA gate. Installed read-back returned the exact increment,
+`ro.debuggable=0`, no package `DEBUGGABLE` flag, no JDWP PID, enforcing
+SELinux, priority-1000 SOS HOME, on-device authority properties, and an empty
+reverse list.
+
+The generated experience and Codex status survived the OTA. With the external
+browser resumed for more than one minute, Node remained the same PID 2878 and
+ActivityManager reported `GpuiAgentService` as foreground with dataSync type
+`0x00000001`; no phantom-process or kill event appeared. Returning to HOME and
+cancelling the fresh one-time flow stopped both Node and the service while the
+prior Codex credential still reported ready. The physical OpenRouter and
+OpenAI configuration buttons each opened a `password=true` field in a
+`SECURE` activity window; both were cancelled without a secret.
+
+A final independent HOME force-stop changed PID 2083 to 3312 while authority
+PID 949 stayed fixed. Direct revision-authority read-back returned revision
+`fe7e19...`, state revision 58, source SHA-256 `9b0d8f...`, 10,250 source
+bytes, and no assets. HOME again logged the configured Codex provider. Fresh
+SELinux/fatal/ANR scans were empty, and phantom monitoring remained at its
+default unset value. The ignored final screenshot
+`sos-pi-codex-after-final-home-restart.png` is 177,603 bytes, SHA-256
+`6c8788c7f4eb369408037b2c77b0a1ae228d938d60d3b6418fe13aba6191bf8d`.
+
+**Decision / remaining risk / next gate:** Native Pi on Android, bounded tool
+use, Codex subscription login/refresh storage, one real model-authored
+experience change, transactional activation, OTA and process persistence,
+foreground browser survival, and unattended no-wipe OTA now pass on the
+SM-A336B. WebView and SOS-specific provider transports are rejected for this
+path. No direct OpenAI or OpenRouter key was entered, so their dialogs,
+catalog, bundle, and security boundaries pass but their real API calls remain
+unclaimed. Speaker/earpiece/Bluetooth/call audio, fingerprint enrollment,
+cellular call/data transfer, suspend/resume, thermal, and soak testing also
+remain open. No further reboot is required for this milestone.

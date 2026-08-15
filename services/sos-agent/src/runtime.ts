@@ -14,10 +14,11 @@ import {
 import { anthropicProvider } from "@earendil-works/pi-ai/providers/anthropic";
 import { openaiCodexProvider } from "@earendil-works/pi-ai/providers/openai-codex";
 import { openaiProvider } from "@earendil-works/pi-ai/providers/openai";
+import { openrouterProvider } from "@earendil-works/pi-ai/providers/openrouter";
 import { Agent, type AgentMessage } from "@earendil-works/pi-agent-core";
 import { createAuthoringTools, type AuthoringBackend } from "./authoring.js";
 
-export type SupportedProvider = "openai" | "anthropic" | "openai-codex";
+export type SupportedProvider = "openai" | "anthropic" | "openai-codex" | "openrouter";
 
 export interface AgentRuntimeOptions {
   backend: AuthoringBackend;
@@ -69,6 +70,9 @@ export function createProviderModels(
       break;
     case "openai-codex":
       models.setProvider(openaiCodexProvider());
+      break;
+    case "openrouter":
+      models.setProvider(openrouterProvider());
       break;
   }
   return models;

@@ -78,6 +78,14 @@ pub fn configure_openai() -> Result<(), String> {
     call_bool("configureOpenAi")
 }
 
+pub fn configure_openrouter() -> Result<(), String> {
+    call_bool("configureOpenRouter")
+}
+
+pub fn configure_codex() -> Result<(), String> {
+    call_bool("configureCodex")
+}
+
 pub fn use_fake() -> Result<(), String> {
     call_bool("useFake")
 }
@@ -114,7 +122,7 @@ fn run_prompt(
     updates: &Sender<AgentUpdate>,
 ) -> Result<(), String> {
     emit_tool(updates, "get_experience_context", || Ok(()))?;
-    let candidate = if status.provider == "openai" {
+    let candidate = if status.provider != "fake" {
         emit_tool(updates, "propose_experience", || {
             let candidate = run_live(prompt, current_source)?;
             validate_candidate(&candidate.source, model)?;
@@ -195,17 +203,17 @@ fn run_live(prompt: &str, current_source: &str) -> Result<LiveCandidate, String>
             .and_then(|value| value.l())
             .map_err(|_error| {
                 env.exception_clear();
-                "OpenAI request failed in the trusted Android bridge".to_owned()
+                "Pi request failed in the trusted Android bridge".to_owned()
             })?;
         if result.is_null() {
-            return Err("OpenAI returned no candidate".into());
+            return Err("Pi returned no candidate".into());
         }
         let envelope: LiveEnvelope = serde_json::from_str(&get_string(env, &result))
-            .map_err(|_| "OpenAI returned an invalid candidate envelope".to_owned())?;
+            .map_err(|_| "Pi returned an invalid candidate envelope".to_owned())?;
         if !envelope.ok {
             return Err(envelope
                 .error
-                .unwrap_or_else(|| "OpenAI did not produce a candidate".into()));
+                .unwrap_or_else(|| "Pi did not produce a candidate".into()));
         }
         Ok(LiveCandidate {
             source: envelope

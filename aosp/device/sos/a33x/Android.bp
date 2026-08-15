@@ -26,6 +26,62 @@ cc_prebuilt_binary {
     init_rc: ["sos-authority.rc"],
 }
 
+cc_prebuilt_binary {
+    name: "sos-node",
+    srcs: ["prebuilts/arm64/sos-node"],
+    stem: "sos-node",
+    compile_multilib: "64",
+    check_elf_files: false,
+    system_ext_specific: true,
+    strip: {
+        none: true,
+    },
+}
+
+cc_prebuilt_library_shared {
+    name: "sos-node-cxx-shared",
+    srcs: ["prebuilts/arm64/libc++_shared.so"],
+    stem: "libc++_shared",
+    compile_multilib: "64",
+    check_elf_files: false,
+    system_ext_specific: true,
+    strip: {
+        none: true,
+    },
+}
+
+prebuilt_etc {
+    name: "sos-agent-android-runner",
+    src: "prebuilts/sos-agent/android-runner.cjs",
+    filename: "android-runner.cjs",
+    sub_dir: "sos-agent",
+    system_ext_specific: true,
+}
+
+prebuilt_etc {
+    name: "sos-agent-experience-api",
+    src: "prebuilts/sos-agent/experience-api.md",
+    filename: "experience-api.md",
+    sub_dir: "sos-agent",
+    system_ext_specific: true,
+}
+
+prebuilt_etc {
+    name: "sos-agent-example-primary",
+    src: "prebuilts/sos-agent/example-primary.luau",
+    filename: "example-primary.luau",
+    sub_dir: "sos-agent",
+    system_ext_specific: true,
+}
+
+prebuilt_etc {
+    name: "sos-agent-example-secondary",
+    src: "prebuilts/sos-agent/example-secondary.luau",
+    filename: "example-secondary.luau",
+    sub_dir: "sos-agent",
+    system_ext_specific: true,
+}
+
 prebuilt_etc {
     name: "sos-default-experience",
     src: "prebuilts/default.luau",

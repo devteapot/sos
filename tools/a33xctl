@@ -170,11 +170,22 @@ stage_sos() {
   [[ "$#" -eq 0 ]] || fail "usage: ./tools/a33xctl stage-sos"
   local apk="$SOS_ROOT/artifacts/sos-experience.apk"
   local authority="$SOS_ROOT/target/aarch64-linux-android/release/sos-android-system-authority"
+  local node="$SOS_ROOT/artifacts/sos-node-android-arm64"
+  local node_cxx="$SOS_ROOT/artifacts/sos-node-libc++_shared.so"
+  local agent_runner="$SOS_ROOT/services/sos-agent/dist/android-runner.cjs"
+  local agent_api="$SOS_ROOT/docs/experience-api.md"
+  local agent_example_primary="$SOS_ROOT/experiences/default.luau"
+  local agent_example_secondary="$SOS_ROOT/experiences/timeflow.luau"
   local bootstrap="$SOS_ROOT/experiences/default.luau"
   [[ -f "$LINEAGE_ROOT/build/envsetup.sh" ]] || fail "run init and sync first"
   [[ -f "$apk" ]] || \
     fail "ARM64 SOS APK missing; run ./tools/sosctl m1-build --abi arm64-v8a --home"
   [[ -x "$authority" ]] || fail "ARM64 SOS authority binary missing"
+  [[ -x "$node" ]] || fail "Android ARM64 Node missing; run ./tools/build-android-node"
+  [[ -f "$node_cxx" ]] || fail "Android Node libc++ runtime missing; run ./tools/build-android-node"
+  [[ -f "$agent_runner" ]] || fail "Android Pi runner missing; run npm run build:android in services/sos-agent"
+  [[ -f "$agent_api" && -f "$agent_example_primary" && -f "$agent_example_secondary" ]] || \
+    fail "Android Pi prompt documents are missing"
   [[ -f "$bootstrap" ]] || fail "SOS bootstrap experience missing"
   [[ "$LINEAGE_SOS_OVERLAY_DESTINATION" == "$LINEAGE_ROOT/device/sos/a33x" ]] || \
     fail "refusing to stage outside the managed a33x SOS destination"
@@ -182,9 +193,14 @@ stage_sos() {
     fail "SOS APK does not contain the ARM64 experience library"
   file "$authority" | grep -F 'ARM aarch64' >/dev/null || \
     fail "SOS authority is not an AArch64 ELF"
+  file "$node" | grep -F 'ARM aarch64' >/dev/null || \
+    fail "SOS Node is not an AArch64 ELF"
+  file "$node_cxx" | grep -F 'ARM aarch64' >/dev/null || \
+    fail "SOS Node libc++ runtime is not an AArch64 ELF"
 
   info "staging the ARM64 SOS product in $LINEAGE_SOS_OVERLAY_DESTINATION"
-  mkdir -p "$LINEAGE_SOS_OVERLAY_DESTINATION/prebuilts/arm64"
+  mkdir -p "$LINEAGE_SOS_OVERLAY_DESTINATION/prebuilts/arm64" \
+    "$LINEAGE_SOS_OVERLAY_DESTINATION/prebuilts/sos-agent"
   rsync -a --delete \
     --exclude prebuilts \
     "$LINEAGE_SOS_OVERLAY_SOURCE/" "$LINEAGE_SOS_OVERLAY_DESTINATION/"
@@ -192,11 +208,29 @@ stage_sos() {
     "$LINEAGE_SOS_OVERLAY_DESTINATION/prebuilts/SosShell.apk"
   install -m 0755 "$authority" \
     "$LINEAGE_SOS_OVERLAY_DESTINATION/prebuilts/arm64/sos-android-system-authority"
+  install -m 0755 "$node" \
+    "$LINEAGE_SOS_OVERLAY_DESTINATION/prebuilts/arm64/sos-node"
+  install -m 0644 "$node_cxx" \
+    "$LINEAGE_SOS_OVERLAY_DESTINATION/prebuilts/arm64/libc++_shared.so"
+  install -m 0644 "$agent_runner" \
+    "$LINEAGE_SOS_OVERLAY_DESTINATION/prebuilts/sos-agent/android-runner.cjs"
+  install -m 0644 "$agent_api" \
+    "$LINEAGE_SOS_OVERLAY_DESTINATION/prebuilts/sos-agent/experience-api.md"
+  install -m 0644 "$agent_example_primary" \
+    "$LINEAGE_SOS_OVERLAY_DESTINATION/prebuilts/sos-agent/example-primary.luau"
+  install -m 0644 "$agent_example_secondary" \
+    "$LINEAGE_SOS_OVERLAY_DESTINATION/prebuilts/sos-agent/example-secondary.luau"
   install -m 0644 "$bootstrap" \
     "$LINEAGE_SOS_OVERLAY_DESTINATION/prebuilts/default.luau"
   sha256sum \
     "$LINEAGE_SOS_OVERLAY_DESTINATION/prebuilts/SosShell.apk" \
     "$LINEAGE_SOS_OVERLAY_DESTINATION/prebuilts/arm64/sos-android-system-authority" \
+    "$LINEAGE_SOS_OVERLAY_DESTINATION/prebuilts/arm64/sos-node" \
+    "$LINEAGE_SOS_OVERLAY_DESTINATION/prebuilts/arm64/libc++_shared.so" \
+    "$LINEAGE_SOS_OVERLAY_DESTINATION/prebuilts/sos-agent/android-runner.cjs" \
+    "$LINEAGE_SOS_OVERLAY_DESTINATION/prebuilts/sos-agent/experience-api.md" \
+    "$LINEAGE_SOS_OVERLAY_DESTINATION/prebuilts/sos-agent/example-primary.luau" \
+    "$LINEAGE_SOS_OVERLAY_DESTINATION/prebuilts/sos-agent/example-secondary.luau" \
     "$LINEAGE_SOS_OVERLAY_DESTINATION/prebuilts/default.luau"
 }
 
@@ -228,6 +262,12 @@ build_sos() {
   hydrate_source_lfs
   apply_source_patches
   "$SOS_ROOT/tools/sosctl" m1-build --abi arm64-v8a --home
+  "$SOS_ROOT/tools/build-android-node"
+  (
+    cd "$SOS_ROOT/services/sos-agent"
+    npm ci --ignore-scripts
+    npm run build:android
+  )
   info "building the ARM64 on-device SOS authority"
   (
     cd "$SOS_ROOT"
@@ -366,6 +406,12 @@ inspect_sos() {
   local target_files="$LINEAGE_ROOT/out/target/product/a33x/obj/PACKAGING/target_files_intermediates/lineage_sos_a33x-target_files"
   local apk="$target_files/SYSTEM_EXT/priv-app/SosShell/SosShell.apk"
   local authority="$target_files/SYSTEM_EXT/bin/sos-authority"
+  local node="$target_files/SYSTEM_EXT/bin/sos-node"
+  local node_cxx="$target_files/SYSTEM_EXT/lib64/libc++_shared.so"
+  local agent_runner="$target_files/SYSTEM_EXT/etc/sos-agent/android-runner.cjs"
+  local agent_api="$target_files/SYSTEM_EXT/etc/sos-agent/experience-api.md"
+  local agent_example_primary="$target_files/SYSTEM_EXT/etc/sos-agent/example-primary.luau"
+  local agent_example_secondary="$target_files/SYSTEM_EXT/etc/sos-agent/example-secondary.luau"
   local bootstrap="$target_files/SYSTEM_EXT/etc/sos/default.luau"
   local init_rc="$target_files/SYSTEM_EXT/etc/init/sos-authority.rc"
   local properties="$target_files/SYSTEM_EXT/etc/build.prop"
@@ -373,7 +419,8 @@ inspect_sos() {
   local file_contexts="$target_files/SYSTEM_EXT/etc/selinux/system_ext_file_contexts"
   local artifact
   for artifact in \
-    "$apk" "$authority" "$bootstrap" "$init_rc" "$properties" \
+    "$apk" "$authority" "$node" "$node_cxx" "$agent_runner" "$agent_api" \
+    "$agent_example_primary" "$agent_example_secondary" "$bootstrap" "$init_rc" "$properties" \
     "$seapp_contexts" "$file_contexts"; do
     [[ -f "$artifact" ]] || fail "SOS target-files artifact missing: $artifact"
     stat --printf='%n %s bytes\n' "$artifact"
@@ -400,11 +447,35 @@ inspect_sos() {
   fi
   grep -F ':allowBackup' <<<"$manifest_dump" | grep -F '=false' >/dev/null || \
     fail "packaged SOS APK must disable application backup"
+  grep -F '="android.permission.FOREGROUND_SERVICE"' <<<"$manifest_dump" >/dev/null || \
+    fail "packaged SOS APK omitted foreground-service permission"
+  grep -F '="android.permission.FOREGROUND_SERVICE_DATA_SYNC"' <<<"$manifest_dump" >/dev/null || \
+    fail "packaged SOS APK omitted data-sync foreground-service permission"
+  grep -F '="dev.gpui.mobile.GpuiAgentService"' <<<"$manifest_dump" >/dev/null || \
+    fail "packaged SOS APK omitted the native Pi foreground service"
+  grep -F ':foregroundServiceType' <<<"$manifest_dump" | grep -F '=0x00000001' >/dev/null || \
+    fail "packaged SOS Pi service must declare the dataSync foreground type"
   file "$authority" | grep -F 'ARM aarch64' >/dev/null || \
     fail "packaged SOS authority is not AArch64"
+  file "$node" | grep -F 'ARM aarch64' >/dev/null || \
+    fail "packaged SOS Node is not AArch64"
+  file "$node_cxx" | grep -F 'ARM aarch64' >/dev/null || \
+    fail "packaged SOS Node libc++ runtime is not AArch64"
   cmp -s "$authority" \
     "$LINEAGE_SOS_OVERLAY_DESTINATION/prebuilts/arm64/sos-android-system-authority" || \
     fail "packaged SOS authority differs from the staged ARM64 binary"
+  cmp -s "$node" "$SOS_ROOT/artifacts/sos-node-android-arm64" || \
+    fail "packaged SOS Node differs from the built ARM64 binary"
+  cmp -s "$node_cxx" "$SOS_ROOT/artifacts/sos-node-libc++_shared.so" || \
+    fail "packaged SOS Node libc++ runtime differs from the pinned NDK binary"
+  cmp -s "$agent_runner" "$SOS_ROOT/services/sos-agent/dist/android-runner.cjs" || \
+    fail "packaged Android Pi runner differs from the built bundle"
+  cmp -s "$agent_api" "$SOS_ROOT/docs/experience-api.md" || \
+    fail "packaged Android Pi API document differs from repository source"
+  cmp -s "$agent_example_primary" "$SOS_ROOT/experiences/default.luau" || \
+    fail "packaged Android Pi primary example differs from repository source"
+  cmp -s "$agent_example_secondary" "$SOS_ROOT/experiences/timeflow.luau" || \
+    fail "packaged Android Pi secondary example differs from repository source"
   cmp -s "$bootstrap" "$SOS_ROOT/experiences/default.luau" || \
     fail "packaged SOS bootstrap differs from the repository source"
   grep -Fx 'ro.sos.authority=on-device' "$properties"
@@ -416,6 +487,9 @@ inspect_sos() {
     "$seapp_contexts"
   grep -Fx \
     '/system_ext/bin/sos-authority               u:object_r:sos_authority_exec:s0' \
+    "$file_contexts"
+  grep -Fx \
+    '/system_ext/bin/sos-node                    u:object_r:sos_node_exec:s0' \
     "$file_contexts"
   grep -Fx \
     '/data/misc/sos(/.*)?                         u:object_r:sos_authority_data_file:s0' \

@@ -82,6 +82,17 @@ The effect allowlist is:
   `previous` through MPRIS/playerctl;
 - `agent.prompt(prompt)` sends one non-empty, bounded request to the resident Pi
   authoring runtime after the interaction state commits.
+- `agent.configure_openai` opens the trusted Android Keystore dialog for a
+  direct OpenAI API key;
+- `agent.configure_openrouter` opens the corresponding OpenRouter API-key
+  dialog;
+- `agent.configure_codex` starts Pi's Codex subscription device-code flow in
+  the system browser, without embedding a WebView;
+- `agent.use_fake` selects the deterministic offline provider and
+  `agent.clear_credential` removes every encrypted agent credential;
+- `network.refresh`, `network.connect(ssid, security)`, and
+  `network.disconnect` expose only the trusted Android Wi-Fi selection
+  boundary.
 
 Linux loads a private capability manifest for the candidate revision before it
 is allowed to render. A provider effect is validated and staged with the state
@@ -92,6 +103,13 @@ it never receives Pi's Unix socket or model credentials. The Linux host bridges
 `agent.prompt`, streams typed progress and text into `model.agent`, and asks the
 same Luau module to render each refresh. Pi-authored replacement revisions must
 retain a visible composer, though they are free to redesign it.
+
+On Android, the HOME launches the packaged ARM64/Bionic Node executable and
+the bundled Pi runner directly. Keystore plaintext crosses only an anonymous
+pipe to that child process; it is never placed in Luau, argv, environment
+variables, a WebView, or logs. The child stages one candidate and returns it to
+the Rust host, which independently compiles, renders, validates, and activates
+the exact source transactionally.
 
 ## Scene nodes
 

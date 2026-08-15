@@ -1,2 +1,3 @@
 /system_ext/bin/sos-authority               u:object_r:sos_authority_exec:s0
+/system_ext/bin/sos-node                    u:object_r:sos_node_exec:s0
 /data/misc/sos(/.*)?                         u:object_r:sos_authority_data_file:s0

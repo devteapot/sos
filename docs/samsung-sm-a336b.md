@@ -24,9 +24,10 @@ the Knox warranty bit to `1`.
   passes build, OTA-signature, PIT, full AVB, ARM64, HOME-manifest, recovery,
   component-identity, compiled-SELinux, physical sideload, live-revision,
   restart-recovery, and hardware-service smoke gates.
-- Actual audio, fingerprint enrollment, Wi-Fi association, calls/data
-  transfer, suspend/resume, thermal behavior, and longer soak testing remain
-  open; the service smoke results do not close those functional gates.
+- Wi-Fi association/data transfer and actual microphone capture now pass.
+  Speaker/earpiece/Bluetooth/call audio, fingerprint enrollment, cellular
+  calls/data transfer, suspend/resume, thermal behavior, and longer soak
+  testing remain open; service presence does not close those functional gates.
 
 ## Connected-device evidence
 
@@ -563,6 +564,81 @@ live-PIT ceilings, package/image identity, recovery, the complete AVB graph,
 SOS contents, properties, and compiled policy all passed. It is approved for
 no-wipe `sideload-auto-reboot`; PackageManager and JDWP read-back remain the
 hard on-device gate before agent or credential use.
+
+### Native Pi, multi-provider credentials, and live experience rewrite
+
+The resident author is now Pi running in native ARM64/Bionic Node rather than
+a WebView or an SOS-specific model client. SOS builds official Node v24.19.0
+at source commit `cdc1b38d40cb567b7ad0b39c86addf830a0af0ae` with NDK r29
+for API 31. The ignored executable is 91,280,288 bytes, SHA-256
+`e1e6cf7de807baea6fa1d2a81bd6da29d777ab08149645431ebbe283bda33607`;
+its 1,373,744-byte `libc++_shared.so` is SHA-256
+`fa9e42dff4c2b14bd8dec3f302aef93fcac3827704053801268090b4caa377d0`.
+The OTA also carries a 2,001,174-byte single-file Pi runner, SHA-256
+`7d9bee75d9912399ea87715c82a51cfb28a3020e244df58685e5cfd5e650157e`.
+Android launches that runner as a bounded child in the HOME app's enforcing
+domain and exchanges one JSON request/result over anonymous pipes. There is no
+WebView, shell tool, environment credential, or writable executable path.
+
+The trusted provider surface offers direct OpenAI and OpenRouter API-key
+dialogs plus Pi's official `openai-codex` device-code OAuth. Credentials are
+provider-scoped AES-GCM ciphertext under non-exportable, unlock-bound Android
+Keystore alias `sos.agent.credentials.v2`; plaintext never enters Luau, JNI,
+argv, environment variables, files, logs, or screenshots. Both API-key fields
+reported `password=true` on the physical device and the activity window was
+`SECURE`. No OpenAI or OpenRouter key was entered, so their real-provider calls
+remain untested. A real Codex subscription login completed and its refreshed
+OAuth document remained configured after OTA, cancelled reauthentication, and
+an independent HOME-process restart.
+
+The first native-Pi OTA was 1,277,021,382 bytes, SHA-256
+`a515008d154bf1d0e2599d45bd3fb5c7b08781bb8bb602af7bdc56150edbf974`.
+Its deterministic Pi path activated updated Daily Flow revision
+`3839f95c7dc6e44efad083bbd06cd41bf3efe57dedf70044b3d0ac9dd6d10c14`.
+The owner then completed Codex device authorization, and a prompt submitted
+through the phone's Luau composer ran real Pi and visibly replaced HOME with a
+model-generated Daily experience. Trusted validation measured 3,022 us queue,
+1,662 us compile, 2,370 us render, and 4,049 us worker-total time. Visible
+commit completed in 104,393 us after the candidate reached the trusted host.
+The activated revision is
+`fe7e19b3e63572b6522dcafec548fb4022f44378a6b4ebe0155c0860263de8a4`,
+source SHA-256
+`9b0d8f6022e175b647a88f484247f3d4fcebe8359b8fe49cf11afce4cb64903e`.
+
+Opening the external OAuth browser exposed one Android lifecycle defect: with
+HOME backgrounded, the OS classified the native child as a phantom process and
+reaped it. Disabling phantom monitoring was used only to isolate the cause and
+was then removed; the final global setting is `null`. The durable fix is an
+unexported `dataSync` foreground service used only while login or provider I/O
+is active. The final OTA was installed unattended from healthy Android with
+`adb reboot sideload-auto-reboot`; sideload completed at `Total xfer: 1.00x`
+and Recovery returned automatically to Android:
+
+| Artifact | Bytes | SHA-256 |
+| --- | ---: | --- |
+| final OTA | 1,276,639,235 | `b5da4fdc0a2b448ba989ce41cdac8e11308983addf7ae813256aeca08dff737c` |
+| platform-signed SOS APK | 40,704,817 | `f5e8ba397ada9e4614b9d02b96ca2ec135ae66dc7501004a801145789caf2252` |
+
+On installed build `sos.dc0062a5a23d.b69ae2204b16`, the browser remained
+the resumed app for more than one minute while the same `sos-node` PID stayed
+alive. ActivityManager reported the service as foreground with type
+`0x00000001`; no phantom-process or kill event occurred. Cancelling the new
+one-time login stopped both Node and the service, without replacing the prior
+credential. A subsequent HOME force-stop changed its PID from 2083 to 3312
+while authority PID 949 remained stable. Direct authority read-back still
+returned revision `fe7e19...`, source hash `9b0d8f...`, and the generated UI;
+HOME logged `provider=openai-codex configured=true` after restart.
+
+The final device is enforcing, non-debuggable (`ro.debuggable=0`, no package
+debug flag, no JDWP PID), has empty `adb reverse --list`, and retains on-device
+authority/HOME properties. A fresh scan found no SOS AVC, fatal exception, or
+ANR. The ignored final restart screenshot is
+`evidence-20260815/sos-pi-codex-after-final-home-restart.png`, 177,603 bytes,
+SHA-256
+`6c8788c7f4eb369408037b2c77b0a1ae228d938d60d3b6418fe13aba6191bf8d`.
+This closes native Pi execution, Codex authentication, live model rewrite,
+revision persistence, automatic OTA, and OAuth-background survival. Direct
+OpenAI/OpenRouter live calls and the hardware gates listed above remain open.
 
 The lock risk is understood by the device-tree maintainers. The
 [`A336BXXSEGYJ3` blob update](https://github.com/exynos1280/android_device_samsung_a33x/commit/a85c2a9652c93880a1c1474a098a72368d416e21)

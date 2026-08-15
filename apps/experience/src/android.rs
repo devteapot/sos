@@ -1537,6 +1537,8 @@ impl ExperienceHost {
         for effect in effects {
             let result = match effect.action.as_str() {
                 "configure_openai" => agent::configure_openai(),
+                "configure_openrouter" => agent::configure_openrouter(),
+                "configure_codex" => agent::configure_codex(),
                 "use_fake" => agent::use_fake(),
                 "clear_credential" => agent::clear_credential(),
                 "prompt" => effect
@@ -1570,8 +1572,8 @@ impl ExperienceHost {
             return Err("the resident agent is already handling a prompt".into());
         }
         let status = agent::status()?;
-        if status.provider == "openai" && !status.configured {
-            return Err("OpenAI is selected but no credential is configured".into());
+        if status.provider != "fake" && !status.configured {
+            return Err("The selected Pi provider has no configured credential".into());
         }
         agent::spawn_prompt(
             status,

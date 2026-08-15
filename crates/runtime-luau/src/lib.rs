@@ -1140,6 +1140,8 @@ fn decode_effects(table: Option<Table>, lua: &Lua) -> Result<Vec<ProviderEffect>
                 | ("music", "command")
                 | ("agent", "prompt")
                 | ("agent", "configure_openai")
+                | ("agent", "configure_openrouter")
+                | ("agent", "configure_codex")
                 | ("agent", "use_fake")
                 | ("agent", "clear_credential")
                 | ("network", "refresh")
@@ -2120,7 +2122,13 @@ mod tests {
             "#,
         )
         .unwrap();
-        for action in ["configure_openai", "use_fake", "clear_credential"] {
+        for action in [
+            "configure_openai",
+            "configure_openrouter",
+            "configure_codex",
+            "use_fake",
+            "clear_credential",
+        ] {
             let outcome = runtime
                 .update_with_effects(
                     &providers_fake_for_test(),

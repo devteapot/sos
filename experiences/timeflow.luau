@@ -96,6 +96,12 @@ local function agent_panel(model, state)
         group("row", { gap = 6 }, {
             group("row", { padding = 8 }, { text("OPENAI", 10, sage) },
                 0x213129, 10, "agent-configure", "agent_configure_openai"),
+            group("row", { padding = 8 }, { text("OPENROUTER", 10, sage) },
+                0x213129, 10, "agent-configure-openrouter", "agent_configure_openrouter"),
+            group("row", { padding = 8 }, { text("CODEX SUB", 10, sage) },
+                0x213129, 10, "agent-configure-codex", "agent_configure_codex"),
+        }),
+        group("row", { gap = 6 }, {
             group("row", { padding = 8 }, { text("FAKE", 10, sage) },
                 0x213129, 10, "agent-use-fake", "agent_use_fake"),
             group("row", { padding = 8 }, { text("REMOVE KEY", 10, 0xE07A6A) },
@@ -191,6 +197,10 @@ local function update(model, state, event)
         end
     elseif event.action == "agent_configure_openai" then
         return { state = state, effects = {{ provider = "agent", action = "configure_openai" }} }
+    elseif event.action == "agent_configure_openrouter" then
+        return { state = state, effects = {{ provider = "agent", action = "configure_openrouter" }} }
+    elseif event.action == "agent_configure_codex" then
+        return { state = state, effects = {{ provider = "agent", action = "configure_codex" }} }
     elseif event.action == "agent_use_fake" then
         return { state = state, effects = {{ provider = "agent", action = "use_fake" }} }
     elseif event.action == "agent_clear_credential" then

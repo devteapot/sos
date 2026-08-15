@@ -77,6 +77,16 @@ local function agent_panel(model, state)
                 id = "agent-configure", background = 0xF0ECE4, radius = 10,
                 tap_action = "agent_configure_openai",
             }),
+            group("row", { padding = 8 }, { text("OPENROUTER", 10, coral) }, {
+                id = "agent-configure-openrouter", background = 0xF0ECE4, radius = 10,
+                tap_action = "agent_configure_openrouter",
+            }),
+            group("row", { padding = 8 }, { text("CODEX SUB", 10, coral) }, {
+                id = "agent-configure-codex", background = 0xF0ECE4, radius = 10,
+                tap_action = "agent_configure_codex",
+            }),
+        }),
+        group("row", { gap = 6 }, {
             group("row", { padding = 8 }, { text("FAKE", 10, coral) }, {
                 id = "agent-use-fake", background = 0xF0ECE4, radius = 10,
                 tap_action = "agent_use_fake",
@@ -273,6 +283,10 @@ local function update(model, state, event)
         end
     elseif event.action == "agent_configure_openai" then
         return { state = state, effects = {{ provider = "agent", action = "configure_openai" }} }
+    elseif event.action == "agent_configure_openrouter" then
+        return { state = state, effects = {{ provider = "agent", action = "configure_openrouter" }} }
+    elseif event.action == "agent_configure_codex" then
+        return { state = state, effects = {{ provider = "agent", action = "configure_codex" }} }
     elseif event.action == "agent_use_fake" then
         return { state = state, effects = {{ provider = "agent", action = "use_fake" }} }
     elseif event.action == "agent_clear_credential" then

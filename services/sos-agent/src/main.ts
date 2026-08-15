@@ -31,8 +31,15 @@ function enabled(name: string): boolean {
 }
 
 function supportedProvider(value: string): SupportedProvider {
-  if (value === "openai" || value === "anthropic" || value === "openai-codex") return value;
-  throw new Error("SOS_AGENT_PROVIDER must be openai, anthropic, or openai-codex");
+  if (
+    value === "openai" ||
+    value === "anthropic" ||
+    value === "openai-codex" ||
+    value === "openrouter"
+  ) {
+    return value;
+  }
+  throw new Error("SOS_AGENT_PROVIDER must be openai, anthropic, openai-codex, or openrouter");
 }
 
 async function readSystemPrompt(apiPath: string, examples: string[]): Promise<string> {
