@@ -4094,3 +4094,77 @@ proven in a later session. After boot, run the deterministic fake end to end
 first, then—with the owner present—configure a dedicated API key and test one
 live experience change, followed by credential removal, SELinux/fatal/ANR
 scans, process-restart persistence, and network restoration.
+
+### 2026-08-15 — Combined Wi-Fi/agent OTA offline artifact gate
+
+**Hypothesis / goal:** Produce one no-wipe a33x update containing the trusted
+Wi-Fi surface, deterministic/live resident agent, and corrected non-debuggable
+packaging. Prove every package, partition, signature, compatibility, and SOS
+content property offline without attempting to drive the unauthorized Recovery
+transport or requiring the absent owner.
+
+**Changed / environment:** From clean SOS revision `a29d43d`,
+`./tools/a33xctl build-sos` rebuilt the release ARM64 HOME, ARM64 authority,
+bootstrap, affected system_ext image, recovery/boot family, target files, and
+signed non-A/B OTA in the separate Lineage checkout. It did not contact or
+write the handset. The exact final ignored artifacts are:
+
+| Artifact | Bytes | SHA-256 |
+| --- | ---: | --- |
+| `artifacts/sos-experience.apk` (local release signature) | 37,764,812 | `beb8b73187121c9ef9ba7b4e5c90b896f65f6e153ddff23741bf7310282db2db` |
+| target-files `SYSTEM_EXT/priv-app/SosShell/SosShell.apk` (platform signature) | 40,679,549 | `0335ff7d4e3f7a147759e9a4285c8d730d4ff1d1572c67592a45422263c87ae9` |
+| target-files `SYSTEM_EXT/bin/sos-authority` | 1,219,472 | `36f11b3510fe59ce6b109c223a1d2ef10fb0e70eb3d9e5f1177baa795f4c669c` |
+| target-files `SYSTEM_EXT/etc/sos/default.luau` | 9,856 | `b30ad9c8f1fb933a5385f04fb340a3c8d66c02f962389b68e47fd5bcc8c89aaa` |
+| `lineage-23.0-20260815-UNOFFICIAL-sos_a33x.zip` | 1,247,268,938 | `b7b042c69795365408c9bf744e424e818486e0f76747004b56a8ae1df784e2d6` |
+
+The local APK SHA differs from the earlier release-build record because the
+debug-key ZIP signature metadata is regenerated on each Gradle packaging run;
+the source revision, size, manifest gates, embedded library, and final artifact
+identity are recorded explicitly here. AOSP then produced the separately
+identified platform-signed APK above.
+
+**Evidence:** The Lineage build completed 49 affected target actions in 3m29s,
+reported VINTF `COMPATIBLE`, and signed the OTA successfully. `./tools/a33xctl
+inspect-sos` exited 0. It passed compressed-data integrity and whole-package
+signature verification; exact SOS target selection; package/target-files
+image identity; the live-PIT ceilings for boot, dtbo, recovery, vendor_boot,
+and vbmeta; each embedded AVB footer and the complete vbmeta hash/hashtree
+graph; repaired recovery init identity; ARM64-only ABI and HOME alias; exact
+authority/bootstrap identities; product properties; and compiled seapp/file
+contexts. The new manifest assertions passed: the platform-signed APK has
+`allowBackup=false` and no `debuggable` attribute. A read-only DEX string check
+found `GpuiAgent`, the Keystore alias, `gpt-5.6-luna`, and the HTTPS Responses
+endpoint in that exact platform-signed APK. No credential value exists in any
+artifact.
+
+`adb devices -l` after inspection still returned serial `RFCT50EGFCN` as
+`unauthorized` on USB transport 19. This is the expected Lineage Recovery main
+menu state and independently confirms that no sideload, boot, wipe, or Android
+interaction was performed during the remote build.
+
+**Failures / fixes:** There was no failed build or inspection gate. Incremental
+kernel/target-file tooling printed its known non-fatal depmod, restat, missing
+optional build-property, and ramdisk device-node warnings; the build completed,
+VINTF passed, and the explicit recovery/PIT/AVB/content inspections all passed.
+The previously built debuggable Wi-Fi-only OTA remains rejected and is
+superseded by the exact combined hash above.
+
+**Decision / remaining risk / next gate:** This combined OTA is the only
+offline-approved next update. It is not installed and carries no physical
+runtime claim. Current Recovery cannot accept shell or sideload commands until
+a person selects `Apply update` then `Apply from ADB`; there is no safe host
+automation around that authorization gate in the present state. Leave the
+phone untouched. When physical access returns, select sideload once, transfer
+only the exact SHA-256 above without formatting data, reboot, and execute the
+deterministic agent, Wi-Fi, Keystore/live-agent, credential-removal, enforcing
+SELinux, crash-scan, restart-persistence, and hardware-regression gates. From a
+future healthy Android session, separately test `adb reboot
+sideload-auto-reboot` so later approved OTAs may become genuinely unattended.
+The exact checked-out Lineage source already contains that path:
+`system/core/init/reboot.cpp` writes `--sideload_auto_reboot` into the bootloader
+message, Recovery calls `ApplyFromAdb`, and then requests `INSTALL_REBOOT` even
+on an install error; Lineage's own `eat` helper uses the same command followed
+by `adb wait-for-sideload` and `adb sideload`. This passes the source-support
+gate, but not the physical runtime gate on this device. It cannot change the
+already-running unauthorized Recovery instance because writing the bootloader
+message requires an authorized Android shell before the reboot.

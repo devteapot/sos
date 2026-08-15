@@ -503,6 +503,35 @@ is the next remote artifact gate; a physical sideload selection, deterministic
 agent activation, Keystore/live request, Wi-Fi UI, and runtime security scans
 remain pending.
 
+That combined artifact gate now passes. From clean SOS revision `a29d43d`, the
+Lineage build completed in 3m29s and produced the only approved next OTA:
+
+| Artifact | Bytes | SHA-256 |
+| --- | ---: | --- |
+| `lineage-23.0-20260815-UNOFFICIAL-sos_a33x.zip` | 1,247,268,938 | `b7b042c69795365408c9bf744e424e818486e0f76747004b56a8ae1df784e2d6` |
+
+The exact platform-signed SOS APK inside target files is 40,679,549 bytes,
+SHA-256
+`0335ff7d4e3f7a147759e9a4285c8d730d4ff1d1572c67592a45422263c87ae9`.
+It is ARM64-only and HOME-enabled, contains `GpuiAgent`, disables application
+backup, and has no debuggable manifest attribute. Full inspection passed ZIP
+and whole-package signatures, live-PIT ceilings, target/package image identity,
+all AVB descriptors, recovery init, VINTF, exact authority/bootstrap content,
+and compiled policy contexts. The device still enumerates as unauthorized at
+the Recovery main menu, proving this remote pass did not sideload, wipe, or
+boot it. One physical `Apply update` / `Apply from ADB` selection remains the
+only installation prerequisite; everything after boot can again be exercised
+and measured over authorized ADB except secret entry and genuinely physical
+perception checks.
+
+The pinned Lineage sources do support unattended later OTAs from a healthy,
+authorized Android session: `adb reboot sideload-auto-reboot` writes the
+Recovery bootloader-message option, enters `ApplyFromAdb`, and automatically
+reboots after the transfer. Lineage's own build helper uses that exact flow.
+It still needs one physical-device proof before becoming the standard update
+procedure, and it cannot be retroactively invoked from the phone's current
+unauthorized Recovery main menu.
+
 The lock risk is understood by the device-tree maintainers. The
 [`A336BXXSEGYJ3` blob update](https://github.com/exynos1280/android_device_samsung_a33x/commit/a85c2a9652c93880a1c1474a098a72368d416e21)
 explicitly declined to update bootloader blobs because the newer `sboot.bin`
