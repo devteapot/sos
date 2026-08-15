@@ -16,7 +16,7 @@ ARTIFACT_DIR="$SOS_ROOT/artifacts"
 M0_APK_PATH="$ARTIFACT_DIR/gpui-mobile-m0-$GPUI_SHORT_COMMIT.apk"
 M1_GRADLE_DIR="$SOS_ROOT/apps/experience/android/gradle"
 M1_JNI_ROOT="$M1_GRADLE_DIR/app/src/main/jniLibs"
-M1_GRADLE_APK="$M1_GRADLE_DIR/app/build/outputs/apk/debug/app-debug.apk"
+M1_GRADLE_APK="$M1_GRADLE_DIR/app/build/outputs/apk/release/app-release.apk"
 M1_APK_PATH="$ARTIFACT_DIR/sos-experience.apk"
 M1_DEVICE_STAGING="/data/local/tmp/dev.sos.experience.candidate.luau"
 M1_PROVIDER_PORT="47777"
@@ -372,7 +372,7 @@ build_experience_apk() {
     )
   fi
 
-  info "packaging a debug-signed SOS APK"
+  info "packaging a locally signed non-debuggable SOS APK"
   if [[ "$(uname -s)" == "Linux" && "$(uname -m)" == "aarch64" ]]; then
     # AGP requests Build Tools 36 even with compileSdk 34. Keep additions out of
     # a read-only system SDK and override Maven's x86-64 aapt2 with Ubuntu's
@@ -396,7 +396,7 @@ build_experience_apk() {
           -Pandroid.aapt2FromMavenOverride="$(command -v aapt2)" \
           -PsosAndroidAbi="$abi" \
           -PsosHomeEnabled="$home_enabled" \
-          clean assembleDebug
+          clean assembleRelease
     )
   else
     (
@@ -404,11 +404,26 @@ build_experience_apk() {
       ./gradlew \
         -PsosAndroidAbi="$abi" \
         -PsosHomeEnabled="$home_enabled" \
-        clean assembleDebug
+        clean assembleRelease
     )
   fi
 
   [[ -f "$M1_GRADLE_APK" ]] || fail "Gradle did not produce $M1_GRADLE_APK"
+  local apk_aapt2
+  apk_aapt2="$(command -v aapt2 || true)"
+  if [[ -z "$apk_aapt2" ]]; then
+    apk_aapt2="$(find "$ANDROID_HOME/build-tools" -mindepth 2 -maxdepth 2 \
+      -type f -name aapt2 | sort -V | tail -1)"
+  fi
+  [[ -x "$apk_aapt2" ]] || fail "aapt2 is required to inspect the packaged SOS APK"
+  local manifest_dump
+  manifest_dump="$("$apk_aapt2" dump xmltree \
+    --file AndroidManifest.xml "$M1_GRADLE_APK")"
+  if grep -F ':debuggable' <<<"$manifest_dump" | grep -Fv '=false' >/dev/null; then
+    fail "packaged SOS APK must not be debuggable"
+  fi
+  grep -F ':allowBackup' <<<"$manifest_dump" | grep -F '=false' >/dev/null || \
+    fail "packaged SOS APK must disable application backup"
   cp "$M1_GRADLE_APK" "$M1_APK_PATH"
   local revision
   revision="$(git -C "$SOS_ROOT" rev-parse --short=12 HEAD)"

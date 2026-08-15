@@ -8,10 +8,10 @@
 //      cargo ndk -t arm64-v8a -o app/src/main/jniLibs build --example android_app --release
 //
 //   2. Build the APK:
-//      ./gradlew assembleDebug
+//      ./gradlew assembleRelease
 //
 //   3. Install on device/emulator:
-//      adb install app/build/outputs/apk/debug/app-debug.apk
+//      adb install app/build/outputs/apk/release/app-release.apk
 
 buildscript {
     repositories {
@@ -56,7 +56,7 @@ tasks.register<Exec>("buildRustDebug") {
 
 tasks.register("buildAll") {
     group = "rust"
-    description = "Build Rust library (release) and then assemble the debug APK."
+    description = "Build Rust library and the locally signed non-debuggable APK."
     dependsOn("buildRustRelease")
-    finalizedBy(":app:assembleDebug")
+    finalizedBy(":app:assembleRelease")
 }

@@ -388,6 +388,11 @@ inspect_sos() {
     fail "packaged SOS APK is missing its HOME activity alias"
   grep -F '="android.intent.category.HOME"' <<<"$manifest_dump" >/dev/null || \
     fail "packaged SOS APK is not HOME-enabled"
+  if grep -F ':debuggable' <<<"$manifest_dump" | grep -Fv '=false' >/dev/null; then
+    fail "packaged SOS APK must not be debuggable"
+  fi
+  grep -F ':allowBackup' <<<"$manifest_dump" | grep -F '=false' >/dev/null || \
+    fail "packaged SOS APK must disable application backup"
   file "$authority" | grep -F 'ARM aarch64' >/dev/null || \
     fail "packaged SOS authority is not AArch64"
   cmp -s "$authority" \

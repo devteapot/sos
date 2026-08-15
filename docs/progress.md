@@ -3983,3 +3983,114 @@ not yet a hardware claim. The next gate is a full inspected a33x OTA followed
 by on-device permission read-back, scan rendering, saved-network reconnect or
 a deliberately entered native-dialog connection, validation, disconnect
 confirmation, SELinux/ANR/fatal scans, and restoration of the working network.
+
+### 2026-08-15 — Resident Android experience agent and credential boundary
+
+**Hypothesis / goal:** Make the permanent phone capable of accepting an agent
+request and transactionally changing its own Luau experience, first with a
+deterministic offline provider and then with an explicitly configured OpenAI
+provider. Keep model credentials outside Luau/JNI, retain the existing SOS
+revision authority as the only activation path, and finish every software and
+artifact gate that does not require touching the phone while its owner is away.
+
+**Changed / environment:** The Android host now owns a resident-agent channel.
+Both providers emit the same bounded tool/activity/candidate updates; the fake
+provider deterministically alternates the complete Daily Flow and Timeflow
+experiences, while the live provider calls the Responses API with
+`gpt-5.6-luna`, one forced strict `propose_experience` function, parallel tool
+calls disabled, and response storage disabled. A proposal is bounded to 256
+KiB, compiled, rendered against the exact current redacted model, scene
+validated, then submitted to the normal worker/state/revision/presentation
+transaction. It cannot directly install a revision or bypass visible-frame
+commit. Agent and network effects are removed before provider-authority commit
+and handled only by trusted Android code.
+
+The default, Timeflow, and Daily Flow revisions expose `OPENAI`, `FAKE`,
+`REMOVE KEY`, and prompt controls. Daily Flow also gained the trusted network
+surface, so the deterministic fake change cannot remove ordinary Wi-Fi access.
+Luau can emit only `agent.prompt`, `agent.configure_openai`, `agent.use_fake`,
+and `agent.clear_credential`; it never receives a credential. The native
+password field disables save/autofill/suggestions, filters obscured touches,
+sets `FLAG_SECURE`, and clears itself on exit. Java encrypts the API key with a
+randomized AES-GCM key held under Android Keystore alias
+`sos.openai.api-key.v1`, requires the device to be unlocked, and stores only
+ciphertext/IV in no-backup app-private preferences. Plaintext stays inside the
+trusted Java request bridge and is not logged. Only the prompt and complete
+active Luau source are sent to OpenAI.
+
+The supported embedded credential is a project API key, not reused Codex
+consumer OAuth. The public OpenAI API contract documents API keys and
+short-lived workload-identity bearer tokens; it does not document repurposing
+Codex OAuth for an embedded third-party client. The same contract explicitly
+warns against exposing long-lived keys in apps. This direct-key path is
+therefore a device-owner prototype boundary, not the eventual fleet design.
+A production deployment should exchange device identity through a controlled
+relay for a short-lived, tightly scoped credential. Until then, use only a
+dedicated low-spend, readily revocable project key.
+
+The durable APK path changed from `assembleDebug` to a locally signed release
+build with `debuggable=false` and JNI debugging disabled; the a33x import still
+re-signs it with the platform certificate. Both the local APK builder and the
+target-files inspector now reject a debuggable APK and require Android backup
+to be disabled.
+
+**Evidence:** `cargo fmt --all --check` passed. `cargo test --locked -p
+experience-ir -p providers-fake -p runtime-luau` passed 4 experience-IR, 5
+fake-provider/providerd, and 22 runtime-Luau tests plus doc tests, including
+the three new bounded agent credential effects. `./tools/sosctl m1-check
+--abi arm64-v8a` passed the actual Android cross-target. Exact final validators
+reported default at 9,856 bytes / 74 nodes, Timeflow at 9,485 bytes / 76 nodes,
+and Daily Flow at 13,612 bytes / 67 nodes. `./tools/sosctl m1-build --abi
+arm64-v8a --home` compiled Rust and `GpuiAgent.java`, completed 44 release
+Gradle tasks, and passed the new manifest gates. The ignored ARM64-only
+`artifacts/sos-experience.apk` is 37,764,812 bytes, SHA-256
+`5d2f0539bae49c4bdbe0081cf339cd481dfce69d017e77b467634557260ac661`.
+`aapt2 dump xmltree` showed package `dev.sos.experience`, HOME alias
+`SosHomeActivity`, `allowBackup=false`, and no `debuggable` attribute (the
+Android default is false).
+
+Before this combined implementation, the Wi-Fi-only host had also been staged
+into an ignored OTA which passed every then-existing inspector:
+`lineage-23.0-20260815-UNOFFICIAL-sos_a33x.zip`, 1,247,513,996 bytes,
+SHA-256
+`ab7d37334d70ca630f621ecff35512a6c919d9de0f956316109b35d41232aeec`.
+ZIP, whole-package signature, live-PIT ceilings, package/target-files image
+identity, complete AVB graph, recovery, VINTF, SOS contents, and policy gates
+passed. Retrospective `aapt2` inspection then found
+`android:debuggable=true` in its 41,598,822-byte target-files APK (SHA-256
+`095fc8fb1ba829e6d913640078b210f64125e9a934eb68e98f1ec43bcb4e2747`).
+That OTA is rejected, not approved for sideload, and is retained only as
+historical evidence. It was never installed. The same inherited Gradle path
+means the currently installed core SOS APK is also presumed debuggable; no
+credential has ever been configured in it. The combined release OTA is a
+required packaging-security correction as well as the feature update.
+
+**Failures / fixes:** The first Android cross-build exposed a missing direct
+`serde` dependency for the status envelope; adding the target dependency fixed
+it. Inspecting the then-current APK and the Wi-Fi-only target-files exposed
+`android:debuggable=true`; changing only native Rust optimization would not
+repair that application boundary, so the complete Gradle packaging path and
+both artifact inspectors were changed to release/non-debuggable gates. The
+Linux application test target remains
+unrunnable on this workstation because the system development link interfaces
+for `libxkbcommon` and `libxkbcommon-x11` are absent; portable unit suites and
+the real ARM64 Android build cover the changed code instead.
+
+The phone accepted `adb reboot recovery` while still remotely reachable, but
+Lineage Recovery's main menu intentionally presents an unauthorized ADB
+interface until a person selects `Apply update` then `Apply from ADB`. No wipe,
+install, key entry, or other mutation occurred after that reboot. This recovery
+UI cannot be driven through its current unauthorized transport. On a later
+Android session, test Lineage's `adb reboot sideload-auto-reboot` target as the
+preferred no-touch OTA route rather than assuming support.
+
+**Decision / remaining risk / next gate:** The deterministic and live agent
+architectures, credential boundary, non-debuggable packaging, and local ARM64
+gates pass. No on-device agent, Keystore, OpenAI, Wi-Fi UI, or revision-change
+claim is made yet. Build and fully inspect one combined a33x OTA while the
+phone remains parked in Recovery. Installation requires one physical menu
+selection unless a previously authorized/automatic recovery entry can be
+proven in a later session. After boot, run the deterministic fake end to end
+first, then—with the owner present—configure a dedicated API key and test one
+live experience change, followed by credential removal, SELinux/fatal/ANR
+scans, process-restart persistence, and network restoration.

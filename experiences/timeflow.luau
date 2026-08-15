@@ -93,6 +93,14 @@ local function agent_panel(model, state)
                 value = agent.activity or (agent.available and "Ready" or "Agent unavailable"),
             }, "agent-status"),
         }),
+        group("row", { gap = 6 }, {
+            group("row", { padding = 8 }, { text("OPENAI", 10, sage) },
+                0x213129, 10, "agent-configure", "agent_configure_openai"),
+            group("row", { padding = 8 }, { text("FAKE", 10, sage) },
+                0x213129, 10, "agent-use-fake", "agent_use_fake"),
+            group("row", { padding = 8 }, { text("REMOVE KEY", 10, 0xE07A6A) },
+                0x213129, 10, "agent-clear-key", "agent_clear_credential"),
+        }),
     }
     for index, message in ipairs(agent.messages or {}) do
         table.insert(children, group("column", { gap = 3, padding = 11 }, {
@@ -181,6 +189,12 @@ local function update(model, state, event)
                 effects = {{ provider = "agent", action = "prompt", payload = { prompt = prompt } }},
             }
         end
+    elseif event.action == "agent_configure_openai" then
+        return { state = state, effects = {{ provider = "agent", action = "configure_openai" }} }
+    elseif event.action == "agent_use_fake" then
+        return { state = state, effects = {{ provider = "agent", action = "use_fake" }} }
+    elseif event.action == "agent_clear_credential" then
+        return { state = state, effects = {{ provider = "agent", action = "clear_credential" }} }
     elseif event.action == "wifi_refresh" then
         return { state = state, effects = {{ provider = "network", action = "refresh" }} }
     elseif event.action == "wifi_disconnect" then

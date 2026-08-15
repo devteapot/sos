@@ -1,4 +1,5 @@
 mod accessibility;
+mod agent;
 mod native_input;
 mod network;
 mod provider_client;
@@ -18,8 +19,9 @@ use std::{
 };
 
 use experience_ir::{
-    Align, AnimationKind, Content, ExperienceModel, Flow, HitRegion, Interaction, Justify, PaintOp,
-    ProviderEffect, Scene, SceneEvent, SceneNode, StateEnvelope, TextContent, WifiSecurity,
+    AgentMessage, AgentMessageRole, Align, AnimationKind, Content, ExperienceModel, Flow,
+    HitRegion, Interaction, Justify, PaintOp, ProviderEffect, Scene, SceneEvent, SceneNode,
+    StateEnvelope, TextContent, WifiSecurity, MAX_AGENT_MESSAGES, MAX_AGENT_MESSAGE_BYTES,
 };
 use gpui::{
     canvas, div, img, prelude::*, px, relative, rgb, Animation as GpuiAnimation, AnimationExt as _,
@@ -206,6 +208,7 @@ struct ExperienceHost {
     pending_frame: Option<PendingFrame>,
     stress: Option<StressRun>,
     pending_reconciled_state: Option<StateEnvelope>,
+    agent_updates: async_channel::Sender<agent::AgentUpdate>,
     #[cfg(feature = "aosp-system")]
     revision_assets: Vec<runtime_luau::RevisionAssetInput>,
     accessibility_dirty: bool,
@@ -245,6 +248,21 @@ impl ExperienceHost {
             Err(error) => {
                 log::warn!("android_network_snapshot_failed error={error}");
                 model.network.error = Some("Wi-Fi status unavailable".into());
+            }
+        }
+        match agent::status() {
+            Ok(status) => {
+                log::info!(
+                    "android_agent_status provider={} configured={}",
+                    status.provider,
+                    status.configured
+                );
+                agent::apply_status(&mut model.agent, &status);
+            }
+            Err(error) => {
+                log::warn!("android_agent_status_failed error={error}");
+                model.agent.available = true;
+                model.agent.activity = "Deterministic fake provider ready".into();
             }
         }
         #[cfg(not(feature = "aosp-system"))]
@@ -318,8 +336,11 @@ impl ExperienceHost {
         )
         .expect("runtime worker thread must start");
         let results = worker.results();
+        let (agent_updates, agent_results) = async_channel::unbounded();
         Self::attach_worker_channels(ready, results, cx);
         Self::attach_network_poll(cx);
+        Self::attach_agent_updates(agent_results, cx);
+        Self::attach_agent_poll(cx);
         log::info!(
             "runtime_worker_spawned ui_thread={:?}",
             thread::current().id()
@@ -348,6 +369,7 @@ impl ExperienceHost {
             pending_frame: None,
             stress: None,
             pending_reconciled_state: None,
+            agent_updates,
             #[cfg(feature = "aosp-system")]
             revision_assets,
             accessibility_dirty: true,
@@ -398,6 +420,51 @@ impl ExperienceHost {
                     }
                     Ok(_) => {}
                     Err(error) => log::warn!("android_network_poll_failed error={error}"),
+                })
+                .is_err()
+            {
+                break;
+            }
+        })
+        .detach();
+    }
+
+    fn attach_agent_updates(
+        updates: async_channel::Receiver<agent::AgentUpdate>,
+        cx: &mut Context<Self>,
+    ) {
+        cx.spawn(async move |this, cx| {
+            while let Ok(update) = updates.recv().await {
+                if this
+                    .update(cx, |this, cx| {
+                        this.handle_agent_update(update);
+                        cx.notify();
+                    })
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        })
+        .detach();
+    }
+
+    fn attach_agent_poll(cx: &mut Context<Self>) {
+        let executor = cx.background_executor().clone();
+        cx.spawn(async move |this, cx| loop {
+            executor.timer(Duration::from_secs(2)).await;
+            let status = agent::status();
+            if this
+                .update(cx, |this, cx| match status {
+                    Ok(status) => {
+                        let before = this.model.agent.clone();
+                        agent::apply_status(&mut this.model.agent, &status);
+                        if this.model.agent != before {
+                            this.refresh_model_from_authority();
+                            cx.notify();
+                        }
+                    }
+                    Err(error) => log::warn!("android_agent_poll_failed error={error}"),
                 })
                 .is_err()
             {
@@ -930,6 +997,14 @@ impl ExperienceHost {
     }
 
     fn submit_reload(&mut self) {
+        let Some(candidate_source) = read_file(CANDIDATE_FILE) else {
+            self.status = Some(("No candidate script found".into(), false));
+            return;
+        };
+        self.submit_candidate_source(candidate_source);
+    }
+
+    fn submit_candidate_source(&mut self, candidate_source: String) {
         if self.stress.is_some()
             || self.action_in_flight
             || self
@@ -940,10 +1015,6 @@ impl ExperienceHost {
             self.status = Some(("A candidate or stress run is already active".into(), false));
             return;
         }
-        let Some(candidate_source) = read_file(CANDIDATE_FILE) else {
-            self.status = Some(("No candidate script found".into(), false));
-            return;
-        };
         let request_id = self.allocate_request_id();
         let submitted_at = Instant::now();
         self.candidates
@@ -1320,9 +1391,9 @@ impl ExperienceHost {
                 self.action_in_flight = false;
                 self.merge_native_input_state(&mut state);
                 let effect_count = effects.len();
-                let (system_effects, provider_effects): (Vec<_>, Vec<_>) = effects
+                let (host_effects, provider_effects): (Vec<_>, Vec<_>) = effects
                     .into_iter()
-                    .partition(|effect| effect.provider == "network");
+                    .partition(|effect| matches!(effect.provider.as_str(), "network" | "agent"));
                 if let Some(expected_revision) = self.remote_state_revision {
                     let source_sha256 = source_sha256(&self.source);
                     let mut committed = provider_client::commit_state(
@@ -1371,7 +1442,11 @@ impl ExperienceHost {
                 self.accessibility_dirty = true;
                 persist_state(&self.state);
                 self.status = None;
-                self.execute_network_effects(system_effects);
+                let (network_effects, agent_effects): (Vec<_>, Vec<_>) = host_effects
+                    .into_iter()
+                    .partition(|effect| effect.provider == "network");
+                self.execute_network_effects(network_effects);
+                self.execute_agent_effects(agent_effects);
                 log::info!(
                     "experience_action_completed request_id={request_id} worker_us={worker_us}"
                 );
@@ -1456,6 +1531,94 @@ impl ExperienceHost {
             self.model.network = snapshot;
             self.refresh_model_from_authority();
         }
+    }
+
+    fn execute_agent_effects(&mut self, effects: Vec<ProviderEffect>) {
+        for effect in effects {
+            let result = match effect.action.as_str() {
+                "configure_openai" => agent::configure_openai(),
+                "use_fake" => agent::use_fake(),
+                "clear_credential" => agent::clear_credential(),
+                "prompt" => effect
+                    .payload
+                    .get("prompt")
+                    .and_then(JsonValue::as_str)
+                    .map(str::trim)
+                    .filter(|prompt| !prompt.is_empty() && prompt.len() <= MAX_AGENT_MESSAGE_BYTES)
+                    .map(|prompt| self.start_agent_prompt(prompt.to_owned()))
+                    .unwrap_or_else(|| {
+                        Err("agent.prompt omitted a bounded non-empty prompt".into())
+                    }),
+                _ => Err(format!(
+                    "unsupported trusted agent action: {}",
+                    effect.action
+                )),
+            };
+            if let Err(error) = result {
+                self.status = Some((format!("Agent action failed: {error}"), false));
+                log::warn!("android_agent_action_failed action={}", effect.action);
+            }
+        }
+        if let Ok(status) = agent::status() {
+            agent::apply_status(&mut self.model.agent, &status);
+            self.refresh_model_from_authority();
+        }
+    }
+
+    fn start_agent_prompt(&mut self, prompt: String) -> Result<(), String> {
+        if self.model.agent.busy {
+            return Err("the resident agent is already handling a prompt".into());
+        }
+        let status = agent::status()?;
+        if status.provider == "openai" && !status.configured {
+            return Err("OpenAI is selected but no credential is configured".into());
+        }
+        agent::spawn_prompt(
+            status,
+            prompt,
+            self.source.clone(),
+            self.model.clone(),
+            self.agent_updates.clone(),
+        );
+        Ok(())
+    }
+
+    fn handle_agent_update(&mut self, update: agent::AgentUpdate) {
+        match update {
+            agent::AgentUpdate::Started { prompt } => {
+                self.model.agent.busy = true;
+                self.model.agent.error = None;
+                self.model.agent.activity = "Understanding the request".into();
+                push_agent_message(&mut self.model, AgentMessageRole::User, prompt);
+            }
+            agent::AgentUpdate::ToolStarted(name) => {
+                self.model.agent.activity = format!("Using {}", display_agent_tool(&name));
+            }
+            agent::AgentUpdate::ToolFinished { name, ok } => {
+                self.model.agent.activity = if ok {
+                    format!("{} complete", display_agent_tool(&name))
+                } else {
+                    format!("{} failed", display_agent_tool(&name))
+                };
+            }
+            agent::AgentUpdate::Candidate { source, summary } => {
+                push_agent_message(&mut self.model, AgentMessageRole::Assistant, summary);
+                self.model.agent.activity = "Validating the proposed experience".into();
+                self.submit_candidate_source(source);
+            }
+            agent::AgentUpdate::Completed => {
+                self.model.agent.busy = false;
+                self.model.agent.activity = agent::status()
+                    .map(|status| status.activity)
+                    .unwrap_or_else(|_| "Agent ready".into());
+            }
+            agent::AgentUpdate::Failed(error) => {
+                self.model.agent.busy = false;
+                self.model.agent.activity = "Agent request failed".into();
+                self.model.agent.error = Some(error);
+            }
+        }
+        self.refresh_model_from_authority();
     }
 
     fn publish_accessibility(&self, cx: &App) {
@@ -2357,6 +2520,32 @@ fn persist_state(state: &JsonValue) {
             }
         }
         Err(error) => log::warn!("could not serialize experience state: {error}"),
+    }
+}
+
+fn push_agent_message(model: &mut ExperienceModel, role: AgentMessageRole, mut text: String) {
+    if text.len() > MAX_AGENT_MESSAGE_BYTES {
+        let mut boundary = MAX_AGENT_MESSAGE_BYTES;
+        while !text.is_char_boundary(boundary) {
+            boundary -= 1;
+        }
+        text.truncate(boundary);
+    }
+    if text.is_empty() {
+        return;
+    }
+    model.agent.messages.push(AgentMessage { role, text });
+    if model.agent.messages.len() > MAX_AGENT_MESSAGES {
+        let excess = model.agent.messages.len() - MAX_AGENT_MESSAGES;
+        model.agent.messages.drain(..excess);
+    }
+}
+
+fn display_agent_tool(name: &str) -> &str {
+    match name {
+        "get_experience_context" => "experience context",
+        "propose_experience" => "experience author",
+        _ => "agent tool",
     }
 }
 

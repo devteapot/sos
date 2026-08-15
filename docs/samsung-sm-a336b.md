@@ -465,6 +465,44 @@ Rust checking, both Luau validators, and the complete Java/Gradle APK build
 pass. Physical scan, permission, association, and policy behavior are the next
 OTA gate and remain unclaimed here.
 
+### Resident agent staged while the phone is remote
+
+The combined follow-up adds one resident Android experience agent without
+changing the authority boundary. Its deterministic fake and OpenAI provider
+both produce a complete bounded Luau proposal, which must still compile,
+render, validate, stage, visibly present, and commit through the same on-device
+revision transaction proven above. The fake alternates Daily Flow and
+Timeflow, and both now retain the SOS network and agent surfaces.
+
+Credential setup is a trusted Android password dialog, not a Luau field. The
+API key is AES-GCM encrypted with a non-exportable Android Keystore alias; only
+ciphertext and IV are app-private, Android backup is disabled, and the release
+APK is non-debuggable. The key does not cross JNI or appear in the experience
+model, source, state, agent conversation, or logs. The live request sends only
+the user's prompt and the complete active Luau source to the Responses API and
+forces one strict proposal function. This is explicitly a sole-device
+prototype: because OpenAI advises against long-lived keys in client apps and
+this handset is bootloader-unlocked, use a dedicated low-spend revocable key.
+A production fleet should use a controlled relay and short-lived credentials.
+Codex consumer OAuth is not treated as an undocumented embedded-app API.
+
+Local ARM64 compilation, 31 focused portable tests, all three exact Luau
+validators, the Java release build, and the new non-debuggable/no-backup
+artifact gates pass. The ignored final APK is 37,764,812 bytes, SHA-256
+`5d2f0539bae49c4bdbe0081cf339cd481dfce69d017e77b467634557260ac661`.
+This work also found `android:debuggable=true` in the never-installed
+Wi-Fi-only OTA. Because the installed core APK came through the same earlier
+Gradle path, it is conservatively treated as debuggable until replaced; no
+OpenAI credential was configured in either image. The combined release OTA is
+therefore a required security correction; the Wi-Fi-only OTA hash is rejected
+and must not be sideloaded.
+This is not physical-device evidence. The handset is parked safely at Lineage
+Recovery's main menu; ADB is intentionally unauthorized there until a person
+selects the sideload menu. No OTA or wipe occurred. A combined inspected OTA
+is the next remote artifact gate; a physical sideload selection, deterministic
+agent activation, Keystore/live request, Wi-Fi UI, and runtime security scans
+remain pending.
+
 The lock risk is understood by the device-tree maintainers. The
 [`A336BXXSEGYJ3` blob update](https://github.com/exynos1280/android_device_samsung_a33x/commit/a85c2a9652c93880a1c1474a098a72368d416e21)
 explicitly declined to update bootloader blobs because the newer `sboot.bin`

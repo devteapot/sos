@@ -121,6 +121,14 @@ local function agent_panel(model, state)
                 value = agent.activity or (agent.available and "Ready" or "Agent unavailable"),
             }, "agent-status"),
         }),
+        group("row", { gap = 6 }, {
+            group("row", { padding = 8 }, { text("OPENAI", 10, moss) },
+                white, 10, "agent-configure", "agent_configure_openai"),
+            group("row", { padding = 8 }, { text("FAKE", 10, moss) },
+                white, 10, "agent-use-fake", "agent_use_fake"),
+            group("row", { padding = 8 }, { text("REMOVE KEY", 10, 0x8C3A36) },
+                white, 10, "agent-clear-key", "agent_clear_credential"),
+        }),
         group("column", { gap = 7 }, messages),
     }, 0xECE9DC, 20, "agent-conversation")
 end
@@ -191,6 +199,12 @@ local function update(model, state, event)
                 effects = {{ provider = "agent", action = "prompt", payload = { prompt = prompt } }},
             }
         end
+    elseif event.action == "agent_configure_openai" then
+        return { state = state, effects = {{ provider = "agent", action = "configure_openai" }} }
+    elseif event.action == "agent_use_fake" then
+        return { state = state, effects = {{ provider = "agent", action = "use_fake" }} }
+    elseif event.action == "agent_clear_credential" then
+        return { state = state, effects = {{ provider = "agent", action = "clear_credential" }} }
     elseif event.action == "wifi_refresh" then
         return { state = state, effects = {{ provider = "network", action = "refresh" }} }
     elseif event.action == "wifi_disconnect" then

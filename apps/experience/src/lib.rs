@@ -40,6 +40,14 @@ pub const DAILY_FLOW_EXPERIENCE: &str = include_str!("../../../experiences/daily
 pub const DAILY_FLOW_AGENT_EXPERIENCE: &str =
     include_str!("../../../experiences/daily-flow-agent.luau");
 
+pub fn deterministic_agent_candidate(current_source: &str) -> &'static str {
+    if current_source.trim() == DAILY_FLOW_EXPERIENCE.trim() {
+        TIMEFLOW_EXPERIENCE
+    } else {
+        DAILY_FLOW_EXPERIENCE
+    }
+}
+
 #[cfg(not(target_os = "android"))]
 pub fn validate_embedded_experience() -> Result<usize, String> {
     let runtime = runtime_luau::LuauRuntime::compile(DEFAULT_EXPERIENCE)
@@ -121,6 +129,22 @@ mod tests {
             assert_eq!(outcome.effects[0].provider, "agent");
             assert_eq!(outcome.effects[0].action, "prompt");
             assert_eq!(outcome.effects[0].payload["prompt"], "Make this calmer");
+        }
+    }
+
+    #[test]
+    fn deterministic_agent_candidate_is_complete_and_visibly_alternates() {
+        let first = super::deterministic_agent_candidate(super::TIMEFLOW_EXPERIENCE);
+        assert_eq!(first.trim(), super::DAILY_FLOW_EXPERIENCE.trim());
+        let second = super::deterministic_agent_candidate(first);
+        assert_eq!(second.trim(), super::TIMEFLOW_EXPERIENCE.trim());
+
+        for source in [first, second] {
+            let runtime = runtime_luau::LuauRuntime::compile(source).unwrap();
+            let scene = runtime
+                .render(&providers_fake::snapshot(), &runtime.initial_state())
+                .unwrap();
+            assert!(experience_ir::validate_scene(&scene).unwrap() > 15);
         }
     }
 }

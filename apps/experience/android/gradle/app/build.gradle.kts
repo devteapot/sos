@@ -11,7 +11,7 @@
 //   cargo ndk -t arm64-v8a -o example/android_app/gradle/app/src/main/jniLibs \
 //       build --example android_app --release
 //   cd example/android_app/gradle
-//   ./gradlew assembleDebug
+//   ./gradlew assembleRelease
 
 plugins {
     id("com.android.application")
@@ -51,6 +51,11 @@ android {
     buildTypes {
         release {
             isMinifyEnabled = false
+            isDebuggable = false
+            isJniDebuggable = false
+            // Local installs need a signature; AOSP replaces this with the
+            // platform certificate when importing the SOS system package.
+            signingConfig = signingConfigs.getByName("debug")
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"

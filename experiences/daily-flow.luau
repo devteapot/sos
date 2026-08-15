@@ -72,8 +72,75 @@ local function agent_panel(model, state)
                 value = agent.activity or (agent.available and "Ready" or "Agent unavailable"),
             }, "agent-status"),
         }),
+        group("row", { gap = 6 }, {
+            group("row", { padding = 8 }, { text("OPENAI", 10, coral) }, {
+                id = "agent-configure", background = 0xF0ECE4, radius = 10,
+                tap_action = "agent_configure_openai",
+            }),
+            group("row", { padding = 8 }, { text("FAKE", 10, coral) }, {
+                id = "agent-use-fake", background = 0xF0ECE4, radius = 10,
+                tap_action = "agent_use_fake",
+            }),
+            group("row", { padding = 8 }, { text("REMOVE KEY", 10, 0x9A3D36) }, {
+                id = "agent-clear-key", background = 0xF0ECE4, radius = 10,
+                tap_action = "agent_clear_credential",
+            }),
+        }),
         group("column", { gap = 7 }, messages),
     }, { id = "agent-conversation", background = white, radius = 20 })
+end
+
+local function network_panel(model)
+    local network = model.network or {}
+    local status = "Wi-Fi off"
+    if network.connected then
+        status = (network.validated and "Online · " or "Connected · ")
+            .. (network.connected_ssid or "Wi-Fi")
+    elseif network.wifi_enabled then
+        status = network.activity ~= "" and network.activity or "Choose a network"
+    end
+    local rows = {
+        group("row", { justify = "between", align = "center" }, {
+            group("column", { gap = 3, grow = true }, {
+                text("NETWORK", 11, coral),
+                text(status, 12, network.validated and coral or muted, {
+                    role = "status", label = "Network status", value = status,
+                }, "network-status"),
+            }),
+            group("row", { padding = 8 }, { text("REFRESH", 10, coral) }, {
+                id = "network-refresh", background = 0xF0ECE4, radius = 10,
+                tap_action = "wifi_refresh",
+            }),
+        }),
+    }
+    if network.error then table.insert(rows, text(network.error, 12, 0x9A3D36)) end
+    for index, item in ipairs(network.networks or {}) do
+        if index > 6 then break end
+        local suffix = item.saved and " · saved" or ""
+        local security = item.security == "open" and "Open" or
+            (item.security == "enterprise" and "Enterprise" or "Secured")
+        local signal = string.rep("●", math.max(1, math.min(4, item.signal_level or 1)))
+        table.insert(rows, group("row", { padding = 10, justify = "between", align = "center" }, {
+            group("column", { gap = 2, grow = true }, {
+                text(item.ssid, 13, ink), text(security .. suffix, 10, muted),
+            }),
+            text(signal, 10, coral),
+        }, {
+            id = "network-" .. tostring(index), background = 0xF0ECE4, radius = 12,
+            tap_action = "wifi_connect_" .. tostring(index),
+        }))
+    end
+    if network.connected then
+        table.insert(rows, group("row", { padding = 8, justify = "center" }, {
+            text("Disconnect", 12, 0x9A3D36),
+        }, {
+            id = "network-disconnect", background = 0xF0ECE4, radius = 10,
+            tap_action = "wifi_disconnect",
+        }))
+    end
+    return group("column", { gap = 8, padding = 14 }, rows, {
+        id = "network-panel", background = white, radius = 20,
+    })
 end
 
 local function render(model, state)
@@ -176,6 +243,7 @@ local function render(model, state)
             }, "system-status"),
             text("TODAY", 11, muted),
             group("column", { gap = 6 }, agenda),
+            network_panel(model),
             agent_panel(model, state),
         }),
     }, { id = "daily-flow-root", background = paper })
@@ -202,6 +270,25 @@ local function update(model, state, event)
                 state = state,
                 effects = {{ provider = "agent", action = "prompt", payload = { prompt = prompt } }},
             }
+        end
+    elseif event.action == "agent_configure_openai" then
+        return { state = state, effects = {{ provider = "agent", action = "configure_openai" }} }
+    elseif event.action == "agent_use_fake" then
+        return { state = state, effects = {{ provider = "agent", action = "use_fake" }} }
+    elseif event.action == "agent_clear_credential" then
+        return { state = state, effects = {{ provider = "agent", action = "clear_credential" }} }
+    elseif event.action == "wifi_refresh" then
+        return { state = state, effects = {{ provider = "network", action = "refresh" }} }
+    elseif event.action == "wifi_disconnect" then
+        return { state = state, effects = {{ provider = "network", action = "disconnect" }} }
+    else
+        local index = string.match(event.action or "", "^wifi_connect_(%d+)$")
+        local selected = index and model.network and model.network.networks[tonumber(index)] or nil
+        if selected then
+            return { state = state, effects = {{
+                provider = "network", action = "connect",
+                payload = { ssid = selected.ssid, security = selected.security },
+            }} }
         end
     end
     return state

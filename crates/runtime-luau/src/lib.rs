@@ -1139,6 +1139,9 @@ fn decode_effects(table: Option<Table>, lua: &Lua) -> Result<Vec<ProviderEffect>
                 | ("calendar", "append")
                 | ("music", "command")
                 | ("agent", "prompt")
+                | ("agent", "configure_openai")
+                | ("agent", "use_fake")
+                | ("agent", "clear_credential")
                 | ("network", "refresh")
                 | ("network", "connect")
                 | ("network", "disconnect")
@@ -2099,6 +2102,38 @@ mod tests {
         assert_eq!(outcome.effects[0].action, "connect");
         assert_eq!(outcome.effects[0].payload["ssid"], "SOS Lab");
         assert_eq!(outcome.effects[0].payload["security"], "personal");
+    }
+
+    #[test]
+    fn returns_only_the_bounded_agent_credential_controls() {
+        let runtime = LuauRuntime::compile(
+            r#"
+                return {
+                    api_version = 3,
+                    render = function() return { id = "root" } end,
+                    update = function(_, state, event)
+                        return { state = state, effects = {{
+                            provider = "agent", action = event.action,
+                        }} }
+                    end,
+                }
+            "#,
+        )
+        .unwrap();
+        for action in ["configure_openai", "use_fake", "clear_credential"] {
+            let outcome = runtime
+                .update_with_effects(
+                    &providers_fake_for_test(),
+                    &json!({}),
+                    &SceneEvent {
+                        action: action.into(),
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+            assert_eq!(outcome.effects[0].provider, "agent");
+            assert_eq!(outcome.effects[0].action, action);
+        }
     }
 
     #[test]
