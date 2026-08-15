@@ -4168,3 +4168,68 @@ by `adb wait-for-sideload` and `adb sideload`. This passes the source-support
 gate, but not the physical runtime gate on this device. It cannot change the
 already-running unauthorized Recovery instance because writing the bootloader
 message requires an authorized Android shell before the reboot.
+
+### 2026-08-15 — First combined OTA install and stale PackageManager cache rejection
+
+**Hypothesis / goal:** Install the offline-approved combined OTA without a
+wipe, prove the release/non-debuggable package on hardware, then advance to the
+Wi-Fi and resident-agent gates only if PackageManager and JDWP agree with the
+audited manifest.
+
+**Changed / environment:** The owner physically selected Recovery's `Apply
+update` / `Apply from ADB` entry. The host revalidated the exact
+1,247,268,938-byte OTA, SHA-256
+`b7b042c69795365408c9bf744e424e818486e0f76747004b56a8ae1df784e2d6`,
+and `adb devices -l` identified the expected `SM_A336B/a33x` sideload target.
+`adb sideload` completed with `Total xfer: 1.00x`; no format-data action was
+performed. The owner selected normal reboot. Android returned with ADB as UID
+2000 shell and SELinux enforcing.
+
+The image itself installed correctly. `/system_ext/priv-app/SosShell/
+SosShell.apk` is the exact inspected 40,679,549-byte platform-signed file,
+SHA-256
+`0335ff7d4e3f7a147759e9a4285c8d730d4ff1d1572c67592a45422263c87ae9`.
+HOME resolves to `dev.sos.experience/.SosHomeActivity`, the APK is ARM64, the
+authority/app run in `sos_authority`/canonical `priv_app` enforcing domains,
+and no ADB reverse exists. Revision
+`32fa86a739260e3b13a7bf7f4bc9639708a7d9517d852c6bfe71acb13a552f59`
+and state revision 1 survived exactly across the OTA.
+
+**Evidence / rejected gate:** The exact installed APK's `aapt2` tree has
+`allowBackup=false` and no `android:debuggable` attribute, and `ro.debuggable`
+is `0`. PackageManager nevertheless reported `DEBUGGABLE`, and `adb jdwp`
+listed the exact SOS PID 2015. This is a real failure, not a cosmetic dumpsys
+artifact, so no API credential was entered and agent/Wi-Fi E2E did not begin.
+PackageManager also reported version 1 and a fixed APK timestamp of
+2009-01-01, while its package-cache directory was newer.
+
+Lineage source inspection identified the deterministic cause. `PackageCacher`
+keys entries by package filename, parse flags, and path hash, and considers an
+entry current using only APK versus cache `st_mtime`; it does not compare APK
+length or content. SOS's reproducible system image gives successive APKs the
+same 2009 timestamp. `PackagePartitions.FINGERPRINT` would normally select a
+new cache directory, but these same-day incremental builds reused
+`ro.build.version.incremental=1786782878` and the stock-overridden partition
+fingerprints, so the pre-OTA parsed debug manifest was reused for the new exact
+APK bytes.
+
+**Fix / local evidence:** The SOS APK is now version code 2 / version name
+0.2.0. More importantly, `build-sos` supplies an explicit build number of the
+form `sos.<12-char-SOS-revision>.<12-char-staged-APK-SHA>` to the Lineage
+build. That changes `ro.build.version.incremental` and therefore the package
+partition fingerprint/cache directory for every materially different staged
+APK. `inspect-sos` now rejects an OTA unless both the APK version bump and the
+unique incremental value are present. `bash -n`, `cargo fmt --all --check`,
+the ARM64 `m1-check`, and a complete 44-task release APK build passed; `aapt2`
+reported version 2, version name 0.2.0, backup disabled, and no debuggable
+attribute.
+
+**Decision / remaining risk / next gate:** The first combined OTA is rejected
+for credential use even though its APK bytes are correct, because the running
+PackageManager state remained debuggable. Build and fully inspect a cache-
+invalidating replacement OTA, enter it from the now-authorized Android session
+with `adb reboot sideload-auto-reboot`, and require version 2, absence of the
+PackageManager debug flag, absence of the SOS PID from `adb jdwp`, exact new
+build increment, and all original security/runtime checks before resuming the
+functional gates. This also becomes the first hardware proof of unattended
+Lineage sideload if it succeeds.

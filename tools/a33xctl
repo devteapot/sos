@@ -238,9 +238,14 @@ build_sos() {
       --locked
   )
   stage_sos
+  local sos_revision staged_apk_sha build_number
+  sos_revision="$(git -C "$SOS_ROOT" rev-parse --short=12 HEAD)"
+  staged_apk_sha="$(sha256sum \
+    "$LINEAGE_SOS_OVERLAY_DESTINATION/prebuilts/SosShell.apk" | cut -d' ' -f1)"
+  build_number="sos.${sos_revision}.${staged_apk_sha:0:12}"
   mkdir -p "$LINEAGE_CCACHE"
-  info "building SOS physical-device target lineage_$LINEAGE_SOS_DEVICE"
-  container bash -lc \
+  info "building SOS physical-device target lineage_$LINEAGE_SOS_DEVICE as $build_number"
+  container env "BUILD_NUMBER=$build_number" bash -lc \
     "ccache -M '$LINEAGE_CCACHE_SIZE' && source build/envsetup.sh && breakfast '$LINEAGE_SOS_DEVICE' && m -j'$LINEAGE_JOBS' bacon"
 }
 
@@ -388,6 +393,8 @@ inspect_sos() {
     fail "packaged SOS APK is missing its HOME activity alias"
   grep -F '="android.intent.category.HOME"' <<<"$manifest_dump" >/dev/null || \
     fail "packaged SOS APK is not HOME-enabled"
+  grep -E ':versionCode\([^)]*\)=2$' <<<"$manifest_dump" >/dev/null || \
+    fail "packaged SOS APK does not carry the cache-invalidating version bump"
   if grep -F ':debuggable' <<<"$manifest_dump" | grep -Fv '=false' >/dev/null; then
     fail "packaged SOS APK must not be debuggable"
   fi
@@ -402,6 +409,8 @@ inspect_sos() {
     fail "packaged SOS bootstrap differs from the repository source"
   grep -Fx 'ro.sos.authority=on-device' "$properties"
   grep -Fx 'ro.sos.home=dev.sos.experience' "$properties"
+  grep -E '^ro\.system_ext\.build\.version\.incremental=sos\.[0-9a-f]{12}\.[0-9a-f]{12}$' \
+    "$properties" || fail "SOS build does not carry a unique package-cache fingerprint"
   grep -Fx \
     'user=_app isPrivApp=true seinfo=platform name=dev.sos.experience domain=priv_app type=privapp_data_file levelFrom=all' \
     "$seapp_contexts"

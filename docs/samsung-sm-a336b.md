@@ -532,6 +532,25 @@ It still needs one physical-device proof before becoming the standard update
 procedure, and it cannot be retroactively invoked from the phone's current
 unauthorized Recovery main menu.
 
+The owner returned and the first combined OTA transferred successfully with
+`Total xfer: 1.00x`, without formatting data. Android booted enforcing, loaded
+the exact inspected platform-signed APK hash, kept SOS as HOME, and preserved
+authority revision `32fa86…`. The package security runtime gate nevertheless
+failed: PackageManager still labeled SOS `DEBUGGABLE`, and `adb jdwp` exposed
+its PID, although the installed APK manifest has no debuggable attribute and
+`ro.debuggable=0`. No credential was entered.
+
+This was stale parsed-package data, not a mismatched image. The reproducible
+system image fixes APK timestamps at 2009, while Lineage's `PackageCacher`
+validates cache freshness only with modification times. Same-day incremental
+SOS builds had also reused the package-partition fingerprint, allowing the
+old debug manifest parse to survive the OTA. The correction bumps the APK to
+version 2 / 0.2.0 and makes every `build-sos` use a build increment derived
+from the SOS revision and staged APK SHA; the inspector requires both. A
+second cache-invalidating OTA must pass PackageManager and JDWP checks before
+the on-device agent or Keystore is exercised. It will also test Lineage's
+automatic sideload/reboot path from authorized Android.
+
 The lock risk is understood by the device-tree maintainers. The
 [`A336BXXSEGYJ3` blob update](https://github.com/exynos1280/android_device_samsung_a33x/commit/a85c2a9652c93880a1c1474a098a72368d416e21)
 explicitly declined to update bootloader blobs because the newer `sboot.bin`

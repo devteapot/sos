@@ -25,8 +25,8 @@ android {
         applicationId = "dev.sos.experience"
         minSdk = 26          // Vulkan 1.0 is mandatory from API 26+
         targetSdk = 34
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = 2
+        versionName = "0.2.0"
 
         // Tell NativeActivity which .so to load.
         // This must match the cdylib / example output name.
