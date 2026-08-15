@@ -4233,3 +4233,47 @@ PackageManager debug flag, absence of the SOS PID from `adb jdwp`, exact new
 build increment, and all original security/runtime checks before resuming the
 functional gates. This also becomes the first hardware proof of unattended
 Lineage sideload if it succeeds.
+
+### 2026-08-15 — Cache-invalidating replacement OTA offline gate
+
+**Hypothesis / goal:** Produce a replacement combined OTA whose content-derived
+build identity forces PackageManager to discard the stale parsed manifest, and
+approve it for unattended sideload only after the full offline artifact gate.
+
+**Changed / environment:** Clean SOS revision `be793baf7c5d` staged the
+37,764,812-byte release APK, SHA-256
+`5b205cc28acb39c9a4e8c290e2718d0f52fa0c8d2c03651deb0c2e138f3ce01c`.
+`./tools/a33xctl build-sos` supplied the resulting build increment
+`sos.be793baf7c5d.5b205cc28acb` and completed the Lineage target-files and
+signed non-A/B OTA build in 4m52s. No device write occurred during this build.
+The exact ignored output approved by this gate is:
+
+| Artifact | Bytes | SHA-256 |
+| --- | ---: | --- |
+| target-files `SYSTEM_EXT/priv-app/SosShell/SosShell.apk` | 40,679,549 | `5ca45e90685f7f4c990f020a5584c92482992c55b48fb57a68789173405691f1` |
+| `lineage-23.0-20260815-UNOFFICIAL-sos_a33x.zip` | 1,247,262,059 | `36e52b5384c2917e5003c7880d894c48cc925cd99a858ec3cf06c8bc787da38c` |
+
+**Evidence:** `./tools/a33xctl inspect-sos` exited 0. ZIP integrity and the
+whole-package signature passed; VINTF was `COMPATIBLE`; all live-PIT ceilings,
+package/target-files identity, recovery init, embedded image AVB footers, and
+the complete vbmeta hash/hashtree graph passed. The exact platform-signed APK
+is ARM64-only, version code 2 / version name 0.2.0, disables backup, and has no
+debuggable manifest attribute. Target files contain
+`ro.system_ext.build.version.incremental=sos.be793baf7c5d.5b205cc28acb`; the
+product properties, HOME alias, authority/bootstrap hashes, and compiled
+SELinux contexts also passed their assertions.
+
+**Failures / fixes:** The build emitted the known non-fatal optional-property,
+ramdisk device-node, and depmod warnings, then completed successfully. There
+was no failed artifact gate. This artifact supersedes both the rejected
+Wi-Fi-only OTA and the first combined OTA for future installation.
+
+**Decision / remaining risk / next gate:** The exact replacement hash above is
+approved for no-wipe installation. It has not yet been installed and carries
+no hardware claim. From the currently authorized Android session, use
+`adb reboot sideload-auto-reboot`, transfer only this archive, wait for Android,
+and require the exact build increment and installed APK hash, version 2, no
+PackageManager `DEBUGGABLE` flag, and no SOS PID in JDWP before any credential
+or agent test. If those gates pass, continue in order with deterministic agent,
+trusted Wi-Fi, live OpenAI, restart persistence, and final enforcing/crash and
+hardware-regression scans.

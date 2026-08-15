@@ -551,6 +551,19 @@ second cache-invalidating OTA must pass PackageManager and JDWP checks before
 the on-device agent or Keystore is exercised. It will also test Lineage's
 automatic sideload/reboot path from authorized Android.
 
+That replacement artifact now passes its complete offline gate. The approved
+OTA is 1,247,262,059 bytes, SHA-256
+`36e52b5384c2917e5003c7880d894c48cc925cd99a858ec3cf06c8bc787da38c`.
+Its exact platform-signed SOS APK is 40,679,549 bytes, SHA-256
+`5ca45e90685f7f4c990f020a5584c92482992c55b48fb57a68789173405691f1`,
+version 2 / 0.2.0, with backup disabled and no debuggable manifest attribute.
+The target system_ext increment is the content-derived
+`sos.be793baf7c5d.5b205cc28acb`. ZIP and whole-package signatures, VINTF,
+live-PIT ceilings, package/image identity, recovery, the complete AVB graph,
+SOS contents, properties, and compiled policy all passed. It is approved for
+no-wipe `sideload-auto-reboot`; PackageManager and JDWP read-back remain the
+hard on-device gate before agent or credential use.
+
 The lock risk is understood by the device-tree maintainers. The
 [`A336BXXSEGYJ3` blob update](https://github.com/exynos1280/android_device_samsung_a33x/commit/a85c2a9652c93880a1c1474a098a72368d416e21)
 explicitly declined to update bootloader blobs because the newer `sboot.bin`
