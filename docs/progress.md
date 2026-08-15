@@ -4438,3 +4438,73 @@ catalog, bundle, and security boundaries pass but their real API calls remain
 unclaimed. Speaker/earpiece/Bluetooth/call audio, fingerprint enrollment,
 cellular call/data transfer, suspend/resume, thermal, and soak testing also
 remain open. No further reboot is required for this milestone.
+
+## 2026-08-15 — Text-field backspace deadlock and horizontal overflow repair
+
+**Goal / hypothesis:** Reproduce the reported SOS failure when backspace is
+used in a text field and keep long single-line values inside their input bounds.
+The hypothesis was that deletion exposed either an invalid UTF-8 selection or
+an Android IME/GPUI synchronization fault, while the visual overflow came from
+painting an unconstrained shaped line.
+
+**Changed:** Android now releases the bounded IME-state queue mutex before it
+requests a GPUI frame. The identical accessibility-action enqueue/wake ordering
+was repaired at the same boundary. Android and Linux native text inputs now
+retain a horizontal viewport offset, keep the focused caret visible, translate
+pointer/IME coordinate queries through that offset, reset to the leading edge
+when unfocused, and paint text, selection, and caret through the exact input
+content mask. A focused Linux regression covers scrolling right, returning
+toward the leading edge, and resetting when the full line fits.
+
+**Evidence:** The pre-fix SM-A336B bug report captured the UI thread blocked in
+`Java_dev_gpui_mobile_GpuiActivity_nativeOnImeState` from
+`GpuiImeBridge$BridgeConnection.endBatchEdit`, while the GPUI `android_main`
+thread was simultaneously blocked. The event log stopped immediately after
+`nativeOnDeepLink: sos://ime` and Android reported an input-dispatch ANR. Source
+inspection established the lock inversion: JNI retained `IME_STATES` while
+`request_host_frame` waited on GPUI, and GPUI render waited on `IME_STATES`.
+
+`./tools/sosctl m1-check`, Linux-host `cargo check --all-targets`, strict
+Linux-host clippy, formatting, and `git diff --check` pass. With temporary
+Fedora `libxkbcommon` development libraries supplied through `LIBRARY_PATH`
+and `LD_LIBRARY_PATH`, the focused `linux_input::tests` suite passes all three
+tests, including `horizontal_scroll_keeps_the_caret_inside_the_field`. The
+release HOME build completed all 44 Gradle tasks. The platform-signed update
+based on source revision `93cb6ba13ef308c515cf84a8eebdb9b3c340563f` plus
+these dirty changes is
+`sos-experience-platform-final.apk`, 37,813,431 bytes, SHA-256
+`a6a80ee433628c54d86be95b65a69105cb3f0db694763c03ecdc7471fce8df61`.
+Its certificate SHA-256 matched the installed product certificate before the
+data-preserving update.
+
+On the physical SM-A336B, an AOSP keyboard delete produced
+`kind=delete`, updated and committed the text state, and was followed by three
+successive five-second GPUI heartbeats with no ANR, fatal exception, or process
+replacement. The restored accessibility tree contains the exact original
+multilingual value `Caffè ☕️ – 明日のデザイン`. Visual inspection shows the
+long agent request clipped at the right input edge and beginning at its leading
+text while unfocused. The ignored screenshot `sos-final-overflow.png` was
+195,925 bytes with SHA-256
+`cec70dc752f09b9ba93eaacfd1ecea87de44fb82da6e0d3c5e06c7286ab7d1b3`;
+it and the extracted bug report remained outside Git and were deleted after
+inspection.
+
+**Failures / fixes / rejected evidence:** The first focused Linux unit-test
+invocation compiled the new code but could not link because this development
+host lacks the unversioned `libxkbcommon` and `libxkbcommon-x11` development
+libraries. Extracting the matching Fedora development RPMs outside the
+repository and exposing those temporary link interfaces allowed the unchanged
+test binary to link and all three focused tests to pass. The locally signed APK
+was correctly rejected as update-incompatible; uninstalling or clearing user
+data was rejected. Signing the already-built APK with the matching product
+platform key allowed an in-place update. A diagnostic ADB text event was not
+delivered to the hidden editor and the subsequent delete changed the coffee
+emoji's presentation selector. A temporary UIAutomator accessibility action
+restored the exact Unicode value, verified through the published tree, and the
+helper was removed.
+
+**Decision / remaining risk / next gate:** The causal Android lock inversion is
+closed on physical hardware, and both native hosts share bounded single-line
+painting and caret scrolling. Linux runtime interaction remains unclaimed;
+perform a windowed Linux input interaction on a provisioned Linux host when
+that platform gate is next exercised.

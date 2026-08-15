@@ -248,6 +248,7 @@ pub unsafe extern "C" fn Java_dev_gpui_mobile_GpuiActivity_nativeOnAccessibility
             actions.pop_front();
         }
         actions.push_back(action);
+        drop(actions);
         super::request_host_frame();
         Ok(())
     });

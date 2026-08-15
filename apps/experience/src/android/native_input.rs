@@ -11,10 +11,10 @@ use std::{
 use experience_ir::MAX_TEXT_BYTES;
 use gpui::{
     actions, div, fill, point, prelude::*, px, relative, rgba, size, App, Bounds, ClipboardItem,
-    Context, CursorStyle, Element, ElementId, ElementInputHandler, Entity, EntityInputHandler,
-    FocusHandle, Focusable, GlobalElementId, KeyBinding, LayoutId, MouseButton, MouseDownEvent,
-    MouseMoveEvent, MouseUpEvent, PaintQuad, Pixels, Point, ShapedLine, SharedString, Style,
-    Subscription, TextRun, UTF16Selection, UnderlineStyle, WeakEntity, Window,
+    ContentMask, Context, CursorStyle, Element, ElementId, ElementInputHandler, Entity,
+    EntityInputHandler, FocusHandle, Focusable, GlobalElementId, KeyBinding, LayoutId, MouseButton,
+    MouseDownEvent, MouseMoveEvent, MouseUpEvent, PaintQuad, Pixels, Point, ShapedLine,
+    SharedString, Style, Subscription, TextRun, UTF16Selection, UnderlineStyle, WeakEntity, Window,
 };
 use unicode_segmentation::UnicodeSegmentation as _;
 
@@ -103,6 +103,7 @@ pub unsafe extern "C" fn Java_dev_gpui_mobile_GpuiActivity_nativeOnImeState(
             states.pop_front();
         }
         states.push_back(state);
+        drop(states);
         super::request_host_frame();
         Ok(())
     });
@@ -193,6 +194,7 @@ pub struct NativeTextInput {
     selected_range: Range<usize>,
     selection_reversed: bool,
     marked_range: Option<Range<usize>>,
+    scroll_offset: Pixels,
     last_layout: Option<ShapedLine>,
     last_bounds: Option<Bounds<Pixels>>,
     is_selecting: bool,
@@ -245,6 +247,7 @@ impl NativeTextInput {
             selected_range: cursor..cursor,
             selection_reversed: false,
             marked_range: None,
+            scroll_offset: px(0.),
             last_layout: None,
             last_bounds: None,
             is_selecting: false,
@@ -635,7 +638,7 @@ impl NativeTextInput {
         }
         Self::editable_index_from_layout(
             &self.content,
-            line.closest_index_for_x(position.x - bounds.left()),
+            line.closest_index_for_x(position.x - bounds.left() + self.scroll_offset),
         )
     }
 
@@ -691,6 +694,27 @@ impl NativeTextInput {
             end -= 1;
         }
         text[..end].to_owned()
+    }
+
+    fn adjusted_scroll_offset(
+        current: Pixels,
+        cursor_x: Pixels,
+        line_width: Pixels,
+        viewport_width: Pixels,
+    ) -> Pixels {
+        let caret_width = px(2.);
+        if line_width <= viewport_width {
+            return px(0.);
+        }
+        let max_offset = (line_width + caret_width - viewport_width).max(px(0.));
+        let visible_cursor_x = cursor_x - current;
+        if visible_cursor_x < px(0.) {
+            cursor_x.min(max_offset)
+        } else if visible_cursor_x + caret_width > viewport_width {
+            (cursor_x + caret_width - viewport_width).min(max_offset)
+        } else {
+            current.min(max_offset)
+        }
     }
 
     fn replacement_range(&self, range_utf16: Option<&Range<usize>>) -> Range<usize> {
@@ -828,8 +852,14 @@ impl EntityInputHandler for NativeTextInput {
         let line = self.last_layout.as_ref()?;
         let range = self.range_from_utf16(&range_utf16);
         Some(Bounds::from_corners(
-            point(bounds.left() + line.x_for_index(range.start), bounds.top()),
-            point(bounds.left() + line.x_for_index(range.end), bounds.bottom()),
+            point(
+                bounds.left() + line.x_for_index(range.start) - self.scroll_offset,
+                bounds.top(),
+            ),
+            point(
+                bounds.left() + line.x_for_index(range.end) - self.scroll_offset,
+                bounds.bottom(),
+            ),
         ))
     }
 
@@ -841,7 +871,7 @@ impl EntityInputHandler for NativeTextInput {
     ) -> Option<usize> {
         let bounds = self.last_bounds?;
         let line = self.last_layout.as_ref()?;
-        let index = line.index_for_x(point.x - bounds.left())?;
+        let index = line.index_for_x(point.x - bounds.left() + self.scroll_offset)?;
         Some(self.offset_to_utf16(index))
     }
 }
@@ -870,6 +900,7 @@ struct TextElement {
 
 struct PrepaintState {
     line: Option<ShapedLine>,
+    scroll_offset: Pixels,
     cursor: Option<PaintQuad>,
     selection: Option<PaintQuad>,
 }
@@ -965,12 +996,23 @@ impl Element for TextElement {
             .text_system()
             .shape_line(display, font_size, &runs, None);
         let cursor_x = line.x_for_index(cursor);
+        let scroll_offset = if input.focus_handle.is_focused(window) {
+            NativeTextInput::adjusted_scroll_offset(
+                input.scroll_offset,
+                cursor_x,
+                line.width(),
+                bounds.size.width,
+            )
+        } else {
+            px(0.)
+        };
+        let text_left = bounds.left() - scroll_offset;
         let (selection, cursor) = if selected.is_empty() {
             (
                 None,
                 Some(fill(
                     Bounds::new(
-                        point(bounds.left() + cursor_x, bounds.top()),
+                        point(text_left + cursor_x, bounds.top()),
                         size(px(2.), bounds.bottom() - bounds.top()),
                     ),
                     gpui::blue(),
@@ -980,14 +1022,8 @@ impl Element for TextElement {
             (
                 Some(fill(
                     Bounds::from_corners(
-                        point(
-                            bounds.left() + line.x_for_index(selected.start),
-                            bounds.top(),
-                        ),
-                        point(
-                            bounds.left() + line.x_for_index(selected.end),
-                            bounds.bottom(),
-                        ),
+                        point(text_left + line.x_for_index(selected.start), bounds.top()),
+                        point(text_left + line.x_for_index(selected.end), bounds.bottom()),
                     ),
                     rgba(0x4F8CFF44),
                 )),
@@ -996,6 +1032,7 @@ impl Element for TextElement {
         };
         PrepaintState {
             line: Some(line),
+            scroll_offset,
             cursor,
             selection,
         }
@@ -1017,25 +1054,29 @@ impl Element for TextElement {
             ElementInputHandler::new(bounds, self.input.clone()),
             cx,
         );
-        if let Some(selection) = state.selection.take() {
-            window.paint_quad(selection);
-        }
         let line = state.line.take().expect("text line shaped during prepaint");
-        line.paint(
-            bounds.origin,
-            window.line_height(),
-            gpui::TextAlign::Left,
-            None,
-            window,
-            cx,
-        )
-        .expect("native input text paint");
-        if focus.is_focused(window) {
-            if let Some(cursor) = state.cursor.take() {
-                window.paint_quad(cursor);
+        let text_origin = point(bounds.left() - state.scroll_offset, bounds.top());
+        window.with_content_mask(Some(ContentMask { bounds }), |window| {
+            if let Some(selection) = state.selection.take() {
+                window.paint_quad(selection);
             }
-        }
+            line.paint(
+                text_origin,
+                window.line_height(),
+                gpui::TextAlign::Left,
+                None,
+                window,
+                cx,
+            )
+            .expect("native input text paint");
+            if focus.is_focused(window) {
+                if let Some(cursor) = state.cursor.take() {
+                    window.paint_quad(cursor);
+                }
+            }
+        });
         self.input.update(cx, |input, _| {
+            input.scroll_offset = state.scroll_offset;
             input.last_layout = Some(line);
             input.last_bounds = Some(bounds);
         });
