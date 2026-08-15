@@ -100,6 +100,29 @@
             </intent-filter>
         </activity>
 
+        <!-- Enabled only for the AOSP product build. Keeping HOME on an alias
+             prevents the ordinary physical-device regression APK from
+             competing with the user's installed launcher. -->
+        <activity-alias
+            android:name="dev.sos.experience.SosHomeActivity"
+            android:enabled="${sosHomeEnabled}"
+            android:exported="true"
+            android:targetActivity="dev.gpui.mobile.GpuiActivity"
+        >
+            <!-- Activity aliases have their own metadata bundle; they do not
+                 inherit the target Activity's android.app.lib_name entry. -->
+            <meta-data
+                android:name="android.app.lib_name"
+                android:value="${nativeLibraryName}"
+            />
+
+            <intent-filter android:priority="1000">
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.HOME" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+        </activity-alias>
+
         <!-- Transparent helper Activity for file/image picker results. -->
         <activity
             android:name="dev.gpui.mobile.GpuiPickerActivity"

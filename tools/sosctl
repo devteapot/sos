@@ -15,7 +15,7 @@ UPSTREAM_DIR="$CACHE_ROOT/gpui-mobile-$GPUI_SHORT_COMMIT"
 ARTIFACT_DIR="$SOS_ROOT/artifacts"
 M0_APK_PATH="$ARTIFACT_DIR/gpui-mobile-m0-$GPUI_SHORT_COMMIT.apk"
 M1_GRADLE_DIR="$SOS_ROOT/apps/experience/android/gradle"
-M1_JNI_DIR="$M1_GRADLE_DIR/app/src/main/jniLibs/arm64-v8a"
+M1_JNI_ROOT="$M1_GRADLE_DIR/app/src/main/jniLibs"
 M1_GRADLE_APK="$M1_GRADLE_DIR/app/build/outputs/apk/debug/app-debug.apk"
 M1_APK_PATH="$ARTIFACT_DIR/sos-experience.apk"
 M1_DEVICE_STAGING="/data/local/tmp/dev.sos.experience.candidate.luau"
@@ -89,9 +89,18 @@ resolve_android_environment() {
   export PATH="$JAVA_HOME/bin:$ANDROID_HOME/platform-tools:$ANDROID_HOME/cmdline-tools/latest/bin:${HOME}/.cargo/bin:$PATH"
 }
 
+android_rust_target() {
+  case "$1" in
+    arm64-v8a) printf '%s\n' aarch64-linux-android ;;
+    x86_64) printf '%s\n' x86_64-linux-android ;;
+    *) fail "Android ABI must be arm64-v8a or x86_64 (found $1)" ;;
+  esac
+}
+
 require_android_rust_target() {
-  rustup target list --installed | grep -qx 'aarch64-linux-android' || \
-    fail "Rust target aarch64-linux-android is not installed"
+  local target="${1:-aarch64-linux-android}"
+  rustup target list --installed | grep -qx "$target" || \
+    fail "Rust target $target is not installed"
 }
 
 run_native_arm64_android_cargo() {
@@ -115,15 +124,23 @@ run_native_arm64_android_cargo() {
 }
 
 check_android_compilation() {
-  [[ "$#" -eq 0 ]] || fail "usage: ./tools/sosctl m1-check"
+  local abi="arm64-v8a"
+  if [[ "${1:-}" == "--abi" ]]; then
+    [[ "$#" -eq 2 ]] || fail "usage: ./tools/sosctl m1-check [--abi arm64-v8a|x86_64]"
+    abi="$2"
+  else
+    [[ "$#" -eq 0 ]] || fail "usage: ./tools/sosctl m1-check [--abi arm64-v8a|x86_64]"
+  fi
+  local rust_target
+  rust_target="$(android_rust_target "$abi")"
   resolve_android_environment
   for command_name in cargo rustup; do
     require_command "$command_name"
   done
-  require_android_rust_target
+  require_android_rust_target "$rust_target"
 
-  info "checking the SOS GPUI host and embedded Luau runtime for ARM64 Android"
-  if [[ "$(uname -s)" == "Linux" && "$(uname -m)" == "aarch64" ]]; then
+  info "checking the SOS GPUI host and embedded Luau runtime for $abi Android"
+  if [[ "$abi" == "arm64-v8a" && "$(uname -s)" == "Linux" && "$(uname -m)" == "aarch64" ]]; then
     (
       cd "$SOS_ROOT"
       run_native_arm64_android_cargo \
@@ -140,7 +157,7 @@ check_android_compilation() {
     (
       cd "$SOS_ROOT"
       cargo ndk \
-        -t arm64-v8a \
+        -t "$abi" \
         -P 31 \
         check -p sos-experience --release --locked --no-default-features --features gate-strict
     )
@@ -289,16 +306,39 @@ follow_logs() {
 }
 
 build_experience_apk() {
+  local abi="arm64-v8a"
+  local home_enabled=false
+  while [[ "$#" -gt 0 ]]; do
+    case "$1" in
+      --abi)
+        [[ "$#" -ge 2 ]] || fail "--abi requires arm64-v8a or x86_64"
+        abi="$2"
+        shift 2
+        ;;
+      --home)
+        home_enabled=true
+        shift
+        ;;
+      *) fail "usage: ./tools/sosctl m1-build [--abi arm64-v8a|x86_64] [--home]" ;;
+    esac
+  done
+  local rust_target jni_dir cargo_features="gate-strict"
+  if $home_enabled; then
+    cargo_features="gate-strict,aosp-system"
+  fi
+  rust_target="$(android_rust_target "$abi")"
+  jni_dir="$M1_JNI_ROOT/$abi"
   resolve_android_environment
-  for command_name in git cargo rustup cargo-ndk adb; do
+  for command_name in git cargo rustup cargo-ndk; do
     require_command "$command_name"
   done
+  require_android_rust_target "$rust_target"
 
-  mkdir -p "$M1_JNI_DIR" "$ARTIFACT_DIR"
-  find "$M1_JNI_DIR" -maxdepth 1 -type f -name '*.so' -delete
+  mkdir -p "$jni_dir" "$ARTIFACT_DIR"
+  find "$jni_dir" -maxdepth 1 -type f -name '*.so' -delete
 
-  info "building the SOS GPUI host and embedded Luau runtime for ARM64"
-  if [[ "$(uname -s)" == "Linux" && "$(uname -m)" == "aarch64" ]]; then
+  info "building the SOS GPUI host and embedded Luau runtime for $abi"
+  if [[ "$abi" == "arm64-v8a" && "$(uname -s)" == "Linux" && "$(uname -m)" == "aarch64" ]]; then
     # Google's Linux NDK host tools are x86-64. On a native ARM64 workstation,
     # compile C/C++ dependencies with the system LLVM toolchain and link through
     # the repository wrapper, which supplies the NDK sysroot and runtime.
@@ -315,20 +355,20 @@ build_experience_apk() {
         --release \
         --locked \
         --no-default-features \
-        --features gate-strict
+        --features "$cargo_features"
     )
     cp "$SOS_ROOT/target/aarch64-linux-android/release/libsos_experience.so" \
-      "$M1_JNI_DIR/libsos_experience.so"
-    cp "$ndk_libcxx" "$M1_JNI_DIR/libc++_shared.so"
+      "$jni_dir/libsos_experience.so"
+    cp "$ndk_libcxx" "$jni_dir/libc++_shared.so"
   else
     (
       cd "$SOS_ROOT"
       cargo ndk \
         --link-libcxx-shared \
-        -t arm64-v8a \
+        -t "$abi" \
         -P 31 \
         -o apps/experience/android/gradle/app/src/main/jniLibs \
-        build -p sos-experience --release --locked --no-default-features --features gate-strict
+        build -p sos-experience --release --locked --no-default-features --features "$cargo_features"
     )
   fi
 
@@ -354,12 +394,17 @@ build_experience_apk() {
       ANDROID_HOME="$sdk_overlay" ANDROID_SDK_ROOT="$sdk_overlay" \
         ./gradlew \
           -Pandroid.aapt2FromMavenOverride="$(command -v aapt2)" \
+          -PsosAndroidAbi="$abi" \
+          -PsosHomeEnabled="$home_enabled" \
           clean assembleDebug
     )
   else
     (
       cd "$M1_GRADLE_DIR"
-      ./gradlew clean assembleDebug
+      ./gradlew \
+        -PsosAndroidAbi="$abi" \
+        -PsosHomeEnabled="$home_enabled" \
+        clean assembleDebug
     )
   fi
 
@@ -1114,8 +1159,10 @@ Commands:
   launch              Launch the installed example app.
   logs                Follow logs from the running example process.
   run [--no-follow]   Doctor, build, install, launch, and follow logs.
-  m1-build            Build the SOS GPUI + Luau ARM64 APK.
-  m1-check            Cross-check the SOS GPUI + Luau ARM64 Android target.
+  m1-build [--abi ABI] [--home]
+                      Build the SOS GPUI + Luau APK (ABI defaults to arm64-v8a).
+  m1-check [--abi ABI]
+                      Cross-check arm64-v8a or x86_64 Android compilation.
   m1-install          Install it with adb install -r (preserves app data).
   m1-launch           Launch the installed SOS experience.
   m1-logs             Follow logs from the SOS experience process.
@@ -1172,8 +1219,7 @@ case "$command_name" in
     follow_logs
     ;;
   m1-build)
-    doctor
-    build_experience_apk
+    build_experience_apk "$@"
     ;;
   m1-check)
     check_android_compilation "$@"

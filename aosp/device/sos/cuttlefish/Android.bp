@@ -1,0 +1,35 @@
+package {
+    default_applicable_licenses: ["Android-Apache-2.0"],
+}
+
+android_app_import {
+    name: "SosShell",
+    apk: "prebuilts/SosShell.apk",
+    certificate: "platform",
+    privileged: true,
+    system_ext_specific: true,
+    dex_preopt: {
+        enabled: false,
+    },
+}
+
+cc_prebuilt_binary {
+    name: "sos-android-system-authority",
+    srcs: ["prebuilts/x86_64/sos-android-system-authority"],
+    stem: "sos-authority",
+    compile_multilib: "64",
+    check_elf_files: false,
+    system_ext_specific: true,
+    strip: {
+        none: true,
+    },
+    init_rc: ["sos-authority.rc"],
+}
+
+prebuilt_etc {
+    name: "sos-default-experience",
+    src: "prebuilts/default.luau",
+    filename: "default.luau",
+    sub_dir: "sos",
+    system_ext_specific: true,
+}

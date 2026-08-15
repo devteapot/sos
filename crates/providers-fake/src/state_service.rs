@@ -36,6 +36,10 @@ impl StateService {
         self.current.clone()
     }
 
+    pub fn staged(&self, stage_id: u64) -> Option<StateEnvelope> {
+        self.staged.get(&stage_id).cloned()
+    }
+
     pub fn configure_fault(&mut self, point: Option<StateFaultPoint>) {
         self.fault = point;
     }

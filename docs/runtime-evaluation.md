@@ -33,6 +33,15 @@ or provider object. A candidate revision runs in a fresh VM and replaces the
 active scene only after compilation, bounded evaluation, decoding, validation,
 and a successful first render. Persistent provider data remains Rust-owned.
 
+On the AOSP Cuttlefish product, Rust ownership now crosses the APK boundary.
+An init-supervised native authority owns provider state, immutable revision
+directories, the activation journal, and the atomic current pointer. The GPUI
+process can prepare and present a candidate but cannot make it durable by
+itself; it asks the authority to activate only from the next-frame callback.
+Android ActivityManager restarts the HOME process independently, while init
+restarts the authority. The protocol and recovery details are in
+[`aosp-cuttlefish.md`](aosp-cuttlefish.md).
+
 ## Resident agent selection (2026-08-09)
 
 Use the low-level `@earendil-works/pi-agent-core` plus

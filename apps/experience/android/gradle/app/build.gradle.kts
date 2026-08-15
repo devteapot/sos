@@ -30,12 +30,22 @@ android {
 
         // Tell NativeActivity which .so to load.
         // This must match the cdylib / example output name.
+        val sosAndroidAbi = providers.gradleProperty("sosAndroidAbi")
+            .orElse("arm64-v8a")
+            .get()
+        require(sosAndroidAbi == "arm64-v8a" || sosAndroidAbi == "x86_64") {
+            "sosAndroidAbi must be arm64-v8a or x86_64"
+        }
         ndk {
-            abiFilters += listOf("arm64-v8a")
+            abiFilters += listOf(sosAndroidAbi)
         }
 
         // Forward the library name to the manifest via a placeholder.
         manifestPlaceholders["nativeLibraryName"] = "sos_experience"
+        manifestPlaceholders["sosHomeEnabled"] = providers
+            .gradleProperty("sosHomeEnabled")
+            .orElse("false")
+            .get()
     }
 
     buildTypes {
@@ -78,7 +88,8 @@ android {
         // release mode and stripping again can break backtraces.
         jniLibs {
             keepDebugSymbols += listOf(
-                "*/arm64-v8a/libsos_experience.so"
+                "*/arm64-v8a/libsos_experience.so",
+                "*/x86_64/libsos_experience.so"
             )
         }
     }

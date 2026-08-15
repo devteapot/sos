@@ -23,10 +23,21 @@ public class GpuiActivity extends NativeActivity {
             try {
                 ActivityInfo info = getPackageManager().getActivityInfo(
                         getComponentName(), PackageManager.GET_META_DATA);
-                String library = info.metaData.getString("android.app.lib_name");
+                Bundle metadata = info.metaData;
+                if (metadata == null) {
+                    info = getPackageManager().getActivityInfo(
+                            new android.content.ComponentName(this, GpuiActivity.class),
+                            PackageManager.GET_META_DATA);
+                    metadata = info.metaData;
+                }
+                String library = metadata == null
+                        ? null
+                        : metadata.getString("android.app.lib_name");
                 if (library != null) {
                     System.loadLibrary(library);
                     sNativeLibLoaded = true;
+                } else {
+                    Log.e("GpuiActivity", "android.app.lib_name metadata unavailable");
                 }
             } catch (PackageManager.NameNotFoundException ignored) {
                 Log.e("GpuiActivity", "activity metadata unavailable");

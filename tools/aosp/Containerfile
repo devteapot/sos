@@ -1,0 +1,55 @@
+FROM ubuntu:24.04
+
+ARG DEBIAN_FRONTEND=noninteractive
+ARG CUTTLEFISH_BASE_VERSION=1.55.1
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        ca-certificates \
+        curl \
+        gnupg \
+    && curl -fsSL https://us-apt.pkg.dev/doc/repo-signing-key.gpg \
+        -o /etc/apt/trusted.gpg.d/android-cuttlefish-artifact-registry.asc \
+    && chmod a+r /etc/apt/trusted.gpg.d/android-cuttlefish-artifact-registry.asc \
+    && printf '%s\n' \
+        'deb https://us-apt.pkg.dev/projects/android-cuttlefish-artifacts android-cuttlefish main' \
+        > /etc/apt/sources.list.d/android-cuttlefish.list \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends \
+        bc \
+        bison \
+        build-essential \
+        ccache \
+        cpio \
+        cuttlefish-base="${CUTTLEFISH_BASE_VERSION}" \
+        flex \
+        fontconfig \
+        git-core \
+        kmod \
+        lib32z1-dev \
+        libasound2t64 \
+        libc6-dev-i386 \
+        libelf-dev \
+        libgl1-mesa-dev \
+        liblz4-tool \
+        libncurses-dev \
+        libpulse0 \
+        libssl-dev \
+        libx11-dev \
+        libxml2-utils \
+        lzop \
+        openssh-client \
+        python3 \
+        repo \
+        rsync \
+        unzip \
+        x11proto-dev \
+        xsltproc \
+        zip \
+        zlib1g-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN repo version | grep -Eq 'repo launcher version ([2-9]|[1-9][0-9])\.'
+
+ENV LANG=C.UTF-8
+ENV LC_ALL=C.UTF-8

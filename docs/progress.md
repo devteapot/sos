@@ -3007,3 +3007,153 @@ behavior. The x86 QEMU 10 topology fix leaves the existing ARM path unchanged,
 but that path was not rerun here. The boot-session verifier also remains to be
 repeated on this guest. The provisioned VM is retained and running for that
 next gate.
+
+## 2026-08-15 — AOSP-0: build and boot pristine Android 17
+
+**Goal / hypothesis:** Establish a known-good AOSP toolchain and Cuttlefish
+environment before allowing any SOS platform changes, using the workstation's
+single active checkout at `~/dev/aosp-sos` rather than duplicating the roughly
+hundreds-of-gigabytes tree under `~/upstream`.
+
+**Code and environment changed:** Added the pinned Ubuntu 24.04 Podman build
+environment and `tools/aospctl` orchestration for host checks, Repo init/sync,
+resolved-manifest identity, pristine and SOS builds, boot, verification, and
+cleanup. The host was Fedora 44 x86-64, kernel 6.19.10, Podman 5.8.4, 32 logical
+CPUs, 65,091,260 kB RAM, 8,388,604 kB swap, and user-accessible KVM. The final
+1,340,023,005-byte container image ID is
+`48736568ce9e99753c1460420698b895799ff7160a253e19021bf989f87ea609`.
+The source was Google's `android-latest-release`; manifest checkout revision
+`ad156f32caaa06dae91c02d443f6a8fe210eaa54`, with ignored resolved manifest
+`.repo/sos-resolved-manifest.xml`, 230,225 bytes, SHA-256
+`a97bb91ebe99656ae59f87cfb2059932c477c679b1f27287651cdeadde892bc1`.
+
+**Evidence:** `./tools/aospctl doctor`, `init`, `sync`, `build-pristine`, `boot
+pristine`, and `verify-pristine` passed. The unmodified
+`aosp_cf_x86_64_only_phone-aosp_current-userdebug` build completed 29,136
+actions in 13 minutes 50.64 seconds. Cuttlefish returned
+`sys.boot_completed=1`, resolved HOME to
+`com.android.launcher3/.uioverrides.QuickstepLauncher`, and reported fingerprint
+`generic/aosp_cf_x86_64_only_phone/vsoc_x86_64_only:17/CP2A.260605.016/eng.root:userdebug/test-keys`.
+The pristine generated images were intentionally not retained after this boot
+proof because both products share `out/target/product/vsoc_x86_64_only`; the
+SOS build replaced that output. `aospctl boot` now checks `ro.sos.home` and
+refuses to mislabel the shared output as the other product.
+
+**Failures and fixes:** Parallel Repo worktree creation raced on XFS, so network
+fetch remains parallel while checkout is serialized with `--no-interleaved`.
+Podman's default 2,048 PID ceiling caused Metalava native-thread failure;
+unbounded container PIDs fixed it. Trusty's nested nsjail could not mount its
+`/proc` under the default masks and capabilities, fixed by unmasking procfs and
+granting `SYS_ADMIN` to this trusted build container. The original image lacked
+Cuttlefish host support and QEMU audio libraries, so the official pinned
+`cuttlefish-base=1.55.1`, ALSA, and Pulse libraries were added. Default seccomp
+also denied AF_VSOCK. Crosvm then stalled before its guest kernel in rootless
+Podman, while `qemu_cli` booted with tap, sandbox, virtiofs, WebRTC, and host GPU
+integration disabled. Finally, Cuttlefish advertised `0.0.0.0:6520`; explicitly
+connecting `127.0.0.1:6520` on every retry prevented a connected physical USB
+phone from being selected.
+
+**Decision / remaining risk / next gate:** Accept the AOSP-0 toolchain and
+pristine Cuttlefish boot. The rootless QEMU/SwiftShader path is deliberately a
+virtual platform gate, not physical GPU, touch, suspend, latency, thermal, or
+soak evidence. Proceed to a separate SOS product using the same checkout.
+
+## 2026-08-15 — AOSP-1/2: SOS HOME with an on-device authority
+
+**Goal / hypothesis:** Make the GPUI experience the default x86-64 HOME, move
+provider/state/revision authority and restart supervision out of that process,
+and prove the complete product without workstation transport or `adb reverse`.
+
+**Code and architecture changed:** `sosctl` and Gradle now select either
+`arm64-v8a` or `x86_64`; a build-only manifest placeholder enables a priority
+1000 HOME alias while ordinary physical-device APKs remain LAUNCHER-only. The
+new `aosp_sos_cf_x86_64_phone` product platform-signs the privileged APK,
+retains Quickstep as the separate Recents provider, installs an RRO naming SOS
+as secondary HOME, and installs a native init service and bootstrap source in
+`system_ext`. Dedicated enforcing `sos_shell_app` and `sos_authority` SELinux
+domains communicate with each other through labeled device-loopback ports
+47777 and 47778. The authority owns the existing typed provider/state service,
+immutable content-addressed revision store, staged-state lookup, fsynced
+activation journal, and atomic current symlink below `/data/misc/sos`. GPUI
+asks it to activate only after the candidate's frame-presented callback; init
+restarts the authority, while Android independently restarts HOME. The physical
+`m1-run` developer path retains its host provider and reverse mapping, but the
+AOSP product does not use either.
+
+**Evidence:** The first unconstrained SOS build reached 14,414 actions before
+the kernel killed a SystemUI KSP JVM at roughly 4.9 GiB anonymous RSS while
+several multi-GiB Java actions ran concurrently and swap was full. Retrying the
+same build with eight workers completed the remaining 11,421 actions in 11
+minutes 55 seconds; eight is now the safe default. Subsequent product, RRO,
+SELinux neverallow, compatibility, contexts, APEX-policy, and image checks all
+passed. `aapt2 dump xmltree` confirms an enabled priority-1000 HOME alias with
+its native-library metadata, and APK inspection finds only x86-64 JNI entries.
+
+Repeated clean Cuttlefish acceptance runs passed `./tools/aospctl verify-sos`. The
+final run reported HOME `dev.sos.experience/.SosHomeActivity`, ABI `x86_64`,
+SELinux `Enforcing`, app domain
+`u:r:sos_shell_app:s0:c88,c256,c512,c768`, authority domain
+`u:r:sos_authority:s0`, and `adb_reverse=none`. Presenting Timeflow changed the
+durable pointer from
+`revisions/b0d20599c81f62db31cfffd4883289e64a12ee9ada6f20a1c92ef518277e9be4`
+to
+`revisions/32fa86a739260e3b13a7bf7f4bc9639708a7d9517d852c6bfe71acb13a552f59`
+without replacing HOME PID 3446. Killing authority PID 781 caused init to
+recover PID 5302 with HOME and the revision unchanged; killing HOME then caused
+Android to recover PID 5388 with authority PID 5302 and the revision unchanged.
+The ignored `/tmp/sos-home.png` visual check was a 720x1280 RGBA rendering of
+the activated Timeflow HOME, 90,409 bytes, SHA-256
+`73586544f732f70cd8a8189a3f34fe7211d9d764028b6c54cb0c513b05608616`.
+
+The ignored artifacts from dirty SOS source base `a44ce7ce82f9` are:
+
+- `artifacts/sos-experience.apk`: 39,372,746 bytes, SHA-256
+  `c5cbc319dd3e91a61c6212ab2c3a8ae007d9f2d674432c6a095a97f1aaa6635a`;
+- `target/x86_64-linux-android/release/sos-android-system-authority`: 1,391,144
+  bytes, SHA-256
+  `0f14f2c6d001b5ab08ac14ba861821ac6508929c5cb7b9dbfbf4ec392df89de3`;
+- `system.img`: 955,183,104 bytes, SHA-256
+  `7bbe6643a9d706b0b51e0d99ebe5ea1ab0660fe6328aed29e343599f53f0dff8`;
+- `system_ext.img`: 294,813,696 bytes, SHA-256
+  `bc1511443ae3ecb0ac1f09412f75e9bdaa645bdaf6721ac34f54a629eb3d2315`;
+- `product.img`: 292,134,912 bytes, SHA-256
+  `38a8c4a7b5254bfff78f45857218165ded06b5e4e95e172634ea8cbd9633275c`;
+- `vendor.img`: 287,932,416 bytes, SHA-256
+  `edc322dd446fb90b40d5fd7c55718f23bf074bfd5363af882a6ee9f4fd93c104`;
+- `boot.img`: 67,108,864 bytes, SHA-256
+  `9a2c7a72de0dda17413dbb88df30fc7ed6abdb73354ca564690854628366409a`;
+- `vendor_boot.img`: 67,108,864 bytes, SHA-256
+  `0015a50cf9662724b5e69a3264acb9ec7706085848f79b4394f65905a7c786e9`.
+
+`cargo fmt --all -- --check`; locked authority, provider, and revision-store
+tests; strict authority Clippy; strict x86-64 and ARM64 Android checks; Bash
+syntax; and `git diff --check` passed. Authority tests cover atomic
+presentation activation, restart recovery from the state-first crash gap, and
+rejection of state belonging to another source.
+
+**Failures and fixes:** Emptying `config_recentsComponentName` made SystemUI's
+`LauncherProxyService` dereference a null component and restart; Quickstep now
+remains solely for Recents while SOS wins HOME resolution. The authority first
+failed to create its atomic `current` symlink, fixed with the narrow labeled
+`lnk_file` permission. SOS's custom domain initially omitted the standard
+privileged-app service attribute and could not find ActivityManager; adding
+`priv_app_domain` and the correct `privapp_data_file` label fixed it. HOME then
+crashed because Activity aliases do not inherit the target Activity's
+`android.app.lib_name`; the alias now declares it and the Java loader safely
+falls back to concrete Activity metadata. The verifier also observed transient
+FallbackHome resolution and display sleep during user unlock, so it wakes the
+display and waits for SOS plus a live/active GPUI signal. Editing a running
+shell invocation once produced an end-of-file parse error after a successful
+build; the saved script was valid and later `bash -n` checks pass.
+
+**Decision / remaining risk / next gate:** Accept AOSP-1 and AOSP-2 at
+Cuttlefish product scope. Revision and provider authority now survive GPUI and
+the product has no workstation transport. Android still owns boot services,
+PackageManager, ActivityManager HOME recovery, SurfaceFlinger, input, IME, and
+focus; Quickstep still owns Recents. The next architecture gate is SOS-owned
+surface staging/promotion and input focus. Repeat functional, lifecycle,
+latency, suspend, thermal, and long-soak gates on compatible physical x86-64 or
+new ARM64 product hardware before making any hardware claim. Production
+revision signing and verification-key provisioning also remain open; this
+Cuttlefish product verifies content identities and read-only revision layout
+but does not provision a signing key.

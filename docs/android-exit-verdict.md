@@ -160,8 +160,8 @@ steady-state memory.
 
 ## What moves to the next phase
 
-The next gate should be a **privileged shell/supervisor spike**, not more Luau
-prompt work:
+The next gate was a **privileged shell/supervisor spike**, not more Luau prompt
+work:
 
 1. Boot or switch into a minimal SOS home/shell process on an AOSP-capable test
    target while retaining Android apps as compatibility surfaces.
@@ -178,15 +178,38 @@ Keep these as parallel regression requirements: the canonical drag/effect,
 pre/post-frame crash recovery, back-to-back fresh candidate PIDs, strict
 provider dependency check, and 10,000 frame-paced swaps.
 
+### 2026-08-15 AOSP follow-through
+
+AOSP-0, AOSP-1, and AOSP-2 now pass in x86-64 Cuttlefish. Unchanged Android 17
+boots first; the SOS product then resolves the platform-signed x86-64 GPUI APK
+as HOME while retaining Quickstep only for Recents. An init-supervised native
+service in its own enforcing SELinux domain now owns the typed provider/state
+service, immutable revision directories, activation journal, and atomic current
+pointer on the device. The product uses device loopback and its verifier rejects
+any ADB reverse mapping.
+
+The verifier activated a presented revision without replacing GPUI, killed and
+recovered the authority without changing HOME or the revision, and killed and
+recovered HOME without replacing the authority or the revision. This completes
+items 1, 2, and 4 above at Cuttlefish spike scope and completes the immutable-
+directory, atomic-pointer, and shared-protocol portions of item 5. A production
+signing/verification key boundary remains open. Item 3 also remains open:
+Android ActivityManager, SurfaceFlinger, and the input stack still own task
+recovery, surface presentation, and focus. Implementation and exact evidence
+are in [`aosp-cuttlefish.md`](aosp-cuttlefish.md) and
+[`progress.md`](progress.md).
+
 ## Remaining risks, explicitly not hidden
 
-- The accepted Java process is still the candidate supervisor; its own death is
-  not recovered by SOS.
+- In the AOSP product, authority survives the accepted Java process, but HOME
+  recovery is still performed by Android ActivityManager rather than an SOS
+  surface supervisor.
 - Android owns boot, task lifecycle, composition, IME, accessibility, and input
   arbitration.
 - Cold GPUI candidate startup is about 1.1–1.3 seconds on this device.
-- The provider service is workstation-hosted and `adb reverse` is laboratory
-  transport.
+- The AOSP product provider/state authority is on-device with no reverse
+  mapping. The separate physical-device `m1-run` harness remains
+  workstation-hosted and uses `adb reverse` as laboratory transport.
 - Drag updates commit every intermediate coordinate rather than coalescing.
 - The soak is minutes, not hours, and native heap attribution is incomplete.
 - The Luau IR cannot express arbitrary new shaders/renderer primitives; the

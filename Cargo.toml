@@ -1,6 +1,8 @@
 [workspace]
 members = [
     "apps/experience",
+    "crates/android-authority-protocol",
+    "crates/android-system-authority",
     "crates/compositor-control-protocol",
     "crates/experience-host-protocol",
     "crates/experience-ir",
@@ -23,6 +25,7 @@ license = "MIT OR Apache-2.0"
 version = "0.1.0"
 
 [workspace.dependencies]
+android-authority-protocol = { path = "crates/android-authority-protocol" }
 async-channel = "2.5"
 compositor-control-protocol = { path = "crates/compositor-control-protocol" }
 experience-host-protocol = { path = "crates/experience-host-protocol" }

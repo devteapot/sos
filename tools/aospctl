@@ -1,0 +1,445 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+SOS_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+AOSP_ROOT="${SOS_AOSP_ROOT:-$HOME/dev/aosp-sos}"
+AOSP_IMAGE="${SOS_AOSP_BUILD_IMAGE:-localhost/sos-aosp-build:ubuntu-24.04}"
+AOSP_MANIFEST="https://android.googlesource.com/platform/manifest"
+AOSP_BRANCH="${SOS_AOSP_BRANCH:-android-latest-release}"
+AOSP_TARGET="${SOS_AOSP_TARGET:-aosp_cf_x86_64_only_phone-aosp_current-userdebug}"
+AOSP_SOS_TARGET="${SOS_AOSP_SOS_TARGET:-aosp_sos_cf_x86_64_phone-aosp_current-userdebug}"
+# Android 17's SystemUI KSP and framework R8 actions can each consume several
+# GiB. Keep the default safe for this 64 GiB workstation; callers with more
+# memory can opt into wider concurrency explicitly.
+AOSP_JOBS="${SOS_AOSP_JOBS:-8}"
+AOSP_SYNC_JOBS="${SOS_AOSP_SYNC_JOBS:-8}"
+AOSP_CONTAINERFILE="$SOS_ROOT/tools/aosp/Containerfile"
+AOSP_OVERLAY_SOURCE="$SOS_ROOT/aosp/device/sos/cuttlefish"
+AOSP_OVERLAY_DESTINATION="$AOSP_ROOT/device/sos/cuttlefish"
+CUTTLEFISH_CONTAINER="${SOS_CUTTLEFISH_CONTAINER:-sos-cuttlefish}"
+CUTTLEFISH_SERIAL="${SOS_CUTTLEFISH_SERIAL:-127.0.0.1:6520}"
+
+info() {
+  printf '==> %s\n' "$*"
+}
+
+fail() {
+  printf 'error: %s\n' "$*" >&2
+  exit 1
+}
+
+require_command() {
+  command -v "$1" >/dev/null 2>&1 || fail "required command not found: $1"
+}
+
+container() {
+  require_command podman
+  # Siso's --config_repo_dir must remain relative to the AOSP execution root.
+  # An absolute OUT_DIR makes an otherwise valid out/siso_config/main.star
+  # invisible to Siso during the Soong bootstrap.
+  # AOSP's Trusty image generator starts a nested nsjail. Rootless Podman's
+  # default procfs masks, capability set, and seccomp profile prevent that
+  # jail from mounting its own /proc, so grant only this trusted build
+  # container the namespace privileges it needs.
+  podman run --rm \
+    --security-opt label=disable \
+    --security-opt unmask=ALL \
+    --security-opt seccomp=unconfined \
+    --cap-add SYS_ADMIN \
+    --pids-limit=-1 \
+    --network host \
+    --volume "$HOME/dev:$HOME/dev" \
+    --workdir "$AOSP_ROOT" \
+    --env "HOME=$HOME" \
+    --env "USER=${USER:-$(id -un)}" \
+    --env "OUT_DIR=${OUT_DIR:-out}" \
+    "$AOSP_IMAGE" \
+    "$@"
+}
+
+image() {
+  [[ "$#" -eq 0 ]] || fail "usage: ./tools/aospctl image"
+  require_command podman
+  info "building reproducible AOSP host image $AOSP_IMAGE"
+  podman build --tag "$AOSP_IMAGE" --file "$AOSP_CONTAINERFILE" "$SOS_ROOT/tools/aosp"
+}
+
+doctor() {
+  [[ "$#" -eq 0 ]] || fail "usage: ./tools/aospctl doctor"
+  require_command podman
+  [[ "$(uname -m)" == "x86_64" ]] || fail "AOSP host must be x86-64"
+  [[ -c /dev/kvm && -r /dev/kvm && -w /dev/kvm ]] || fail "/dev/kvm is not accessible"
+  local available_kb
+  available_kb="$(df --output=avail -k "$HOME/dev" | tail -n 1 | tr -d ' ')"
+  [[ "$available_kb" =~ ^[0-9]+$ && "$available_kb" -ge 419430400 ]] || \
+    fail "AOSP needs at least 400 GiB free below $HOME/dev"
+  local memory_kb
+  memory_kb="$(awk '/^MemTotal:/ { print $2 }' /proc/meminfo)"
+  [[ "$memory_kb" =~ ^[0-9]+$ && "$memory_kb" -ge 64000000 ]] || \
+    fail "AOSP needs at least 64 GB RAM"
+  podman image exists "$AOSP_IMAGE" || fail "build the host image with ./tools/aospctl image"
+  container repo version
+  info "AOSP host gate passed"
+  printf '    root:       %s\n' "$AOSP_ROOT"
+  printf '    target:     %s\n' "$AOSP_TARGET"
+  printf '    jobs:       %s\n' "$AOSP_JOBS"
+  printf '    sync jobs:  %s\n' "$AOSP_SYNC_JOBS"
+  printf '    memory:     %s kB\n' "$memory_kb"
+  printf '    disk free:  %s kB\n' "$available_kb"
+}
+
+init() {
+  [[ "$#" -eq 0 ]] || fail "usage: ./tools/aospctl init"
+  mkdir -p "$AOSP_ROOT"
+  [[ ! -e "$AOSP_ROOT/.repo" ]] || fail "$AOSP_ROOT is already initialized"
+  info "initializing $AOSP_BRANCH in $AOSP_ROOT"
+  container repo init \
+    --partial-clone \
+    --no-use-superproject \
+    --current-branch \
+    --no-tags \
+    --manifest-url "$AOSP_MANIFEST" \
+    --manifest-branch "$AOSP_BRANCH"
+}
+
+sync_source() {
+  [[ "$#" -eq 0 ]] || fail "usage: ./tools/aospctl sync"
+  [[ -d "$AOSP_ROOT/.repo" ]] || fail "run ./tools/aospctl init first"
+  info "syncing the current $AOSP_BRANCH manifest with $AOSP_SYNC_JOBS workers"
+  # Keep network transfer parallel but serialize worktree initialization. On
+  # XFS, Repo's interleaved checkout raced while creating several new project
+  # worktrees during the first sync.
+  container repo sync \
+    -c \
+    --no-tags \
+    --no-clone-bundle \
+    --no-interleaved \
+    --jobs-network="$AOSP_SYNC_JOBS" \
+    --jobs-checkout=1 \
+    --fail-fast
+  container repo manifest -r -o .repo/sos-resolved-manifest.xml
+  info "resolved manifest: $AOSP_ROOT/.repo/sos-resolved-manifest.xml"
+}
+
+build_pristine() {
+  [[ "$#" -eq 0 ]] || fail "usage: ./tools/aospctl build-pristine"
+  [[ -f "$AOSP_ROOT/build/envsetup.sh" ]] || fail "AOSP source is not synced"
+  info "building pristine AOSP target $AOSP_TARGET"
+  container bash -lc \
+    "source build/envsetup.sh && lunch '$AOSP_TARGET' && m -j'$AOSP_JOBS'"
+}
+
+stage_sos() {
+  [[ "$#" -eq 0 ]] || fail "usage: ./tools/aospctl stage-sos"
+  local apk="$SOS_ROOT/artifacts/sos-experience.apk"
+  local authority="$SOS_ROOT/target/x86_64-linux-android/release/sos-android-system-authority"
+  [[ -f "$apk" ]] || fail "SOS APK missing; run ./tools/sosctl m1-build --abi x86_64 --home"
+  [[ -x "$authority" ]] || fail "Android authority binary missing; build it with cargo-ndk"
+  [[ -f "$AOSP_ROOT/build/envsetup.sh" ]] || fail "AOSP source is not synced"
+
+  info "staging the SOS product overlay in $AOSP_OVERLAY_DESTINATION"
+  mkdir -p "$AOSP_OVERLAY_DESTINATION/prebuilts/x86_64"
+  rsync -a --delete \
+    --exclude prebuilts \
+    "$AOSP_OVERLAY_SOURCE/" "$AOSP_OVERLAY_DESTINATION/"
+  install -m 0644 "$apk" "$AOSP_OVERLAY_DESTINATION/prebuilts/SosShell.apk"
+  install -m 0755 "$authority" \
+    "$AOSP_OVERLAY_DESTINATION/prebuilts/x86_64/sos-android-system-authority"
+  install -m 0644 "$SOS_ROOT/experiences/default.luau" \
+    "$AOSP_OVERLAY_DESTINATION/prebuilts/default.luau"
+  sha256sum \
+    "$AOSP_OVERLAY_DESTINATION/prebuilts/SosShell.apk" \
+    "$AOSP_OVERLAY_DESTINATION/prebuilts/x86_64/sos-android-system-authority" \
+    "$AOSP_OVERLAY_DESTINATION/prebuilts/default.luau"
+}
+
+build_sos() {
+  [[ "$#" -eq 0 ]] || fail "usage: ./tools/aospctl build-sos"
+  "$SOS_ROOT/tools/sosctl" m1-build --abi x86_64 --home
+  info "building the x86-64 on-device authority"
+  (
+    cd "$SOS_ROOT"
+    cargo ndk -t x86_64 -P 31 build \
+      -p android-system-authority \
+      --bin sos-android-system-authority \
+      --release \
+      --locked
+  )
+  stage_sos
+  info "building SOS Cuttlefish target $AOSP_SOS_TARGET"
+  container bash -lc \
+    "source build/envsetup.sh && lunch '$AOSP_SOS_TARGET' && m -j'$AOSP_JOBS'"
+}
+
+boot_cvd() {
+  [[ "$#" -le 1 ]] || fail "usage: ./tools/aospctl boot [pristine|sos]"
+  local kind="${1:-sos}" target
+  local system_ext_properties="$AOSP_ROOT/out/target/product/vsoc_x86_64_only/system_ext/etc/build.prop"
+  case "$kind" in
+    pristine) target="$AOSP_TARGET" ;;
+    sos) target="$AOSP_SOS_TARGET" ;;
+    *) fail "boot kind must be pristine or sos" ;;
+  esac
+  [[ -x "$AOSP_ROOT/out/host/linux-x86/bin/launch_cvd" ]] || \
+    fail "Cuttlefish host tools missing; build the target first"
+  [[ -f "$system_ext_properties" ]] || fail "product output is missing; build the target first"
+  if grep -q '^ro\.sos\.home=' "$system_ext_properties"; then
+    [[ "$kind" == "sos" ]] || \
+      fail "the shared Cuttlefish output currently contains SOS; run build-pristine before boot pristine"
+  else
+    [[ "$kind" == "pristine" ]] || \
+      fail "the shared Cuttlefish output is pristine; run build-sos before boot sos"
+  fi
+  if podman container exists "$CUTTLEFISH_CONTAINER"; then
+    fail "$CUTTLEFISH_CONTAINER already exists; run ./tools/aospctl stop first"
+  fi
+  info "starting $kind Cuttlefish in $CUTTLEFISH_CONTAINER"
+  # Cuttlefish uses nested mount namespaces and AF_VSOCK. Rootless Podman's
+  # default seccomp profile denies AF_VSOCK, while its default procfs masks
+  # prevent nested namespace setup. Cuttlefish only recognizes /.dockerenv,
+  # not Podman's /run/.containerenv, so disable crosvm's inner sandbox and
+  # virtiofs explicitly as Cuttlefish normally does inside a container.
+  podman run --detach \
+    --name "$CUTTLEFISH_CONTAINER" \
+    --security-opt label=disable \
+    --security-opt unmask=ALL \
+    --security-opt seccomp=unconfined \
+    --cap-add SYS_ADMIN \
+    --pids-limit=-1 \
+    --network host \
+    --device /dev/kvm \
+    --device /dev/net/tun \
+    --device /dev/vhost-net \
+    --device /dev/vhost-vsock \
+    --volume "$HOME/dev:$HOME/dev" \
+    --workdir "$AOSP_ROOT" \
+    --env "HOME=$HOME" \
+    --env "USER=${USER:-$(id -un)}" \
+    --env "OUT_DIR=${OUT_DIR:-$AOSP_ROOT/out}" \
+    "$AOSP_IMAGE" \
+    bash -lc "source build/envsetup.sh && lunch '$target' && launch_cvd --daemon --report_anonymous_usage_stats=n --vm_manager=qemu_cli --enable_tap_devices=false --enable_sandbox=false --enable_virtiofs=false --start_webrtc=false --gpu_mode=guest_swiftshader && exec sleep infinity"
+}
+
+stop_cvd() {
+  [[ "$#" -eq 0 ]] || fail "usage: ./tools/aospctl stop"
+  if ! podman container exists "$CUTTLEFISH_CONTAINER"; then
+    info "no $CUTTLEFISH_CONTAINER container exists"
+    return
+  fi
+  podman exec "$CUTTLEFISH_CONTAINER" bash -lc \
+    "'$AOSP_ROOT/out/host/linux-x86/bin/stop_cvd' || true" >/dev/null 2>&1 || true
+  # launch_cvd is a daemon and the container's foreground `sleep infinity`
+  # deliberately remains after stop_cvd has shut down the guest. Terminate
+  # that inert wrapper directly instead of waiting for Podman's stop timeout.
+  podman kill --signal KILL "$CUTTLEFISH_CONTAINER" >/dev/null 2>&1 || true
+  podman rm --force "$CUTTLEFISH_CONTAINER" >/dev/null
+  info "stopped and removed $CUTTLEFISH_CONTAINER"
+}
+
+adb_command() {
+  local adb="$AOSP_ROOT/out/host/linux-x86/bin/adb"
+  [[ -x "$adb" ]] || fail "AOSP adb missing; build Cuttlefish first"
+  "$adb" -s "$CUTTLEFISH_SERIAL" "$@"
+}
+
+wait_for_boot() {
+  local completed="" state=""
+  # launch_cvd advertises the host endpoint as 0.0.0.0:6520. Connect the
+  # explicit loopback serial used by this harness so a physical USB device can
+  # never be selected accidentally.
+  "$AOSP_ROOT/out/host/linux-x86/bin/adb" connect "$CUTTLEFISH_SERIAL" >/dev/null 2>&1 || true
+  for _ in {1..180}; do
+    if podman container exists "$CUTTLEFISH_CONTAINER" && \
+      [[ "$(podman inspect --format '{{.State.Running}}' "$CUTTLEFISH_CONTAINER")" != "true" ]]; then
+      podman logs --tail 100 "$CUTTLEFISH_CONTAINER" >&2 || true
+      fail "$CUTTLEFISH_CONTAINER exited before Android booted"
+    fi
+    state="$(adb_command get-state 2>/dev/null || true)"
+    if [[ "$state" != "device" ]]; then
+      "$AOSP_ROOT/out/host/linux-x86/bin/adb" connect "$CUTTLEFISH_SERIAL" >/dev/null 2>&1 || true
+    fi
+    if [[ "$state" == "device" ]]; then
+      completed="$(adb_command shell getprop sys.boot_completed | tr -d '\r')"
+    fi
+    [[ "$completed" == "1" ]] && return
+    sleep 1
+  done
+  fail "Cuttlefish did not complete boot within 180 seconds"
+}
+
+verify_pristine() {
+  [[ "$#" -eq 0 ]] || fail "usage: ./tools/aospctl verify-pristine"
+  wait_for_boot
+  local home fingerprint
+  home="$(adb_command shell cmd package resolve-activity --brief \
+    -a android.intent.action.MAIN -c android.intent.category.HOME | tail -n 1 | tr -d '\r')"
+  fingerprint="$(adb_command shell getprop ro.build.fingerprint | tr -d '\r')"
+  [[ "$home" != *"dev.sos.experience"* ]] || fail "pristine boot unexpectedly resolved SOS HOME"
+  printf 'boot_completed=1\nhome=%s\nfingerprint=%s\n' "$home" "$fingerprint"
+}
+
+verify_sos() {
+  [[ "$#" -eq 0 ]] || fail "usage: ./tools/aospctl verify-sos"
+  wait_for_boot
+  adb_command root >/dev/null
+  for _ in {1..50}; do
+    [[ "$(adb_command get-state 2>/dev/null || true)" == "device" ]] && break
+    sleep 0.1
+  done
+  [[ "$(adb_command get-state 2>/dev/null || true)" == "device" ]] || \
+    fail "Cuttlefish ADB did not return after adb root"
+  local home abi authority_pid initial_authority_pid recovered_authority_pid first_home_pid second_home_pid revision_before revision_after bootstrap_revision reverses enforcing logs app_context authority_context
+  # A freshly booted Cuttlefish display can sleep while adb restarts as root,
+  # and PackageManager can briefly resolve Settings' FallbackHome during user
+  # unlock. Keep the virtual display awake and wait for the actual HOME.
+  adb_command shell input keyevent KEYCODE_WAKEUP
+  adb_command shell wm dismiss-keyguard
+  adb_command shell svc power stayon true
+  adb_command shell input keyevent KEYCODE_HOME
+  abi="$(adb_command shell dumpsys package dev.sos.experience | \
+    awk -F= '/primaryCpuAbi=/{print $2; exit}' | tr -d '\r ')"
+  for _ in {1..100}; do
+    home="$(adb_command shell cmd package resolve-activity --brief \
+      -a android.intent.action.MAIN -c android.intent.category.HOME | tail -n 1 | tr -d '\r')"
+    authority_pid="$(adb_command shell pidof sos-authority 2>/dev/null | tr -d '\r' || true)"
+    first_home_pid="$(adb_command shell pidof dev.sos.experience 2>/dev/null | tr -d '\r' || true)"
+    revision_before="$(adb_command shell readlink /data/misc/sos/revisions/current 2>/dev/null | tr -d '\r' || true)"
+    logs="$(adb_command logcat -d -s 'sos-experience:I' '*:S')"
+    if [[ "$home" == "dev.sos.experience/.SosHomeActivity" || \
+      "$home" == "dev.sos.experience/dev.sos.experience.SosHomeActivity" ]] && \
+      [[ -n "$authority_pid" && -n "$first_home_pid" && -n "$revision_before" && \
+      ( "$logs" == *"SOS experience window is live"* || \
+        "$logs" == *"heartbeat"*"init_done=true, active=true"* ) ]]; then
+      break
+    fi
+    sleep 0.1
+  done
+  reverses="$(adb_command reverse --list)"
+  enforcing="$(adb_command shell getenforce | tr -d '\r')"
+  app_context="$(adb_command shell ps -AZ | awk '$NF == "dev.sos.experience" {print $1; exit}' | tr -d '\r')"
+  authority_context="$(adb_command shell ps -AZ | awk '$NF == "sos-authority" {print $1; exit}' | tr -d '\r')"
+  [[ "$home" == "dev.sos.experience/.SosHomeActivity" || \
+    "$home" == "dev.sos.experience/dev.sos.experience.SosHomeActivity" ]] || \
+    fail "SOS is not the resolved HOME activity: $home"
+  [[ "$abi" == "x86_64" ]] || fail "SOS primary ABI is $abi, expected x86_64"
+  [[ -n "$authority_pid" && -n "$first_home_pid" ]] || fail "SOS authority or HOME is not running"
+  [[ -n "$revision_before" ]] || fail "authority current revision pointer is missing"
+  [[ -z "$reverses" ]] || fail "ADB reverse mappings remain: $reverses"
+  [[ "$enforcing" == "Enforcing" ]] || fail "SELinux is not enforcing: $enforcing"
+  [[ "$app_context" == "u:r:sos_shell_app:s0"* ]] || fail "unexpected SOS app domain: $app_context"
+  [[ "$authority_context" == "u:r:sos_authority:s0" ]] || fail "unexpected authority domain: $authority_context"
+  [[ "$logs" == *"SOS experience window is live"* || \
+    "$logs" == *"heartbeat"*"init_done=true, active=true"* ]] || \
+    fail "SOS HOME did not log a live GPUI window"
+
+  bootstrap_revision="$revision_before"
+  adb_command logcat -c
+  adb_command push "$SOS_ROOT/experiences/timeflow.luau" \
+    /data/local/tmp/dev.sos.experience.candidate.luau >/dev/null
+  adb_command shell run-as dev.sos.experience \
+    cp /data/local/tmp/dev.sos.experience.candidate.luau files/experience.candidate.luau
+  adb_command shell rm -f /data/local/tmp/dev.sos.experience.candidate.luau
+  adb_command shell am start -W \
+    -a android.intent.action.VIEW \
+    -d sos://reload \
+    -n dev.sos.experience/dev.gpui.mobile.GpuiActivity >/dev/null
+  for _ in {1..100}; do
+    revision_after="$(adb_command shell readlink /data/misc/sos/revisions/current 2>/dev/null | tr -d '\r' || true)"
+    logs="$(adb_command logcat -d -s 'sos-experience:I' '*:S')"
+    if [[ -n "$revision_after" && "$revision_after" != "$bootstrap_revision" && \
+      "$logs" == *"android_authority_revision_activated"* ]]; then
+      break
+    fi
+    sleep 0.1
+  done
+  [[ "$revision_after" != "$bootstrap_revision" ]] || fail "presented probe did not change the durable revision"
+  [[ "$logs" == *"android_authority_revision_activated"* ]] || \
+    fail "presented probe did not log authority activation"
+  [[ "$(adb_command shell pidof dev.sos.experience 2>/dev/null | tr -d '\r' || true)" == "$first_home_pid" ]] || \
+    fail "revision activation replaced the permanent GPUI process"
+  revision_before="$revision_after"
+
+  initial_authority_pid="$authority_pid"
+  adb_command shell kill -9 "$authority_pid"
+  for _ in {1..100}; do
+    recovered_authority_pid="$(adb_command shell pidof sos-authority 2>/dev/null | tr -d '\r' || true)"
+    [[ -n "$recovered_authority_pid" && "$recovered_authority_pid" != "$authority_pid" ]] && break
+    sleep 0.1
+  done
+  [[ -n "$recovered_authority_pid" && "$recovered_authority_pid" != "$authority_pid" ]] || \
+    fail "init did not recover the killed authority process"
+  [[ "$(adb_command shell readlink /data/misc/sos/revisions/current 2>/dev/null | tr -d '\r' || true)" == "$revision_before" ]] || \
+    fail "revision changed across authority recovery"
+  [[ "$(adb_command shell pidof dev.sos.experience 2>/dev/null | tr -d '\r' || true)" == "$first_home_pid" ]] || \
+    fail "authority recovery replaced the GPUI process"
+  authority_pid="$recovered_authority_pid"
+
+  adb_command logcat -c
+  adb_command shell kill -9 "$first_home_pid"
+  for _ in {1..300}; do
+    second_home_pid="$(adb_command shell pidof dev.sos.experience 2>/dev/null | tr -d '\r' || true)"
+    logs="$(adb_command logcat -d -s 'sos-experience:I' '*:S')"
+    if [[ -n "$second_home_pid" && "$second_home_pid" != "$first_home_pid" && \
+      "$logs" == *"SOS experience window is live"* ]]; then
+      break
+    fi
+    sleep 0.1
+  done
+  revision_after="$(adb_command shell readlink /data/misc/sos/revisions/current 2>/dev/null | tr -d '\r' || true)"
+  [[ -n "$second_home_pid" && "$second_home_pid" != "$first_home_pid" ]] || \
+    fail "Android did not recover the killed HOME process"
+  [[ "$logs" == *"SOS experience window is live"* ]] || \
+    fail "recovered HOME did not reopen a live GPUI window"
+  [[ "$revision_after" == "$revision_before" ]] || fail "revision changed across HOME recovery"
+  [[ "$(adb_command shell pidof sos-authority 2>/dev/null | tr -d '\r' || true)" == "$authority_pid" ]] || \
+    fail "authority process changed when only HOME was killed"
+  printf 'boot_completed=1\nhome=%s\nabi=%s\nselinux=%s\napp_domain=%s\nauthority_domain=%s\nauthority_pid_before=%s\nauthority_pid_after=%s\nhome_pid_before=%s\nhome_pid_after=%s\nbootstrap_revision=%s\nactivated_revision=%s\nadb_reverse=none\n' \
+    "$home" "$abi" "$enforcing" "$app_context" "$authority_context" "$initial_authority_pid" "$authority_pid" "$first_home_pid" "$second_home_pid" "$bootstrap_revision" "$revision_before"
+}
+
+manifest_identity() {
+  [[ "$#" -eq 0 ]] || fail "usage: ./tools/aospctl manifest-identity"
+  local manifest="$AOSP_ROOT/.repo/sos-resolved-manifest.xml"
+  [[ -f "$manifest" ]] || fail "resolved manifest missing; run ./tools/aospctl sync"
+  sha256sum "$manifest"
+}
+
+usage() {
+  cat <<'USAGE'
+Usage: ./tools/aospctl <command>
+
+Commands:
+  image              Build the pinned Ubuntu AOSP build environment.
+  doctor             Check host capacity, KVM access, and the build image.
+  init               Initialize android-latest-release at ~/dev/aosp-sos.
+  sync               Sync and record a revision-pinned resolved manifest.
+  build-pristine     Build the unmodified x86-64 Cuttlefish userdebug target.
+  stage-sos          Copy the SOS overlay and generated prebuilts into AOSP.
+  build-sos          Build the x86-64 HOME APK, authority, and SOS product.
+  boot [kind]        Boot the built pristine or SOS image in Cuttlefish.
+  verify-pristine    Prove stock AOSP booted without SOS installed as HOME.
+  verify-sos         Prove HOME, ABI, no reverse, and external recovery gates.
+  stop               Stop Cuttlefish and remove its runtime container.
+  manifest-identity  Print the SHA-256 of the resolved source manifest.
+USAGE
+}
+
+command_name="${1:-help}"
+shift || true
+case "$command_name" in
+  image) image "$@" ;;
+  doctor) doctor "$@" ;;
+  init) init "$@" ;;
+  sync) sync_source "$@" ;;
+  build-pristine) build_pristine "$@" ;;
+  stage-sos) stage_sos "$@" ;;
+  build-sos) build_sos "$@" ;;
+  boot) boot_cvd "$@" ;;
+  verify-pristine) verify_pristine "$@" ;;
+  verify-sos) verify_sos "$@" ;;
+  stop) stop_cvd "$@" ;;
+  manifest-identity) manifest_identity "$@" ;;
+  help|-h|--help) usage ;;
+  *) fail "unknown command: $command_name" ;;
+esac

@@ -1,0 +1,6 @@
+type sos_shell_app, domain, coredomain;
+app_domain(sos_shell_app)
+priv_app_domain(sos_shell_app)
+net_domain(sos_shell_app)
+
+allow sos_shell_app { sos_provider_port sos_revision_port }:tcp_socket name_connect;

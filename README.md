@@ -42,6 +42,8 @@ The bounded resident Pi authoring service and first Linux live-test procedure
 are in [`docs/sos-agent.md`](docs/sos-agent.md).
 Ongoing experiments, failures, measurements, and decisions are indexed in the
 living [`docs/progress.md`](docs/progress.md) ledger.
+The pristine AOSP, SOS-as-HOME Cuttlefish product, and on-device authority spike
+are documented in [`docs/aosp-cuttlefish.md`](docs/aosp-cuttlefish.md).
 
 Scene ABI v3 lets any retained node combine responsive host layout, content,
 nested clips/transforms/layers, host-shaped glyph runs, raw multi-pointer
@@ -85,6 +87,35 @@ tracked.
 
 The experiment contract and current device results are recorded in
 [`docs/experiment.md`](docs/experiment.md).
+
+## AOSP Cuttlefish product
+
+The workstation keeps its single active AOSP checkout at `~/dev/aosp-sos`; the
+small tracked SOS overlay remains in this repository. Build the unmodified
+platform first, then the SOS HOME product:
+
+```sh
+./tools/aospctl image
+./tools/aospctl doctor
+./tools/aospctl init
+./tools/aospctl sync
+./tools/aospctl build-pristine
+./tools/aospctl boot pristine
+./tools/aospctl verify-pristine
+./tools/aospctl stop
+
+./tools/aospctl build-sos
+./tools/aospctl boot sos
+./tools/aospctl verify-sos
+./tools/aospctl stop
+```
+
+The SOS build packages an x86-64-only HOME APK and an init-supervised on-device
+provider/state/revision authority. Its acceptance verifier requires no ADB
+reverse mapping and kills the GPUI process to prove that HOME recovery and the
+durable revision survive outside it. See
+[`docs/aosp-cuttlefish.md`](docs/aosp-cuttlefish.md) for the transaction and
+SELinux boundaries.
 
 ## Linux stable host
 
