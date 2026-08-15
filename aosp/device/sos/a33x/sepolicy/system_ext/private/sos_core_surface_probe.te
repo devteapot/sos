@@ -1,0 +1,19 @@
+type sos_core_surface_probe, domain, coredomain;
+init_daemon_domain(sos_core_surface_probe)
+
+binder_use(sos_core_surface_probe)
+binder_call(sos_core_surface_probe, surfaceflinger)
+binder_call(surfaceflinger, sos_core_surface_probe)
+hwbinder_use(sos_core_surface_probe)
+
+hal_client_domain(sos_core_surface_probe, hal_graphics_allocator)
+hal_client_domain(sos_core_surface_probe, hal_graphics_composer)
+
+allow sos_core_surface_probe surfaceflinger_service:service_manager find;
+allow sos_core_surface_probe gpu_device:chr_file rw_file_perms;
+allow sos_core_surface_probe gpu_device:dir r_dir_perms;
+allow sos_core_surface_probe sysfs_gpu:file r_file_perms;
+allow sos_core_surface_probe ion_device:chr_file rw_file_perms;
+allow sos_core_surface_probe dmabuf_system_heap_device:chr_file r_file_perms;
+allow sos_core_surface_probe hal_graphics_allocator:fd use;
+allow sos_core_surface_probe hal_graphics_composer:fd use;

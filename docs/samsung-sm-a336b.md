@@ -327,7 +327,7 @@ on LTE. These are service/smoke results only: fingerprint enrollment, Wi-Fi
 association, actual audio, calls/data, suspend/resume, thermal, and soak still
 require physical tests.
 
-The new `lineage_sos_a33x` product inherits this baseline and adds the
+The original `lineage_sos_a33x` product inherited this baseline and added the
 platform-signed privileged ARM64 SOS HOME, ARM64 authority, bootstrap, init
 service, properties, overlay, and enforcing system_ext policy. Launcher3 stays
 packaged because SystemUI uses it for Recents. The first build exposed an
@@ -351,6 +351,12 @@ match their audited inputs, and that compiled seapp/file contexts assign the
 dedicated SOS domains and data labels. The offline SOS flash gate passes. The
 next gate is a no-wipe sideload from the repaired recovery followed by
 on-device HOME, activation, SELinux-domain, restart, and hardware checks.
+
+That original product has since become the explicit
+`lineage_sos_compat_a33x` profile. The shared hardware/services base and the
+new `lineage_sos_core_a33x` shadow-stage profile are specified in
+[`android-product-split.md`](android-product-split.md). Historical artifact
+names and hashes below remain unchanged evidence for the original target.
 
 That exact first SOS OTA installed with `Total xfer: 1.00x` and booted Android
 without formatting data. The authority ran in its dedicated enforcing domain,

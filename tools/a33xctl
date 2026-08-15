@@ -9,7 +9,8 @@ LINEAGE_MANIFEST="https://github.com/LineageOS/android.git"
 LINEAGE_MANIFEST_REV="2a46cce5dff3a9a3ab98b3c25a7564084b34cd1f"
 LINEAGE_LOCAL_MANIFEST="$SOS_ROOT/aosp/manifests/a33x-lineage-23.0.xml"
 LINEAGE_PATCH_DIR="$SOS_ROOT/aosp/patches/a33x-lineage-23.0"
-LINEAGE_SOS_DEVICE="sos_a33x"
+LINEAGE_SOS_COMPAT_DEVICE="sos_compat_a33x"
+LINEAGE_SOS_CORE_DEVICE="sos_core_a33x"
 LINEAGE_SOS_OVERLAY_SOURCE="$SOS_ROOT/aosp/device/sos/a33x"
 LINEAGE_SOS_OVERLAY_DESTINATION="$LINEAGE_ROOT/device/sos/a33x"
 LINEAGE_JOBS="${SOS_LINEAGE_JOBS:-8}"
@@ -256,8 +257,14 @@ build_rom() {
     "ccache -M '$LINEAGE_CCACHE_SIZE' && source build/envsetup.sh && breakfast a33x && m -j'$LINEAGE_JOBS' bacon"
 }
 
-build_sos() {
-  [[ "$#" -eq 0 ]] || fail "usage: ./tools/a33xctl build-sos"
+build_sos_profile() {
+  [[ "$#" -eq 1 ]] || fail "internal usage: build_sos_profile <compat|core>"
+  local profile="$1" target_device staged_input_sha
+  case "$profile" in
+    compat) target_device="$LINEAGE_SOS_COMPAT_DEVICE" ;;
+    core) target_device="$LINEAGE_SOS_CORE_DEVICE" ;;
+    *) fail "unsupported SOS profile: $profile" ;;
+  esac
   [[ -f "$LINEAGE_ROOT/build/envsetup.sh" ]] || fail "run init and sync first"
   hydrate_source_lfs
   apply_source_patches
@@ -278,15 +285,39 @@ build_sos() {
       --locked
   )
   stage_sos
-  local sos_revision staged_apk_sha build_number
+  local sos_revision build_number
   sos_revision="$(git -C "$SOS_ROOT" rev-parse --short=12 HEAD)"
-  staged_apk_sha="$(sha256sum \
-    "$LINEAGE_SOS_OVERLAY_DESTINATION/prebuilts/SosShell.apk" | cut -d' ' -f1)"
-  build_number="sos.${sos_revision}.${staged_apk_sha:0:12}"
+  if [[ "$profile" == compat ]]; then
+    staged_input_sha="$(sha256sum \
+      "$LINEAGE_SOS_OVERLAY_DESTINATION/prebuilts/SosShell.apk" | cut -d' ' -f1)"
+  else
+    staged_input_sha="$(sha256sum \
+      "$LINEAGE_SOS_OVERLAY_DESTINATION/core/surface_probe.cpp" \
+      "$LINEAGE_SOS_OVERLAY_DESTINATION/core/sos-core-surface-probe.rc" \
+      "$LINEAGE_SOS_OVERLAY_DESTINATION/prebuilts/default.luau" \
+      "$LINEAGE_SOS_OVERLAY_DESTINATION/prebuilts/arm64/sos-android-system-authority" | \
+      sha256sum | cut -d' ' -f1)"
+  fi
+  build_number="sos.${profile}.${sos_revision}.${staged_input_sha:0:12}"
   mkdir -p "$LINEAGE_CCACHE"
-  info "building SOS physical-device target lineage_$LINEAGE_SOS_DEVICE as $build_number"
+  info "building SOS $profile target lineage_$target_device as $build_number"
   container env "BUILD_NUMBER=$build_number" bash -lc \
-    "ccache -M '$LINEAGE_CCACHE_SIZE' && source build/envsetup.sh && breakfast '$LINEAGE_SOS_DEVICE' && m -j'$LINEAGE_JOBS' bacon"
+    "ccache -M '$LINEAGE_CCACHE_SIZE' && source build/envsetup.sh && breakfast '$target_device' && m -j'$LINEAGE_JOBS' bacon"
+}
+
+build_compat() {
+  [[ "$#" -eq 0 ]] || fail "usage: ./tools/a33xctl build-compat"
+  build_sos_profile compat
+}
+
+build_core() {
+  [[ "$#" -eq 0 ]] || fail "usage: ./tools/a33xctl build-core"
+  build_sos_profile core
+}
+
+build_sos() {
+  [[ "$#" -eq 0 ]] || fail "usage: ./tools/a33xctl build-sos"
+  build_compat
 }
 
 inspect_recovery() {
@@ -320,17 +351,28 @@ inspect_recovery() {
 inspect_rom() {
   [[ "$#" -le 1 ]] || fail "usage: ./tools/a33xctl inspect-rom [target-product]"
   local product_out="$LINEAGE_ROOT/out/target/product/a33x"
-  local package package_name package_suffix bootstrap_dir target_files
+  local package package_name package_suffix bootstrap_dir target_files build_command
   local target_product="${1:-lineage_a33x}"
   case "$target_product" in
-    lineage_a33x) package_suffix=a33x ;;
-    lineage_sos_a33x) package_suffix=sos_a33x ;;
+    lineage_a33x)
+      package_suffix=a33x
+      build_command=build-rom
+      ;;
+    lineage_sos_compat_a33x)
+      package_suffix=sos_compat_a33x
+      build_command=build-compat
+      ;;
+    lineage_sos_core_a33x)
+      package_suffix=sos_core_a33x
+      build_command=build-core
+      ;;
     *) fail "unsupported a33x target product: $target_product" ;;
   esac
   package="$(find "$product_out" -maxdepth 1 -type f \
     -name "lineage-23.0-*-UNOFFICIAL-${package_suffix}.zip" -printf '%T@ %p\n' | \
     sort -nr | head -n 1 | cut -d' ' -f2-)"
-  [[ -n "$package" && -f "$package" ]] || fail "install package missing; run build-rom first"
+  [[ -n "$package" && -f "$package" ]] || \
+    fail "install package missing; run ./tools/a33xctl $build_command first"
   package_name="$(basename "$package" .zip)"
   bootstrap_dir="${SOS_SAMSUNG_WORK:-$HOME/sos-samsung-work}/lineage-a33x/${package_name}-bootstrap"
   target_files="$product_out/obj/PACKAGING/target_files_intermediates/${target_product}-target_files/IMAGES"
@@ -402,8 +444,8 @@ inspect_rom() {
 
 inspect_sos() {
   [[ "$#" -eq 0 ]] || fail "usage: ./tools/a33xctl inspect-sos"
-  inspect_rom lineage_sos_a33x
-  local target_files="$LINEAGE_ROOT/out/target/product/a33x/obj/PACKAGING/target_files_intermediates/lineage_sos_a33x-target_files"
+  inspect_rom lineage_sos_compat_a33x
+  local target_files="$LINEAGE_ROOT/out/target/product/a33x/obj/PACKAGING/target_files_intermediates/lineage_sos_compat_a33x-target_files"
   local apk="$target_files/SYSTEM_EXT/priv-app/SosShell/SosShell.apk"
   local authority="$target_files/SYSTEM_EXT/bin/sos-authority"
   local node="$target_files/SYSTEM_EXT/bin/sos-node"
@@ -480,8 +522,12 @@ inspect_sos() {
     fail "packaged SOS bootstrap differs from the repository source"
   grep -Fx 'ro.sos.authority=on-device' "$properties"
   grep -Fx 'ro.sos.home=dev.sos.experience' "$properties"
-  grep -E '^ro\.system_ext\.build\.version\.incremental=sos\.[0-9a-f]{12}\.[0-9a-f]{12}$' \
+  grep -E '^ro\.system_ext\.build\.version\.incremental=sos\.compat\.[0-9a-f]{12}\.[0-9a-f]{12}$' \
     "$properties" || fail "SOS build does not carry a unique package-cache fingerprint"
+  grep -Fx 'ro.sos.profile=compat' "$properties"
+  grep -Fx 'ro.sos.ui_owner=android-compat' "$properties"
+  grep -Fx 'ro.sos.revision_format=3' "$properties"
+  grep -Fx 'ro.sos.experience_api=3' "$properties"
   grep -Fx \
     'user=_app isPrivApp=true seinfo=platform name=dev.sos.experience domain=priv_app type=privapp_data_file levelFrom=all' \
     "$seapp_contexts"
@@ -495,6 +541,52 @@ inspect_sos() {
     '/data/misc/sos(/.*)?                         u:object_r:sos_authority_data_file:s0' \
     "$file_contexts"
   info "SOS ARM64 target-files gate passed"
+}
+
+inspect_core() {
+  [[ "$#" -eq 0 ]] || fail "usage: ./tools/a33xctl inspect-core"
+  inspect_rom lineage_sos_core_a33x
+  local target_files="$LINEAGE_ROOT/out/target/product/a33x/obj/PACKAGING/target_files_intermediates/lineage_sos_core_a33x-target_files"
+  local probe="$target_files/SYSTEM_EXT/bin/sos-core-surface-probe"
+  local init_rc="$target_files/SYSTEM_EXT/etc/init/sos-core-surface-probe.rc"
+  local properties="$target_files/SYSTEM_EXT/etc/build.prop"
+  local file_contexts="$target_files/SYSTEM_EXT/etc/selinux/system_ext_file_contexts"
+  local authority="$target_files/SYSTEM_EXT/bin/sos-authority"
+  local system_ui="$target_files/SYSTEM_EXT/priv-app/SystemUI/SystemUI.apk"
+  local launcher="$target_files/SYSTEM_EXT/priv-app/Launcher3QuickStep/Launcher3QuickStep.apk"
+  local artifact
+  for artifact in \
+    "$probe" "$init_rc" "$properties" "$file_contexts" "$authority" \
+    "$system_ui" "$launcher"; do
+    [[ -f "$artifact" ]] || fail "SOS Core shadow-stage artifact missing: $artifact"
+    stat --printf='%n %s bytes\n' "$artifact"
+    sha256sum "$artifact"
+  done
+  [[ ! -e "$target_files/SYSTEM_EXT/priv-app/SosShell/SosShell.apk" ]] || \
+    fail "SOS Core must not package the Android Activity shell"
+  file "$probe" | grep -F 'ARM aarch64' >/dev/null || \
+    fail "SOS Core surface probe is not AArch64"
+  grep -F 'libgui.so' <(readelf -d "$probe") >/dev/null || \
+    fail "SOS Core surface probe does not link the native SurfaceComposer client"
+  grep -Fx '    disabled' "$init_rc" >/dev/null || \
+    fail "SOS Core surface probe must remain manually started"
+  grep -Fx '    gentle_kill' "$init_rc" >/dev/null || \
+    fail "SOS Core surface probe must receive SIGTERM before forced cleanup"
+  grep -Fx 'on property:debug.sos.core.surface_probe=1' "$init_rc" >/dev/null || \
+    fail "SOS Core surface probe is missing its manual start trigger"
+  grep -Fx 'on property:debug.sos.core.surface_probe=0' "$init_rc" >/dev/null || \
+    fail "SOS Core surface probe is missing its manual stop trigger"
+  grep -Fx 'ro.sos.authority=on-device' "$properties"
+  grep -Fx 'ro.sos.profile=core' "$properties"
+  grep -Fx 'ro.sos.ui_owner=android-shadow' "$properties"
+  grep -Fx 'ro.sos.revision_format=3' "$properties"
+  grep -Fx 'ro.sos.experience_api=3' "$properties"
+  grep -E '^ro\.system_ext\.build\.version\.incremental=sos\.core\.[0-9a-f]{12}\.[0-9a-f]{12}$' \
+    "$properties" || fail "SOS Core build does not carry a content-derived fingerprint"
+  grep -Fx \
+    '/system_ext/bin/sos-core-surface-probe      u:object_r:sos_core_surface_probe_exec:s0' \
+    "$file_contexts"
+  info "SOS Core shadow-stage target-files gate passed; Android recovery UI is intentionally retained"
 }
 
 usage() {
@@ -513,8 +605,11 @@ commands:
   inspect-recovery  report size, SHA-256, file type, and AVB metadata
   build-rom         build the complete a33x LineageOS install package
   inspect-rom       verify and identify the package and boot-chain images
-  build-sos         build the complete ARM64 SOS a33x install package
-  inspect-sos       verify SOS packaging plus the complete boot-chain graph
+  build-compat      build the ARM64 SOS Compat install package
+  build-core        build the ARM64 SOS Core bring-up install package
+  build-sos         compatibility alias for build-compat
+  inspect-sos       verify SOS Compat packaging and boot-chain graph
+  inspect-core      verify Core native probe and retained recovery UI
 EOF
 }
 
@@ -533,9 +628,12 @@ case "$command" in
   build-recovery) build_recovery "$@" ;;
   inspect-recovery) inspect_recovery "$@" ;;
   build-rom) build_rom "$@" ;;
+  build-compat) build_compat "$@" ;;
+  build-core) build_core "$@" ;;
   inspect-rom) inspect_rom "$@" ;;
   build-sos) build_sos "$@" ;;
   inspect-sos) inspect_sos "$@" ;;
+  inspect-core) inspect_core "$@" ;;
   -h|--help|help|'') usage ;;
   *) fail "unknown command: $command" ;;
 esac

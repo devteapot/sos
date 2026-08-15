@@ -1,0 +1,16 @@
+# Manual Core bring-up probe. Do not auto-start this service: until native
+# input and trusted recovery exist, Android remains the recovery UI.
+on property:debug.sos.core.surface_probe=1
+    start sos_core_surface_probe
+
+on property:debug.sos.core.surface_probe=0
+    stop sos_core_surface_probe
+
+service sos_core_surface_probe /system_ext/bin/sos-core-surface-probe
+    class late_start
+    user graphics
+    group graphics
+    disabled
+    oneshot
+    gentle_kill
+    task_profiles MaxPerformance

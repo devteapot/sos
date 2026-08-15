@@ -2,6 +2,28 @@ package {
     default_applicable_licenses: ["Android-Apache-2.0"],
 }
 
+cc_binary {
+    name: "sos-core-surface-probe",
+    srcs: ["core/surface_probe.cpp"],
+    compile_multilib: "64",
+    system_ext_specific: true,
+    init_rc: ["core/sos-core-surface-probe.rc"],
+    cflags: [
+        "-Wall",
+        "-Werror",
+        "-Wextra",
+    ],
+    shared_libs: [
+        "libEGL",
+        "libGLESv2",
+        "libbinder",
+        "libgui",
+        "liblog",
+        "libui",
+        "libutils",
+    ],
+}
+
 android_app_import {
     name: "SosShell",
     apk: "prebuilts/SosShell.apk",

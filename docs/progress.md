@@ -4571,3 +4571,264 @@ handling. The physical repeated-delete gate now passes across composing,
 commit, ordinary delete, and empty-input delete states. Repair the stale vendor
 test before counting the regression as an executed Android unit test; retain a
 repeated IME edit burst in future device acceptance checks.
+
+## 2026-08-15 — Split a33x into SOS Compat and Core shadow products
+
+**Goal / hypothesis:** Start removing Android's visible ownership without
+discarding its working telephony, network, Bluetooth, NFC, credential, display,
+audio, and vendor infrastructure. The proposed boundary was one shared a33x
+hardware/services/revision base with an Android-compatible product and a native
+Core product, while treating removal of Java UI and removal of Zygote as
+separate gates.
+
+**Changed:** Replaced the single `lineage_sos_a33x` definition with shared
+`sos_a33x_common.mk`, `lineage_sos_compat_a33x`, and
+`lineage_sos_core_a33x` products. Compat carries the SOS Activity/overlay and
+declares Android compatibility UI ownership. Core excludes the SOS Activity
+and carries a 64-bit init-launched C++ SurfaceComposer/EGL probe with a dedicated
+SELinux domain. Its init service is disabled and its ownership property is
+`android-shadow`, so SystemUI and Launcher remain the recovery owner. Build and
+inspection tooling now has `build-compat`, `build-core`, and `inspect-core`;
+`build-sos` remains a Compat alias. The architecture, Core 0/Core 1 boundary,
+per-surface cutover gate, and retained Android substrate are detailed in
+[`android-product-split.md`](android-product-split.md).
+
+**Evidence:** Product evaluation with `source build/envsetup.sh`, `breakfast
+sos_compat_a33x` / `breakfast sos_core_a33x`, and `get_build_var` confirmed that
+both products inherit the same a33x graph and SOS services. Compat selects
+`SosShell` and its overlay; Core selects `sos-core-surface-probe` and excludes
+both. SystemUI, Launcher3, Settings, and LatinIME remain selected in both at
+this shadow stage. `m -j8 sos-core-surface-probe` completed, and `m -j8
+selinux_policy` passed the merged policy, compatibility, and neverallow gates.
+
+`./tools/a33xctl build-compat` completed in 6:09 and
+`./tools/a33xctl inspect-sos` passed ZIP integrity, whole-package test-key
+signature, VINTF, AVB, PIT partition ceilings, target-files contents,
+properties, and SELinux checks. The artifact
+`lineage-23.0-20260815-UNOFFICIAL-sos_compat_a33x.zip` uses build number
+`sos.compat.301cefc50d20.0ee968c48b29`, is 1,276,655,898 bytes, and has SHA-256
+`146b681f6472ac60006220faaf71fafffd6102af2d5ead6bacbca05475a77fa7`.
+
+After formatting and signal-handling cleanup, `./tools/a33xctl build-core`
+completed in 4:01 and `./tools/a33xctl inspect-core` passed the same image and
+boot-chain gates. It additionally proved that the probe is AArch64, links
+`libgui`, is correctly labeled, and remains disabled; that `SosShell.apk` is
+absent; and that SystemUI plus Launcher are deliberately retained. The final
+artifact `lineage-23.0-20260815-UNOFFICIAL-sos_core_a33x.zip` uses build number
+`sos.core.301cefc50d20.c3937d2e6275`, is 1,256,417,960 bytes, and has SHA-256
+`5f6bcabcb1160f48e75d41e5bbc0b4a7affdbb3498dff1d32723b1c0f205a60a`.
+Its packaged `sos-core-surface-probe` is 51,464 bytes with SHA-256
+`ba9799dfbcf61559e34550743066e10e0f4a7c5223d77993dc36216e909d5b73`.
+`bash -n tools/a33xctl`, the checkout clang-format gate, and `git diff --check`
+pass. `shellcheck` was unavailable on this host. No image was flashed or run on
+the phone, so none of this is physical display, input, recovery, or latency
+evidence.
+
+**Failures / fixes / rejected approaches:** Android 16 rejected initial
+two-field `COMMON_LUNCH_CHOICES`; the entries were removed and `breakfast`
+allowed the release configuration to select `bp2a`. The first probe compile
+used an absent `ISurfaceComposerClient` header, the wrong `DisplayMode`
+namespace, and missing pthread/error declarations; using the available Android
+16 interfaces fixed it. `Transaction::remove` is unavailable in this branch,
+so shutdown hides the surface and releases its client. The first strict source
+check found clang-format drift; formatting and blocking termination signals
+before starting Binder threads were followed by a complete Core rebuild and
+reinspection. A later cross-profile inspection found the Compat ZIP had been
+removed by Android's expected install-clean while switching to Core; the docs
+now require adjacent build/inspect pairs and the tool reports the correct
+profile build command. Filtering inherited `PRODUCT_PACKAGES` at the leaf was
+rejected because inherited package accumulation is not a safe ownership
+boundary.
+Immediately deleting SystemUI/Launcher or selecting no-Zygote was also rejected:
+there is no native input, trusted lockscreen, recovery UI, or replacement for
+the Java-managed phone/connectivity services yet.
+
+**Decision / remaining risk / next gate:** The two product identities and
+shared base are accepted. Compat is the continuation of the installable Android
+product. Core is accepted only as a non-autostarting shadow bring-up target and
+must not be called Core 0. The next gate is physical SM-A336B execution of the
+manual native surface alongside Android: verify presentation through
+SurfaceFlinger/HWC, start/stop and failure recovery, enforcing SELinux behavior,
+and the absence of display/suspend regressions. Then port the GPUI host to that
+`ANativeWindow`, add native input plus fixed trusted recovery/lock surfaces,
+and only after those physical gates switch `ro.sos.ui_owner` to `native-sos`
+and remove superseded Android UI packages from Core. No-Zygote remains a later
+service-migration gate.
+
+## 2026-08-15 — Physical Compat and Core-shadow device gates
+
+**Goal / hypothesis:** Install both split products without wiping the physical
+SM-A336B, prove Compat retains the working Android substrate while SOS owns
+HOME, then run the disabled Core SurfaceComposer probe with Android still
+available as the recovery UI.
+
+**Changed / environment:** The connected `RFCT50EGFCN` handset identified as
+`SM_A336B` / `a33x`, reported 99% battery, completed Android boot, orange
+verified-boot state, and enforcing SELinux. The owner clarified that Launcher3
+had only been selected while recovering from an earlier SOS crash. After the
+Compat update, `cmd package set-home-activity
+dev.sos.experience/.SosHomeActivity` restored the intended explicit HOME
+choice without clearing application data. The Core probe remains disabled at
+boot, but its init file now maps transient shell-writable property
+`debug.sos.core.surface_probe=1` to start and `=0` to stop; the architecture
+document records those manual development commands. A canary on the installed
+pre-split image proved that shell can write and clear the `debug` namespace.
+
+**Compat build, install, and device evidence:** A fresh
+`./tools/a33xctl build-compat` completed in 4:09 with build number
+`sos.compat.301cefc50d20.3d43de4361b8`. `./tools/a33xctl inspect-sos` passed
+ZIP and whole-package signature integrity, live PIT ceilings, VINTF, recovery
+init, every embedded AVB footer and vbmeta descriptor, APK/runtime identity,
+product properties, and compiled SELinux assertions. The exact installed
+archive is `lineage-23.0-20260815-UNOFFICIAL-sos_compat_a33x.zip`,
+1,276,666,944 bytes, SHA-256
+`e22f979c6f51a8f38463e7d2434b725f2714046ecb8e063de10c1a540354fc5c`.
+From authorized Android, `adb reboot sideload-auto-reboot`, `adb
+wait-for-sideload`, and `adb sideload` identified the expected a33x and
+completed at `Total xfer: 1.00x`; no format-data action occurred.
+
+Android returned boot-complete and enforcing with the exact increment,
+`ro.sos.profile=compat`, `ro.sos.ui_owner=android-compat`, revision format 3,
+Zygote, `system_server`, SurfaceFlinger, SystemUI, and the on-device authority.
+Phone, connectivity, Bluetooth, NFC, and SurfaceFlinger services were found and
+Wi-Fi remained connected. The application CE/DE data inodes remained exactly
+3743/3592 across the OTA. A Home-key test put
+`dev.sos.experience.SosHomeActivity` in focus; Settings then opened normally in
+354 ms and another Home key returned to the same SOS PID. The active generated
+Daily experience and configured Codex-provider status rendered after reboot.
+The app ran in the MCS-labelled `priv_app` domain, the authority in
+`sos_authority`, PackageManager exposed no `DEBUGGABLE` flag, the SOS PID was
+absent from JDWP, no ADB reverse existed, and final scans counted zero
+fatal/ANR/native-signal records and zero SOS-related AVC denials.
+
+Two ignored evidence captures were inspected and kept out of Git:
+
+| Capture | Bytes | SHA-256 |
+| --- | ---: | --- |
+| `/tmp/sos-compat-post-ota.png` | 498,404 | `14d77abcf0c25b257cae56247d92ec5806c7722734acd796e972f381f9b95edd` |
+| `/tmp/sos-compat-home.png` | 177,585 | `d8ba757bc1cd729b6bec3907d11223a7ccbcec3800411720d4b88c0386106ba2` |
+
+**Initial Core artifact and interrupted entry:** A fresh
+`./tools/a33xctl build-core` completed in 3:50 with build number
+`sos.core.301cefc50d20.1d93946d6967`. `./tools/a33xctl inspect-core` passed the
+same complete artifact gate and additionally proved that target files contain
+SystemUI, Launcher3, the disabled probe and its init/SELinux policy, but no
+packaged `SosShell.apk`. The inspected archive
+`lineage-23.0-20260815-UNOFFICIAL-sos_core_a33x.zip` is 1,256,407,136 bytes,
+SHA-256
+`9d72975319a83189e3246b133c4be740cf2fed02476218bb735f300a8448d2f4`.
+The AArch64 probe remains 51,464 bytes, SHA-256
+`ba9799dfbcf61559e34550743066e10e0f4a7c5223d77993dc36216e909d5b73`;
+the revised 483-byte init file has SHA-256
+`2e761434184b5e2eef18deb5d3244c39396ea88dbcd12df704af39ca088b5606`.
+
+The subsequent `adb reboot sideload-auto-reboot` cleanly disconnected USB at
+21:01:42 CEST, but the handset did not re-enumerate as Samsung, Android, or ADB
+sideload during the next four minutes. The waiting host command was
+interrupted. `adb sideload` was never entered, no Core bytes transferred, and
+no wipe or completed device change occurred. This is a recovery-entry/power
+failure, not evidence for or against the Core image or native display probe.
+
+The handset later completed a normal Compat boot and re-enumerated without host
+intervention. Repeating the same recovery command then entered sideload
+normally, and the already inspected Core archive transferred at `Total xfer:
+1.00x` without a wipe.
+
+**Core physical evidence and termination fix:** The first Core installation
+booted complete and enforcing with the exact
+`sos.core.301cefc50d20.1d93946d6967` increment, `ro.sos.profile=core`,
+`ro.sos.ui_owner=android-shadow`, and revision format 3. Zygote,
+`system_server`, SurfaceFlinger, SystemUI, phone, connectivity, Bluetooth, NFC,
+and Wi-Fi remained live. Target files contain no `SosShell.apk`; the SOS APK
+reported by PackageManager is instead a pre-existing no-wipe update under
+`/data/app`. Its `base.apk` is 37,813,431 bytes with SHA-256
+`4c7b3904c50ccf4f43c60603a9e22dba42770bd215d026b744ba1551b0a0bb0a`.
+This distinction matters: the Core product did not package SOS, but this shadow
+test also deliberately did not destroy user data.
+
+Setting `debug.sos.core.surface_probe=1` started PID 2763 in
+`u:r:sos_core_surface_probe:s0`. It logged
+`native_surface_ready width=1080 height=2400 ui_owner=android-shadow`.
+SurfaceFlinger reported the full-screen probe as its sole visible layer and
+assigned `DEVICE` composition through the Samsung Hardware Composer. Setting
+the property to zero removed the layer and returned to Android's working
+lockscreen, while SurfaceFlinger and SystemUI stayed alive. The initial init
+definition used the default hard stop, however, so stop sent SIGKILL despite
+the probe's signal handler. That was rejected as insufficient lifecycle
+evidence.
+
+The init service now has `gentle_kill`; `inspect-core` requires that flag as
+well as both property triggers. After a complete rebuild,
+`./tools/a33xctl inspect-core` again passed ZIP/signature, VINTF, PIT, AVB,
+package/property, init, binary, and SELinux gates. The corrected installed
+archive `lineage-23.0-20260815-UNOFFICIAL-sos_core_a33x.zip` uses build number
+`sos.core.301cefc50d20.f600281a80ff`, is 1,256,433,258 bytes, and has SHA-256
+`c815dabd75cd5bff777904f9f9538b4ad04dafdba484c607b9fbf5678ab0f045`.
+Its probe is still 51,464 bytes with SHA-256
+`ba9799dfbcf61559e34550743066e10e0f4a7c5223d77993dc36216e909d5b73`;
+the 499-byte init file has SHA-256
+`a77794926d5fbc4ccdbb8877b2d67821372be1a4805e7fe714e244b82bc657a5`.
+The corrected archive transferred at `Total xfer: 1.00x` without a wipe and
+booted with the exact expected Core identity.
+
+On the corrected image, PID 2701 rendered the same 1080x2400 HWC `DEVICE`
+layer. A power-key suspend moved the handset from awake to dozing without
+stopping the process; resume returned it to awake with the same PID and layer.
+The property stop sent SIGTERM, the probe logged `stopping after signal=15`,
+exited with status 0, and removed its layer in 205 ms. Init's 200 ms process
+group cleanup also logged a subsequent SIGKILL after the successful exit, so
+the next lifecycle refinement is to finish comfortably inside that deadline.
+Launching `com.android.launcher3/.uioverrides.QuickstepLauncher` then produced
+a usable Android recovery surface in 262 ms with SystemUI and Launcher alive
+and the probe stopped. Final log scans counted zero fatal exceptions, ANRs, or
+native fatal signals.
+
+EGL/Mali probing produced three unique enforcing AVC denials for directory
+`search` on `system_data_file` named `data`; rendering still succeeded. Broad
+`/data` search permission was deliberately not added merely to suppress these
+failed driver probes. Determine the exact optional driver path before changing
+policy.
+
+Ignored physical evidence captures were inspected and kept out of Git:
+
+| Capture | Bytes | SHA-256 |
+| --- | ---: | --- |
+| `/tmp/sos-core-probe-running.png` | 15,584 | `ba20c352f66694f517c51b748358882450f56a12a320fcad25530ac83167bd06` |
+| `/tmp/sos-core-probe-stopped.png` | 491,036 | `4c774ea3c87e7c0356c0a86a2a3bb3e8b06de8d2a690a8416823f824817ba415` |
+| `/tmp/sos-core-probe-after-resume.png` | 15,584 | `ba20c352f66694f517c51b748358882450f56a12a320fcad25530ac83167bd06` |
+| `/tmp/sos-core-android-shadow.png` | 611,006 | `ae02a7f286c66b1e26be3d0e2a548314c87c820a13676c7e742725e3ed80dd93` |
+
+**Final Compat restoration:** Switching products removes the other profile's
+archive from `out`, so Compat was rebuilt adjacent to its inspection before
+restoration. `./tools/a33xctl build-compat` completed in 3:47 and
+`./tools/a33xctl inspect-sos` passed the complete artifact gate. The exact
+restoration archive `lineage-23.0-20260815-UNOFFICIAL-sos_compat_a33x.zip`
+uses build number `sos.compat.301cefc50d20.8412fd499a46`, is 1,276,709,090
+bytes, and has SHA-256
+`a16edd84a0bc8cdc5d6d11daa65d0c5befc804a0be3f24a6b382f0edb47008b8`.
+Recovery accepted it at `Total xfer: 1.00x` without formatting data.
+
+The phone finished booting the exact Compat identity with enforcing SELinux,
+revision format 3, and no Core probe binary or init service. SOS PID 2074 was
+explicitly selected as HOME, then the preserved Daily experience rendered.
+Android Settings opened warm in 396 ms and HOME returned to the same PID and
+`SosHomeActivity`; Launcher3 was not selected as HOME. Zygote,
+`system_server`, SurfaceFlinger, SystemUI, SOS authority, phone, connectivity,
+Bluetooth, and NFC remained live, and Wi-Fi was connected. An isolated final
+scan counted zero fatal exceptions, ANRs, native fatal signals, and SOS-related
+AVC denials; ADB reverse and the JDWP process list were empty. The final ignored
+capture `/tmp/sos-compat-final.png` is 178,036 bytes with SHA-256
+`c8fc42e12ba999975d9d09f4937010b3ed25ca5eaf632c6b3858c09868969763`.
+
+**Decision / remaining risk / next gate:** Compat passes its physical product
+gate. Core passes the intended *shadow* gate: a native init service can own a
+physical SurfaceFlinger/HWC layer, survive one doze/resume cycle, stop cleanly,
+and return to Android recovery UI under enforcing SELinux. It remains
+`android-shadow`, not Core 0: Android UI is deliberately packaged and running,
+native input and trusted lock/recovery surfaces do not exist, the residual EGL
+path probes need attribution, and a no-wipe `/data` SOS update remains installed.
+The handset is restored to Compat as the daily target with SOS explicitly
+selected as HOME. The next Core gate is the GPUI host on this `ANativeWindow`,
+raw/native input, fixed trusted lock and recovery surfaces, repeated
+suspend/failure tests, and only then switching ownership to `native-sos` and
+removing superseded Java UI.
