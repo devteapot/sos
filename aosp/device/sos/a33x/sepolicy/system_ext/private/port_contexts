@@ -1,0 +1,2 @@
+portcon tcp 47777 u:object_r:sos_provider_port:s0
+portcon tcp 47778 u:object_r:sos_revision_port:s0

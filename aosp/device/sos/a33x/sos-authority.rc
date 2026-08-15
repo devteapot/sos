@@ -1,0 +1,10 @@
+on post-fs-data
+    mkdir /data/misc/sos 0770 system system
+    mkdir /data/misc/sos/revisions 0770 system system
+    restorecon_recursive /data/misc/sos
+
+service sos_authority /system_ext/bin/sos-authority --root /data/misc/sos/revisions --state-file /data/misc/sos/provider-state.json --bootstrap-source /system_ext/etc/sos/default.luau
+    class main
+    user system
+    group system inet
+    restart_period 1

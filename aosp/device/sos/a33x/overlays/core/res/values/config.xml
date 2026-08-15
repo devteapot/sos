@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- SOS is HOME; the inherited Quickstep component continues to own Recents. -->
+    <string name="config_secondaryHomePackage" translatable="false">dev.sos.experience</string>
+</resources>

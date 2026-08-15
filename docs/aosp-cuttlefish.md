@@ -137,3 +137,15 @@ reverse mapping; those are not present in the AOSP product path. Revision
 directories are content-addressed, verified on read, and made read-only, but
 this development product does not yet provision the store's optional manifest
 signing and verification keys.
+
+The first ARM64 product investigation is recorded in
+[`samsung-sm-a336b.md`](samsung-sm-a336b.md). Complete community device,
+kernel, and vendor foundations exist for `a33x`, and the SOS authority
+cross-compiles for ARM64. The only connected phone has now been returned to
+exact FYH2 stock, factory booted, unlocked, factory booted again, and verified
+as unlocked/orange while retaining a zero Knox warranty bit before any custom
+binary. A pinned Android 16 / LineageOS 23 recovery also builds and matches the
+live recovery partition layout. Its test signing key does not match FYH2's
+vbmeta recovery chain, so recovery alone is not flash-ready. The next physical
+gate is a complete, internally consistent Lineage boot-chain/install package,
+followed by its stock-restore drill; Android 17 remains a later port.

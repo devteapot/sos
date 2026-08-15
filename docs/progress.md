@@ -3157,3 +3157,726 @@ new ARM64 product hardware before making any hardware claim. Production
 revision signing and verification-key provisioning also remain open; this
 Cuttlefish product verifies content identities and read-only revision layout
 but does not provision a signing key.
+
+## 2026-08-15 — SM-A336B bootloader and platform viability gate
+
+**Goal / hypothesis:** Determine whether the existing Galaxy A33 5G can safely
+advance from ARM64 APK testing to a device-specific SOS system image, and
+whether enough device, kernel, vendor, recovery, and restore material exists to
+justify an ARM64 product port.
+
+**Device, environment, and documentation changed:** Probed the already
+authorized SM-A336B over ADB without rebooting, wiping, rooting, entering
+Download Mode, or writing a partition. Developer Options was opened for a UI
+dump and the phone was returned to HOME. Pulled its ignored `SecSettings.apk`
+to `/tmp` for bytecode inspection, shallow-cloned the candidate community
+device/common/kernel/vendor trees under `/tmp`, and cross-compiled the existing
+authority for `arm64-v8a`. Removed the 842 MiB temporary audit tree after
+recording its revisions and measurements. Added the focused
+[`samsung-sm-a336b.md`](samsung-sm-a336b.md) assessment and linked it from the
+AOSP report.
+
+**Evidence:** `adb shell getprop` identified `SM-A336B` / `a33x`, Exynos 1280
+`s5e8825`, Android 16 / One UI 8, stock build `A336BXXUEGYI8`, dynamic A-only
+partitions, Treble, and rollback level 14. The phone remains locked and intact:
+`flash.locked=1`, `vbmeta.device_state=locked`, verified boot `green`,
+`other.locked=1`, Knox Guard `Completed`, and warranty bit `0`.
+`ro.oem_unlock_supported` was absent and the OEM-unlock row was absent from the
+top of Developer Options. `apkanalyzer dex code` confirmed this firmware's
+`OemUnlockPreferenceController` requires `ro.oem_unlock_supported=1` to obtain
+an `OemLockManager` and rejects `ro.boot.other.locked=1`. The ignored
+114,799,707-byte `SecSettings-A336BXXUEGYI8.apk` had SHA-256
+`b16a9bbd64d740f7482afe1fcd0c44b7ef8340f01bdb1950f73cf125fedd6a6c`.
+
+The community source audit found an `a33x` device tree at
+`a85c2a9652c…`, `s5e8825-common` at `33dd9c999786…`, a 5.10.239 kernel at
+`0f885d194baa…`, device blobs at `a7efdd5712ec…`, common blobs at
+`4a2275bfabd9…`, and a dependency manifest at `23b84e5f5dc0…`. The board and
+kernel cover the observed ARM64 partition topology and device DTS, panel,
+camera, touch, init, VINTF, SELinux, radio, and recovery surfaces. A separate
+2026-08-08 unofficial LineageOS 23.2 release is 1,260,835,762 bytes with
+published SHA-256
+`54f38de8d898ba6ea6712fd69ce4853b99f8f9b336505baed6ee05368ff843b1`.
+This establishes a credible Android 16 community basis, not a proven SOS or
+Android 17 product.
+
+`cargo ndk -t arm64-v8a -P 31 build -p android-system-authority --bin
+sos-android-system-authority --release --locked` passed in 15.60 seconds. The
+ignored stripped Android 31 ARM64 PIE from clean SOS revision
+`b6da0369c29092b85720c4c20a8a56707afc2942` is 1,216,976 bytes, SHA-256
+`d4e25d1e5be06b5c4b7cf2fd159f7a9f593788f37626e0b49b278faeaa2b8158`.
+
+**Failures and rejected paths:** The device-tree blob update for One UI 8
+explicitly pins the older `A336BXXSEFYH2` bootloader/TEE set because newer
+`sboot.bin` adds an auto-lock property, consistent with the connected phone.
+Official a33x TWRP exists, but its latest downloadable recovery is a 2024
+Android-12 build with a prebuilt kernel and decryption disabled, so it is not a
+recovery proof for this Android 16 phone. No exact stock firmware bundle or
+validated Samsung flashing tool exists locally. Two discovered GitHub
+"firmware preservation" repositories were empty. The apparent shared binary
+revision `E` between the current build and pre-One-UI-8 `FYH2` makes downgrade
+a donor-device hypothesis only, not a safe procedure. The community trees are
+LineageOS 23.x / Android 16 and include unlicensed proprietary blobs; they
+cannot simply replace the current Android 17 Cuttlefish device directory.
+
+**Decision / remaining risk / next gate:** Keep the current SM-A336B as the
+intact ARM64 APK test device and classify it as no-go for system flashing. The
+device family remains a conditional candidate because a complete community
+hardware basis exists and the SOS authority already builds for ARM64. Acquire
+a separate pre-One-UI-8 SM-A336B with a visible OEM-unlock control, archive and
+hash exact stock packages, and prove stock-to-stock restore on that donor
+before accepting the factory reset and irreversible Knox warranty-bit risk.
+Then reproduce and boot the pinned Android 16 baseline before layering the SOS
+ARM64 product, init service, SELinux policy, and signing. No Samsung hardware,
+latency, suspend, thermal, or soak gate was advanced by this non-destructive
+audit.
+
+### Sole-device rollback and official-TWRP clarification
+
+**Goal / hypothesis:** Determine whether the only available SM-A336B could
+recover the missing OEM-unlock path by returning from One UI 8 to One UI 7 and
+then rely on the official a33x TWRP image.
+
+**Device and environment changed:** No device state changed. A second
+read-only `adb shell getprop` check confirmed EUX, build `A336BXXUEGYI8`,
+`ro.boot.rp=14`, locked/green verified boot, `flash.locked=1`,
+`other.locked=1`, and no `ro.oem_unlock_supported`. The phone was not rebooted
+or placed in Download Mode. The published TeamWin prebuilt kernel was fetched
+to a fresh `mktemp` directory, inspected, and deleted; the attempted direct
+official TWRP image fetch returned an HTML download page rather than an image
+and that temporary file was also deleted.
+
+**Evidence:** Samsung's update history identifies `A336BXXSEFYH2` as Android
+15 / One UI 7 dated 2025-08-27 and `A336BXXUEGYI8` as Android 16 / One UI 8
+dated 2025-10-22. Firmware metadata lists an EUX 7.86 GB four-file FYH2 package
+at binary revision `E`, matching the installed build and direct rollback level
+14, with published MD5 `45d5e89f77e1dfa8ee45d62b9c376e93`; no package was
+downloaded, so its size, hash, signature, and completeness remain unverified.
+Samsung's FYH2 release note warns that its security-policy update prevents
+downgrading to older software, without promising a later One UI 8 build can
+return to FYH2.
+
+The official TWRP listing still offers only `twrp-3.7.1_12-0-a33x` from
+2024-02-18. `curl` plus `sha256sum`, `wc -c`, and `strings` measured the
+TeamWin tree's `prebuilt/Image` at 31,461,888 bytes, SHA-256
+`593ad8f97564fe067ca5dec37417e7eeac6b0b80f342c6407e4fa280c6fe606e`,
+with embedded Linux version `5.10.66-Gabriel260BR-TWRP-ga0103aac9499` built
+2023-01-01. `BoardConfig.mk` targets platform 12 and sets
+`TW_INCLUDE_CRYPTO`, `TW_INCLUDE_CRYPTO_FBE`, and
+`TW_INCLUDE_FBE_METADATA_DECRYPT` false. The device-specific TWRP changelog
+does not state a compatible Samsung firmware baseline.
+
+**Failures and rejected paths:** Matching binary revision `E` is necessary but
+does not prove Samsung verified-boot/version-binding acceptance. A direct
+download URL was deliberately not treated as an image after `file` identified
+the 6,795-byte response as HTML. The old official TWRP image cannot be the sole
+restore path: its kernel predates FYH2 by more than two years and it cannot
+decrypt `/data`. Combining stock rollback, bootloader unlock, custom recovery,
+and SOS in one flash session was rejected because it erases the intermediate
+evidence and multiplies the only phone's failure modes.
+
+**Decision / remaining risk / next gate:** A complete Samsung-signed
+GYI8-to-FYH2 rollback is a plausible destructive experiment, not a safe or
+simple migration. Keep APK testing as the default while this remains the only
+phone. Proceed only if the phone is explicitly accepted as expendable, all
+data and authentication material are backed up independently, exact EUX FYH2
+and GYI8 stock packages are locally archived and verified, and a pinned
+flashing/recovery host passes non-writing Download Mode detection. Roll back to
+stock FYH2 and boot it as a separate gate; continue only if the OEM-unlock
+control actually returns. Do not use the 2024 official TWRP build as the sole
+recovery plan; build a recovery against the pinned contemporary a33x
+kernel/device tree before any SOS system flash. No hardware gate advanced.
+
+### Authorized sole-device rollback preparation
+
+**Goal / hypothesis:** After the owner explicitly accepted loss of this
+dedicated development phone and waived user-data backup, assemble a complete
+stock restore path and advance only as far as non-writing Download Mode/PIT
+validation before flashing FYH2.
+
+**Device, environment, and artifacts changed:** No partition was written.
+Verified the native Fedora 44 host had 572 GiB free, a direct USB path, and no
+installed Samsung flasher; the phone was at 100% battery. Downloaded pinned
+`samloader` 2.0.0 release archive (2,328,736 bytes, SHA-256
+`7c6514028f20d5ea0eb57d6f872eee41b3a52336eabac6379b15a01a06ed7a79`)
+and verified its extracted 8,470,752-byte static executable at SHA-256
+`8a12712a530aa404df50df4fef0b16b7e0081b5362a3a34c752472d79c61f288`.
+All tools and firmware remain outside Git under
+`/home/carlid/sos-samsung-work`.
+
+**Evidence:** `samloader check-update --model SM-A336B --region EUX --all`
+returned the exact FUS versions for installed GYI8 and target FYH2. Direct
+Samsung downloads produced `SM-A336B_EUX_A336BXXSEFYH2.zip`, 8,436,163,243
+bytes, SHA-256
+`71a9a3433400cd0002541020395b5680f8651c4b3bf47f0e7d895e94d7f959d6`,
+and `SM-A336B_EUX_A336BXXUEGYI8.zip`, 8,086,643,743 bytes, SHA-256
+`237d6567800569a7120474761643fd3571b1cfbb93a3d841e932495b65300bc3`.
+`unzip -t` passed both; `samloader verify-md5` passed all ten extracted BL,
+AP, CP, CSC, and HOME_CSC archives. Their filenames, sizes, and SHA-256 values
+are recorded in `docs/samsung-sm-a336b.md`.
+
+The package PIT files have distinct raw hashes but parse to identical 48-entry
+layouts. `adb reboot download` then moved the still-locked device from USB
+`04e8:6860` to Download Mode `04e8:685d`; `samloader detect --verbose`
+returned `Device detected`.
+
+**Failures and fixes:** A third-party published FYH2 outer MD5 did not match
+the ZIP streamed directly from Samsung FUS, so it was rejected as the trust
+anchor; ZIP CRC validation, locally recorded SHA-256, and every embedded Odin
+MD5 all pass. The first live PIT dump stopped before protocol setup because
+Fedora exposed the Download Mode node as `root:root` mode `0664`; the pinned
+tool reported `Access denied (insufficient permissions)`. The normal-mode ADB
+udev rule covers only product `6860`, not Download Mode product `685d`.
+
+**Decision / remaining risk / next gate:** Package acquisition and offline
+integrity gates pass. The phone is paused intact in Download Mode and no flash
+has started. Obtain administrator authorization for an ephemeral write ACL on
+the current USB node, dump the live PIT, compare it to the identical parsed
+FYH2/GYI8 layout, and only then perform a complete BL/AP/CP/wiping-CSC FYH2
+stock flash without repartition. Stock FYH2 boot and return of the OEM-unlock
+control remain separate future gates; official TWRP remains rejected as the
+sole recovery path. No hardware or unlock gate advanced.
+
+**Continuation:** The owner applied an ephemeral ACL to the current Download
+Mode node. A full Odin 5 session then succeeded and dumped the ignored live
+PIT: `SM-A336B-live-before-FYH2.pit`, 8,192 bytes, SHA-256
+`238552c2c4857cb7cf4a5e2c8033b324478bf5201ff14552f33f93cd15c2c53a`.
+`samloader print-pit` produced an exact diff match against the FYH2 package's
+48-entry layout. The PIT command sent its end-session/reboot request, but the
+phone remained in Download Mode. The first flash invocation then revalidated
+BL/AP/CP/CSC and failed during the initial `ODIN` handshake with bulk-transfer
+timeouts; no Odin session or file transfer began. `usbreset 001/006` reset the
+host USB port successfully without changing enumeration or the ACL, but a
+second invocation failed at the same pre-session handshake. This confirms the
+device-side Odin session, not package integrity or host USB permission, must
+be reset by a real handset reboot. No partition write occurred. Install the
+pinned tool's audited `TAG+="uaccess"` udev rule, physically reboot with Side +
+Volume Down, re-enter Download Mode from the intact GYI8 system, and use the
+fresh enumeration for one flash session without a preceding PIT command.
+
+**Rollback flash result:** After the physical reboot, GYI8 booted intact and
+the persistent `/etc/udev/rules.d/60-samloader.rules` rule exposed the fresh
+Download Mode node with the expected per-user `uaccess` ACL. From that fresh
+session, pinned `samloader` 2.0.0 verified and flashed the FYH2 `BL`, `AP`,
+`CP`, and wiping `CSC_OXM` archives. No PIT argument, repartition, EFS clear,
+or `HOME_CSC` was used. The Odin 5 handshake and its in-session PIT read
+succeeded; `FLD`, `BOOTLOADER`, `UP_PARAM`, `LDFW`, `TZSW`, `TZAR`, `HARX`,
+`KEYSTORAGE`, `UH`, `BOOT`, `VENDOR_BOOT`, `DTBO`, `RECOVERY`, `SUPER`,
+`USERDATA`, `PRISM`, and `OPTICS` all returned successful upload responses.
+The tool printed `Ending session...`, `Rebooting device...`, released the USB
+interface, and exited 0 at 2026-08-15 03:51 CEST. There was no anti-rollback,
+signature, size, or write failure.
+
+The tool's automatic reboot request did not transition the handset: for at
+least 38 seconds afterward it remained enumerated on the same USB node as
+Samsung Download Mode `04e8:685d`. This is a post-flash reboot-boundary issue,
+not evidence of a failed transfer. Stock FYH2 boot is not yet claimed. The
+next gate is a physical Side + Volume Down restart into normal boot, completion
+of the expected factory-reset setup, and read-back of build, rollback, lock,
+verified-boot, and OEM-unlock state before any custom image or unlock action.
+No SOS hardware, latency, or suspend gate advanced.
+
+**Stock boot continuation:** The owner held Side + Volume Down after the host
+had exited and no process held the Download Mode USB node. Download Mode
+disappeared, the phone completed its first boot, and the owner reached the
+Android welcome/setup screen. At 2026-08-15 03:58 CEST the host saw a fresh
+normal-mode Samsung `04e8:6860` device in MTP mode. This passes the factory-boot
+and USB re-enumeration portions of the rollback gate. Exact FYH2 properties,
+verified-boot/lock state, and availability of OEM unlocking remain pending
+until setup is complete and USB debugging is re-enabled.
+
+**FYH2 read-back and unlock-control gate:** After setup and renewed ADB
+authorization, the phone reported `ro.build.PDA=A336BXXSEFYH2`, Android 15 /
+API 35, security patch `2025-08-01`, the FYH2 release-key fingerprint, and
+`ro.bootloader=A336BXXSEFYH2`. It remains at rollback level 14 with
+`flash.locked=1`, `vbmeta.device_state=locked`, verified boot `green`, and
+Knox warranty bit `0`. A temporary `uiautomator` dump of Developer Options,
+removed immediately after inspection, confirmed an enabled `OEM unlocking`
+row with summary `Allow the bootloader to be unlocked`; its switch is
+currently unchecked. The rollback goal therefore passes: the exact signed
+FYH2 baseline boots and restores the unlock control without changing the lock
+or Knox state. Bootloader unlock is a separate destructive gate and has not
+yet been attempted.
+
+**Unlock authorization staged:** With the phone at 100% on USB power, Android's
+`automatic_system_updates` global setting was changed from enabled to `0` to
+avoid an unattended FYH2 replacement on reboot. The owner then enabled the
+visible `OEM unlocking` preference and accepted its device warning. A second
+temporary `uiautomator` dump, removed immediately, showed the enabled switch
+as `checked=true`; at that checkpoint `flash.locked` was still `1` and the
+Knox warranty bit still `0`. This only authorizes a later bootloader unlock;
+it did not itself unlock, wipe, or flash the phone.
+
+**Bootloader unlock initiated:** From the powered-off A33 hardware-key entry,
+the device presented `Continue`, `Device unlock mode`, and `Cancel`; the owner
+long-pressed Volume Up, then confirmed the `Yes (may void warranty)` prompt.
+Download Mode disappeared immediately. After roughly 48 seconds without a USB
+device, the phone re-enumerated at 2026-08-15 04:15 CEST as normal Samsung MTP
+`04e8:6860`, demonstrating that the unlock-triggered reset reached Android.
+Final lock, AVB, and Knox properties remain pending until setup and renewed
+ADB authorization; do not call the unlock gate complete from MTP alone.
+
+**Bootloader unlock verified:** After setup and renewed ADB authorization,
+FYH2 remained installed and the device reported `ro.boot.flash.locked=0`,
+`ro.boot.vbmeta.device_state=unlocked`, and verified boot `orange`. Rollback
+level remained 14. No custom image had been loaded, and the Knox warranty bit
+remained `0`; Knox Guard changed from the pre-unlock `0x4` observation to
+`ro.boot.kg=0x1`. The wipe cleared the update setting, so
+`automatic_system_updates=0` was reapplied. A temporary UI dump, deleted after
+inspection, showed the OEM control checked, disabled, and summarized as
+`Bootloader already unlocked`. The stock rollback and bootloader-unlock gates
+are complete. The next gate is a pinned contemporary a33x recovery/custom-ROM
+baseline and a stock-restore procedure; the outdated official TWRP image is
+still not accepted as the sole recovery path.
+
+### Pinned a33x Android 16 recovery build and AVB gate
+
+**Goal / hypothesis:** Reproduce a contemporary ARM64 recovery from the
+audited LineageOS 23.0 a33x graph, prove its partition/layout compatibility
+against exact FYH2 stock, and reject any flash set whose AVB relationships are
+not internally consistent.
+
+**Code and environment changed:** Added the exact-revision local manifest
+`aosp/manifests/a33x-lineage-23.0.xml`, a dedicated Ubuntu 24.04 build image at
+`tools/a33x/Containerfile`, and the `tools/a33xctl` init/sync/build/inspection
+driver. The new checkout is isolated at `/home/carlid/dev/lineage-a33x`; the
+Android 17 Cuttlefish tree was not changed. The container image ID is
+`4e351528281b6b7085676140451e0f2cc531764963668a8f0f3016f2f82596dc`.
+The phone remained booted on unlocked stock FYH2 throughout; no custom binary
+was flashed and the last observed Knox warranty bit remains `0`.
+
+**Evidence:** `./tools/a33xctl doctor`, `init`, and `sync` passed. The clean
+1,150-project checkout produced the 280,889-byte resolved manifest
+`.repo/sos-a33x-resolved-manifest.xml`, SHA-256
+`91594f3ddcbeee8b87196d017cfedd8b5bff5b66622c6363b0228efa56d8d573`.
+Direct HEAD checks matched the pinned a33x device
+`a85c2a9652c93880a1c1474a098a72368d416e21`, s5e8825 common
+`33dd9c99978647a44aa22089db4830f95bb91fb8`, kernel
+`0f885d194baaed657ad05bc4ff0d8d5cd4a2f4e5`, a33x vendor
+`a7efdd5712ece827ad3632fd38c93dd267f58b51`, and common vendor
+`4a2275bfabd9fcce764bcf773a7d1e236ff67346` revisions. `repo status` reported
+a clean worktree.
+
+`./tools/a33xctl build-recovery` configured Android 16,
+`lineage_a33x-userdebug`, ARM64 `cortex-a55`, compiled 11,704 actions including
+the 5.10.239 s5e8825 kernel and A33 EU DTBOs, and completed in 10m19s. The
+ignored `out/target/product/a33x/recovery.img` is exactly 100,663,296 bytes,
+SHA-256
+`9bbf7983feb5dbb0854dc34448690c18c037273821c0eb45a210ac50218b48e9`.
+`file`, `unpack_bootimg`, and `avbtool info_image` report boot header v2,
+4,096-byte pages, the stock load addresses, a valid `recovery` hash descriptor,
+and a SHA256_RSA4096 AVB footer. Its signed content is 65,105,920 bytes.
+
+Exact FYH2 `recovery.img.lz4`, 56,973,312 bytes and SHA-256
+`cb7910d8ee1727ea6f2ba91ebf0f2daf818990ba3c57c6498e646905c574a442`,
+was extracted from the already verified AP archive and decoded outside Git.
+The decoded stock recovery is also exactly 100,663,296 bytes, SHA-256
+`49b0745a746aaa45ccba806479d6e9c2cc7f74f756d03e2390bdc6ffb3f78712`,
+and uses the same header version, page size, and load addresses.
+
+The vendor tree labels the SM-A336B radio set `A336BXXSEFYH2`. A streaming
+comparison used `tar -xOf <archive> <member>.lz4 | lz4 -d -c | sha1sum`
+inside the pinned container and compared each result with `sha1sum` on the
+pinned vendor file. All ten matched: `fld.bin` `1136f30e…`, `sboot.bin`
+`ef119131…`, `ldfw.img`
+`af59ba8a…`, `tzsw.img` `5d400680…`, `tzar.img` `3c3658ad…`, `harx.bin`
+`535423b4…`, `keystorage.bin` `b443046c…`, `uh.bin` `b560c96e…`,
+`modem.bin` `6d7d58bf…`, and `modem_debug.bin` `203a495a…`. This proves the
+install package's firmware input is the exact FYH2 generation already running
+on the handset, not merely a matching version label.
+
+**Failures, fixes, and rejected paths:** The first source sync was lengthy
+because partial-clone checkout fetched multi-gigabyte Clang and Rust packs;
+process, network, disk, and file-growth checks showed continuous progress, and
+the sync finished without retry. Containerized nsjail was unavailable, so the
+Android build disabled sandboxing inside the already isolated Podman build
+environment. Upstream optional-library, Python escape, deprecation, and depmod
+messages were warnings; the build exited 0. A temporary layout-audit helper
+was rejected before execution because it included recursive cleanup; the audit
+was rerun into a persistent ignored evidence directory without deletion.
+
+The decisive rejected path is flashing recovery alone. FYH2 `vbmeta.img`
+chains `recovery` at rollback-index location 1 to Samsung public-key SHA-1
+`557dab1a3e7a1b571d6d864f8414d0e39468f835`, which matches FYH2 recovery.
+The built recovery uses Lineage test-key SHA-1
+`2597c218aae470a130f61162feaae70afd97f011`. A generic
+verification-disabled vbmeta was also rejected because it would bypass the
+matched-chain proof and could strand stock Android.
+
+**Decision / remaining risk / next gate:** The source, compilation, partition
+size, header, DTB/DTBO, and recovery-footer gates pass, but the flash gate does
+not. The pinned device releasetools intentionally update `dtbo`, `vbmeta`, and
+`vendor_boot`. AOSP's non-A/B releasetools explicitly exclude recovery from the
+generated top-level vbmeta descriptors and instead give recovery its own AVB
+footer; Samsung stock currently does chain recovery from vbmeta, so the exact
+generated package and bootstrap set still require inspection rather than an
+assumption about bootloader behavior. `tools/a33xctl inspect-rom` now requires
+the package's boot, DTBO, recovery, vbmeta, and vendor-boot entries and enforces
+their exact live-PIT size ceilings. Build and inspect the complete Lineage
+install package and its boot-chain images. Only after their hashes, ZIP
+integrity, PIT fit, updater script, and AVB descriptors agree may the first
+custom flash proceed directly into recovery and full ROM installation. No SOS
+hardware, latency, thermal, suspend, or soak gate advanced.
+
+**Full-ROM build continuation and camera-shim fix:** `./tools/a33xctl
+build-rom` reused the pinned checkout and recovery output, then advanced through
+123,295 of 147,270 Ninja actions before stopping after 1h39m05s. The phone
+remained booted on unlocked FYH2 and no partition write occurred. `out/error.log`
+identified one failed prebuilt-ELF gate: the FYH2 `libexynoscamera3.so` imports
+`createScenarioOperator`, while the pinned `libepicoperator` shim exported
+`createOperator`. `llvm-nm -D --undefined-only` independently confirmed the
+blob import; the generated shim had no matching export.
+
+The maintainers' later commit
+`cb4ca128b0867d9cc92f22501430d0775018f5f1` contains exactly the required
+one-line rename. Added its audited backport as
+`aosp/patches/a33x-lineage-23.0/0001-s5e8825-fix-epicoperator-symbol.patch`,
+SHA-256 `a8dea6c8c01f3c8572f952b8455560c690e700626df0332bd391abc04b175c61`,
+and made `tools/a33xctl` idempotently apply it after sync and before either
+build target. `git apply --check`, the resulting source diff, `bash -n`, and
+`git diff --check` passed. Allowing arbitrary undefined symbols in the camera
+blob was rejected because it would suppress the build-time proof without
+providing the runtime symbol. Resume the cached full-ROM build, then run the
+unchanged ZIP, PIT-size, updater, firmware, and AVB inspection gates. No
+hardware or flash gate advanced.
+
+**Second cached-build stop and RIL dependency fix:** The resumed graph rebuilt
+the shim, exported `createScenarioOperator`, regenerated the successful camera
+ELF-gate timestamp, and then stopped after 2m26s at 9,544 of 23,990 remaining
+actions. `out/error.log` showed a distinct, precise mismatch: FYH2
+`libsec-ril.so` has `DT_NEEDED libprotobuf-cpp-full-21.7.so`, but its generated
+`Android.bp` declared generic `libprotobuf-cpp-full`. `llvm-readelf -d`
+confirmed the binary SONAME dependency, and the pinned vendor tree already
+contains and packages the `libprotobuf-cpp-full-21.7` module.
+
+The maintainers corrected that dependency in later commit
+`cf2678a02cedac743ddd00502fc390731a337301`. Added the applicable one-line
+backport as
+`aosp/patches/a33x-lineage-23.0/0002-s5e8825-match-libsec-ril-protobuf-soname.patch`,
+SHA-256 `18517d33328c5ffdf101bf8e8b1f25d5383d96ee50cfde5463a6d036da543795`,
+and extended the idempotent patch driver to map each patch to its exact source
+project. Disabling ELF checking was rejected because the declared dependency
+must match the blob's runtime loader contract. Patch application, source
+diffs, `bash -n`, and `git diff --check` passed. Resume the cache again; no
+device or flash gate advanced.
+
+**Third cached-build stop and LFS hydration gate:** The RIL ELF dependency
+check passed after the second backport. The next cached run stopped after
+2m31s at 3,208 of 14,475 actions because the ARM64 WebView APK was a 134-byte
+Git-LFS pointer, so `manifest_check`/`aapt2` correctly rejected it as an
+invalid ZIP. The adjacent `depmod` and Ninja `restat` messages were not the
+failed subcommand; `out/error.log` isolated WebView. A checkout-wide pointer
+scan found only the four architecture-specific WebView APKs plus a Rust test
+fixture; only ARM64 is in this product graph.
+
+Added `tools/a33xctl hydrate-lfs`, called after sync and before both build
+targets, to explicitly pull and verify the pinned ARM64 object while automatic
+LFS smudging remains disabled. `git lfs pull --include=webview.apk` materialized
+`external/chromium-webview/prebuilt/arm64/webview.apk` at 265,525,351 bytes,
+SHA-256 `68fa550b7a76e39f0382308d93b235c0623d032c0aa6c4a56fc02eedfdbe6342`;
+`unzip -tq` passed and the LFS-aware container reported a clean project. Resume
+the cache; no phone or flash gate advanced.
+
+**Full-ROM result and offline flash gate:** After LFS hydration, the final
+cached run completed 11,275 actions in 8m05s. `check_target_files_vintf.py`
+reported `COMPATIBLE`, the OTA generator signed the result, and Ninja exited
+0. The ignored install artifact is
+`lineage-23.0-20260815-UNOFFICIAL-a33x.zip`, 1,226,299,848 bytes, SHA-256
+`765e4a9045bcece5fba8777f041d9f86d5d8569870ca63a183483086c3451e20`.
+`unzip -tq` passed, and AOSP's `check_ota_package_signature.py` verified the
+whole-file signature against the packaged test certificate.
+
+Inspection found that late target-files image generation intentionally made
+the ZIP's `dtbo`, `vbmeta`, and `vendor_boot` differ from stale top-level
+product copies. The installer writes the ZIP copies, so `tools/a33xctl
+inspect-rom` now extracts those authoritative files to the ignored
+`/home/carlid/sos-samsung-work/lineage-a33x/lineage-23.0-20260815-UNOFFICIAL-a33x-bootstrap`
+directory, requires byte identity with the target-files images, and verifies
+that graph. The resulting bootstrap set is:
+
+| Image | Bytes | SHA-256 |
+| --- | ---: | --- |
+| `boot.img` | 67,108,864 | `d27ea3e21a8643631f744616b1b98f5fe949f5f43914a599c2758720cc191d9a` |
+| `dtbo.img` | 8,388,608 | `bb8b37acf0f6122228a203d9890ee2bcb45cf6860172f6fd5f86a0b032c99ba4` |
+| `recovery.img` | 100,663,296 | `fe53c96b609dfd4c3a4121551bd8b965990d43784783ffbc54d2f52d82b50800` |
+| `vbmeta.img` | 8,192 | `6061dd683af3d33a3ad01a2d4fc05e2e51a8f0d63aa4bc05d8bb7f1eb5e966b8` |
+| `vendor_boot.img` | 33,554,432 | `053d9b6cab655ebdd89cb6895aae3667df7c44b33e020132e14ed03c77b2b82d` |
+
+All five fit their exact live-PIT ceilings. `avbtool verify_image` passed each
+footer. Recovery is independently SHA256_RSA4096-signed with key SHA-1
+`2597c218aae470a130f61162feaae70afd97f011`; top `vbmeta` is algorithm
+`NONE`, flags `0`, rollback index `1769904000`, intentionally omits recovery,
+and binds the package's boot, DTBO, vendor boot, ODM, product, system,
+system_ext, vendor, and vendor_dlkm images. Full graph verification passed all
+three hash descriptors and all six dm-verity hashtrees.
+
+The updater asserts `a33x`, patches the dynamic partitions, writes boot,
+DTBO, vbmeta, and vendor boot, and does not write recovery. Its SM-A336B
+firmware clause runs only when `ro.boot.bootloader` is not
+`A336BXXSEFYH2`; the live property is exact FYH2, so it will skip that clause.
+Independent SHA-1 reads of all ten firmware entries in the finished ZIP still
+match the already verified stock FYH2 bytes. A final ADB preflight reported
+`SM-A336B`, `A336BXXSEFYH2`, model property `SM-A336B`, unlocked boot state,
+and 100% battery.
+
+The offline build, package-signature, updater, firmware, PIT, and AVB gates
+pass. The next gate is one no-repartition/no-PIT samloader session that writes
+the five authoritative bootstrap images with automatic reboot disabled,
+followed immediately by a hardware-key transition into Lineage recovery,
+format-data, and sideload of the verified ZIP. This first custom write is
+expected to irreversibly trip Knox; the owner already accepted that risk. No
+physical Lineage or SOS hardware gate has advanced yet.
+
+**First custom bootstrap flash and recovery boot:** Immediately before the
+write, `sha256sum -c` revalidated all five authoritative bootstrap files; ADB
+revalidated unlocked FYH2, `SM-A336B`, and sufficient battery, and the pinned
+samloader binary remained SHA-256
+`8a12712a530aa404df50df4fef0b16b7e0081b5362a3a34c752472d79c61f288`.
+The phone entered a fresh Download Mode session. One samloader invocation used
+explicit `BOOT`, `VENDOR_BOOT`, `DTBO`, `RECOVERY`, and final `VBMETA`
+partition mappings with `--no-reboot`. It supplied no PIT, repartition,
+skip-size-check, archive, EFS, or userdata option. The in-session live-PIT read
+passed; all five uploads returned success; the tool ended the session and
+exited 0.
+
+The owner then held Side + Volume Down until black and immediately switched to
+Side + Volume Up with USB connected. The handset booted the newly built
+Lineage Recovery instead of stock Android. This passes the matched-bootstrap
+write and first custom-recovery boot gates. Recovery's main menu did not expose
+an ADB USB gadget, which is expected before selecting ADB sideload and is not a
+boot failure. The next gate is recovery format-data, ADB sideload of the exact
+verified ZIP, and first Lineage system boot. Knox state has not yet been read
+back; no ROM or SOS hardware gate has advanced.
+
+**Recovery USB/watchdog repair and first Lineage boot:** The owner completed
+Recovery's factory-reset/format-data operation. Selecting `Apply update` →
+`Apply from ADB` then exposed no USB device at all: repeated `adb devices` and
+`lsusb` checks remained empty after cable, connector-orientation, and direct
+host-port retries. The handset also eventually showed a green screen and
+rebooted back into Recovery. These results rejected an ADB-server or Linux
+permissions explanation and implicated the recovery image itself.
+
+Offline ramdisk inspection reproduced the defect. Recovery's generic
+`system/etc/init/hw/init.rc` imports `/init.recovery.${ro.hardware}.rc`, but
+`cpio -it` proved the built ramdisk had no `init.recovery.s5e8825.rc`. The
+pinned common tree instead packaged `init.s5e8825.recovery.rc` only under
+`/vendor/etc/init`, which is unavailable to that early recovery import. That
+file sets `sys.usb.configfs=1`, selects controller `13200000.dwc3`, and starts
+`watchdogd`, accounting for both observed symptoms.
+
+Added the local backport
+`aosp/patches/a33x-lineage-23.0/0003-s5e8825-package-recovery-init.patch`,
+SHA-256 `51557dbd9e58d1788b505cf87d267ea260c362f9311eef2d9c62d743e906b2d4`,
+and extended `tools/a33xctl apply-patches` to install it idempotently. The
+patch copies the existing source file to the exact imported recovery-ramdisk
+path. The cached `recoveryimage` rebuild completed 42 Ninja actions in 2m34s.
+The corrected ignored artifact is
+`/home/carlid/sos-samsung-work/lineage-a33x/recovery-fix-20260815/recovery.img`,
+100,663,296 bytes, SHA-256
+`d751d08b12c80861a5e0e7800e7df5eb189a94f3d7fda31fdfdb36dce04c7a6c`.
+It fits the exact live PIT, and `avbtool verify_image` passed its
+SHA256_RSA4096 footer and payload hash. `unpack_bootimg`, `lz4`, `cpio`, and
+`cmp` proved that `/init.recovery.s5e8825.rc` is present and byte-identical to
+the intended source.
+
+The first `samloader flash --wait` attempt rejected the absent device and
+returned before a session or write; it was discarded. After an explicit USB
+watcher detected fresh Download Mode `04e8:685d`, one no-auto-reboot samloader
+session downloaded the live PIT and uploaded only `RECOVERY` successfully. It
+used no PIT input, repartition, archive, size-check bypass, or other partition.
+The corrected recovery booted and immediately enumerated as `18d1:d001`; ADB
+reported serial `RFCT50EGFCN` and expected `unauthorized` state on the main
+menu. Selecting sideload changed that same device to `sideload` with product
+`a33xnsxx`, model `SM_A336B`, and device `a33x`, proving the USB repair on the
+physical handset.
+
+Immediately before transfer, SHA-256 revalidated the exact signed
+1,226,299,848-byte Lineage ZIP. `adb sideload` served the package through the
+usual displayed 47% boundary and exited normally with `Total xfer: 1.00x`;
+Recovery returned to its main ADB state without a transport or installer
+error. The owner then selected system boot and reported the handset booted
+into LineageOS. Format-data, full-package sideload, and first Lineage system
+boot gates therefore pass on the SM-A336B. The OTA intentionally did not write
+recovery, so the corrected image remains installed. The already-built ZIP
+still contains the earlier recovery entry; regenerate and reinspect the full
+package before any later distribution or SOS image flash. Android property
+read-back, Knox state, and Wi-Fi/Bluetooth/audio/camera/NFC/modem/UDFPS,
+suspend, thermal, latency, and SOS hardware gates remain pending.
+
+**Lineage read-back, hardware baseline, and flash-ready SOS product:** Normal
+ADB read-back from the booted handset reports `SM-A336B` / `a33x`, Android 16
+API 36, `lineage-23.0-20260815-UNOFFICIAL-a33x`, kernel
+`5.10.239-android12-9`, FYH2 bootloader, rollback level 14, unlocked/orange
+verified boot, Knox warranty bit `1`, SELinux `Enforcing`, and encrypted FBE.
+The system patch is 2026-02-01 and retained vendor patch is 2025-10-01. The
+stock-looking FYH2 `ro.build.fingerprint` is an intentional device-tree spoof;
+partition build properties independently identify Android 16 and Lineage.
+Battery was 99%, USB-powered, and 31.8 C during this read-back.
+
+The baseline CameraService enumerated camera IDs `0`, `1`, `2`, `3`, and `60`.
+Aperture opened both primary cameras without a HAL death: the rear preview
+produced frames, while the front preview was visibly correct. The ignored
+screenshots are `evidence-20260815/camera-rear.png`, SHA-256
+`4ccb34a3dc0dff6d0efd1a64a39cc9e008dd2bdf63b4bb38c39b3c6cf9e590fb`,
+and `camera-front.png`, SHA-256
+`3d2f2beed41ca4f59ab2a12f1891a96c02b8064d3484f0bfd5f5982a6f8c2d0a`.
+Fingerprint HAL sensor 0 enumerated with no HAL death, NFC was on, Bluetooth
+was on as `Galaxy A33 5G` with no crash, and the FYH2 modem registered the Salt
+SIM in slot 1 on LTE in Switzerland. Wi-Fi was enabled but not associated;
+fingerprint enrollment, actual audio, calls/data, suspend, thermal, and soak
+remain untested and are not advanced by this smoke check.
+
+Added the ARM64 Samsung SOS product at `aosp/device/sos/a33x` and corresponding
+`tools/a33xctl stage-sos`, `build-sos`, and `inspect-sos` gates. It inherits the
+reproduced a33x product, retains Launcher3QuickStep for SystemUI Recents, and
+adds the platform-signed privileged SOS HOME, ARM64 on-device authority,
+bootstrap experience, init service, product properties, and dedicated
+enforcing `sos_shell_app` / `sos_authority` policy. The staged input APK is
+38,244,027 bytes, SHA-256
+`0add171a0673f7f8bc840d15d1ea94a3c6790b44e3d54c5f5ff2e556ad356938`,
+and contains only ARM64 native libraries with its priority-1000 HOME alias
+enabled. The authority is 1,216,976 bytes, SHA-256
+`d4e25d1e5be06b5c4b7cf2fd159f7a9f593788f37626e0b49b278faeaa2b8158`;
+the 6,080-byte bootstrap is SHA-256
+`a9bb30563d21d05912e9b58e24d8455088686f41c82058ec9c566a32758193f4`.
+
+The first SOS build stopped safely at policy compilation because the Android
+17 Cuttlefish policy used `priv_app_domain()`, a macro absent from LineageOS
+23. Inspection of Lineage's policy model showed its custom privileged apps use
+`app_domain` plus explicit grants. The port now follows that model; permissive
+policy and broad allow rules were rejected. The resumed build compiled all
+SELinux compatibility/context/APEX tests, completed 12,924 actions in 3m51s,
+reported VINTF `COMPATIBLE`, and produced the signed ignored
+`lineage-23.0-20260815-UNOFFICIAL-sos_a33x.zip`: 1,247,998,781 bytes,
+SHA-256
+`0fb4d1139475b4f53b64f555db34851ab4a55251f578db5efd804984f781cf2a`.
+
+`./tools/a33xctl inspect-sos` passed ZIP integrity and the whole-package
+signature, selected the SOS package by exact target suffix, proved package /
+target-files byte identity for all five bootstrap images, enforced their live
+PIT ceilings, and verified the complete AVB graph. It also unpacked the
+package's 100,663,296-byte recovery and proved the repaired
+`init.recovery.s5e8825.rc` is present. The installed APK is 41,536,658 bytes
+after platform signing, SHA-256
+`d5ad8b059b30931e30b3e0938b1a8d566937a849a9b35abb35fe4081db77a36d`;
+it remains ARM64-only and HOME-enabled. The packaged authority and bootstrap
+match their staged/source hashes exactly, both SOS product properties are
+present, and compiled seapp/file contexts contain the intended domains and
+labels. The offline SOS flash gate passes. Next, sideload this exact ZIP from
+repaired recovery without formatting data, boot it, and require physical proof
+of SOS as HOME, on-device activation with no `adb reverse`, enforcing runtime
+domains, authority/app restart recovery, and preserved hardware services
+before advancing the SOS hardware gate.
+
+**First SOS boot, enforcing-policy failure, and corrected OTA:** Recovery
+installed the 1,247,998,781-byte SOS OTA above with `Total xfer: 1.00x`; no
+format-data operation was performed. After reboot the physical phone reached
+`sys.boot_completed=1` as
+`lineage-23.0-20260815-UNOFFICIAL-sos_a33x`, retained FYH2, unlocked/orange
+AVB, warranty bit `1`, and SELinux `Enforcing`, and exposed both SOS product
+properties. PackageManager found the system_ext privileged APK with
+`primaryCpuAbi=arm64-v8a` and resolved priority-1000 HOME to
+`dev.sos.experience/.SosHomeActivity`. Init kept `sos_authority` running as
+PID 945 in `u:r:sos_authority:s0`; `adb reverse --list` was empty.
+
+The HOME itself failed the runtime gate. Three launches died before attaching
+to ActivityManager. Crash-buffer and kernel audit evidence showed the single
+root cause: enforcing SELinux denied `service_manager find` on
+`activity_service` from `u:r:sos_shell_app:s0`, after which ActivityThread
+received a null ActivityManager binder and crashed. This was not a boot-chain,
+APK-ABI, HOME-resolution, or authority failure.
+
+Source inspection established why the offline policy compiler could not catch
+the behavioral mismatch. LineageOS 23's `app_domain()` supplies only the base
+app attribute and isolation neverallows; its complete framework, network,
+Bluetooth, and privileged-service contract is attached to the concrete
+canonical `priv_app` domain. Android 17's `priv_app_all` attribute, which
+allows a package-specific domain to inherit that contract on Cuttlefish, is
+absent. Iteratively copying framework allows, running permissive, and adding a
+wildcard service rule were rejected. The package-specific seapp rule now maps
+this platform-signed system_ext privileged package to Lineage's canonical
+enforcing `priv_app` domain, while SOS policy adds only its two labeled TCP
+ports.
+
+The cached rebuild compiled 292 affected actions in 3m48s. All neverallow,
+compatibility, context, APEX-policy, and VINTF checks passed. The corrected
+signed OTA is 1,247,480,012 bytes, SHA-256
+`6476f3a80556708491992b8a88b305d353e03d4a3390346f5062746d9b3f61ce`.
+`./tools/a33xctl inspect-sos` again passed ZIP and whole-package signatures,
+all PIT ceilings, package/target-files image identity, the complete AVB graph,
+repaired recovery ramdisk, ARM64/HOME component checks, exact authority and
+bootstrap identity, and compiled contexts. The new system_ext seapp contexts
+are 525 bytes, SHA-256
+`065dde02949dfcca65a27825b3f63a8da5bfadfc55b6218a1a28a99b7f481dde`,
+and contain the exact package-to-`priv_app` assignment. This corrected artifact
+is the only SOS ZIP approved and is the one installed below; the earlier hash
+is retained solely as failed historical evidence.
+
+**Corrected SOS physical runtime, live revision, and restart gate
+(2026-08-15):** Recovery accepted the corrected 1,247,480,012-byte OTA above
+with `adb sideload` reporting `Total xfer: 1.00x`; data was not formatted.
+After reboot the SM-A336B reported
+`lineage-23.0-20260815-UNOFFICIAL-sos_a33x`, Android 16 / API 36, FYH2,
+unlocked/orange AVB, warranty bit `1`, encrypted FBE, and SELinux
+`Enforcing`. Priority-1000 HOME resolved to
+`dev.sos.experience/.SosHomeActivity`; `ro.sos.authority=on-device` and
+`ro.sos.home=dev.sos.experience` were present. The authority ran as PID 938
+in `u:r:sos_authority:s0`, and the application ran as PID 2061 in the
+canonical enforcing `u:r:priv_app:s0:c154,c256,c512,c768` domain. The app
+selected the Mali-G68 Vulkan adapter, opened its 1080x2400 window, logged a
+healthy five-second event-loop heartbeat, and used its TCP provider transport
+with an empty `adb reverse --list`. The ignored first healthy HOME screenshot
+is `evidence-20260815/sos-home-corrected.png`, 171,681 bytes, SHA-256
+`67ed68a8f883bb9c3fedfe27759b65b29c3c9d7e99c63f050baadfd733cc4364`.
+
+The localhost authority `current` request established bootstrap revision
+`b0d20599c81f62db31cfffd4883289e64a12ee9ada6f20a1c92ef518277e9be4`,
+state revision `0`, and source SHA-256
+`a9bb30563d21d05912e9b58e24d8455088686f41c82058ec9c566a32758193f4`.
+The normal `run-as` candidate-copy helper could not traverse this package's
+canonical `privapp_data_file` directory; audit evidence identified that as a
+test-tooling limitation in Lineage's `runas` policy, not an SOS service
+denial. Adding product policy solely for `run-as`, weakening the app domain,
+or issuing authority mutations by hand were rejected. Rooted debugging was
+temporarily enabled from Developer Options, `adb root` copied the candidate
+with UID/GID 10154, mode 0600, and the exact
+`privapp_data_file:s0:c154,c256,c512,c768` label, and the presentation path
+remained the component that requested validation and activation.
+
+The candidate was `experiences/timeflow.luau`, 5,678 bytes, SHA-256
+`4983de6756ef4b21ba6a0eddaed9f2a01f4363b0ab18d0292f55987f49f7ceb9`.
+`am start -W -a android.intent.action.VIEW -d sos://reload` returned a hot,
+successful launch. Runtime evidence reported `candidate_validated` with
+7,204 us compile, 5,493 us render, and 12,716 us worker-total time, followed
+by `android_authority_revision_activated`. The authority returned new
+revision
+`32fa86a739260e3b13a7bf7f4bc9639708a7d9517d852c6bfe71acb13a552f59`,
+state revision `1`, and the candidate source hash while the application
+remained PID 2061. The visibly distinct Timeflow screenshot is
+`evidence-20260815/sos-timeflow-activated.png`, 178,465 bytes, SHA-256
+`ca07d68fabaf65412598dd4c5592d68416c2796a0119548ce2621eda0bef985d`.
+
+Two independent forced-death tests passed on hardware. Killing authority PID
+938 caused init to start PID 2946; application PID 2061 stayed alive and a
+fresh localhost request returned the exact activated revision and state.
+Killing application PID 2061 then produced PID 3000; authority PID 2946
+stayed alive, SOS resumed as the focused HOME, selected Mali-G68 Vulkan,
+reported its live window and runtime worker in 9,104 us, and reattached to the
+same revision. The final screenshot after both restarts is
+`evidence-20260815/sos-timeflow-after-restarts.png`, 173,926 bytes, SHA-256
+`3bb3189d0602011ac94347dbdb8239cfcd24ec6765333940a22fcfb4261c7042`.
+
+Rooted debugging was then switched off in Developer Options; UI automation
+read `checked=false`, `adb root` was rejected with `ADB Root access is
+disabled by system setting`, and `adb shell id` returned UID 2000 in
+`u:r:shell:s0`. Final read-back still showed SOS HOME focused, the two
+expected enforcing process labels, SELinux `Enforcing`, the activated
+revision, and no reverse mapping. The post-restart log scan found no SOS AVC,
+fatal exception, or ANR. CameraService still enumerated five devices,
+fingerprint sensor 0 reported zero HAL deaths, NFC was on, Bluetooth was on,
+and the Salt SIM remained registered for voice and data on LTE. This completes
+the physical SOS HOME, on-device activation, persistence, enforcing-domain,
+process-recovery, and service-preservation smoke gates. Actual audio,
+fingerprint enrollment, Wi-Fi association, calls/data transfer,
+suspend/resume, thermal behavior, and a longer soak remain open and must not
+be inferred from this smoke test.

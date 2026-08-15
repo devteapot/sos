@@ -1,0 +1,6 @@
+# LineageOS 23 expresses the complete platform privileged-app contract through
+# its concrete priv_app domain; unlike Android 17 it has no priv_app_all
+# attribute that a package-specific domain can inherit. Keep the package-name
+# seapp rule so the assignment is explicit, then add only the two SOS endpoints
+# to the canonical domain's existing network permissions.
+allow priv_app { sos_provider_port sos_revision_port }:tcp_socket name_connect;

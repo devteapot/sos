@@ -1,0 +1,453 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+SOS_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+LINEAGE_ROOT="${SOS_LINEAGE_ROOT:-$HOME/dev/lineage-a33x}"
+LINEAGE_IMAGE="${SOS_LINEAGE_BUILD_IMAGE:-localhost/sos-lineage-build:ubuntu-24.04}"
+LINEAGE_MANIFEST="https://github.com/LineageOS/android.git"
+LINEAGE_MANIFEST_REV="2a46cce5dff3a9a3ab98b3c25a7564084b34cd1f"
+LINEAGE_LOCAL_MANIFEST="$SOS_ROOT/aosp/manifests/a33x-lineage-23.0.xml"
+LINEAGE_PATCH_DIR="$SOS_ROOT/aosp/patches/a33x-lineage-23.0"
+LINEAGE_SOS_DEVICE="sos_a33x"
+LINEAGE_SOS_OVERLAY_SOURCE="$SOS_ROOT/aosp/device/sos/a33x"
+LINEAGE_SOS_OVERLAY_DESTINATION="$LINEAGE_ROOT/device/sos/a33x"
+LINEAGE_JOBS="${SOS_LINEAGE_JOBS:-8}"
+LINEAGE_SYNC_JOBS="${SOS_LINEAGE_SYNC_JOBS:-8}"
+LINEAGE_CCACHE="${SOS_LINEAGE_CCACHE:-$HOME/dev/.cache/lineage-a33x-ccache}"
+LINEAGE_CCACHE_SIZE="${SOS_LINEAGE_CCACHE_SIZE:-50G}"
+
+info() {
+  printf '==> %s\n' "$*"
+}
+
+fail() {
+  printf 'error: %s\n' "$*" >&2
+  exit 1
+}
+
+require_command() {
+  command -v "$1" >/dev/null 2>&1 || fail "required command not found: $1"
+}
+
+container() {
+  require_command podman
+  podman run --rm \
+    --security-opt label=disable \
+    --pids-limit=-1 \
+    --network host \
+    --volume "$HOME/dev:$HOME/dev" \
+    --workdir "$LINEAGE_ROOT" \
+    --env "HOME=$HOME" \
+    --env "USER=${USER:-$(id -un)}" \
+    --env "USE_CCACHE=1" \
+    --env "CCACHE_EXEC=/usr/bin/ccache" \
+    --env "CCACHE_DIR=$LINEAGE_CCACHE" \
+    "$LINEAGE_IMAGE" \
+    "$@"
+}
+
+image() {
+  [[ "$#" -eq 0 ]] || fail "usage: ./tools/a33xctl image"
+  require_command podman
+  info "building reproducible LineageOS host image $LINEAGE_IMAGE"
+  podman build --tag "$LINEAGE_IMAGE" --file "$SOS_ROOT/tools/a33x/Containerfile" \
+    "$SOS_ROOT/tools/a33x"
+}
+
+doctor() {
+  [[ "$#" -eq 0 ]] || fail "usage: ./tools/a33xctl doctor"
+  require_command podman
+  [[ "$(uname -m)" == "x86_64" ]] || fail "LineageOS host must be x86-64"
+  local available_kb memory_kb
+  available_kb="$(df --output=avail -k "$HOME/dev" | tail -n 1 | tr -d ' ')"
+  [[ "$available_kb" =~ ^[0-9]+$ && "$available_kb" -ge 314572800 ]] || \
+    fail "a33x checkout/build needs at least 300 GiB free below $HOME/dev"
+  memory_kb="$(awk '/^MemTotal:/ { print $2 }' /proc/meminfo)"
+  [[ "$memory_kb" =~ ^[0-9]+$ && "$memory_kb" -ge 60000000 ]] || \
+    fail "a33x build needs at least 60 GB RAM"
+  podman image exists "$LINEAGE_IMAGE" || fail "run ./tools/a33xctl image first"
+  container repo version
+  info "a33x build-host gate passed"
+  printf '    root:       %s\n' "$LINEAGE_ROOT"
+  printf '    manifest:   %s\n' "$LINEAGE_MANIFEST_REV"
+  printf '    jobs:       %s\n' "$LINEAGE_JOBS"
+  printf '    sync jobs:  %s\n' "$LINEAGE_SYNC_JOBS"
+  printf '    disk free:  %s kB\n' "$available_kb"
+  printf '    memory:     %s kB\n' "$memory_kb"
+}
+
+init() {
+  [[ "$#" -eq 0 ]] || fail "usage: ./tools/a33xctl init"
+  [[ ! -e "$LINEAGE_ROOT/.repo" ]] || fail "$LINEAGE_ROOT is already initialized"
+  mkdir -p "$LINEAGE_ROOT"
+  info "initializing pinned LineageOS manifest $LINEAGE_MANIFEST_REV"
+  container repo init \
+    --partial-clone \
+    --no-use-superproject \
+    --current-branch \
+    --no-tags \
+    --manifest-url "$LINEAGE_MANIFEST" \
+    --manifest-branch "$LINEAGE_MANIFEST_REV"
+  mkdir -p "$LINEAGE_ROOT/.repo/local_manifests"
+  install -m 0644 "$LINEAGE_LOCAL_MANIFEST" \
+    "$LINEAGE_ROOT/.repo/local_manifests/a33x-lineage-23.0.xml"
+}
+
+sync_source() {
+  [[ "$#" -eq 0 ]] || fail "usage: ./tools/a33xctl sync"
+  [[ -d "$LINEAGE_ROOT/.repo" ]] || fail "run ./tools/a33xctl init first"
+  info "syncing pinned a33x LineageOS source graph"
+  container repo sync \
+    -c \
+    --no-tags \
+    --no-clone-bundle \
+    --no-interleaved \
+    --jobs-network="$LINEAGE_SYNC_JOBS" \
+    --jobs-checkout=1 \
+    --fail-fast
+  container repo manifest -r -o .repo/sos-a33x-resolved-manifest.xml
+  sha256sum "$LINEAGE_ROOT/.repo/sos-a33x-resolved-manifest.xml"
+  hydrate_source_lfs
+  apply_source_patches
+}
+
+hydrate_source_lfs() {
+  [[ "$#" -eq 0 ]] || fail "usage: ./tools/a33xctl hydrate-lfs"
+  local project="$LINEAGE_ROOT/external/chromium-webview/prebuilt/arm64"
+  local artifact="$project/webview.apk"
+  local expected_bytes=265525351
+  local expected_sha256=68fa550b7a76e39f0382308d93b235c0623d032c0aa6c4a56fc02eedfdbe6342
+  [[ -d "$project" ]] || fail "ARM64 WebView checkout missing; run init and sync first"
+
+  if [[ ! -f "$artifact" ]] || \
+      [[ "$(stat --printf='%s' "$artifact")" != "$expected_bytes" ]] || \
+      [[ "$(sha256sum "$artifact" | cut -d' ' -f1)" != "$expected_sha256" ]]; then
+    info "hydrating pinned ARM64 WebView Git-LFS object"
+    container git -C "$project" lfs pull --include=webview.apk --exclude=
+  fi
+
+  [[ -f "$artifact" ]] || fail "ARM64 WebView artifact missing after Git-LFS pull"
+  [[ "$(stat --printf='%s' "$artifact")" == "$expected_bytes" ]] || \
+    fail "ARM64 WebView artifact has unexpected size"
+  [[ "$(sha256sum "$artifact" | cut -d' ' -f1)" == "$expected_sha256" ]] || \
+    fail "ARM64 WebView artifact failed SHA-256 verification"
+  info "ARM64 WebView Git-LFS gate passed"
+}
+
+apply_source_patches() {
+  [[ "$#" -eq 0 ]] || fail "usage: ./tools/a33xctl apply-patches"
+  local -a projects=(
+    device/samsung/s5e8825-common
+    vendor/samsung/s5e8825-common
+    device/samsung/s5e8825-common
+  )
+  local -a patches=(
+    0001-s5e8825-fix-epicoperator-symbol.patch
+    0002-s5e8825-match-libsec-ril-protobuf-soname.patch
+    0003-s5e8825-package-recovery-init.patch
+  )
+  local index project patch
+  for index in "${!patches[@]}"; do
+    project="$LINEAGE_ROOT/${projects[$index]}"
+    patch="$LINEAGE_PATCH_DIR/${patches[$index]}"
+    [[ -d "$project/.git" || -f "$project/.git" ]] || \
+      fail "source checkout missing: ${projects[$index]}"
+    [[ -f "$patch" ]] || fail "required source patch missing: $patch"
+
+    if git -C "$project" apply --reverse --check "$patch" 2>/dev/null; then
+      info "source patch already applied: $(basename "$patch")"
+    elif git -C "$project" apply --check "$patch"; then
+      git -C "$project" apply "$patch"
+      info "applied source patch: $(basename "$patch")"
+    else
+      fail "source patch cannot be applied cleanly: $patch"
+    fi
+  done
+}
+
+stage_sos() {
+  [[ "$#" -eq 0 ]] || fail "usage: ./tools/a33xctl stage-sos"
+  local apk="$SOS_ROOT/artifacts/sos-experience.apk"
+  local authority="$SOS_ROOT/target/aarch64-linux-android/release/sos-android-system-authority"
+  local bootstrap="$SOS_ROOT/experiences/default.luau"
+  [[ -f "$LINEAGE_ROOT/build/envsetup.sh" ]] || fail "run init and sync first"
+  [[ -f "$apk" ]] || \
+    fail "ARM64 SOS APK missing; run ./tools/sosctl m1-build --abi arm64-v8a --home"
+  [[ -x "$authority" ]] || fail "ARM64 SOS authority binary missing"
+  [[ -f "$bootstrap" ]] || fail "SOS bootstrap experience missing"
+  [[ "$LINEAGE_SOS_OVERLAY_DESTINATION" == "$LINEAGE_ROOT/device/sos/a33x" ]] || \
+    fail "refusing to stage outside the managed a33x SOS destination"
+  unzip -Z1 "$apk" | grep -Fx lib/arm64-v8a/libsos_experience.so >/dev/null || \
+    fail "SOS APK does not contain the ARM64 experience library"
+  file "$authority" | grep -F 'ARM aarch64' >/dev/null || \
+    fail "SOS authority is not an AArch64 ELF"
+
+  info "staging the ARM64 SOS product in $LINEAGE_SOS_OVERLAY_DESTINATION"
+  mkdir -p "$LINEAGE_SOS_OVERLAY_DESTINATION/prebuilts/arm64"
+  rsync -a --delete \
+    --exclude prebuilts \
+    "$LINEAGE_SOS_OVERLAY_SOURCE/" "$LINEAGE_SOS_OVERLAY_DESTINATION/"
+  install -m 0644 "$apk" \
+    "$LINEAGE_SOS_OVERLAY_DESTINATION/prebuilts/SosShell.apk"
+  install -m 0755 "$authority" \
+    "$LINEAGE_SOS_OVERLAY_DESTINATION/prebuilts/arm64/sos-android-system-authority"
+  install -m 0644 "$bootstrap" \
+    "$LINEAGE_SOS_OVERLAY_DESTINATION/prebuilts/default.luau"
+  sha256sum \
+    "$LINEAGE_SOS_OVERLAY_DESTINATION/prebuilts/SosShell.apk" \
+    "$LINEAGE_SOS_OVERLAY_DESTINATION/prebuilts/arm64/sos-android-system-authority" \
+    "$LINEAGE_SOS_OVERLAY_DESTINATION/prebuilts/default.luau"
+}
+
+build_recovery() {
+  [[ "$#" -eq 0 ]] || fail "usage: ./tools/a33xctl build-recovery"
+  [[ -f "$LINEAGE_ROOT/build/envsetup.sh" ]] || fail "run init and sync first"
+  hydrate_source_lfs
+  apply_source_patches
+  mkdir -p "$LINEAGE_CCACHE"
+  info "building the pinned a33x recovery image"
+  container bash -lc \
+    "ccache -M '$LINEAGE_CCACHE_SIZE' && source build/envsetup.sh && breakfast a33x && m -j'$LINEAGE_JOBS' recoveryimage"
+}
+
+build_rom() {
+  [[ "$#" -eq 0 ]] || fail "usage: ./tools/a33xctl build-rom"
+  [[ -f "$LINEAGE_ROOT/build/envsetup.sh" ]] || fail "run init and sync first"
+  hydrate_source_lfs
+  apply_source_patches
+  mkdir -p "$LINEAGE_CCACHE"
+  info "building the pinned a33x LineageOS install package"
+  container bash -lc \
+    "ccache -M '$LINEAGE_CCACHE_SIZE' && source build/envsetup.sh && breakfast a33x && m -j'$LINEAGE_JOBS' bacon"
+}
+
+build_sos() {
+  [[ "$#" -eq 0 ]] || fail "usage: ./tools/a33xctl build-sos"
+  [[ -f "$LINEAGE_ROOT/build/envsetup.sh" ]] || fail "run init and sync first"
+  hydrate_source_lfs
+  apply_source_patches
+  "$SOS_ROOT/tools/sosctl" m1-build --abi arm64-v8a --home
+  info "building the ARM64 on-device SOS authority"
+  (
+    cd "$SOS_ROOT"
+    cargo ndk -t arm64-v8a -P 31 build \
+      -p android-system-authority \
+      --bin sos-android-system-authority \
+      --release \
+      --locked
+  )
+  stage_sos
+  mkdir -p "$LINEAGE_CCACHE"
+  info "building SOS physical-device target lineage_$LINEAGE_SOS_DEVICE"
+  container bash -lc \
+    "ccache -M '$LINEAGE_CCACHE_SIZE' && source build/envsetup.sh && breakfast '$LINEAGE_SOS_DEVICE' && m -j'$LINEAGE_JOBS' bacon"
+}
+
+inspect_recovery() {
+  [[ "$#" -eq 0 ]] || fail "usage: ./tools/a33xctl inspect-recovery"
+  local image="$LINEAGE_ROOT/out/target/product/a33x/recovery.img"
+  [[ -f "$image" ]] || fail "recovery image missing; run build-recovery first"
+  [[ "$(stat --printf='%s' "$image")" == 100663296 ]] || \
+    fail "recovery image does not match the live SM-A336B PIT size"
+  stat --printf='recovery=%n\nbytes=%s\n' "$image"
+  sha256sum "$image"
+  file "$image"
+  container bash -lc \
+    "set -euo pipefail
+     image='$image'
+     inspect_dir=\$(mktemp -d /tmp/a33x-recovery-inspect.XXXXXX)
+     trap 'rm -rf -- \"\$inspect_dir\"' EXIT
+     out/host/linux-x86/bin/avbtool info_image --image \"\$image\"
+     out/host/linux-x86/bin/avbtool verify_image \
+       --image \"\$image\" \
+       --key external/avb/test/data/testkey_rsa4096.pem
+     out/host/linux-x86/bin/unpack_bootimg \
+       --boot_img \"\$image\" --out \"\$inspect_dir\" >/dev/null
+     out/host/linux-x86/bin/lz4 -dc \"\$inspect_dir/ramdisk\" | \
+       cpio -it 2>/dev/null | grep -Fx init.recovery.s5e8825.rc
+     out/host/linux-x86/bin/lz4 -dc \"\$inspect_dir/ramdisk\" | \
+       cpio -i --to-stdout init.recovery.s5e8825.rc 2>/dev/null | \
+       cmp - device/samsung/s5e8825-common/configs/init/init.s5e8825.recovery.rc
+     printf 'recovery_device_init=VERIFIED\\n'"
+}
+
+inspect_rom() {
+  [[ "$#" -le 1 ]] || fail "usage: ./tools/a33xctl inspect-rom [target-product]"
+  local product_out="$LINEAGE_ROOT/out/target/product/a33x"
+  local package package_name package_suffix bootstrap_dir target_files
+  local target_product="${1:-lineage_a33x}"
+  case "$target_product" in
+    lineage_a33x) package_suffix=a33x ;;
+    lineage_sos_a33x) package_suffix=sos_a33x ;;
+    *) fail "unsupported a33x target product: $target_product" ;;
+  esac
+  package="$(find "$product_out" -maxdepth 1 -type f \
+    -name "lineage-23.0-*-UNOFFICIAL-${package_suffix}.zip" -printf '%T@ %p\n' | \
+    sort -nr | head -n 1 | cut -d' ' -f2-)"
+  [[ -n "$package" && -f "$package" ]] || fail "install package missing; run build-rom first"
+  package_name="$(basename "$package" .zip)"
+  bootstrap_dir="${SOS_SAMSUNG_WORK:-$HOME/sos-samsung-work}/lineage-a33x/${package_name}-bootstrap"
+  target_files="$product_out/obj/PACKAGING/target_files_intermediates/${target_product}-target_files/IMAGES"
+  [[ -d "$target_files" ]] || fail "target-files image directory missing"
+  stat --printf='package=%n\nbytes=%s\n' "$package"
+  sha256sum "$package"
+  unzip -tq "$package"
+  local entry
+  for entry in \
+    META-INF/com/google/android/update-binary \
+    META-INF/com/google/android/updater-script \
+    boot.img dtbo.img recovery.img vbmeta.img vendor_boot.img; do
+    [[ "$(unzip -Z1 "$package" "$entry")" == "$entry" ]] || \
+      fail "required install-package entry missing: $entry"
+  done
+  container python3 build/make/tools/releasetools/check_ota_package_signature.py \
+    build/make/target/product/security/testkey.x509.pem "$package"
+
+  mkdir -p "$bootstrap_dir"
+  unzip -oq "$package" \
+    boot.img dtbo.img recovery.img vbmeta.img vendor_boot.img \
+    -d "$bootstrap_dir"
+  printf 'bootstrap_dir=%s\n' "$bootstrap_dir"
+
+  # Exact byte ceilings from the verified 48-entry SM-A336B live PIT.
+  local -A partition_size=(
+    [boot]=67108864
+    [dtbo]=8388608
+    [recovery]=100663296
+    [vbmeta]=65536
+    [vendor_boot]=33554432
+  )
+  local image image_bytes package_image
+  for image in boot dtbo recovery vbmeta vendor_boot; do
+    package_image="$bootstrap_dir/$image.img"
+    [[ -f "$package_image" ]] || fail "$image.img missing from extracted install package"
+    [[ -f "$target_files/$image.img" ]] || fail "$image.img missing from target-files images"
+    cmp -s "$package_image" "$target_files/$image.img" || \
+      fail "$image.img differs between the install package and target-files images"
+    image_bytes="$(stat --printf='%s' "$package_image")"
+    [[ "$image_bytes" -le "${partition_size[$image]}" ]] || \
+      fail "$image.img is $image_bytes bytes, larger than the verified PIT ceiling ${partition_size[$image]}"
+    stat --printf='%n %s bytes\n' "$package_image"
+    printf 'PIT ceiling: %s bytes (pass)\n' "${partition_size[$image]}"
+    sha256sum "$package_image"
+    container bash -lc \
+      "out/host/linux-x86/bin/avbtool info_image --image '$target_files/$image.img'"
+    if [[ "$image" != vbmeta ]]; then
+      container bash -lc \
+        "out/host/linux-x86/bin/avbtool verify_image --image '$target_files/$image.img'"
+    fi
+  done
+  container bash -lc \
+    "cd '$target_files' && '$LINEAGE_ROOT/out/host/linux-x86/bin/avbtool' verify_image --image vbmeta.img"
+  container bash -lc \
+    "set -euo pipefail
+     image='$target_files/recovery.img'
+     inspect_dir=\$(mktemp -d /tmp/a33x-package-recovery-inspect.XXXXXX)
+     trap 'rm -rf -- \"\$inspect_dir\"' EXIT
+     out/host/linux-x86/bin/unpack_bootimg \
+       --boot_img \"\$image\" --out \"\$inspect_dir\" >/dev/null
+     out/host/linux-x86/bin/lz4 -dc \"\$inspect_dir/ramdisk\" | \
+       cpio -it 2>/dev/null | grep -Fx init.recovery.s5e8825.rc
+     out/host/linux-x86/bin/lz4 -dc \"\$inspect_dir/ramdisk\" | \
+       cpio -i --to-stdout init.recovery.s5e8825.rc 2>/dev/null | \
+       cmp - device/samsung/s5e8825-common/configs/init/init.s5e8825.recovery.rc
+     printf 'package_recovery_device_init=VERIFIED\\n'"
+}
+
+inspect_sos() {
+  [[ "$#" -eq 0 ]] || fail "usage: ./tools/a33xctl inspect-sos"
+  inspect_rom lineage_sos_a33x
+  local target_files="$LINEAGE_ROOT/out/target/product/a33x/obj/PACKAGING/target_files_intermediates/lineage_sos_a33x-target_files"
+  local apk="$target_files/SYSTEM_EXT/priv-app/SosShell/SosShell.apk"
+  local authority="$target_files/SYSTEM_EXT/bin/sos-authority"
+  local bootstrap="$target_files/SYSTEM_EXT/etc/sos/default.luau"
+  local init_rc="$target_files/SYSTEM_EXT/etc/init/sos-authority.rc"
+  local properties="$target_files/SYSTEM_EXT/etc/build.prop"
+  local seapp_contexts="$target_files/SYSTEM_EXT/etc/selinux/system_ext_seapp_contexts"
+  local file_contexts="$target_files/SYSTEM_EXT/etc/selinux/system_ext_file_contexts"
+  local artifact
+  for artifact in \
+    "$apk" "$authority" "$bootstrap" "$init_rc" "$properties" \
+    "$seapp_contexts" "$file_contexts"; do
+    [[ -f "$artifact" ]] || fail "SOS target-files artifact missing: $artifact"
+    stat --printf='%n %s bytes\n' "$artifact"
+    sha256sum "$artifact"
+  done
+  unzip -tq "$apk"
+  [[ "$(unzip -Z1 "$apk" | sed -n 's|^lib/\([^/]*\)/.*|\1|p' | sort -u)" == arm64-v8a ]] || \
+    fail "packaged SOS APK is not ARM64-only"
+  unzip -Z1 "$apk" | grep -Fx lib/arm64-v8a/libsos_experience.so >/dev/null || \
+    fail "packaged SOS APK does not contain its ARM64 experience library"
+  local manifest_dump
+  manifest_dump="$(container out/host/linux-x86/bin/aapt2 dump xmltree \
+    --file AndroidManifest.xml "$apk")"
+  grep -F 'package="dev.sos.experience"' <<<"$manifest_dump" >/dev/null || \
+    fail "packaged SOS APK has the wrong application ID"
+  grep -F '="dev.sos.experience.SosHomeActivity"' <<<"$manifest_dump" >/dev/null || \
+    fail "packaged SOS APK is missing its HOME activity alias"
+  grep -F '="android.intent.category.HOME"' <<<"$manifest_dump" >/dev/null || \
+    fail "packaged SOS APK is not HOME-enabled"
+  file "$authority" | grep -F 'ARM aarch64' >/dev/null || \
+    fail "packaged SOS authority is not AArch64"
+  cmp -s "$authority" \
+    "$LINEAGE_SOS_OVERLAY_DESTINATION/prebuilts/arm64/sos-android-system-authority" || \
+    fail "packaged SOS authority differs from the staged ARM64 binary"
+  cmp -s "$bootstrap" "$SOS_ROOT/experiences/default.luau" || \
+    fail "packaged SOS bootstrap differs from the repository source"
+  grep -Fx 'ro.sos.authority=on-device' "$properties"
+  grep -Fx 'ro.sos.home=dev.sos.experience' "$properties"
+  grep -Fx \
+    'user=_app isPrivApp=true seinfo=platform name=dev.sos.experience domain=priv_app type=privapp_data_file levelFrom=all' \
+    "$seapp_contexts"
+  grep -Fx \
+    '/system_ext/bin/sos-authority               u:object_r:sos_authority_exec:s0' \
+    "$file_contexts"
+  grep -Fx \
+    '/data/misc/sos(/.*)?                         u:object_r:sos_authority_data_file:s0' \
+    "$file_contexts"
+  info "SOS ARM64 target-files gate passed"
+}
+
+usage() {
+  cat <<'EOF'
+usage: ./tools/a33xctl <command>
+
+commands:
+  image             build the pinned Ubuntu 24.04 LineageOS host image
+  doctor            validate host resources and container tooling
+  init              initialize the separate LineageOS checkout
+  sync              sync sources and record an immutable resolved manifest
+  hydrate-lfs       fetch and verify the pinned ARM64 WebView LFS object
+  apply-patches      apply the audited local a33x source backports
+  stage-sos          stage ARM64 SOS product sources and prebuilts
+  build-recovery    build only the a33x recovery image
+  inspect-recovery  report size, SHA-256, file type, and AVB metadata
+  build-rom         build the complete a33x LineageOS install package
+  inspect-rom       verify and identify the package and boot-chain images
+  build-sos         build the complete ARM64 SOS a33x install package
+  inspect-sos       verify SOS packaging plus the complete boot-chain graph
+EOF
+}
+
+command="${1:-}"
+if [[ "$#" -gt 0 ]]; then
+  shift
+fi
+case "$command" in
+  image) image "$@" ;;
+  doctor) doctor "$@" ;;
+  init) init "$@" ;;
+  sync) sync_source "$@" ;;
+  hydrate-lfs) hydrate_source_lfs "$@" ;;
+  apply-patches) apply_source_patches "$@" ;;
+  stage-sos) stage_sos "$@" ;;
+  build-recovery) build_recovery "$@" ;;
+  inspect-recovery) inspect_recovery "$@" ;;
+  build-rom) build_rom "$@" ;;
+  inspect-rom) inspect_rom "$@" ;;
+  build-sos) build_sos "$@" ;;
+  inspect-sos) inspect_sos "$@" ;;
+  -h|--help|help|'') usage ;;
+  *) fail "unknown command: $command" ;;
+esac
