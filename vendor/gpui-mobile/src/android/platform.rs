@@ -938,7 +938,11 @@ impl AndroidPlatform {
     ///
     /// Useful in headless tests where there is no real ALooper.
     pub fn flush_main_thread_tasks(&self) {
-        self.state.lock().dispatcher.flush_main_thread_tasks();
+        // A queued task may re-enter the platform (for example, an IME frame
+        // request calls `primary_window`). Do not retain the platform-state
+        // lock while arbitrary foreground tasks execute.
+        let dispatcher = self.state.lock().dispatcher.clone();
+        dispatcher.flush_main_thread_tasks();
     }
 }
 
@@ -1649,6 +1653,28 @@ mod tests {
     fn flush_main_thread_tasks_no_panic() {
         // There are no tasks queued, so this should be a no-op.
         headless().flush_main_thread_tasks();
+    }
+
+    #[test]
+    fn flush_main_thread_tasks_releases_platform_state_lock() {
+        let platform = Arc::new(headless());
+        let task_platform = Arc::clone(&platform);
+        let task_ran = Arc::new(AtomicBool::new(false));
+        let task_ran_clone = Arc::clone(&task_ran);
+
+        platform
+            .background_executor()
+            .dispatch_on_main_thread(move || {
+                assert!(
+                    task_platform.state.try_lock().is_some(),
+                    "platform state lock was retained while running a foreground task"
+                );
+                assert!(task_platform.primary_window().is_none());
+                task_ran_clone.store(true, Ordering::Release);
+            });
+
+        platform.flush_main_thread_tasks();
+        assert!(task_ran.load(Ordering::Acquire));
     }
 
     // ── tick ─────────────────────────────────────────────────────────────────

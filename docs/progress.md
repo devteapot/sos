@@ -4508,3 +4508,66 @@ closed on physical hardware, and both native hosts share bounded single-line
 painting and caret scrolling. Linux runtime interaction remains unclaimed;
 perform a windowed Linux input interaction on a provisioned Linux host when
 that platform gate is next exercised.
+
+## 2026-08-15 — Repeated-backspace dispatcher self-deadlock follow-up
+
+**Goal / hypothesis:** Reproduce the reported remaining failure under repeated
+software-keyboard backspace and replace the earlier single-delete hardware gate
+with a sustained IME deletion gate. The hypothesis was that releasing the SOS
+IME queue lock closed one inversion but left another lock held while queued
+foreground work executed.
+
+**Changed:** `AndroidPlatform::flush_main_thread_tasks` now clones its dispatcher
+out of the platform-state mutex before draining arbitrary foreground tasks. A
+headless Android regression queues a task that probes the state mutex and
+re-enters `primary_window`, proving that the task is not invoked while the
+platform lock is retained.
+
+**Evidence:** The SM-A336B reproduced a second input-dispatch ANR at 19:17:38.
+Its UI thread was blocked in `nativeOnImeState` from
+`GpuiImeBridge.BridgeConnection.setComposingRegion`, and `android_main` was also
+in a futex wait. Source inspection identified the self-deadlock: the GPUI loop
+held `AndroidPlatformState` across `dispatcher.flush_main_thread_tasks`; the
+queued IME frame task then called `primary_window` and attempted to reacquire
+that same mutex. The ignored diagnostic
+`repeat-backspace-bugreport.zip` is 4,844,010 bytes with SHA-256
+`b90f0089db18ba095166cfc6565d29cde1f380bcf7641f2a38210283549cb07b` and
+contains `FS/data/anr/anr_2026-08-15-19-17-38-874`.
+
+`./tools/sosctl m1-check`, formatting, and the release HOME build pass; the
+build completed all 44 Gradle tasks. The platform-signed, data-preserving test
+update is based on revision `a9fff8883185d4390223555d861242afd6dc6622` plus
+the dispatcher change. `sos-repeat-backspace-fixed.apk` is 37,813,431 bytes
+with SHA-256
+`4c7b3904c50ccf4f43c60603a9e22dba42770bd215d026b744ba1551b0a0bb0a`;
+its signing certificate SHA-256 is
+`c8a2e9bccf597c2fb6dc66bee293fc13f2fc47ec77bc6b2b0d52c11f51192ab8`,
+matching the installed product certificate.
+
+On the physical phone, 40 software-keyboard delete presses at 80 ms spacing
+removed all 16 prompt characters and delivered a further 24 `kind=delete`
+states at selection `0:0`. PID 13747 remained unchanged, no new ANR, fatal
+exception, or native signal appeared, and healthy GPUI heartbeats continued at
+19:27:58, 19:28:03, and 19:28:08. A direct accessibility `ACTION_SET_TEXT`
+restored the exact pre-test values `gpt-5.6-luna` and `I want dark mode`, both
+verified through the final accessibility tree.
+
+**Failures / fixes / rejected evidence:** The earlier single-delete test was
+insufficient and is superseded by the repeated-delete/empty-boundary gate.
+A direct cross-target Cargo command lacked cargo-ndk's compiler environment;
+the normal strict Android gate passed. The corrected Android vendor test-target
+check remains blocked before execution by an unrelated existing
+`AndroidWindow::gpu_info` test that no longer compiles; it is not counted as a
+passing regression test. Two coordinate-based diagnostic taps opened Codex and
+OpenAI configuration dialogs because keyboard scrolling moved the virtual
+bounds. No credential was saved or submitted; both dialogs were cancelled.
+The restoration helper was changed from coordinate-based UIAutomator
+`setText` to direct accessibility actions before restoring and verifying the
+two affected values.
+
+**Decision / remaining risk / next gate:** The remaining failure was the
+generic Android foreground-dispatch lock boundary, not deletion or UTF-8
+handling. The physical repeated-delete gate now passes across composing,
+commit, ordinary delete, and empty-input delete states. Repair the stale vendor
+test before counting the regression as an executed Android unit test; retain a
+repeated IME edit burst in future device acceptance checks.
