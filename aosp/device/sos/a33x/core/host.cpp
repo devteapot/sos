@@ -53,16 +53,25 @@ using android::ui::DisplayMode;
 constexpr int kServiceWaitMicros = 100'000;
 constexpr int kExitRecoveryRequested = 100;
 constexpr int kExitAndroidUserLocked = 101;
+constexpr int kExitCompatHandoff = 102;
 constexpr int32_t kCoreLayer = 0x40000002;
 constexpr int32_t kRecoveryLayer = 0x40000001;
 constexpr int32_t kLockLayer = 0x40000003;
 constexpr int kBridgeMagic = 0x534f5331;
 constexpr int kBridgeStatus = 1;
 constexpr int kBridgeVerifyPin = 2;
+constexpr int kBridgeStartHome = 3;
 constexpr int kBridgeOk = 1;
 constexpr int kBridgeRejected = 2;
 constexpr int kBridgeRetry = 3;
+constexpr int kCredentialNone = -1;
+constexpr int kCredentialPin = 3;
 constexpr char kBridgeSocket[] = "sos_framework_bridge";
+constexpr int kControlMagic = 0x534f5332;
+constexpr int kControlLock = 1;
+constexpr int kControlHomeFailed = 2;
+constexpr uid_t kSystemUid = 1000;
+constexpr char kControlSocket[] = "sos_native_shell_control";
 constexpr char kExperienceLibrary[] =
     "/system_ext/lib64/libsos_core_experience.so";
 constexpr char kCoreDataDirectory[] = "/data/misc/sos/core";
@@ -144,6 +153,16 @@ int runExperience() {
     const int gate = runPreUnlockGate();
     if (gate != 0)
       return gate;
+  }
+  const std::string stage =
+      android::base::GetProperty("ro.sos.core.stage", "shadow");
+  if (stage == "compat") {
+    // Native Compat owns the pre-unlock surface and raw input, then gets out
+    // of WindowManager's way. The platform-signed GPUI HOME is the only SOS
+    // Activity host; explicitly selected non-system Activities may render
+    // beneath its persistent trusted controls.
+    ALOGI("native_compat_handoff target=sos-home android_system_ui=false");
+    return kExitCompatHandoff;
   }
   NativeSurface nativeSurface;
   if (!createSurface("SOS Core Experience", kCoreLayer, &nativeSurface)) {
@@ -470,6 +489,98 @@ int runBridgeProbe() {
   return 0;
 }
 
+enum class CompatCommand { Lock, HomeFailed };
+
+struct CompatRequest {
+  CompatCommand command;
+  int responseFd;
+};
+
+int createCompatControlSocket() {
+  const int server = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+  if (server < 0) {
+    ALOGE("native_compat_control_failed step=socket error=%s", strerror(errno));
+    return -1;
+  }
+  sockaddr_un address{};
+  address.sun_family = AF_UNIX;
+  address.sun_path[0] = '\0';
+  static_assert(sizeof(kControlSocket) < sizeof(address.sun_path));
+  memcpy(address.sun_path + 1, kControlSocket, sizeof(kControlSocket) - 1);
+  const socklen_t addressLength =
+      offsetof(sockaddr_un, sun_path) + sizeof(kControlSocket);
+  if (bind(server, reinterpret_cast<const sockaddr *>(&address),
+           addressLength) != 0 ||
+      listen(server, 4) != 0) {
+    ALOGE("native_compat_control_failed step=bind-listen error=%s",
+          strerror(errno));
+    close(server);
+    return -1;
+  }
+  ALOGI("native_compat_control_ready transport=local_socket peer=system");
+  return server;
+}
+
+CompatRequest waitForCompatCommand(int server) {
+  for (;;) {
+    const int client = accept4(server, nullptr, nullptr, SOCK_CLOEXEC);
+    if (client < 0) {
+      if (errno == EINTR)
+        continue;
+      ALOGE("native_compat_control_accept_failed error=%s", strerror(errno));
+      usleep(kServiceWaitMicros);
+      continue;
+    }
+    ucred peer{};
+    socklen_t peerLength = sizeof(peer);
+    uint32_t magic = 0;
+    uint8_t command = 0;
+    const bool accepted =
+        getsockopt(client, SOL_SOCKET, SO_PEERCRED, &peer, &peerLength) == 0 &&
+        peer.uid == kSystemUid && readAll(client, &magic, sizeof(magic)) &&
+        ntohl(magic) == kControlMagic &&
+        readAll(client, &command, sizeof(command));
+    if (!accepted) {
+      close(client);
+      ALOGW("native_compat_control_peer_rejected");
+      continue;
+    }
+    if (command == kControlLock) {
+      ALOGI("native_compat_control command=lock");
+      return {CompatCommand::Lock, client};
+    }
+    if (command == kControlHomeFailed) {
+      ALOGW("native_compat_control command=home-failed");
+      return {CompatCommand::HomeFailed, client};
+    }
+    close(client);
+    ALOGW("native_compat_control_unknown command=%u", command);
+  }
+}
+
+void acknowledgeCompatRequest(int responseFd, bool ready) {
+  if (responseFd < 0)
+    return;
+  const uint8_t response = ready ? 1 : 0;
+  if (!writeAll(responseFd, &response, sizeof(response)))
+    ALOGW("native_compat_control_ack_failed ready=%s",
+          ready ? "true" : "false");
+  close(responseFd);
+}
+
+bool requestCompatHome() {
+  for (int attempt = 0; attempt < 100; ++attempt) {
+    const BridgeReply reply = bridgeRequest(kBridgeStartHome);
+    if (reply.code == kBridgeOk) {
+      ALOGI("native_compat_home_request result=accepted");
+      return true;
+    }
+    usleep(kServiceWaitMicros);
+  }
+  ALOGE("native_compat_home_request result=unavailable");
+  return false;
+}
+
 int openNamedInput(const char *wantedName, input_absinfo *xRange = nullptr,
                    input_absinfo *yRange = nullptr) {
   for (int index = 0; index < 32; ++index) {
@@ -526,7 +637,9 @@ bool updateRecoveryChord(const input_event &event, bool *volumeUp,
 }
 
 void renderLocked(const NativeSurface &nativeSurface, size_t pinLength,
-                  const char *status, bool coreOne) {
+                  const char *status, bool coreOne,
+                  int credentialType = kCredentialPin,
+                  bool credentialStatusReady = true) {
   ANativeWindow_Buffer buffer{};
   ARect dirty{0, 0, nativeSurface.width, nativeSurface.height};
   ANativeWindow *window = nativeSurface.surface.get();
@@ -556,6 +669,33 @@ void renderLocked(const NativeSurface &nativeSurface, size_t pinLength,
              0xfff0f3ed);
     drawText(pixels, buffer.stride, nativeSurface.width,
              (nativeSurface.height * 5) / 6, "USE RECOVERY", scale, 0xfff0f3ed);
+    ANativeWindow_unlockAndPost(window);
+    return;
+  }
+
+  if (!credentialStatusReady) {
+    drawText(pixels, buffer.stride, nativeSurface.width,
+             nativeSurface.height / 3, "CHECKING CREDENTIAL", scale / 2,
+             0xfff0f3ed);
+    ANativeWindow_unlockAndPost(window);
+    return;
+  }
+  if (credentialType == kCredentialNone) {
+    const int left = nativeSurface.width / 12;
+    const int right = (nativeSurface.width * 11) / 12;
+    const int top = (nativeSurface.height * 3) / 5;
+    const int bottom = (nativeSurface.height * 4) / 5;
+    fillRect(pixels, buffer.stride, nativeSurface.width, nativeSurface.height,
+             left, top, right, bottom, 0xff245b43);
+    drawTextAt(pixels, buffer.stride, (left + right) / 2,
+               (top + bottom) / 2 - (7 * scale) / 2, "ENTER", scale,
+               0xfff0f3ed);
+    ANativeWindow_unlockAndPost(window);
+    return;
+  }
+  if (credentialType != kCredentialPin) {
+    drawText(pixels, buffer.stride, nativeSurface.width,
+             nativeSurface.height / 3, "USE RECOVERY", scale / 2, 0xffdf9c62);
     ANativeWindow_unlockAndPost(window);
     return;
   }
@@ -590,7 +730,19 @@ void renderLocked(const NativeSurface &nativeSurface, size_t pinLength,
   ANativeWindow_unlockAndPost(window);
 }
 
-int lockedKeyAt(int x, int y, int width, int height) {
+int lockedKeyAt(int x, int y, int width, int height, int credentialType,
+                bool credentialStatusReady) {
+  if (!credentialStatusReady)
+    return -3;
+  if (credentialType == kCredentialNone) {
+    const int left = width / 12;
+    const int right = (width * 11) / 12;
+    const int top = (height * 3) / 5;
+    const int bottom = (height * 4) / 5;
+    return x >= left && x < right && y >= top && y < bottom ? -1 : -3;
+  }
+  if (credentialType != kCredentialPin)
+    return -3;
   const int left = width / 12;
   const int right = (width * 11) / 12;
   const int top = (height * 3) / 10;
@@ -609,50 +761,66 @@ int lockedKeyAt(int x, int y, int width, int height) {
   return -1;
 }
 
-int runPinUnlock() {
+int runPinUnlock(bool runtimeRelock = false, int responseFd = -1) {
   NativeSurface surface;
-  if (!createSurface("SOS Trusted Lock", kLockLayer, &surface))
+  if (!createSurface("SOS Trusted Lock", kLockLayer, &surface)) {
+    acknowledgeCompatRequest(responseFd, false);
     return 1;
+  }
   input_absinfo xRange{};
   input_absinfo yRange{};
   const int touch = openNamedInput("sec_touchscreen", &xRange, &yRange);
   if (touch < 0) {
+    acknowledgeCompatRequest(responseFd, false);
     renderLocked(surface, 0, "INPUT FAILED", false);
     return 1;
   }
   const int keys = openNamedInput("gpio_keys");
   if (keys < 0) {
     close(touch);
+    acknowledgeCompatRequest(responseFd, false);
     renderLocked(surface, 0, "KEYS FAILED", false);
     return 1;
   }
-  ALOGI("trusted_lock_ready bridge=headless-framework credential=pin "
+  acknowledgeCompatRequest(responseFd, true);
+  ALOGI("trusted_lock_ready bridge=headless-framework credential=pending "
         "recovery_chord=volume_up+volume_down");
   std::string pin;
   std::string status = "WAITING";
-  int credentialType = -1;
+  int credentialType = kCredentialNone;
+  bool credentialStatusReady = false;
   bool volumeUp = false;
   bool volumeDown = false;
   int rawX = 0;
   int rawY = 0;
   for (;;) {
-    if (android::base::GetBoolProperty("sys.user.0.ce_available", false)) {
+    if (!runtimeRelock &&
+        android::base::GetBoolProperty("sys.user.0.ce_available", false)) {
       close(touch);
       close(keys);
       SurfaceComposerClient::Transaction{}.hide(surface.control).apply();
       ALOGI("trusted_unlock_complete ce_available=true");
       return 0;
     }
-    if (credentialType < 0) {
+    if (!credentialStatusReady) {
       BridgeReply bridge = bridgeRequest(kBridgeStatus);
       if (bridge.code == kBridgeOk) {
         credentialType = bridge.value;
-        status = credentialType == 3 ? "BRIDGE READY" : "PIN REQUIRED";
-        ALOGI("framework_bridge_status credential_type=%d unlocked=%s",
-              credentialType, bridge.unlocked ? "true" : "false");
+        credentialStatusReady = true;
+        if (credentialType == kCredentialPin) {
+          status = "PIN REQUIRED";
+        } else if (credentialType == kCredentialNone) {
+          status = runtimeRelock ? "PRESS ENTER" : "UNLOCKING";
+        } else {
+          status = "UNSUPPORTED";
+        }
+        ALOGI(
+            "framework_bridge_status ready=true credential_type=%d unlocked=%s",
+            credentialType, bridge.unlocked ? "true" : "false");
       }
     }
-    renderLocked(surface, pin.size(), status.c_str(), false);
+    renderLocked(surface, pin.size(), status.c_str(), false, credentialType,
+                 credentialStatusReady);
     pollfd descriptors[2] = {{touch, POLLIN, 0}, {keys, POLLIN, 0}};
     if (poll(descriptors, 2, 100) <= 0)
       continue;
@@ -683,7 +851,8 @@ int runPinUnlock() {
         continue;
       const int x = (rawX - xRange.minimum) * surface.width / xDenominator;
       const int y = (rawY - yRange.minimum) * surface.height / yDenominator;
-      const int key = lockedKeyAt(x, y, surface.width, surface.height);
+      const int key = lockedKeyAt(x, y, surface.width, surface.height,
+                                  credentialType, credentialStatusReady);
       if (key >= 0 && pin.size() < 64) {
         pin.push_back(static_cast<char>('0' + key));
         status = "ENTER PIN";
@@ -691,13 +860,28 @@ int runPinUnlock() {
         std::fill(pin.begin(), pin.end(), '\0');
         pin.clear();
         status = "CLEARED";
-      } else if (key == -1 && pin.size() >= 4 && credentialType == 3) {
+      } else if (key == -1 && runtimeRelock && pin.empty() &&
+                 credentialStatusReady && credentialType == kCredentialNone) {
+        close(touch);
+        close(keys);
+        SurfaceComposerClient::Transaction{}.hide(surface.control).apply();
+        ALOGI("native_runtime_unlock_complete credential=none");
+        return 0;
+      } else if (key == -1 && pin.size() >= 4 && credentialStatusReady &&
+                 credentialType == kCredentialPin) {
         BridgeReply result = bridgeRequest(kBridgeVerifyPin, pin);
         std::fill(pin.begin(), pin.end(), '\0');
         pin.clear();
         if (result.code == kBridgeOk) {
           status = "UNLOCKING";
           ALOGI("trusted_credential_result matched=true");
+          if (runtimeRelock) {
+            close(touch);
+            close(keys);
+            SurfaceComposerClient::Transaction{}.hide(surface.control).apply();
+            ALOGI("native_runtime_unlock_complete credential=pin");
+            return 0;
+          }
         } else if (result.code == kBridgeRetry) {
           status = "TRY LATER";
           ALOGW("trusted_credential_result throttled=true timeout_ms=%d",
@@ -740,8 +924,8 @@ int runCoreOneLocked() {
 int runPreUnlockGate() {
   const std::string stage =
       android::base::GetProperty("ro.sos.core.stage", "shadow");
-  if (stage == "0b")
-    return runPinUnlock();
+  if (stage == "compat" || stage == "0b")
+    return runPinUnlock(false);
   if (stage == "1")
     return runCoreOneLocked();
   ALOGW("native_core_deferred reason=user_ce_locked stage=%s", stage.c_str());
@@ -889,6 +1073,38 @@ RecoveryAction runRecovery(int childStatus, bool androidAvailable) {
   }
 }
 
+int superviseCompatUnlocked() {
+  int server = createCompatControlSocket();
+  while (server < 0) {
+    runRecovery(70, false);
+    server = createCompatControlSocket();
+  }
+  while (!requestCompatHome())
+    runRecovery(70, false);
+
+  for (;;) {
+    const CompatRequest request = waitForCompatCommand(server);
+    if (request.command == CompatCommand::Lock) {
+      int lockStatus = runPinUnlock(true, request.responseFd);
+      while (lockStatus != 0) {
+        runRecovery(70, false);
+        lockStatus = runPinUnlock(true);
+      }
+      continue;
+    }
+
+    acknowledgeCompatRequest(request.responseFd, true);
+    ALOGW("native_compat_home_failed action=restart-home");
+    if (requestCompatHome())
+      continue;
+
+    ALOGE("native_compat_home_restart_failed action=fixed-recovery");
+    do {
+      runRecovery(70, false);
+    } while (!requestCompatHome());
+  }
+}
+
 int supervise() {
   const std::string stage =
       android::base::GetProperty("ro.sos.core.stage", "shadow");
@@ -929,6 +1145,10 @@ int supervise() {
 
     if (WIFEXITED(status) && WEXITSTATUS(status) == 0)
       return 0;
+    if (WIFEXITED(status) && WEXITSTATUS(status) == kExitCompatHandoff) {
+      ALOGI("native_compat_supervisor state=unlocked-wait");
+      return superviseCompatUnlocked();
+    }
     if (WIFEXITED(status) && WEXITSTATUS(status) == kExitAndroidUserLocked) {
       ALOGW("native_core_fallback reason=user_ce_locked");
       return 0;

@@ -1,87 +1,143 @@
 package dev.gpui.mobile;
 
-import android.app.Activity;
-import android.graphics.Color;
+import android.graphics.Canvas;
+import android.graphics.RectF;
 import android.os.Bundle;
 import android.text.format.DateFormat;
-import android.view.Gravity;
-import android.widget.Button;
-import android.widget.LinearLayout;
-import android.widget.ScrollView;
-import android.widget.TextView;
+import android.view.MotionEvent;
+import android.view.View;
 
 import java.util.Date;
 import java.util.List;
 
-/** Fixed signed presentation for the durable attention journal. */
-public final class SosAttentionActivity extends Activity {
+/** Fixed SOS presentation for the durable attention journal. */
+public final class SosAttentionActivity extends SosFixedActivity {
     @Override
     protected void onCreate(Bundle state) {
         super.onCreate(state);
-        SosCompatChromeService.start(this);
-        render();
+        setContentView(new AttentionView(SosAttentionStore.read(this)));
     }
 
-    private void render() {
-        List<SosAttentionStore.Event> events = SosAttentionStore.read(this);
-        LinearLayout list = new LinearLayout(this);
-        list.setOrientation(LinearLayout.VERTICAL);
-        list.setPadding(dp(24), dp(24), dp(96), dp(24));
-        list.setBackgroundColor(0xfff3f1e8);
+    private final class AttentionView extends View {
+        private final SosFixedUi.Renderer renderer = new SosFixedUi.Renderer();
+        private List<SosAttentionStore.Event> events;
+        private float scroll;
+        private float downY;
+        private float lastY;
+        private boolean dragging;
 
-        TextView title = new TextView(this);
-        title.setText("SOS ATTENTION");
-        title.setTextSize(22);
-        title.setTextColor(0xff17211b);
-        list.addView(title);
-
-        TextView durable = new TextView(this);
-        durable.setText("Durable typed events · urgent calls, alarms and security signals remain "
-                + "fixed trusted presentation.");
-        durable.setTextColor(0xff637069);
-        durable.setPadding(0, dp(8), 0, dp(12));
-        list.addView(durable);
-
-        Button clear = new Button(this);
-        clear.setText("Clear acknowledged events");
-        clear.setAllCaps(false);
-        clear.setOnClickListener(view -> {
-            SosAttentionStore.clear(this);
-            render();
-        });
-        list.addView(clear);
-
-        if (events.isEmpty()) {
-            TextView empty = new TextView(this);
-            empty.setText("No attention events");
-            empty.setTextSize(16);
-            empty.setGravity(Gravity.CENTER);
-            empty.setPadding(0, dp(48), 0, 0);
-            list.addView(empty);
+        AttentionView(List<SosAttentionStore.Event> events) {
+            super(SosAttentionActivity.this);
+            this.events = events;
+            setBackgroundColor(SosFixedUi.BACKGROUND);
+            setContentDescription("SOS attention events");
         }
 
-        for (SosAttentionStore.Event event : events) {
-            TextView row = new TextView(this);
-            String time = DateFormat.getTimeFormat(this).format(new Date(event.timestamp));
-            row.setText((event.urgent ? "URGENT · " : "") + event.kind.toUpperCase()
-                    + " · " + time + "\n" + event.title + "\n" + event.detail
-                    + "\n" + event.packageName);
-            row.setTextColor(event.urgent ? 0xff7a241f : 0xff17211b);
-            row.setBackgroundColor(event.urgent ? 0xffffe2dd : Color.WHITE);
-            row.setPadding(dp(14), dp(12), dp(14), dp(12));
-            LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
-                    LinearLayout.LayoutParams.MATCH_PARENT,
-                    LinearLayout.LayoutParams.WRAP_CONTENT);
-            params.topMargin = dp(8);
-            list.addView(row, params);
+        @Override
+        protected void onDraw(Canvas canvas) {
+            super.onDraw(canvas);
+            renderer.fill(canvas, SosFixedUi.BACKGROUND);
+            float margin = SosFixedUi.dp(getContext(), 24);
+            float usableRight = getWidth() - SosFixedUi.dp(getContext(), 96);
+            renderer.text(canvas, "SOS ATTENTION", margin, SosFixedUi.dp(getContext(), 52),
+                    SosFixedUi.dp(getContext(), 22), SosFixedUi.TEXT, true);
+            renderer.text(canvas, "Calls, alarms and security signals keep trusted priority.",
+                    margin, SosFixedUi.dp(getContext(), 80),
+                    SosFixedUi.dp(getContext(), 13), SosFixedUi.MUTED, false);
+
+            RectF clear = clearBounds(usableRight);
+            renderer.button(canvas, clear, "CLEAR ACKNOWLEDGED", false,
+                    SosFixedUi.dp(getContext(), 10), SosFixedUi.dp(getContext(), 12));
+
+            canvas.save();
+            canvas.clipRect(0, SosFixedUi.dp(getContext(), 152), usableRight, getHeight());
+            canvas.translate(0, -scroll);
+            float top = SosFixedUi.dp(getContext(), 164);
+            float rowHeight = SosFixedUi.dp(getContext(), 104);
+            float gap = SosFixedUi.dp(getContext(), 10);
+            for (SosAttentionStore.Event event : events) {
+                String source = SosVisibleIdentity.source(getContext(), event.packageName);
+                String title = SosVisibleIdentity.content(
+                        getContext(), event.packageName, event.title);
+                String detail = SosVisibleIdentity.content(
+                        getContext(), event.packageName, event.detail);
+                RectF row = new RectF(margin, top, usableRight - margin, top + rowHeight);
+                renderer.rect(canvas, row,
+                        event.urgent ? 0xff3d211e : SosFixedUi.PANEL,
+                        SosFixedUi.dp(getContext(), 12));
+                String time = DateFormat.getTimeFormat(SosAttentionActivity.this)
+                        .format(new Date(event.timestamp));
+                renderer.text(canvas,
+                        (event.urgent ? "URGENT · " : "")
+                                + event.kind.toUpperCase() + " · " + time,
+                        row.left + margin / 2, row.top + SosFixedUi.dp(getContext(), 26),
+                        SosFixedUi.dp(getContext(), 13),
+                        event.urgent ? SosFixedUi.URGENT : SosFixedUi.MUTED, true);
+                renderer.text(canvas, title, row.left + margin / 2,
+                        row.top + SosFixedUi.dp(getContext(), 52),
+                        SosFixedUi.dp(getContext(), 16), SosFixedUi.TEXT, true);
+                renderer.text(canvas, detail, row.left + margin / 2,
+                        row.top + SosFixedUi.dp(getContext(), 76),
+                        SosFixedUi.dp(getContext(), 13), SosFixedUi.TEXT, false);
+                renderer.text(canvas, source, row.left + margin / 2,
+                        row.top + SosFixedUi.dp(getContext(), 94),
+                        SosFixedUi.dp(getContext(), 10), SosFixedUi.MUTED, false);
+                top += rowHeight + gap;
+            }
+            if (events.isEmpty()) {
+                renderer.text(canvas, "NO ATTENTION EVENTS", margin, top + margin,
+                        SosFixedUi.dp(getContext(), 15), SosFixedUi.MUTED, true);
+            }
+            canvas.restore();
         }
 
-        ScrollView scroll = new ScrollView(this);
-        scroll.addView(list);
-        setContentView(scroll);
-    }
+        @Override
+        public boolean onTouchEvent(MotionEvent event) {
+            float y = event.getY();
+            if (event.getActionMasked() == MotionEvent.ACTION_DOWN) {
+                downY = y;
+                lastY = y;
+                dragging = false;
+                return true;
+            }
+            if (event.getActionMasked() == MotionEvent.ACTION_MOVE) {
+                float delta = lastY - y;
+                if (Math.abs(y - downY) > SosFixedUi.dp(getContext(), 8)) dragging = true;
+                scroll = clampScroll(scroll + delta);
+                lastY = y;
+                invalidate();
+                return true;
+            }
+            if (event.getActionMasked() == MotionEvent.ACTION_UP && !dragging) {
+                if (clearBounds(getWidth() - SosFixedUi.dp(getContext(), 96))
+                        .contains(event.getX(), y)) {
+                    SosAttentionStore.clear(SosAttentionActivity.this);
+                    events = SosAttentionStore.read(SosAttentionActivity.this);
+                    scroll = 0;
+                    invalidate();
+                }
+                performClick();
+                return true;
+            }
+            return true;
+        }
 
-    private int dp(int value) {
-        return Math.round(value * getResources().getDisplayMetrics().density);
+        @Override
+        public boolean performClick() {
+            super.performClick();
+            return true;
+        }
+
+        private RectF clearBounds(float usableRight) {
+            return new RectF(SosFixedUi.dp(getContext(), 24),
+                    SosFixedUi.dp(getContext(), 96),
+                    usableRight - SosFixedUi.dp(getContext(), 24),
+                    SosFixedUi.dp(getContext(), 140));
+        }
+
+        private float clampScroll(float value) {
+            float content = SosFixedUi.dp(getContext(), 164 + events.size() * 114 + 24);
+            return Math.max(0, Math.min(value, Math.max(0, content - getHeight())));
+        }
     }
 }

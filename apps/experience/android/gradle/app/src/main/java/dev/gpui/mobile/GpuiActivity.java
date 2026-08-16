@@ -13,13 +13,14 @@ import android.view.KeyEvent;
 import dev.sos.experience.BuildConfig;
 
 import androidx.core.splashscreen.SplashScreen;
-
 /** Permanent NativeActivity host for Luau-authored SOS experience revisions. */
 public class GpuiActivity extends NativeActivity {
     private static volatile boolean sNativeLibLoaded = false;
+    private static volatile boolean sActivityCreated = false;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
+        configureSosWindow();
         SplashScreen splash = SplashScreen.installSplashScreen(this);
         if (!sNativeLibLoaded) {
             try {
@@ -50,12 +51,14 @@ public class GpuiActivity extends NativeActivity {
         splash.setKeepOnScreenCondition(() -> !isNativeReady());
         setVolumeControlStream(AudioManager.STREAM_MUSIC);
         super.onCreate(savedInstanceState);
+        sActivityCreated = true;
         SosHomePolicy.enforce(this, "activity-create");
     }
 
     @Override
     protected void onResume() {
         super.onResume();
+        configureSosWindow();
         SosHomePolicy.enforce(this, "activity-resume");
         if (BuildConfig.SOS_COMPAT_ENABLED) {
             SosCompatChromeService.start(this);
@@ -63,6 +66,24 @@ public class GpuiActivity extends NativeActivity {
     }
 
     private boolean isNativeReady() {
+        return isSosHomeReady();
+    }
+
+    @Override
+    public void onWindowFocusChanged(boolean hasFocus) {
+        super.onWindowFocusChanged(hasFocus);
+        if (hasFocus) {
+            configureSosWindow();
+            SosCompatChromeService.ownerFocused(this);
+        }
+    }
+
+    private void configureSosWindow() {
+        SosWindowPolicy.apply(this, "gpui");
+    }
+
+    static boolean isSosHomeReady() {
+        if (!sActivityCreated) return false;
         if (!sNativeLibLoaded) return false;
         try {
             return nativeIsInitialized();
@@ -112,6 +133,7 @@ public class GpuiActivity extends NativeActivity {
 
     @Override
     protected void onDestroy() {
+        sActivityCreated = false;
         GpuiMediaSession.release();
         super.onDestroy();
     }

@@ -22,8 +22,82 @@ index 59c5e0e7fc2c..28eb00c91148 100644
 +                Slog.i(TAG, "SOS Core headless boot: no HOME Activity; completing boot directly");
 +                mHandler.post(this::ensureBootCompleted);
              }
- 
+
              mHandler.post(mAtmInternal::showSystemReadyErrorDialogsIfNeeded);
+diff --git a/services/core/java/com/android/server/am/AppErrors.java b/services/core/java/com/android/server/am/AppErrors.java
+index 2fbf05eb0061..00393dd595d8 100644
+--- a/services/core/java/com/android/server/am/AppErrors.java
++++ b/services/core/java/com/android/server/am/AppErrors.java
+@@ -46,6 +46,7 @@ import android.os.Bundle;
+ import android.os.Message;
+ import android.os.Process;
+ import android.os.SystemClock;
++import android.os.SystemProperties;
+ import android.os.UserHandle;
+ import android.os.UserManager;
+ import android.provider.Settings;
+@@ -1028,6 +1029,16 @@ class AppErrors {
+                 Slog.e(TAG, "handleShowAppErrorUi: proc is null");
+                 return;
+             }
++            if (SystemProperties.getBoolean(
++                    "ro.sos.block_android_system_activities", false)) {
++                notifySosAttention(proc, "crash");
++                Slog.w(TAG, "SOS Compat suppressed Android crash dialog for "
++                        + proc.processName);
++                if (res != null) {
++                    res.set(AppErrorDialog.FORCE_QUIT);
++                }
++                return;
++            }
+             final ProcessErrorStateRecord errState = proc.mErrorState;
+             userId = proc.userId;
+             if (errState.getDialogController().hasCrashDialogs()) {
+@@ -1111,6 +1122,21 @@ class AppErrors {
+             Slog.e(TAG, "handleShowAnrUi: proc is null");
+             return;
+         }
++        if (SystemProperties.getBoolean(
++                "ro.sos.block_android_system_activities", false)) {
++            notifySosAttention(proc, "anr");
++            Slog.w(TAG, "SOS Compat suppressed Android ANR dialog for "
++                    + proc.processName);
++            if (!proc.isPersistent()) {
++                packageList = proc.getPackageListWithVersionCode();
++            }
++            mService.killAppAtUsersRequest(proc);
++            if (packageList != null) {
++                mPackageWatchdog.notifyPackageFailure(packageList,
++                        PackageWatchdog.FAILURE_REASON_APP_NOT_RESPONDING);
++            }
++            return;
++        }
+         synchronized (mProcLock) {
+             final ProcessErrorStateRecord errState = proc.mErrorState;
+             errState.setAnrData(data);
+@@ -1165,6 +1191,22 @@ class AppErrors {
+         }
+     }
+
++    private void notifySosAttention(ProcessRecord proc, String kind) {
++        final String packageName = proc.info == null || proc.info.packageName == null
++                ? proc.processName : proc.info.packageName;
++        final Intent intent = new Intent("dev.sos.action.SYSTEM_ATTENTION")
++                .setPackage("dev.sos.experience")
++                .putExtra("kind", kind)
++                .putExtra("package", packageName)
++                .putExtra("title", "Application " + kind)
++                .putExtra("detail", packageName);
++        // Crash UI dispatch can hold mProcLock. Keep the SOS presentation
++        // bridge asynchronous so a receiver launch never nests back into AMS
++        // while process state is locked.
++        mService.mHandler.post(() ->
++                mContext.sendBroadcastAsUser(intent, UserHandle.SYSTEM));
++    }
++
+     void handleDismissAnrDialogs(ProcessRecord proc) {
+         synchronized (mProcLock) {
+             final ProcessErrorStateRecord errState = proc.mErrorState;
 diff --git a/services/core/java/com/android/server/pm/PackageInstallerService.java b/services/core/java/com/android/server/pm/PackageInstallerService.java
 index 2d0bb258e89f..f8ae9b5e62a9 100644
 --- a/services/core/java/com/android/server/pm/PackageInstallerService.java
@@ -39,7 +113,7 @@ index 2d0bb258e89f..f8ae9b5e62a9 100644
 @@ -682,6 +683,12 @@ public class PackageInstallerService extends IPackageInstaller.Stub implements
              throw new SecurityException("User restriction prevents installing");
          }
- 
+
 +        if (SystemProperties.getBoolean("ro.sos.disable_user_apk_install", false)
 +                && !PackageManagerServiceUtils.isSystemOrRoot(callingUid)) {
 +            throw new SecurityException(
@@ -50,7 +124,7 @@ index 2d0bb258e89f..f8ae9b5e62a9 100644
          // capability; ensure if this is set as the install reason the app has one of the necessary
          // signature permissions to perform the rollback.
 diff --git a/services/core/java/com/android/server/wm/ActivityStarter.java b/services/core/java/com/android/server/wm/ActivityStarter.java
-index 92f51bed419f..65ffb428f49a 100644
+index 92f51bed419f..e0548b6f68d1 100644
 --- a/services/core/java/com/android/server/wm/ActivityStarter.java
 +++ b/services/core/java/com/android/server/wm/ActivityStarter.java
 @@ -127,6 +127,7 @@ import android.os.Bundle;
@@ -61,10 +135,10 @@ index 92f51bed419f..65ffb428f49a 100644
  import android.os.Trace;
  import android.os.UserHandle;
  import android.os.UserManager;
-@@ -1046,6 +1047,13 @@ class ActivityStarter {
+@@ -1046,12 +1047,25 @@ class ActivityStarter {
          mLastStartReason = request.reason;
          mLastStartActivityTimeMs = System.currentTimeMillis();
- 
+
 +        if (SystemProperties.getBoolean("ro.sos.block_android_activities", false)) {
 +            SafeActivityOptions.abort(request.activityOptions);
 +            Slog.w(TAG, "SOS Core product policy blocked Android Activity start: "
@@ -75,3 +149,82 @@ index 92f51bed419f..65ffb428f49a 100644
          final IApplicationThread caller = request.caller;
          Intent intent = request.intent;
          NeededUriGrants intentGrants = request.intentGrants;
+         String resolvedType = request.resolvedType;
+         ActivityInfo aInfo = request.activityInfo;
+         ResolveInfo rInfo = request.resolveInfo;
++        if (shouldBlockSosSystemActivity(aInfo)) {
++            SafeActivityOptions.abort(request.activityOptions);
++            Slog.w(TAG, "SOS Compat blocked Android system Activity: "
++                    + aInfo.packageName + "/" + aInfo.name);
++            return START_ABORTED;
++        }
+         final IVoiceInteractionSession voiceSession = request.voiceSession;
+         final IBinder resultTo = request.resultTo;
+         String resultWho = request.resultWho;
+@@ -1460,6 +1474,16 @@ class ActivityStarter {
+
+             aInfo = mSupervisor.resolveActivity(intent, rInfo, startFlags, null /*profilerInfo*/);
+         }
++        // Interceptors, legacy permission review, and the ephemeral installer
++        // can replace the originally approved non-system Activity after the
++        // first policy check. Apply the membrane to the final resolved target
++        // as well so framework-generated system UI cannot escape.
++        if (shouldBlockSosSystemActivity(aInfo)) {
++            ActivityOptions.abort(checkedOptions);
++            Slog.w(TAG, "SOS Compat blocked redirected Android system Activity: "
++                    + aInfo.packageName + "/" + aInfo.name);
++            return START_ABORTED;
++        }
+         // TODO (b/187680964) Correcting the caller/pid/uid when start activity from shortcut
+         // Pending intent launched from systemui also depends on caller app
+         if (callerApp == null && realCallingPid > 0) {
+@@ -1531,6 +1555,14 @@ class ActivityStarter {
+         return mLastStartActivityResult;
+     }
+
++    private static boolean shouldBlockSosSystemActivity(ActivityInfo activityInfo) {
++        return SystemProperties.getBoolean("ro.sos.block_android_system_activities", false)
++                && activityInfo != null && activityInfo.applicationInfo != null
++                && (activityInfo.applicationInfo.flags & (ApplicationInfo.FLAG_SYSTEM
++                        | ApplicationInfo.FLAG_UPDATED_SYSTEM_APP)) != 0
++                && !"dev.sos.experience".equals(activityInfo.packageName);
++    }
++
+     /**
+      * Return true if background activity is really aborted.
+      *
+diff --git a/services/core/java/com/android/server/wm/WindowManagerService.java b/services/core/java/com/android/server/wm/WindowManagerService.java
+index df06b70df984..f02c20e2cacf 100644
+--- a/services/core/java/com/android/server/wm/WindowManagerService.java
++++ b/services/core/java/com/android/server/wm/WindowManagerService.java
+@@ -57,7 +57,9 @@ import static android.view.WindowManager.DISPLAY_IME_POLICY_FALLBACK_DISPLAY;
+ import static android.view.WindowManager.DISPLAY_IME_POLICY_LOCAL;
+ import static android.view.WindowManager.LayoutParams.FIRST_APPLICATION_WINDOW;
+ import static android.view.WindowManager.LayoutParams.FIRST_SUB_WINDOW;
++import static android.view.WindowManager.LayoutParams.FIRST_SYSTEM_WINDOW;
+ import static android.view.WindowManager.LayoutParams.FLAG_ALT_FOCUSABLE_IM;
++import static android.view.WindowManager.LayoutParams.FLAG_DIM_BEHIND;
+ import static android.view.WindowManager.LayoutParams.FLAG_DISMISS_KEYGUARD;
+ import static android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON;
+ import static android.view.WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE;
+@@ -1537,6 +1539,20 @@ public class WindowManagerService extends IWindowManager.Stub
+             InsetsSourceControl.Array outActiveControls, Rect outAttachedFrame,
+             float[] outSizeCompatScale) {
+         outActiveControls.set(null, false /* copyControls */);
++        if (SystemProperties.getBoolean("ro.sos.block_android_system_activities", false)
++                && session.mUid == SYSTEM_UID && attrs.type >= FIRST_SYSTEM_WINDOW) {
++            // Compat retains system_server as a headless Android-app adapter.
++            // Keep system-owned windows logically alive for framework progress
++            // callbacks, but make them incapable of presentation or input.
++            // Selected non-system app windows and the separately signed SOS
++            // overlay use application UIDs and are unaffected.
++            attrs.alpha = 0f;
++            attrs.dimAmount = 0f;
++            attrs.flags &= ~FLAG_DIM_BEHIND;
++            attrs.flags |= FLAG_NOT_FOCUSABLE | FLAG_NOT_TOUCHABLE;
++            Slog.w(TAG, "SOS Compat silenced Android system window type=" + attrs.type
++                    + " title=" + attrs.getTitle());
++        }
+         int[] appOp = new int[1];
+         final boolean isRoundedCornerOverlay = (attrs.privateFlags
+                 & PRIVATE_FLAG_IS_ROUNDED_CORNERS_OVERLAY) != 0;

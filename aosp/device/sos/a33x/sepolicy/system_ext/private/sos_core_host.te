@@ -36,6 +36,10 @@ allow sos_core_host { sos_provider_port sos_revision_port }:tcp_socket name_conn
 # Activities. Peer credentials and this domain transition bound the abstract
 # socket before a credential byte is accepted.
 allow sos_core_host system_app:unix_stream_socket connectto;
+# The same non-rendering bridge reports screen-off and permanent-HOME failure
+# into the fixed Compat supervisor. Peer UID checks still gate the abstract
+# control socket in native code.
+allow system_app sos_core_host:unix_stream_socket connectto;
 
 # The fixed Volume Up+Down chord is the recovery path even when system_server
 # and Android's power UI are absent.

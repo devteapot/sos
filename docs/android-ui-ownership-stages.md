@@ -8,20 +8,20 @@ flashable product; a runtime property does not turn one image into another.
 
 ```text
 shared a33x hardware, vendor HALs, SOS services, and revision format
-├── Compat 0  lineage_sos_compat0_a33x  SOS is enforced HOME
-├── Compat 1  lineage_sos_compat_a33x   SOS chrome/attention/APK workspace
+├── Compat 0  lineage_sos_compat0_a33x  historical Android-visible bring-up
+├── Compat 1  lineage_sos_compat_a33x   native SOS + Android app runtime
 ├── Shadow    lineage_sos_core_a33x     manual native probe, Android recovery
 ├── Core 0A   lineage_sos_core0a_a33x  native shell after Android CE unlock
 ├── Core 0B   lineage_sos_core0b_a33x  native lock/UI, headless framework
 └── Core 1    lineage_sos_core1_a33x   no Zygote; native locked/recovery gate
 ```
 
-## Implemented boundaries
+## Source boundaries and target ownership
 
 | Stage | Boot and UI owner | Android runtime | Recovery boundary |
 | --- | --- | --- | --- |
-| Compat 0 | A platform-signed persistent SOS process audits and reasserts `android.app.role.HOME`; Android still draws keyguard, status/navigation, permissions, calls, and other ceremonies. | Full. Launcher3 remains installed but is not an accepted steady-state HOME. | Android UI and Recovery. |
-| Compat 1 | SOS remains enforced HOME. Launcher3 is removed from this product. A trusted overlay supplies time/network/battery status plus Back, Apps, Attention, and Exit above selected Android tasks; stock status/expand/navigation content is suppressed while the chrome service owns it. | Full. The workspace enumerates exported launcher activities and opens only an explicit selection. This is task containment, not a separate Android user or data sandbox. | Android credential/permission/call ceremonies and Recovery. |
+| Compat 0 | Historical bring-up evidence only. A platform-signed persistent SOS process owns HOME while Android still draws keyguard, status/navigation, permissions, calls, and other ceremonies. It is not the intended Compat experience. | Full, including Android UI. | Android UI and Recovery. |
+| Compat 1 | SOS owns every system surface. Source combines the shared fixed native boot/runtime lock with a restartable, full-frame Rust/GPUI HOME and trusted SOS controls; only the contents of an explicitly selected compatible non-system Android application may appear. Revision `sos.compat1.19d8a653fbd7.220e268c228f` passed the rebuilt exact-image hardware gate except for a still-pending human touchscreen ENTER. | Zygote, `system_server`, PackageManager, WindowManager, and app processes remain. SystemUI, Launcher, Settings, chooser/file-picker/IME, setup, dialer, and the other inherited UI packages are removed. Framework policy aborts both initially resolved and framework-redirected system-package Activity launches, suppresses crash/ANR UI, and makes system-UID system windows non-presenting and non-interactive. | The persistent native supervisor first restarts a missing HOME through the headless bridge and owns fixed Recovery only if that bounded restart cannot restore the heartbeat. The GPUI NativeActivity is deliberately restartable and unavailable before CE unlock. Android is an application runtime, never a presentation fallback. |
 | Shadow | Android boots normally. The disabled init services expose a one-frame SurfaceComposer probe and the supervised native GPUI shell for manual tests. | Full; no SOS APK is packaged. | Fixed SOS recovery can retry or expose the still-live Android UI. |
 | Core 0A | Android performs its existing credential ceremony. When `sys.user.0.ce_available=true`, init starts the native GPUI supervisor, which owns the top display layer and grabs touch/volume input. | Full framework remains installed behind the native layer, but PackageInstaller rejects non-system installation callers. A direct-boot framework bridge is packaged for forward compatibility but is not the unlock owner. | Fixed SOS recovery can retry or expose Android. |
 | Core 0B | Init starts the fixed native lock surface once SurfaceFlinger is available. A direct-boot, persistent system-UID process has no Activity and exposes only status and bounded PIN verification over an abstract Unix socket. After LockSettings releases CE storage, GPUI replaces the lock layer. | Zygote and `system_server` remain for headless phone/network/Bluetooth/NFC, LockSettings, Gatekeeper, Keystore, and vendor-backed services. The inherited launcher, SystemUI, settings, chooser, file picker, IME, media/PIM apps, setup/provisioning UI, and other ordinary UI APKs are overridden out. Mixed service/UI packages required by retained headless frameworks stay installed: notably, PackageManager requires exactly one installer package during bootstrap, so `PackageInstaller` remains present while session policy rejects user installs and the immutable Activity policy prevents its UI from rendering. The opaque native/fixed-recovery layer remains presentation owner. | Fixed SOS recovery retries the native host; Android is not offered as a UI fallback. Holding Volume Up+Down asks init to reboot into Recovery. |
@@ -39,24 +39,84 @@ explicit migration policy is approved.
 
 ## Trusted attention and compatibility space
 
-Compat 1 converts posted Android notifications into a bounded, durable JSONL
+Compat converts posted Android notifications into a bounded, durable JSONL
 journal in credential-protected SOS storage. The adapter classifies call, alarm,
 security, media, message, background, and general events. Calls, alarms, and
 security events receive a fixed urgent classification. The signed Attention
 Activity is the first trusted renderer; generated experiences do not decide
 whether those events are security-critical. Notification title/body content is
-not copied into device-protected storage; before first unlock Android retains
-ownership of its existing call/alarm/security ceremonies.
+not copied into device-protected storage. Android never receives presentation
+ownership as a fallback: before SOS has native handling for an event or
+capability, the operation must remain unavailable or reach fixed Recovery.
 
 The compatibility workspace is intentionally explicit: an application does
-not become part of SOS merely because it is installed. The user selects one
-exported launcher activity, Android creates its normal task, and persistent SOS
-chrome remains above it. This stage does not isolate app files, permissions, or
-UIDs. A later security-containment gate must choose a separate Android user,
-managed profile, or virtualization boundary before the workspace can be called
-a data sandbox.
+not become part of SOS merely because it is installed. A launcher-intent
+`<queries>` declaration exposes only exported launcher Activities; the adapter
+then excludes SOS itself, system/updated-system packages, and legacy targets
+that require Android's permission-review ceremony. The user selects one
+remaining Activity, Android creates its normal task, and persistent SOS controls
+remain above it. Android app content is allowed; Android system content is not.
+A request that would normally open PermissionController, PackageInstaller,
+Settings, DocumentsUI, a chooser, an IME, keyguard, or another system Activity
+is blocked after final framework resolution until SOS has a native broker for
+that capability. This stage does not isolate app files, permissions, or UIDs. A
+later security-containment gate must choose a separate Android user, managed
+profile, or virtualization boundary before the workspace can be called a data
+sandbox.
+
+“Native” here is a presentation and trust boundary, not a claim that Android's
+task machinery has disappeared. The unlocked GPUI HOME is hosted by one fixed,
+platform-signed NativeActivity so WindowManager can compose selected Android
+application tasks. That hosting detail may not introduce Android chrome,
+widgets, navigation, lockscreen, dialogs, or recovery UI.
+
+Core and Compat do not fork the experience implementation. Both build the same
+Rust `ExperienceHost`; Core supplies a standalone SurfaceComposer/input adapter
+and Compat supplies the NativeActivity/task adapter. Shared product fragments
+select the same native host, runtime, autostart property, and UI-removal marker
+for Compat, Core 0B, and Core 1 so package policy cannot drift independently.
+
+The former platform `Button`/`TextView` Compat prototypes are removed. The
+workspace, attention journal, and permanent app controls use one small fixed
+SOS Canvas renderer plus one headless Android app/task adapter. Those classes
+are deliberately outside the generative experience and contain no platform-
+default widgets. The Activity opts out of Android decor fitting, hides system
+bar insets, draws through the display cutout, and disables bar contrast so SOS
+owns the complete physical frame. These remain Android-hosted adapter surfaces,
+so pixel parity,
+accessibility virtual nodes, touch, and transition behavior are still physical
+acceptance gates; they are not a second shell implementation.
+
+All fixed Compat Activities inherit the same full-frame window/focus policy.
+The workspace and attention broker pass package-derived strings through a
+visible-identity boundary: installed non-system packages become their
+user-facing application label, the platform package becomes `SOS RUNTIME`, and
+unknown package-shaped strings become `COMPATIBILITY APP`. The task adapter and
+chrome controls synchronously hide the overlay before requesting a transition;
+destination focus reveals the complete software-text layer after 250 ms for an
+SOS Activity or 750 ms for a foreign application. The service therefore never
+publishes a stale rectangle-only or partially clipped chrome frame between
+tasks.
 
 ## Credential limitations
+
+Compat reuses the Core 0B direct SurfaceComposer lock layer and non-rendering
+LockSettings bridge during boot. The host releases exclusive touch only after
+the trusted unlock transition, then hands off to SOS HOME without exiting its
+supervisor. A protected screen-off fact re-enters that same native lock, and a
+readiness acknowledgement holds the broadcast until its fixed surface and
+exclusive input grabs exist. A signature-protected heartbeat requires both
+GPUI HOME and trusted controls to remain ready. Missing heartbeat enters fixed
+native Recovery; Retry asks the
+headless bridge to restart HOME. Side-button wake/display power, real
+credentials, fingerprint, emergency calling, and authentication-bound Keystore
+release remain mandatory physical gates. The legacy Android keyguard is not an
+allowed substitute.
+
+Credential type `NONE` is a valid LockSettings result (`-1`), not a bridge
+failure sentinel. The native host records bridge readiness separately, so it
+queries status once and can retain the fixed enter-to-unlock runtime ceremony
+without a busy polling loop.
 
 Core 0B deliberately accepts only an ASCII PIN of 4–64 digits. The native host
 grabs the physical touchscreen before accepting input, never logs the PIN, and
@@ -101,18 +161,23 @@ not evidence that PIN verification or CE-key release passed.
 
 Every device campaign proceeds in that order. Each exact OTA is inspected
 before sideload, installed without formatting data, and tested before the next
-stage. Core 1 is followed by a Recovery sideload of the latest passing Compat 1
-archive so the handset is not left on the intentionally locked validation
-target.
+stage. Core 1 may be followed only by the inspected native-Compat archive
+`sos.compat1.19d8a653fbd7.220e268c228f` or another explicitly approved
+recovery image; the rejected Android-visible Compat archive is development
+recovery evidence, not the rollback target.
 
-## 2026-08-16 physical campaign result
+## 2026-08-16 physical campaign and native-Compat rerun
 
-The ordered campaign passed all six boundaries on the connected SM-A336B:
+The ordered campaign exercised all six images on the connected SM-A336B. The
+later lock report and clarified product definition reclassified the first
+Compat 1 image as rejected. A no-wipe rebuilt-image rerun then exercised the
+native Compat boundary; the other rows retain their original stage-specific
+results:
 
 | Stage | Accepted revision | Physical result |
 | --- | --- | --- |
 | Compat 0 | `db36ed79bb16` | SOS reclaimed HOME with Android UI and user installation retained. |
-| Compat 1 | `616ac2404a79` | Launcher3 absent; SOS HOME, chrome, durable attention, and explicit APK workspace passed. |
+| Compat 1 | `220e268c228f` | The prior `616ac2404a79` was rejected for visible Android SystemUI/keyguard. The rebuilt image passed full-frame SOS HOME/workspace/attention, atomic chrome handoffs, explicit modern-app launch, legacy permission-review blocking, restart-first HOME recovery, and wake to the native lock with no Android system surface. Physical touchscreen ENTER is pending. |
 | Shadow | `1aad692518b8` | Native probe/GPUI, raw-input acquisition, fixed recovery, Retry, and Android escape passed. |
 | Core 0A | `1b0c9edec481` | Post-unlock native ownership, install denial, bridge status, fixed recovery, and Android escape passed. |
 | Core 0B | `4341fa73391c` | Pre-unlock native lock, direct headless boot completion, Unix provider/revision IPC, absence of Android UI/focus, Activity/install blocking, retained headless phone/Bluetooth/NFC, and no-Android watchdog recovery passed. |
@@ -133,6 +198,12 @@ Keystore release. No credential was enrolled for testing. Physical touch
 dispatch and the actual Volume Up+Down chord also remain owner-operated gates;
 ADB fault/recovery properties prove process behavior, not finger input.
 
-After Core 1, Recovery installed the preserved Compat 1 archive with no wipe.
-The phone is left on exact revision `616ac2404a79`, unlocked on SOS HOME, with
-Launcher3 absent and the SOS compatibility chrome visible.
+After Core 1, Recovery first installed the preserved Android-visible Compat
+archive with no wipe. The later rebuilt campaign installed exact revision
+`sos.compat1.19d8a653fbd7.220e268c228f`, also without a wipe. The phone is now
+awake on that revision at the native `SOS LOCK / PRESS ENTER` surface. The
+screen, WindowManager, SurfaceFlinger, and log evidence prove that only SOS or
+explicitly selected non-system application contents rendered throughout the
+automated rerun. A human press on the native ENTER target, real credentials,
+fingerprint, emergency calling, and the remaining service brokers continue as
+separate physical/security gates.

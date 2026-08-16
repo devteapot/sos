@@ -241,7 +241,7 @@ fn run_experience(shared: SharedPlatform) {
                 },
                 |_, cx| cx.new(ExperienceHost::new),
             ) {
-                Ok(_) => log::info!("SOS experience window is live"),
+                Ok(_) => log::info!("SOS experience window is live frame_padding=none"),
                 Err(error) => log::error!("failed to open experience window: {error}"),
             }
         });
@@ -2492,8 +2492,6 @@ impl Render for ExperienceHost {
             .flex()
             .flex_col()
             .size_full()
-            .pt(px(34.0))
-            .pb(px(18.0))
             .bg(rgb(0xF3F1E8))
             .child(content);
         if let Some((message, accepted)) = &self.status {

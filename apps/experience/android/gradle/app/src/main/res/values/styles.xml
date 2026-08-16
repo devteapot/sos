@@ -41,14 +41,14 @@
         <!-- No title bar — we render our own UI chrome. -->
         <item name="android:windowNoTitle">true</item>
 
-        <!-- NOT fullscreen — allow the status bar and navigation bar to show
-             so we can color them via setStatusBarColor / setNavigationBarColor. -->
-        <item name="android:windowFullscreen">false</item>
-
-        <!-- Draw behind the status bar so our content fills the screen,
-             and we can set the bar colors programmatically. -->
-        <item name="android:statusBarColor">@color/gpui_surface</item>
-        <item name="android:navigationBarColor">@color/gpui_surface</item>
+        <!-- SOS owns the complete physical frame. Android bar insets must not
+             reserve blank bands even when SystemUI itself is absent. -->
+        <item name="android:windowFullscreen">true</item>
+        <item name="android:windowDrawsSystemBarBackgrounds">true</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:windowLightNavigationBar">false</item>
 
         <!-- Disable default content transitions that could cause flicker. -->
         <item name="android:windowContentTransitions">false</item>

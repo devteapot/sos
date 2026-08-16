@@ -1,6 +1,7 @@
 package dev.gpui.mobile;
 
 import android.app.Application;
+import android.content.Intent;
 import android.os.Handler;
 import android.os.Looper;
 
@@ -9,6 +10,8 @@ import dev.sos.experience.BuildConfig;
 /** Permanent policy process for an SOS system HOME. */
 public final class SosApplication extends Application {
     private static final long HOME_AUDIT_INTERVAL_MS = 5000;
+    private static final String FRAMEWORK_BRIDGE_PACKAGE = "dev.sos.frameworkbridge";
+    private static final String HOME_HEARTBEAT_ACTION = "dev.sos.action.HOME_HEARTBEAT";
     private final Handler handler = new Handler(Looper.getMainLooper());
 
     private final Runnable homeAudit = new Runnable() {
@@ -17,6 +20,7 @@ public final class SosApplication extends Application {
             SosHomePolicy.enforce(SosApplication.this, "periodic-audit");
             if (BuildConfig.SOS_COMPAT_ENABLED) {
                 SosAttentionPolicy.enforce(SosApplication.this, "periodic-audit");
+                reportHomeHeartbeat();
             }
             handler.postDelayed(this, HOME_AUDIT_INTERVAL_MS);
         }
@@ -32,5 +36,10 @@ public final class SosApplication extends Application {
             }
             handler.postDelayed(homeAudit, HOME_AUDIT_INTERVAL_MS);
         }
+    }
+
+    private void reportHomeHeartbeat() {
+        if (!GpuiActivity.isSosHomeReady() || !SosCompatChromeService.isReady()) return;
+        sendBroadcast(new Intent(HOME_HEARTBEAT_ACTION).setPackage(FRAMEWORK_BRIDGE_PACKAGE));
     }
 }

@@ -578,7 +578,7 @@ inspect_compat_profile() {
     compat1)
       target_product=lineage_sos_compat_a33x
       expected_stage=1
-      expected_owner=sos-compat
+      expected_owner=native-sos-android-runtime
       build_profile=compat1
       ;;
     *) fail "unsupported SOS Compat profile: $profile" ;;
@@ -651,7 +651,8 @@ inspect_compat_profile() {
       dev.gpui.mobile.SosCompatChromeService \
       dev.gpui.mobile.SosCompatWorkspaceActivity \
       dev.gpui.mobile.SosAttentionListenerService \
-      dev.gpui.mobile.SosAttentionActivity; do
+      dev.gpui.mobile.SosAttentionActivity \
+      dev.gpui.mobile.SosSystemAttentionReceiver; do
       grep -F "=\"$component\"" <<<"$manifest_dump" >/dev/null || \
         fail "SOS Compat 1 component missing: $component"
     done
@@ -661,17 +662,158 @@ inspect_compat_profile() {
     grep -F '="android.permission.SYSTEM_APPLICATION_OVERLAY"' \
       <<<"$manifest_dump" >/dev/null || \
       fail "SOS Compat 1 chrome cannot remain visible over protected Activities"
+    grep -F '="dev.sos.permission.REPORT_HOME_HEARTBEAT"' \
+      <<<"$manifest_dump" >/dev/null || \
+      fail "SOS Compat 1 omitted its signed HOME-health boundary"
+    grep -F 'E: queries' <<<"$manifest_dump" >/dev/null || \
+      fail "SOS Compat 1 omitted its launcher-only package visibility query"
+    grep -F -A8 'E: queries' <<<"$manifest_dump" | \
+      grep -F '="android.intent.category.LAUNCHER"' >/dev/null || \
+      fail "SOS Compat 1 package query is not scoped to launcher Activities"
+    grep -F ':persistent' <<<"$manifest_dump" | grep -F '=false' >/dev/null || \
+      fail "native Compat NativeActivity process must be restartable"
+    unzip -p "$apk" 'classes*.dex' | strings | \
+      grep -F 'sos_window_mode=full-frame decor_fits_system_windows=false' >/dev/null || \
+      fail "native Compat HOME omitted full-frame inset ownership"
+    unzip -p "$apk" 'classes*.dex' | strings | \
+      grep -F 'Ldev/gpui/mobile/SosWindowPolicy;' >/dev/null || \
+      fail "native Compat omitted its shared full-frame window policy"
+    unzip -p "$apk" 'classes*.dex' | strings | \
+      grep -F 'Ldev/gpui/mobile/SosFixedActivity;' >/dev/null || \
+      fail "native Compat fixed Java surfaces can drift from HOME window lifecycle"
+    unzip -p "$apk" 'classes*.dex' | strings | \
+      grep -F 'Ldev/gpui/mobile/SosVisibleIdentity;' >/dev/null || \
+      fail "native Compat omitted its SOS-owned visible identity policy"
+    unzip -p "$apk" 'classes*.dex' | strings | \
+      grep -F 'Open a compatible application. SOS remains in control.' >/dev/null || \
+      fail "native Compat workspace copy exposes its Android substrate"
+    unzip -p "$apk" 'classes*.dex' | strings | \
+      grep -F 'transition_reveal=atomic controls=back,apps,attention,exit' >/dev/null || \
+      fail "native Compat chrome can expose a partially rendered transition frame"
+    if unzip -p "$apk" 'classes*.dex' | strings | \
+      grep -F 'Android executes the selected app' >/dev/null; then
+      fail "native Compat workspace retains Android-owned presentation copy"
+    fi
+    local disabled_ceremony
+    for disabled_ceremony in \
+      dev.gpui.mobile.GpuiPickerActivity \
+      dev.gpui.mobile.GpuiPermissionActivity \
+      dev.gpui.mobile.GpuiAuthActivity; do
+      grep -F -A2 "=\"$disabled_ceremony\"" <<<"$manifest_dump" | \
+        grep -F ':enabled' | grep -F '=false' >/dev/null || \
+        fail "native Compat Android ceremony remains enabled: $disabled_ceremony"
+    done
     [[ -f "$target_files/PRODUCT/overlay/SosCompat1FrameworkOverlay.apk" ]] || \
       fail "SOS Compat 1 framework overlay is missing"
-    [[ -f "$target_files/PRODUCT/overlay/SosCompat1SystemUiOverlay.apk" ]] || \
-      fail "SOS Compat 1 SystemUI policy overlay is missing"
-    [[ -f "$target_files/SYSTEM_EXT/bin/sos-compat-launcher-removal-marker" ]] || \
-      fail "SOS Compat 1 Launcher-removal marker is missing"
-    file "$target_files/SYSTEM_EXT/bin/sos-compat-launcher-removal-marker" | \
-      grep -F 'ARM aarch64' >/dev/null || \
-      fail "SOS Compat 1 Launcher-removal marker is not an AArch64 executable"
-    [[ ! -e "$target_files/SYSTEM_EXT/priv-app/Launcher3QuickStep/Launcher3QuickStep.apk" ]] || \
-      fail "SOS Compat 1 must not package the accidental Launcher3 HOME fallback"
+    [[ ! -e "$target_files/PRODUCT/overlay/SosCompat1SystemUiOverlay.apk" ]] || \
+      fail "native Compat must not depend on a SystemUI presentation overlay"
+
+    local host="$target_files/SYSTEM_EXT/bin/sos-core-host"
+    local host_runtime="$target_files/SYSTEM_EXT/lib64/libsos_core_experience.so"
+    local host_init_rc="$target_files/SYSTEM_EXT/etc/init/sos-core-host.rc"
+    local bridge_apk="$target_files/SYSTEM_EXT/priv-app/SosFrameworkBridge/SosFrameworkBridge.apk"
+    local marker="$target_files/SYSTEM_EXT/bin/sos-ui-removal-marker"
+    local services_jar="$target_files/SYSTEM/framework/services.jar"
+    for artifact in \
+      "$host" "$host_runtime" "$host_init_rc" "$bridge_apk" "$marker" \
+      "$services_jar"; do
+      [[ -f "$artifact" ]] || fail "native Compat artifact missing: $artifact"
+      stat --printf='%n %s bytes\n' "$artifact"
+      sha256sum "$artifact"
+    done
+    file "$host" | grep -F 'ARM aarch64' >/dev/null || \
+      fail "native Compat host is not AArch64"
+    file "$host_runtime" | grep -F 'ARM aarch64' >/dev/null || \
+      fail "native Compat GPUI runtime is not AArch64"
+    strings "$host_runtime" | grep -F \
+      'SOS experience window is live frame_padding=none' >/dev/null || \
+      fail "native Compat GPUI runtime still reserves Android-style frame bands"
+    file "$marker" | grep -F 'ARM aarch64' >/dev/null || \
+      fail "native Compat UI-removal marker is not AArch64"
+    strings "$host" | grep -F \
+      'native_compat_handoff target=sos-home android_system_ui=false' >/dev/null || \
+      fail "native Compat host omitted its post-unlock SOS HOME handoff"
+    strings "$host" | grep -F \
+      'trusted_lock_ready bridge=headless-framework credential=pending' >/dev/null || \
+      fail "native Compat host does not resolve credentials before drawing controls"
+    strings "$host" | grep -F \
+      'native_compat_control_ready transport=local_socket peer=system' >/dev/null || \
+      fail "native Compat host omitted its runtime lock control boundary"
+    strings "$host" | grep -F \
+      'native_runtime_unlock_complete credential=' >/dev/null || \
+      fail "native Compat host omitted its runtime re-lock completion"
+    strings "$host" | grep -F \
+      'framework_bridge_status ready=true credential_type=' >/dev/null || \
+      fail "native Compat host still conflates credential NONE with bridge readiness"
+    strings "$host" | grep -F \
+      'native_compat_home_failed action=restart-home' >/dev/null || \
+      fail "native Compat host omitted post-handoff HOME restart"
+    strings "$host" | grep -F \
+      'native_compat_home_restart_failed action=fixed-recovery' >/dev/null || \
+      fail "native Compat host omitted failed-restart fixed recovery"
+    grep -Fx \
+      'on property:init.svc.surfaceflinger=running && property:ro.sos.core.autostart=preunlock' \
+      "$host_init_rc" >/dev/null || fail "native Compat does not start before unlock"
+    grep -Fx 'ro.sos.core.autostart=preunlock' "$properties"
+    grep -Fx 'ro.sos.core.stage=compat' "$properties"
+    grep -Fx 'ro.sos.block_android_system_activities=true' "$properties"
+    ! grep -Fx 'ro.sos.block_android_activities=true' "$properties" >/dev/null || \
+      fail "native Compat must allow selected Android application Activities"
+    unzip -p "$services_jar" 'classes*.dex' | strings | \
+      grep -F 'SOS Compat blocked Android system Activity:' >/dev/null || \
+      fail "native Compat framework omitted its Android system-Activity block"
+    unzip -p "$services_jar" 'classes*.dex' | strings | \
+      grep -F 'SOS Compat blocked redirected Android system Activity:' >/dev/null || \
+      fail "native Compat framework omitted its post-redirection Activity block"
+    unzip -p "$services_jar" 'classes*.dex' | strings | \
+      grep -F 'SOS Compat suppressed Android crash dialog for' >/dev/null || \
+      fail "native Compat framework omitted its Android crash-dialog block"
+    unzip -p "$services_jar" 'classes*.dex' | strings | \
+      grep -F 'SOS Compat suppressed Android ANR dialog for' >/dev/null || \
+      fail "native Compat framework omitted its Android ANR-dialog block"
+    unzip -p "$services_jar" 'classes*.dex' | strings | \
+      grep -F 'SOS Compat silenced Android system window type=' >/dev/null || \
+      fail "native Compat framework omitted its system-window presentation membrane"
+
+    local bridge_manifest
+    bridge_manifest="$(container out/host/linux-x86/bin/aapt2 dump xmltree \
+      --file AndroidManifest.xml "$bridge_apk")"
+    grep -F 'package="dev.sos.frameworkbridge"' <<<"$bridge_manifest" >/dev/null || \
+      fail "native Compat packaged the wrong framework bridge"
+    ! grep -F 'E: activity' <<<"$bridge_manifest" >/dev/null || \
+      fail "native Compat framework bridge must remain non-rendering"
+    grep -F '="dev.sos.permission.REPORT_HOME_HEARTBEAT"' \
+      <<<"$bridge_manifest" >/dev/null || \
+      fail "native Compat framework bridge omitted its signature heartbeat permission"
+    unzip -p "$bridge_apk" 'classes*.dex' | strings | \
+      grep -F 'native_control_acknowledged command=' >/dev/null || \
+      fail "native Compat framework bridge omitted acknowledged screen-off control"
+    unzip -p "$bridge_apk" 'classes*.dex' | strings | \
+      grep -F 'home-heartbeat-missing' >/dev/null || \
+      fail "native Compat framework bridge omitted live HOME supervision"
+    unzip -p "$bridge_apk" 'classes*.dex' | strings | \
+      grep -F 'framework_bridge_home_start result=accepted' >/dev/null || \
+      fail "native Compat framework bridge omitted bounded HOME restart"
+    unzip -p "$bridge_apk" 'classes*.dex' | strings | \
+      grep -F 'framework_bridge_home_start result=user-locked' >/dev/null || \
+      fail "native Compat framework bridge can initialize HOME before CE unlock"
+
+    for removed in \
+      AccessibilityMenu Aperture ApertureLensLauncher AudioFX AvatarPicker \
+      Backgrounds BackupRestoreConfirmation BasicDreams Camelot CaptivePortalLogin \
+      CertInstaller Contacts CredentialManager DeskClock Dialer DocumentsUI EmergencyInfo \
+      DeviceAsWebcam DeviceDiagnostics DownloadProviderUi \
+      DynamicSystemInstallationService EasterEgg Etar ExactCalculator Gallery2 \
+      Glimpse HTMLViewer IntentResolver Jelly LatinIME \
+      Launcher3QuickStep LineageParts LineageSetupWizard LiveWallpapersPicker \
+      ManagedProvisioning PhotoTable PrintSpooler Profiles \
+      QuickAccessWallet Recorder SamsungDAP-custom SamsungDoze Seedvault Settings \
+      SettingsIntelligence SimAppDialog SimpleSettingsConfig SoundPicker SpeakerFX \
+      Stk StorageManager SystemUI ThemePicker ThemesStub Twelve Updater VpnDialogs \
+      messaging; do
+      ! find "$target_files" -type f -name "${removed}.apk" -print -quit | grep -q . || \
+        fail "native Compat still packages Android UI APK $removed"
+    done
   fi
   file "$authority" | grep -F 'ARM aarch64' >/dev/null || \
     fail "packaged SOS authority is not AArch64"
@@ -767,6 +909,9 @@ inspect_core() {
     fail "SOS Core native host is not AArch64"
   file "$host_runtime" | grep -F 'ARM aarch64' >/dev/null || \
     fail "SOS Core GPUI runtime is not AArch64"
+  strings "$host_runtime" | grep -F \
+    'SOS experience window is live frame_padding=none' >/dev/null || \
+    fail "SOS Core GPUI runtime still reserves Android-style frame bands"
   grep -F 'libgui.so' <(readelf -d "$probe") >/dev/null || \
     fail "SOS Core surface probe does not link the native SurfaceComposer client"
   grep -F 'libgui.so' <(readelf -d "$host") >/dev/null || \
@@ -874,7 +1019,7 @@ inspect_core_stage() {
   local authority="$target_files/SYSTEM_EXT/bin/sos-authority"
   local system_ext_policy="$target_files/SYSTEM_EXT/etc/selinux/system_ext_sepolicy.cil"
   local bridge_apk="$target_files/SYSTEM_EXT/priv-app/SosFrameworkBridge/SosFrameworkBridge.apk"
-  local marker="$target_files/SYSTEM_EXT/bin/sos-core-ui-removal-marker"
+  local marker="$target_files/SYSTEM_EXT/bin/sos-ui-removal-marker"
   local artifact
   for artifact in \
     "$host" "$host_runtime" "$host_init_rc" "$properties" "$authority" \
@@ -889,6 +1034,9 @@ inspect_core_stage() {
     fail "SOS $stage native host is not AArch64"
   file "$host_runtime" | grep -F 'ARM aarch64' >/dev/null || \
     fail "SOS $stage GPUI runtime is not AArch64"
+  strings "$host_runtime" | grep -F \
+    'SOS experience window is live frame_padding=none' >/dev/null || \
+    fail "SOS $stage GPUI runtime still reserves Android-style frame bands"
   readelf -Ws "$host_runtime" | grep -F ' sos_core_main' >/dev/null || \
     fail "SOS $stage GPUI runtime does not export sos_core_main"
   file "$authority" | grep -F 'ARM aarch64' >/dev/null || \
@@ -991,8 +1139,12 @@ inspect_core_stage() {
       fail "SOS $stage packaged the wrong framework bridge"
     ! grep -F 'E: activity' <<<"$bridge_manifest" >/dev/null || \
       fail "SOS $stage framework bridge must not render an Activity"
-    strings "$host" | grep -F 'trusted_lock_ready bridge=headless-framework credential=pin' >/dev/null || \
-      fail "SOS $stage host omitted its fixed PIN credential surface"
+    unzip -p "$bridge_apk" 'classes*.dex' | strings | \
+      grep -F 'framework_bridge_mode=credential-only' >/dev/null || \
+      fail "SOS $stage bridge omitted its non-Compat lifecycle gate"
+    strings "$host" | grep -F \
+      'trusted_lock_ready bridge=headless-framework credential=pending' >/dev/null || \
+      fail "SOS $stage host does not resolve credentials before drawing controls"
     strings "$host" | grep -F 'framework_bridge_probe result=ready credential_type=' >/dev/null || \
       fail "SOS $stage host omitted its non-secret framework bridge probe"
     grep -Fx 'on property:debug.sos.core.bridge_probe=1' "$host_init_rc" >/dev/null || \
@@ -1047,7 +1199,7 @@ commands:
   build-rom         build the complete a33x LineageOS install package
   inspect-rom       verify and identify the package and boot-chain images
   build-compat0     build SOS-as-HOME with Android ceremonies retained
-  build-compat1     build SOS chrome, attention broker, and APK workspace
+  build-compat1     build native SOS with the Android app runtime island
   build-compat      compatibility alias for build-compat1
   build-core-shadow build the manual native display/GPUI probe target
   build-core0a      build the post-unlock native GPUI ownership target
@@ -1056,7 +1208,7 @@ commands:
   build-core        compatibility alias for build-core-shadow
   build-sos         compatibility alias for build-compat
   inspect-compat0   verify Compat 0 packaging and boot-chain graph
-  inspect-compat1   verify Compat 1 packaging and boot-chain graph
+  inspect-compat1   verify native Compat and absence of Android system UI
   inspect-sos       compatibility alias for inspect-compat1
   inspect-core      verify Core Shadow and retained recovery UI
   inspect-core0a    verify post-unlock native ownership packaging

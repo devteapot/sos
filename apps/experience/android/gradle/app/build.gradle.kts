@@ -42,19 +42,27 @@ android {
 
         // Forward the library name to the manifest via a placeholder.
         manifestPlaceholders["nativeLibraryName"] = "sos_experience"
-        manifestPlaceholders["sosHomeEnabled"] = providers
+        val sosHomeEnabled = providers
             .gradleProperty("sosHomeEnabled")
             .orElse("false")
             .get()
+        manifestPlaceholders["sosHomeEnabled"] = sosHomeEnabled
         val sosCompatEnabled = providers
             .gradleProperty("sosCompatEnabled")
             .orElse("false")
             .get()
         manifestPlaceholders["sosCompatEnabled"] = sosCompatEnabled
-        buildConfigField("boolean", "SOS_HOME_ENABLED", providers
-            .gradleProperty("sosHomeEnabled")
-            .orElse("false")
-            .get())
+        // Native Compat is supervised by sos-core-host. Keeping NativeActivity's
+        // process persistent prevents a clean process restart after a renderer
+        // failure and lets stale GPUI thread state survive Activity recreation.
+        // Legacy Android-owned HOME products retain their prior persistence.
+        manifestPlaceholders["sosExperiencePersistent"] =
+            (sosHomeEnabled.toBoolean() && !sosCompatEnabled.toBoolean()).toString()
+        // Native Compat never opens Android-owned picker, permission, or
+        // biometric ceremonies. Ordinary regression APKs retain them.
+        manifestPlaceholders["sosAndroidCeremoniesEnabled"] =
+            (!sosCompatEnabled.toBoolean()).toString()
+        buildConfigField("boolean", "SOS_HOME_ENABLED", sosHomeEnabled)
         buildConfigField("boolean", "SOS_COMPAT_ENABLED", sosCompatEnabled)
     }
 

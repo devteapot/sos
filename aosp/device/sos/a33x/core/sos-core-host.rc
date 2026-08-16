@@ -14,7 +14,8 @@ on property:debug.sos.core.bridge_probe=1
     start sos_core_bridge_probe
 
 # Core 0A begins only after Android's existing lock-settings path has released
-# CE storage. Core 0B/Core 1 use a separate pre-unlock trusted surface.
+# CE storage. Native Compat, Core 0B, and Core 1 use a separate pre-unlock
+# trusted surface.
 on property:sys.user.0.ce_available=true && property:ro.sos.core.autostart=postunlock
     start sos_core_host
 

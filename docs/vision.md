@@ -209,14 +209,16 @@ and SystemUI model no longer defines the shell, provider model, revision model,
 or interaction experience.
 
 The physical a33x implementation is split into
-[`SOS Compat` and `SOS Core`](android-product-split.md). Compat keeps Android's
-APK/runtime and compatibility ceremonies behind SOS-owned presentation. Core
-first removes Android Java UI while retaining proven native Android
-infrastructure; eliminating Zygote and `system_server` is a later service
-migration. The initial Core target is intentionally a shadow stage with a
-manual native SurfaceComposer probe and Android recovery UI still packaged. It
-must not claim Core 0 until native input, trusted lockscreen, recovery, and
-physical-device gates pass.
+[`SOS Compat` and `SOS Core`](android-product-split.md). Compat is the native SOS
+system with an Android application-runtime island: SOS owns every system
+surface, while explicitly selected non-system Android app contents may appear
+as compatibility windows. Android ceremonies are not part of Compat. Core
+removes Android Activity presentation entirely while initially retaining proven
+native Android infrastructure; eliminating Zygote and `system_server` is a
+later service migration. The initial Core target is intentionally a shadow
+stage with a manual native SurfaceComposer probe and Android recovery UI still
+packaged. It must not claim Core 0 until native input, trusted lockscreen,
+recovery, and physical-device gates pass.
 
 ## Android exit gate
 

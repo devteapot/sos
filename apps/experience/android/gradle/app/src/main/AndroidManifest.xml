@@ -38,10 +38,21 @@
     <uses-permission android:name="android.permission.SYSTEM_APPLICATION_OVERLAY" />
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
     <uses-permission android:name="android.permission.INJECT_EVENTS" />
+    <uses-permission android:name="dev.sos.permission.REPORT_HOME_HEARTBEAT" />
     <!-- SOS is platform-signed and is the system HOME on SOS products. This
          signature permission keeps scan/configuration access inside the
          trusted permanent host rather than exposing Wi-Fi objects to Luau. -->
     <uses-permission android:name="android.permission.NETWORK_SETTINGS" />
+
+    <!-- Package visibility is deliberately limited to exported launcher
+         Activities. Compat never receives a general inventory of installed
+         packages or system services. -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.LAUNCHER" />
+        </intent>
+    </queries>
 
     <!-- Vulkan feature declaration.
          `required="false"` allows the app to fall back to OpenGL ES on
@@ -75,7 +86,7 @@
         android:largeHeap="true"
         android:icon="@mipmap/ic_launcher"
         android:label="SOS"
-        android:persistent="${sosHomeEnabled}"
+        android:persistent="${sosExperiencePersistent}"
         android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
         android:theme="@style/GpuiTheme"
@@ -94,6 +105,7 @@
         <activity
             android:name="dev.gpui.mobile.GpuiActivity"
             android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|keyboard|navigation|uiMode|density"
+            android:directBootAware="false"
             android:exported="true"
             android:launchMode="singleTask"
             android:screenOrientation="unspecified"
@@ -128,6 +140,7 @@
              competing with the user's installed launcher. -->
         <activity-alias
             android:name="dev.sos.experience.SosHomeActivity"
+            android:directBootAware="false"
             android:enabled="${sosHomeEnabled}"
             android:exported="true"
             android:targetActivity="dev.gpui.mobile.GpuiActivity"
@@ -149,6 +162,7 @@
         <!-- Transparent helper Activity for file/image picker results. -->
         <activity
             android:name="dev.gpui.mobile.GpuiPickerActivity"
+            android:enabled="${sosAndroidCeremoniesEnabled}"
             android:exported="false"
             android:theme="@android:style/Theme.Translucent.NoTitleBar"
         />
@@ -156,6 +170,7 @@
         <!-- Transparent helper Activity for runtime permission requests. -->
         <activity
             android:name="dev.gpui.mobile.GpuiPermissionActivity"
+            android:enabled="${sosAndroidCeremoniesEnabled}"
             android:exported="false"
             android:theme="@android:style/Theme.Translucent.NoTitleBar"
         />
@@ -163,6 +178,7 @@
         <!-- Transparent helper Activity for biometric authentication (BiometricPrompt). -->
         <activity
             android:name="dev.gpui.mobile.GpuiAuthActivity"
+            android:enabled="${sosAndroidCeremoniesEnabled}"
             android:exported="false"
             android:theme="@android:style/Theme.Translucent.NoTitleBar"
         />
@@ -180,6 +196,7 @@
 
         <activity
             android:name="dev.gpui.mobile.SosCompatWorkspaceActivity"
+            android:directBootAware="false"
             android:enabled="${sosCompatEnabled}"
             android:excludeFromRecents="true"
             android:exported="false"
@@ -189,6 +206,7 @@
 
         <activity
             android:name="dev.gpui.mobile.SosAttentionActivity"
+            android:directBootAware="false"
             android:enabled="${sosCompatEnabled}"
             android:excludeFromRecents="true"
             android:exported="false"
@@ -230,6 +248,18 @@
                 <action android:name="android.intent.action.LOCKED_BOOT_COMPLETED" />
                 <action android:name="android.intent.action.BOOT_COMPLETED" />
                 <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
+
+        <receiver
+            android:name="dev.gpui.mobile.SosSystemAttentionReceiver"
+            android:directBootAware="false"
+            android:enabled="${sosCompatEnabled}"
+            android:exported="true"
+            android:permission="android.permission.STATUS_BAR_SERVICE"
+        >
+            <intent-filter>
+                <action android:name="dev.sos.action.SYSTEM_ATTENTION" />
             </intent-filter>
         </receiver>
 

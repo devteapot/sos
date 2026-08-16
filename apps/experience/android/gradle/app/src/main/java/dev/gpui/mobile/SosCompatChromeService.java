@@ -1,11 +1,11 @@
 package dev.gpui.mobile;
 
 import android.app.Service;
-import android.app.Instrumentation;
 import android.content.Context;
 import android.content.Intent;
-import android.graphics.Color;
+import android.graphics.Canvas;
 import android.graphics.PixelFormat;
+import android.graphics.RectF;
 import android.net.ConnectivityManager;
 import android.net.Network;
 import android.net.NetworkCapabilities;
@@ -15,12 +15,9 @@ import android.os.IBinder;
 import android.os.Looper;
 import android.util.Log;
 import android.view.Gravity;
-import android.view.KeyEvent;
+import android.view.MotionEvent;
 import android.view.View;
 import android.view.WindowManager;
-import android.widget.Button;
-import android.widget.LinearLayout;
-import android.widget.TextView;
 
 import java.lang.reflect.Method;
 import java.text.SimpleDateFormat;
@@ -29,7 +26,7 @@ import java.util.Locale;
 
 import dev.sos.experience.BuildConfig;
 
-/** Trusted Back/Apps/Attention/Exit controls displayed above compatibility tasks. */
+/** Fixed SOS-rendered task controls above Android compatibility applications. */
 public final class SosCompatChromeService extends Service {
     private static final String TAG = "SosCompatChrome";
     private static final int DISABLE_EXPAND = 0x00010000;
@@ -41,7 +38,19 @@ public final class SosCompatChromeService extends Service {
     private static final int DISABLE_BACK = 0x00400000;
     private static final int DISABLE_RECENT = 0x01000000;
     private static final long STATUS_REFRESH_MS = 30_000;
+    private static final long APP_TRANSITION_REVEAL_MS = 750;
+    private static final long OWNER_FOCUS_REVEAL_MS = 250;
+    private static volatile boolean ready;
+    private static volatile SosCompatChromeService instance;
     private final Handler handler = new Handler(Looper.getMainLooper());
+    private WindowManager windowManager;
+    private ChromeView chrome;
+    private final Runnable transitionReveal = () -> {
+        if (chrome != null) {
+            chrome.setVisibility(View.VISIBLE);
+            chrome.invalidate();
+        }
+    };
     private final Runnable statusRefresh = new Runnable() {
         @Override
         public void run() {
@@ -49,18 +58,38 @@ public final class SosCompatChromeService extends Service {
             handler.postDelayed(this, STATUS_REFRESH_MS);
         }
     };
-    private WindowManager windowManager;
-    private View chrome;
-    private TextView status;
-
     static void start(Context context) {
         if (!BuildConfig.SOS_COMPAT_ENABLED) return;
         context.startService(new Intent(context, SosCompatChromeService.class));
     }
 
+    static boolean isReady() {
+        return ready;
+    }
+
+    static void ownerFocused(Context context) {
+        SosCompatChromeService service = instance;
+        if (service == null) {
+            start(context);
+        } else {
+            service.handler.post(
+                    () -> service.redrawAfterTransition(OWNER_FOCUS_REVEAL_MS));
+        }
+    }
+
+    static void beginTransition(Context context) {
+        SosCompatChromeService service = instance;
+        if (service == null) {
+            start(context);
+        } else {
+            service.redrawAfterTransition(APP_TRANSITION_REVEAL_MS);
+        }
+    }
+
     @Override
     public void onCreate() {
         super.onCreate();
+        instance = this;
         windowManager = getSystemService(WindowManager.class);
         installChrome();
         setAndroidNavigationDisabled(true);
@@ -71,12 +100,16 @@ public final class SosCompatChromeService extends Service {
     public int onStartCommand(Intent intent, int flags, int startId) {
         if (chrome == null) installChrome();
         setAndroidNavigationDisabled(true);
+        redrawAfterTransition(APP_TRANSITION_REVEAL_MS);
         return START_STICKY;
     }
 
     @Override
     public void onDestroy() {
+        ready = false;
+        if (instance == this) instance = null;
         handler.removeCallbacks(statusRefresh);
+        handler.removeCallbacks(transitionReveal);
         setAndroidNavigationDisabled(false);
         if (chrome != null && windowManager != null) {
             windowManager.removeView(chrome);
@@ -92,39 +125,35 @@ public final class SosCompatChromeService extends Service {
 
     private void installChrome() {
         if (chrome != null || windowManager == null) return;
-        LinearLayout bar = new LinearLayout(this);
-        bar.setOrientation(LinearLayout.VERTICAL);
-        bar.setPadding(dp(6), dp(8), dp(6), dp(8));
-        bar.setBackgroundColor(0xee17211b);
-        status = new TextView(this);
-        status.setTextColor(0xffd7e2db);
-        status.setTextSize(10);
-        status.setGravity(Gravity.CENTER);
-        status.setContentDescription("SOS trusted time, network and battery status");
-        status.setPadding(0, 0, 0, dp(8));
-        bar.addView(status);
-        bar.addView(button("BACK", view -> injectBack()));
-        bar.addView(button("APPS", view -> open(SosCompatWorkspaceActivity.class)));
-        bar.addView(button("ATTN", view -> open(SosAttentionActivity.class)));
-        bar.addView(button("EXIT", view -> showSosHome()));
-
+        ChromeView view = new ChromeView(this);
         WindowManager.LayoutParams params = new WindowManager.LayoutParams(
-                dp(76), WindowManager.LayoutParams.WRAP_CONTENT,
+                Math.round(SosFixedUi.dp(this, 76)), Math.round(SosFixedUi.dp(this, 344)),
                 WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
                 WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
                         | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
                         | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
                 PixelFormat.TRANSLUCENT);
         params.gravity = Gravity.END | Gravity.CENTER_VERTICAL;
-        params.setTitle("SOS Compat Chrome");
+        params.setTitle("SOS Trusted App Controls");
         try {
             markAsSystemApplicationOverlay(params);
-            windowManager.addView(bar, params);
-            chrome = bar;
-            Log.i(TAG, "compat_chrome_ready controls=back,apps,attention,exit");
+            windowManager.addView(view, params);
+            chrome = view;
+            ready = true;
+            redrawAfterTransition(APP_TRANSITION_REVEAL_MS);
+            Log.i(TAG, "compat_chrome_ready renderer=sos-fixed-software-text"
+                    + " transition_reveal=atomic controls=back,apps,attention,exit");
         } catch (ReflectiveOperationException | RuntimeException error) {
+            ready = false;
             Log.e(TAG, "compat_chrome_failed", error);
         }
+    }
+
+    private void redrawAfterTransition(long revealDelayMs) {
+        if (chrome == null) return;
+        handler.removeCallbacks(transitionReveal);
+        chrome.setVisibility(View.INVISIBLE);
+        handler.postDelayed(transitionReveal, revealDelayMs);
     }
 
     private void markAsSystemApplicationOverlay(WindowManager.LayoutParams params)
@@ -135,45 +164,14 @@ public final class SosCompatChromeService extends Service {
         Log.i(TAG, "compat_chrome_trust=system_application_overlay");
     }
 
-    private Button button(String label, View.OnClickListener listener) {
-        Button button = new Button(this);
-        button.setText(label);
-        button.setTextColor(Color.WHITE);
-        button.setTextSize(10);
-        button.setAllCaps(false);
-        button.setOnClickListener(listener);
-        button.setMinHeight(dp(48));
-        button.setContentDescription("SOS " + label.toLowerCase());
-        return button;
-    }
-
     private void open(Class<?> activity) {
         Intent intent = new Intent(this, activity)
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
         startActivity(intent);
     }
 
-    private void showSosHome() {
-        Intent home = new Intent(Intent.ACTION_MAIN)
-                .addCategory(Intent.CATEGORY_HOME)
-                .setPackage(getPackageName())
-                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
-        startActivity(home);
-    }
-
-    private void injectBack() {
-        new Thread(() -> {
-            try {
-                new Instrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_BACK);
-                Log.i(TAG, "compat_chrome_action action=back");
-            } catch (RuntimeException error) {
-                Log.e(TAG, "compat_back_failed", error);
-            }
-        }, "sos-compat-back").start();
-    }
-
     private void updateStatus() {
-        if (status == null) return;
+        if (chrome == null) return;
         String time = new SimpleDateFormat("HH:mm", Locale.getDefault()).format(new Date());
         BatteryManager battery = getSystemService(BatteryManager.class);
         int percent = battery == null ? -1
@@ -190,7 +188,7 @@ public final class SosCompatChromeService extends Service {
             else if (capabilities.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET)) network = "LAN";
             else network = "NET";
         }
-        status.setText(time + "\n" + network + "\n" + (percent < 0 ? "--" : percent + "%"));
+        chrome.setStatus(time, network, percent < 0 ? "--" : percent + "%");
     }
 
     private void setAndroidNavigationDisabled(boolean disabled) {
@@ -204,13 +202,99 @@ public final class SosCompatChromeService extends Service {
         try {
             Method disable = statusBar.getClass().getMethod("disable", int.class);
             disable.invoke(statusBar, flags);
-            Log.i(TAG, "android_navigation_owner=" + (disabled ? "sos" : "android"));
+            Log.i(TAG, "android_navigation_owner=" + (disabled ? "sos" : "none"));
         } catch (ReflectiveOperationException | RuntimeException error) {
             Log.e(TAG, "status_bar_policy_failed", error);
         }
     }
 
-    private int dp(int value) {
-        return Math.round(value * getResources().getDisplayMetrics().density);
+    private final class ChromeView extends View {
+        private final SosFixedUi.Renderer renderer = new SosFixedUi.Renderer();
+        private final String[] labels = {"BACK", "APPS", "ATTN", "EXIT"};
+        private String time = "--:--";
+        private String network = "OFFLINE";
+        private String battery = "--";
+        private int pressed = -1;
+
+        ChromeView(Context context) {
+            super(context);
+            setLayerType(View.LAYER_TYPE_SOFTWARE, null);
+            setContentDescription("SOS trusted Back, Apps, Attention and Exit controls");
+        }
+
+        void setStatus(String time, String network, String battery) {
+            this.time = time;
+            this.network = network;
+            this.battery = battery;
+            invalidate();
+        }
+
+        @Override
+        protected void onDraw(Canvas canvas) {
+            super.onDraw(canvas);
+            renderer.fill(canvas, SosFixedUi.PANEL);
+            float inset = SosFixedUi.dp(getContext(), 6);
+            renderer.text(canvas, time, inset, SosFixedUi.dp(getContext(), 19),
+                    SosFixedUi.dp(getContext(), 12), SosFixedUi.TEXT, true);
+            renderer.text(canvas, network, inset, SosFixedUi.dp(getContext(), 37),
+                    SosFixedUi.dp(getContext(), 9), SosFixedUi.MUTED, false);
+            renderer.text(canvas, battery, inset, SosFixedUi.dp(getContext(), 53),
+                    SosFixedUi.dp(getContext(), 9), SosFixedUi.MUTED, false);
+            for (int index = 0; index < labels.length; index++) {
+                RectF bounds = buttonBounds(index);
+                renderer.button(canvas, bounds, labels[index], pressed == index,
+                        SosFixedUi.dp(getContext(), 8), SosFixedUi.dp(getContext(), 10));
+            }
+        }
+
+        @Override
+        public boolean onTouchEvent(MotionEvent event) {
+            int index = buttonAt(event.getX(), event.getY());
+            if (event.getActionMasked() == MotionEvent.ACTION_DOWN) {
+                pressed = index;
+                invalidate();
+                return true;
+            }
+            if (event.getActionMasked() == MotionEvent.ACTION_CANCEL) {
+                pressed = -1;
+                invalidate();
+                return true;
+            }
+            if (event.getActionMasked() == MotionEvent.ACTION_UP) {
+                int selected = pressed == index ? index : -1;
+                pressed = -1;
+                invalidate();
+                if (selected >= 0) {
+                    beginTransition(SosCompatChromeService.this);
+                }
+                if (selected == 0) SosAndroidAppAdapter.back();
+                else if (selected == 1) open(SosCompatWorkspaceActivity.class);
+                else if (selected == 2) open(SosAttentionActivity.class);
+                else if (selected == 3) SosAndroidAppAdapter.home(SosCompatChromeService.this);
+                performClick();
+                return true;
+            }
+            return true;
+        }
+
+        @Override
+        public boolean performClick() {
+            super.performClick();
+            return true;
+        }
+
+        private RectF buttonBounds(int index) {
+            float inset = SosFixedUi.dp(getContext(), 6);
+            float top = SosFixedUi.dp(getContext(), 64 + index * 68);
+            return new RectF(inset, top, getWidth() - inset,
+                    top + SosFixedUi.dp(getContext(), 58));
+        }
+
+        private int buttonAt(float x, float y) {
+            for (int index = 0; index < labels.length; index++) {
+                if (buttonBounds(index).contains(x, y)) return index;
+            }
+            return -1;
+        }
     }
 }

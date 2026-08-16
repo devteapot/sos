@@ -5461,3 +5461,841 @@ ownership, and removal of dead APK payloads from Core 1. Core 0B also preserves
 existing `/data/app` data across no-wipe transitions; Activity rendering is
 blocked, but a separate background-component/data migration policy remains to
 be designed.
+
+## 2026-08-16 — Compat 1 side-button lock gesture ownership repair
+
+**Goal / hypothesis:** Reproduce the report that exact Compat 1 revision
+`sos.compat1.0805cf6bd0b4.616ac2404a79` could enter Android keyguard with the
+side button but could not return to SOS HOME by touch. Determine whether this
+was a touchscreen failure, a credential problem, or an SOS/SystemUI ownership
+conflict, recover without altering credentials or user data, and repair the
+source boundary.
+
+**Physical evidence:** The connected SM-A336B remained reachable over ADB.
+`dumpsys input` reported `sec_touchscreen` enabled on `/dev/input/event5` with
+current absolute coordinates, while `dumpsys window` named `NotificationShade`
+as focus, `SosHomeActivity` as the focused app behind it, and
+`mDreamingLockscreen=true`. Window policy reported keyguard showing; the trust
+service reported `deviceLocked=0`; UI Automator described the entry icon as
+`Unlocked`. Thus no PIN or Gatekeeper decision was pending. The SOS process
+still held status-bar disable record `0x01F70000`. A synthetic ordinary upward
+swipe (`adb shell input swipe 540 2050 540 450 500`) left every state unchanged.
+
+Source inspection then found two conflicting Compat policies. The static
+`SosCompat1SystemUiOverlay` set
+`config_enableNotificationShadeDrag=false`; Android 16's
+`NotificationPanelViewController` checks that value in the gesture handler
+that also performs keyguard swipe-to-unlock. Independently, the persistent
+`SosCompatChromeService` retained `DISABLE_EXPAND` and the other SOS navigation
+flags while keyguard was showing. The top-down SystemUI/notification controls
+could still respond through separate paths, which explained the apparently
+partial touch behavior.
+
+`am stopservice`, `pm disable-user`, and `am force-stop` were rejected or had
+no effect because SOS is a non-exported persistent privileged package; these
+approaches were discarded. `adb shell wm dismiss-keyguard` performed the
+ordinary no-secret dismissal and immediately changed focus to
+`SosHomeActivity`, `mDreamingLockscreen=false`, and keyguard not showing. It
+modified no credential and recovered the phone to SOS HOME.
+
+**Source repair:** Compat's SystemUI overlay now keeps
+`config_enableNotificationShadeDrag=true`. The chrome service registers for
+the protected screen-off, screen-on, and user-present broadcasts, releases its
+status-bar disable token on screen-off or while `KeyguardManager` reports the
+keyguard locked, and restores SOS navigation ownership only after the user is
+present. This preserves Android ownership of credential/lock ceremonies while
+retaining SOS-owned chrome and shade suppression in the unlocked compatibility
+workspace.
+
+The Java change compiled with:
+
+```text
+cd apps/experience/android/gradle
+./gradlew :app:compileDebugJavaWithJavac \
+  -PsosHomeEnabled=true -PsosCompatEnabled=true -PsosAndroidAbi=arm64-v8a
+./gradlew :app:lintDebug \
+  -PsosHomeEnabled=true -PsosCompatEnabled=true -PsosAndroidAbi=arm64-v8a
+# javac BUILD SUCCESSFUL; only the existing Java 8 source/target warnings
+# lint task completed under abortOnError=false; its report retained the existing
+# unrelated permission/API-level findings and reported no new receiver issue
+```
+
+Raw captures remain outside Git in
+`/home/carlid/sos-samsung-work/lineage-a33x/evidence-20260816/`:
+
+| Capture | Bytes | SHA-256 |
+| --- | ---: | --- |
+| `sos-compat1-lockscreen-stuck-616ac2404a79.png` | 482,178 | `5b63b3683596afc02690bc0625d646cb29307e301d39b5b4fe511322b889a310` |
+| `sos-compat1-lockscreen-wm-recovered-616ac2404a79.png` | 182,704 | `e9eedbd0ccf51159885298b1a7a481c0d4d624841b4498c1771e07416351e110` |
+
+**Decision / risk / next gate:** Revision `616ac2404a79` remains useful
+evidence for the earlier Compat workspace gates but is rejected for the
+lock/resume gate. The connected phone is recovered and still runs that old
+image, so the defect will recur after another physical lock; the bounded
+development recovery is `adb shell wm dismiss-keyguard`. For the current
+plugged-in handoff, `adb shell svc power stayon usb` set
+`stay_on_while_plugged_in=2`; `dumpsys power` reported `mStayOn=true`, and
+keyguard was dismissed with `SosHomeActivity` focused. Unplugging restores
+normal timeout behavior, and `adb shell svc power stayon false` clears the
+development setting. Do not mark the repair complete from the desktop
+compilation. Build and inspect a new Compat 1 OTA,
+sideload it without wiping data, then physically repeat side-button lock, wake,
+finger swipe-to-dismiss, and return to SOS HOME. The same run must verify that
+the Android shade remains suppressed while unlocked, that SOS chrome returns
+after `USER_PRESENT`, and later that a real enrolled credential still reaches
+the Android bouncer and preserves Gatekeeper/Keystore semantics.
+
+## 2026-08-16 — Redefine Compat as native SOS with an Android app-runtime island
+
+**Goal / corrected hypothesis:** The product owner clarified that Compat is
+not SOS chrome around an Android system experience. It is the native SOS
+system, visually and behaviorally equivalent to Core, with Android retained
+only to execute explicitly selected compatible applications. The visible-frame
+invariant is now: SOS, or SOS controls plus one selected non-system Android
+application's content; never Android keyguard, SystemUI, navigation/status
+bars, notification/quick-settings shade, Settings, permission/install UI,
+chooser/file picker, IME, setup, dialer/emergency UI, crash/ANR UI, or Android
+Recovery.
+
+This clarification rejects the immediately preceding proposal to repair the
+Android keyguard gesture. Re-enabling
+`config_enableNotificationShadeDrag` and dynamically returning the status-bar
+disable token would have made the old Android ceremony usable, but would have
+preserved the wrong UI owner. That Java workaround was reverted and the
+`SosCompat1SystemUiOverlay` source was deleted instead.
+
+**Source and build changes:** `lineage_sos_compat_a33x` now packages the Core
+fixed pre-unlock host, GPUI runtime, non-rendering LockSettings bridge, and the
+generic `sos-ui-removal-marker` alongside the SOS HOME APK. The marker overrides
+SystemUI, Launcher, Settings, DocumentsUI, IntentResolver, LatinIME, dialer,
+setup/provisioning, and the other inherited Android UI packages. The product
+sets `ro.sos.core.autostart=preunlock`, `ro.sos.core.stage=compat`, and
+`ro.sos.block_android_system_activities=true`; it deliberately does not set
+the full Core Activity block or install-session denial, because compatible
+non-system applications must still install and render.
+
+The native host now runs the fixed lock/PIN bridge before CE is available and,
+for the Compat stage, hides that surface and hands display ownership to SOS
+HOME after unlock. `ActivityStarter` now aborts any remaining system or
+updated-system package Activity launch in this product, except the trusted
+`dev.sos.experience` host, while retaining the existing all-Activity Core
+policy. The Compat workspace
+also excludes system and updated-system launcher candidates. The inspector now
+requires the native host/runtime/bridge, UI-removal marker, selective framework
+policy marker, and pre-unlock properties, rejects the old SystemUI overlay, and
+rejects every known Android UI APK in target files.
+
+The source revision was `19d8a653fbd7-dirty`. Evidence commands and results:
+
+```text
+cd apps/experience/android/gradle
+./gradlew :app:compileDebugJavaWithJavac \
+  -PsosHomeEnabled=true -PsosCompatEnabled=true -PsosAndroidAbi=arm64-v8a
+# BUILD SUCCESSFUL; only existing Java 8 source/target warnings
+
+cd /home/carlid/dev/sos
+cargo ndk -t arm64-v8a -P 31 check -p sos-experience --release --locked \
+  --no-default-features --features core-native
+# passed; only the existing future-incompatibility warning
+./tools/sosctl m1-build --abi arm64-v8a --home --compat
+./tools/a33xctl stage-sos
+# both passed
+
+cd /home/carlid/dev/lineage-a33x
+source build/envsetup.sh
+breakfast sos_compat_a33x
+m -j8 SosFrameworkBridge sos-core-host sos-ui-removal-marker SosShell \
+  SosCompat1FrameworkOverlay
+# completed successfully in 02:13
+m -j8 services
+# completed successfully in 01:00; the selective Activity policy compiled,
+# was optimized, dexpreopted, and installed as system/framework/services.jar
+
+# After the final init-comment/source synchronization:
+m -j8 sos-core-host
+# completed successfully in 04:50, including regenerated product/Soong state
+
+# After extending the selective rule to FLAG_UPDATED_SYSTEM_APP as well:
+m -j8 services
+# completed successfully in 08:46 after a broader local framework dependency
+# refresh; ActivityStarter javac/R8/dex packaging and API checks passed
+
+git -C frameworks/base apply --reverse --check \
+  /home/carlid/dev/sos/aosp/patches/a33x-lineage-23.0/\
+0004-frameworks-base-enforce-sos-core-install-policy.patch
+# passed: the tracked patch exactly reverses the staged framework change
+
+cd /home/carlid/dev/sos
+bash -n tools/a33xctl
+git diff --check
+# passed; shellcheck was unavailable in this environment
+```
+
+Generated build evidence remains outside Git:
+
+| Artifact | Bytes | SHA-256 |
+| --- | ---: | --- |
+| `/home/carlid/dev/sos/artifacts/sos-experience.apk` | 37,786,852 | `9a14eb48eb1e004de85a78703c8b3c2cd44d6d1097e91f48807ec5c3b7a3e703` |
+| `out/target/product/a33x/system_ext/bin/sos-core-host` | 68,328 | `3f915d9b4f171a9442c26c70f27969c61bb48e1ff23df74f117f6658db4a7c7b` |
+| `out/target/product/a33x/system_ext/etc/init/sos-core-host.rc` | 1,385 | `85e75fa5f280f01e37ec7231179821d14d3cdde8aa8bd910a9e7ef2e40d2463d` |
+| `out/target/product/a33x/system_ext/bin/sos-ui-removal-marker` | 51,216 | `6ca538a90323d4f1907be2dd5ab2381e7507b5fd62e6b295e6c0f464a16a4c14` |
+| `out/target/product/a33x/system_ext/priv-app/SosShell/SosShell.apk` | 40,722,809 | `981e34f59b541509ab4c76b7dafd1a88989a0ece9bcafb82cabfcd361d18420c` |
+| `out/target/product/a33x/system_ext/priv-app/SosFrameworkBridge/SosFrameworkBridge.apk` | 16,798 | `3f9306ff6daf4a0b96154bc18d34c22868aec0d087463be085791b433e95b59a` |
+| `out/target/product/a33x/system/framework/services.jar` | 22,164,791 | `df44c18185e8d007b3c7b10cb703f9910d42305ca493c57f03188936b0f15b25` |
+
+**Decision / risks / next gate:** This is a compiled architectural scaffold,
+not an accepted Compat build. No complete OTA was produced, inspected, or
+flashed. The connected phone remains on the rejected Android-visible revision
+`616ac2404a79`, recovered to `SosHomeActivity` with `mStayOn=true` while USB is
+connected. Its current side-button defect therefore still exists.
+
+The highest-priority missing implementation is native runtime re-lock after the
+post-unlock host hands off to HOME, including display power, side-button wake,
+credential/Gatekeeper/Keystore state, fingerprint lockout, and fixed recovery
+if HOME dies. SOS-native permission, install, chooser, keyboard, calls,
+emergency, attention, alarm, crash, thermal, and recovery brokers are also
+required; their Android implementations now fail closed rather than render.
+The Java `View`/`Button` workspace, attention, and side-chrome prototypes also
+remain a visual trace risk and cannot pass the “feels like Core” gate until
+GPUI/fixed SOS rendering replaces them or physical inspection proves no
+platform-default widget appearance.
+App task containment, Back/Home/Exit controls, process restart, app
+crash/ANR, suspend/resume, and a separate app-data isolation policy remain
+physical/security gates. The next image may be flashed only after a complete
+OTA passes `inspect-compat1`; physical acceptance then requires boot and
+pre-unlock, side-button lock/wake/unlock, app launch/return, failure/recovery,
+and SurfaceFlinger/window inspection proving that no Android system surface is
+ever visible.
+
+## 2026-08-16 — Share the native Core shell with Compat and close runtime Android UI escapes
+
+**Goal / hypothesis:** Implement the corrected Compat model without creating a
+second SOS experience that can drift from Core: one native SOS shell and fixed
+renderer should own boot, lock, unlock, HOME recovery, and system attention in
+both products. Compat may retain Android only behind headless adapters needed
+to enumerate, launch, contain, and report compatible non-system applications.
+Any remaining Android system Activity, framework dialog/window, crash/ANR
+surface, keyguard, shade, launcher, Settings, picker, installer, keyboard, or
+other system chrome must be absent or fail closed.
+
+**Shared product and runtime composition:** Added
+`sos_native_host_common.mk` as the single package/property fragment for
+`sos-core-experience-runtime`, `sos-core-host`, the generic
+`sos-ui-removal-marker`, and fixed pre-unlock startup. Added
+`sos_headless_android_adapter_common.mk` on top of it for products that retain
+the non-rendering `SosFrameworkBridge`. Compat and Core 0B now inherit the
+headless adapter fragment; Core 1 inherits the native host fragment directly.
+The variation is therefore an adapter boundary, not a fork of the shell:
+
+```text
+ExperienceHost + fixed SOS renderer
+  |- Core 1: SurfaceComposer/raw-input adapter
+  `- Compat/Core 0B: NativeActivity/task + headless framework adapter
+```
+
+The former Compat-only and Core-only UI removal markers were collapsed into
+`sos-ui-removal-marker`, with the same override set for SystemUI, launcher,
+Settings, DocumentsUI, IntentResolver, LatinIME, dialer/emergency UI, setup,
+provisioning, and other inherited Android UI packages. The now-contradictory
+Compat SystemUI overlay was removed. Compat identifies its owner as
+`native-sos-android-runtime` and keeps only the selective system-Activity and
+framework-window block; Core retains the full Activity and install-session
+blocks.
+
+**Native lock and recovery:** The shared C++ host now remains as a Compat
+supervisor after fixed pre-unlock. It owns the fixed lock/PIN surface, uses the
+existing headless LockSettings bridge for credential verification, and hands
+off to SOS HOME only after unlock. An abstract Unix control socket
+`sos_native_shell_control` accepts versioned commands only from Android's
+system UID. The framework bridge sends the runtime-lock command during
+`SCREEN_OFF` using `goAsync()` so the fixed native lock has acquired the
+surface, touchscreen, and GPIO volume keys before a native readiness byte
+releases the broadcast and suspend may proceed. A review found and rejected an
+initial write-only version of this protocol: socket delivery did not prove the
+native lock was ready. The Samsung side power key remains owned by its separate
+`sec-pmic-key` input path for display power and wake. Credential type `NONE`
+uses the fixed enter-to-unlock path; unsupported credential state fails closed.
+
+Core 0B shares only the bridge's credential commands. The screen-off receiver,
+HOME start command, and heartbeat monitor are gated on
+`ro.sos.core.stage=compat`, preventing Compat lifecycle policy from leaking
+back into the headless Core product.
+
+The same supervisor starts SOS HOME through the bridge and presents a fixed
+native recovery surface if HOME never becomes ready or later stops reporting.
+Recovery Retry asks the bridge for another bounded HOME start rather than
+falling through to Launcher/SystemUI. Native evidence markers cover control
+readiness, runtime unlock, HOME failure, and the fixed recovery action.
+
+HOME liveness is readiness-based rather than process-based. The bridge declares
+the signature permission `dev.sos.permission.REPORT_HOME_HEARTBEAT`, protects
+its exported dynamic heartbeat receiver with that permission, grants the same
+permission to the platform-signed SOS package, waits 30 seconds at initial
+boot, and then requires a heartbeat within 16 seconds. `SosApplication` sends
+one every five seconds only while `GpuiActivity` has both been created and
+completed native initialization and `SosCompatChromeService` has installed its
+trusted overlay. Start grace is bounded, and failure state resets after a
+restart/heartbeat so repeated failed retries return to fixed recovery.
+
+**Android app adapter and fixed surfaces:** `SosAndroidAppAdapter` is now the
+single headless boundary for listing exported launcher Activities from
+non-system/non-updated-system packages, launching the explicitly selected app,
+injecting Back, and returning to SOS HOME. Compat disables the Android picker,
+permission, and biometric helper Activities at manifest generation time.
+Workspace, side chrome, and attention were rewritten as fixed custom Canvas
+surfaces using `SosFixedUi`; the platform `Button`, `TextView`, `LinearLayout`,
+and `ScrollView` visual prototypes were removed. This closes the obvious
+widget-theme drift but does not yet prove pixel parity, accessibility virtual
+children, transitions, touch geometry, or truncation on physical hardware.
+
+`SosSystemAttentionReceiver` records crash/ANR facts in the SOS attention
+journal without showing Android dialogs. It is protected by
+`android.permission.STATUS_BAR_SERVICE`, so ordinary applications cannot forge
+system attention.
+
+**Framework membrane:** The tracked `frameworks/base` patch now has three
+Compat-specific enforcement layers in addition to the existing Core policies:
+
+- `ActivityStarter` refuses Activities belonging to system or updated-system
+  packages, except the trusted SOS experience host.
+- `AppErrors` preserves PackageWatchdog notification but suppresses Android
+  crash/ANR dialogs, posts a protected explicit fact broadcast to SOS outside
+  the process lock, and kills an unresponsive app after reporting it.
+- `WindowManagerService` keeps system-server callback windows logically alive
+  but makes every system-UID system-window type fully transparent,
+  non-focusable, non-touchable, and non-dimming. This contains global actions,
+  boot/shutdown, debugger, strict-mode, IME, and system-dialog escape paths
+  without throwing from framework call sites and destabilizing system_server.
+
+The added SELinux rule permits the persistent `system_app` bridge to connect to
+the native host socket; the socket still authenticates `SO_PEERCRED` as the
+system UID.
+
+**Build and static evidence:** A first product-matrix attempt used the old
+`lunch lineage_sos_*_a33x-userdebug` form and failed because Android 16 requires
+an explicit release field. This was a command-selection failure, not a source
+failure. Repeating the matrix through each product's supported `breakfast`
+target passed and resolved the intended composition:
+
+```text
+lineage_sos_compat_a33x  shared_native_host=PASS  bridge=present
+lineage_sos_core0b_a33x  shared_native_host=PASS  bridge=present
+lineage_sos_core1_a33x   shared_native_host=PASS  bridge=absent
+```
+
+The following source and targeted-build gates passed:
+
+```text
+cd apps/experience/android/gradle
+./gradlew :app:compileDebugJavaWithJavac :app:assembleRelease \
+  -PsosHomeEnabled=true -PsosCompatEnabled=true -PsosAndroidAbi=arm64-v8a
+# BUILD SUCCESSFUL; only the existing Java 8 source/target warnings
+
+cd /home/carlid/dev/lineage-a33x
+source build/envsetup.sh
+breakfast sos_compat_a33x
+m -j8 SosFrameworkBridge sos-core-host sos-ui-removal-marker SosShell \
+  SosCompat1FrameworkOverlay services
+# completed successfully in 03:05
+m -j8 services
+# completed successfully in 00:56 after adding the system-window membrane
+m selinux_policy
+# completed successfully in 00:41, including neverallow and compatibility tests
+
+cd /home/carlid/dev/sos
+/home/carlid/dev/lineage-a33x/prebuilts/clang/host/linux-x86/\
+clang-stable/bin/clang-format --dry-run --Werror \
+  aosp/device/sos/a33x/core/host.cpp
+bash -n tools/a33xctl
+git diff --check
+git -C /home/carlid/dev/lineage-a33x/frameworks/base apply --reverse --check \
+  /home/carlid/dev/sos/aosp/patches/a33x-lineage-23.0/\
+0004-frameworks-base-enforce-sos-core-install-policy.patch
+# all passed; the tracked patch exactly reverses the staged framework source
+```
+
+The unqualified `clang-format` spelling was initially retried from the SOS
+shell and failed because that binary is not on its PATH. The AOSP-pinned
+`clang-stable` binary above was used instead and passed; no source change was
+needed.
+
+`a33xctl inspect-compat1` was extended to require the shared host, fixed lock
+and recovery markers, bridge and signature heartbeat path, system Activity
+policy, crash/ANR suppression, system-window membrane, disabled Android helper
+Activities, and generic removal marker. It rejects the deleted SystemUI overlay
+and every known visible Android UI APK.
+
+The initial complete build expanded to 74,132 tasks after the earlier product
+matrix changed Soong configuration from Core 1. At 20%, review found that the
+screen-off command had no readiness acknowledgement, so that knowingly stale
+build was stopped and the completed Ninja outputs were retained. Killing the
+outer wrapper left its containerized Soong child holding `out/.lock`; the first
+retry therefore failed after the documented 10-second lock timeout. Stopping
+that exact ephemeral build container required Podman's SIGKILL fallback after
+its 10-second SIGTERM deadline. A second early build was likewise stopped after
+review found that Core 0B would inherit Compat HOME monitoring. Both findings
+were fixed before the final stage. No generated output was treated as evidence
+until a clean final `bacon` invocation completed.
+
+Final full-image and inspection evidence:
+
+```text
+cd /home/carlid/dev/sos
+./tools/a33xctl build-compat1
+# build completed successfully in 10:00
+# revision sos.compat1.19d8a653fbd7.398c68858f5e
+
+./tools/a33xctl inspect-compat1
+# passed OTA ZIP integrity and whole-package signature verification
+# passed boot/dtbo/recovery/vbmeta PIT and AVB checks
+# passed product properties, native/bridge/framework markers, manifest policy,
+# source-to-package comparisons, and the Android UI APK absence scan
+# ==> SOS compat1 ARM64 target-files gate passed
+
+cd apps/experience/android/gradle
+./gradlew :app:lintDebug \
+  -PsosHomeEnabled=true -PsosCompatEnabled=true -PsosAndroidAbi=arm64-v8a
+# BUILD SUCCESSFUL in 4s; abortOnError=false
+```
+
+The lint report is not a clean quality gate: it contains 32 errors and 54
+warnings, dominated by the existing platform-privileged camera/location/Wi-Fi
+permission calls and hidden `statusbar` service constant. The new fixed
+surfaces add non-blocking default-locale/draw-allocation warnings, and the app
+adapter adds a package-query warning. There was no new manifest receiver or
+compilation error. These findings remain follow-up work; the successful AOSP
+platform build and inspector, not Gradle's non-failing lint configuration, are
+the static acceptance evidence above.
+
+Generated evidence remains outside Git:
+
+| Artifact | Bytes | SHA-256 |
+| --- | ---: | --- |
+| `out/target/product/a33x/lineage-23.0-20260816-UNOFFICIAL-sos_compat_a33x.zip` | 1,042,595,904 | `2a89be077727beb19f59c146afe9b5598760b2bd5af8d70b9d371b6de55d2962` |
+| `/home/carlid/dev/sos/artifacts/sos-experience.apk` | 37,786,976 | `26739998ab095156f2006e579954884f379380d346318028b7aea5a6d2d04618` |
+| target files `SYSTEM_EXT/bin/sos-core-host` | 84,776 | `4cd0d5fab4785ae247d9c288e4cf0a79f86e3ee5396196bdae802eae2861f6c8` |
+| target files `SYSTEM_EXT/lib64/libsos_core_experience.so` | 14,526,424 | `6ae4b8217349af06d3b52e9832b2f345aa6f90b0c4ad6fbeb94d26a881189201` |
+| target files `SYSTEM_EXT/priv-app/SosFrameworkBridge/SosFrameworkBridge.apk` | 20,894 | `4436eea159189ba33f5f679ae2a44ac926d000b4ba8414ac063fb84c7dff2c5f` |
+| target files `SYSTEM_EXT/priv-app/SosShell/SosShell.apk` | 40,717,609 | `631d8fcc91ea542b984f0f111cac479bfa6bb70932703ab449d3c0c7f9ab1534` |
+| target files `SYSTEM_EXT/bin/sos-ui-removal-marker` | 51,216 | `6ca538a90323d4f1907be2dd5ab2381e7507b5fd62e6b295e6c0f464a16a4c14` |
+| target files `SYSTEM/framework/services.jar` | 22,166,123 | `2b3abc71a4a8e4230e784c912083140af1e0c2255a464bfcb943e2868eb424be` |
+
+The inspector extracted revision `398c68858f5e` bootstrap images under
+`/home/carlid/sos-samsung-work/lineage-a33x/lineage-23.0-20260816-UNOFFICIAL-sos_compat_a33x-bootstrap/`:
+
+| Bootstrap artifact | Bytes | SHA-256 |
+| --- | ---: | --- |
+| `boot.img` | 67,108,864 | `1a8305a6fb8328a398caeb2301a1d5098bc1b20410f47e41ac1b562437733f9c` |
+| `dtbo.img` | 8,388,608 | `9b4bdf238d8f30c9de94f9ebf6503a203e0de3e952ba73eb38a7d2130b7c161c` |
+| `recovery.img` | 100,663,296 | `b603066aee10469551901f22ad9639a75d482ee96b0a6396842fbbd3591e79e4` |
+| `vbmeta.img` | 8,192 | `8bd23c4eb6d775be0828c3fc7c7d993810a23cbfdf3c1a5786d8bb2831d2dab3` |
+| `vendor_boot.img` | 33,554,432 | `1fdad7b9c3ca06d2021063bff762290d3219df788056cc7877c0e405b6cc9106` |
+
+**Decision / remaining risks / next gate:** Revision
+`sos.compat1.19d8a653fbd7.398c68858f5e` passes the complete build and static
+target-files gate for the one-shell architecture and Android UI membrane. This
+is not a hardware acceptance result. The connected A33x was deliberately left
+on the rejected revision `616ac2404a79`, recovered to SOS HOME with USB
+stay-awake enabled; no image from this change was flashed. The new archive is
+eligible for a later controlled sideload, but is not accepted as Compat until
+the physical gates below pass.
+
+Physical acceptance must then cover boot/pre-unlock, credential and
+credential-none paths, side-button lock/suspend/wake/relock, exclusive touch,
+volume/power routing, HOME-ready heartbeat and repeated recovery failure,
+selected app launch/Back/Home/Exit, app crash and ANR, and SurfaceFlinger/window
+captures proving no Android system surface is visible. SOS-native permission,
+install, chooser, keyboard, call/emergency, alarm, thermal, and Recovery
+brokers remain absent and fail closed; app-data isolation, accessibility
+virtual nodes, fixed-layout clipping, and fingerprint/Gatekeeper/Keystore
+behavior remain explicit security and physical gates.
+
+## 2026-08-16 — Native Compat A33x hardware pass with release-blocking Android UI escapes
+
+**Goal / hypothesis:** Sideload revision
+`sos.compat1.19d8a653fbd7.398c68858f5e` onto the connected Samsung A33x and
+test the claim that Compat now feels like Core while retaining only contained
+Android application execution. The required evidence was boot ownership,
+side-button-equivalent screen-off locking, raw-input ownership, application
+launch/return, system-Activity and crash-dialog suppression, HOME liveness,
+fixed recovery, and an Android-surface audit. No data wipe was authorized or
+performed.
+
+**Device and image:** Device `RFCT50EGFCN` (`SM_A336B`) was authorized over
+USB, at 99% battery with external power and USB stay-awake enabled. Preflight
+confirmed the rejected old Compat revision
+`sos.compat1.0805cf6bd0b4.616ac2404a79`, profile `compat`, completed boot, and
+SELinux enforcing. The following OTA was hash-checked before use and installed
+with `adb reboot sideload-auto-reboot` followed by `adb sideload`; recovery
+reported `Total xfer: 1.00x` and the device was not wiped:
+
+| Artifact | Bytes | SHA-256 |
+| --- | ---: | --- |
+| `/home/carlid/dev/lineage-a33x/out/target/product/a33x/lineage-23.0-20260816-UNOFFICIAL-sos_compat_a33x.zip` | 1,042,595,904 | `2a89be077727beb19f59c146afe9b5598760b2bd5af8d70b9d371b6de55d2962` |
+
+**Boot and ownership evidence:** The first boot and a final unperturbed cold
+boot both reached the exact intended revision with
+`ro.sos.ui_owner=native-sos-android-runtime`, profile/stage `compat`,
+`ro.sos.compat.block_system_activities=true`, `sys.boot_completed=1`,
+`sys.user.0.ce_available=true`, and SELinux enforcing. HOME resolved uniquely
+to `dev.sos.experience/.SosHomeActivity` from the system-ext `SosShell.apk`;
+there was no `/data/app` override. `pm path` returned no SystemUI or launcher,
+and SurfaceFlinger showed only SOS HOME plus `SOS Trusted App Controls` after
+handoff. The final device state had a single HOME task (`t2`) focused, the SOS
+package enabled with `stopped=false`, no trusted lock/recovery layer, and an
+empty `pm list packages -3` result.
+
+The visual boot gate nevertheless failed. Both HOME captures contain blank
+white bands across the physical top and bottom edges. WindowManager reports a
+1080x2400 HOME frame but `mAppBounds=Rect(0, 88 - 1080, 2400)`, and the current
+`GpuiActivity` does not explicitly opt out of decor fitting or configure the
+bar surfaces. There are no Android status/navigation icons, but the visible
+frame is not the full SOS-native frame and therefore does not meet Core parity.
+
+**Runtime lock:** With logs cleared, `adb shell input keyevent 26` took the
+device to `Wakefulness=Asleep`. The bridge logged
+`native_compat_control command=lock`, the native host exclusively acquired
+`sec_touchscreen` and `gpio_keys`, rendered the trusted lock, and acknowledged
+readiness before the bridge completed its `reason=screen-off` path. A second
+power keyevent woke to a full-frame native `SOS LOCK` keypad with `PRESS ENTER`;
+SurfaceFlinger contained `SOS Trusted Lock` and no Android system surface. This
+passes the suspend readiness/race and native ownership gates. It does not pass
+the human input gate: injected framework taps cannot cross the intentional raw
+grab, SELinux correctly denied shell `sendevent` writes, `adb root` was
+correctly unavailable, and no physical ENTER tap was completed during the
+observation window. Physical side-key routing and physical touch unlock remain
+pending.
+
+The lock logs exposed a separate implementation defect. Android encodes
+credential type `NONE` as `-1`, while the host also uses `-1` as its
+"status not initialized" sentinel. It consequently re-queries and logs
+`framework_bridge_status credential_type=-1` approximately every 100 ms until
+CE becomes available, and does the same indefinitely on a runtime relock. The
+host needs a separate status-ready bit or a non-overlapping sentinel.
+
+**Android application and membrane evidence:** Two local AOSP test APKs were
+used and removed afterward:
+
+| Test APK | Bytes | SHA-256 |
+| --- | ---: | --- |
+| `MultiDexLegacyTestApp_without_corrupted.apk` | 25,057 | `ee924db9163b2e243374fcaee2f51c90b2e9bf848ac549c204fa1b80c294997a` |
+| `ExactCalculator.apk` | 4,740,863 | `25226826e80c4df6dc73e34016ac90cf084701e230d24c1705924b576104a230` |
+
+The target-SDK-19 MultiDex install was initially rejected with
+`INSTALL_FAILED_DEPRECATED_SDK_VERSION`; retrying the intentional compatibility
+fixture with `adb install --bypass-low-target-sdk-block` succeeded. The SOS
+workspace still rendered `NO COMPATIBLE APPLICATIONS` even though shell package
+queries found the exported non-system launcher Activity. This disproves the
+enumeration path: `SosAndroidAppAdapter` lacks the launcher-intent `<queries>`
+visibility declaration (or an equivalent narrowly scoped privileged query).
+
+Explicitly launching that legacy app produced a visible Android
+PermissionController `ReviewPermissionsActivity` beneath the persistent SOS
+chrome. A direct shell launch of the same PermissionController component is
+blocked with result code 102, so the existing `ActivityStarter` check does not
+cover the framework-initiated permission-review route used during application
+start. This is a direct Android-experience escape and a release blocker.
+
+The modern target-SDK-35 ExactCalculator launch passed: calculator content was
+visible with only the fixed SOS side chrome, SurfaceFlinger showed no Android
+system chrome, and tapping SOS BACK logged
+`compat_app_action action=back` and returned to HOME. Forcing Calculator to
+crash with `adb shell am crash com.android.calculator2` also passed:
+`AppErrors` logged `SOS Compat suppressed Android crash dialog`, the protected
+SOS attention receiver persisted the crash fact, and focus returned to HOME
+without an Android dialog. A real `INSTALL_PACKAGE` intent resolved to
+`com.android.packageinstaller/.InstallStart` but was blocked with result code
+102 while HOME retained focus. ANR suppression was not dynamically exercised.
+
+**Native recovery:** Force-stop alone did not terminate the platform-signed
+SOS process because the package is persistent. Disabling it for user 0 and
+then issuing a controlled `am crash dev.sos.experience` removed the healthy
+HOME heartbeat; after approximately 20 seconds the native host placed a
+full-frame `SOS Fixed Recovery` surface above Android. This passed the liveness
+timeout and fail-closed rendering gate. The package was re-enabled and restored
+to `stopped=false`. Recovery is intentionally sticky, and its retry action uses
+raw volume input, so the physical Retry gate was not exercised.
+
+The abnormal disable/re-enable sequence also exposed lifecycle fragility. The
+disabled-user state persisted across the first immediate reboot. Re-enabling
+and explicitly starting HOME before CE availability caused repeated
+`must construct App on main thread` GPUI panics and transient HOME-task churn;
+fixed recovery remained in control. After restoring and flushing package state,
+a cold boot without any pre-unlock Activity injection reached a single healthy
+HOME task normally. This was a test-induced sequence rather than a normal-boot
+failure, but recovery retry and duplicate NativeActivity initialization need a
+dedicated hardware regression before acceptance.
+
+Representative commands were:
+
+```text
+adb shell getprop ro.system_ext.build.version.incremental
+adb shell dumpsys window
+adb shell dumpsys SurfaceFlinger --list
+adb shell input keyevent 26
+adb install --bypass-low-target-sdk-block MultiDexLegacyTestApp_without_corrupted.apk
+adb install ExactCalculator.apk
+adb shell am crash com.android.calculator2
+adb shell am start -W -a android.intent.action.INSTALL_PACKAGE \
+  -d content://dev.sos.test/app.apk \
+  -t application/vnd.android.package-archive
+adb shell pm disable-user --user 0 dev.sos.experience
+adb shell am crash dev.sos.experience
+adb shell pm enable --user 0 dev.sos.experience
+adb shell sync
+```
+
+Raw generated evidence is outside Git under
+`/home/carlid/sos-samsung-work/lineage-a33x/evidence-20260816-native-compat/`:
+
+| Artifact | Bytes | SHA-256 |
+| --- | ---: | --- |
+| `sos-native-compat-boot-398c68858f5e.log` | 4,079,095 | `2bc88bbdee2f04fb78da4bc135d6d7768bec249e758e26c194c9c14811fd75cd` |
+| `sos-native-compat-home-398c68858f5e.png` | 180,662 | `f8e2db40faae41784a3ffe7f0c69a58a6c02aa93d26f35dfdbbbede22c96c4f4` |
+| `sos-native-compat-runtime-lock-398c68858f5e.log` | 1,090,104 | `965011a27fbec5801bcd5830b21f5c2196fa4095b8cb256e0a38eead6ecc1a48` |
+| `sos-native-compat-runtime-lock-398c68858f5e.png` | 17,427 | `6d95ba3998bec036caeac94922e8897a884cf9927b26a4b8b01fdf75ed333d9e` |
+| `sos-native-compat-workspace-398c68858f5e.png` | 59,098 | `bf9ba72b33b4f4eec36cc3a6c6f7c07e4ff5f830fa1f23a3f6acb61b37dd5b0b` |
+| `sos-native-compat-test-app-398c68858f5e.png` | 86,034 | `7ec3be7b1922e78d9e95d0264a87820c9ff47c012a5f3e17629f41cfb3fba630` |
+| `sos-native-compat-calculator-398c68858f5e.png` | 111,445 | `29866fec853087034ee0d63d2316edcde1cc61694af91fc972e9eaddca0cf0f9` |
+| `sos-native-compat-crash-398c68858f5e.log` | 111,266 | `7619cef2f25da7908be29a5f50ca3e632a3853f1c546f00d9833af8c96ca4088` |
+| `sos-native-compat-crash-398c68858f5e.png` | 181,173 | `42f4f576345e2d83d91fd74d9179aa576e49ed2aca4e127132a3c033062ccead` |
+| `sos-native-compat-installer-block-398c68858f5e.log` | 67,713 | `bac234b3535630684ba88d5982fc9abd8d748b5bba14d9f3cde7257235b80101` |
+| `sos-native-compat-fixed-recovery-398c68858f5e.log` | 205,952 | `34a44d30a17b3942791021a52d2f963ed099e6bafa6de4f6b38bb034befdc06c` |
+| `sos-native-compat-fixed-recovery-398c68858f5e.png` | 17,304 | `45dd5b34b3dda575283cff865c38165454b87d6684522130a5f877286b6cbad8` |
+| `sos-native-compat-fixed-recovery-surfaces-398c68858f5e.txt` | 3,240 | `bf3904702e826fd351b19e143bbf90ec96e734956ce8ba23859f0897cf9e0e6a` |
+| `sos-native-compat-final-boot-398c68858f5e.log` | 3,649,365 | `f3bda2fbe4a4774cf9fd1e6357c76f6dc2879abc2aae12b616318596bb12c021` |
+| `sos-native-compat-final-home-398c68858f5e.png` | 181,849 | `d51a1f5ab8f99949bdcca213d1b0b9b20b97a511357f249bf18a05e85cec5367` |
+| `sos-native-compat-final-surfaces-398c68858f5e.txt` | 3,308 | `ca0ee2d55645a7ba1bda872a86054ed636312908bc46ecab9f610fab6f8b3d21` |
+
+**Decision / remaining risks / next gate:** Reject revision
+`sos.compat1.19d8a653fbd7.398c68858f5e` for Compat acceptance. The shared native
+host, readiness-acknowledged lock, fixed recovery, selected modern-app chrome,
+crash suppression, installer block, and removal of packaged SystemUI/Launcher
+all work on hardware. Acceptance remains blocked by the HOME inset bands, app
+enumeration visibility failure, permission-review Android UI escape, and the
+credential-`NONE` sentinel bug. The next image must fix those four defects,
+then repeat the physical side-button/touch ENTER and recovery Retry gates plus
+permission, ANR, chooser, keyboard, emergency/call, alarm, thermal, and
+accessibility brokers. The phone was left booted on the exact tested revision,
+awake at SOS HOME, with CE unlocked, the SOS package enabled, and all temporary
+test applications removed.
+
+## 2026-08-16 — Compat 1 Core-parity integration and exact-image hardware rerun
+
+**Goal / hypothesis:** Resolve every blocker found by the rejected native-Compat
+hardware pass and enforce the clarified product invariant: Compat is Core's SOS
+presentation and supervision stack plus a narrowly bounded Android application
+runtime, never an Android experience with an SOS launcher. The rebuilt image
+had to remove the Android lockscreen/shade path, reuse Core implementation
+instead of forking it, fill the physical frame, enumerate only eligible apps,
+block framework-redirection ceremonies, survive HOME process death, and show
+complete SOS chrome across task handoffs. A desktop build could not close the
+gate; the exact OTA had to be flashed and measured on `RFCT50EGFCN`.
+
+**Architecture and code changes:** Compat 1, Core 0B, and Core 1 now include the
+same `sos_native_host_common.mk` and `sos_headless_android_adapter_common.mk`
+fragments. They share the fixed native host/runtime, pre-unlock autostart,
+headless LockSettings bridge, UI-removal marker, and inherited-package removal
+set. The obsolete Compat SystemUI overlay was deleted because there is no
+SystemUI process to configure. Compat still builds the same Rust
+`ExperienceHost` as Core; only its NativeActivity/task adapter is product-
+specific.
+
+The native host remains alive after unlocked handoff and re-enters its direct
+SurfaceComposer lock on protected screen-off. Bridge status readiness is now a
+separate state from credential type, so Android's valid `NONE == -1` result no
+longer collides with an uninitialized sentinel. The HOME watchdog is
+restart-first: heartbeat loss asks the persistent bridge to start a clean HOME,
+and enters fixed native Recovery only if that bounded request cannot restore
+readiness. The framework bridge accepts that request only after CE is available
+and records the result without exposing an Activity of its own.
+
+The framework policy patch now checks the final Activity target after legacy
+permission-review and other framework interception, not only the caller's
+initial resolution. It also makes remaining system-UID system windows
+transparent, non-focusable, and non-touchable while preserving framework
+progress callbacks. `SosShell` declares narrowly scoped launcher queries;
+`SosAndroidAppAdapter` exposes only exported launcher Activities from eligible
+non-system, non-updated-system, non-legacy packages.
+
+The Android-hosted fixed surfaces were consolidated instead of copied:
+`SosWindowPolicy` owns full-frame/cutout/system-bar behavior,
+`SosFixedActivity` owns the focus lifecycle, and `SosFixedUi` owns Canvas
+rendering for workspace, attention, and controls. `SosVisibleIdentity` maps
+installed packages to their application labels, platform package `android` to
+`SOS RUNTIME`, and unknown package-shaped strings to `COMPATIBILITY APP`; raw
+package rows and the old substrate copy were removed. Workspace copy now reads
+`Open a compatible application. SOS remains in control.`
+
+The permanent control service uses a software text layer and an atomic
+transition protocol. `beginTransition()` hides the whole overlay synchronously
+inside the control-up or app-launch event, before Activity transition work can
+reuse the old surface. Destination focus then reveals one complete frame after
+250 ms for SOS-owned Activities or 750 ms for a foreign application. Workspace
+and attention no longer issue racing service starts. The inspector requires the
+compiled marker
+`transition_reveal=atomic controls=back,apps,attention,exit`, the shared
+full-frame classes, visible-identity helper, restart-first watchdog markers,
+and the absence of the old SystemUI overlay and Android-visible copy.
+
+The detailed product boundary and ownership record were updated in
+[`android-product-split.md`](android-product-split.md) and
+[`android-ui-ownership-stages.md`](android-ui-ownership-stages.md).
+
+**Rejected approaches and fixes:** The following failures were material to the
+result and were not treated as passes:
+
+- Full-frame HOME/window flags alone fixed the 88-pixel Android inset but did
+  not prevent the SOS control rectangles from surviving a task switch while
+  their text layer was clipped.
+- Extra invalidation, a software layer by itself, and a 250 ms focus redraw
+  each still admitted a partial control frame on hardware. Splitting the delay
+  to 250/750 ms fixed foreign-app settling but duplicate Activity `onCreate`
+  service starts still raced the focus owner. Removing those starts and hiding
+  synchronously at the input boundary produced the first invariant handoff:
+  destination-only at 100 ms, complete chrome at 350 ms for SOS, and complete
+  chrome at 850 ms for Calculator.
+- A generic Gradle release APK used for rapid proof had
+  `sosHomeEnabled=false`. Installing it as a system-app update correctly left no
+  enabled HOME Activity and drove fixed Recovery; `aapt` exposed the disabled
+  alias. This was a proof-artifact configuration error, not an image defect.
+  `pm uninstall-system-updates dev.sos.experience` restored the `/system_ext`
+  APK, and every later proof build used
+  `-PsosHomeEnabled=true -PsosCompatEnabled=true` plus the product platform
+  certificate.
+- Revision `sos.compat1.19d8a653fbd7.f21bca865cea` was a flashed exact-image
+  baseline while the final handoff was isolated with platform-signed app
+  updates. Its overwritten OTA was 1,042,585,450 bytes, SHA-256
+  `289209155ecb56b9f9f569b5d7a8c69c6e51a78f75f88d4cf905f5653e063a32`;
+  it is not the accepted rollback artifact.
+- The last rapid hardware proof APK was kept outside Git at
+  `/tmp/sos-chrome-handoff-proof.6c7geK/SosShell-platform.apk`, 37,829,815
+  bytes, SHA-256
+  `2a086f38f12d9cf413b139bba99a2560cb4ea9840da51cc10686d2b5732e3715`.
+  Its source-matched 100/350/1000 ms captures validated the event boundary
+  before committing to another full OTA build. The update was removed before
+  final flashing, and `pm path` returned only the system-ext APK.
+
+**Build and package evidence:** `./tools/a33xctl build-compat1` completed in
+3:09 and produced revision
+`sos.compat1.19d8a653fbd7.220e268c228f`. The build reported 112/112 targets and
+`Package Complete`. `./tools/a33xctl inspect-compat1` then passed archive CRC,
+whole-package signature, PIT ceilings, boot/recovery/dtbo/vbmeta AVB,
+target-files hashtrees, package/removal policy, manifest, compiled marker,
+SELinux labeling, and stage-property checks:
+
+| Final artifact | Bytes | SHA-256 |
+| --- | ---: | --- |
+| `/home/carlid/dev/lineage-a33x/out/target/product/a33x/lineage-23.0-20260816-UNOFFICIAL-sos_compat_a33x.zip` | 1,042,568,904 | `bbba76ca12ed831bbd3feb053f1c21196749f888051b8447a809f7f46e27cf52` |
+| `SYSTEM_EXT/priv-app/SosShell/SosShell.apk` | 40,747,113 | `55ed4f3694f01869e20ed19724ae229d9a93e2a2d11cccbe75e43ed87fb1da01` |
+| `SYSTEM_EXT/bin/sos-core-host` | 84,808 | `826200b26b2a97927ea7f22cd7ede225183347928d81635b6dd0b06443109995` |
+| `SYSTEM_EXT/lib64/libsos_core_experience.so` | 14,526,296 | `0a1acf64edf7a9b1ff7101699249bef19dea9bf28d3837245f45a49585af328c` |
+| `SYSTEM_EXT/priv-app/SosFrameworkBridge/SosFrameworkBridge.apk` | 20,894 | `4ebe01c795fedfe0c1513d8d1ae3a42887a99d0c06f03f72a3f6d7eff81ccd7b` |
+| `SYSTEM/framework/services.jar` | 22,166,311 | `be860e74b0db32e0cc91689713c124fcfd9c1109b361959503caf331eebcfac5` |
+
+The exact OTA was installed with `adb reboot sideload-auto-reboot`,
+`adb wait-for-sideload`, and `adb sideload`; Recovery reported
+`Total xfer: 1.00x`. The no-wipe boot reached the exact revision with profile
+`compat`, core stage `compat`, Compat stage `1`, CE available, and SELinux
+enforcing. `dev.sos.experience` resolved only to
+`/system_ext/priv-app/SosShell/SosShell.apk`; there was no `/data/app` update and
+`pm path com.android.systemui` returned no package.
+
+**Exact-image device results:** The following checks were performed on the
+flashed revision, not on the rapid proof APK:
+
+- HOME was the focused 1080x2400 Activity with `isKeyguardShowing=false` and a
+  complete SOS control frame. Window and SurfaceFlinger audits contained no
+  SystemUI, status/navigation bar, notification shade, PermissionController,
+  keyguard, or fixed-recovery surface.
+- APPS produced a full-frame fixed SOS workspace containing only `Calculator`,
+  not the legacy fixture or a raw package identifier. At 100 ms the destination
+  was complete and chrome intentionally absent; at 350 ms the entire chrome
+  appeared in one frame.
+- ATTN produced a full-frame fixed SOS attention surface. Platform facts were
+  labeled `SOS RUNTIME` and application crashes `Calculator`; neither
+  `android` nor `com.android.*` appeared as visible identity. Its 100/350 ms
+  handoff repeated the atomic result.
+- Calculator launched as the selected non-system app. At 350 ms the app filled
+  the frame with chrome intentionally absent; at 850 ms all four SOS controls
+  were complete. An in-bounds SOS BACK press returned to the workspace.
+- Explicit launch of the target-SDK-19 fixture returned Activity error 102.
+  The framework logged `SOS Compat blocked redirected Android system Activity`
+  for `ReviewPermissionsActivity`; workspace retained focus and no
+  PermissionController surface existed.
+- With Calculator foreground, `adb shell am crash dev.sos.experience` removed
+  HOME. The native host logged `native_compat_home_failed action=restart-home`,
+  the bridge and host both logged an accepted HOME request, and HOME was focused
+  again after 14.216 seconds. There was no
+  `native_compat_home_restart_failed` and no fixed-recovery surface.
+- After uninstalling `com.android.calculator2` and
+  `com.android.multidexlegacytestapp` and deleting the exact staged
+  `/data/local/tmp/sos-test.apk`, screen-off/wake rendered the direct native
+  `SOS LOCK / PRESS ENTER` frame. Logs show exclusive `sec_touchscreen` and
+  `gpio_keys`, `trusted_lock_ready`, and a one-shot bridge status of
+  `credential_type=-1 unlocked=true`. Window policy says
+  `deviceHasKeyguard=false`; Android keyguard remains false and SurfaceFlinger
+  contains `SOS Trusted Lock`, not SystemUI or a shade.
+
+Representative commands were:
+
+```text
+./tools/a33xctl build-compat1
+./tools/a33xctl inspect-compat1
+adb reboot sideload-auto-reboot
+adb wait-for-sideload
+adb sideload lineage-23.0-20260816-UNOFFICIAL-sos_compat_a33x.zip
+adb shell dumpsys activity activities
+adb shell dumpsys window windows
+adb shell dumpsys window policy
+adb shell dumpsys SurfaceFlinger --list
+adb shell am start -W -n com.android.multidexlegacytestapp/.MainActivity
+adb shell am crash dev.sos.experience
+adb shell input keyevent KEYCODE_SLEEP
+adb shell input keyevent KEYCODE_WAKEUP
+```
+
+Raw generated evidence remains outside Git in
+`/home/carlid/sos-samsung-work/lineage-a33x/evidence-20260816-native-compat-fixes/`:
+
+| Evidence | Bytes | SHA-256 |
+| --- | ---: | --- |
+| `55-final-220e-home.png` | 193,106 | `761f762d605d397037f335d9ee9a6fdea83d16862f17df436050b32a7334aba3` |
+| `55-final-220e-home-activities.txt` | 14,643 | `86e638b9beb69c30f42f29a9467d2bf93ac148399629d7278ac2228ed3a2e6de` |
+| `55-final-220e-home-windows.txt` | 6,235 | `3b2cac587ef0a2d77af77b36ee4f78c331fc772e3044f35c720317c359b0a48f` |
+| `55-final-220e-home-surfaces.txt` | 3,309 | `f79bf4c74f8bee4a675605f6ace5106c96a63b2363f11b784e43b5bc45deca90` |
+| `56-final-220e-workspace-100ms.png` | 39,472 | `84de919efd19dbec6699e8cc5562ba21ae24d45cbf28d2113aa65baabd7f21da` |
+| `56-final-220e-workspace-350ms.png` | 55,832 | `25ee9324dd35d0f670bed281145eb76a14f0716652d7354291e6fc01eed87565` |
+| `57-final-220e-attention-100ms.png` | 128,539 | `30b6abf0693fbd81abbc9203df75bbcb23eab1496f3798a47b8131c2470b6925` |
+| `57-final-220e-attention-350ms.png` | 144,612 | `ce96c0b2186df002343fcb1484fbd04045ed207f70b1b1edcfa60d480b56d5b9` |
+| `58-final-220e-calculator-350ms.png` | 104,349 | `89440da4fd366a98840072c71b5f76eb2366eed1ef8a2da8e8239dce5ab228aa` |
+| `58-final-220e-calculator-850ms.png` | 111,965 | `281bbff2b1bb4aaa52967b29751d45c9b4ffc6a459dda4cf0267b53948877e8a` |
+| `59-final-220e-legacy-start.txt` | 125 | `574408882be0ec65cddc37af3658a21df0d6cd7011e67f573fa1ca77eea6ab93` |
+| `59-final-220e-legacy-logcat.txt` | 8,779 | `11f78cdde412e9b08de27a90cc5d48c09ae17d46ca1186b23600c4896558aba4` |
+| `60-final-220e-crash-recovery.png` | 193,437 | `a0ae1d6eff0c325e3a1a20077cee568dcd2729e610b7f083f4d719df71e6f412` |
+| `60-final-220e-crash-recovery-logcat.txt` | 138,140 | `439494662b3aac842a47e9e3932a7fbdaf395c38b810090354b8e93b27b8ba90` |
+| `61-final-220e-native-lock.png` | 16,499 | `da5ff01426dc98a02ce6d15e0b3cfadcbff1b159ff62f724257b5c60e740df0c` |
+| `61-final-220e-native-lock-windows.txt` | 6,262 | `1188e1ed994469bc88e46ef4fb27983955f5d9b4102747a7e7527e8ef5793285` |
+| `61-final-220e-native-lock-surfaces.txt` | 3,505 | `759b07ef4835ed6af7a30f299f2f57290a323b6ee5be3f8085416c50b3180b8c` |
+| `61-final-220e-native-lock-logcat.txt` | 75,822 | `6429ad0b3bb9818a26a352d86fd9dfaff09f15afce7fae8460ad3eb225c9d84b` |
+
+Final source verification passed `cargo fmt --all -- --check`, product-flagged
+`:app:compileReleaseJavaWithJavac`, the pinned AOSP `clang-format --dry-run
+--Werror` over `core/host.cpp`, `bash -n tools/a33xctl`, and
+`git diff --check`. Applying the tracked framework patch in reverse with
+`--check` also passed against the staged Lineage `frameworks/base` checkout,
+proving that the patch and built framework source match.
+
+**Decision / remaining risks / next gate:** Accept revision
+`sos.compat1.19d8a653fbd7.220e268c228f` as the native-Compat exact-image
+rollback artifact and as passing the automated hardware presentation,
+application membrane, transition, restart, and side-button lock gates. Do not
+mark physical input complete: ADB framework injection intentionally cannot
+cross the host's raw-device grab, so a human must press the visible native
+ENTER target and confirm return to HOME. The handset has credential type
+`NONE`; PIN/Gatekeeper throttling, fingerprint, authentication-bound Keystore,
+physical side-key routing, emergency calling, ANR, chooser/IME, call/alarm,
+thermal, accessibility, and data-containment gates remain separate work. The
+phone was left on the exact revision at the native ENTER screen, CE available,
+SELinux enforcing, with the temporary app update, both test apps, and staged
+test APK removed.

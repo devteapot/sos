@@ -56,20 +56,7 @@ cc_binary {
 }
 
 cc_binary {
-    name: "sos-compat-launcher-removal-marker",
-    srcs: ["core/ui_removal_marker.cpp"],
-    compile_multilib: "64",
-    system_ext_specific: true,
-    cflags: [
-        "-Wall",
-        "-Werror",
-        "-Wextra",
-    ],
-    overrides: ["Launcher3QuickStep"],
-}
-
-cc_binary {
-    name: "sos-core-ui-removal-marker",
+    name: "sos-ui-removal-marker",
     srcs: ["core/ui_removal_marker.cpp"],
     compile_multilib: "64",
     system_ext_specific: true,
