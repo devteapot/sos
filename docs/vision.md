@@ -188,20 +188,25 @@ It does **not** mean porting the prototype to an ordinary desktop Linux app.
 It means promoting SOS from an application hosted by Android into the phone's
 primary operating environment.
 
-The intended transition is incremental:
+The transition is incremental, and multiple stages remain runnable as
+regression and recovery targets:
 
-1. **Android laboratory — current.** SOS is an APK using GPUI Mobile, Android
-   lifecycle/input/surfaces, synthetic providers, and workstation-driven tools.
-2. **Privileged Android/AOSP shell.** SOS becomes the boot-to-home experience
-   and owns the visible shell. Android applications may temporarily appear as
-   compatibility providers or embedded surfaces.
-3. **SOS system services.** Revision supervision, state, providers, agent,
-   evaluation, input routing, and scene activation become first-class
-   services rather than APK-local mechanisms.
-4. **Thin hardware substrate.** SOS runs over the Linux kernel, device drivers,
-   vendor HALs, graphics/audio stacks, and whichever AOSP services remain useful.
-   The Android application framework is an optional compatibility island, not
-   the owner of the user experience.
+1. **Android laboratory — passed and retained as a harness.** The GPUI Mobile
+   APK proved generated interaction, transactional revision activation,
+   provider/state independence, and sustained device viability.
+2. **Privileged Android/AOSP shell — current physical baseline.** SOS boots as
+   the complete visible shell. Compat may present explicitly selected
+   non-system Android applications inside an SOS-owned boundary; Core presents
+   no Android Activity UI.
+3. **SOS system services — in progress.** Revision supervision, durable state,
+   provider transport, the resident agent, evaluation, native input, and scene
+   activation have first-class implementations. Phone, credential, network,
+   accessibility, urgent-attention, and other retained Android services still
+   need bounded native brokers or replacements.
+4. **Thin hardware substrate — architecture gate demonstrated, migration not
+   complete.** Core 1 boots the fixed native locked/recovery surface without
+   Zygote or any APK process. It deliberately does not unlock CE storage or
+   claim that displaced framework services have been replaced.
 
 “Off Android” therefore does not require rewriting a kernel, GPU driver, modem
 stack, camera HAL, or every vendor service. It means that Android's application
@@ -213,18 +218,22 @@ The physical a33x implementation is split into
 system with an Android application-runtime island: SOS owns every system
 surface, while explicitly selected non-system Android app contents may appear
 as compatibility windows. Android ceremonies are not part of Compat. Core
-removes Android Activity presentation entirely while initially retaining proven
-native Android infrastructure; eliminating Zygote and `system_server` is a
-later service migration. The initial Core target is intentionally a shadow
-stage with a manual native SurfaceComposer probe and Android recovery UI still
-packaged. It must not claim Core 0 until native input, trusted lockscreen,
-recovery, and physical-device gates pass.
+removes Android Activity presentation entirely while initially retaining
+proven native Android infrastructure. The physical campaign has now passed the
+Shadow, Core 0A, and Core 0B stage-specific gates, including native display and
+input ownership, fixed recovery, a pre-unlock native lock surface, and a
+headless-framework boot. Core 1 separately proves the no-Zygote process and
+recovery boundary, but remains honestly locked until native
+synthetic-password/FBE unlock and the displaced system services exist. The
+exact ownership boundaries and accepted revisions are recorded in
+[`android-product-split.md`](android-product-split.md) and
+[`android-ui-ownership-stages.md`](android-ui-ownership-stages.md).
 
-## Android exit gate
+## Historical Android laboratory exit gate
 
-The project should leave the APK laboratory after it proves the novel property,
-not after it polishes an Android application. The following are the required
-gates.
+The project was to leave the APK laboratory after proving the novel property,
+not after polishing an Android application. The following were the required
+gates; they remain useful regression criteria.
 
 ### A. Generative depth beyond the current IR
 
@@ -238,17 +247,17 @@ synthetic data:
    an appointment using new geometry, hit testing, state, and a typed provider
    action.
 
-The third request is the decisive one. The original `UiNode` catalog could not
-express it. Scene ABI v3 now lets generated paint operations and hit regions
-coexist on an ordinary retained node, but the first agent trial still required
-an operator layout correction on the physical phone. Passing requires an
-untouched agent output to complete the interaction through the low-level Luau
-capability API.
+The third request was the decisive one. The original `UiNode` catalog could not
+express it. Scene ABI v3 lets generated paint operations and hit regions
+coexist on an ordinary retained node. The first trial required an operator
+layout correction; a later curated single-shot agent output completed the
+interaction untouched through the low-level Luau capability API and closed the
+prototype-scope gate.
 
 ### B. A genuine single-shot agent loop
 
-For the Android exit decision, a request may be submitted from the development
-Mac and must drive one unattended generation attempt:
+For the Android exit decision, a request could be submitted from the
+development workstation and had to drive one unattended generation attempt:
 
 ```text
 request → inspect current source/state/provider schemas
@@ -256,11 +265,11 @@ request → inspect current source/state/provider schemas
         → present diff → accept or rollback
 ```
 
-Use headless Codex with `gpt-5.6-luna` at medium reasoning for the initial cheap
-model test. Record first-pass success, failed evaluations, time to visible
-candidate, and rollback. Screenshot/log inspection and autonomous
-self-correction remain important future work, but are deliberately not part of
-this gate. A human manually writing the candidate is not completion.
+The passing run used headless Codex with `gpt-5.6-luna` at medium reasoning and
+recorded first-pass success, failed evaluations, time to visible candidate, and
+rollback. Screenshot/log inspection and autonomous self-correction were
+deliberately not part of this gate. A human manually writing the candidate did
+not count as completion.
 
 ### C. Complete revision activation and recovery
 
@@ -296,15 +305,14 @@ worth building.
 
 ## Exit condition in one paragraph
 
-We are ready to begin the privileged AOSP/system-services phase when a user can
-make the three increasingly unconventional requests above; an agent implements
-them in an unattended single shot; the phone activates each working revision
-without freezing or losing state; the old revision survives every failed
-candidate; and the final drag operation crosses a typed provider boundary. At
-that point SOS
-has demonstrated that the interface is genuinely being programmed around the
-user rather than configured from a catalog. Remaining inside a normal APK would
-then constrain the research more than it de-risks it.
+The project was ready to begin the privileged AOSP/system-services phase when a
+user could make the increasingly unconventional requests above, an agent could
+implement the decisive revision in an unattended single shot, the phone could
+activate working revisions without freezing or losing state, the old revision
+could survive every failed candidate, and the final drag operation crossed a
+typed provider boundary. The prototype-scope evidence met that condition;
+remaining inside a normal APK would have constrained the research more than it
+de-risked it.
 
 ## Current phase decision
 
@@ -325,15 +333,22 @@ one GPUI experience process. The new run's visible p95 was 92.708 ms with zero
 rejections; full evidence is in
 [`stable-host-device-gate.md`](stable-host-device-gate.md).
 
-The project should therefore begin the privileged AOSP/system-services phase.
-The earlier APK gate used disposable candidate Activities as a recovery probe;
-that evidence remains historical, but the product architecture no longer uses
-per-revision processes or surfaces. The current Android harness now activates
-Luau in one GPUI host process, while the Linux supervisor drives a stable host
-through a typed prepare/present protocol. The new phone gate confirms the APK
-lifecycle, but revision authority, the provider daemon, compositor-backed
-presentation acknowledgement, and permanent-host recovery are not yet owned by
-the target system. The APK remains a regression harness while that work proceeds.
+The project did leave the APK laboratory. The Linux path now has a stable host,
+durable provider/state authority, revision supervisor, resident authoring
+agent, authenticated compositor, and direct-DRM VM gate. Android 17 Cuttlefish
+boots SOS as HOME with an init-supervised on-device authority. On the physical
+SM-A336B, Compat 1 owns every system surface around an optional Android
+application-runtime island; the ordered Shadow, Core 0A, Core 0B, and Core 1
+campaign demonstrated successively stronger native ownership boundaries.
+
+The current phase is service migration and hardening, not further proof that a
+generated experience can replace an APK screen. Compat 1 revision
+`sos.compat1.19d8a653fbd7.220e268c228f` is the accepted physical fallback.
+Core 0B is the strongest bootable headless-framework stage; Core 1 is an
+intentionally locked no-Zygote validation target. Real credentials,
+accessibility, urgent attention, data containment, service replacement, and
+broader physical hardware gates remain open. The APK continues as a regression
+harness rather than the product architecture.
 
 ## Explicit non-goals for the current phase
 

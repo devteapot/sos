@@ -6308,3 +6308,57 @@ thermal, accessibility, and data-containment gates remain separate work. The
 phone was left on the exact revision in the SOS application workspace, CE
 available and SELinux enforcing, with the temporary app update, both test apps,
 and staged test APK removed.
+
+## 2026-08-16 — User-facing documentation audit after the native-ownership campaign
+
+**Goal / hypothesis:** Reconcile the public project entry points with the
+implemented and measured system after the AOSP, Linux, resident-agent, Samsung
+a33x, and six-profile native-ownership work. The root README had last changed at
+`b6da036` and still described Milestone 0 as the current physical status and
+Milestone 1 as the current architecture. The vision document likewise called
+the Android APK laboratory current and described Core 0 as a future claim.
+
+**Documentation changes:** `README.md` now leads with the current research
+status, separates the APK regression harness, Linux, Cuttlefish, and physical
+a33x evidence, explains the Compat/Core profile matrix, provides verified
+developer entry points for each track, links the current evidence reports, and
+states the principal security and hardware limitations. It also adds a
+prominent physical-flash warning and avoids presenting any build command as
+authorization to unlock or flash a device.
+
+`docs/vision.md` now marks the Android laboratory as passed historical work,
+identifies privileged shell/service migration as the current phase, and records
+the actual Shadow, Core 0A, Core 0B, and intentionally locked Core 1 boundaries.
+The original exit criteria remain intact as historical regression criteria.
+The decision summary in `docs/samsung-sm-a336b.md` now identifies accepted
+Compat revision `sos.compat1.19d8a653fbd7.220e268c228f`, the complete staged
+physical campaign, the native Pi/live-revision result, and the gates that remain
+open.
+
+**Evidence and checks:** `./tools/sosctl` and `./tools/a33xctl` help output were
+compared directly with every README command and profile. A repository-local
+shell check extracted every Markdown target from `README.md` and `docs/*.md`,
+resolved each non-HTTP path relative to its source file, and found no missing
+target. A second extraction verified that every `./tools/...` path named in the
+README exists. `git diff --check` passed. No build, VM, device, flash, runtime,
+latency, or hardware test was run because this change makes no implementation
+or evidence claim beyond the already recorded accepted results.
+
+**Failures / fixes / rejected approaches:** The old README was not extended as
+another chronological status list: that structure made the earliest milestones
+look current and buried the runnable paths. It was reorganized around current
+status, architecture, selectable development tracks, repository orientation,
+and limitations. Detailed artifact hashes and campaign transcripts remain in
+their focused reports rather than being duplicated into the entry point. The
+first combined patch attempt did not apply because a wrapped `docs/vision.md`
+context line differed from the patch; it made no partial change. The update was
+then applied as exact per-file patches and the resulting diff was rechecked.
+
+**Decision / remaining risks / next gate:** Treat the README as the public
+status and navigation surface, `docs/vision.md` as the architectural north
+star, and the focused gate reports plus this ledger as evidence. This audit
+does not close the open PIN/Gatekeeper, fingerprint, authentication-bound
+Keystore, Recovery chord, urgent-attention, IME, accessibility, data
+containment, audio/call, thermal, soak, native CE-unlock, or displaced-service
+gates. Future material architecture or hardware work must update both its
+focused report and the README when it changes the public status matrix.

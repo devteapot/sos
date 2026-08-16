@@ -3,12 +3,13 @@
 ## Decision
 
 The connected Galaxy A33 5G has passed the stock rollback, bootloader-unlock,
-LineageOS bring-up, and **physical ARM64 SOS runtime gates**. It is running the
-corrected Android 16 / LineageOS 23 SOS a33x product over exact FYH2 vendor
-firmware with an unlocked/orange boot chain. SOS is the permanent HOME, its
-authority is on-device, and a live Luau revision has survived independent
-authority and application restarts. A custom boot has irreversibly changed
-the Knox warranty bit to `1`.
+LineageOS bring-up, **physical ARM64 SOS runtime gates**, and the complete
+six-profile Compat/Core ownership campaign. It is running accepted Compat 1
+revision `sos.compat1.19d8a653fbd7.220e268c228f` over exact FYH2 vendor
+firmware with an unlocked/orange boot chain. SOS owns the visible system and
+on-device authority; the resident native Pi agent has produced a live Luau
+revision that survived an OTA and independent authority/HOME restarts. A custom
+boot has irreversibly changed the Knox warranty bit to `1`.
 
 - The owner explicitly accepted factory reset and device-loss risk on
   2026-08-15 and waived the user-data backup gate because this is a dedicated
@@ -20,14 +21,23 @@ the Knox warranty bit to `1`.
   LineageOS 23 recovery now builds reproducibly from the contemporary a33x,
   s5e8825, kernel, and vendor graph.
 - The recovery USB/watchdog defect was reproduced, repaired, reflashed, and
-  proven by physical ADB sideload. The separately named SOS a33x product now
-  passes build, OTA-signature, PIT, full AVB, ARM64, HOME-manifest, recovery,
-  component-identity, compiled-SELinux, physical sideload, live-revision,
-  restart-recovery, and hardware-service smoke gates.
-- Wi-Fi association/data transfer and actual microphone capture now pass.
-  Speaker/earpiece/Bluetooth/call audio, fingerprint enrollment, cellular
-  calls/data transfer, suspend/resume, thermal behavior, and longer soak
-  testing remain open; service presence does not close those functional gates.
+  proven by physical ADB sideload. Separately inspectable Compat 0, Compat 1,
+  Shadow, Core 0A, Core 0B, and Core 1 images then passed their stage-specific
+  build, boot-chain, presentation, supervision, and rollback gates. Core 1 is
+  deliberately locked and is not a claim that native CE unlock or every
+  Android system service has been replaced.
+- The final Compat image passed full-frame native SOS presentation, a selected
+  modern-application handoff, blocking of Android system ceremonies, HOME
+  restart, side-button lock/wake, and owner-confirmed touchscreen ENTER unlock.
+  The exact stage boundary and evidence are summarized in
+  [`android-product-split.md`](android-product-split.md) and
+  [`android-ui-ownership-stages.md`](android-ui-ownership-stages.md).
+- SOS-authored Wi-Fi association/data transfer, actual microphone capture,
+  native Pi execution, Codex subscription authentication, and a live generated
+  rewrite now pass. Speaker/earpiece/Bluetooth/call audio, fingerprint and real
+  PIN gates, cellular calls/data transfer, the physical Recovery chord,
+  broader suspend/resume, thermal behavior, accessibility, and longer soak
+  testing remain open; service presence does not close functional gates.
 
 ## Connected-device evidence
 
