@@ -2389,6 +2389,7 @@ mod tests {
             surfaces: Vec::new(),
             agent: Default::default(),
             network: Default::default(),
+            providers: Default::default(),
         }
     }
 }

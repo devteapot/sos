@@ -36,6 +36,13 @@ pub enum RevisionRequest {
         revision_id: String,
         state_stage_id: u64,
     },
+    /// Restore the authority-pinned stock experience after the active
+    /// generated revision fails validation during host startup. The failed id
+    /// prevents a stale host from rolling back a newer activation.
+    FallbackToStock {
+        request_id: u64,
+        failed_revision_id: String,
+    },
 }
 
 impl RevisionRequest {
@@ -43,7 +50,8 @@ impl RevisionRequest {
         match self {
             Self::Current { request_id }
             | Self::Install { request_id, .. }
-            | Self::Activate { request_id, .. } => *request_id,
+            | Self::Activate { request_id, .. }
+            | Self::FallbackToStock { request_id, .. } => *request_id,
         }
     }
 }
@@ -56,5 +64,11 @@ pub struct RevisionResponse {
     pub source: Option<String>,
     pub state: Option<StateEnvelope>,
     pub assets: Vec<RevisionAssetWire>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stock_revision_id: Option<String>,
+    #[serde(default)]
+    pub stock_trusted: bool,
+    #[serde(default)]
+    pub fallback_performed: bool,
     pub error: Option<String>,
 }

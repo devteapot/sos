@@ -28,12 +28,65 @@ return {
 }
 ```
 
-`model` contains `greeting`, `date`, `weather`, `calendar`, `notes`, `music`,
-`system`, `surfaces`, and `agent` values. Android and unconfigured development sessions
-use the deterministic fixture provider. A configured Linux host replaces the
-resource domains with file/iCalendar/MPRIS-backed data and capability-scoped
-system/media snapshots, then pushes live changes into the accepted VM without
-installing a revision. `system` includes time/timezone, online interfaces,
+`model` retains the prototype `greeting`, `date`, `weather`, `calendar`,
+`notes`, `music`, `system`, `surfaces`, `network`, and `agent` values for Linux
+and development compatibility. Android system products additionally expose the
+canonical `model.providers` System Providers ABI. The stock experience and a
+generated experience receive exactly the same value:
+
+```luau
+model.providers = {
+    abi_version = 1,
+    observed_at_ms = 1786900000000,
+    clock = {
+        unix_time_ms = 1786900000000,
+        locale = "en-CH",
+        timezone = "Europe/Zurich",
+        time_label = "14:05",
+        date_label = "16 August 2026",
+    },
+    power = {
+        battery_percent = 72, charging = false, charging_source = "",
+        battery_temperature_deci_c = 296, thermal_status = "none",
+    },
+    connectivity = {
+        wifi_enabled = true, connected = true, validated = true,
+        transport = "wifi", network_label = "Studio", signal_level = 4,
+        online_interfaces = { "wlan" },
+        wifi_networks = {{
+            id = "network-…", label = "Studio", signal_level = 4,
+            saved = true, connected = true,
+        }},
+    },
+    audio = {
+        volume_percent = 50, muted = false,
+        media = { active = true, playing = true, title = "…", artist = "…" },
+    },
+    apps = { compatible = {{ id = "app-…", label = "Calculator" }} },
+    attention = {
+        urgent_count = 0,
+        items = {{
+            id = "attention-…", occurred_at_ms = 1786900000000,
+            source = "Calculator", kind = "general", urgent = false,
+            title = "…", detail = "…",
+        }},
+    },
+    capabilities = { "audio_set_volume", "app_launch", "attention_acknowledge" },
+}
+```
+
+Application, network, and attention IDs are bounded authority-scoped opaque
+selections. Package names, Activity components, Android notification keys,
+Binder objects, Intents, credentials, and framework handles are not part of the
+ABI. Native adapters provide clock, sysfs link, and available power/thermal
+facts. A peer-credential-checked headless framework bridge supplies only the
+framework facts in the typed document. The authority merges both and remains
+the canonical registry.
+
+A configured Linux host replaces its resource domains with
+file/iCalendar/MPRIS-backed data and capability-scoped system/media snapshots,
+then pushes live changes into the accepted VM without installing a revision.
+The compatibility `system` value includes time/timezone, online interfaces,
 battery/AC, audio volume/mute, connected DRM displays, and input devices.
 `state` is JSON-like durable experience state.
 `agent` is the bounded host-fed conversation view:
@@ -72,7 +125,24 @@ return {
 }
 ```
 
-The effect allowlist is:
+The Android System Providers v1 effect allowlist is:
+
+- `audio.set_volume(percent)` where `percent` is an integer in `0..100`;
+- `audio.set_muted(muted)` with a boolean payload;
+- `media.play_pause`, `media.next`, and `media.previous`;
+- `network.connect(network_id)` and `network.disconnect`;
+- `apps.launch(app_id)`;
+- `attention.acknowledge(attention_id)`.
+
+Each effect must have a matching capability in the current trusted snapshot.
+Opaque selections are resolved again inside the framework bridge immediately
+before execution. The ABI also reserves typed `power.request_lock`,
+`power.request_restart`, and `power.request_shutdown` actions, but v1 does not
+grant them: those requests require a future fixed native confirmation surface.
+Luau can request such a ceremony only after the authority advertises the
+corresponding capability; it can never render or complete it.
+
+The existing Linux/development effect allowlist is:
 
 - `notes.attach_to_event(note_id, event_title)` for the durable prototype
   authority;
@@ -90,9 +160,10 @@ The effect allowlist is:
   the system browser, without embedding a WebView;
 - `agent.use_fake` selects the deterministic offline provider and
   `agent.clear_credential` removes every encrypted agent credential;
-- `network.refresh`, `network.connect(ssid, security)`, and
+- `network.refresh`, legacy `network.connect(ssid, security)`, and
   `network.disconnect` expose only the trusted Android Wi-Fi selection
-  boundary.
+  boundary in the APK laboratory. Android system products use the opaque v1
+  selection above.
 
 Linux loads a private capability manifest for the candidate revision before it
 is allowed to render. A provider effect is validated and staged with the state

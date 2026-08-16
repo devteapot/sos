@@ -65,7 +65,7 @@ mod tests {
         assert!(super::validate_embedded_experience().unwrap() > 20);
 
         let runtime = runtime_luau::LuauRuntime::compile(super::DEFAULT_EXPERIENCE).unwrap();
-        let scene = runtime
+        let _scene = runtime
             .render(&providers_fake::snapshot(), &runtime.initial_state())
             .unwrap();
         fn contains_action(node: &experience_ir::SceneNode, action: &str) -> bool {
@@ -82,7 +82,28 @@ mod tests {
                     if session.submit_action.as_deref() == Some("agent_submit")
             ) || node.children.iter().any(contains_agent_composer)
         }
-        assert!(contains_action(&scene.root, "toggle_music"));
+        let mut stock_model = providers_fake::snapshot();
+        stock_model.providers.abi_version = experience_ir::SYSTEM_PROVIDER_ABI_VERSION;
+        stock_model.providers.audio.volume_percent = Some(50);
+        stock_model.providers.capabilities = vec![experience_ir::SystemCapability::AudioSetVolume];
+        let stock_scene = runtime
+            .render(&stock_model, &runtime.initial_state())
+            .unwrap();
+        assert!(contains_action(&stock_scene.root, "audio_volume_up"));
+        assert!(contains_agent_composer(&stock_scene.root));
+        let outcome = runtime
+            .update_with_effects(
+                &stock_model,
+                &runtime.initial_state(),
+                &experience_ir::SceneEvent {
+                    action: "audio_volume_up".into(),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(outcome.effects[0].provider, "audio");
+        assert_eq!(outcome.effects[0].action, "set_volume");
+        assert_eq!(outcome.effects[0].payload["percent"], 60);
 
         let timeflow = runtime_luau::LuauRuntime::compile(super::TIMEFLOW_EXPERIENCE).unwrap();
         let timeflow_scene = timeflow
@@ -103,11 +124,7 @@ mod tests {
             assert!(contains_action(&scene.root, "toggle_music"));
         }
 
-        for source in [
-            super::DEFAULT_EXPERIENCE,
-            super::TIMEFLOW_EXPERIENCE,
-            super::DAILY_FLOW_EXPERIENCE,
-        ] {
+        for source in [super::TIMEFLOW_EXPERIENCE, super::DAILY_FLOW_EXPERIENCE] {
             let runtime = runtime_luau::LuauRuntime::compile(source).unwrap();
             let model = providers_fake::snapshot();
             let state = runtime.initial_state();

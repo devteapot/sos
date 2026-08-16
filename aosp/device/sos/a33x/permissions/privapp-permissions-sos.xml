@@ -1,5 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <permissions>
+    <privapp-permissions package="dev.sos.frameworkbridge">
+        <permission name="android.permission.INTERACT_ACROSS_USERS_FULL" />
+        <permission name="android.permission.MEDIA_CONTENT_CONTROL" />
+    </privapp-permissions>
     <!-- Required only by the fixed Compat chrome to suppress stock status and
          navigation ownership while its signed overlay is active. -->
     <privapp-permissions package="dev.sos.experience">

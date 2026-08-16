@@ -78,6 +78,7 @@ pub fn snapshot() -> ExperienceModel {
             activity: "Connected".into(),
             error: None,
         },
+        providers: Default::default(),
     }
 }
 

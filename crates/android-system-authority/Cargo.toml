@@ -8,7 +8,7 @@ publish = false
 [dependencies]
 android-authority-protocol.workspace = true
 experience-ir.workspace = true
-providers-fake.workspace = true
+libc = "0.2"
 revision-supervisor = { path = "../revision-supervisor" }
 serde.workspace = true
 serde_json.workspace = true
@@ -19,4 +19,3 @@ tempfile = "3"
 [[bin]]
 name = "sos-android-system-authority"
 path = "src/main.rs"
-

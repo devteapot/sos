@@ -6362,3 +6362,281 @@ Keystore, Recovery chord, urgent-attention, IME, accessibility, data
 containment, audio/call, thermal, soak, native CE-unlock, or displaced-service
 gates. Future material architecture or hardware work must update both its
 focused report and the README when it changes the public status matrix.
+
+## 2026-08-16 — System Providers v1 and Stock Base v0 implementation slice
+
+**Goal / hypothesis:** Replace the Android system authority's
+`providers_fake::snapshot()` HOME payload before extending the product UI. The
+first vertical slice should prove one canonical, capability-controlled ABI for
+live clock, power/thermal, connectivity/Wi-Fi, audio/media, compatible
+applications, and attention facts; the product stock Luau source and generated
+Luau revisions must receive the same value. Android package components,
+notification keys, Binder objects, Intents, credentials, and trusted ceremony
+implementation must remain outside Luau.
+
+**Code and architecture changes:** `experience-ir` now defines System Providers
+ABI 1 at `model.providers`, including closed fact, attention-kind, thermal, and
+capability types. The init-owned Android authority now owns a
+`SystemProviderRegistry`: native adapters read wall clock and available bounded
+sysfs link/power/thermal facts, while a peer-credential-checked extension of the
+existing direct-boot framework bridge supplies locale/time-zone labels,
+framework battery/thermal state, validated connectivity and saved Wi-Fi,
+audio/media, compatible applications, and active attention. The authority
+crate no longer depends on `providers-fake`; its state transaction helper is
+now authority-local. Legacy fixture and APK-laboratory providers remain
+available outside the Android system-product path.
+
+The framework bridge exposes only visible labels, scalar facts, and SHA-256
+derived opaque IDs. Package/Activity components, Wi-Fi configuration IDs, and
+notification keys are resolved again inside the bridge immediately before an
+action. Rust converts every Luau effect to a closed `SystemAction`, enforces
+payload and opaque-ID bounds, requires a matching capability from a fresh
+bridge snapshot, and intersects bridge grants with a fixed authority allowlist.
+Volume/mute, media, saved-Wi-Fi, application-launch, and attention-acknowledge
+actions are implemented. Typed lock/restart/shutdown requests exist at the
+boundary but cannot be granted until a fixed native confirmation ceremony is
+implemented. SELinux adds only read access for `sysfs_net`/`sysfs_thermal` and
+an authority-to-`system_app` local-socket connection; battery health stays
+behind the framework/health boundary.
+
+Android HOME now polls the system authority for the full canonical model and
+preserves only its separate resident-agent conversation across refreshes. The
+non-system APK laboratory retains its prior local Wi-Fi adapter. Stock Base v0
+in `experiences/default.luau` renders a live status plane, capability-aware
+quick controls, compatible-application workspace, attention center, and
+Luau-authored resident-agent composer. It contains no Rome weather, seeded
+calendar/notes, Tycho media, or fixed prototype date. The tracked stock source
+is 15,164 bytes with SHA-256
+`ba77495fec9b6bcefa69243922002e6525c34dc02ca83f28a160edfe69227aca`.
+The product already stages that source as AVB/OTA-protected
+`/system_ext/etc/sos/default.luau`.
+
+The authority now installs and pins that immutable product source independently
+of its mutable current pointer. Revision responses identify the trusted stock
+revision. If a generated revision fails runtime validation during startup, the
+host submits the exact revision it booted; the authority rejects stale or stock
+self-fallback requests, journals a coordinated state/pointer transition,
+restores empty stock state, and relies on the fixed supervisor for the clean
+restart. Failure of stock escalates to fixed Recovery instead of looping. The
+detailed ABI, ownership, and gate are recorded in
+[`system-providers-v1.md`](system-providers-v1.md), with the agent-facing shape
+in [`experience-api.md`](experience-api.md).
+
+**Commands and evidence:** The focused Rust suite
+
+```text
+cargo test --locked -p android-system-authority -p android-authority-protocol \
+  -p experience-ir -p providers-fake -p runtime-luau
+```
+
+passed 8 authority tests, 4 experience-IR tests, 5 fixture-provider tests, and
+22 Luau runtime tests. These cover native fixture sysfs collection, framework
+merge/version rejection behavior, absence of package/Activity fields, typed
+payload bounds, missing-capability rejection, non-seeded authority snapshots,
+and coordinated generated-to-stock fallback. `cargo check --locked -p
+sos-experience --tests` passed the stock host test code. The standalone Luau
+validator reported `source_bytes=15164`, `nodes=50`, `inputs=1`, and
+`semantics=2` for the stock source.
+
+Both Android/Bionic checks passed:
+
+```text
+cargo ndk -t arm64-v8a -P 31 check -p android-system-authority --locked
+cargo ndk --link-libcxx-shared -t arm64-v8a -P 31 check \
+  -p sos-experience --locked --no-default-features --features core-native
+```
+
+The complete framework-bridge Java source compiled with `javac -source 8
+-target 8` against the Android 34 SDK and the built Lineage
+`framework-minus-apex-headers` jar. `xmllint --noout` passed the bridge manifest
+and privileged-permission allowlist. `cargo fmt --all`, `git diff --check`, and
+the tracked source size/SHA-256 checks passed.
+
+**Failures, fixes, and rejected evidence:** The first Android authority check
+found that Bionic's `c_char` is unsigned, while the local clock/property buffers
+had been declared as `i8`; changing both buffers to `libc::c_char` made desktop
+and Android builds agree. A full desktop `cargo test -p sos-experience --lib`
+compiled the test target but could not link because this workstation lacks
+`libxkbcommon` and `libxkbcommon-x11`; it was not counted as a pass. The
+link-free test-target check and standalone Luau runtime validator passed
+instead. Framework compilation reports deprecation notes for the Android saved
+network APIs. Those APIs were deliberately bounded to already configured
+networks and a privileged system bridge, but their actual Android 16 behavior
+remains a hardware/integration risk rather than a closed gate. No generated
+APK, OTA, revision directory, screenshot, or raw hardware artifact was used as
+evidence in this desktop implementation slice.
+
+**Decision / remaining risks / next gate:** Accept the provider ABI, authority
+registry, opaque framework membrane, typed action boundary, stock source, and
+transactional fallback as the implementation baseline. Do not mark the
+milestone or any hardware/latency/security gate complete from these desktop and
+cross-compilation checks. The next gate is an exact-image a33x build and device
+campaign covering real values, SELinux denials, authority/bridge restart,
+generated-revision failure and stock recovery, volume/mute/media, saved-Wi-Fi,
+application handoff/return, attention acknowledgement, screen-off/wake,
+thermal behavior, and refresh soak. Display/rotation, session/power facts,
+trusted power confirmation, calls, alarms, urgent call UI, notification actions,
+personal data, credential variants, and Recovery input remain later work.
+
+## 2026-08-16 — System Providers v1 + Stock Base v0 exact-image A33x gate
+
+**Goal / hypothesis:** Prove that the first system-provider vertical slice
+replaces the seeded Android HOME model on physical hardware without widening
+the Android/Luau trust boundary. The exact no-wipe Compat 1 image had to boot a
+signed stock revision, report live clock, power, network, audio, application,
+and attention state, enforce typed action capabilities, recover a failed
+generated revision to stock, retain fixed native lock ownership, and remain
+stable under repeated refresh.
+
+**Code, device, and image changes:** Testing used the USB-connected Samsung
+SM-A336B `RFCT50EGFCN`, battery 99% and USB powered, with the accepted FYH2
+vendor base. The first complete provider image was revision
+`sos.compat1.a3f3bae010bf.cfb7f6732eb5`. It exposed two hardware-only defects:
+the framework bridge returned the same saved Wi-Fi network/opaque ID twice,
+and `sos_authority` generated an enforcing SELinux denial approximately every
+two seconds while probing Samsung's vendor-private `sysfs_battery` type. That
+image was not accepted.
+
+`SosSystemProviders.wifiNetworks()` now de-duplicates stable opaque IDs. The
+Android native snapshot no longer reads battery sysfs; battery, charging,
+temperature, and thermal state come through the typed framework/health bridge,
+while desktop/native fixture tests retain their bounded sysfs adapter. A first
+attempt to add `allow sos_authority sysfs_battery` was rejected by the build
+because the vendor-private type is not visible to system-ext policy. No image
+was packaged or installed from that attempt. The final policy retains only
+public `sysfs_net`/`sysfs_thermal` reads and documents the vendor health
+boundary. `a33xctl` inspection now also requires the notification-listener
+manifest permission/service, typed snapshot/action markers, and absence of a
+packaged `sysfs_battery` allow.
+
+The corrected exact revision is
+`sos.compat1.a3f3bae010bf.b093c3a0b50a`. `./tools/a33xctl build-compat1`
+completed in 3:25 and `./tools/a33xctl inspect-compat1` passed whole-package
+signature, ZIP integrity, PIT/AVB/VINTF, target-files/source/package equality,
+provider bridge, manifest, and SELinux policy gates. Final artifacts were:
+
+| Artifact | Bytes | SHA-256 |
+| --- | ---: | --- |
+| `lineage-23.0-20260816-UNOFFICIAL-sos_compat_a33x.zip` | 1,042,724,759 | `13cc2afb209dc8bdfe36c7b14138f81acb0ded4687cfffbae7c666d22e69097d` |
+| `SYSTEM_EXT/bin/sos-authority` | 1,328,760 | `39f6f4cb581d2e3c50bfa3f213a2d055ebc3c09892be8994ffb205af8a5863d0` |
+| `SYSTEM_EXT/priv-app/SosFrameworkBridge/SosFrameworkBridge.apk` | 37,278 | `5ffa80944cb08bcb481592f0a073f0b4fd322ae1ade2aaaa95914264f3604e7f` |
+| `SYSTEM_EXT/etc/sos/default.luau` | 15,164 | `ba77495fec9b6bcefa69243922002e6525c34dc02ca83f28a160edfe69227aca` |
+
+For rejected-artifact traceability, the first installed OTA was 1,042,732,400
+bytes with SHA-256
+`be57e207fa502927681e63499279e067d3f99dceaa751c1282a860d1ef8da111`
+and revision `sos.compat1.a3f3bae010bf.cfb7f6732eb5`. Both completed sideload
+operations used `adb reboot sideload-auto-reboot`, `adb wait-for-sideload`, and
+`adb sideload`; Recovery reported `Total xfer: 1.00x`. Neither operation wiped
+`/data`. The corrected image reached `sys.boot_completed=1` at the exact
+incremental revision with profile `compat`, stage `1`, and SELinux enforcing.
+
+**Physical commands and measurements:** Direct provider requests used Android
+loopback ports 47777/47778 through USB ADB. The corrected snapshot reported ABI
+1, locale `en-US`, timezone `Europe/Zurich`, `8:34 PM` / `August 16, 2026`, 99%
+USB charging, 33.3--33.6 C battery temperature, thermal status `none`, the
+validated saved Wi-Fi connection at signal level 4 on `wlan0`, and 32% unmuted
+media volume. The live SSID was compared exactly but is redacted from tracked
+documentation. `dumpsys battery`, `dumpsys wifi`, and `dumpsys audio` matched
+those values; Android stream volume 8/25 matched 32%. The Wi-Fi list contained
+one item and one unique opaque ID. Legacy fields derived from the same live
+model reported `August 16, 2026`, `Weather unavailable`, and an empty track;
+`Saturday, 8 August`, `Clear over Rome`, `Tycho`, and `synthetic0` were absent.
+A recursive ABI audit found no Binder, Intent, credential, BSSID/MAC,
+package-name, or component-name key.
+
+The authority current response named identical current and pinned stock IDs,
+`31f8e1d31b6e2c91a8a0b0829e5f29934440c64ed8f535bb86d81a5a836c49e5`,
+with `stock_trusted=true` and the packaged stock source hash. A 1080x2400
+capture showed Stock Base v0's live status plane, quick controls, empty
+compatible-application workspace, and attention center. The raw capture
+`/tmp/sos-stock-v1.png` is outside Git, 203,148 bytes, SHA-256
+`b0ae1d8414b7907c74d259b64246998cf74184abbd5b868f50174cbc4d39db5e`.
+
+Typed action evidence was reversible and compared against fresh snapshots:
+
+- `audio.set_volume(52)` was accepted and produced Android index 13/25;
+  mute/unmute was accepted; volume and mute were restored to 32%/false.
+  Percent 101 was rejected before the bridge.
+- `network.disconnect` changed the snapshot to disconnected/unvalidated while
+  leaving Wi-Fi enabled and the saved opaque selection present. Reconnect by
+  that opaque ID restored the same validated SSID and `wlan0`.
+- Acknowledging the non-urgent `Discover Trust` attention ID was accepted and
+  removed it from the next snapshot. Android re-posted that system notification
+  after the later reboot, which is correct source ownership rather than stored
+  Luau state.
+- With no active media session or compatible third-party app, the bridge
+  withheld `media_*` and `app_launch`; attempted play/pause and launch were
+  rejected by the authority. `power.request_restart` was likewise rejected
+  because trusted power confirmation is intentionally not grantable.
+
+HOME process replacement changed PID 1461 to 2586 in 1,191 ms, refocused
+`SosHomeActivity`, and loaded pinned stock plus live providers. For the stronger
+fallback gate, the authority installed and activated deliberately invalid
+generated revision
+`29108c4bed03cc408b1cffbd121e41f8aa2f1cdbdcb485fe2bab167756c36c53`.
+On HOME restart the Luau parser rejected it; the runtime logged
+`stock_fallback=true`, the authority advanced state revision 586 to 587 with
+empty stock state/source hash, the bad process aborted, and replacement PID
+2803 rendered stock. Current and pinned stock IDs matched again 1,248 ms after
+the test began.
+
+Screen-off reached `mWakefulness=Asleep`. The bridge requested native lock, the
+host logged `trusted_lock_ready`, and the bridge acknowledged
+`reason=screen-off` before transition completion. Wake exposed only
+`SOS Trusted Lock`, with no SystemUI/status/navigation/notification layer. The
+raw-input screen capture `/tmp/sos-provider-lock.png` is outside Git, 16,499
+bytes, SHA-256
+`da5ff01426dc98a02ce6d15e0b3cfadcbff1b159ff62f724257b5c60e740df0c`.
+Because the fixed layer intentionally rejects Android-injected input, this run
+did not repeat the already accepted physical ENTER gate. A subsequent `adb
+reboot` returned to the same exact revision and focused stock HOME; stock state
+revision 587, Wi-Fi, audio, attention, and unique-ID invariants persisted.
+
+The final smoke soak issued 60 snapshots at two-second intervals:
+
+```text
+duration_ms=124729 samples=60 failures=0 max_request_ms=107
+pid_stability authority=941/941 host=924/924 bridge=1372/1372 home=1391/1391
+soak_error_audit matches=0
+```
+
+Every sample required ABI 1, unique Wi-Fi IDs, and absence of all demo values.
+The post-soak all-buffer log audit found no `sos_authority` AVC, framework
+provider failure, HOME provider-poll failure, SOS crash/ANR, or failed HOME
+restart. One `Try again (os error 11)` HOME poll warning appeared once during
+the initial post-OTA startup before this clean reboot/soak; it did not recur.
+
+The final repository recheck repeated the focused Rust matrix (8 authority, 4
+experience-IR, 5 fixture-provider, and 22 Luau tests), `cargo check --locked -p
+sos-experience --tests`, and the standalone stock validator
+(`source_bytes=15164`, `nodes=50`, `inputs=1`, `semantics=2`). `cargo fmt --all
+-- --check`, `git diff --check`, `bash -n tools/a33xctl`, both XML parses, and
+the complete framework-bridge `javac -source 8 -target 8` compile passed. The
+first standalone Java invocation put the public Android SDK jar before the
+Lineage framework header jar and therefore hid five internal `UserHandle`
+symbols; reversing that test-only classpath order compiled all sources with
+only the already documented deprecation/Java-8 warnings. Temporary javac output
+directories were created under `/tmp`, outside Git.
+Both cached ARM64/Bionic checks also passed. The authority check reports three
+expected dead-code warnings because its desktop sysfs power/thermal fixture
+helpers are compiled but intentionally unused on Android after moving battery
+facts behind the health bridge; the experience check reports only the existing
+future-incompatibility notice for `proc-macro-error2`.
+
+**Failures, fixes, decision, and next gate:** Reject the duplicated-network and
+battery-sysfs image and reject a cross-partition SELinux allow as the wrong
+architectural fix. Accept corrected revision
+`sos.compat1.a3f3bae010bf.b093c3a0b50a` as the first physical-hardware pass for
+clock, normal power/thermal observation, Wi-Fi, audio volume/mute, empty app
+inventory, attention acknowledgement, signed stock rendering/fallback, native
+lock handoff, reboot persistence, and short refresh stability. This does not
+close successful media control or application launch/return because the device
+had no eligible resources, a long-duration soak, thermal-load response,
+bridge/authority forced-restart recovery, physical lock input, or any latency
+acceptance gate. Display/rotation, session/power facts, trusted restart/shutdown
+confirmation, calls, alarms, urgent attention, personal data, credential
+variants, and Recovery remain later milestones.
+The README status now names this focused pass without replacing the earlier
+Compat revision that still owns the broader application and physical-input
+acceptance evidence.

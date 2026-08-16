@@ -7,3 +7,15 @@ allow sos_authority sos_authority_data_file:file create_file_perms;
 allow sos_authority sos_authority_data_file:lnk_file create_file_perms;
 allow sos_authority sos_authority_data_file:sock_file create_file_perms;
 allow sos_authority { sos_provider_port sos_revision_port }:tcp_socket name_bind;
+
+# System Providers v1 reads only framework-independent link and thermal facts
+# from public sysfs labels. Android intentionally keeps Samsung battery sysfs
+# behind the vendor health boundary, so battery facts cross the typed bridge.
+allow sos_authority sysfs_net:dir r_dir_perms;
+allow sos_authority sysfs_net:file r_file_perms;
+allow sos_authority sysfs_thermal:dir r_dir_perms;
+allow sos_authority sysfs_thermal:file r_file_perms;
+
+# Framework-only facts and actions cross one peer-credential-checked abstract
+# socket. No Binder object or Intent crosses into the native authority.
+allow sos_authority system_app:unix_stream_socket connectto;

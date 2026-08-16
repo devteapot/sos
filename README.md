@@ -26,7 +26,7 @@ laboratory into the privileged system and native-ownership phase.
 | Android APK harness | The physical SM-A336B passed the stable-host regression, typed provider effect, durable state/authority recovery, and a 10,000-swap device soak. This remains a regression harness, not the product boundary. |
 | Linux | A permanent GPUI/Wayland host, durable provider/state service, revision supervisor, resident Pi authoring agent, authenticated Smithay compositor, selectable GDM session, and Debian direct-DRM VM gate are implemented. Physical Linux hardware remains unproven. |
 | AOSP Cuttlefish | Pristine Android 17, SOS-as-HOME, and an init-supervised on-device authority passed in x86-64 Cuttlefish. |
-| Samsung a33x | All six staged Compat/Core images were built, inspected, and exercised on physical hardware. Compat 1 passed native SOS presentation with a bounded Android application-runtime island. Core 0B passed native UI with a headless Android framework; Core 1 passed the no-Zygote locked/recovery boundary. These are stage-specific gates, not a production-ready Core OS. |
+| Samsung a33x | All six staged Compat/Core images were built, inspected, and exercised on physical hardware. Compat 1 passed native SOS presentation with a bounded Android application-runtime island; a later exact image passed live System Providers v1, signed Stock Base v0, typed actions, and automatic stock fallback. Core 0B passed native UI with a headless Android framework; Core 1 passed the no-Zygote locked/recovery boundary. These are stage-specific gates, not a production-ready Core OS. |
 | Resident agent | Pi runs on Linux and as native ARM64/Bionic Node on the phone. A subscription-backed Codex flow produced and activated a live generated revision on-device without bypassing trusted validation. |
 
 The accepted physical fallback is Compat 1 revision
@@ -36,6 +36,12 @@ system-Activity blocking, HOME restart, native side-button lock/wake, and
 owner-confirmed touchscreen ENTER unlock on a no-credential test device. Core
 1 intentionally remains locked: native synthetic-password/FBE unlock and the
 system-service replacements needed to remove Android safely do not exist yet.
+Provider-focused revision `sos.compat1.a3f3bae010bf.b093c3a0b50a` subsequently
+passed live clock/power/Wi-Fi/audio/attention facts, reversible typed actions,
+generated-revision failure recovery to signed stock, reboot persistence, and a
+125-second refresh smoke soak. It does not supersede the broader fallback
+revision because successful media/application actions and physical ENTER were
+not repeated in that campaign.
 
 The concise chronological record is [`docs/progress.md`](docs/progress.md).
 The product boundary and exact physical results are in

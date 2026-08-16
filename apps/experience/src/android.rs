@@ -3,6 +3,7 @@ mod agent;
 #[cfg(feature = "core-native")]
 mod core_input;
 mod native_input;
+#[cfg(not(feature = "aosp-system"))]
 mod network;
 mod provider_client;
 #[cfg(feature = "aosp-system")]
@@ -26,10 +27,12 @@ use std::{
     sync::{atomic::AtomicI32, Arc},
 };
 
+#[cfg(not(feature = "aosp-system"))]
+use experience_ir::WifiSecurity;
 use experience_ir::{
     AgentMessage, AgentMessageRole, Align, AnimationKind, Content, ExperienceModel, Flow,
     HitRegion, Interaction, Justify, PaintOp, ProviderEffect, Scene, SceneEvent, SceneNode,
-    StateEnvelope, TextContent, WifiSecurity, MAX_AGENT_MESSAGES, MAX_AGENT_MESSAGE_BYTES,
+    StateEnvelope, TextContent, MAX_AGENT_MESSAGES, MAX_AGENT_MESSAGE_BYTES,
 };
 use gpui::{
     canvas, div, img, prelude::*, px, relative, rgb, Animation as GpuiAnimation, AnimationExt as _,
@@ -355,6 +358,8 @@ struct ExperienceHost {
     remote_state_revision: Option<u64>,
     state_schema_version: u64,
     source: String,
+    #[cfg(feature = "aosp-system")]
+    system_revision_id: String,
     status: Option<(String, bool)>,
     next_request_id: u64,
     candidates: HashMap<u64, CandidatePurpose>,
@@ -381,6 +386,11 @@ impl ExperienceHost {
         #[cfg(feature = "aosp-system")]
         let authority_current = revision_client::current_with_retry()
             .unwrap_or_else(|error| panic!("system revision authority is required: {error}"));
+        #[cfg(feature = "aosp-system")]
+        let system_revision_id = authority_current
+            .revision_id
+            .clone()
+            .unwrap_or_else(|| panic!("system revision authority omitted current revision id"));
         let mut model = match provider_client::snapshot() {
             Ok(model) => {
                 #[cfg(feature = "core-native")]
@@ -399,6 +409,7 @@ impl ExperienceHost {
                 panic!("strict gate requires provider snapshot: {error}")
             }
         };
+        #[cfg(not(feature = "aosp-system"))]
         match network::snapshot() {
             Ok(snapshot) => {
                 log::info!(
@@ -503,6 +514,9 @@ impl ExperienceHost {
         let results = worker.results();
         let (agent_updates, agent_results) = async_channel::unbounded();
         Self::attach_worker_channels(ready, results, cx);
+        #[cfg(feature = "aosp-system")]
+        Self::attach_provider_poll(cx);
+        #[cfg(not(feature = "aosp-system"))]
         Self::attach_network_poll(cx);
         Self::attach_agent_updates(agent_results, cx);
         Self::attach_agent_poll(cx);
@@ -519,6 +533,8 @@ impl ExperienceHost {
             remote_state_revision,
             state_schema_version,
             source,
+            #[cfg(feature = "aosp-system")]
+            system_revision_id,
             status: Some(("Starting Luau worker…".into(), true)),
             next_request_id: 1,
             candidates: HashMap::new(),
@@ -571,6 +587,37 @@ impl ExperienceHost {
         .detach();
     }
 
+    #[cfg(feature = "aosp-system")]
+    fn attach_provider_poll(cx: &mut Context<Self>) {
+        let executor = cx.background_executor().clone();
+        cx.spawn(async move |this, cx| loop {
+            executor.timer(Duration::from_secs(2)).await;
+            let snapshot = provider_client::snapshot();
+            if this
+                .update(cx, |this, cx| match snapshot {
+                    Ok(mut snapshot) => {
+                        // Agent credentials and conversation remain in the
+                        // resident app adapter; the system provider authority
+                        // remains canonical for every system fact.
+                        snapshot.agent = this.model.agent.clone();
+                        if snapshot == this.model {
+                            return;
+                        }
+                        this.model = snapshot;
+                        this.refresh_model_from_authority();
+                        cx.notify();
+                    }
+                    Err(error) => log::warn!("android_provider_poll_failed error={error}"),
+                })
+                .is_err()
+            {
+                break;
+            }
+        })
+        .detach();
+    }
+
+    #[cfg(not(feature = "aosp-system"))]
     fn attach_network_poll(cx: &mut Context<Self>) {
         let executor = cx.background_executor().clone();
         cx.spawn(async move |this, cx| loop {
@@ -677,7 +724,18 @@ impl ExperienceHost {
             Err(error) if self.source.trim() != DEFAULT_EXPERIENCE.trim() => {
                 #[cfg(feature = "aosp-system")]
                 {
-                    log::error!("system revision rejected at startup: {error}");
+                    let fallback =
+                        revision_client::fallback_to_stock(self.system_revision_id.clone());
+                    match fallback {
+                        Ok(response) => log::error!(
+                            "system revision rejected at startup: {error}; stock_fallback={} stock_revision={}",
+                            response.fallback_performed,
+                            response.stock_revision_id.as_deref().unwrap_or("unknown")
+                        ),
+                        Err(fallback_error) => log::error!(
+                            "system revision rejected at startup: {error}; stock fallback failed: {fallback_error}"
+                        ),
+                    }
                     std::process::abort();
                 }
                 #[cfg(not(feature = "aosp-system"))]
@@ -705,8 +763,18 @@ impl ExperienceHost {
                 }
             }
             Err(error) => {
-                log::error!("embedded runtime rejected at startup: {error}");
-                self.status = Some((format!("Runtime could not start: {error}"), false));
+                #[cfg(feature = "aosp-system")]
+                {
+                    log::error!(
+                        "trusted stock runtime rejected at startup: {error}; fixed Recovery is required"
+                    );
+                    std::process::abort();
+                }
+                #[cfg(not(feature = "aosp-system"))]
+                {
+                    log::error!("embedded runtime rejected at startup: {error}");
+                    self.status = Some((format!("Runtime could not start: {error}"), false));
+                }
             }
         }
     }
@@ -1556,6 +1624,11 @@ impl ExperienceHost {
                 self.action_in_flight = false;
                 self.merge_native_input_state(&mut state);
                 let effect_count = effects.len();
+                #[cfg(feature = "aosp-system")]
+                let (host_effects, provider_effects): (Vec<_>, Vec<_>) = effects
+                    .into_iter()
+                    .partition(|effect| effect.provider == "agent");
+                #[cfg(not(feature = "aosp-system"))]
                 let (host_effects, provider_effects): (Vec<_>, Vec<_>) = effects
                     .into_iter()
                     .partition(|effect| matches!(effect.provider.as_str(), "network" | "agent"));
@@ -1607,11 +1680,16 @@ impl ExperienceHost {
                 self.accessibility_dirty = true;
                 persist_state(&self.state);
                 self.status = None;
-                let (network_effects, agent_effects): (Vec<_>, Vec<_>) = host_effects
-                    .into_iter()
-                    .partition(|effect| effect.provider == "network");
-                self.execute_network_effects(network_effects);
-                self.execute_agent_effects(agent_effects);
+                #[cfg(feature = "aosp-system")]
+                self.execute_agent_effects(host_effects);
+                #[cfg(not(feature = "aosp-system"))]
+                {
+                    let (network_effects, agent_effects): (Vec<_>, Vec<_>) = host_effects
+                        .into_iter()
+                        .partition(|effect| effect.provider == "network");
+                    self.execute_network_effects(network_effects);
+                    self.execute_agent_effects(agent_effects);
+                }
                 log::info!(
                     "experience_action_completed request_id={request_id} worker_us={worker_us}"
                 );
@@ -1653,6 +1731,7 @@ impl ExperienceHost {
         }
     }
 
+    #[cfg(not(feature = "aosp-system"))]
     fn execute_network_effects(&mut self, effects: Vec<ProviderEffect>) {
         for effect in effects {
             let result = match effect.action.as_str() {
@@ -1874,6 +1953,7 @@ impl ExperienceHost {
                     self.remote_state_revision = Some(envelope.revision);
                     self.state_schema_version = envelope.schema_version;
                     self.state = envelope.state;
+                    self.system_revision_id = activation.revision_id.clone();
                     let _ = fs::remove_file(file_path(CANDIDATE_FILE));
                     let _ = fs::remove_file(file_path(CANDIDATE_STATE_FILE));
                     log::info!(

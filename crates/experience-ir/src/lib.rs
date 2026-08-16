@@ -21,6 +21,7 @@ pub const MAX_EFFECT_PAYLOAD_BYTES: usize = 16 * 1024;
 pub const MAX_STATE_BYTES: usize = 1024 * 1024;
 pub const MAX_AGENT_MESSAGES: usize = 24;
 pub const MAX_AGENT_MESSAGE_BYTES: usize = 32 * 1024;
+pub const SYSTEM_PROVIDER_ABI_VERSION: u32 = 1;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct ExperienceModel {
@@ -38,6 +39,174 @@ pub struct ExperienceModel {
     pub agent: AgentConversation,
     #[serde(default)]
     pub network: NetworkState,
+    /// Versioned system facts exposed equally to stock and generated
+    /// experiences. Platform objects and authority-only identifiers never
+    /// cross this boundary.
+    #[serde(default)]
+    pub providers: SystemProviders,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SystemProviders {
+    pub abi_version: u32,
+    pub observed_at_ms: u64,
+    #[serde(default)]
+    pub clock: ClockProviderState,
+    #[serde(default)]
+    pub power: PowerProviderState,
+    #[serde(default)]
+    pub connectivity: ConnectivityProviderState,
+    #[serde(default)]
+    pub audio: AudioProviderState,
+    #[serde(default)]
+    pub apps: AppsProviderState,
+    #[serde(default)]
+    pub attention: AttentionProviderState,
+    #[serde(default)]
+    pub capabilities: Vec<SystemCapability>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ClockProviderState {
+    pub unix_time_ms: u64,
+    #[serde(default)]
+    pub locale: String,
+    #[serde(default)]
+    pub timezone: String,
+    #[serde(default)]
+    pub time_label: String,
+    #[serde(default)]
+    pub date_label: String,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PowerProviderState {
+    pub battery_percent: Option<u8>,
+    pub charging: Option<bool>,
+    #[serde(default)]
+    pub charging_source: String,
+    pub battery_temperature_deci_c: Option<i32>,
+    pub thermal_status: Option<ThermalStatus>,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ThermalStatus {
+    None,
+    Light,
+    Moderate,
+    Severe,
+    Critical,
+    Emergency,
+    Shutdown,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ConnectivityProviderState {
+    pub wifi_enabled: bool,
+    pub connected: bool,
+    pub validated: bool,
+    #[serde(default)]
+    pub transport: String,
+    #[serde(default)]
+    pub network_label: String,
+    pub signal_level: Option<u8>,
+    #[serde(default)]
+    pub online_interfaces: Vec<String>,
+    #[serde(default)]
+    pub wifi_networks: Vec<SystemWifiNetwork>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SystemWifiNetwork {
+    /// Authority-scoped opaque identifier. It is not an SSID, network id, or
+    /// framework handle.
+    pub id: String,
+    pub label: String,
+    pub signal_level: u8,
+    pub saved: bool,
+    pub connected: bool,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AudioProviderState {
+    pub volume_percent: Option<u8>,
+    pub muted: Option<bool>,
+    #[serde(default)]
+    pub media: MediaProviderState,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MediaProviderState {
+    pub active: bool,
+    pub playing: bool,
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub artist: String,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AppsProviderState {
+    #[serde(default)]
+    pub compatible: Vec<SystemApplication>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SystemApplication {
+    /// Authority-scoped opaque identifier. Package and Activity names remain
+    /// inside the framework bridge.
+    pub id: String,
+    pub label: String,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AttentionProviderState {
+    #[serde(default)]
+    pub items: Vec<AttentionItem>,
+    pub urgent_count: u32,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AttentionItem {
+    /// Authority-scoped opaque identifier. Notification keys and package
+    /// names remain inside the framework bridge.
+    pub id: String,
+    pub occurred_at_ms: u64,
+    pub source: String,
+    pub kind: AttentionKind,
+    pub urgent: bool,
+    pub title: String,
+    pub detail: String,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AttentionKind {
+    General,
+    Message,
+    Call,
+    Alarm,
+    Media,
+    System,
+    Background,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum SystemCapability {
+    AudioSetVolume,
+    AudioSetMuted,
+    MediaPlayPause,
+    MediaNext,
+    MediaPrevious,
+    WifiConnect,
+    WifiDisconnect,
+    AppLaunch,
+    AttentionAcknowledge,
+    RequestLock,
+    RequestRestart,
+    RequestShutdown,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]

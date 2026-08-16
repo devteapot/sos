@@ -115,7 +115,7 @@ version = "0.1.0"
 dependencies = [
  "android-authority-protocol",
  "experience-ir",
- "providers-fake",
+ "libc",
  "revision-supervisor",
  "serde",
  "serde_json",

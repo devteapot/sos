@@ -714,9 +714,10 @@ inspect_compat_profile() {
     local bridge_apk="$target_files/SYSTEM_EXT/priv-app/SosFrameworkBridge/SosFrameworkBridge.apk"
     local marker="$target_files/SYSTEM_EXT/bin/sos-ui-removal-marker"
     local services_jar="$target_files/SYSTEM/framework/services.jar"
+    local system_ext_policy="$target_files/SYSTEM_EXT/etc/selinux/system_ext_sepolicy.cil"
     for artifact in \
       "$host" "$host_runtime" "$host_init_rc" "$bridge_apk" "$marker" \
-      "$services_jar"; do
+      "$services_jar" "$system_ext_policy"; do
       [[ -f "$artifact" ]] || fail "native Compat artifact missing: $artifact"
       stat --printf='%n %s bytes\n' "$artifact"
       sha256sum "$artifact"
@@ -785,6 +786,18 @@ inspect_compat_profile() {
     grep -F '="dev.sos.permission.REPORT_HOME_HEARTBEAT"' \
       <<<"$bridge_manifest" >/dev/null || \
       fail "native Compat framework bridge omitted its signature heartbeat permission"
+    grep -F '=".SosProviderNotificationListenerService"' \
+      <<<"$bridge_manifest" >/dev/null || \
+      fail "native Compat framework bridge omitted its attention provider service"
+    grep -F '="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE"' \
+      <<<"$bridge_manifest" >/dev/null || \
+      fail "native Compat attention provider lacks its system binding boundary"
+    unzip -p "$bridge_apk" 'classes*.dex' | strings | \
+      grep -F 'framework_provider_snapshot_failed' >/dev/null || \
+      fail "native Compat framework bridge omitted the typed provider snapshot path"
+    unzip -p "$bridge_apk" 'classes*.dex' | strings | \
+      grep -F 'audio_set_volume' >/dev/null || \
+      fail "native Compat framework bridge omitted provider action capabilities"
     unzip -p "$bridge_apk" 'classes*.dex' | strings | \
       grep -F 'native_control_acknowledged command=' >/dev/null || \
       fail "native Compat framework bridge omitted acknowledged screen-off control"
@@ -797,6 +810,8 @@ inspect_compat_profile() {
     unzip -p "$bridge_apk" 'classes*.dex' | strings | \
       grep -F 'framework_bridge_home_start result=user-locked' >/dev/null || \
       fail "native Compat framework bridge can initialize HOME before CE unlock"
+    ! grep -F '(allow sos_authority sysfs_battery' "$system_ext_policy" >/dev/null || \
+      fail "native Compat authority bypasses Android's vendor health boundary"
 
     for removed in \
       AccessibilityMenu Aperture ApertureLensLauncher AudioFX AvatarPicker \
@@ -1139,6 +1154,18 @@ inspect_core_stage() {
       fail "SOS $stage packaged the wrong framework bridge"
     ! grep -F 'E: activity' <<<"$bridge_manifest" >/dev/null || \
       fail "SOS $stage framework bridge must not render an Activity"
+    grep -F '=".SosProviderNotificationListenerService"' \
+      <<<"$bridge_manifest" >/dev/null || \
+      fail "SOS $stage framework bridge omitted its attention provider service"
+    grep -F '="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE"' \
+      <<<"$bridge_manifest" >/dev/null || \
+      fail "SOS $stage attention provider lacks its system binding boundary"
+    unzip -p "$bridge_apk" 'classes*.dex' | strings | \
+      grep -F 'framework_provider_snapshot_failed' >/dev/null || \
+      fail "SOS $stage framework bridge omitted the typed provider snapshot path"
+    unzip -p "$bridge_apk" 'classes*.dex' | strings | \
+      grep -F 'audio_set_volume' >/dev/null || \
+      fail "SOS $stage framework bridge omitted provider action capabilities"
     unzip -p "$bridge_apk" 'classes*.dex' | strings | \
       grep -F 'framework_bridge_mode=credential-only' >/dev/null || \
       fail "SOS $stage bridge omitted its non-Compat lifecycle gate"

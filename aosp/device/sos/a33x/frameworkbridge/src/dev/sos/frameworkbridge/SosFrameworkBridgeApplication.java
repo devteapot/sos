@@ -1,7 +1,9 @@
 package dev.sos.frameworkbridge;
 
 import android.app.Application;
+import android.app.NotificationManager;
 import android.content.BroadcastReceiver;
+import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
@@ -23,10 +25,12 @@ import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.io.EOFException;
 import java.io.IOException;
+import java.lang.reflect.Method;
 import java.nio.CharBuffer;
+import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 
-/** Direct-boot, non-rendering bridge from the native lock surface to LockSettingsService. */
+/** Direct-boot, non-rendering bridge for credentials and typed framework-only providers. */
 public final class SosFrameworkBridgeApplication extends Application {
     private static final String TAG = "SosFrameworkBridge";
     private static final String SOCKET_NAME = "sos_framework_bridge";
@@ -34,12 +38,15 @@ public final class SosFrameworkBridgeApplication extends Application {
     private static final int COMMAND_STATUS = 1;
     private static final int COMMAND_VERIFY_PIN = 2;
     private static final int COMMAND_START_HOME = 3;
+    private static final int COMMAND_PROVIDER_SNAPSHOT = 4;
+    private static final int COMMAND_PROVIDER_ACTION = 5;
     private static final int RESPONSE_OK = 1;
     private static final int RESPONSE_REJECTED = 2;
     private static final int RESPONSE_RETRY = 3;
     private static final int RESPONSE_ERROR = 4;
     private static final int MIN_PIN = 4;
     private static final int MAX_PIN = 64;
+    private static final int MAX_PROVIDER_ACTION_BYTES = 64 * 1024;
     private static final String CONTROL_SOCKET_NAME = "sos_native_shell_control";
     private static final int CONTROL_MAGIC = 0x534f5332; // SOS2
     private static final int CONTROL_LOCK = 1;
@@ -80,6 +87,7 @@ public final class SosFrameworkBridgeApplication extends Application {
         Thread server = new Thread(this::serve, "sos-framework-bridge");
         server.setDaemon(true);
         server.start();
+        grantProviderListenerAccess();
         if (!isCompatStage()) {
             Slog.i(TAG, "framework_bridge_mode=credential-only");
             return;
@@ -118,6 +126,39 @@ public final class SosFrameworkBridgeApplication extends Application {
         DataOutputStream output = new DataOutputStream(client.getOutputStream());
         if (input.readInt() != MAGIC) throw new IOException("bad protocol magic");
         int command = input.readUnsignedByte();
+        if (command == COMMAND_PROVIDER_SNAPSHOT) {
+            try {
+                writeProviderResponse(output, RESPONSE_OK,
+                        SosSystemProviders.snapshot(this));
+            } catch (Exception error) {
+                Slog.e(TAG, "framework_provider_snapshot_failed", error);
+                writeProviderResponse(output, RESPONSE_ERROR,
+                        "{\"error\":\"provider snapshot failed\"}");
+            }
+            return;
+        }
+        if (command == COMMAND_PROVIDER_ACTION) {
+            int length = input.readInt();
+            if (length <= 0 || length > MAX_PROVIDER_ACTION_BYTES) {
+                writeProviderResponse(output, RESPONSE_ERROR,
+                        "{\"error\":\"invalid provider action length\"}");
+                return;
+            }
+            byte[] encoded = new byte[length];
+            input.readFully(encoded);
+            try {
+                String result = SosSystemProviders.execute(
+                        this, new String(encoded, StandardCharsets.UTF_8));
+                writeProviderResponse(output, RESPONSE_OK, result);
+            } catch (Exception error) {
+                Slog.e(TAG, "framework_provider_action_failed", error);
+                writeProviderResponse(output, RESPONSE_ERROR,
+                        "{\"error\":\"provider action rejected\"}");
+            } finally {
+                Arrays.fill(encoded, (byte) 0);
+            }
+            return;
+        }
         if (command == COMMAND_STATUS) {
             writeHeader(output, RESPONSE_OK);
             LockPatternUtils locks = new LockPatternUtils(this);
@@ -182,6 +223,30 @@ public final class SosFrameworkBridgeApplication extends Application {
     private static void writeHeader(DataOutputStream output, int response) throws IOException {
         output.writeInt(MAGIC);
         output.writeByte(response);
+    }
+
+    private static void writeProviderResponse(DataOutputStream output, int response,
+            String document) throws IOException {
+        byte[] encoded = document.getBytes(StandardCharsets.UTF_8);
+        writeHeader(output, response);
+        output.writeInt(encoded.length);
+        output.write(encoded);
+        output.flush();
+    }
+
+    private void grantProviderListenerAccess() {
+        NotificationManager notifications = getSystemService(NotificationManager.class);
+        if (notifications == null) return;
+        ComponentName component = new ComponentName(
+                this, SosProviderNotificationListenerService.class);
+        try {
+            Method grant = NotificationManager.class.getMethod(
+                    "setNotificationListenerAccessGranted", ComponentName.class, boolean.class);
+            grant.invoke(notifications, component, true);
+            Slog.i(TAG, "framework_provider_attention_access granted=true");
+        } catch (ReflectiveOperationException | RuntimeException error) {
+            Slog.w(TAG, "framework_provider_attention_access granted=false", error);
+        }
     }
 
     private boolean startSosHome() {

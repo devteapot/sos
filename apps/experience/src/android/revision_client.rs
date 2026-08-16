@@ -75,6 +75,13 @@ pub(super) fn activate(
     })
 }
 
+pub(super) fn fallback_to_stock(failed_revision_id: String) -> Result<RevisionResponse, String> {
+    request(RevisionRequest::FallbackToStock {
+        request_id: allocate_request_id(),
+        failed_revision_id,
+    })
+}
+
 pub(super) fn inputs(assets: Vec<RevisionAssetWire>) -> Vec<RevisionAssetInput> {
     assets
         .into_iter()

@@ -9,10 +9,15 @@ use android_authority_protocol::{RevisionAssetWire, RevisionRequest, RevisionRes
 use experience_ir::{
     ProviderEffect, ProviderRequest, ProviderResponse, StateEnvelope, MAX_STATE_BYTES,
 };
-use providers_fake::state_service::StateService;
 use revision_supervisor::{RevisionAssetInput, RevisionInput, RevisionStore, VerifiedRevision};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+
+mod provider_registry;
+mod state_service;
+
+use provider_registry::{SystemAction, SystemProviderRegistry};
+use state_service::StateService;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 struct ActivationJournal {
@@ -23,7 +28,9 @@ struct ActivationJournal {
 pub struct AndroidSystemAuthority {
     revisions: RevisionStore,
     state: StateService,
-    staged_effects: HashMap<u64, Vec<ProviderEffect>>,
+    staged_effects: HashMap<u64, Vec<SystemAction>>,
+    providers: SystemProviderRegistry,
+    stock_revision_id: String,
     state_file: PathBuf,
     journal_file: PathBuf,
 }
@@ -37,22 +44,24 @@ impl AndroidSystemAuthority {
         let revision_root = revision_root.into();
         let state_file = state_file.into();
         let revisions = RevisionStore::open(&revision_root).map_err(|error| error.to_string())?;
+        // The bootstrap is immutable product content (AVB/OTA signed on the
+        // device) and is pinned independently of the mutable current pointer.
+        let stock = revisions
+            .install(RevisionInput {
+                source: bootstrap_source.to_vec(),
+                state: json!({}),
+                schema_version: 1,
+                experience_api_version: experience_ir::EXPERIENCE_API_VERSION,
+                assets: Vec::new(),
+            })
+            .map_err(|error| error.to_string())?;
         let current = match revisions.current().map_err(|error| error.to_string())? {
             Some(current) => current,
             None => {
-                let revision = revisions
-                    .install(RevisionInput {
-                        source: bootstrap_source.to_vec(),
-                        state: json!({}),
-                        schema_version: 1,
-                        experience_api_version: 3,
-                        assets: Vec::new(),
-                    })
-                    .map_err(|error| error.to_string())?;
                 revisions
-                    .set_current(&revision.manifest.revision_id)
+                    .set_current(&stock.manifest.revision_id)
                     .map_err(|error| error.to_string())?;
-                revision
+                stock.clone()
             }
         };
         let initial = if state_file.exists() {
@@ -73,6 +82,8 @@ impl AndroidSystemAuthority {
             revisions,
             state: StateService::new(initial),
             staged_effects: HashMap::new(),
+            providers: SystemProviderRegistry::android(),
+            stock_revision_id: stock.manifest.revision_id,
             state_file,
             journal_file,
         };
@@ -86,7 +97,7 @@ impl AndroidSystemAuthority {
         let request_id = request.request_id();
         match request {
             ProviderRequest::Snapshot { .. } => ProviderResponse {
-                model: Some(providers_fake::snapshot()),
+                model: Some(self.providers.snapshot_model()),
                 ..provider_response(request_id, true)
             },
             ProviderRequest::Action {
@@ -94,25 +105,20 @@ impl AndroidSystemAuthority {
                 action,
                 payload,
                 ..
-            } if provider == "notes" && action == "attach_to_event" => {
-                let note_id = payload.get("note_id").and_then(|value| value.as_str());
-                let event_title = payload.get("event_title").and_then(|value| value.as_str());
-                match (note_id, event_title) {
-                    (Some(note_id), Some(event_title)) => ProviderResponse {
-                        result: Some(json!({
-                            "receipt": format!("notes:{note_id}->{event_title}"),
-                        })),
+            } => match self.providers.parse_and_authorize(&ProviderEffect {
+                provider,
+                action,
+                payload,
+            }) {
+                Ok(action) => match self.providers.execute(&action) {
+                    Ok(result) => ProviderResponse {
+                        result: Some(result),
                         ..provider_response(request_id, true)
                     },
-                    _ => provider_failure(request_id, "note_id and event_title are required"),
-                }
-            }
-            ProviderRequest::Action {
-                provider, action, ..
-            } => provider_failure(
-                request_id,
-                &format!("unsupported provider action: {provider}.{action}"),
-            ),
+                    Err(error) => provider_failure(request_id, &error),
+                },
+                Err(error) => provider_failure(request_id, &error),
+            },
             ProviderRequest::LoadState { .. } => ProviderResponse {
                 state: Some(self.state.load()),
                 ..provider_response(request_id, true)
@@ -120,20 +126,21 @@ impl AndroidSystemAuthority {
             ProviderRequest::StageState {
                 expected_revision,
                 schema_version,
-                mut state,
+                state,
                 source_sha256,
                 effects,
                 ..
             } => {
-                if let Err(error) = validate_effects(&effects, &mut state) {
-                    return provider_failure(request_id, &error);
-                }
+                let actions = match self.authorize_effects(&effects) {
+                    Ok(actions) => actions,
+                    Err(error) => return provider_failure(request_id, &error),
+                };
                 match self
                     .state
                     .stage(expected_revision, schema_version, state, source_sha256)
                 {
                     Ok(stage_id) => {
-                        self.staged_effects.insert(stage_id, effects);
+                        self.staged_effects.insert(stage_id, actions);
                         ProviderResponse {
                             stage_id: Some(stage_id),
                             ..provider_response(request_id, true)
@@ -188,6 +195,9 @@ impl AndroidSystemAuthority {
                 state_stage_id,
                 ..
             } => self.activate_response(request_id, &revision_id, state_stage_id),
+            RevisionRequest::FallbackToStock {
+                failed_revision_id, ..
+            } => self.fallback_to_stock_response(request_id, &failed_revision_id),
         };
         result.unwrap_or_else(|error| RevisionResponse {
             request_id,
@@ -203,7 +213,13 @@ impl AndroidSystemAuthority {
             .current()
             .map_err(|error| error.to_string())?
             .ok_or_else(|| "revision authority has no current revision".to_owned())?;
-        revision_response(request_id, &current, Some(self.state.load()))
+        revision_response(
+            request_id,
+            &current,
+            Some(self.state.load()),
+            &self.stock_revision_id,
+            false,
+        )
     }
 
     fn install_response(
@@ -232,7 +248,7 @@ impl AndroidSystemAuthority {
                     .collect(),
             })
             .map_err(|error| error.to_string())?;
-        revision_response(request_id, &revision, None)
+        revision_response(request_id, &revision, None, &self.stock_revision_id, false)
     }
 
     fn activate_response(
@@ -267,7 +283,65 @@ impl AndroidSystemAuthority {
             .unwrap_or_else(|error| fatal_activation(error));
         self.remove_journal()
             .unwrap_or_else(|error| fatal_activation(error));
-        revision_response(request_id, &revision, Some(state))
+        revision_response(
+            request_id,
+            &revision,
+            Some(state),
+            &self.stock_revision_id,
+            false,
+        )
+    }
+
+    fn fallback_to_stock_response(
+        &mut self,
+        request_id: u64,
+        failed_revision_id: &str,
+    ) -> Result<RevisionResponse, String> {
+        let current = self
+            .revisions
+            .current()
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| "revision authority has no current revision".to_owned())?;
+        if current.manifest.revision_id != failed_revision_id {
+            return Err("fallback request does not name the active revision".into());
+        }
+        if failed_revision_id == self.stock_revision_id {
+            return Err("stock experience failed; fixed Recovery is required".into());
+        }
+        let stock = self
+            .revisions
+            .verify(&self.stock_revision_id)
+            .map_err(|error| error.to_string())?;
+        let stage_id = self.state.stage(
+            self.state.load().revision,
+            stock.manifest.schema_version,
+            json!({}),
+            stock.manifest.source.sha256.clone(),
+        )?;
+        self.write_journal(&ActivationJournal {
+            revision_id: self.stock_revision_id.clone(),
+            state_stage_id: stage_id,
+        })?;
+        let state = self
+            .promote_state(stage_id)
+            .unwrap_or_else(|error| fatal_activation(error));
+        self.revisions
+            .set_current(&self.stock_revision_id)
+            .map_err(|error| error.to_string())
+            .unwrap_or_else(|error| fatal_activation(error));
+        self.remove_journal()
+            .unwrap_or_else(|error| fatal_activation(error));
+        println!(
+            "android_authority_stock_fallback failed_revision={} stock_revision={}",
+            failed_revision_id, self.stock_revision_id
+        );
+        revision_response(
+            request_id,
+            &stock,
+            Some(state),
+            &self.stock_revision_id,
+            true,
+        )
     }
 
     fn promote_state(&mut self, stage_id: u64) -> Result<StateEnvelope, String> {
@@ -275,12 +349,33 @@ impl AndroidSystemAuthority {
         let promoted = self.state.promote(stage_id);
         let current = self.state.load();
         if current.revision > before_revision {
-            if let Some(effects) = self.staged_effects.remove(&stage_id) {
-                execute_effects(current.revision, &effects);
+            if let Some(actions) = self.staged_effects.remove(&stage_id) {
+                for action in actions {
+                    match self.providers.execute(&action) {
+                        Ok(result) => println!(
+                            "provider_action_promoted revision={} action={action:?} result={result}",
+                            current.revision
+                        ),
+                        Err(error) => eprintln!(
+                            "provider_action_failed_after_promotion revision={} action={action:?} error={error}",
+                            current.revision
+                        ),
+                    }
+                }
             }
             self.persist_state()?;
         }
         promoted
+    }
+
+    fn authorize_effects(&self, effects: &[ProviderEffect]) -> Result<Vec<SystemAction>, String> {
+        if effects.len() > experience_ir::MAX_EFFECTS {
+            return Err("too many staged provider effects".into());
+        }
+        effects
+            .iter()
+            .map(|effect| self.providers.parse_and_authorize(effect))
+            .collect()
     }
 
     fn recover_activation(&mut self) -> Result<(), String> {
@@ -380,6 +475,8 @@ fn revision_response(
     request_id: u64,
     revision: &VerifiedRevision,
     state: Option<StateEnvelope>,
+    stock_revision_id: &str,
+    fallback_performed: bool,
 ) -> Result<RevisionResponse, String> {
     let source = fs::read_to_string(revision.directory.join(&revision.manifest.source.path))
         .map_err(|error| error.to_string())?;
@@ -403,6 +500,9 @@ fn revision_response(
         source: Some(source),
         state,
         assets,
+        stock_revision_id: Some(stock_revision_id.into()),
+        stock_trusted: true,
+        fallback_performed,
         error: None,
     })
 }
@@ -423,50 +523,6 @@ fn provider_failure(request_id: u64, error: &str) -> ProviderResponse {
     ProviderResponse {
         error: Some(error.into()),
         ..provider_response(request_id, false)
-    }
-}
-
-fn validate_effects(
-    effects: &[ProviderEffect],
-    state: &mut serde_json::Value,
-) -> Result<(), String> {
-    if effects.len() > experience_ir::MAX_EFFECTS {
-        return Err("too many staged provider effects".into());
-    }
-    for effect in effects {
-        if (effect.provider.as_str(), effect.action.as_str()) != ("notes", "attach_to_event") {
-            return Err(format!(
-                "unsupported staged provider action: {}.{}",
-                effect.provider, effect.action
-            ));
-        }
-        let note_id = effect
-            .payload
-            .get("note_id")
-            .and_then(|value| value.as_str())
-            .ok_or_else(|| "note_id is required".to_owned())?;
-        let event_title = effect
-            .payload
-            .get("event_title")
-            .and_then(|value| value.as_str())
-            .ok_or_else(|| "event_title is required".to_owned())?;
-        if !state.is_object() {
-            *state = json!({});
-        }
-        state.as_object_mut().expect("state object").insert(
-            "provider_receipt".into(),
-            json!({ "receipt": format!("notes:{note_id}->{event_title}") }),
-        );
-    }
-    Ok(())
-}
-
-fn execute_effects(revision: u64, effects: &[ProviderEffect]) {
-    for effect in effects {
-        println!(
-            "provider_effect_promoted revision={revision} provider={} action={} payload={}",
-            effect.provider, effect.action, effect.payload
-        );
     }
 }
 
@@ -526,6 +582,29 @@ mod tests {
         assert!(activated.ok, "{:?}", activated.error);
         assert_eq!(activated.state.unwrap().revision, 1);
         assert_eq!(authority.state.load().state, json!({ "candidate": true }));
+    }
+
+    #[test]
+    fn provider_snapshot_is_live_system_abi_not_seeded_home_content() {
+        let temporary = tempfile::tempdir().unwrap();
+        let mut authority = AndroidSystemAuthority::open(
+            temporary.path().join("revisions"),
+            temporary.path().join("provider.json"),
+            b"return { api_version = 3 }",
+        )
+        .unwrap();
+        let response = authority.dispatch_provider(ProviderRequest::Snapshot { request_id: 9 });
+        let model = response.model.unwrap();
+        assert_eq!(
+            model.providers.abi_version,
+            experience_ir::SYSTEM_PROVIDER_ABI_VERSION
+        );
+        assert_eq!(model.greeting, "SOS");
+        assert!(model.calendar.is_empty());
+        assert!(model.notes.is_empty());
+        assert_ne!(model.date, "Saturday, 8 August");
+        assert_ne!(model.music.artist, "Tycho");
+        assert!(!model.system.timezone.is_empty());
     }
 
     #[test]
@@ -597,5 +676,55 @@ mod tests {
         });
         assert!(!activated.ok);
         assert_eq!(authority.state.load().revision, 0);
+    }
+
+    #[test]
+    fn rejected_generated_revision_falls_back_to_pinned_stock() {
+        let temporary = tempfile::tempdir().unwrap();
+        let bootstrap = b"return { api_version = 3, stock = true }";
+        let mut authority = AndroidSystemAuthority::open(
+            temporary.path().join("revisions"),
+            temporary.path().join("provider.json"),
+            bootstrap,
+        )
+        .unwrap();
+        let stock_revision_id = authority.stock_revision_id.clone();
+        let (generated_revision_id, stage_id) = install_and_stage(
+            &mut authority,
+            "return { api_version = 3, generated = true }",
+        );
+        assert!(
+            authority
+                .dispatch_revision(RevisionRequest::Activate {
+                    request_id: 3,
+                    revision_id: generated_revision_id.clone(),
+                    state_stage_id: stage_id,
+                })
+                .ok
+        );
+
+        let fallback = authority.dispatch_revision(RevisionRequest::FallbackToStock {
+            request_id: 4,
+            failed_revision_id: generated_revision_id,
+        });
+        assert!(fallback.ok, "{:?}", fallback.error);
+        assert!(fallback.fallback_performed);
+        assert!(fallback.stock_trusted);
+        assert_eq!(
+            fallback.revision_id.as_deref(),
+            Some(stock_revision_id.as_str())
+        );
+        assert_eq!(
+            fallback.source.as_deref(),
+            Some(std::str::from_utf8(bootstrap).unwrap())
+        );
+        assert_eq!(fallback.state.unwrap().state, json!({}));
+
+        let second = authority.dispatch_revision(RevisionRequest::FallbackToStock {
+            request_id: 5,
+            failed_revision_id: stock_revision_id,
+        });
+        assert!(!second.ok);
+        assert!(second.error.unwrap().contains("fixed Recovery"));
     }
 }
