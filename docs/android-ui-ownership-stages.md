@@ -21,7 +21,7 @@ shared a33x hardware, vendor HALs, SOS services, and revision format
 | Stage | Boot and UI owner | Android runtime | Recovery boundary |
 | --- | --- | --- | --- |
 | Compat 0 | Historical bring-up evidence only. A platform-signed persistent SOS process owns HOME while Android still draws keyguard, status/navigation, permissions, calls, and other ceremonies. It is not the intended Compat experience. | Full, including Android UI. | Android UI and Recovery. |
-| Compat 1 | SOS owns every system surface. Source combines the shared fixed native boot/runtime lock with a restartable, full-frame Rust/GPUI HOME and trusted SOS controls; only the contents of an explicitly selected compatible non-system Android application may appear. Revision `sos.compat1.19d8a653fbd7.220e268c228f` passed the rebuilt exact-image hardware gate except for a still-pending human touchscreen ENTER. | Zygote, `system_server`, PackageManager, WindowManager, and app processes remain. SystemUI, Launcher, Settings, chooser/file-picker/IME, setup, dialer, and the other inherited UI packages are removed. Framework policy aborts both initially resolved and framework-redirected system-package Activity launches, suppresses crash/ANR UI, and makes system-UID system windows non-presenting and non-interactive. | The persistent native supervisor first restarts a missing HOME through the headless bridge and owns fixed Recovery only if that bounded restart cannot restore the heartbeat. The GPUI NativeActivity is deliberately restartable and unavailable before CE unlock. Android is an application runtime, never a presentation fallback. |
+| Compat 1 | SOS owns every system surface. Source combines the shared fixed native boot/runtime lock with a restartable, full-frame Rust/GPUI HOME and trusted SOS controls; only the contents of an explicitly selected compatible non-system Android application may appear. Revision `sos.compat1.19d8a653fbd7.220e268c228f` passed the rebuilt exact-image hardware gate, including owner-confirmed side-button lock/wake and native touchscreen ENTER. | Zygote, `system_server`, PackageManager, WindowManager, and app processes remain. SystemUI, Launcher, Settings, chooser/file-picker/IME, setup, dialer, and the other inherited UI packages are removed. Framework policy aborts both initially resolved and framework-redirected system-package Activity launches, suppresses crash/ANR UI, and makes system-UID system windows non-presenting and non-interactive. | The persistent native supervisor first restarts a missing HOME through the headless bridge and owns fixed Recovery only if that bounded restart cannot restore the heartbeat. The GPUI NativeActivity is deliberately restartable and unavailable before CE unlock. Android is an application runtime, never a presentation fallback. |
 | Shadow | Android boots normally. The disabled init services expose a one-frame SurfaceComposer probe and the supervised native GPUI shell for manual tests. | Full; no SOS APK is packaged. | Fixed SOS recovery can retry or expose the still-live Android UI. |
 | Core 0A | Android performs its existing credential ceremony. When `sys.user.0.ce_available=true`, init starts the native GPUI supervisor, which owns the top display layer and grabs touch/volume input. | Full framework remains installed behind the native layer, but PackageInstaller rejects non-system installation callers. A direct-boot framework bridge is packaged for forward compatibility but is not the unlock owner. | Fixed SOS recovery can retry or expose Android. |
 | Core 0B | Init starts the fixed native lock surface once SurfaceFlinger is available. A direct-boot, persistent system-UID process has no Activity and exposes only status and bounded PIN verification over an abstract Unix socket. After LockSettings releases CE storage, GPUI replaces the lock layer. | Zygote and `system_server` remain for headless phone/network/Bluetooth/NFC, LockSettings, Gatekeeper, Keystore, and vendor-backed services. The inherited launcher, SystemUI, settings, chooser, file picker, IME, media/PIM apps, setup/provisioning UI, and other ordinary UI APKs are overridden out. Mixed service/UI packages required by retained headless frameworks stay installed: notably, PackageManager requires exactly one installer package during bootstrap, so `PackageInstaller` remains present while session policy rejects user installs and the immutable Activity policy prevents its UI from rendering. The opaque native/fixed-recovery layer remains presentation owner. | Fixed SOS recovery retries the native host; Android is not offered as a UI fallback. Holding Volume Up+Down asks init to reboot into Recovery. |
@@ -177,7 +177,7 @@ results:
 | Stage | Accepted revision | Physical result |
 | --- | --- | --- |
 | Compat 0 | `db36ed79bb16` | SOS reclaimed HOME with Android UI and user installation retained. |
-| Compat 1 | `220e268c228f` | The prior `616ac2404a79` was rejected for visible Android SystemUI/keyguard. The rebuilt image passed full-frame SOS HOME/workspace/attention, atomic chrome handoffs, explicit modern-app launch, legacy permission-review blocking, restart-first HOME recovery, and wake to the native lock with no Android system surface. Physical touchscreen ENTER is pending. |
+| Compat 1 | `220e268c228f` | The prior `616ac2404a79` was rejected for visible Android SystemUI/keyguard. The rebuilt image passed full-frame SOS HOME/workspace/attention, atomic chrome handoffs, explicit modern-app launch, legacy permission-review blocking, restart-first HOME recovery, side-button wake to the native lock, and owner-confirmed touchscreen ENTER return with no Android system surface. |
 | Shadow | `1aad692518b8` | Native probe/GPUI, raw-input acquisition, fixed recovery, Retry, and Android escape passed. |
 | Core 0A | `1b0c9edec481` | Post-unlock native ownership, install denial, bridge status, fixed recovery, and Android escape passed. |
 | Core 0B | `4341fa73391c` | Pre-unlock native lock, direct headless boot completion, Unix provider/revision IPC, absence of Android UI/focus, Activity/install blocking, retained headless phone/Bluetooth/NFC, and no-Android watchdog recovery passed. |
@@ -200,10 +200,12 @@ ADB fault/recovery properties prove process behavior, not finger input.
 
 After Core 1, Recovery first installed the preserved Android-visible Compat
 archive with no wipe. The later rebuilt campaign installed exact revision
-`sos.compat1.19d8a653fbd7.220e268c228f`, also without a wipe. The phone is now
-awake on that revision at the native `SOS LOCK / PRESS ENTER` surface. The
-screen, WindowManager, SurfaceFlinger, and log evidence prove that only SOS or
-explicitly selected non-system application contents rendered throughout the
-automated rerun. A human press on the native ENTER target, real credentials,
-fingerprint, emergency calling, and the remaining service brokers continue as
-separate physical/security gates.
+`sos.compat1.19d8a653fbd7.220e268c228f`, also without a wipe. The owner then
+completed repeated physical side-button lock/wake and native ENTER cycles; the
+host logged eight `native_runtime_unlock_complete credential=none` events and
+the final focused surface was the SOS application workspace with no trusted
+lock layer. The screen, WindowManager, SurfaceFlinger, and log evidence prove
+that only SOS or explicitly selected non-system application contents rendered
+throughout the rerun. Real credentials, fingerprint, emergency calling, the
+Recovery volume chord, and the remaining service brokers continue as separate
+physical/security gates.

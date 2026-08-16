@@ -6236,6 +6236,12 @@ flashed revision, not on the rapid proof APK:
   `credential_type=-1 unlocked=true`. Window policy says
   `deviceHasKeyguard=false`; Android keyguard remains false and SurfaceFlinger
   contains `SOS Trusted Lock`, not SystemUI or a shade.
+- The owner then performed repeated physical side-button lock/wake and native
+  ENTER cycles and explicitly confirmed that unlock works. The host recorded
+  eight `native_runtime_unlock_complete credential=none` events. The final
+  activity/focus was `SosCompatWorkspaceActivity`, `SOS Trusted Lock` was absent
+  from SurfaceFlinger, and the empty `pm list packages -3` result explains the
+  correct `NO COMPATIBLE APPLICATIONS` workspace state after fixture cleanup.
 
 Representative commands were:
 
@@ -6278,6 +6284,11 @@ Raw generated evidence remains outside Git in
 | `61-final-220e-native-lock-windows.txt` | 6,262 | `1188e1ed994469bc88e46ef4fb27983955f5d9b4102747a7e7527e8ef5793285` |
 | `61-final-220e-native-lock-surfaces.txt` | 3,505 | `759b07ef4835ed6af7a30f299f2f57290a323b6ee5be3f8085416c50b3180b8c` |
 | `61-final-220e-native-lock-logcat.txt` | 75,822 | `6429ad0b3bb9818a26a352d86fd9dfaff09f15afce7fae8460ad3eb225c9d84b` |
+| `62-final-220e-physical-unlock-workspace.png` | 55,975 | `b4029b8588077737b527762c90f49d5e971dab50355dbc773802d9fbe63b5ccd` |
+| `62-final-220e-physical-unlock-logcat.txt` | 2,740,973 | `70ac795ae3a40afe404acb2132b72c41215d89b9c1b543ea1c975a5d4f2687ed` |
+| `62-final-220e-physical-unlock-activities.txt` | 19,753 | `9a9f53d2e6a61202eb034d73fd1c1830f34eb8ef6aadc13f7b5ba025f353ca1d` |
+| `62-final-220e-physical-unlock-surfaces.txt` | 3,863 | `53bf9e329952bb307ddc5a45bfccff23c3141aa4ad9063649c379ba006fcf98c` |
+| `62-final-220e-third-party-packages.txt` | 0 | `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855` |
 
 Final source verification passed `cargo fmt --all -- --check`, product-flagged
 `:app:compileReleaseJavaWithJavac`, the pinned AOSP `clang-format --dry-run
@@ -6289,13 +6300,11 @@ proving that the patch and built framework source match.
 **Decision / remaining risks / next gate:** Accept revision
 `sos.compat1.19d8a653fbd7.220e268c228f` as the native-Compat exact-image
 rollback artifact and as passing the automated hardware presentation,
-application membrane, transition, restart, and side-button lock gates. Do not
-mark physical input complete: ADB framework injection intentionally cannot
-cross the host's raw-device grab, so a human must press the visible native
-ENTER target and confirm return to HOME. The handset has credential type
-`NONE`; PIN/Gatekeeper throttling, fingerprint, authentication-bound Keystore,
-physical side-key routing, emergency calling, ANR, chooser/IME, call/alarm,
+application membrane, transition, restart, side-button lock/wake, and physical
+touchscreen ENTER gates. The handset has credential type `NONE`;
+PIN/Gatekeeper throttling, fingerprint, authentication-bound Keystore, the
+Volume Up+Down Recovery chord, emergency calling, ANR, chooser/IME, call/alarm,
 thermal, accessibility, and data-containment gates remain separate work. The
-phone was left on the exact revision at the native ENTER screen, CE available,
-SELinux enforcing, with the temporary app update, both test apps, and staged
-test APK removed.
+phone was left on the exact revision in the SOS application workspace, CE
+available and SELinux enforcing, with the temporary app update, both test apps,
+and staged test APK removed.
