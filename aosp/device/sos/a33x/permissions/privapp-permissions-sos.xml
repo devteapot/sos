@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<permissions>
+    <!-- Required only by the fixed Compat chrome to suppress stock status and
+         navigation ownership while its signed overlay is active. -->
+    <privapp-permissions package="dev.sos.experience">
+        <permission name="android.permission.STATUS_BAR" />
+    </privapp-permissions>
+</permissions>

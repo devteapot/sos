@@ -1,10 +1,36 @@
 use experience_ir::{NetworkState, WifiSecurity};
+#[cfg(not(feature = "core-native"))]
 use gpui_mobile::android::jni::{activity, find_app_class, get_string, with_env};
+#[cfg(not(feature = "core-native"))]
 use jni::objects::{JObject, JValue};
+#[cfg(not(feature = "core-native"))]
 use jni::strings::JNIString;
 
+#[cfg(not(feature = "core-native"))]
 const HELPER_CLASS: &str = "dev.gpui.mobile.GpuiWifi";
 
+#[cfg(feature = "core-native")]
+pub fn snapshot() -> Result<NetworkState, String> {
+    let interface = std::path::Path::new("/sys/class/net/wlan0");
+    let wifi_enabled = interface.exists();
+    let connected = std::fs::read_to_string(interface.join("operstate"))
+        .map(|state| state.trim() == "up")
+        .unwrap_or(false);
+    Ok(NetworkState {
+        wifi_enabled,
+        connected,
+        connected_ssid: None,
+        // Link state is not Android's validated-network signal. Do not infer
+        // Internet reachability until the native framework bridge supplies it.
+        validated: false,
+        signal_level: None,
+        networks: Vec::new(),
+        activity: "Native Wi-Fi link state".into(),
+        error: Some("Wi-Fi scan and configuration await the Core framework bridge".into()),
+    })
+}
+
+#[cfg(not(feature = "core-native"))]
 pub fn snapshot() -> Result<NetworkState, String> {
     with_env(|env| {
         let helper = find_app_class(env, HELPER_CLASS)?;
@@ -29,10 +55,22 @@ pub fn snapshot() -> Result<NetworkState, String> {
     })
 }
 
+#[cfg(feature = "core-native")]
+pub fn refresh() -> Result<(), String> {
+    Err(core_action_unavailable())
+}
+
+#[cfg(not(feature = "core-native"))]
 pub fn refresh() -> Result<(), String> {
     call_bool("refresh")
 }
 
+#[cfg(feature = "core-native")]
+pub fn connect(_ssid: &str, _security: WifiSecurity) -> Result<(), String> {
+    Err(core_action_unavailable())
+}
+
+#[cfg(not(feature = "core-native"))]
 pub fn connect(ssid: &str, security: WifiSecurity) -> Result<(), String> {
     let security = match security {
         WifiSecurity::Open => "open",
@@ -68,10 +106,22 @@ pub fn connect(ssid: &str, security: WifiSecurity) -> Result<(), String> {
     })
 }
 
+#[cfg(feature = "core-native")]
+pub fn disconnect() -> Result<(), String> {
+    Err(core_action_unavailable())
+}
+
+#[cfg(not(feature = "core-native"))]
 pub fn disconnect() -> Result<(), String> {
     call_bool("disconnect")
 }
 
+#[cfg(feature = "core-native")]
+fn core_action_unavailable() -> String {
+    "Core network changes require the trusted native framework bridge".into()
+}
+
+#[cfg(not(feature = "core-native"))]
 fn call_bool(method: &str) -> Result<(), String> {
     with_env(|env| {
         let helper = find_app_class(env, HELPER_CLASS)?;

@@ -8,7 +8,9 @@ use std::{
 
 use experience_ir::{Content, Scene, SceneNode, SemanticRole};
 use gpui::{Bounds, Pixels};
+#[cfg(not(feature = "core-native"))]
 use gpui_mobile::android::jni::{activity, find_app_class, get_string, with_env};
+#[cfg(not(feature = "core-native"))]
 use jni::objects::{JObject, JValue};
 use serde_json::{json, Value};
 
@@ -192,6 +194,21 @@ fn snapshot(
     json!({ "summary": summary(scene), "nodes": nodes })
 }
 
+#[cfg(feature = "core-native")]
+pub fn publish(
+    scene: &Scene,
+    text: &HashMap<String, AccessibilityTextState>,
+    scroll: &HashMap<String, ScrollState>,
+) -> Result<usize, String> {
+    // Core has no Android View hierarchy. Keep generating the bounded trusted
+    // semantic document so a future native assistive service can consume the
+    // same contract without routing through a Java Activity.
+    serde_json::to_vec(&snapshot(scene, text, scroll))
+        .map(|payload| payload.len())
+        .map_err(|error| error.to_string())
+}
+
+#[cfg(not(feature = "core-native"))]
 pub fn publish(
     scene: &Scene,
     text: &HashMap<String, AccessibilityTextState>,
@@ -220,6 +237,7 @@ pub fn publish(
 
 /// Receives actions from Android's virtual accessibility nodes. The Android
 /// render loop polls this bounded queue and applies them on the GPUI thread.
+#[cfg(not(feature = "core-native"))]
 #[no_mangle]
 pub unsafe extern "C" fn Java_dev_gpui_mobile_GpuiActivity_nativeOnAccessibilityAction(
     _env: *mut std::ffi::c_void,

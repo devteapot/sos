@@ -1,0 +1,14 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="dev.sos.frameworkbridge"
+    android:sharedUserId="android.uid.system">
+    <uses-permission android:name="android.permission.ACCESS_KEYGUARD_SECURE_STORAGE" />
+    <uses-permission android:name="android.permission.INTERACT_ACROSS_USERS_FULL" />
+    <application
+        android:name=".SosFrameworkBridgeApplication"
+        android:allowBackup="false"
+        android:directBootAware="true"
+        android:hasCode="true"
+        android:label="SOS headless framework bridge"
+        android:persistent="true"
+        android:supportsRtl="false" />
+</manifest>

@@ -4832,3 +4832,632 @@ selected as HOME. The next Core gate is the GPUI host on this `ANativeWindow`,
 raw/native input, fixed trusted lock and recovery surfaces, repeated
 suspend/failure tests, and only then switching ownership to `native-sos` and
 removing superseded Java UI.
+
+## 2026-08-15–16 — Native GPUI Core host, fixed recovery, and Compat restoration
+
+**Goal / hypothesis:** Replace the one-frame Core display probe with the real
+permanent GPUI experience without an Activity, APK lifecycle, or Java UI host;
+isolate it behind a fixed signed supervisor; prove native presentation,
+suspend, failure, retry, and Android escape on the physical SM-A336B; and leave
+the handset on Compat with SOS—not the accidentally selected Launcher3—as
+HOME. Android UI removal was explicitly conditional on trusted input,
+lockscreen, and recovery gates rather than an objective to force through this
+experiment.
+
+**Changed:** `gpui-mobile` now supports a standalone Android platform around a
+caller-supplied `ANativeWindow`. It records the constructing thread as GPUI's
+main thread, manually drains foreground work and requests frames at 16 ms, and
+never calls looper teardown for a null non-Activity looper. The experience
+library adds a `core-native` feature and exported `sos_core_main` boundary,
+uses `/data/misc/sos/core`, installs signal handling, and shares the normal
+experience/revision/runtime code without creating an Activity. Its native
+input reader discovers `sec_touchscreen`, `gpio_keys`, and `sec-pmic-key`,
+translates multitouch and power/volume events into the GPUI Android event path,
+and requests fixed recovery after a two-second Volume Up+Down chord.
+
+Core now packages `sos-core-host` and
+`libsos_core_experience.so`. The host creates the full-screen SurfaceComposer
+layer and supervises a separately exec'd GPUI child. A nonzero exit or signal
+cannot unwind through Binder/SurfaceFlinger state: the parent draws a fixed
+CPU-rendered `SOS RECOVERY` surface with Volume Up retry and Volume Down Android
+escape. Retry forks and execs a clean child; it does not continue from a
+post-Binder fork. Transient edge-triggered `debug.sos.core.fault` and
+`debug.sos.core.recovery` properties support unattended fault/recovery tests.
+The service remains `disabled`, `oneshot`, and `gentle_kill` in the dedicated
+`sos_core_host` SELinux domain. Product inspection now verifies both native
+binaries, the runtime exports, supervisor/recovery/fault strings, init
+triggers, and labels. Core's content revision now includes product, Blueprint,
+host, init, policy, runtime, authority, and default-experience inputs, fixing a
+case where policy-only changes did not alter the build identity. The detailed
+stage boundary and manual test commands are recorded in
+[`android-product-split.md`](android-product-split.md).
+
+The final reviewed source also fails closed before presentation when
+`sys.user.0.ce_available` is false: the child exits with a distinct status and
+the supervisor returns directly to Android keyguard without drawing either the
+experience or fixed recovery over it. This is a temporary preservation of the
+existing credential boundary, not a native lockscreen implementation.
+
+**Build and static evidence:** The final physically tested Core archive was
+`lineage-23.0-20260815-UNOFFICIAL-sos_core_a33x.zip`, build
+`sos.core.0805cf6bd0b4.5bb309d830bd`, 1,262,746,472 bytes, SHA-256
+`4b1dc874c7e49eb82206052e388b8a69b4b90f61d6bcd70d8bd74d756699a767`.
+Its `sos-core-host` was 51,712 bytes, SHA-256
+`912557a27c23d6660dbf74f263e1846d33f9ea841e4a29a1d2cb36fe17b3df62`;
+the GPUI runtime was 14,582,728 bytes, SHA-256
+`d6eb57348e9a1cb45c0ae9d74c3bb5466acb1123ace5103539324dbb24fc85e4`.
+`./tools/a33xctl inspect-core` passed ZIP integrity, whole-package signature,
+PIT ceilings, AVB graph, VINTF, recovery init, target-file contents, exported
+symbols, init/service assertions, compiled SELinux contexts, neverallow tests,
+and APEX policy tests. Recovery installed the archive without formatting data
+and `adb sideload` completed at `Total xfer: 1.00x`.
+
+After the final source cleanup, `cargo fmt --all -- --check`,
+`./tools/sosctl m1-check --abi arm64-v8a`, and `cargo ndk -t arm64-v8a -P 31
+check -p sos-experience --release --locked --no-default-features --features
+core-native` passed. The Android checkout's clang-format dry-run, `bash -n
+tools/a33xctl`, and `git diff --check` also passed. A targeted AOSP
+`m -j8 sos-core-host` rebuilt the formatted C++ source and its pre-unlock guard.
+That post-test guard was not reflashed, so its evidence is compile/inspection
+only; physical evidence below remains tied to the exact `5bb309d830bd` archive,
+whose user was already CE-available during the native test.
+
+**Physical native presentation and lifecycle evidence:** On the installed Core
+image, SELinux was enforcing and `ro.sos.ui_owner=android-shadow`. Setting
+`debug.sos.core.host=1` left supervisor PID 2690 alive and exec'd GPUI child
+2691, both in `u:r:sos_core_host:s0`. The child initialized Vulkan on the
+Mali-G68, opened all three expected raw input devices, connected to the real
+SOS authority/provider snapshot, started the Luau runtime worker, and rendered
+the Daily experience at 1080x2400. `dumpsys SurfaceFlinger` showed the SOS
+native buffer as the only display layer with Samsung HWC `DEVICE` composition.
+A doze/resume cycle retained the same PID and layer. A property stop delivered
+SIGTERM, logged reason 15/status 0, removed the layer in 100 ms, and exposed
+Android's still-working lockscreen.
+
+The ignored capture `/tmp/sos-core-native-88b6e0bd7c0f.png` is 171,492 bytes,
+SHA-256
+`d548132e4daa017f69b51ffe4a1924c4cc7aa1222cc19ff1ccc988c8611999a2`.
+The matching Android-fallback capture
+`/tmp/sos-core-android-fallback-88b6e0bd7c0f.png` is 487,680 bytes, SHA-256
+`c62d1f71c32b6447d1af042ea0c2f742de8ae2e3e9775b40fb1c282f0c3cf98f`.
+
+**Physical fault and recovery evidence:** Changing
+`debug.sos.core.fault` from false to true sent SIGABRT to the GPUI child while
+the supervisor remained alive. The fixed recovery became the only 1080x2400
+HWC `DEVICE` layer; SurfaceFlinger, `system_server`, SystemUI, phone,
+Bluetooth, and NFC processes stayed live. The ignored capture
+`/tmp/sos-core-fixed-recovery-5bb309d830bd.png` is 17,286 bytes, SHA-256
+`37f1c452a9898e0e307412e00331d19c715f8db9cc6325522360bb84eea2fd53`.
+The instrumentation retry action exec'd a clean child PID 2799, which returned
+to the same GPUI experience; `/tmp/sos-core-after-retry-5bb309d830bd.png` is
+171,492 bytes with SHA-256
+`d548132e4daa017f69b51ffe4a1924c4cc7aa1222cc19ff1ccc988c8611999a2`.
+A second injected failure followed by the Android action removed the native
+host/recovery in 204 ms while SurfaceFlinger PID 567, `system_server` PID 1020,
+SystemUI PID 1297, Launcher3 PID 1604, phone PID 1473, Bluetooth PID 1425, and
+NFC PID 1448 remained alive under enforcing SELinux.
+
+Raw device discovery is physical evidence, but actual touchscreen dispatch and
+the physical two-volume-button chord were not exercised by the owner during
+this run. Those gates remain open; the property-driven paths do not substitute
+for hardware interaction.
+
+**Failures, fixes, and rejected approaches:** The first GPUI library could not
+be loaded because `android-activity` retained an undefined `android_main`; an
+inert Core-only symbol satisfies load-time glue without creating an Activity.
+The next child reached Vulkan but panicked because GPUI did not recognize the
+standalone thread as main, then touched a null looper during panic cleanup;
+explicit thread identity and null-safe unregister fixed both. SELinux initially
+blocked `/dev/input` directory search; the dedicated domain received only the
+input directory/device access it needs. The native host initially missed
+`libnativewindow`; declaring the shared library fixed the AOSP link.
+
+The first recovery retry property was level-triggered and created a retry
+storm. The first retry also continued in a child forked after Binder threads
+had started and aborted. Edge-triggering the property and fork/execing the
+signed host fixed both. SELinux then denied that self-exec as
+`execute_no_trans`; one type-specific rule for `sos_core_host_exec` fixed the
+clean re-exec without granting general execution. Four failed optional Mali
+path probes still request broad `/data` directory search; rendering does not
+need it, so the broad permission remains rejected pending exact attribution.
+
+Android incremental packaging twice reported a missing-restat condition
+because the generated kernel `Image` timestamp was older than a regenerated
+partition file list. Refreshing that generated output allowed the already
+successful kernel build to package; this is recorded as a build-environment
+workaround, not a source or device fix. Standalone Core also proved that the
+remote SOS authority transport works, while current network, agent-status, and
+accessibility adapters report that no Java VM exists. Those JNI paths must be
+replaced by a native framework/provider bridge rather than granting Core an
+Activity merely to reuse them.
+
+**Compat rebuild, restoration, and HOME ownership:** After the Core tests,
+`./tools/a33xctl build-compat` completed successfully and
+`./tools/a33xctl inspect-sos` passed ZIP, signature, PIT, AVB, VINTF,
+partition, package, property, and SELinux gates. The no-wipe restoration
+archive `lineage-23.0-20260815-UNOFFICIAL-sos_compat_a33x.zip` uses build
+`sos.compat.0805cf6bd0b4.45459139a271`, is 1,276,678,027 bytes, and has
+SHA-256
+`ea2c540e4e01c060c8e1e9c3e6d071b08447a6faf9faa3466f1fa873c814ed79`.
+Its packaged `SosShell.apk` is 40,708,721 bytes with SHA-256
+`a2ea732ec533b32c85ff9579912ab8d8abcf81c1fd4b37ec1439f75b3f743e84`.
+Recovery installed it at `Total xfer: 1.00x` without formatting data.
+
+The phone booted the exact increment with `ro.sos.profile=compat`,
+`ro.sos.ui_owner=android-compat`, revision format 3, enforcing SELinux, enabled
+Wi-Fi, and live SurfaceFlinger, `system_server`, SystemUI, phone, Bluetooth,
+NFC, and SOS authority processes. `/system_ext/bin/sos-core-host` and its init
+service are absent. `cmd package set-home-activity
+dev.sos.experience/.SosHomeActivity` succeeded, and PackageManager resolves
+the default HOME uniquely to that component rather than Launcher3. Starting it
+created SOS PID 3104 with live remote-provider and Luau-worker readiness logs.
+The credential keyguard correctly remained visually authoritative after boot,
+so the test did not bypass it merely to capture the HOME surface. The ignored
+lockscreen capture `/tmp/sos-compat-restored-45459139a271.png` is 499,960
+bytes, SHA-256
+`807cc36153027055fa6d1b2ad58333515aa0bf2714222f6ae4e72a0c90a5137e`.
+The isolated post-boot log contained zero fatal exceptions, ANRs, native fatal
+signals, or SOS-related AVC denials; ADB reverse and the JDWP list were empty.
+
+**Decision / remaining risk / next gate:** Keep both products and keep Core at
+`android-shadow`. The native GPUI presentation and fixed failure-recovery
+boundary pass their first physical gate, and Compat is restored with SOS as
+the intentional HOME. Do not yet remove SystemUI, Launcher, Settings,
+LatinIME, package installation, or keyguard: the remaining gates are physical
+touch/chord evidence; a signed native FBE/Gatekeeper/Keystore unlock ceremony;
+a native framework/provider bridge for network, agent status, accessibility,
+phone, Bluetooth, and NFC state/actions; trusted attention for calls, alarms,
+security, battery, and thermal events; and repeated boot/suspend/crash tests.
+Only after those pass should Core switch to `native-sos` and remove superseded
+Java UI. Core 1/no-Zygote remains a later service migration.
+
+## 2026-08-16 — Exclusive Core input, JNI-free adapters, and final two-product device gate
+
+**Goal / hypothesis:** Close the unsafe duplicate-input and Java-VM fallback
+gaps found during the first native GPUI shadow run, prove the corrected Core
+artifact on the physical SM-A336B, then rebuild and restore Compat with SOS as
+the intentional HOME. This remains a Core shadow gate; it does not authorize
+removing Android UI before the credential, urgent-attention, and physical
+gesture gates pass.
+
+**Changed:** Core now opens its three required input devices synchronously
+before presenting. It uses `EVIOCGRAB` to acquire `sec_touchscreen` and
+`gpio_keys` exclusively, while observing `sec-pmic-key` and leaving Android as
+the display-power/suspend owner. Failure to open or grab the required touch or
+volume device fails the GPUI child into fixed recovery. Fixed recovery also
+grabs `gpio_keys`; if that device is missing or cannot be grabbed, the
+supervisor fails safe to Android instead of displaying an unusable recovery
+surface.
+
+The `core-native` build no longer attempts the Activity/JNI adapters. Network
+state reads only the presence and `operstate` of `wlan0`; it deliberately does
+not infer SSID, scan results, Android validated-network state, or permit a
+mutation. Agent status and candidate generation use the bounded deterministic
+native provider, while live-provider configuration and credentials return an
+explicit trusted-ceremony error. Accessibility still creates the bounded
+semantic JSON document but does not publish it into a Java View hierarchy.
+Core text focus reports that the native composition-aware IME is unavailable
+instead of calling Java. These are honest intermediate contracts, not
+substitutes for the remaining framework bridge, assistive service, live-agent
+credential ceremony, or native keyboard.
+
+The physical SCSC interface lives below
+`/sys/devices/platform/11a70000.scsc_wifibt/net`, outside AOSP's virtual-net
+label. A device-specific `genfscon` now labels only that subtree `sysfs_net`,
+and `sos_core_host` receives read-only directory/file access to that type. It
+receives no sysfs write permission. `inspect-core` verifies that compiled CIL
+label as well as the exclusive-input and fail-safe recovery strings. The Core
+content revision now includes `genfs_contexts` so a policy-only change cannot
+reuse an older build identity. Overlay staging changed from timestamp-based
+`rsync -a` to `rsync -a --checksum --no-times --delete` so Ninja cannot retain
+a stale object when copied source content has an older or equal timestamp.
+
+**Final Core build and static evidence:** `./tools/a33xctl build-core`
+completed successfully for build
+`sos.core.0805cf6bd0b4.17dd66593016`. The inspected archive was
+`lineage-23.0-20260816-UNOFFICIAL-sos_core_a33x.zip`, 1,262,755,472 bytes,
+SHA-256
+`27da5b8a9cd9529439f99ff87092bee207f592111bea5aeaf7715921f1d85c7d`.
+The packaged `sos-core-host` was 51,712 bytes, SHA-256
+`034310121fa7e2467808938ae63ac543c34a97d8aa4e8ea447ff8f5bf876d5c7`;
+`libsos_core_experience.so` was 14,534,696 bytes, SHA-256
+`32861e76cb54c3a6b037b580a853c264ae727a547bb618cb3d9591165293d11b`;
+and compiled `system_ext_sepolicy.cil` was 102,738 bytes, SHA-256
+`9371e1fdf8ee5d18bd6a04c7134e254cc653dbc2b9b1d7a9cd33dda675a380a5`.
+`./tools/a33xctl inspect-core` passed compressed ZIP integrity, the whole-file
+OTA signature, PIT ceilings, the complete AVB graph, VINTF, packaged recovery
+init, target contents, ELF exports/strings, init properties, compiled policy,
+neverallow checks, and APEX policy tests. Recovery accepted this exact archive
+at `Total xfer: 1.00x` without wiping data.
+
+Final source verification passed `cargo fmt --all -- --check`,
+`cargo test -p android-system-authority` (3/3), `./tools/sosctl m1-check
+--abi arm64-v8a`, the release ARM64 `cargo ndk` check with only
+`core-native`, `bash -n tools/a33xctl`, the pinned AOSP `clang-format
+--dry-run --Werror` over `core/host.cpp`, and `git diff --check`.
+
+**Final Core physical evidence:** The phone booted enforcing with
+`ro.sos.profile=core`, `ro.sos.ui_owner=android-shadow`, revision format 3,
+CE storage available, and the exact `17dd66593016` increment. Starting the
+disabled service created supervisor PID 2743 and GPUI child PID 2744 in
+`u:r:sos_core_host:s0`. The Mali-G68 Vulkan path rendered the Daily experience
+at 1080x2400 through Samsung HWC. Logs reported touchscreen and `gpio_keys` as
+`mode=exclusive`, the power key as `mode=observe owner=android-power`, and the
+native snapshot as `enabled=true connected=true validated=false networks=0`.
+The latter, together with the compiled/on-device `sysfs_net` directory label
+and absence of another `operstate` denial, proves the confined Core process—not
+the ADB shell—read the physical link state. The remote authority, Luau worker,
+and native semantic-document generation also remained ready without a Java-VM
+fallback.
+
+An injected `SIGABRT` killed child 2744 while the supervisor remained alive
+and presented `SOS Fixed Recovery` with exclusive recovery keys. Android
+SurfaceFlinger, `system_server`, SystemUI, phone, Bluetooth, and NFC remained
+alive. A separate edge-triggered campaign started supervisor 2975/child 2976,
+injected the same failure, and selected Retry; the supervisor exec'd clean
+child 3028, which reacquired both exclusive input devices, reread the native
+Wi-Fi state, and rendered again. A subsequent Android action stopped the
+native host and exposed the intact Android credential lockscreen. The two
+fatal signals in that campaign were deliberate fault injections, not
+unexplained crashes.
+
+Ignored physical captures were visually inspected and remain outside Git:
+
+| Capture | Bytes | SHA-256 |
+| --- | ---: | --- |
+| `/tmp/sos-core-native-17dd66593016.png` | 171,492 | `d548132e4daa017f69b51ffe4a1924c4cc7aa1222cc19ff1ccc988c8611999a2` |
+| `/tmp/sos-core-recovery-17dd66593016.png` | 17,286 | `37f1c452a9898e0e307412e00331d19c715f8db9cc6325522360bb84eea2fd53` |
+| `/tmp/sos-core-android-fallback-17dd66593016.png` | 491,321 | `802b837748180d1a060bae2a0540fc500623b8a5eb9bb16fd252ed35effca13f` |
+
+**Final Compat build, restoration, and HOME evidence:** Switching products
+performed an install-clean and explicitly removed `sos-core-host`, its probe,
+both init files, and the standalone GPUI library. `./tools/a33xctl
+build-compat` then completed successfully for
+`sos.compat.0805cf6bd0b4.80ca8f2dfd8d`. `./tools/a33xctl inspect-sos` passed
+the same ZIP/signature/PIT/AVB/VINTF/recovery and product gates. The exact
+archive `lineage-23.0-20260816-UNOFFICIAL-sos_compat_a33x.zip` was
+1,276,677,263 bytes, SHA-256
+`3da14d2b1a81b98dc87dd73c9d9a351290f8a9918202b9b4336b1bad1073f51d`;
+its packaged `SosShell.apk` was 40,708,721 bytes, SHA-256
+`53593e99687563380cb940ee0eff48318b16e857cc1e011c19735d4c10429d90`.
+Recovery accepted it at `Total xfer: 1.00x` without a wipe.
+
+The phone booted the exact Compat increment with `ro.sos.profile=compat`,
+`ro.sos.ui_owner=android-compat`, revision format 3, CE available, and
+enforcing SELinux. `cmd package set-home-activity
+dev.sos.experience/.SosHomeActivity` succeeded and HOME resolved uniquely to
+SOS, not Launcher3. A final audit found that PackageManager was initially
+running a preserved `/data/app` update over the flashed system package.
+`cmd package uninstall-system-updates dev.sos.experience` reverted only that
+update; the system app remained installed and the HOME preference remained
+SOS. The repeated gate then showed both current focus/top-resumed activity as
+`SosHomeActivity` and `pm path` as
+`/system_ext/priv-app/SosShell/SosShell.apk`. SurfaceFlinger,
+`system_server`, SystemUI, phone, Bluetooth, NFC, and `sos-authority` were live,
+Wi-Fi was connected, the Core host binary/init service were absent, ADB reverse
+was empty, and an isolated relaunch scan contained no fatal exception, ANR,
+SOS-related AVC, provider failure, or accessibility publication failure. The
+visually inspected ignored capture
+`/tmp/sos-compat-system-final-80ca8f2dfd8d.png` is 177,472 bytes, SHA-256
+`287c804a849cb9304527c99d8cc20717661d1528d1ca36730019289893c9a87e`.
+The packaged SOS HOME filter also carries priority 1000 while Launcher3's HOME
+filter has no priority. Android's `HomeRoleBehavior` chooses the unique
+highest-priority candidate when no user role holder exists, so a fresh
+role-less user falls back to SOS rather than Launcher3. `inspect-sos` now
+requires that priority in addition to the HOME alias/category; rerunning it on
+the exact installed archive passed.
+
+**Failures, fixes, and rejected approaches:** A direct targeted AOSP compile
+outside the normal release wrapper invalidated the broad product environment
+and caused a 62,000-action rebuild; it did not expose a source failure. Editing
+`tools/a33xctl` while an older Bash instance was still parsing it later ended
+that already-successful package run with `line 704: t: command not found`; the
+stable script passed `bash -n` and all subsequent builds exited normally.
+Android's recurring generated-kernel `Missing restat` warning was handled by
+refreshing the already-built generated `KERNEL_OBJ/.../Image` timestamp before
+packaging; this remains a build-environment workaround.
+
+The first final package inspection caught an older `sos-core-host` despite new
+source. `rsync -a` had preserved a source timestamp older than Ninja's object;
+content-based, no-timestamp staging fixed it and the inspector then found all
+new host markers. The first native network run returned link-down while Android
+Wi-Fi was connected: the read-only allow rule targeted `sysfs_net`, but this
+physical device subtree was still generic `sysfs`. The narrow `genfscon` fixed
+the label and the final confined run returned link-up. Adding generic `sysfs`
+read access was rejected. The first unattended Retry attempt reused an
+unchanged `retry` property and was correctly inert; resetting it to `idle` and
+then making an edge change proved the intended behavior. Four optional Mali
+probes still request broad `/data` search and are denied while rendering works;
+that broad permission remains rejected pending path attribution.
+
+**Decision / remaining risk / next gate:** Both products pass the implemented
+physical gate, and the handset is left on Compat with the immutable system SOS
+package explicitly selected as HOME. Launcher3 remains installed only as an
+Android recovery fallback. Core remains `android-shadow`, not Core 0. Actual
+finger-driven touch and the physical Volume Up+Down chord were not exercised;
+the CE-unavailable guard was compiled and inspected but not physically tested
+because this no-wipe user was already unlocked. Still missing are the signed
+native FBE/Gatekeeper/fingerprint/Keystore ceremony; native IME; framework
+state and mutations for network, phone, Bluetooth, and NFC; assistive-service
+delivery/actions; trusted calls/alarms/security/battery/thermal attention;
+Compat workspace chrome and installation policy; and repeated cold-boot,
+suspend, crash, and rollback campaigns. Do not switch to `native-sos`, remove
+SystemUI/Launcher/Settings/LatinIME, or begin Core 1/no-Zygote until those gates
+pass.
+
+## 2026-08-16 — Implement and physically gate all six Android-ownership stages
+
+**Goal / hypothesis:** Replace the earlier two-product sketch with six explicit,
+flashable ownership stages and exercise them in order on the connected
+SM-A336B. The required sequence was Compat 0, Compat 1, Shadow, Core 0A, Core
+0B, and Core 1, followed by an exact no-wipe restoration of the accepted Compat
+1 artifact. The central hypothesis was that visible Android ownership can be
+removed before removing useful native Android infrastructure, and that Core 0B
+can keep Zygote/`system_server` strictly headless while Core 1 can prove the
+no-Zygote/recovery boundary without pretending to unlock CE storage.
+
+The concrete stage contract and product mapping are recorded in
+[`android-ui-ownership-stages.md`](android-ui-ownership-stages.md) and
+[`android-product-split.md`](android-product-split.md).
+
+**Code and product changes:** Six product definitions now share the Samsung
+a33x hardware/vendor graph, SOS authority, experience artifacts, SELinux
+policy, and revision format 3:
+
+- Compat 0 adds a platform-signed, persistent HOME policy that reasserts
+  `dev.sos.experience/.SosHomeActivity` through the role API after boot,
+  package replacement, or ownership drift. Launcher3 remains installed only
+  in this measurement stage.
+- Compat 1 removes Launcher3 and adds a trusted persistent chrome service,
+  explicit launcher-activity workspace, typed notification adapter, bounded
+  durable JSONL attention journal, and fixed attention renderer. The chrome
+  exposes time/connectivity/battery plus Back, Apps, Attention, and Exit while
+  suppressing stock status/expand/navigation content for owned tasks.
+- Shadow packages disabled init services for the one-frame native
+  SurfaceComposer probe and the supervised GPUI host. Android remains the
+  display/recovery owner until an explicit debug property starts either
+  service.
+- Core 0A starts the native supervisor only after
+  `sys.user.0.ce_available=true`, grabs touchscreen/volume input, observes the
+  power key, rejects user PackageInstaller sessions, and retains Android as a
+  fixed-recovery escape.
+- Core 0B starts a CPU-rendered trusted lock surface as soon as SurfaceFlinger
+  is available. Principal Android UI packages are removed, every Activity
+  start is aborted by immutable product policy, user install sessions are
+  rejected, and a no-Activity direct-boot bridge delegates bounded PIN status
+  and verification to LockSettings. The framework has a product-gated direct
+  boot-completion path because no HOME Activity exists to become idle.
+  `PackageInstaller.apk` remains as a non-rendering bootstrap invariant because
+  PackageManager requires exactly one installer.
+- Core 1 selects AOSP `core_no_zygote.mk` at the shared Samsung product
+  boundary. It starts no Zygote, `system_server`, APK process, or Java bridge;
+  the native host shows an honest locked/recovery surface and never sets CE
+  available. A tracked source patch makes the shared device choose
+  `core_no_zygote.mk` only for `lineage_sos_core1_a33x`; all other a33x targets
+  retain `core_64_bit_only.mk`.
+
+The fixed native supervisor now owns a CPU-only recovery layer, fault
+injection, Retry, stage-aware Android fallback, and a Volume Up+Down Recovery
+reboot chord. The standalone GPUI/wgpu child obtains an `ANativeWindow` from
+SurfaceComposer and reads `sec_touchscreen`, `gpio_keys`, and `sec-pmic-key`
+without an Activity or JNI lifecycle. Core-native revision and provider calls
+use SELinux-confined filesystem Unix sockets at
+`/data/misc/sos/revision.sock` and `/data/misc/sos/provider.sock`; Compat keeps
+its Android loopback adapters. Inspectors now scan every `classes*.dex`, verify
+the framework policy/headless markers, require the native socket strings and
+`connectto` rule, enforce stage-specific package presence/absence, verify the
+no-Zygote init selection, and include all audited source patches in the
+content-derived product identity.
+
+**Accepted package artifacts:** All files below are ignored raw evidence in
+`artifacts/device-stages/`; none is added to Git. Each OTA passed ZIP integrity,
+whole-file signature, PIT ceilings, AVB verification, VINTF, recovery-init,
+stage-property, package-content, binary-marker, and compiled-policy inspection
+before sideload.
+
+| Stage | Exact artifact | Bytes | SHA-256 |
+| --- | --- | ---: | --- |
+| Compat 0 | `compat0-db36ed79bb16.zip` | 1,276,699,263 | `0abb652191b2ad61cf421f64afcd5255b2cab17c866572a9457d83c3207e44cc` |
+| Compat 1 | `compat1-616ac2404a79.zip` | 1,264,854,020 | `d9b8f58ae09d8e405e7ba3754a21a9b12f52bfea955b5739b2fa444ea8eca3a5` |
+| Shadow | `shadow-1aad692518b8.zip` | 1,262,728,002 | `4b111d0a83a21b203c735223b814dc3f8908e0bd197381317f64dfa765145f8b` |
+| Core 0A | `core0a-1b0c9edec481.zip` | 1,262,798,713 | `eccd673087c315b327955c3ea279826da17313581548bcf803bbc3e22eff4246` |
+| Core 0B | `core0b-4341fa73391c.zip` | 1,021,900,489 | `71a0933ed4a3fb35974a4da5a3b117d2d04c10547110d33168ee787433d7360f` |
+| Core 1 | `core1-1f3cd4b232c2.zip` | 1,021,911,891 | `099839d1f29f5f6eea5121e9b8bcfab008e22225755fc7a821332fd8bd63344c` |
+
+Accepted component evidence:
+
+| Artifact | Bytes | SHA-256 |
+| --- | ---: | --- |
+| `compat0-SosShell-db36ed79bb16.apk` | 40,723,177 | `865028c917a3d85b35115366013a4b581eca1f1c48f3431ba0058274c04a17ce` |
+| `compat1-SosShell-616ac2404a79.apk` | 40,722,849 | `52380aae15a5340b3efd3721d95b356d04b09d072f8dd21588baff913992f6e2` |
+| `shadow-sos-core-host-1aad692518b8` | 68,328 | `0510f65ee969ff2e8107784121414fe1d0f74de2b6ca4d1e2590c0a3c6d51559` |
+| `shadow-libsos-core-1aad692518b8.so` | 14,534,696 | `caaef737801d64c57dc66290f9d23bdeb617e3bfa29da27e84f140290332e8c4` |
+| `shadow-surface-probe-1aad692518b8` | 51,464 | `ba9799dfbcf61559e34550743066e10e0f4a7c5223d77993dc36216e909d5b73` |
+| `core0a-framework-bridge-1b0c9edec481.apk` | 16,798 | `3f9306ff6daf4a0b96154bc18d34c22868aec0d087463be085791b433e95b59a` |
+| `core0b-sos-core-host-4341fa73391c` | 68,328 | `0510f65ee969ff2e8107784121414fe1d0f74de2b6ca4d1e2590c0a3c6d51559` |
+| `core0b-libsos-core-4341fa73391c.so` | 14,526,424 | `6ae4b8217349af06d3b52e9832b2f345aa6f90b0c4ad6fbeb94d26a881189201` |
+| `core0b-sos-authority-4341fa73391c` | 1,242,848 | `a33368140e004e027f94d7260058b2d2936c6f60ab44d19f6d11b84af3fba5b5` |
+| `core0b-framework-bridge-4341fa73391c.apk` | 16,798 | `3f9306ff6daf4a0b96154bc18d34c22868aec0d087463be085791b433e95b59a` |
+| `core0b-ui-removal-marker-4341fa73391c` | 51,216 | `6ca538a90323d4f1907be2dd5ab2381e7507b5fd62e6b295e6c0f464a16a4c14` |
+| `core1-init-no-zygote-1f3cd4b232c2.rc` | 128 | `3b353112b688b2e1d5c5c19343bcc44b1f9581dd7ba19fb95f499115e12adcfc` |
+| `core1-sos-core-host-1f3cd4b232c2` | 68,328 | `0510f65ee969ff2e8107784121414fe1d0f74de2b6ca4d1e2590c0a3c6d51559` |
+| `core1-libsos-core-1f3cd4b232c2.so` | 14,526,424 | `6ae4b8217349af06d3b52e9832b2f345aa6f90b0c4ad6fbeb94d26a881189201` |
+| `core1-sos-authority-1f3cd4b232c2` | 1,242,848 | `a33368140e004e027f94d7260058b2d2936c6f60ab44d19f6d11b84af3fba5b5` |
+| `core1-ui-removal-marker-1f3cd4b232c2` | 51,216 | `6ca538a90323d4f1907be2dd5ab2381e7507b5fd62e6b295e6c0f464a16a4c14` |
+
+**Compat 0 and Compat 1 physical evidence:** Compat 0 booted exact increment
+`sos.compat0.0805cf6bd0b4.db36ed79bb16`, enforcing, with SOS as HOME even
+though Launcher3 remained a candidate. Replacing or killing the SOS process did
+not transfer HOME ownership; the policy relaunched/reasserted it. Android UI,
+PackageManager, and user install remained usable. The final fix limited the
+status-bar privilege to the signed Compat chrome and terminated an obsolete
+Activity process after package replacement so stale code could not remain the
+apparent result.
+
+Compat 1 booted exact increment
+`sos.compat1.0805cf6bd0b4.616ac2404a79`. `pm path` found no Launcher3, HOME
+resolved to SOS, and user install remained allowed. Files and Settings opened
+inside the explicit workspace with the SOS status/actions layer remaining on
+top; Back and Exit returned control to SOS. A test notification became a typed
+attention record, survived a process restart, and rendered through the fixed
+Attention Activity. No unexplained SOS crash, ANR, or SOS-related AVC was
+present in the accepted runs.
+
+**Shadow and Core 0A physical evidence:** Shadow booted with Android as owner.
+The manual probe created a top one-frame SurfaceComposer layer, after which the
+supervised host rendered the GPUI Daily experience through Mali-G68 Vulkan at
+1080x2400. Logs reported exclusive `sec_touchscreen` and `gpio_keys`, observed
+`sec-pmic-key`, native provider/agent/semantics readiness, and the fixed
+watchdog. Injected `SIGABRT` produced the CPU recovery surface; Retry launched a
+clean GPUI child, and Android escape exposed the still-live framework UI.
+
+Core 0A booted exact increment
+`sos.core0a.0805cf6bd0b4.1b0c9edec481`, waited for Android's CE unlock, then
+started the same native shell/input/watchdog. Zygote, `system_server`, SystemUI,
+Launcher, phone, Bluetooth, and NFC remained present behind it. The bridge
+reported `credential_type=-1 user_unlocked=true` without accepting secret
+bytes, `pm install-create` was rejected, and injected failure proved both Retry
+and explicit Android fallback.
+
+**Core 0B rejected candidates and fixes:** Four exact candidates were preserved
+because each exposed a different architectural dependency:
+
+| Revision | Bytes | SHA-256 | Rejection and correction |
+| --- | ---: | --- | --- |
+| `3d66364bccad` | 1,020,563,015 | `6ebfb2ec3ec876ee1f831ff02f96dc90dc3bb03c4122a03326a2720f4e634fd2` | Removing PackageInstaller made `system_server` loop with `There must be exactly one installer; found []`. Retain the package as a bootstrap invariant; block sessions and all Activity rendering instead. |
+| `42b794490bd0` | 1,021,916,363 | `323d17c7135710e59936cea0e654014969f2af82fbb6d57efb8f77062e360c2e` | `system_server` was stable, but user 0 remained BOOTING and CE locked because no HOME Activity could become idle. Add a product-gated `ensureBootCompleted()` path and skip HOME creation. |
+| `7db350df7a62` | 1,021,904,148 | `4ca394ed24b7c967d87dc8c33f9cc94656764e2cd2ce546c8713ce91f56c39c8` | Headless boot/CE passed, but the Core host could not reach the revision authority over Android loopback TCP; strict revision failure correctly reached fixed recovery. Move revision IPC to a confined Unix socket. |
+| `2c0e1554da62` | 1,021,923,522 | `0569a90cb9bdadc78c8f768d6458aa542771832dade0420c7bb5d1819db8d22c` | Revision IPC passed, but provider state still used loopback TCP and the strict provider gate reached fixed recovery. Move provider IPC to its own confined Unix socket as well. |
+
+The accepted `4341fa73391c` cold boot first displayed the native PIN surface
+while both `sys.boot_completed` and CE availability were unset. Without any ADB
+input, the no-credential device then reached `sys.boot_completed=1`,
+`sys.user.0.ce_available=true`, and user state `RUNNING_UNLOCKED`. The fixed
+layer hid and GPUI rendered. Logs proved the direct headless boot path,
+Mali-G68 Vulkan selection, all three raw-input modes, and
+`provider_snapshot_remote transport=unix`. The bridge returned
+`credential_type=-1 user_unlocked=true`.
+
+`SystemUI`, Launcher, Settings, and the other inspector-listed Android UI APKs
+were absent; PackageInstaller remained present but non-rendering. Zygote,
+`system_server`, `com.android.phone`, `com.android.bluetooth`, and
+`com.android.nfc` remained live. WindowManager reported null current/focused
+Activity, and SurfaceFlinger listed only `SOS Core Experience` among SOS/UI
+layers. `pm install-create -S 1` threw
+`SecurityException: SOS Core product policy prevents user APK installation`.
+Both Settings and INSTALL_PACKAGE Activity starts returned code 102 and logged
+the product-policy block.
+
+An injected SIGABRT killed only the GPUI child. The parent presented `SOS Fixed
+Recovery`; an unattended `android` edge logged
+`fixed_recovery_android_unavailable stage=headless` and remained on recovery.
+`retry` launched a clean child, which reconnected over Unix IPC and rendered
+again with no Android Activity focus. Four Mali/Vulkan loader probes attempted
+to search `/data/data` and received enforcing AVC denials against
+`system_data_file`. Rendering continued. Broad `/data/data` access was
+deliberately rejected; the denial remains a known, narrowly observed probe, not
+a granted dependency.
+
+**Core 1 build and physical evidence:** The first Core 1 build failed before
+packaging because the shared Samsung product contributed
+`ro.zygote=zygote64` while the Core 1 file contributed
+`ro.zygote=no_zygote`. Layering two immutable properties was rejected. The
+tracked `0005-s5e8825-select-no-zygote-for-sos-core1.patch` now makes the
+shared hardware definition choose AOSP `core_no_zygote.mk` for only the Core 1
+target, leaving one authoritative property and preserving the other products.
+
+The accepted `1f3cd4b232c2` boot reported `ro.zygote=no_zygote`, enforcing
+SELinux, encrypted FBE, empty boot-complete/CE properties, and running
+SurfaceFlinger, service managers, native SOS authority, native host, and ADB.
+No Zygote, `system_server`, `com.android.*`, or framework-bridge process
+existed. SurfaceFlinger listed only `SOS Core 1 Locked`; the screen visibly
+reported `NO ZYGOTE` and `CE DATA LOCKED`. Logs recorded
+`core1_locked_surface_ready native_synthetic_password=false`. The state
+remained stable after ten seconds. An injected child fault produced fixed
+recovery, and Retry returned to a fresh locked Core 1 child without starting a
+Java process.
+
+Core 1 deliberately proves absence of the APK runtime/process boundary, not
+read-only payload minimization: inherited non-UI framework APK files that can
+never execute without Zygote remain image-size debt for a later product-pruning
+pass. It also deliberately provides no phone/network/Bluetooth/NFC framework
+service replacement and no synthetic-password unwrap.
+
+**Ignored visual evidence:** The following selected captures were inspected at
+original 1080x2400 resolution:
+
+| Capture | Bytes | SHA-256 |
+| --- | ---: | --- |
+| `sos-compat0-db36ed79bb16.png` | 177,551 | `f08e28febee54fb3a31668457e5dfa0889c69ccc76d1e6fcb9a6bd76b7f2ae3c` |
+| `sos-compat1-home-unlocked-616ac2404a79.png` | 184,482 | `0b64ea783fc852298743f9c42de5116ce14015cd24a03e0a8523da8bb858acae` |
+| `sos-compat1-workspace-616ac2404a79.png` | 123,323 | `8885d4dd9117cc91278427bcf1e1d340a32d78a3668316513ad30d894a6e4f5f` |
+| `sos-compat1-settings-settled-616ac2404a79.png` | 195,437 | `2e4b7cc01231133d75e2e9ed518cf1696064c57747a6c82f14bb9684f2506741` |
+| `sos-compat1-attention-616ac2404a79.png` | 154,602 | `6833692389e87ebb6431dab883fe9e5bbc2a0dcebed967b148226d0e730ecfba` |
+| `sos-shadow-surface-probe-1aad692518b8.png` | 15,584 | `ba20c352f66694f517c51b748358882450f56a12a320fcad25530ac83167bd06` |
+| `sos-shadow-native-gpui-1aad692518b8.png` | 171,492 | `d548132e4daa017f69b51ffe4a1924c4cc7aa1222cc19ff1ccc988c8611999a2` |
+| `sos-shadow-fixed-recovery-1aad692518b8.png` | 17,286 | `37f1c452a9898e0e307412e00331d19c715f8db9cc6325522360bb84eea2fd53` |
+| `sos-shadow-android-escape-1aad692518b8.png` | 495,956 | `9cbafe114ef767f05ccd7b5d287a99df8cb0914feb96ad2033954f321718b135` |
+| `sos-core0a-native-1b0c9edec481.png` | 171,492 | `d548132e4daa017f69b51ffe4a1924c4cc7aa1222cc19ff1ccc988c8611999a2` |
+| `sos-core0a-fixed-recovery-1b0c9edec481.png` | 17,286 | `37f1c452a9898e0e307412e00331d19c715f8db9cc6325522360bb84eea2fd53` |
+| `sos-core0a-android-fallback-1b0c9edec481.png` | 496,468 | `a6225ba15ac52ee950d882d7303d08db96dfd15d03a6cfd9e1e8aff3ebb85f28` |
+| `sos-core0b-boot-stuck-42b794490bd0.png` | 17,775 | `5a69e3a3f207e1eb96c92951936a0f7d1694efbed0ed885bc1d58d425683826d` |
+| `sos-core0b-preunlock-4341fa73391c.png` | 17,451 | `ebcd8bf5257054ca3d3530acd29bf4c5b1cc4bf74e5e50361418b796c5b73c94` |
+| `sos-core0b-native-4341fa73391c.png` | 171,492 | `d548132e4daa017f69b51ffe4a1924c4cc7aa1222cc19ff1ccc988c8611999a2` |
+| `sos-core0b-fixed-recovery-4341fa73391c.png` | 17,304 | `45dd5b34b3dda575283cff865c38165454b87d6684522130a5f877286b6cbad8` |
+| `sos-core0b-after-retry-4341fa73391c.png` | 171,492 | `d548132e4daa017f69b51ffe4a1924c4cc7aa1222cc19ff1ccc988c8611999a2` |
+| `sos-core1-locked-1f3cd4b232c2.png` | 17,324 | `fd11466f534905543f75d6c896942cf633250f221ba324e7766890f751de7890` |
+| `sos-core1-watchdog-recovery-1f3cd4b232c2.png` | 17,304 | `45dd5b34b3dda575283cff865c38165454b87d6684522130a5f877286b6cbad8` |
+| `sos-compat1-restored-home-616ac2404a79.png` | 183,035 | `d0be3a6238351c1de18e77d4a154ac30742669065f1f77a990048952bb51e9ce` |
+
+**Restoration:** From Core 1, `adb reboot sideload-auto-reboot` reached the
+packaged Recovery, which accepted the preserved
+`compat1-616ac2404a79.zip` at `Total xfer: 1.00x` without formatting data. The
+phone then reported exact increment
+`sos.compat1.0805cf6bd0b4.616ac2404a79`, profile `compat`, stage `1`,
+`ro.zygote=zygote64`, boot complete, CE available, and enforcing SELinux. HOME
+resolved to `dev.sos.experience/.SosHomeActivity`; `pm path` found no
+Launcher3 and retained SystemUI for Android compatibility ceremonies. Because
+the test user has no credential, `wm dismiss-keyguard` performed only the
+ordinary no-secret dismissal. Window focus then named `SosHomeActivity`, and
+the final capture shows the SOS home plus compatibility chrome. The handset is
+left in this accepted Compat 1 state.
+
+**Final source verification:** The final tree passed:
+
+```text
+cargo fmt --all -- --check
+cargo test -p android-system-authority                 # 3 passed
+./tools/sosctl m1-check --abi arm64-v8a
+cargo ndk -t arm64-v8a -P 31 check -p sos-experience \
+  --release --locked --no-default-features --features core-native
+AOSP clang-format 20 --dry-run --Werror over all Core C++ sources
+bash -n tools/a33xctl
+bash -n tools/sosctl
+git diff --check
+git apply --reverse --check for framework patch 0004 and device patch 0005
+```
+
+The Rust checks emitted only the already-known future-incompatibility warning
+from `proc-macro-error2`; no test or compilation failed. Every accepted OTA was
+physically installed only after its matching inspector passed.
+
+**Decision / remaining risks / next gates:** The six-stage product split is now
+implemented and physically demonstrated. Core 0B is the first stage that
+removes Android-rendered ownership while preserving useful Java framework
+services; Core 1 is an intentionally locked architecture/recovery validation
+target. Neither is yet a daily-use Core release.
+
+The owner still needs to exercise real touch dispatch and the physical
+Volume Up+Down Recovery chord. The handset has `CredentialType: NONE`; no
+credential was added without authorization, so real PIN verification,
+Gatekeeper throttling, fingerprint lockout/unlock, CE-key release, and
+authentication-bound Keystore behavior remain open. Compat attention still
+needs real call/alarm/security/battery/thermal events, and its workspace is task
+containment rather than a separate-user or VM data sandbox. Core needs a native
+IME, display-power/suspend repetition on every accepted stage, phone/network/
+Bluetooth/NFC provider state and mutations, calls/emergency behavior, audio and
+thermal warnings, accessibility delivery/actions, native synthetic-password
+ownership, and removal of dead APK payloads from Core 1. Core 0B also preserves
+existing `/data/app` data across no-wipe transitions; Activity rendering is
+blocked, but a separate background-component/data migration policy remains to
+be designed.

@@ -308,6 +308,7 @@ follow_logs() {
 build_experience_apk() {
   local abi="arm64-v8a"
   local home_enabled=false
+  local compat_enabled=false
   while [[ "$#" -gt 0 ]]; do
     case "$1" in
       --abi)
@@ -319,7 +320,12 @@ build_experience_apk() {
         home_enabled=true
         shift
         ;;
-      *) fail "usage: ./tools/sosctl m1-build [--abi arm64-v8a|x86_64] [--home]" ;;
+      --compat)
+        home_enabled=true
+        compat_enabled=true
+        shift
+        ;;
+      *) fail "usage: ./tools/sosctl m1-build [--abi arm64-v8a|x86_64] [--home] [--compat]" ;;
     esac
   done
   local rust_target jni_dir cargo_features="gate-strict"
@@ -396,6 +402,7 @@ build_experience_apk() {
           -Pandroid.aapt2FromMavenOverride="$(command -v aapt2)" \
           -PsosAndroidAbi="$abi" \
           -PsosHomeEnabled="$home_enabled" \
+          -PsosCompatEnabled="$compat_enabled" \
           clean assembleRelease
     )
   else
@@ -404,6 +411,7 @@ build_experience_apk() {
       ./gradlew \
         -PsosAndroidAbi="$abi" \
         -PsosHomeEnabled="$home_enabled" \
+        -PsosCompatEnabled="$compat_enabled" \
         clean assembleRelease
     )
   fi
@@ -1174,7 +1182,7 @@ Commands:
   launch              Launch the installed example app.
   logs                Follow logs from the running example process.
   run [--no-follow]   Doctor, build, install, launch, and follow logs.
-  m1-build [--abi ABI] [--home]
+  m1-build [--abi ABI] [--home] [--compat]
                       Build the SOS GPUI + Luau APK (ABI defaults to arm64-v8a).
   m1-check [--abi ABI]
                       Cross-check arm64-v8a or x86_64 Android compilation.

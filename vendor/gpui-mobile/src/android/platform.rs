@@ -51,6 +51,7 @@ use std::{
         atomic::{AtomicBool, Ordering},
         Arc,
     },
+    time::Duration,
 };
 
 use super::{
@@ -169,6 +170,13 @@ struct AndroidPlatformState {
 
     /// Whether the platform is running headless (no real surface).
     headless: bool,
+
+    /// Whether the platform owns a native window supplied by a non-Activity
+    /// process. Standalone mode drives frames and foreground tasks itself.
+    standalone: bool,
+
+    /// Process-lifetime stop flag used by the standalone event loop.
+    standalone_stop: Option<&'static AtomicBool>,
 
     /// Preferred GPU backend.
     preferred_backend: AndroidBackend,
@@ -415,10 +423,41 @@ impl AndroidPlatform {
                 on_init_window_callback: None,
                 is_active: false,
                 headless,
+                standalone: false,
+                standalone_stop: None,
                 preferred_backend: AndroidBackend::Vulkan,
             }),
             should_quit: AtomicBool::new(false),
         }
+    }
+
+    /// Create a GPUI Android platform around an `ANativeWindow` supplied by
+    /// an init-launched native process rather than `NativeActivity`.
+    ///
+    /// The standalone loop deliberately uses the manually drained dispatcher:
+    /// there is no Java main thread or `AndroidApp` to own an `ALooper`.
+    pub fn new_standalone(
+        native_window: ndk::native_window::NativeWindow,
+        density_dpi: i32,
+        stop: &'static AtomicBool,
+    ) -> Result<Arc<Self>> {
+        let platform = Arc::new(Self::new(true));
+        let scale_factor = if density_dpi > 0 {
+            density_dpi as f32 / 160.0
+        } else {
+            1.0
+        };
+        {
+            let mut state = platform.state.lock();
+            state.displays =
+                DisplayList::single(AndroidDisplay::from_window(&native_window, density_dpi));
+            state.is_active = true;
+            state.headless = false;
+            state.standalone = true;
+            state.standalone_stop = Some(stop);
+        }
+        platform.open_window(native_window, scale_factor, false)?;
+        Ok(platform)
     }
 
     // ── executor access ───────────────────────────────────────────────────────
@@ -491,10 +530,36 @@ impl AndroidPlatform {
         if let Some(app) = super::jni::android_app() {
             super::jni::run_event_loop(&app);
         } else {
-            // Headless / test mode — just invoke the callback immediately.
+            // Headless tests and standalone init processes do not have an
+            // AndroidApp lifecycle. Initialise GPUI immediately.
             let cb = self.state.lock().finish_launching.take();
             if let Some(cb) = cb {
                 cb();
+            }
+            let (standalone, stop, dispatcher) = {
+                let state = self.state.lock();
+                (
+                    state.standalone,
+                    state.standalone_stop.clone(),
+                    state.dispatcher.clone(),
+                )
+            };
+            if standalone {
+                log::info!("AndroidPlatform::run — entering standalone frame loop");
+                while !self.should_quit()
+                    && !stop
+                        .as_ref()
+                        .is_some_and(|stop| stop.load(Ordering::Acquire))
+                {
+                    dispatcher.tick();
+                    dispatcher.flush_main_thread_tasks();
+                    if let Some(window) = self.primary_window() {
+                        window.request_frame();
+                    }
+                    std::thread::sleep(Duration::from_millis(16));
+                }
+                dispatcher.flush_main_thread_tasks();
+                log::info!("AndroidPlatform::run — standalone frame loop stopped");
             }
         }
 

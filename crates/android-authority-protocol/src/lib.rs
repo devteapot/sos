@@ -2,6 +2,8 @@ use experience_ir::StateEnvelope;
 use serde::{Deserialize, Serialize};
 
 pub const REVISION_ADDRESS: &str = "127.0.0.1:47778";
+pub const CORE_PROVIDER_SOCKET: &str = "/data/misc/sos/provider.sock";
+pub const CORE_REVISION_SOCKET: &str = "/data/misc/sos/revision.sock";
 // RevisionAssetWire uses serde's JSON byte-array representation. The runtime's
 // 16 MiB raw sidecar ceiling can therefore expand to roughly 64 MiB on the
 // wire; retain an explicit bound with enough headroom for source and metadata.

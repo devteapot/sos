@@ -1,0 +1,77 @@
+diff --git a/services/core/java/com/android/server/am/ActivityManagerService.java b/services/core/java/com/android/server/am/ActivityManagerService.java
+index 59c5e0e7fc2c..28eb00c91148 100644
+--- a/services/core/java/com/android/server/am/ActivityManagerService.java
++++ b/services/core/java/com/android/server/am/ActivityManagerService.java
+@@ -9132,10 +9132,20 @@ public class ActivityManagerService extends IActivityManager.Stub
+             // to a secondary user.
+             // TODO(b/266158156): this workaround shouldn't be necessary once we move
+             // the headless-user start logic to UserManager-land.
+-            if (isBootingSystemUser && !UserManager.isHeadlessSystemUserMode()) {
++            final boolean isSosHeadlessCore = SystemProperties.getBoolean(
++                    "ro.sos.block_android_activities", false);
++            if (isBootingSystemUser && !UserManager.isHeadlessSystemUserMode()
++                    && !isSosHeadlessCore) {
+                 t.traceBegin("startHomeOnAllDisplays");
+                 mAtmInternal.startHomeOnAllDisplays(currentUserId, "systemReady");
+                 t.traceEnd();
++            } else if (isBootingSystemUser && isSosHeadlessCore) {
++                // Core 0B deliberately has no HOME Activity. Normally an idle HOME tells
++                // ActivityTaskSupervisor to finish booting; complete that transition directly
++                // so credential-encrypted storage and headless services can become available
++                // without creating an Android-rendered window.
++                Slog.i(TAG, "SOS Core headless boot: no HOME Activity; completing boot directly");
++                mHandler.post(this::ensureBootCompleted);
+             }
+ 
+             mHandler.post(mAtmInternal::showSystemReadyErrorDialogsIfNeeded);
+diff --git a/services/core/java/com/android/server/pm/PackageInstallerService.java b/services/core/java/com/android/server/pm/PackageInstallerService.java
+index 2d0bb258e89f..f8ae9b5e62a9 100644
+--- a/services/core/java/com/android/server/pm/PackageInstallerService.java
++++ b/services/core/java/com/android/server/pm/PackageInstallerService.java
+@@ -90,6 +90,7 @@ import android.os.RemoteCallback;
+ import android.os.RemoteCallbackList;
+ import android.os.RemoteException;
+ import android.os.SELinux;
++import android.os.SystemProperties;
+ import android.os.UserHandle;
+ import android.os.UserManager;
+ import android.os.storage.StorageManager;
+@@ -682,6 +683,12 @@ public class PackageInstallerService extends IPackageInstaller.Stub implements
+             throw new SecurityException("User restriction prevents installing");
+         }
+ 
++        if (SystemProperties.getBoolean("ro.sos.disable_user_apk_install", false)
++                && !PackageManagerServiceUtils.isSystemOrRoot(callingUid)) {
++            throw new SecurityException(
++                    "SOS Core product policy prevents user APK installation");
++        }
++
+         // INSTALL_REASON_ROLLBACK allows an app to be rolled back without requiring the ROLLBACK
+         // capability; ensure if this is set as the install reason the app has one of the necessary
+         // signature permissions to perform the rollback.
+diff --git a/services/core/java/com/android/server/wm/ActivityStarter.java b/services/core/java/com/android/server/wm/ActivityStarter.java
+index 92f51bed419f..65ffb428f49a 100644
+--- a/services/core/java/com/android/server/wm/ActivityStarter.java
++++ b/services/core/java/com/android/server/wm/ActivityStarter.java
+@@ -127,6 +127,7 @@ import android.os.Bundle;
+ import android.os.IBinder;
+ import android.os.OperationCanceledException;
+ import android.os.RemoteException;
++import android.os.SystemProperties;
+ import android.os.Trace;
+ import android.os.UserHandle;
+ import android.os.UserManager;
+@@ -1046,6 +1047,13 @@ class ActivityStarter {
+         mLastStartReason = request.reason;
+         mLastStartActivityTimeMs = System.currentTimeMillis();
+ 
++        if (SystemProperties.getBoolean("ro.sos.block_android_activities", false)) {
++            SafeActivityOptions.abort(request.activityOptions);
++            Slog.w(TAG, "SOS Core product policy blocked Android Activity start: "
++                    + request.reason);
++            return START_ABORTED;
++        }
++
+         final IApplicationThread caller = request.caller;
+         Intent intent = request.intent;
+         NeededUriGrants intentGrants = request.intentGrants;

@@ -31,6 +31,7 @@ use std::{
         atomic::{AtomicBool, Ordering},
         Arc,
     },
+    thread::ThreadId,
     time::{Duration, Instant},
 };
 
@@ -143,6 +144,9 @@ pub struct AndroidDispatcher {
     /// Raw pointer to the main-thread `ALooper` (not `Send` — used only on the
     /// main thread).
     looper: *mut libc_looper_opaque,
+    /// Thread that constructed the dispatcher. Standalone Core has no
+    /// `ALooper`, so GPUI still needs an explicit foreground-thread identity.
+    main_thread_id: ThreadId,
     /// Background thread-pool.
     pool: ThreadPool,
     /// Delayed background tasks sorted by due time.
@@ -192,6 +196,7 @@ impl AndroidDispatcher {
             main_queue: Arc::clone(&main_queue),
             read_fd,
             looper,
+            main_thread_id: std::thread::current().id(),
             pool: ThreadPool::new(pool_threads),
             delayed: Mutex::new(Vec::new()),
             shutdown: AtomicBool::new(false),
@@ -228,6 +233,7 @@ impl AndroidDispatcher {
             main_queue,
             read_fd,
             looper: std::ptr::null_mut(), // no real looper in headless mode
+            main_thread_id: std::thread::current().id(),
             pool: ThreadPool::new(pool_threads),
             delayed: Mutex::new(Vec::new()),
             shutdown: AtomicBool::new(false),
@@ -238,11 +244,7 @@ impl AndroidDispatcher {
 
     /// Returns `true` if the calling thread is the main/UI thread.
     pub fn is_main_thread(&self) -> bool {
-        // On Android the main thread is the one that owns the looper we
-        // registered with.  `ALooper_forThread()` returns the *same* pointer
-        // if we're on that thread, or a *different* (or null) pointer otherwise.
-        let current = unsafe { ALooper_forThread() };
-        !current.is_null() && current == self.looper
+        std::thread::current().id() == self.main_thread_id
     }
 
     /// Enqueue a task to run on the **main** (foreground) thread.
@@ -359,8 +361,10 @@ impl AndroidDispatcher {
     }
 
     fn unregister_from_looper(&self) {
-        unsafe {
-            ALooper_removeFd(self.looper, self.read_fd);
+        if !self.looper.is_null() {
+            unsafe {
+                ALooper_removeFd(self.looper, self.read_fd);
+            }
         }
     }
 }
@@ -605,6 +609,7 @@ mod tests {
             main_queue,
             read_fd,
             looper: std::ptr::null_mut(),
+            main_thread_id: std::thread::current().id(),
             pool: ThreadPool::new(1),
             delayed: Mutex::new(Vec::new()),
             shutdown: AtomicBool::new(false),

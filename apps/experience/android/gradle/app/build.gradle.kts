@@ -46,6 +46,16 @@ android {
             .gradleProperty("sosHomeEnabled")
             .orElse("false")
             .get()
+        val sosCompatEnabled = providers
+            .gradleProperty("sosCompatEnabled")
+            .orElse("false")
+            .get()
+        manifestPlaceholders["sosCompatEnabled"] = sosCompatEnabled
+        buildConfigField("boolean", "SOS_HOME_ENABLED", providers
+            .gradleProperty("sosHomeEnabled")
+            .orElse("false")
+            .get())
+        buildConfigField("boolean", "SOS_COMPAT_ENABLED", sosCompatEnabled)
     }
 
     buildTypes {
@@ -97,6 +107,10 @@ android {
                 "*/x86_64/libsos_experience.so"
             )
         }
+    }
+
+    buildFeatures {
+        buildConfig = true
     }
 
     // Lint configuration — relaxed for an example project.

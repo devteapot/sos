@@ -7,8 +7,12 @@ $(call inherit-product, device/sos/a33x/sos_a33x_common.mk)
 PRODUCT_NAME := lineage_sos_core_a33x
 
 PRODUCT_PACKAGES += \
+    sos-core-experience-runtime \
+    sos-core-host \
     sos-core-surface-probe
 
 PRODUCT_SYSTEM_EXT_PROPERTIES += \
+    ro.sos.core.autostart=off \
+    ro.sos.core.stage=shadow \
     ro.sos.profile=core \
     ro.sos.ui_owner=android-shadow

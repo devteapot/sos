@@ -9,8 +9,12 @@ LINEAGE_MANIFEST="https://github.com/LineageOS/android.git"
 LINEAGE_MANIFEST_REV="2a46cce5dff3a9a3ab98b3c25a7564084b34cd1f"
 LINEAGE_LOCAL_MANIFEST="$SOS_ROOT/aosp/manifests/a33x-lineage-23.0.xml"
 LINEAGE_PATCH_DIR="$SOS_ROOT/aosp/patches/a33x-lineage-23.0"
-LINEAGE_SOS_COMPAT_DEVICE="sos_compat_a33x"
-LINEAGE_SOS_CORE_DEVICE="sos_core_a33x"
+LINEAGE_SOS_COMPAT0_DEVICE="sos_compat0_a33x"
+LINEAGE_SOS_COMPAT1_DEVICE="sos_compat_a33x"
+LINEAGE_SOS_CORE_SHADOW_DEVICE="sos_core_a33x"
+LINEAGE_SOS_CORE0A_DEVICE="sos_core0a_a33x"
+LINEAGE_SOS_CORE0B_DEVICE="sos_core0b_a33x"
+LINEAGE_SOS_CORE1_DEVICE="sos_core1_a33x"
 LINEAGE_SOS_OVERLAY_SOURCE="$SOS_ROOT/aosp/device/sos/a33x"
 LINEAGE_SOS_OVERLAY_DESTINATION="$LINEAGE_ROOT/device/sos/a33x"
 LINEAGE_JOBS="${SOS_LINEAGE_JOBS:-8}"
@@ -142,11 +146,15 @@ apply_source_patches() {
     device/samsung/s5e8825-common
     vendor/samsung/s5e8825-common
     device/samsung/s5e8825-common
+    frameworks/base
+    device/samsung/s5e8825-common
   )
   local -a patches=(
     0001-s5e8825-fix-epicoperator-symbol.patch
     0002-s5e8825-match-libsec-ril-protobuf-soname.patch
     0003-s5e8825-package-recovery-init.patch
+    0004-frameworks-base-enforce-sos-core-install-policy.patch
+    0005-s5e8825-select-no-zygote-for-sos-core1.patch
   )
   local index project patch
   for index in "${!patches[@]}"; do
@@ -170,6 +178,7 @@ apply_source_patches() {
 stage_sos() {
   [[ "$#" -eq 0 ]] || fail "usage: ./tools/a33xctl stage-sos"
   local apk="$SOS_ROOT/artifacts/sos-experience.apk"
+  local core_runtime="$SOS_ROOT/artifacts/libsos_core_experience.so"
   local authority="$SOS_ROOT/target/aarch64-linux-android/release/sos-android-system-authority"
   local node="$SOS_ROOT/artifacts/sos-node-android-arm64"
   local node_cxx="$SOS_ROOT/artifacts/sos-node-libc++_shared.so"
@@ -181,6 +190,8 @@ stage_sos() {
   [[ -f "$LINEAGE_ROOT/build/envsetup.sh" ]] || fail "run init and sync first"
   [[ -f "$apk" ]] || \
     fail "ARM64 SOS APK missing; run ./tools/sosctl m1-build --abi arm64-v8a --home"
+  [[ -f "$core_runtime" ]] || \
+    fail "ARM64 Core GPUI runtime missing; run ./tools/a33xctl build-core"
   [[ -x "$authority" ]] || fail "ARM64 SOS authority binary missing"
   [[ -x "$node" ]] || fail "Android ARM64 Node missing; run ./tools/build-android-node"
   [[ -f "$node_cxx" ]] || fail "Android Node libc++ runtime missing; run ./tools/build-android-node"
@@ -194,6 +205,8 @@ stage_sos() {
     fail "SOS APK does not contain the ARM64 experience library"
   file "$authority" | grep -F 'ARM aarch64' >/dev/null || \
     fail "SOS authority is not an AArch64 ELF"
+  file "$core_runtime" | grep -F 'ARM aarch64' >/dev/null || \
+    fail "SOS Core GPUI runtime is not an AArch64 ELF"
   file "$node" | grep -F 'ARM aarch64' >/dev/null || \
     fail "SOS Node is not an AArch64 ELF"
   file "$node_cxx" | grep -F 'ARM aarch64' >/dev/null || \
@@ -202,11 +215,16 @@ stage_sos() {
   info "staging the ARM64 SOS product in $LINEAGE_SOS_OVERLAY_DESTINATION"
   mkdir -p "$LINEAGE_SOS_OVERLAY_DESTINATION/prebuilts/arm64" \
     "$LINEAGE_SOS_OVERLAY_DESTINATION/prebuilts/sos-agent"
-  rsync -a --delete \
+  # Content checks catch same-size source edits; omitting source timestamps
+  # ensures Ninja sees every transferred overlay file as newer than a cached
+  # object instead of silently packaging stale native code.
+  rsync -a --checksum --no-times --delete \
     --exclude prebuilts \
     "$LINEAGE_SOS_OVERLAY_SOURCE/" "$LINEAGE_SOS_OVERLAY_DESTINATION/"
   install -m 0644 "$apk" \
     "$LINEAGE_SOS_OVERLAY_DESTINATION/prebuilts/SosShell.apk"
+  install -m 0644 "$core_runtime" \
+    "$LINEAGE_SOS_OVERLAY_DESTINATION/prebuilts/arm64/libsos_core_experience.so"
   install -m 0755 "$authority" \
     "$LINEAGE_SOS_OVERLAY_DESTINATION/prebuilts/arm64/sos-android-system-authority"
   install -m 0755 "$node" \
@@ -225,6 +243,7 @@ stage_sos() {
     "$LINEAGE_SOS_OVERLAY_DESTINATION/prebuilts/default.luau"
   sha256sum \
     "$LINEAGE_SOS_OVERLAY_DESTINATION/prebuilts/SosShell.apk" \
+    "$LINEAGE_SOS_OVERLAY_DESTINATION/prebuilts/arm64/libsos_core_experience.so" \
     "$LINEAGE_SOS_OVERLAY_DESTINATION/prebuilts/arm64/sos-android-system-authority" \
     "$LINEAGE_SOS_OVERLAY_DESTINATION/prebuilts/arm64/sos-node" \
     "$LINEAGE_SOS_OVERLAY_DESTINATION/prebuilts/arm64/libc++_shared.so" \
@@ -258,17 +277,54 @@ build_rom() {
 }
 
 build_sos_profile() {
-  [[ "$#" -eq 1 ]] || fail "internal usage: build_sos_profile <compat|core>"
-  local profile="$1" target_device staged_input_sha
+  [[ "$#" -eq 1 ]] || \
+    fail "internal usage: build_sos_profile <compat0|compat1|shadow|core0a|core0b|core1>"
+  local profile="$1" target_device staged_input_sha apk_flags
   case "$profile" in
-    compat) target_device="$LINEAGE_SOS_COMPAT_DEVICE" ;;
-    core) target_device="$LINEAGE_SOS_CORE_DEVICE" ;;
+    compat0)
+      target_device="$LINEAGE_SOS_COMPAT0_DEVICE"
+      apk_flags="--home"
+      ;;
+    compat1)
+      target_device="$LINEAGE_SOS_COMPAT1_DEVICE"
+      apk_flags="--home --compat"
+      ;;
+    shadow)
+      target_device="$LINEAGE_SOS_CORE_SHADOW_DEVICE"
+      apk_flags="--home"
+      ;;
+    core0a)
+      target_device="$LINEAGE_SOS_CORE0A_DEVICE"
+      apk_flags="--home"
+      ;;
+    core0b)
+      target_device="$LINEAGE_SOS_CORE0B_DEVICE"
+      apk_flags="--home"
+      ;;
+    core1)
+      target_device="$LINEAGE_SOS_CORE1_DEVICE"
+      apk_flags="--home"
+      ;;
     *) fail "unsupported SOS profile: $profile" ;;
   esac
   [[ -f "$LINEAGE_ROOT/build/envsetup.sh" ]] || fail "run init and sync first"
   hydrate_source_lfs
   apply_source_patches
-  "$SOS_ROOT/tools/sosctl" m1-build --abi arm64-v8a --home
+  # shellcheck disable=SC2086 # apk_flags is a controlled internal option list.
+  "$SOS_ROOT/tools/sosctl" m1-build --abi arm64-v8a $apk_flags
+  info "building the standalone ARM64 Core GPUI runtime"
+  (
+    cd "$SOS_ROOT"
+    cargo ndk --link-libcxx-shared -t arm64-v8a -P 31 build \
+      -p sos-experience \
+      --release \
+      --locked \
+      --no-default-features \
+      --features core-native
+  )
+  install -m 0644 \
+    "$SOS_ROOT/target/aarch64-linux-android/release/libsos_experience.so" \
+    "$SOS_ROOT/artifacts/libsos_core_experience.so"
   "$SOS_ROOT/tools/build-android-node"
   (
     cd "$SOS_ROOT/services/sos-agent"
@@ -287,19 +343,29 @@ build_sos_profile() {
   stage_sos
   local sos_revision build_number
   sos_revision="$(git -C "$SOS_ROOT" rev-parse --short=12 HEAD)"
-  if [[ "$profile" == compat ]]; then
-    staged_input_sha="$(sha256sum \
-      "$LINEAGE_SOS_OVERLAY_DESTINATION/prebuilts/SosShell.apk" | cut -d' ' -f1)"
-  else
-    staged_input_sha="$(sha256sum \
-      "$LINEAGE_SOS_OVERLAY_DESTINATION/core/surface_probe.cpp" \
-      "$LINEAGE_SOS_OVERLAY_DESTINATION/core/sos-core-surface-probe.rc" \
-      "$LINEAGE_SOS_OVERLAY_DESTINATION/prebuilts/default.luau" \
-      "$LINEAGE_SOS_OVERLAY_DESTINATION/prebuilts/arm64/sos-android-system-authority" | \
-      sha256sum | cut -d' ' -f1)"
-  fi
+  # Every product identity covers the complete staged SOS device tree and the
+  # audited source patches. This avoids stale identities when a policy,
+  # overlay, bridge, native host, product composition, or packaged prebuilt
+  # changes.
+  staged_input_sha="$({
+    find "$LINEAGE_SOS_OVERLAY_DESTINATION" -type f -print0 | sort -z | \
+      xargs -0 sha256sum
+    find "$LINEAGE_PATCH_DIR" -maxdepth 1 -type f -name '*.patch' -print0 | \
+      sort -z | xargs -0 sha256sum
+  } | sha256sum | cut -d' ' -f1)"
   build_number="sos.${profile}.${sos_revision}.${staged_input_sha:0:12}"
   mkdir -p "$LINEAGE_CCACHE"
+  # These images embed BUILD_NUMBER in AVB descriptors but Ninja does not track
+  # that environment value as an input. Invalidate only the generated
+  # boot-chain outputs and image metadata so a product/profile switch cannot
+  # package a stale fingerprint into otherwise-current target files.
+  rm -f -- \
+    "$LINEAGE_ROOT/out/target/product/a33x/boot.img" \
+    "$LINEAGE_ROOT/out/target/product/a33x/dtbo.img" \
+    "$LINEAGE_ROOT/out/target/product/a33x/recovery.img" \
+    "$LINEAGE_ROOT/out/target/product/a33x/vendor_boot.img" \
+    "$LINEAGE_ROOT/out/target/product/a33x/vbmeta.img" \
+    "$LINEAGE_ROOT/out/target/product/a33x/misc_info.txt"
   info "building SOS $profile target lineage_$target_device as $build_number"
   container env "BUILD_NUMBER=$build_number" bash -lc \
     "ccache -M '$LINEAGE_CCACHE_SIZE' && source build/envsetup.sh && breakfast '$target_device' && m -j'$LINEAGE_JOBS' bacon"
@@ -307,12 +373,42 @@ build_sos_profile() {
 
 build_compat() {
   [[ "$#" -eq 0 ]] || fail "usage: ./tools/a33xctl build-compat"
-  build_sos_profile compat
+  build_sos_profile compat1
 }
 
 build_core() {
   [[ "$#" -eq 0 ]] || fail "usage: ./tools/a33xctl build-core"
-  build_sos_profile core
+  build_sos_profile shadow
+}
+
+build_compat0() {
+  [[ "$#" -eq 0 ]] || fail "usage: ./tools/a33xctl build-compat0"
+  build_sos_profile compat0
+}
+
+build_compat1() {
+  [[ "$#" -eq 0 ]] || fail "usage: ./tools/a33xctl build-compat1"
+  build_sos_profile compat1
+}
+
+build_core_shadow() {
+  [[ "$#" -eq 0 ]] || fail "usage: ./tools/a33xctl build-core-shadow"
+  build_sos_profile shadow
+}
+
+build_core0a() {
+  [[ "$#" -eq 0 ]] || fail "usage: ./tools/a33xctl build-core0a"
+  build_sos_profile core0a
+}
+
+build_core0b() {
+  [[ "$#" -eq 0 ]] || fail "usage: ./tools/a33xctl build-core0b"
+  build_sos_profile core0b
+}
+
+build_core1() {
+  [[ "$#" -eq 0 ]] || fail "usage: ./tools/a33xctl build-core1"
+  build_sos_profile core1
 }
 
 build_sos() {
@@ -362,9 +458,25 @@ inspect_rom() {
       package_suffix=sos_compat_a33x
       build_command=build-compat
       ;;
+    lineage_sos_compat0_a33x)
+      package_suffix=sos_compat0_a33x
+      build_command=build-compat0
+      ;;
     lineage_sos_core_a33x)
       package_suffix=sos_core_a33x
       build_command=build-core
+      ;;
+    lineage_sos_core0a_a33x)
+      package_suffix=sos_core0a_a33x
+      build_command=build-core0a
+      ;;
+    lineage_sos_core0b_a33x)
+      package_suffix=sos_core0b_a33x
+      build_command=build-core0b
+      ;;
+    lineage_sos_core1_a33x)
+      package_suffix=sos_core1_a33x
+      build_command=build-core1
       ;;
     *) fail "unsupported a33x target product: $target_product" ;;
   esac
@@ -427,6 +539,17 @@ inspect_rom() {
   done
   container bash -lc \
     "cd '$target_files' && '$LINEAGE_ROOT/out/host/linux-x86/bin/avbtool' verify_image --image vbmeta.img"
+  local expected_incremental actual_incremental
+  expected_incremental="$(sed -n 's/^ro\.system_ext\.build\.version\.incremental=//p' \
+    "$product_out/obj/PACKAGING/target_files_intermediates/${target_product}-target_files/SYSTEM_EXT/etc/build.prop")"
+  [[ -n "$expected_incremental" ]] || fail "system_ext incremental is missing"
+  for image in boot dtbo recovery vendor_boot odm product system system_ext vendor vendor_dlkm; do
+    actual_incremental="$(container out/host/linux-x86/bin/avbtool info_image \
+      --image "$target_files/$image.img" | \
+      sed -n "s/.*fingerprint -> '.*\/\([^/:]*\):userdebug\/test-keys'.*/\1/p")"
+    [[ "$actual_incremental" == "$expected_incremental" ]] || \
+      fail "$image AVB incremental $actual_incremental differs from $expected_incremental"
+  done
   container bash -lc \
     "set -euo pipefail
      image='$target_files/recovery.img'
@@ -442,10 +565,26 @@ inspect_rom() {
      printf 'package_recovery_device_init=VERIFIED\\n'"
 }
 
-inspect_sos() {
-  [[ "$#" -eq 0 ]] || fail "usage: ./tools/a33xctl inspect-sos"
-  inspect_rom lineage_sos_compat_a33x
-  local target_files="$LINEAGE_ROOT/out/target/product/a33x/obj/PACKAGING/target_files_intermediates/lineage_sos_compat_a33x-target_files"
+inspect_compat_profile() {
+  [[ "$#" -eq 1 ]] || fail "internal usage: inspect_compat_profile <compat0|compat1>"
+  local profile="$1" target_product expected_stage expected_owner build_profile
+  case "$profile" in
+    compat0)
+      target_product=lineage_sos_compat0_a33x
+      expected_stage=0
+      expected_owner=android-ceremonies
+      build_profile=compat0
+      ;;
+    compat1)
+      target_product=lineage_sos_compat_a33x
+      expected_stage=1
+      expected_owner=sos-compat
+      build_profile=compat1
+      ;;
+    *) fail "unsupported SOS Compat profile: $profile" ;;
+  esac
+  inspect_rom "$target_product"
+  local target_files="$LINEAGE_ROOT/out/target/product/a33x/obj/PACKAGING/target_files_intermediates/${target_product}-target_files"
   local apk="$target_files/SYSTEM_EXT/priv-app/SosShell/SosShell.apk"
   local authority="$target_files/SYSTEM_EXT/bin/sos-authority"
   local node="$target_files/SYSTEM_EXT/bin/sos-node"
@@ -459,11 +598,12 @@ inspect_sos() {
   local properties="$target_files/SYSTEM_EXT/etc/build.prop"
   local seapp_contexts="$target_files/SYSTEM_EXT/etc/selinux/system_ext_seapp_contexts"
   local file_contexts="$target_files/SYSTEM_EXT/etc/selinux/system_ext_file_contexts"
+  local privapp_permissions="$target_files/SYSTEM_EXT/etc/permissions/privapp-permissions-sos.xml"
   local artifact
   for artifact in \
     "$apk" "$authority" "$node" "$node_cxx" "$agent_runner" "$agent_api" \
     "$agent_example_primary" "$agent_example_secondary" "$bootstrap" "$init_rc" "$properties" \
-    "$seapp_contexts" "$file_contexts"; do
+    "$seapp_contexts" "$file_contexts" "$privapp_permissions"; do
     [[ -f "$artifact" ]] || fail "SOS target-files artifact missing: $artifact"
     stat --printf='%n %s bytes\n' "$artifact"
     sha256sum "$artifact"
@@ -482,6 +622,8 @@ inspect_sos() {
     fail "packaged SOS APK is missing its HOME activity alias"
   grep -F '="android.intent.category.HOME"' <<<"$manifest_dump" >/dev/null || \
     fail "packaged SOS APK is not HOME-enabled"
+  grep -E ':priority\([^)]*\)=1000$' <<<"$manifest_dump" >/dev/null || \
+    fail "packaged SOS HOME must retain priority 1000 over Launcher3 fallback"
   grep -E ':versionCode\([^)]*\)=2$' <<<"$manifest_dump" >/dev/null || \
     fail "packaged SOS APK does not carry the cache-invalidating version bump"
   if grep -F ':debuggable' <<<"$manifest_dump" | grep -Fv '=false' >/dev/null; then
@@ -497,6 +639,40 @@ inspect_sos() {
     fail "packaged SOS APK omitted the native Pi foreground service"
   grep -F ':foregroundServiceType' <<<"$manifest_dump" | grep -F '=0x00000001' >/dev/null || \
     fail "packaged SOS Pi service must declare the dataSync foreground type"
+  grep -F '="android.permission.MANAGE_ROLE_HOLDERS"' <<<"$manifest_dump" >/dev/null || \
+    fail "packaged SOS HOME cannot enforce the HOME role"
+  grep -F '<permission name="android.permission.STATUS_BAR" />' \
+    "$privapp_permissions" >/dev/null || \
+    fail "packaged SOS Compat omitted its STATUS_BAR privapp allowlist"
+  grep -F '="dev.gpui.mobile.SosBootReceiver"' <<<"$manifest_dump" >/dev/null || \
+    fail "packaged SOS HOME omitted its boot-time ownership policy"
+  if [[ "$profile" == compat1 ]]; then
+    for component in \
+      dev.gpui.mobile.SosCompatChromeService \
+      dev.gpui.mobile.SosCompatWorkspaceActivity \
+      dev.gpui.mobile.SosAttentionListenerService \
+      dev.gpui.mobile.SosAttentionActivity; do
+      grep -F "=\"$component\"" <<<"$manifest_dump" >/dev/null || \
+        fail "SOS Compat 1 component missing: $component"
+    done
+    grep -F '="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE"' \
+      <<<"$manifest_dump" >/dev/null || \
+      fail "SOS Compat 1 attention broker lacks its system binding boundary"
+    grep -F '="android.permission.SYSTEM_APPLICATION_OVERLAY"' \
+      <<<"$manifest_dump" >/dev/null || \
+      fail "SOS Compat 1 chrome cannot remain visible over protected Activities"
+    [[ -f "$target_files/PRODUCT/overlay/SosCompat1FrameworkOverlay.apk" ]] || \
+      fail "SOS Compat 1 framework overlay is missing"
+    [[ -f "$target_files/PRODUCT/overlay/SosCompat1SystemUiOverlay.apk" ]] || \
+      fail "SOS Compat 1 SystemUI policy overlay is missing"
+    [[ -f "$target_files/SYSTEM_EXT/bin/sos-compat-launcher-removal-marker" ]] || \
+      fail "SOS Compat 1 Launcher-removal marker is missing"
+    file "$target_files/SYSTEM_EXT/bin/sos-compat-launcher-removal-marker" | \
+      grep -F 'ARM aarch64' >/dev/null || \
+      fail "SOS Compat 1 Launcher-removal marker is not an AArch64 executable"
+    [[ ! -e "$target_files/SYSTEM_EXT/priv-app/Launcher3QuickStep/Launcher3QuickStep.apk" ]] || \
+      fail "SOS Compat 1 must not package the accidental Launcher3 HOME fallback"
+  fi
   file "$authority" | grep -F 'ARM aarch64' >/dev/null || \
     fail "packaged SOS authority is not AArch64"
   file "$node" | grep -F 'ARM aarch64' >/dev/null || \
@@ -522,10 +698,11 @@ inspect_sos() {
     fail "packaged SOS bootstrap differs from the repository source"
   grep -Fx 'ro.sos.authority=on-device' "$properties"
   grep -Fx 'ro.sos.home=dev.sos.experience' "$properties"
-  grep -E '^ro\.system_ext\.build\.version\.incremental=sos\.compat\.[0-9a-f]{12}\.[0-9a-f]{12}$' \
+  grep -E "^ro\\.system_ext\\.build\\.version\\.incremental=sos\\.${build_profile}\\.[0-9a-f]{12}\\.[0-9a-f]{12}$" \
     "$properties" || fail "SOS build does not carry a unique package-cache fingerprint"
   grep -Fx 'ro.sos.profile=compat' "$properties"
-  grep -Fx 'ro.sos.ui_owner=android-compat' "$properties"
+  grep -Fx "ro.sos.compat.stage=$expected_stage" "$properties"
+  grep -Fx "ro.sos.ui_owner=$expected_owner" "$properties"
   grep -Fx 'ro.sos.revision_format=3' "$properties"
   grep -Fx 'ro.sos.experience_api=3' "$properties"
   grep -Fx \
@@ -540,7 +717,22 @@ inspect_sos() {
   grep -Fx \
     '/data/misc/sos(/.*)?                         u:object_r:sos_authority_data_file:s0' \
     "$file_contexts"
-  info "SOS ARM64 target-files gate passed"
+  info "SOS ${profile} ARM64 target-files gate passed"
+}
+
+inspect_compat0() {
+  [[ "$#" -eq 0 ]] || fail "usage: ./tools/a33xctl inspect-compat0"
+  inspect_compat_profile compat0
+}
+
+inspect_compat1() {
+  [[ "$#" -eq 0 ]] || fail "usage: ./tools/a33xctl inspect-compat1"
+  inspect_compat_profile compat1
+}
+
+inspect_sos() {
+  [[ "$#" -eq 0 ]] || fail "usage: ./tools/a33xctl inspect-sos"
+  inspect_compat1
 }
 
 inspect_core() {
@@ -549,14 +741,19 @@ inspect_core() {
   local target_files="$LINEAGE_ROOT/out/target/product/a33x/obj/PACKAGING/target_files_intermediates/lineage_sos_core_a33x-target_files"
   local probe="$target_files/SYSTEM_EXT/bin/sos-core-surface-probe"
   local init_rc="$target_files/SYSTEM_EXT/etc/init/sos-core-surface-probe.rc"
+  local host="$target_files/SYSTEM_EXT/bin/sos-core-host"
+  local host_runtime="$target_files/SYSTEM_EXT/lib64/libsos_core_experience.so"
+  local host_init_rc="$target_files/SYSTEM_EXT/etc/init/sos-core-host.rc"
   local properties="$target_files/SYSTEM_EXT/etc/build.prop"
   local file_contexts="$target_files/SYSTEM_EXT/etc/selinux/system_ext_file_contexts"
+  local system_ext_policy="$target_files/SYSTEM_EXT/etc/selinux/system_ext_sepolicy.cil"
   local authority="$target_files/SYSTEM_EXT/bin/sos-authority"
   local system_ui="$target_files/SYSTEM_EXT/priv-app/SystemUI/SystemUI.apk"
   local launcher="$target_files/SYSTEM_EXT/priv-app/Launcher3QuickStep/Launcher3QuickStep.apk"
   local artifact
   for artifact in \
-    "$probe" "$init_rc" "$properties" "$file_contexts" "$authority" \
+    "$probe" "$init_rc" "$host" "$host_runtime" "$host_init_rc" \
+    "$properties" "$file_contexts" "$system_ext_policy" "$authority" \
     "$system_ui" "$launcher"; do
     [[ -f "$artifact" ]] || fail "SOS Core shadow-stage artifact missing: $artifact"
     stat --printf='%n %s bytes\n' "$artifact"
@@ -566,8 +763,41 @@ inspect_core() {
     fail "SOS Core must not package the Android Activity shell"
   file "$probe" | grep -F 'ARM aarch64' >/dev/null || \
     fail "SOS Core surface probe is not AArch64"
+  file "$host" | grep -F 'ARM aarch64' >/dev/null || \
+    fail "SOS Core native host is not AArch64"
+  file "$host_runtime" | grep -F 'ARM aarch64' >/dev/null || \
+    fail "SOS Core GPUI runtime is not AArch64"
   grep -F 'libgui.so' <(readelf -d "$probe") >/dev/null || \
     fail "SOS Core surface probe does not link the native SurfaceComposer client"
+  grep -F 'libgui.so' <(readelf -d "$host") >/dev/null || \
+    fail "SOS Core host does not link the native SurfaceComposer client"
+  strings "$host" | grep -F 'native_supervisor_ready child=' >/dev/null || \
+    fail "SOS Core host does not contain the fixed native supervisor"
+  strings "$host" | grep -F 'fixed_recovery_ready child_status=' >/dev/null || \
+    fail "SOS Core host does not contain the fixed native recovery surface"
+  strings "$host" | grep -F 'native_fault_injected child=' >/dev/null || \
+    fail "SOS Core host does not contain the physical fault-injection gate"
+  strings "$host" | grep -F 'native_core_deferred reason=user_ce_locked' >/dev/null || \
+    fail "SOS Core host does not preserve Android's trusted pre-unlock boundary"
+  strings "$host" | grep -F \
+    'fixed_recovery_keys_unavailable action=android' >/dev/null || \
+    fail "SOS Core fixed recovery does not fail safely when hardware keys are unavailable"
+  strings "$host" | grep -F 'fixed_recovery_key_grab_failed error=' >/dev/null || \
+    fail "SOS Core fixed recovery does not exclusively acquire its volume keys"
+  readelf -Ws "$host_runtime" | grep -F ' sos_core_main' >/dev/null || \
+    fail "SOS Core GPUI runtime does not export sos_core_main"
+  readelf -Ws "$host_runtime" | awk \
+    '$8 == "android_main" && $7 != "UND" { found = 1 } END { exit !found }' || \
+    fail "SOS Core GPUI runtime cannot satisfy NativeActivity glue at load time"
+  strings "$host_runtime" | grep -F \
+    'core_input_ready device=sec_touchscreen mode=exclusive' >/dev/null || \
+    fail "SOS Core GPUI runtime does not exclusively own its touchscreen"
+  strings "$host_runtime" | grep -F \
+    'core_input_ready device=gpio_keys mode=exclusive' >/dev/null || \
+    fail "SOS Core GPUI runtime does not exclusively own its volume keys"
+  strings "$host_runtime" | grep -F \
+    'core_input_ready device=sec-pmic-key mode=observe owner=android-power' >/dev/null || \
+    fail "SOS Core GPUI runtime does not preserve Android display-power ownership"
   grep -Fx '    disabled' "$init_rc" >/dev/null || \
     fail "SOS Core surface probe must remain manually started"
   grep -Fx '    gentle_kill' "$init_rc" >/dev/null || \
@@ -576,17 +806,228 @@ inspect_core() {
     fail "SOS Core surface probe is missing its manual start trigger"
   grep -Fx 'on property:debug.sos.core.surface_probe=0' "$init_rc" >/dev/null || \
     fail "SOS Core surface probe is missing its manual stop trigger"
+  grep -Fx '    disabled' "$host_init_rc" >/dev/null || \
+    fail "SOS Core GPUI host must remain manually started in Core shadow"
+  grep -Fx '    gentle_kill' "$host_init_rc" >/dev/null || \
+    fail "SOS Core GPUI host must receive SIGTERM before forced cleanup"
+  grep -Fx 'on property:debug.sos.core.host=1' "$host_init_rc" >/dev/null || \
+    fail "SOS Core GPUI host is missing its manual start trigger"
+  grep -Fx 'on property:debug.sos.core.host=0' "$host_init_rc" >/dev/null || \
+    fail "SOS Core GPUI host is missing its manual stop trigger"
   grep -Fx 'ro.sos.authority=on-device' "$properties"
   grep -Fx 'ro.sos.profile=core' "$properties"
   grep -Fx 'ro.sos.ui_owner=android-shadow' "$properties"
   grep -Fx 'ro.sos.revision_format=3' "$properties"
   grep -Fx 'ro.sos.experience_api=3' "$properties"
-  grep -E '^ro\.system_ext\.build\.version\.incremental=sos\.core\.[0-9a-f]{12}\.[0-9a-f]{12}$' \
+  grep -E '^ro\.system_ext\.build\.version\.incremental=sos\.shadow\.[0-9a-f]{12}\.[0-9a-f]{12}$' \
     "$properties" || fail "SOS Core build does not carry a content-derived fingerprint"
   grep -Fx \
     '/system_ext/bin/sos-core-surface-probe      u:object_r:sos_core_surface_probe_exec:s0' \
     "$file_contexts"
-  info "SOS Core shadow-stage target-files gate passed; Android recovery UI is intentionally retained"
+  grep -Fx \
+    '/system_ext/bin/sos-core-host               u:object_r:sos_core_host_exec:s0' \
+    "$file_contexts"
+  grep -F \
+    '(genfscon sysfs "/devices/platform/11a70000.scsc_wifibt/net"' \
+    "$system_ext_policy" >/dev/null || \
+    fail "SOS Core policy does not narrowly label the physical Wi-Fi net subtree"
+  info "SOS Core GPUI shadow-stage target-files gate passed; Android recovery UI is intentionally retained"
+}
+
+inspect_core_stage() {
+  [[ "$#" -eq 1 ]] || fail "internal usage: inspect_core_stage <core0a|core0b|core1>"
+  local stage="$1" target_product expected_stage expected_owner android_ui bridge no_zygote
+  case "$stage" in
+    core0a)
+      target_product=lineage_sos_core0a_a33x
+      expected_stage=0a
+      expected_owner=native-sos
+      android_ui=present
+      bridge=present
+      no_zygote=false
+      ;;
+    core0b)
+      target_product=lineage_sos_core0b_a33x
+      expected_stage=0b
+      expected_owner=native-sos-headless-framework
+      android_ui=absent
+      bridge=present
+      no_zygote=false
+      ;;
+    core1)
+      target_product=lineage_sos_core1_a33x
+      expected_stage=1
+      expected_owner=native-sos-no-zygote
+      android_ui=absent
+      bridge=absent
+      no_zygote=true
+      ;;
+    *) fail "unsupported SOS Core stage: $stage" ;;
+  esac
+
+  inspect_rom "$target_product"
+  local target_files="$LINEAGE_ROOT/out/target/product/a33x/obj/PACKAGING/target_files_intermediates/${target_product}-target_files"
+  local host="$target_files/SYSTEM_EXT/bin/sos-core-host"
+  local host_runtime="$target_files/SYSTEM_EXT/lib64/libsos_core_experience.so"
+  local host_init_rc="$target_files/SYSTEM_EXT/etc/init/sos-core-host.rc"
+  local properties="$target_files/SYSTEM_EXT/etc/build.prop"
+  local authority="$target_files/SYSTEM_EXT/bin/sos-authority"
+  local system_ext_policy="$target_files/SYSTEM_EXT/etc/selinux/system_ext_sepolicy.cil"
+  local bridge_apk="$target_files/SYSTEM_EXT/priv-app/SosFrameworkBridge/SosFrameworkBridge.apk"
+  local marker="$target_files/SYSTEM_EXT/bin/sos-core-ui-removal-marker"
+  local artifact
+  for artifact in \
+    "$host" "$host_runtime" "$host_init_rc" "$properties" "$authority" \
+    "$system_ext_policy"; do
+    [[ -f "$artifact" ]] || fail "SOS $stage artifact missing: $artifact"
+    stat --printf='%n %s bytes\n' "$artifact"
+    sha256sum "$artifact"
+  done
+  [[ ! -e "$target_files/SYSTEM_EXT/priv-app/SosShell/SosShell.apk" ]] || \
+    fail "SOS Core must not package the Android Activity shell"
+  file "$host" | grep -F 'ARM aarch64' >/dev/null || \
+    fail "SOS $stage native host is not AArch64"
+  file "$host_runtime" | grep -F 'ARM aarch64' >/dev/null || \
+    fail "SOS $stage GPUI runtime is not AArch64"
+  readelf -Ws "$host_runtime" | grep -F ' sos_core_main' >/dev/null || \
+    fail "SOS $stage GPUI runtime does not export sos_core_main"
+  file "$authority" | grep -F 'ARM aarch64' >/dev/null || \
+    fail "SOS $stage revision authority is not AArch64"
+  strings "$authority" | grep -F 'core_revision=' >/dev/null || \
+    fail "SOS $stage authority omitted its Core-local listener"
+  strings "$authority" | grep -F 'core_provider=' >/dev/null || \
+    fail "SOS $stage authority omitted its Core-local provider listener"
+  strings "$authority" | grep -F '/data/misc/sos/provider.sock' >/dev/null || \
+    fail "SOS $stage authority omitted the Core-local provider socket path"
+  strings "$authority" | grep -F '/data/misc/sos/revision.sock' >/dev/null || \
+    fail "SOS $stage authority omitted the Core-local revision socket path"
+  strings "$host_runtime" | grep -F '/data/misc/sos/provider.sock' >/dev/null || \
+    fail "SOS $stage GPUI provider still depends on Android loopback networking"
+  strings "$host_runtime" | grep -F '/data/misc/sos/revision.sock' >/dev/null || \
+    fail "SOS $stage GPUI runtime still depends on Android loopback networking"
+  grep -F '(allow sos_core_host sos_authority (unix_stream_socket (connectto)))' \
+    "$system_ext_policy" >/dev/null || \
+    fail "SOS $stage policy cannot connect Core to the revision authority"
+  strings "$host" | grep -F 'native_supervisor_ready child=' >/dev/null || \
+    fail "SOS $stage host omitted its native watchdog"
+  strings "$host" | grep -F 'fixed_recovery_ready child_status=' >/dev/null || \
+    fail "SOS $stage host omitted its fixed recovery surface"
+  strings "$host" | grep -F 'native_recovery_chord action=reboot,recovery' >/dev/null || \
+    fail "SOS $stage host omitted its framework-independent Recovery chord"
+  grep -Fx "ro.sos.core.stage=$expected_stage" "$properties"
+  grep -Fx "ro.sos.ui_owner=$expected_owner" "$properties"
+  grep -Fx 'ro.sos.profile=core' "$properties"
+  grep -Fx 'ro.sos.disable_user_apk_install=true' "$properties"
+  grep -Fx 'ro.sos.revision_format=3' "$properties"
+  unzip -p "$target_files/SYSTEM/framework/services.jar" 'classes*.dex' | strings | \
+    grep -F 'SOS Core product policy prevents user APK installation' >/dev/null || \
+    fail "SOS $stage framework does not enforce the Core APK-install policy"
+  grep -E "^ro\\.system_ext\\.build\\.version\\.incremental=sos\\.${stage}\\.[0-9a-f]{12}\\.[0-9a-f]{12}$" \
+    "$properties" || fail "SOS $stage build lacks a content-derived fingerprint"
+
+  if [[ "$stage" == core0a ]]; then
+    grep -Fx 'ro.sos.core.autostart=postunlock' "$properties"
+    grep -Fx \
+      'on property:sys.user.0.ce_available=true && property:ro.sos.core.autostart=postunlock' \
+      "$host_init_rc" >/dev/null || fail "Core 0A is not gated on trusted CE unlock"
+    strings "$host" | grep -F 'native_core_deferred reason=user_ce_locked' >/dev/null || \
+      fail "Core 0A does not preserve Android's trusted pre-unlock ceremony"
+  else
+    grep -Fx 'ro.sos.core.autostart=preunlock' "$properties"
+    grep -Fx \
+      'on property:init.svc.surfaceflinger=running && property:ro.sos.core.autostart=preunlock' \
+      "$host_init_rc" >/dev/null || fail "SOS $stage lacks native pre-unlock startup"
+  fi
+
+  if [[ "$stage" == core0b || "$stage" == core1 ]]; then
+    grep -Fx 'ro.sos.block_android_activities=true' "$properties" || \
+      fail "SOS $stage does not block Android Activity rendering"
+    unzip -p "$target_files/SYSTEM/framework/services.jar" 'classes*.dex' | strings | \
+      grep -F 'SOS Core product policy blocked Android Activity start:' >/dev/null || \
+      fail "SOS $stage framework omitted the Android Activity-start policy"
+  fi
+
+  if [[ "$stage" == core0b ]]; then
+    unzip -p "$target_files/SYSTEM/framework/services.jar" 'classes*.dex' | strings | \
+      grep -F 'SOS Core headless boot: no HOME Activity; completing boot directly' >/dev/null || \
+      fail "Core 0B framework omitted its non-rendering boot-completion path"
+  fi
+
+  local system_ui="$target_files/SYSTEM_EXT/priv-app/SystemUI/SystemUI.apk"
+  local launcher="$target_files/SYSTEM_EXT/priv-app/Launcher3QuickStep/Launcher3QuickStep.apk"
+  if [[ "$android_ui" == present ]]; then
+    [[ -f "$system_ui" && -f "$launcher" ]] || \
+      fail "Core 0A must retain Android UI as an inert recovery layer"
+  else
+    [[ ! -e "$system_ui" && ! -e "$launcher" ]] || \
+      fail "SOS $stage still packages SystemUI or Launcher3"
+    [[ -f "$marker" ]] || fail "SOS $stage UI removal marker is missing"
+    file "$marker" | grep -F 'ARM aarch64' >/dev/null || \
+      fail "SOS $stage UI removal marker is not an AArch64 executable"
+    for removed in \
+      AccessibilityMenu Aperture ApertureLensLauncher AudioFX AvatarPicker \
+      Backgrounds BackupRestoreConfirmation BasicDreams Camelot CaptivePortalLogin \
+      CertInstaller Contacts CredentialManager Dialer DocumentsUI EmergencyInfo \
+      DeviceAsWebcam DeviceDiagnostics DownloadProviderUi \
+      DynamicSystemInstallationService EasterEgg Etar ExactCalculator Gallery2 \
+      Glimpse HTMLViewer IntentResolver Jelly LatinIME \
+      Launcher3QuickStep LineageParts LineageSetupWizard LiveWallpapersPicker \
+      ManagedProvisioning PhotoTable PrintSpooler Profiles \
+      QuickAccessWallet Recorder SamsungDAP-custom SamsungDoze Seedvault Settings \
+      SettingsIntelligence SimAppDialog SimpleSettingsConfig SoundPicker SpeakerFX \
+      Stk StorageManager SystemUI ThemePicker ThemesStub Twelve Updater VpnDialogs \
+      messaging; do
+      ! find "$target_files" -type f -name "${removed}.apk" -print -quit | grep -q . || \
+        fail "SOS $stage still packages Android UI APK $removed"
+    done
+  fi
+
+  if [[ "$bridge" == present ]]; then
+    [[ -f "$bridge_apk" ]] || fail "SOS $stage headless framework bridge is missing"
+    local bridge_manifest
+    bridge_manifest="$(container out/host/linux-x86/bin/aapt2 dump xmltree \
+      --file AndroidManifest.xml "$bridge_apk")"
+    grep -F 'package="dev.sos.frameworkbridge"' <<<"$bridge_manifest" >/dev/null || \
+      fail "SOS $stage packaged the wrong framework bridge"
+    ! grep -F 'E: activity' <<<"$bridge_manifest" >/dev/null || \
+      fail "SOS $stage framework bridge must not render an Activity"
+    strings "$host" | grep -F 'trusted_lock_ready bridge=headless-framework credential=pin' >/dev/null || \
+      fail "SOS $stage host omitted its fixed PIN credential surface"
+    strings "$host" | grep -F 'framework_bridge_probe result=ready credential_type=' >/dev/null || \
+      fail "SOS $stage host omitted its non-secret framework bridge probe"
+    grep -Fx 'on property:debug.sos.core.bridge_probe=1' "$host_init_rc" >/dev/null || \
+      fail "SOS $stage omitted its physical bridge-test trigger"
+  else
+    [[ ! -e "$bridge_apk" ]] || fail "Core 1 cannot retain an APK framework bridge"
+  fi
+
+  if [[ "$no_zygote" == true ]]; then
+    local no_zygote_rc="$target_files/SYSTEM/etc/init/hw/init.no_zygote.rc"
+    [[ -f "$no_zygote_rc" ]] || fail "Core 1 no-Zygote init selection is missing"
+    ! grep -Eq '^[[:space:]]*service[[:space:]]+zygote' "$no_zygote_rc" || \
+      fail "Core 1 no-Zygote init file unexpectedly starts Zygote"
+    grep -RhsFx 'ro.zygote=no_zygote' \
+      "$target_files/VENDOR/build.prop" "$target_files/VENDOR/etc" 2>/dev/null | grep -Fx \
+      'ro.zygote=no_zygote' >/dev/null || fail "Core 1 does not select init.no_zygote.rc"
+    strings "$host" | grep -F 'core1_locked_surface_ready native_synthetic_password=false' >/dev/null || \
+      fail "Core 1 must expose the native-unlock blocker instead of faking CE unlock"
+  fi
+  info "SOS $stage target-files gate passed"
+}
+
+inspect_core0a() {
+  [[ "$#" -eq 0 ]] || fail "usage: ./tools/a33xctl inspect-core0a"
+  inspect_core_stage core0a
+}
+
+inspect_core0b() {
+  [[ "$#" -eq 0 ]] || fail "usage: ./tools/a33xctl inspect-core0b"
+  inspect_core_stage core0b
+}
+
+inspect_core1() {
+  [[ "$#" -eq 0 ]] || fail "usage: ./tools/a33xctl inspect-core1"
+  inspect_core_stage core1
 }
 
 usage() {
@@ -605,11 +1046,22 @@ commands:
   inspect-recovery  report size, SHA-256, file type, and AVB metadata
   build-rom         build the complete a33x LineageOS install package
   inspect-rom       verify and identify the package and boot-chain images
-  build-compat      build the ARM64 SOS Compat install package
-  build-core        build the ARM64 SOS Core bring-up install package
+  build-compat0     build SOS-as-HOME with Android ceremonies retained
+  build-compat1     build SOS chrome, attention broker, and APK workspace
+  build-compat      compatibility alias for build-compat1
+  build-core-shadow build the manual native display/GPUI probe target
+  build-core0a      build the post-unlock native GPUI ownership target
+  build-core0b      build native UI with the headless framework bridge
+  build-core1       build the no-Zygote native locked/recovery target
+  build-core        compatibility alias for build-core-shadow
   build-sos         compatibility alias for build-compat
-  inspect-sos       verify SOS Compat packaging and boot-chain graph
-  inspect-core      verify Core native probe and retained recovery UI
+  inspect-compat0   verify Compat 0 packaging and boot-chain graph
+  inspect-compat1   verify Compat 1 packaging and boot-chain graph
+  inspect-sos       compatibility alias for inspect-compat1
+  inspect-core      verify Core Shadow and retained recovery UI
+  inspect-core0a    verify post-unlock native ownership packaging
+  inspect-core0b    verify headless-framework native UI packaging
+  inspect-core1     verify no-Zygote native-only packaging
 EOF
 }
 
@@ -628,12 +1080,23 @@ case "$command" in
   build-recovery) build_recovery "$@" ;;
   inspect-recovery) inspect_recovery "$@" ;;
   build-rom) build_rom "$@" ;;
+  build-compat0) build_compat0 "$@" ;;
+  build-compat1) build_compat1 "$@" ;;
   build-compat) build_compat "$@" ;;
+  build-core-shadow) build_core_shadow "$@" ;;
+  build-core0a) build_core0a "$@" ;;
+  build-core0b) build_core0b "$@" ;;
+  build-core1) build_core1 "$@" ;;
   build-core) build_core "$@" ;;
   inspect-rom) inspect_rom "$@" ;;
   build-sos) build_sos "$@" ;;
+  inspect-compat0) inspect_compat0 "$@" ;;
+  inspect-compat1) inspect_compat1 "$@" ;;
   inspect-sos) inspect_sos "$@" ;;
   inspect-core) inspect_core "$@" ;;
+  inspect-core0a) inspect_core0a "$@" ;;
+  inspect-core0b) inspect_core0b "$@" ;;
+  inspect-core1) inspect_core1 "$@" ;;
   -h|--help|help|'') usage ;;
   *) fail "unknown command: $command" ;;
 esac

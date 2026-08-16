@@ -1,0 +1,35 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: SOS bring-up <sos@localhost>
+Date: Sun, 16 Aug 2026 09:56:00 +0200
+Subject: [PATCH] s5e8825-common: Select no-Zygote base for SOS Core 1
+
+The shared Samsung device definition unconditionally inherits
+core_64_bit_only.mk, which assigns ro.zygote=zygote64. SOS Core 1 also used
+core_no_zygote.mk, producing contradictory immutable vendor properties and a
+hard build failure.
+
+Select AOSP's existing no-Zygote product fragment at the shared hardware
+boundary for the explicit Core 1 target. All other a33x products retain the
+original 64-bit Zygote configuration.
+---
+ common.mk | 8 +++++++-
+ 1 file changed, 7 insertions(+), 1 deletion(-)
+
+diff --git a/common.mk b/common.mk
+index 1233c99..010fad1 100644
+--- a/common.mk
++++ b/common.mk
+@@ -15,4 +15,10 @@
+ 
+-# Inherit from generic products, most specific first
++# Inherit from generic products, most specific first. SOS Core 1 deliberately
++# retains the shared Samsung hardware product while selecting AOSP's empty
++# Zygote init configuration; every other a33x product remains 64-bit-only.
++ifeq ($(TARGET_PRODUCT),lineage_sos_core1_a33x)
++$(call inherit-product, $(SRC_TARGET_DIR)/product/core_no_zygote.mk)
++else
+ $(call inherit-product, $(SRC_TARGET_DIR)/product/core_64_bit_only.mk)
++endif
+ $(call inherit-product, $(SRC_TARGET_DIR)/product/full_base_telephony.mk)
+-- 
+2.51.0

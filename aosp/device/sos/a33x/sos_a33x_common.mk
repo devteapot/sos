@@ -1,4 +1,4 @@
-# Shared SOS Samsung base. Both product profiles use the reproduced a33x
+# Shared SOS Samsung base. Every staged product uses the reproduced a33x
 # hardware definition, on-device services, and immutable revision format.
 # UI ownership belongs in the profile makefiles, not here.
 $(call inherit-product, device/samsung/a33x/lineage_a33x.mk)

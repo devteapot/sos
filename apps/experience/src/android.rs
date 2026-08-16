@@ -1,5 +1,7 @@
 mod accessibility;
 mod agent;
+#[cfg(feature = "core-native")]
+mod core_input;
 mod native_input;
 mod network;
 mod provider_client;
@@ -17,6 +19,12 @@ use std::{
     thread,
     time::{Duration, Instant},
 };
+#[cfg(feature = "core-native")]
+use std::{
+    ffi::{c_char, c_void, CStr},
+    ptr::NonNull,
+    sync::{atomic::AtomicI32, Arc},
+};
 
 use experience_ir::{
     AgentMessage, AgentMessageRole, Align, AnimationKind, Content, ExperienceModel, Flow,
@@ -28,7 +36,11 @@ use gpui::{
     AnyElement, App, Application, Context, Entity, MouseButton, Render, ScrollHandle, SharedString,
     Window, WindowOptions,
 };
-use gpui_mobile::{android::jni, packages::deeplink};
+#[cfg(feature = "core-native")]
+use gpui_mobile::android::AndroidPlatform;
+use gpui_mobile::android::{jni, SharedPlatform};
+#[cfg(not(feature = "core-native"))]
+use gpui_mobile::packages::deeplink;
 use runtime_luau::{CandidateTimings, RuntimeWorker, WorkerReady, WorkerResult};
 use serde_json::{json, Value as JsonValue};
 use sha2::{Digest, Sha256};
@@ -45,15 +57,38 @@ static FILES_DIR: OnceLock<PathBuf> = OnceLock::new();
 static RELOAD_REQUESTED: AtomicBool = AtomicBool::new(false);
 static WORKER_RESTART_REQUESTED: AtomicBool = AtomicBool::new(false);
 static STRESS_REQUEST: OnceLock<Mutex<Option<StressRequest>>> = OnceLock::new();
+#[cfg(feature = "core-native")]
+static CORE_PLATFORM: OnceLock<Mutex<Option<Arc<AndroidPlatform>>>> = OnceLock::new();
+#[cfg(feature = "core-native")]
+static CORE_STOP_REQUESTED: AtomicBool = AtomicBool::new(false);
+#[cfg(feature = "core-native")]
+static CORE_EXIT_REASON: AtomicI32 = AtomicI32::new(0);
 
+#[cfg(not(feature = "core-native"))]
 fn request_host_frame() {
     gpui_mobile::TEXT_INPUT_DIRTY.store(true, Ordering::Release);
+    #[cfg(not(feature = "core-native"))]
     if let Some(platform) = jni::platform() {
         platform.background_executor().dispatch_on_main_thread(|| {
             if let Some(window) = jni::platform().and_then(|platform| platform.primary_window()) {
                 window.request_frame();
             }
         });
+    }
+    #[cfg(feature = "core-native")]
+    if let Some(platform) = core_platform_slot()
+        .lock()
+        .expect("Core platform lock")
+        .clone()
+    {
+        let dispatch_platform = Arc::clone(&platform);
+        platform
+            .background_executor()
+            .dispatch_on_main_thread(move || {
+                if let Some(window) = dispatch_platform.primary_window() {
+                    window.request_frame();
+                }
+            });
     }
 }
 
@@ -63,6 +98,7 @@ const CANDIDATE_STATE_FILE: &str = "experience.candidate-state.json";
 const PREVIOUS_FILE: &str = "experience.previous.luau";
 const REJECTED_FILE: &str = "experience.rejected.luau";
 const STATE_FILE: &str = "experience-state.json";
+#[cfg(not(feature = "core-native"))]
 const MAX_STRESS_SWAPS: usize = 10_000;
 
 #[derive(Clone, Debug)]
@@ -126,6 +162,7 @@ struct GestureSession {
     moved: bool,
 }
 
+#[cfg(not(feature = "core-native"))]
 #[no_mangle]
 fn android_main(app: android_activity::AndroidApp) {
     android_logger::init_once(
@@ -168,6 +205,31 @@ fn android_main(app: android_activity::AndroidApp) {
         }
     });
 
+    run_experience(shared);
+
+    // `android-activity` may create a fresh native thread when HOME is
+    // relaunched while keeping the Linux process alive. GPUI's Android
+    // dispatcher and its process-global platform are bound to the original
+    // native thread, so re-entering `android_main` in that process would reuse
+    // a stale dispatcher and fail GPUI's main-thread invariant. NativeActivity
+    // owns no durable state in-process; the SOS model and journal live on disk.
+    // End the spent process after the Activity lifecycle exits so Android
+    // starts the next HOME instance with a clean platform and dispatcher.
+    log::info!("native_activity_lifecycle_ended; recycling process");
+    unsafe { libc::_exit(0) }
+}
+
+// `android-activity`'s NativeActivity glue has a load-time reference to this
+// symbol even in the standalone Core process, where no Activity can invoke it.
+// Keep the symbol inert so `dlopen` can resolve the shared object without
+// reintroducing an Activity lifecycle into Core.
+#[cfg(feature = "core-native")]
+#[no_mangle]
+fn android_main(_app: android_activity::AndroidApp) {
+    log::error!("Core runtime received an impossible NativeActivity entry");
+}
+
+fn run_experience(shared: SharedPlatform) {
     Application::with_platform(shared.into_rc())
         .with_assets(SosAssets)
         .run(|cx: &mut App| {
@@ -183,6 +245,106 @@ fn android_main(app: android_activity::AndroidApp) {
                 Err(error) => log::error!("failed to open experience window: {error}"),
             }
         });
+}
+
+#[cfg(feature = "core-native")]
+fn core_platform_slot() -> &'static Mutex<Option<Arc<AndroidPlatform>>> {
+    CORE_PLATFORM.get_or_init(|| Mutex::new(None))
+}
+
+#[cfg(feature = "core-native")]
+extern "C" fn core_signal_handler(signal: i32) {
+    CORE_EXIT_REASON.store(signal, Ordering::Release);
+    CORE_STOP_REQUESTED.store(true, Ordering::Release);
+}
+
+#[cfg(feature = "core-native")]
+fn install_core_signal_handlers() {
+    unsafe {
+        let handler = core_signal_handler as *const () as libc::sighandler_t;
+        libc::signal(libc::SIGTERM, handler);
+        libc::signal(libc::SIGINT, handler);
+        libc::signal(libc::SIGHUP, handler);
+    }
+}
+
+#[cfg(feature = "core-native")]
+fn request_core_recovery() {
+    CORE_EXIT_REASON.store(100, Ordering::Release);
+    CORE_STOP_REQUESTED.store(true, Ordering::Release);
+}
+
+/// Run the permanent GPUI experience on a SurfaceComposer-owned native
+/// window. This entry point has no Activity, JNI lifecycle, or APK data path.
+#[cfg(feature = "core-native")]
+#[no_mangle]
+pub unsafe extern "C" fn sos_core_main(
+    native_window: *mut c_void,
+    density_dpi: i32,
+    data_dir: *const c_char,
+) -> i32 {
+    android_logger::init_once(
+        android_logger::Config::default()
+            .with_max_level(log::LevelFilter::Info)
+            .with_tag("sos-core-experience"),
+    );
+    jni::install_panic_hook();
+    CORE_STOP_REQUESTED.store(false, Ordering::Release);
+    CORE_EXIT_REASON.store(0, Ordering::Release);
+    install_core_signal_handlers();
+
+    let Some(native_window) = NonNull::new(native_window.cast()) else {
+        log::error!("Core host received a null ANativeWindow");
+        return 64;
+    };
+    if data_dir.is_null() {
+        log::error!("Core host received a null data directory");
+        return 64;
+    }
+    let data_dir = match CStr::from_ptr(data_dir).to_str() {
+        Ok(path) if !path.is_empty() => PathBuf::from(path),
+        _ => {
+            log::error!("Core host received an invalid data directory");
+            return 64;
+        }
+    };
+    if FILES_DIR.get().is_none() {
+        let _ = FILES_DIR.set(data_dir);
+    }
+
+    let native_window = ndk::native_window::NativeWindow::clone_from_ptr(native_window);
+    let platform =
+        match AndroidPlatform::new_standalone(native_window, density_dpi, &CORE_STOP_REQUESTED) {
+            Ok(platform) => platform,
+            Err(error) => {
+                log::error!("Core GPUI platform failed: {error:#}");
+                return 70;
+            }
+        };
+    *core_platform_slot().lock().expect("Core platform lock") = Some(Arc::clone(&platform));
+    pointer_input::install();
+    if let Err(error) = core_input::start(Arc::clone(&platform)) {
+        log::error!("Core input ownership failed: {error}");
+        *core_platform_slot().lock().expect("Core platform lock") = None;
+        return 70;
+    }
+    log::info!("sos_experience_host role=core-native density_dpi={density_dpi}");
+
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        run_experience(SharedPlatform::new(platform));
+    }));
+    *core_platform_slot().lock().expect("Core platform lock") = None;
+    if outcome.is_err() {
+        log::error!("Core GPUI host unwound into its fixed native boundary");
+        return 70;
+    }
+    let reason = CORE_EXIT_REASON.load(Ordering::Acquire);
+    log::info!("sos_experience_host_stopped role=core-native reason={reason}");
+    if reason == 100 {
+        100
+    } else {
+        0
+    }
 }
 
 struct ExperienceHost {
@@ -221,6 +383,9 @@ impl ExperienceHost {
             .unwrap_or_else(|error| panic!("system revision authority is required: {error}"));
         let mut model = match provider_client::snapshot() {
             Ok(model) => {
+                #[cfg(feature = "core-native")]
+                log::info!("provider_snapshot_remote transport=unix");
+                #[cfg(not(feature = "core-native"))]
                 log::info!("provider_snapshot_remote transport=tcp");
                 model
             }
@@ -2414,6 +2579,7 @@ fn loading_scene() -> Scene {
     }
 }
 
+#[cfg(not(feature = "core-native"))]
 fn parse_stress_request(url: &str) -> Option<StressRequest> {
     let query = url.split_once('?')?.1;
     let mut count = None;

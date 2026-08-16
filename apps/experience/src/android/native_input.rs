@@ -19,7 +19,9 @@ use gpui::{
 use unicode_segmentation::UnicodeSegmentation as _;
 
 use super::{accessibility, ExperienceHost};
+#[cfg(not(feature = "core-native"))]
 use gpui_mobile::android::jni::{activity, find_app_class, get_string, with_env};
+#[cfg(not(feature = "core-native"))]
 use jni::objects::{JObject, JValue};
 
 thread_local! {
@@ -65,6 +67,7 @@ pub fn take_ime_states() -> Vec<ImeState> {
         .collect()
 }
 
+#[cfg(not(feature = "core-native"))]
 #[no_mangle]
 pub unsafe extern "C" fn Java_dev_gpui_mobile_GpuiActivity_nativeOnImeState(
     _env: *mut std::ffi::c_void,
@@ -109,6 +112,7 @@ pub unsafe extern "C" fn Java_dev_gpui_mobile_GpuiActivity_nativeOnImeState(
     });
 }
 
+#[cfg(not(feature = "core-native"))]
 #[no_mangle]
 pub unsafe extern "C" fn Java_dev_gpui_mobile_GpuiActivity_nativeOnImeInset(
     _env: *mut std::ffi::c_void,
@@ -122,6 +126,7 @@ pub unsafe extern "C" fn Java_dev_gpui_mobile_GpuiActivity_nativeOnImeInset(
     super::request_host_frame();
 }
 
+#[cfg(not(feature = "core-native"))]
 fn install_mobile_keyboard_callback(node_id: &str) {
     ACTIVE_INPUT.with(|active| *active.borrow_mut() = Some(node_id.to_owned()));
     gpui_mobile::set_text_input_callback(Some(Box::new(|text| {
@@ -380,68 +385,90 @@ impl NativeTextInput {
     }
 
     fn activate_mobile_ime(&self) {
-        gpui_mobile::set_text_input_callback(None);
-        ACTIVE_INPUT.with(|active| *active.borrow_mut() = Some(self.node_id.clone()));
-        let state = self.accessibility_state();
-        let result = with_env(|env| {
-            let helper = find_app_class(env, "dev.gpui.mobile.GpuiImeBridge")?;
-            let activity = activity(env)?;
-            let node_id = env
-                .new_string(&self.node_id)
-                .map_err(|error| error.to_string())?;
-            let text = env
-                .new_string(&state.value)
-                .map_err(|error| error.to_string())?;
-            let (marked_start, marked_end) = state
-                .marked
-                .map(|range| (range.start as i32, range.end as i32))
-                .unwrap_or((-1, -1));
-            env.call_static_method(
-                &helper,
-                jni::jni_str!("activate"),
-                jni::jni_sig!("(Landroid/app/Activity;Ljava/lang/String;Ljava/lang/String;IIII)V"),
-                &[
-                    JValue::Object(&activity),
-                    JValue::Object(&node_id),
-                    JValue::Object(&text),
-                    JValue::Int(state.selection.start as i32),
-                    JValue::Int(state.selection.end as i32),
-                    JValue::Int(marked_start),
-                    JValue::Int(marked_end),
-                ],
-            )
-            .map_err(|error| {
-                env.exception_clear();
-                error.to_string()
-            })?;
-            Ok(())
-        });
-        if let Err(error) = result {
-            log::warn!("composition_ime_unavailable error={error}; using committed-text fallback");
-            install_mobile_keyboard_callback(&self.node_id);
-            gpui_mobile::show_keyboard();
+        #[cfg(feature = "core-native")]
+        {
+            log::warn!(
+                "core_native_ime_unavailable node={}; trusted keyboard gate remains open",
+                self.node_id
+            );
+            return;
+        }
+        #[cfg(not(feature = "core-native"))]
+        {
+            gpui_mobile::set_text_input_callback(None);
+            ACTIVE_INPUT.with(|active| *active.borrow_mut() = Some(self.node_id.clone()));
+            let state = self.accessibility_state();
+            let result = with_env(|env| {
+                let helper = find_app_class(env, "dev.gpui.mobile.GpuiImeBridge")?;
+                let activity = activity(env)?;
+                let node_id = env
+                    .new_string(&self.node_id)
+                    .map_err(|error| error.to_string())?;
+                let text = env
+                    .new_string(&state.value)
+                    .map_err(|error| error.to_string())?;
+                let (marked_start, marked_end) = state
+                    .marked
+                    .map(|range| (range.start as i32, range.end as i32))
+                    .unwrap_or((-1, -1));
+                env.call_static_method(
+                    &helper,
+                    jni::jni_str!("activate"),
+                    jni::jni_sig!(
+                        "(Landroid/app/Activity;Ljava/lang/String;Ljava/lang/String;IIII)V"
+                    ),
+                    &[
+                        JValue::Object(&activity),
+                        JValue::Object(&node_id),
+                        JValue::Object(&text),
+                        JValue::Int(state.selection.start as i32),
+                        JValue::Int(state.selection.end as i32),
+                        JValue::Int(marked_start),
+                        JValue::Int(marked_end),
+                    ],
+                )
+                .map_err(|error| {
+                    env.exception_clear();
+                    error.to_string()
+                })?;
+                Ok(())
+            });
+            if let Err(error) = result {
+                log::warn!(
+                    "composition_ime_unavailable error={error}; using committed-text fallback"
+                );
+                install_mobile_keyboard_callback(&self.node_id);
+                gpui_mobile::show_keyboard();
+            }
         }
     }
 
     fn deactivate_mobile_ime(&self) {
-        let _ = with_env(|env| {
-            let helper = find_app_class(env, "dev.gpui.mobile.GpuiImeBridge")?;
-            let activity = activity(env)?;
-            let node_id = env
-                .new_string(&self.node_id)
-                .map_err(|error| error.to_string())?;
-            env.call_static_method(
-                &helper,
-                jni::jni_str!("deactivate"),
-                jni::jni_sig!("(Landroid/app/Activity;Ljava/lang/String;)V"),
-                &[JValue::Object(&activity), JValue::Object(&node_id)],
-            )
-            .map_err(|error| {
-                env.exception_clear();
-                error.to_string()
-            })?;
-            Ok(())
-        });
+        #[cfg(feature = "core-native")]
+        {
+            return;
+        }
+        #[cfg(not(feature = "core-native"))]
+        {
+            let _ = with_env(|env| {
+                let helper = find_app_class(env, "dev.gpui.mobile.GpuiImeBridge")?;
+                let activity = activity(env)?;
+                let node_id = env
+                    .new_string(&self.node_id)
+                    .map_err(|error| error.to_string())?;
+                env.call_static_method(
+                    &helper,
+                    jni::jni_str!("deactivate"),
+                    jni::jni_sig!("(Landroid/app/Activity;Ljava/lang/String;)V"),
+                    &[JValue::Object(&activity), JValue::Object(&node_id)],
+                )
+                .map_err(|error| {
+                    env.exception_clear();
+                    error.to_string()
+                })?;
+                Ok(())
+            });
+        }
     }
 
     fn notify_change(&self, cx: &mut Context<Self>) {

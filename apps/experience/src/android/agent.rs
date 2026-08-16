@@ -2,12 +2,15 @@ use std::thread;
 
 use async_channel::Sender;
 use experience_ir::{AgentConversation, ExperienceModel};
+#[cfg(not(feature = "core-native"))]
 use gpui_mobile::android::jni::{activity, find_app_class, get_string, with_env};
+#[cfg(not(feature = "core-native"))]
 use jni::objects::{JObject, JValue};
 use serde::Deserialize;
 
 use crate::deterministic_agent_candidate;
 
+#[cfg(not(feature = "core-native"))]
 const HELPER_CLASS: &str = "dev.gpui.mobile.GpuiAgent";
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
@@ -27,6 +30,7 @@ pub enum AgentUpdate {
     Failed(String),
 }
 
+#[cfg(not(feature = "core-native"))]
 #[derive(Deserialize)]
 struct LiveEnvelope {
     ok: bool,
@@ -40,6 +44,16 @@ struct LiveCandidate {
     summary: String,
 }
 
+#[cfg(feature = "core-native")]
+pub fn status() -> Result<AgentStatus, String> {
+    Ok(AgentStatus {
+        provider: "fake".into(),
+        configured: true,
+        activity: "Deterministic native provider ready".into(),
+    })
+}
+
+#[cfg(not(feature = "core-native"))]
 pub fn status() -> Result<AgentStatus, String> {
     with_env(|env| {
         let helper = find_app_class(env, HELPER_CLASS)?;
@@ -180,6 +194,12 @@ fn validate_candidate(source: &str, model: &ExperienceModel) -> Result<(), Strin
         .map_err(|error| format!("agent candidate scene is invalid: {error}"))
 }
 
+#[cfg(feature = "core-native")]
+fn run_live(_prompt: &str, _current_source: &str) -> Result<LiveCandidate, String> {
+    Err("Core live-agent credentials require a trusted native ceremony".into())
+}
+
+#[cfg(not(feature = "core-native"))]
 fn run_live(prompt: &str, current_source: &str) -> Result<LiveCandidate, String> {
     with_env(|env| {
         let helper = find_app_class(env, HELPER_CLASS)?;
@@ -226,6 +246,12 @@ fn run_live(prompt: &str, current_source: &str) -> Result<LiveCandidate, String>
     })
 }
 
+#[cfg(feature = "core-native")]
+fn call_bool(_method: &str) -> Result<(), String> {
+    Err("Core agent credentials require a trusted native ceremony".into())
+}
+
+#[cfg(not(feature = "core-native"))]
 fn call_bool(method: &str) -> Result<(), String> {
     with_env(|env| {
         let helper = find_app_class(env, HELPER_CLASS)?;

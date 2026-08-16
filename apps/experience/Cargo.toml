@@ -10,6 +10,7 @@ default = ["offline-fallback"]
 offline-fallback = ["dep:providers-fake"]
 gate-strict = []
 aosp-system = ["dep:android-authority-protocol"]
+core-native = ["aosp-system"]
 linux-host = []
 
 [lib]
@@ -27,6 +28,8 @@ gpui = { git = "https://github.com/zed-industries/zed", rev = "5688167d224b5eca5
 gpui-mobile = { path = "../../vendor/gpui-mobile", default-features = false, features = ["deeplink"] }
 log.workspace = true
 jni = "0.22"
+libc = "0.2"
+ndk = { version = "0.9", features = ["nativewindow"] }
 providers-fake = { workspace = true, optional = true }
 runtime-luau.workspace = true
 serde.workspace = true

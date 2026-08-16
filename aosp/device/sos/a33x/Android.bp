@@ -2,6 +2,14 @@ package {
     default_applicable_licenses: ["Android-Apache-2.0"],
 }
 
+prebuilt_etc {
+    name: "sos-compat-privapp-permissions",
+    src: "permissions/privapp-permissions-sos.xml",
+    filename: "privapp-permissions-sos.xml",
+    sub_dir: "permissions",
+    system_ext_specific: true,
+}
+
 cc_binary {
     name: "sos-core-surface-probe",
     srcs: ["core/surface_probe.cpp"],
@@ -22,6 +30,139 @@ cc_binary {
         "libui",
         "libutils",
     ],
+}
+
+cc_binary {
+    name: "sos-core-host",
+    srcs: ["core/host.cpp"],
+    compile_multilib: "64",
+    system_ext_specific: true,
+    init_rc: ["core/sos-core-host.rc"],
+    cflags: [
+        "-Wall",
+        "-Werror",
+        "-Wextra",
+    ],
+    shared_libs: [
+        "libbase",
+        "libbinder",
+        "libdl",
+        "libgui",
+        "liblog",
+        "libnativewindow",
+        "libui",
+        "libutils",
+    ],
+}
+
+cc_binary {
+    name: "sos-compat-launcher-removal-marker",
+    srcs: ["core/ui_removal_marker.cpp"],
+    compile_multilib: "64",
+    system_ext_specific: true,
+    cflags: [
+        "-Wall",
+        "-Werror",
+        "-Wextra",
+    ],
+    overrides: ["Launcher3QuickStep"],
+}
+
+cc_binary {
+    name: "sos-core-ui-removal-marker",
+    srcs: ["core/ui_removal_marker.cpp"],
+    compile_multilib: "64",
+    system_ext_specific: true,
+    cflags: [
+        "-Wall",
+        "-Werror",
+        "-Wextra",
+    ],
+    overrides: [
+        "Aperture",
+        "ApertureLensLauncher",
+        "AccessibilityMenu",
+        "AudioFX",
+        "AvatarPicker",
+        "Backgrounds",
+        "BackupRestoreConfirmation",
+        "BasicDreams",
+        "Camelot",
+        "CaptivePortalLogin",
+        "CertInstaller",
+        "Contacts",
+        "CredentialManager",
+        "DeskClock",
+        "DeviceAsWebcam",
+        "DeviceDiagnostics",
+        "Dialer",
+        "DocumentsUI",
+        "DownloadProviderUi",
+        "DynamicSystemInstallationService",
+        "EasterEgg",
+        "EmergencyInfo",
+        "Etar",
+        "ExactCalculator",
+        "Gallery2",
+        "Glimpse",
+        "HTMLViewer",
+        "IntentResolver",
+        "Jelly",
+        "LatinIME",
+        "Launcher3QuickStep",
+        "LineageParts",
+        "LineageSetupWizard",
+        "LiveWallpapersPicker",
+        "ManagedProvisioning",
+        "PhotoTable",
+        "PrintSpooler",
+        "Profiles",
+        "QuickAccessWallet",
+        "Recorder",
+        "SamsungDoze",
+        "SamsungDAP-custom",
+        "Seedvault",
+        "Settings",
+        "SettingsIntelligence",
+        "SimAppDialog",
+        "SimpleSettingsConfig",
+        "SoundPicker",
+        "SpeakerFX",
+        "Stk",
+        "StorageManager",
+        "SystemUI",
+        "ThemePicker",
+        "ThemesStub",
+        "Twelve",
+        "Updater",
+        "VpnDialogs",
+        "messaging",
+    ],
+}
+
+android_app {
+    name: "SosFrameworkBridge",
+    srcs: ["frameworkbridge/src/**/*.java"],
+    manifest: "frameworkbridge/AndroidManifest.xml",
+    certificate: "platform",
+    platform_apis: true,
+    privileged: true,
+    system_ext_specific: true,
+    optimize: {
+        enabled: true,
+    },
+}
+
+cc_prebuilt_library_shared {
+    name: "sos-core-experience-runtime",
+    srcs: ["prebuilts/arm64/libsos_core_experience.so"],
+    stem: "libsos_core_experience",
+    compile_multilib: "64",
+    check_elf_files: false,
+    system_ext_specific: true,
+    strip: {
+        none: true,
+    },
 }
 
 android_app_import {

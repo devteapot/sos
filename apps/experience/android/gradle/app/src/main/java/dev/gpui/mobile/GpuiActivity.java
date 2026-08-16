@@ -10,6 +10,8 @@ import android.os.Bundle;
 import android.util.Log;
 import android.view.KeyEvent;
 
+import dev.sos.experience.BuildConfig;
+
 import androidx.core.splashscreen.SplashScreen;
 
 /** Permanent NativeActivity host for Luau-authored SOS experience revisions. */
@@ -48,7 +50,16 @@ public class GpuiActivity extends NativeActivity {
         splash.setKeepOnScreenCondition(() -> !isNativeReady());
         setVolumeControlStream(AudioManager.STREAM_MUSIC);
         super.onCreate(savedInstanceState);
+        SosHomePolicy.enforce(this, "activity-create");
+    }
 
+    @Override
+    protected void onResume() {
+        super.onResume();
+        SosHomePolicy.enforce(this, "activity-resume");
+        if (BuildConfig.SOS_COMPAT_ENABLED) {
+            SosCompatChromeService.start(this);
+        }
     }
 
     private boolean isNativeReady() {

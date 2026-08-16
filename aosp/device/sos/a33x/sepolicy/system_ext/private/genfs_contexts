@@ -1,0 +1,5 @@
+# The SCSC Wi-Fi interface is backed by a physical platform device rather than
+# /sys/devices/virtual/net, so AOSP's generic sysfs_net label does not reach it.
+# Label only the network subtree; SOS Core receives read-only access to this
+# type and cannot mutate Wi-Fi configuration through sysfs.
+genfscon sysfs /devices/platform/11a70000.scsc_wifibt/net u:object_r:sysfs_net:s0
