@@ -220,11 +220,12 @@ surface, while explicitly selected non-system Android app contents may appear
 as compatibility windows. Android ceremonies are not part of Compat. Core
 removes Android Activity presentation entirely while initially retaining
 proven native Android infrastructure. The physical campaign has now passed the
-Shadow, Core 0A, and Core 0B stage-specific gates, including native display and
-input ownership, fixed recovery, a pre-unlock native lock surface, and a
-headless-framework boot. Core 1 separately proves the no-Zygote process and
-recovery boundary, but remains honestly locked until native
-synthetic-password/FBE unlock and the displaced system services exist. The
+historical Shadow, Core 0A, and Core 0B stage-specific gates, including native
+display and input ownership, fixed recovery, a pre-unlock native lock surface,
+and a headless-framework boot. Core 0A is now archived and Core 0B is a frozen
+opt-in migration oracle. Core 1 is the sole active Core target and separately
+proves the no-Zygote process and recovery boundary, but remains honestly locked
+until native synthetic-password/FBE unlock and the displaced system services exist. The
 exact ownership boundaries and accepted revisions are recorded in
 [`android-product-split.md`](android-product-split.md) and
 [`android-ui-ownership-stages.md`](android-ui-ownership-stages.md).
@@ -339,13 +340,14 @@ agent, authenticated compositor, and direct-DRM VM gate. Android 17 Cuttlefish
 boots SOS as HOME with an init-supervised on-device authority. On the physical
 SM-A336B, Compat 1 owns every system surface around an optional Android
 application-runtime island; the ordered Shadow, Core 0A, Core 0B, and Core 1
-campaign demonstrated successively stronger native ownership boundaries.
+campaign historically demonstrated successively stronger native ownership
+boundaries.
 
 The current phase is service migration and hardening, not further proof that a
 generated experience can replace an APK screen. Compat 1 revision
 `sos.compat1.19d8a653fbd7.220e268c228f` is the accepted physical fallback.
-Core 0B is the strongest bootable headless-framework stage; Core 1 is an
-intentionally locked no-Zygote validation target. Real credentials,
+Core 0B remains the frozen last bootable headless-framework comparison target;
+Core 1 is the active, intentionally locked no-Zygote target. Real credentials,
 accessibility, urgent attention, data containment, service replacement, and
 broader physical hardware gates remain open. The APK continues as a regression
 harness rather than the product architecture.

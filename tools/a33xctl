@@ -12,7 +12,6 @@ LINEAGE_PATCH_DIR="$SOS_ROOT/aosp/patches/a33x-lineage-23.0"
 LINEAGE_SOS_COMPAT0_DEVICE="sos_compat0_a33x"
 LINEAGE_SOS_COMPAT1_DEVICE="sos_compat_a33x"
 LINEAGE_SOS_CORE_SHADOW_DEVICE="sos_core_a33x"
-LINEAGE_SOS_CORE0A_DEVICE="sos_core0a_a33x"
 LINEAGE_SOS_CORE0B_DEVICE="sos_core0b_a33x"
 LINEAGE_SOS_CORE1_DEVICE="sos_core1_a33x"
 LINEAGE_SOS_OVERLAY_SOURCE="$SOS_ROOT/aosp/device/sos/a33x"
@@ -278,7 +277,7 @@ build_rom() {
 
 build_sos_profile() {
   [[ "$#" -eq 1 ]] || \
-    fail "internal usage: build_sos_profile <compat0|compat1|shadow|core0a|core0b|core1>"
+    fail "internal usage: build_sos_profile <compat0|compat1|shadow|core0b|core1>"
   local profile="$1" target_device staged_input_sha apk_flags
   case "$profile" in
     compat0)
@@ -291,10 +290,6 @@ build_sos_profile() {
       ;;
     shadow)
       target_device="$LINEAGE_SOS_CORE_SHADOW_DEVICE"
-      apk_flags="--home"
-      ;;
-    core0a)
-      target_device="$LINEAGE_SOS_CORE0A_DEVICE"
       apk_flags="--home"
       ;;
     core0b)
@@ -396,13 +391,11 @@ build_core_shadow() {
   build_sos_profile shadow
 }
 
-build_core0a() {
-  [[ "$#" -eq 0 ]] || fail "usage: ./tools/a33xctl build-core0a"
-  build_sos_profile core0a
-}
-
 build_core0b() {
   [[ "$#" -eq 0 ]] || fail "usage: ./tools/a33xctl build-core0b"
+  [[ "${SOS_ENABLE_LEGACY_CORE0B_BUILD:-}" == 1 ]] || \
+    fail "Core 0B is frozen legacy; set SOS_ENABLE_LEGACY_CORE0B_BUILD=1 for an intentional migration comparison build"
+  info "Core 0B legacy build explicitly enabled; this target is not release-supported"
   build_sos_profile core0b
 }
 
@@ -465,10 +458,6 @@ inspect_rom() {
     lineage_sos_core_a33x)
       package_suffix=sos_core_a33x
       build_command=build-core
-      ;;
-    lineage_sos_core0a_a33x)
-      package_suffix=sos_core0a_a33x
-      build_command=build-core0a
       ;;
     lineage_sos_core0b_a33x)
       package_suffix=sos_core0b_a33x
@@ -995,22 +984,14 @@ inspect_core() {
 }
 
 inspect_core_stage() {
-  [[ "$#" -eq 1 ]] || fail "internal usage: inspect_core_stage <core0a|core0b|core1>"
-  local stage="$1" target_product expected_stage expected_owner android_ui bridge no_zygote
+  [[ "$#" -eq 1 ]] || fail "internal usage: inspect_core_stage <core0b|core1>"
+  local stage="$1" target_product expected_stage expected_owner expected_lifecycle bridge no_zygote
   case "$stage" in
-    core0a)
-      target_product=lineage_sos_core0a_a33x
-      expected_stage=0a
-      expected_owner=native-sos
-      android_ui=present
-      bridge=present
-      no_zygote=false
-      ;;
     core0b)
       target_product=lineage_sos_core0b_a33x
       expected_stage=0b
       expected_owner=native-sos-headless-framework
-      android_ui=absent
+      expected_lifecycle=legacy
       bridge=present
       no_zygote=false
       ;;
@@ -1018,7 +999,7 @@ inspect_core_stage() {
       target_product=lineage_sos_core1_a33x
       expected_stage=1
       expected_owner=native-sos-no-zygote
-      android_ui=absent
+      expected_lifecycle=active
       bridge=absent
       no_zygote=true
       ;;
@@ -1079,6 +1060,7 @@ inspect_core_stage() {
     fail "SOS $stage host omitted its framework-independent Recovery chord"
   grep -Fx "ro.sos.core.stage=$expected_stage" "$properties"
   grep -Fx "ro.sos.ui_owner=$expected_owner" "$properties"
+  grep -Fx "ro.sos.lifecycle=$expected_lifecycle" "$properties"
   grep -Fx 'ro.sos.profile=core' "$properties"
   grep -Fx 'ro.sos.disable_user_apk_install=true' "$properties"
   grep -Fx 'ro.sos.revision_format=3' "$properties"
@@ -1088,27 +1070,16 @@ inspect_core_stage() {
   grep -E "^ro\\.system_ext\\.build\\.version\\.incremental=sos\\.${stage}\\.[0-9a-f]{12}\\.[0-9a-f]{12}$" \
     "$properties" || fail "SOS $stage build lacks a content-derived fingerprint"
 
-  if [[ "$stage" == core0a ]]; then
-    grep -Fx 'ro.sos.core.autostart=postunlock' "$properties"
-    grep -Fx \
-      'on property:sys.user.0.ce_available=true && property:ro.sos.core.autostart=postunlock' \
-      "$host_init_rc" >/dev/null || fail "Core 0A is not gated on trusted CE unlock"
-    strings "$host" | grep -F 'native_core_deferred reason=user_ce_locked' >/dev/null || \
-      fail "Core 0A does not preserve Android's trusted pre-unlock ceremony"
-  else
-    grep -Fx 'ro.sos.core.autostart=preunlock' "$properties"
-    grep -Fx \
-      'on property:init.svc.surfaceflinger=running && property:ro.sos.core.autostart=preunlock' \
-      "$host_init_rc" >/dev/null || fail "SOS $stage lacks native pre-unlock startup"
-  fi
+  grep -Fx 'ro.sos.core.autostart=preunlock' "$properties"
+  grep -Fx \
+    'on property:init.svc.surfaceflinger=running && property:ro.sos.core.autostart=preunlock' \
+    "$host_init_rc" >/dev/null || fail "SOS $stage lacks native pre-unlock startup"
 
-  if [[ "$stage" == core0b || "$stage" == core1 ]]; then
-    grep -Fx 'ro.sos.block_android_activities=true' "$properties" || \
-      fail "SOS $stage does not block Android Activity rendering"
-    unzip -p "$target_files/SYSTEM/framework/services.jar" 'classes*.dex' | strings | \
-      grep -F 'SOS Core product policy blocked Android Activity start:' >/dev/null || \
-      fail "SOS $stage framework omitted the Android Activity-start policy"
-  fi
+  grep -Fx 'ro.sos.block_android_activities=true' "$properties" || \
+    fail "SOS $stage does not block Android Activity rendering"
+  unzip -p "$target_files/SYSTEM/framework/services.jar" 'classes*.dex' | strings | \
+    grep -F 'SOS Core product policy blocked Android Activity start:' >/dev/null || \
+    fail "SOS $stage framework omitted the Android Activity-start policy"
 
   if [[ "$stage" == core0b ]]; then
     unzip -p "$target_files/SYSTEM/framework/services.jar" 'classes*.dex' | strings | \
@@ -1118,32 +1089,27 @@ inspect_core_stage() {
 
   local system_ui="$target_files/SYSTEM_EXT/priv-app/SystemUI/SystemUI.apk"
   local launcher="$target_files/SYSTEM_EXT/priv-app/Launcher3QuickStep/Launcher3QuickStep.apk"
-  if [[ "$android_ui" == present ]]; then
-    [[ -f "$system_ui" && -f "$launcher" ]] || \
-      fail "Core 0A must retain Android UI as an inert recovery layer"
-  else
-    [[ ! -e "$system_ui" && ! -e "$launcher" ]] || \
-      fail "SOS $stage still packages SystemUI or Launcher3"
-    [[ -f "$marker" ]] || fail "SOS $stage UI removal marker is missing"
-    file "$marker" | grep -F 'ARM aarch64' >/dev/null || \
-      fail "SOS $stage UI removal marker is not an AArch64 executable"
-    for removed in \
-      AccessibilityMenu Aperture ApertureLensLauncher AudioFX AvatarPicker \
-      Backgrounds BackupRestoreConfirmation BasicDreams Camelot CaptivePortalLogin \
-      CertInstaller Contacts CredentialManager Dialer DocumentsUI EmergencyInfo \
-      DeviceAsWebcam DeviceDiagnostics DownloadProviderUi \
-      DynamicSystemInstallationService EasterEgg Etar ExactCalculator Gallery2 \
-      Glimpse HTMLViewer IntentResolver Jelly LatinIME \
-      Launcher3QuickStep LineageParts LineageSetupWizard LiveWallpapersPicker \
-      ManagedProvisioning PhotoTable PrintSpooler Profiles \
-      QuickAccessWallet Recorder SamsungDAP-custom SamsungDoze Seedvault Settings \
-      SettingsIntelligence SimAppDialog SimpleSettingsConfig SoundPicker SpeakerFX \
-      Stk StorageManager SystemUI ThemePicker ThemesStub Twelve Updater VpnDialogs \
-      messaging; do
-      ! find "$target_files" -type f -name "${removed}.apk" -print -quit | grep -q . || \
-        fail "SOS $stage still packages Android UI APK $removed"
-    done
-  fi
+  [[ ! -e "$system_ui" && ! -e "$launcher" ]] || \
+    fail "SOS $stage still packages SystemUI or Launcher3"
+  [[ -f "$marker" ]] || fail "SOS $stage UI removal marker is missing"
+  file "$marker" | grep -F 'ARM aarch64' >/dev/null || \
+    fail "SOS $stage UI removal marker is not an AArch64 executable"
+  for removed in \
+    AccessibilityMenu Aperture ApertureLensLauncher AudioFX AvatarPicker \
+    Backgrounds BackupRestoreConfirmation BasicDreams Camelot CaptivePortalLogin \
+    CertInstaller Contacts CredentialManager Dialer DocumentsUI EmergencyInfo \
+    DeviceAsWebcam DeviceDiagnostics DownloadProviderUi \
+    DynamicSystemInstallationService EasterEgg Etar ExactCalculator Gallery2 \
+    Glimpse HTMLViewer IntentResolver Jelly LatinIME \
+    Launcher3QuickStep LineageParts LineageSetupWizard LiveWallpapersPicker \
+    ManagedProvisioning PhotoTable PrintSpooler Profiles \
+    QuickAccessWallet Recorder SamsungDAP-custom SamsungDoze Seedvault Settings \
+    SettingsIntelligence SimAppDialog SimpleSettingsConfig SoundPicker SpeakerFX \
+    Stk StorageManager SystemUI ThemePicker ThemesStub Twelve Updater VpnDialogs \
+    messaging; do
+    ! find "$target_files" -type f -name "${removed}.apk" -print -quit | grep -q . || \
+      fail "SOS $stage still packages Android UI APK $removed"
+  done
 
   if [[ "$bridge" == present ]]; then
     [[ -f "$bridge_apk" ]] || fail "SOS $stage headless framework bridge is missing"
@@ -1194,11 +1160,6 @@ inspect_core_stage() {
   info "SOS $stage target-files gate passed"
 }
 
-inspect_core0a() {
-  [[ "$#" -eq 0 ]] || fail "usage: ./tools/a33xctl inspect-core0a"
-  inspect_core_stage core0a
-}
-
 inspect_core0b() {
   [[ "$#" -eq 0 ]] || fail "usage: ./tools/a33xctl inspect-core0b"
   inspect_core_stage core0b
@@ -1229,8 +1190,6 @@ commands:
   build-compat1     build native SOS with the Android app runtime island
   build-compat      compatibility alias for build-compat1
   build-core-shadow build the manual native display/GPUI probe target
-  build-core0a      build the post-unlock native GPUI ownership target
-  build-core0b      build native UI with the headless framework bridge
   build-core1       build the no-Zygote native locked/recovery target
   build-core        compatibility alias for build-core-shadow
   build-sos         compatibility alias for build-compat
@@ -1238,9 +1197,10 @@ commands:
   inspect-compat1   verify native Compat and absence of Android system UI
   inspect-sos       compatibility alias for inspect-compat1
   inspect-core      verify Core Shadow and retained recovery UI
-  inspect-core0a    verify post-unlock native ownership packaging
-  inspect-core0b    verify headless-framework native UI packaging
   inspect-core1     verify no-Zygote native-only packaging
+legacy migration commands (not release-supported):
+  build-core0b      require SOS_ENABLE_LEGACY_CORE0B_BUILD=1, then build Core 0B
+  inspect-core0b    verify an intentional Core 0B comparison build
 EOF
 }
 
@@ -1263,7 +1223,6 @@ case "$command" in
   build-compat1) build_compat1 "$@" ;;
   build-compat) build_compat "$@" ;;
   build-core-shadow) build_core_shadow "$@" ;;
-  build-core0a) build_core0a "$@" ;;
   build-core0b) build_core0b "$@" ;;
   build-core1) build_core1 "$@" ;;
   build-core) build_core "$@" ;;
@@ -1273,7 +1232,6 @@ case "$command" in
   inspect-compat1) inspect_compat1 "$@" ;;
   inspect-sos) inspect_sos "$@" ;;
   inspect-core) inspect_core "$@" ;;
-  inspect-core0a) inspect_core0a "$@" ;;
   inspect-core0b) inspect_core0b "$@" ;;
   inspect-core1) inspect_core1 "$@" ;;
   -h|--help|help|'') usage ;;

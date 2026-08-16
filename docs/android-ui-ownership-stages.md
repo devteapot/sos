@@ -2,19 +2,23 @@
 
 Date: 2026-08-16
 
-This document defines the concrete a33x build profiles used to move visible
-ownership from Android to SOS. Each stage is a separately inspectable and
-flashable product; a runtime property does not turn one image into another.
+This document records the concrete a33x stages used to move visible ownership
+from Android to SOS. Historical evidence remains here after an intermediate
+product retires; a runtime property does not turn one image into another.
 
 ```text
 shared a33x hardware, vendor HALs, SOS services, and revision format
 ├── Compat 0  lineage_sos_compat0_a33x  historical Android-visible bring-up
 ├── Compat 1  lineage_sos_compat_a33x   native SOS + Android app runtime
 ├── Shadow    lineage_sos_core_a33x     manual native probe, Android recovery
-├── Core 0A   lineage_sos_core0a_a33x  native shell after Android CE unlock
-├── Core 0B   lineage_sos_core0b_a33x  native lock/UI, headless framework
-└── Core 1    lineage_sos_core1_a33x   no Zygote; native locked/recovery gate
+├── Core 0A   archived                  historical post-CE native shell
+├── Core 0B   legacy opt-in             native lock/UI, headless framework
+└── Core 1    active                    no Zygote; native locked/recovery gate
 ```
+
+Core 1 is the sole active Core development target. Core 0A has no product or
+CLI entry. Core 0B remains registered only as an explicitly enabled migration
+oracle; it is not part of normal builds or release support.
 
 ## Source boundaries and target ownership
 
@@ -151,24 +155,24 @@ not evidence that PIN verification or CE-key release passed.
 
 ./tools/a33xctl build-core-shadow
 ./tools/a33xctl inspect-core
-./tools/a33xctl build-core0a
-./tools/a33xctl inspect-core0a
-./tools/a33xctl build-core0b
-./tools/a33xctl inspect-core0b
 ./tools/a33xctl build-core1
 ./tools/a33xctl inspect-core1
+
+SOS_ENABLE_LEGACY_CORE0B_BUILD=1 ./tools/a33xctl build-core0b
+./tools/a33xctl inspect-core0b
 ```
 
-Every device campaign proceeds in that order. Each exact OTA is inspected
-before sideload, installed without formatting data, and tested before the next
-stage. Core 1 may be followed only by the inspected native-Compat archive
+The first six-stage device campaign proceeded in the historical order below;
+new campaigns do not rebuild retired stages. Each exact OTA that is selected
+for a device is still inspected before sideload and installed without
+formatting data. Core 1 may be followed only by the inspected native-Compat archive
 `sos.compat1.19d8a653fbd7.220e268c228f` or another explicitly approved
 recovery image; the rejected Android-visible Compat archive is development
 recovery evidence, not the rollback target.
 
 ## 2026-08-16 physical campaign and native-Compat rerun
 
-The ordered campaign exercised all six images on the connected SM-A336B. The
+The historical ordered campaign exercised all six images on the connected SM-A336B. The
 later lock report and clarified product definition reclassified the first
 Compat 1 image as rejected. A no-wipe rebuilt-image rerun then exercised the
 native Compat boundary; the other rows retain their original stage-specific
@@ -182,6 +186,14 @@ results:
 | Core 0A | `1b0c9edec481` | Post-unlock native ownership, install denial, bridge status, fixed recovery, and Android escape passed. |
 | Core 0B | `4341fa73391c` | Pre-unlock native lock, direct headless boot completion, Unix provider/revision IPC, absence of Android UI/focus, Activity/install blocking, retained headless phone/Bluetooth/NFC, and no-Android watchdog recovery passed. |
 | Core 1 | `1f3cd4b232c2` | No Zygote/system_server/APK process, CE locked, fixed native blocker, watchdog Retry, and Recovery rollback passed. |
+
+The accepted results remain reproducible evidence, not a current support
+matrix. Core 0A was retired because Compat 1 and Core 0B cover its useful
+boundaries more directly. Core 0B is frozen until Core 1 passes native
+synthetic-password/FBE unlock; native power, network, audio, attention,
+call/alarm, session, update, and recovery ownership; and the associated
+hardware soak. After those gates, Core 0B's product and commands can be removed
+without deleting this record or its hashed artifacts.
 
 Core 0B keeps `PackageInstaller.apk` because `system_server` refuses to boot
 unless PackageManager finds exactly one installer. Its session API is denied by

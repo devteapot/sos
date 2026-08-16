@@ -13,5 +13,6 @@ PRODUCT_SYSTEM_EXT_PROPERTIES += \
     ro.sos.block_android_activities=true \
     ro.sos.disable_user_apk_install=true \
     ro.sos.core.stage=1 \
+    ro.sos.lifecycle=active \
     ro.sos.profile=core \
     ro.sos.ui_owner=native-sos-no-zygote

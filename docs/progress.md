@@ -6640,3 +6640,113 @@ variants, and Recovery remain later milestones.
 The README status now names this focused pass without replacing the earlier
 Compat revision that still owns the broader application and physical-input
 acceptance evidence.
+
+## 2026-08-16 — Retire Core 0A and freeze Core 0B behind Core 1
+
+**Goal / hypothesis:** Reduce the supported Core matrix now that Core 1 exists.
+Core 0A no longer provides unique implementation or migration evidence, while
+Core 0B still provides a useful pre-unlock Android-hosted oracle until the
+native Core 1 path owns equivalent unlock, service, and Recovery behavior. The
+intended product state is one active Core target, one explicitly frozen legacy
+target, and no buildable Core 0A target.
+
+**Code, product, and documentation changes:** Removed
+`lineage_sos_core0a_a33x.mk` from the repository and from
+`AndroidProducts.mk`, removed its post-credential-encryption init trigger, and
+deleted the `build-core0a` / `inspect-core0a` command paths. Core 1 remains the
+only active Core product and now declares `ro.sos.lifecycle=active`. Core 0B is
+retained as a frozen migration oracle with `ro.sos.lifecycle=legacy`; its build
+command fails closed unless the operator explicitly sets
+`SOS_ENABLE_LEGACY_CORE0B_BUILD=1`. Inspection remains available for existing
+legacy artifacts. The product split, UI-ownership campaign, device notes,
+vision, README, init comments, and command help now distinguish historical
+stage evidence from supported targets. Historical Core 0A measurements and
+artifact identities remain in documentation rather than an indefinitely
+buildable product definition.
+
+Staging the revised device overlay into the external Lineage checkout used the
+existing `rsync --delete` path and removed the retired Core 0A makefile there as
+well. Switching the existing output tree from Compat 1 to Core 1 caused the
+expected automatic install-clean, removing APK/bridge outputs that Core 1 must
+not contain.
+
+**Commands, build evidence, and artifact identity:** `bash -n tools/a33xctl`
+passed. `./tools/a33xctl build-core0a` now terminates as an unknown command, and
+an ordinary `./tools/a33xctl build-core0b` terminates with the legacy opt-in
+instruction. A source audit confirmed that `AndroidProducts.mk` exposes Core
+0B and Core 1 but no Core 0A product, and the Core 0A product file is absent
+from both the repository and staged Lineage device tree.
+
+The exact active target build
+
+```text
+./tools/a33xctl build-core1
+```
+
+completed successfully in 5:27 at revision
+`sos.core1.c0d13c5a8169.68abc2e6bd71`. Soong/Make accepted the reduced product
+graph and packaged
+`lineage-23.0-20260816-UNOFFICIAL-sos_core1_a33x.zip`, 1,022,034,187 bytes,
+SHA-256
+`351f996142c3e88a2fa529f4a7819f57316df7dabc60b30d7679eea13b7412f2`.
+This generated OTA remains outside Git.
+
+`./tools/a33xctl inspect-core1` passed whole-package signature and compressed
+data checks, PIT ceilings, AVB verification for every packaged partition,
+VINTF compatibility, Recovery device-init presence, Core 1 target-files
+composition, ARM64 host/runtime/authority identities, no Android UI or zygote
+path, pre-unlock init ownership, provider authority/stock source and SELinux
+contracts, and these exact product properties:
+
+```text
+ro.sos.core.stage=1
+ro.sos.ui_owner=native-sos-no-zygote
+ro.sos.lifecycle=active
+ro.sos.profile=core
+ro.sos.core.autostart=preunlock
+ro.sos.block_android_activities=true
+```
+
+The inspected target-files contained an 84,808-byte `sos-core-host` with
+SHA-256
+`826200b26b2a97927ea7f22cd7ede225183347928d81635b6dd0b06443109995`,
+the 14,597,576-byte Core experience runtime with SHA-256
+`50d8baf7f5a09cbca4662ab424a6db901cc77963e9c2876d6a38816716ec38b1`,
+and the 1,328,760-byte system authority with SHA-256
+`39f6f4cb581d2e3c50bfa3f213a2d055ebc3c09892be8994ffb205af8a5863d0`.
+
+The final repository regression repeated `cargo fmt --all -- --check`,
+`git diff --check`, and `bash -n tools/a33xctl`. The focused provider/runtime
+suite passed 8 system-authority tests, 4 experience-IR tests, 5 fixture-provider
+tests, and 22 Luau runtime tests:
+
+```text
+cargo test --locked -p android-system-authority \
+  -p android-authority-protocol -p experience-ir \
+  -p providers-fake -p runtime-luau
+```
+
+The zero-result active-reference audit covered `build-core0a`,
+`inspect-core0a`, and `lineage_sos_core0a_a33x`; lifecycle-marker inspection
+found only the intentional Core 0B legacy opt-in and Core 0B/Core 1
+`legacy`/`active` product properties.
+
+**Failures, decision, and next gate:** There was no build or inspection
+failure. The OTA tooling emitted its existing non-fatal property-read,
+unprivileged device-node extraction, and deprecated OpenSSL warnings; the
+build still completed, VINTF reported `COMPATIBLE`, and the inspector verified
+the final package. No OTA was flashed and no physical-device test was run for
+this retirement change. The connected SM-A336B remains on the previously
+accepted Compat 1 revision
+`sos.compat1.a3f3bae010bf.b093c3a0b50a`, so this entry does not close a Core 1
+hardware, unlock, service, latency, or Recovery gate.
+
+Accept Core 0A retirement, Core 0B's frozen opt-in status, and Core 1 as the
+sole active Core target. Delete Core 0B only after Core 1 demonstrates on
+hardware: native synthetic/FBE unlock and credential handoff; equivalent
+clock/power/network/audio/application/attention behavior without the Android
+host; calls, alarms, session/update, and Recovery transitions needed for
+migration debugging; and a sustained boot/wake/lock/restart soak with no need
+to compare against the Android-hosted pre-unlock oracle. Until then, Core 0B
+receives no features or release-support promise—only fixes necessary to keep
+that bounded migration oracle usable.

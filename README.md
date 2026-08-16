@@ -26,7 +26,7 @@ laboratory into the privileged system and native-ownership phase.
 | Android APK harness | The physical SM-A336B passed the stable-host regression, typed provider effect, durable state/authority recovery, and a 10,000-swap device soak. This remains a regression harness, not the product boundary. |
 | Linux | A permanent GPUI/Wayland host, durable provider/state service, revision supervisor, resident Pi authoring agent, authenticated Smithay compositor, selectable GDM session, and Debian direct-DRM VM gate are implemented. Physical Linux hardware remains unproven. |
 | AOSP Cuttlefish | Pristine Android 17, SOS-as-HOME, and an init-supervised on-device authority passed in x86-64 Cuttlefish. |
-| Samsung a33x | All six staged Compat/Core images were built, inspected, and exercised on physical hardware. Compat 1 passed native SOS presentation with a bounded Android application-runtime island; a later exact image passed live System Providers v1, signed Stock Base v0, typed actions, and automatic stock fallback. Core 0B passed native UI with a headless Android framework; Core 1 passed the no-Zygote locked/recovery boundary. These are stage-specific gates, not a production-ready Core OS. |
+| Samsung a33x | The historical six-stage campaign was completed on physical hardware. Compat 1 is the accepted usable fallback and later passed live System Providers v1. Core 1 is now the only active Core development target; Core 0A is archived and Core 0B is a frozen, opt-in migration oracle. Core 1 has passed the no-Zygote locked/recovery boundary but is not yet a usable unlocked OS. |
 | Resident agent | Pi runs on Linux and as native ARM64/Bionic Node on the phone. A subscription-backed Codex flow produced and activated a live generated revision on-device without bypassing trusted validation. |
 
 The accepted physical fallback is Compat 1 revision
@@ -82,14 +82,15 @@ SOS Compat
 └── Compat 1  native SOS presentation + selected Android applications
 
 SOS Core
-├── Shadow    manual native probe with Android recovery UI
-├── Core 0A   native shell/input after Android credential unlock
-├── Core 0B   native lock/UI + headless Android framework services
-└── Core 1    no Zygote/APK process; fixed locked/recovery surface
+├── Shadow    manual diagnostic probe with Android recovery UI
+├── Core 0A   archived historical stage; no build product
+├── Core 0B   frozen legacy migration oracle; explicit opt-in only
+└── Core 1    active no-Zygote target; fixed locked/recovery surface
 ```
 
-Each row is a separately built and inspected OTA. A runtime property cannot
-turn one ownership stage into another.
+The historical rows remain evidence, not an obligation to maintain every
+intermediate as a current product. A runtime property cannot turn one ownership
+stage into another.
 
 ## Choose a development path
 
@@ -239,20 +240,20 @@ Build and inspect one explicit ownership stage:
 ./tools/a33xctl build-compat1
 ./tools/a33xctl inspect-compat1
 
-./tools/a33xctl build-core0b
-./tools/a33xctl inspect-core0b
+./tools/a33xctl build-core1
+./tools/a33xctl inspect-core1
 ```
 
 The complete profile matrix is:
 
-| Stage | Build | Inspect |
-| --- | --- | --- |
-| Compat 0 | `build-compat0` | `inspect-compat0` |
-| Compat 1 | `build-compat1` | `inspect-compat1` |
-| Shadow | `build-core-shadow` | `inspect-core` |
-| Core 0A | `build-core0a` | `inspect-core0a` |
-| Core 0B | `build-core0b` | `inspect-core0b` |
-| Core 1 | `build-core1` | `inspect-core1` |
+| Stage | Lifecycle | Build | Inspect |
+| --- | --- | --- | --- |
+| Compat 0 | Historical Compat bring-up | `build-compat0` | `inspect-compat0` |
+| Compat 1 | Active fallback/application island | `build-compat1` | `inspect-compat1` |
+| Shadow | Diagnostic probe | `build-core-shadow` | `inspect-core` |
+| Core 0A | Archived; product removed | — | — |
+| Core 0B | Frozen legacy migration oracle | `SOS_ENABLE_LEGACY_CORE0B_BUILD=1 ./tools/a33xctl build-core0b` | `inspect-core0b` |
+| Core 1 | Active Core target | `build-core1` | `inspect-core1` |
 
 `build-compat` and `build-sos` are aliases for Compat 1;
 `build-core` is an alias for Shadow. Building or inspecting an OTA does not
@@ -317,6 +318,10 @@ documented external evidence directories and are intentionally not tracked.
 - Core 1 proves the no-Zygote process and recovery boundary while remaining
   deliberately locked. Native CE unlock and replacements for displaced Android
   framework services are future work.
+- Core 0A is historical evidence only. Core 0B is retained solely as an
+  opt-in comparison target until Core 1 owns native unlock and the displaced
+  power, network, audio, attention, call/alarm, session, update, and recovery
+  services.
 - Speaker, earpiece, Bluetooth/call audio, cellular calls/data, and longer
   suspend, thermal, and soak campaigns are not complete across all accepted
   ownership stages.

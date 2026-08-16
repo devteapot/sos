@@ -22,10 +22,12 @@ boot has irreversibly changed the Knox warranty bit to `1`.
   s5e8825, kernel, and vendor graph.
 - The recovery USB/watchdog defect was reproduced, repaired, reflashed, and
   proven by physical ADB sideload. Separately inspectable Compat 0, Compat 1,
-  Shadow, Core 0A, Core 0B, and Core 1 images then passed their stage-specific
-  build, boot-chain, presentation, supervision, and rollback gates. Core 1 is
-  deliberately locked and is not a claim that native CE unlock or every
-  Android system service has been replaced.
+  Shadow, Core 0A, Core 0B, and Core 1 images then passed their historical
+  stage-specific build, boot-chain, presentation, supervision, and rollback
+  gates. Core 0A is now archived, Core 0B is a frozen opt-in migration oracle,
+  and Core 1 is the sole active Core target. Core 1 remains deliberately locked
+  and is not a claim that native CE unlock or every Android system service has
+  been replaced.
 - The final Compat image passed full-frame native SOS presentation, a selected
   modern-application handoff, blocking of Android system ceremonies, HOME
   restart, side-button lock/wake, and owner-confirmed touchscreen ENTER unlock.

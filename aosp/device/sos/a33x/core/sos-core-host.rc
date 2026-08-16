@@ -1,5 +1,5 @@
-# Manual Core 0A host. Its fixed native supervisor catches GPUI child failure,
-# while Android remains installed as the final recovery owner during bring-up.
+# Shared native Core host. Core Shadow starts it manually; active Core 1 and the
+# frozen Core 0B migration target use the pre-unlock trigger below.
 on post-fs-data
     mkdir /data/misc/sos/core 0770 system system
     restorecon_recursive /data/misc/sos/core
@@ -12,12 +12,6 @@ on property:debug.sos.core.host=0
 
 on property:debug.sos.core.bridge_probe=1
     start sos_core_bridge_probe
-
-# Core 0A begins only after Android's existing lock-settings path has released
-# CE storage. Native Compat, Core 0B, and Core 1 use a separate pre-unlock
-# trusted surface.
-on property:sys.user.0.ce_available=true && property:ro.sos.core.autostart=postunlock
-    start sos_core_host
 
 on property:init.svc.surfaceflinger=running && property:ro.sos.core.autostart=preunlock
     start sos_core_host

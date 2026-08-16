@@ -2,8 +2,9 @@
 
 Date: 2026-08-16
 
-SOS has two product families and six explicit ownership stages over one
-hardware, service, and revision base:
+SOS has two product families over one hardware, service, and revision base. Six
+historical ownership stages established the migration evidence; Core 1 is now
+the sole active Core development target:
 
 ```text
 shared a33x hardware + SOS services + revision format
@@ -12,13 +13,14 @@ shared a33x hardware + SOS services + revision format
 │   └── Compat 1: native SOS presentation; Android app runtime only
 └── SOS Core
     ├── Shadow:  manual native probe; Android remains recovery owner
-    ├── Core 0A: native shell/input/watchdog; Android UI installed behind it
-    ├── Core 0B: no visible Android UI; headless framework bridge retained
-    └── Core 1:  no Zygote or APK process
+    ├── Core 0A: archived historical stage; product removed
+    ├── Core 0B: frozen opt-in headless-framework migration oracle
+    └── Core 1:  active no-Zygote target
 ```
 
-The separate build products make the ownership decision reviewable in the OTA
-itself. The detailed package, boot, credential, and recovery contracts are in
+Current build products make the ownership decision reviewable in the OTA
+itself through `ro.sos.lifecycle`; archived evidence remains revision-pinned in
+the documents. The detailed package, boot, credential, and recovery contracts are in
 [`android-ui-ownership-stages.md`](android-ui-ownership-stages.md).
 
 ## Product boundary
@@ -28,9 +30,9 @@ itself. The detailed package, boot, credential, and recovery contracts are in
 | Compat 0 | `lineage_sos_compat0_a33x` | Historical bring-up only. A persistent platform policy reasserts SOS as HOME while Android still draws system ceremonies. It is not the product vision. |
 | Compat 1 | `lineage_sos_compat_a33x` | SOS owns pre-unlock, runtime re-lock, HOME, task controls, attention, system facts/actions, and Recovery. Android retains only framework/app-runtime services and explicitly selected non-system application Activities. Exact revision `sos.compat1.19d8a653fbd7.220e268c228f` passed the rebuilt image, transition, application, policy, restart, native-lock, side-button cycle, and owner-confirmed touchscreen ENTER hardware gates. |
 | Shadow | `lineage_sos_core_a33x` | Android remains owner until a disabled native probe or GPUI supervisor is started manually. |
-| Core 0A | `lineage_sos_core0a_a33x` | Android performs CE unlock, then init automatically gives the top display layer and exclusive touch/volume input to native SOS. Android UI remains installed behind it for failure escape. |
-| Core 0B | `lineage_sos_core0b_a33x` | A fixed native lock surface starts before CE. Principal Android UI APKs are removed and the framework aborts all Activity starts; Zygote and `system_server` remain for headless services and a no-Activity LockSettings bridge. |
-| Core 1 | `lineage_sos_core1_a33x` | AOSP's no-Zygote init is selected. The native host exposes an honest locked/recovery surface until synthetic-password unlock and framework services have native owners. |
+| Core 0A | Archived; no product | Historical evidence only. Android performed CE unlock before native SOS acquired presentation/input ownership. |
+| Core 0B | `lineage_sos_core0b_a33x` (`ro.sos.lifecycle=legacy`) | Frozen, explicit-opt-in migration oracle. A fixed native lock starts before CE while Zygote/`system_server` retain headless services and the no-Activity bridge. |
+| Core 1 | `lineage_sos_core1_a33x` (`ro.sos.lifecycle=active`) | Sole active Core target. AOSP's no-Zygote init is selected; the native host exposes an honest locked/recovery surface until synthetic-password unlock and framework services have native owners. |
 
 Both inherit the same Samsung a33x device/vendor graph, init, SELinux, Binder,
 SurfaceFlinger, Hardware Composer, audio services, Keystore, Gatekeeper, vendor
@@ -62,7 +64,7 @@ The product split is composition, not an experience fork. Core and Compat build
 the same Rust `ExperienceHost`. A standalone SurfaceComposer/raw-input adapter
 hosts it in Core; a NativeActivity/task adapter hosts it in Compat. Shared make
 fragments own the native host/runtime/autostart/removal package set used by
-Compat, Core 0B, and Core 1. Compat-only code is restricted to headless Android
+Compat, frozen Core 0B, and active Core 1. Compat-only code is restricted to headless Android
 framework/task facts and the fixed controls required around a selected app.
 
 Compat's fixed Android-hosted surfaces share one full-frame window policy,
@@ -101,9 +103,9 @@ programs:
 
 The host has no Activity, JNI lifecycle, or APK data directory. It uses a
 dedicated SELinux domain and `/data/misc/sos/core`, while the SOS revision,
-authority, and provider services remain shared. Shadow is manually triggered;
-Core 0A auto-starts only after Android reports CE available; Core 0B and Core 1
-auto-start after SurfaceFlinger. Every child is supervised by fixed signed
+authority, and provider services remain shared. Shadow is manually triggered.
+The retired Core 0A started only after Android reported CE available; frozen
+Core 0B and active Core 1 start after SurfaceFlinger. Every child is supervised by fixed signed
 native code. Failure presents a CPU-rendered recovery surface, and the locked
 stages accept Volume Up+Down as a direct Recovery reboot chord.
 
@@ -114,22 +116,24 @@ Zygote and `system_server` also host or coordinate working telephony, network,
 Bluetooth, NFC, permissions, storage, and credential services. Removing them is
 therefore a service migration, not a UI cleanup.
 
-Core advances through two Core 0 gates before no-Zygote:
+Core historically advanced through two Core 0 gates before no-Zygote:
 
-1. **Core 0A — native ownership with Android recovery.** Android UI stays
+1. **Core 0A — archived native ownership with Android recovery.** Android UI stayed
    installed but becomes inert behind the native top layer after trusted CE
    unlock. This isolates shell, input, watchdog, and recovery failures.
-2. **Core 0B — no Android-rendered ownership.** Principal UI packages are
+2. **Core 0B — frozen no-Android-rendered migration oracle.** Principal UI packages are
    overridden out and an immutable product policy aborts every Activity start,
    including starts from preserved `/data/app` packages on no-wipe upgrades.
    The remaining SOS Java process is a direct-boot, system-UID bridge with no
    Activity; it delegates bounded PIN verification to LockSettings.
    Phone/network/Bluetooth/NFC framework services remain.
-3. **Core 1 — no Zygote/APK runtime.** AOSP's no-Zygote init is selected. The
+3. **Core 1 — active no-Zygote/APK target.** AOSP's no-Zygote init is selected. The
    initial target deliberately remains locked because native Android
    synthetic-password unwrap and the displaced services are not yet complete.
 
-Core 1 therefore proves the process and native recovery boundary; it does not
+Core 0A no longer has a product definition. Core 0B requires an explicit
+legacy-build opt-in and receives no new product features. Core 1 therefore
+proves the process and native recovery boundary; it does not
 pretend that removing Zygote somehow replaces the services Zygote hosted.
 
 ## Ownership cutover gate
@@ -166,8 +170,8 @@ Current physical status on the SM-A336B:
 | Compat 0 ownership | Passed on `sos.compat0.0805cf6bd0b4.db36ed79bb16`: SOS reclaimed HOME while Launcher3 and Android ceremonies remained available. |
 | Compat 1 ownership | The old `sos.compat1.0805cf6bd0b4.616ac2404a79` was rejected for visible SystemUI/keyguard. Rebuilt `sos.compat1.19d8a653fbd7.220e268c228f` passed exact-image hardware evidence for full-frame HOME/workspace/attention, selected-app containment, redirected-system-Activity blocking, HOME crash restart, side-button wake to `SOS Trusted Lock`, and owner-confirmed touchscreen ENTER return, with no Android system surface. |
 | Shadow display and failure boundary | Passed on `sos.shadow.0805cf6bd0b4.1aad692518b8`: both the one-frame probe and GPUI rendered through SurfaceComposer/Samsung HWC, injected failure reached fixed recovery, Retry relaunched GPUI, and Android escape exposed the intact framework UI. |
-| Core 0A ownership | Passed on `sos.core0a.0805cf6bd0b4.1b0c9edec481`: GPUI started after CE unlock, raw input was acquired, user install was rejected, and Android remained an explicit failure escape. |
-| Core 0B headless framework | Passed on `sos.core0b.0805cf6bd0b4.4341fa73391c`: native lock was visible before CE, headless boot reached `RUNNING_UNLOCKED`, native provider/revision IPC used confined Unix sockets, no Android Activity or UI surface rendered, and phone/Bluetooth/NFC framework processes remained live. |
+| Core 0A ownership (archived) | Passed on `sos.core0a.0805cf6bd0b4.1b0c9edec481`: GPUI started after CE unlock, raw input was acquired, user install was rejected, and Android remained an explicit failure escape. |
+| Core 0B headless framework (legacy) | Passed on `sos.core0b.0805cf6bd0b4.4341fa73391c`: native lock was visible before CE, headless boot reached `RUNNING_UNLOCKED`, native provider/revision IPC used confined Unix sockets, no Android Activity or UI surface rendered, and phone/Bluetooth/NFC framework processes remained live. |
 | Core 1 no-Zygote boundary | Passed on `sos.core1.0805cf6bd0b4.1f3cd4b232c2`: `ro.zygote=no_zygote`, Zygote/system_server/APK processes were absent, CE stayed locked, and the native locked/recovery surface survived a watchdog/retry cycle. |
 | Fixed native recovery after child failure | Passed in Shadow, Core 0A, Core 0B, and Core 1 through injected `SIGABRT`; the supervisor remained alive and Retry launched a clean child. Core 0B correctly refused the Android UI action. |
 | Recovery and rollback | Mechanism passed, and revision `220e268c228f` is now the inspected, sideloaded, native-Compat rollback artifact for the next Core campaign. Recovery accepted it without a wipe and reported `Total xfer: 1.00x`. |
@@ -191,7 +195,7 @@ Current physical status on the SM-A336B:
 | Lockscreen | Fixed signed native experience on Compat and Core; generated code cannot handle PIN, fingerprint, unlock state, or lockout. Android keyguard is never a visible fallback. |
 | Android IME | Removed from Compat and Core. Both require an SOS-native composition-aware keyboard, with fixed trusted PIN entry. Until that exists, text requests that depend on Android IME fail closed. |
 | Settings | Generated provider surfaces for ordinary changes and fixed native confirmation for credentials, permissions, destructive actions, and recovery. |
-| APKs | Explicit non-system application workspace on Compat, with SOS controls retained and system-package Activities blocked. Core 0B blocks all Activity rendering; Core 1 has no Zygote or APK process. Inherited, non-executable system APK payloads remain image-size debt until the later pruning pass. |
+| APKs | Explicit non-system application workspace on Compat, with SOS controls retained and system-package Activities blocked. Legacy Core 0B blocks all Activity rendering; active Core 1 has no Zygote or APK process. Inherited, non-executable system APK payloads remain image-size debt until the later pruning pass. |
 
 Android notifications can first enter the Compat attention broker through
 [`NotificationListenerService`](https://developer.android.com/reference/android/service/notification/NotificationListenerService).
@@ -214,12 +218,11 @@ and remains locked until the service migration gate passes.
 
 ./tools/a33xctl build-core-shadow
 ./tools/a33xctl inspect-core
-./tools/a33xctl build-core0a
-./tools/a33xctl inspect-core0a
-./tools/a33xctl build-core0b
-./tools/a33xctl inspect-core0b
 ./tools/a33xctl build-core1
 ./tools/a33xctl inspect-core1
+
+SOS_ENABLE_LEGACY_CORE0B_BUILD=1 ./tools/a33xctl build-core0b
+./tools/a33xctl inspect-core0b
 ```
 
 `build-compat`/`build-sos` remain aliases for Compat 1, and `build-core`
