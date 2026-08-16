@@ -56,6 +56,32 @@ cc_binary {
 }
 
 cc_binary {
+    name: "sos-core-platform-adapter",
+    stem: "sos-core-platform",
+    srcs: ["core/platform_adapter.cpp"],
+    compile_multilib: "64",
+    system_ext_specific: true,
+    init_rc: ["core/sos-core-platform.rc"],
+    cflags: [
+        "-Wall",
+        "-Werror",
+        "-Wextra",
+    ],
+    shared_libs: [
+        "android.hardware.health-V4-ndk",
+        "android.hardware.wifi.supplicant-V4-ndk",
+        "libaudioclient",
+        "libbase",
+        "libbinder",
+        "libbinder_ndk",
+        "libcrypto",
+        "libjsoncpp",
+        "liblog",
+        "libutils",
+    ],
+}
+
+cc_binary {
     name: "sos-ui-removal-marker",
     srcs: ["core/ui_removal_marker.cpp"],
     compile_multilib: "64",
@@ -236,6 +262,14 @@ prebuilt_etc {
     name: "sos-default-experience",
     src: "prebuilts/default.luau",
     filename: "default.luau",
+    sub_dir: "sos",
+    system_ext_specific: true,
+}
+
+prebuilt_etc {
+    name: "sos-core-app-manifest",
+    src: "core/core-apps.json",
+    filename: "core-apps.json",
     sub_dir: "sos",
     system_ext_specific: true,
 }

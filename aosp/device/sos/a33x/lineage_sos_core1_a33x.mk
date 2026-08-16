@@ -9,10 +9,15 @@ $(call inherit-product, device/sos/a33x/sos_native_host_common.mk)
 
 PRODUCT_NAME := lineage_sos_core1_a33x
 
+PRODUCT_PACKAGES += \
+    sos-core-app-manifest \
+    sos-core-platform-adapter
+
 PRODUCT_SYSTEM_EXT_PROPERTIES += \
     ro.sos.block_android_activities=true \
     ro.sos.disable_user_apk_install=true \
     ro.sos.core.stage=1 \
     ro.sos.lifecycle=active \
+    ro.sos.providers=core-native \
     ro.sos.profile=core \
     ro.sos.ui_owner=native-sos-no-zygote

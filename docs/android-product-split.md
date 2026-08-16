@@ -32,7 +32,7 @@ the documents. The detailed package, boot, credential, and recovery contracts ar
 | Shadow | `lineage_sos_core_a33x` | Android remains owner until a disabled native probe or GPUI supervisor is started manually. |
 | Core 0A | Archived; no product | Historical evidence only. Android performed CE unlock before native SOS acquired presentation/input ownership. |
 | Core 0B | `lineage_sos_core0b_a33x` (`ro.sos.lifecycle=legacy`) | Frozen, explicit-opt-in migration oracle. A fixed native lock starts before CE while Zygote/`system_server` retain headless services and the no-Activity bridge. |
-| Core 1 | `lineage_sos_core1_a33x` (`ro.sos.lifecycle=active`) | Sole active Core target. AOSP's no-Zygote init is selected; the native host exposes an honest locked/recovery surface until synthetic-password unlock and framework services have native owners. |
+| Core 1 | `lineage_sos_core1_a33x` (`ro.sos.lifecycle=active`) | Sole active Core target. AOSP's no-Zygote init is selected; the native host exposes an honest locked/recovery surface, and System Providers v1 selects the native Health/Supplicant/audio/inventory adapter. Synthetic-password unlock and the remaining displaced services still need native owners. |
 
 Both inherit the same Samsung a33x device/vendor graph, init, SELinux, Binder,
 SurfaceFlinger, Hardware Composer, audio services, Keystore, Gatekeeper, vendor
@@ -173,6 +173,7 @@ Current physical status on the SM-A336B:
 | Core 0A ownership (archived) | Passed on `sos.core0a.0805cf6bd0b4.1b0c9edec481`: GPUI started after CE unlock, raw input was acquired, user install was rejected, and Android remained an explicit failure escape. |
 | Core 0B headless framework (legacy) | Passed on `sos.core0b.0805cf6bd0b4.4341fa73391c`: native lock was visible before CE, headless boot reached `RUNNING_UNLOCKED`, native provider/revision IPC used confined Unix sockets, no Android Activity or UI surface rendered, and phone/Bluetooth/NFC framework processes remained live. |
 | Core 1 no-Zygote boundary | Passed on `sos.core1.0805cf6bd0b4.1f3cd4b232c2`: `ro.zygote=no_zygote`, Zygote/system_server/APK processes were absent, CE stayed locked, and the native locked/recovery surface survived a watchdog/retry cycle. |
+| Core 1 System Providers v1 build boundary | Passed exact product build/inspection on `sos.core1.f4d780007972.812bca990cc5`: the AArch64 native adapter, Health v4 and Supplicant v4 clients, audio actions, signed app manifest, media/attention state, authority socket policy, VINTF, SELinux, package signature, and AVB chain were present. No physical provider test was run, so hardware behavior is pending. |
 | Fixed native recovery after child failure | Passed in Shadow, Core 0A, Core 0B, and Core 1 through injected `SIGABRT`; the supervisor remained alive and Retry launched a clean child. Core 0B correctly refused the Android UI action. |
 | Recovery and rollback | Mechanism passed, and revision `220e268c228f` is now the inspected, sideloaded, native-Compat rollback artifact for the next Core campaign. Recovery accepted it without a wipe and reported `Total xfer: 1.00x`. |
 | Suspend/resume while native UI owns the display | Passed for one earlier Shadow doze/resume cycle; not yet repeated for every accepted stage revision. |
@@ -180,7 +181,7 @@ Current physical status on the SM-A336B:
 | Physical touch dispatch and volume chord | Compat physical touch dispatch passed: eight native no-credential unlock completions were observed across owner-operated lock/wake/ENTER cycles. The Volume Up+Down Recovery chord remains pending owner interaction. |
 | Trusted lockscreen/FBE/Gatekeeper/Keystore ceremony | Implementation exists for a bounded PIN bridge in Core 0B, but the test handset has `CredentialType: NONE`; no real PIN, Gatekeeper throttle, fingerprint, or authentication-bound key release was exercised. Core 1 therefore remains honestly locked. |
 | JNI-free Core provider baseline | Passed for native provider/revision Unix IPC, read-only network state, deterministic native-agent status/candidates, and a bounded semantic document. No Java VM fallback was used for the Core UI. |
-| Full native framework bridge | Pending for Wi-Fi scan/SSID/validation/mutations, live-agent credential ceremony, assistive-service delivery/actions, phone, Bluetooth, NFC, and other framework state. |
+| Native platform-service replacement | The first provider ABI slice now builds without Zygote: health power facts, Supplicant saved-network selection, native audio, signed application inventory, and media/attention paths. Physical execution, native Wi-Fi provisioning and validation, active media/app/attention producers, live-agent credential ceremony, assistive delivery/actions, phone, Bluetooth, NFC, and other displaced services remain pending. |
 | Trusted urgent attention | Pending for calls, alarms, security, battery, thermal, and recovery warnings. |
 | Removal of Android Java UI and user-install surface | Passed for Core 0B presentation ownership: principal UI APKs are absent, PackageInstaller sessions are rejected, and all Activity starts are blocked. PackageInstaller remains as a non-rendering bootstrap invariant because PackageManager requires exactly one installer. |
 
@@ -261,7 +262,7 @@ The original one-frame probe is still available with
 `debug.sos.core.surface_probe`, but new shell work should use
 `debug.sos.core.host`.
 
-The six products share one AOSP `out/target/product/a33x` directory. Switching
+The five remaining products share one AOSP `out/target/product/a33x` directory. Switching
 products triggers Android's install-clean and may remove the preceding
 profile's install ZIP, so keep each build/inspect pair together and copy exact
 accepted artifacts to the ignored evidence directory before switching.

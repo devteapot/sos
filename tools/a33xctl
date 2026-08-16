@@ -1015,6 +1015,9 @@ inspect_core_stage() {
   local authority="$target_files/SYSTEM_EXT/bin/sos-authority"
   local system_ext_policy="$target_files/SYSTEM_EXT/etc/selinux/system_ext_sepolicy.cil"
   local bridge_apk="$target_files/SYSTEM_EXT/priv-app/SosFrameworkBridge/SosFrameworkBridge.apk"
+  local core_platform="$target_files/SYSTEM_EXT/bin/sos-core-platform"
+  local core_platform_rc="$target_files/SYSTEM_EXT/etc/init/sos-core-platform.rc"
+  local core_app_manifest="$target_files/SYSTEM_EXT/etc/sos/core-apps.json"
   local marker="$target_files/SYSTEM_EXT/bin/sos-ui-removal-marker"
   local artifact
   for artifact in \
@@ -1144,6 +1147,40 @@ inspect_core_stage() {
       fail "SOS $stage omitted its physical bridge-test trigger"
   else
     [[ ! -e "$bridge_apk" ]] || fail "Core 1 cannot retain an APK framework bridge"
+    for artifact in "$core_platform" "$core_platform_rc" "$core_app_manifest"; do
+      [[ -f "$artifact" ]] || fail "Core 1 native provider artifact missing: $artifact"
+      stat --printf='%n %s bytes\n' "$artifact"
+      sha256sum "$artifact"
+    done
+    file "$core_platform" | grep -F 'ARM aarch64' >/dev/null || \
+      fail "Core 1 platform provider adapter is not AArch64"
+    strings "$core_platform" | grep -F 'sos_core_platform' >/dev/null || \
+      fail "Core 1 platform adapter omitted its typed Unix-socket boundary"
+    strings "$core_platform" | grep -F 'android.hardware.health-V4-ndk.so' >/dev/null || \
+      fail "Core 1 platform adapter omitted the stable native health-HAL client"
+    strings "$core_platform" | grep -F 'audio_set_volume' >/dev/null || \
+      fail "Core 1 platform adapter omitted native audio actions"
+    strings "$core_platform" | grep -F 'android.hardware.wifi.supplicant-V4-ndk.so' >/dev/null || \
+      fail "Core 1 platform adapter omitted the stable Supplicant AIDL client"
+    strings "$core_platform" | grep -F 'attention_acknowledge' >/dev/null || \
+      fail "Core 1 platform adapter omitted native attention actions"
+    grep -Fx 'on post-fs-data && property:ro.sos.providers=core-native' \
+      "$core_platform_rc" >/dev/null || \
+      fail "Core 1 does not conditionally start the native Wi-Fi owner"
+    grep -Fx '    start wpa_supplicant' "$core_platform_rc" >/dev/null || \
+      fail "Core 1 native provider does not start stable Supplicant service"
+    python3 -c 'import json,sys; value=json.load(open(sys.argv[1])); assert value.get("version") == 1 and isinstance(value.get("apps"), list)' \
+      "$core_app_manifest" || fail "Core 1 native application manifest is invalid"
+    grep -Fx 'ro.sos.providers=core-native' "$properties" >/dev/null || \
+      fail "Core 1 authority does not select the native provider adapter"
+    grep -F '(allow sos_authority sos_core_platform (unix_stream_socket (connectto)))' \
+      "$system_ext_policy" >/dev/null || \
+      fail "Core 1 authority cannot connect to the native provider adapter"
+    ! grep -Eq '^\(allow sos_core_platform sysfs_battery(info)? ' "$system_ext_policy" || \
+      fail "Core 1 bypasses the native health HAL with vendor battery sysfs access"
+    ! grep -Eq '^\(allow sos_core_platform (wpa_socket|hal_wifi_supplicant_default) ' \
+      "$system_ext_policy" || \
+      fail "Core 1 bypasses stable Supplicant AIDL with a vendor control socket"
   fi
 
   if [[ "$no_zygote" == true ]]; then

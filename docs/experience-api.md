@@ -78,10 +78,13 @@ model.providers = {
 Application, network, and attention IDs are bounded authority-scoped opaque
 selections. Package names, Activity components, Android notification keys,
 Binder objects, Intents, credentials, and framework handles are not part of the
-ABI. Native adapters provide clock, sysfs link, and available power/thermal
-facts. A peer-credential-checked headless framework bridge supplies only the
-framework facts in the typed document. The authority merges both and remains
-the canonical registry.
+ABI. The authority provides clock and public link/thermal fallback facts.
+Compat selects a peer-credential-checked headless framework adapter; Core 1
+selects a peer-credential-checked native platform adapter backed by stable
+Health/Supplicant AIDL HALs, native audio, and signed native inventories. Both
+return exactly this typed document. The authority merges it and remains the
+canonical registry; [`core1-provider-parity.md`](core1-provider-parity.md)
+documents target-specific resource availability.
 
 A configured Linux host replaces its resource domains with
 file/iCalendar/MPRIS-backed data and capability-scoped system/media snapshots,
@@ -135,8 +138,8 @@ The Android System Providers v1 effect allowlist is:
 - `attention.acknowledge(attention_id)`.
 
 Each effect must have a matching capability in the current trusted snapshot.
-Opaque selections are resolved again inside the framework bridge immediately
-before execution. The ABI also reserves typed `power.request_lock`,
+Opaque selections are resolved again inside the selected platform adapter
+immediately before execution. The ABI also reserves typed `power.request_lock`,
 `power.request_restart`, and `power.request_shutdown` actions, but v1 does not
 grant them: those requests require a future fixed native confirmation surface.
 Luau can request such a ceremony only after the authority advertises the

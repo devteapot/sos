@@ -6750,3 +6750,132 @@ migration debugging; and a sustained boot/wake/lock/restart soak with no need
 to compare against the Android-hosted pre-unlock oracle. Until then, Core 0B
 receives no features or release-support promise—only fixes necessary to keep
 that bounded migration oracle usable.
+
+## 2026-08-16 — Core 1 native System Providers v1 parity
+
+**Goal / hypothesis:** Give the active no-Zygote Core 1 product the same typed
+System Providers ABI v1 and stock-experience contract as Compat 1 without
+recreating `system_server` or exposing platform handles to Luau. The first
+slice is clock, power/thermal, network/Wi-Fi, audio/media, signed application
+inventory, attention, and their resource-scoped actions. "Parity" means ABI,
+product, and build parity in this entry; physical provider behavior requires a
+separate A33 acceptance run.
+
+**Code, product, and environment changes:** Generalized the authority's
+framework-only bridge into a `ProviderAdapter` selected by the immutable
+`ro.sos.providers` product property. Compat 1 and frozen Core 0B retain the
+headless Java adapter; Core 1 selects a new init-owned `sos-core-platform`
+daemon over the same peer-credential-checked abstract Unix-socket ABI 1 JSON
+boundary. The authority now applies one fixed platform-capability allowlist to
+both published capabilities and action authorization, rejects adapter ABI
+mismatches, and falls back to native clock, link, and public thermal facts with
+no adapter actions when the daemon is absent.
+
+The new ARM64 C++ daemon reads battery, charging, and temperature through the
+stable Health AIDL v4 service; link facts through public network sysfs; saved
+network inventory, RSSI, connect, and disconnect through stable Supplicant
+AIDL v4; and music volume/mute through `AudioSystem` and audioserver. Media and
+application actions use bounded fixed native datagram targets, while attention
+uses a bounded durable journal and opaque normalized IDs. Capability emission
+is resource-derived. The signed `/system_ext/etc/sos/core-apps.json` inventory
+is initially empty because Core 1 has no APK runtime or registered native
+applications; media and attention are likewise truthfully inactive/empty
+until native owners and producers register. Calls, alarms, personal data,
+display/session, and trusted power confirmation remain outside this slice.
+
+Core 1 conditionally starts the existing vendor `wpa_supplicant` for the
+`core-native` profile. Its dedicated `sos_core_platform` SELinux domain has
+stable Health/Supplicant HAL client access, bounded audio service access,
+read-only public network sysfs, and private platform state. Only the
+system-UID authority may connect to its stream socket. Binder objects, Android
+Intents, credentials, BSSID/MAC values, package internals, and raw platform
+keys do not cross into the authority or Luau. Lock, credential, permission,
+emergency, restart, shutdown, and Recovery remain fixed native surfaces and
+cannot be granted by this adapter. Detailed ownership and acceptance limits
+are in [`core1-provider-parity.md`](core1-provider-parity.md).
+
+**Commands, tests, and measurements:** Formatting passed, and the focused
+workspace command
+
+```text
+cargo test --locked -p android-system-authority \
+  -p android-authority-protocol -p experience-ir \
+  -p providers-fake -p runtime-luau
+```
+
+passed 10 system-authority, 4 experience-IR, 5 fixture-provider, and 22 Luau
+tests (41 total), plus all selected doctests. The authority tests cover live
+native fallback facts, complete adapter merge, typed payload bounds,
+capability absence, ABI mismatch, and malicious privileged-capability
+injection. `cargo ndk -t arm64-v8a -P 31 check -p
+android-system-authority --locked` passed. `cargo fmt --all -- --check`,
+`bash -n tools/a33xctl`, and `git diff --check` also passed before the exact
+product gate.
+
+The final clean command
+
+```text
+./tools/a33xctl build-core1
+./tools/a33xctl inspect-core1
+```
+
+completed the exact product build in 3:04 and passed C++ compilation with
+warnings as errors, complete SELinux neverallow policy, VINTF compatibility,
+ZIP integrity and whole-package signature, PIT ceilings, the AVB chain for
+every packaged partition, ARM64/ELF identity, Health v4 and Supplicant v4
+needed libraries, audio/action markers, init/property selection, signed app
+manifest parsing, authority connection policy, and absence of direct vendor
+supplicant-socket or battery-sysfs access. The raw generated OTA remains
+outside Git:
+
+| Artifact | Revision | Bytes | SHA-256 |
+| --- | --- | ---: | --- |
+| `lineage-23.0-20260816-UNOFFICIAL-sos_core1_a33x.zip` | `sos.core1.f4d780007972.812bca990cc5` | 1,022,102,986 | `3216038f337c44bb39f114485765db665908a3700325bac755021f3f251b2d25` |
+| `SYSTEM_EXT/bin/sos-core-platform` | same | 118,816 | `481c43e971b518fc8a93cc1272b188916427d2e3078ec1c24cd72fc86ae067e1` |
+| `SYSTEM_EXT/bin/sos-authority` | same | 1,332,000 | `7da9c058d7e7fbee12cd7f7144042ebd2c3713af8ea865d4accff328cfe9e3d1` |
+| `SYSTEM_EXT/etc/init/sos-core-platform.rc` | same | 353 | `5b3563f02b16bdc8d0457dd4021a15c9248df9a4b17de4b719f0fd2234fe9790` |
+| `SYSTEM_EXT/etc/sos/core-apps.json` | same | 33 | `90a2246ac8d3369de1cd93eb04ad4733799a689e31fc8dada25785998cbef731` |
+
+**Failures and fixes:** A new security regression test initially exposed that
+an adapter could inject `power.request_restart` into its advertised
+capabilities and pass action authorization. Filtering snapshot publication was
+insufficient; applying the fixed allowlist again at authorization closed the
+confused-deputy path, and the full suite then passed. The first exact product
+attempt, revision `sos.core1.f4d780007972.fce3ffd8989f`, tried to use the
+vendor-private supplicant control socket. System-ext policy could not see the
+vendor implementation domain, and a platform neverallow correctly prohibited
+the direct datagram. That design was rejected rather than weakened; the daemon
+now uses the stable Supplicant AIDL service.
+
+Two early inspector checks also failed despite correct packaging: stripped ELF
+binaries retain needed-library names rather than full AIDL descriptor strings,
+and a broad battery-policy search matched the unrelated public
+`sysfs_batteryinfo` attribute. The checks now inspect the v4 NDK needed
+libraries and an anchored actual-allow rule. A later build and inspection at
+revision `sos.core1.f4d780007972.c911d5a1874f` produced a 1,022,117,011-byte
+OTA with SHA-256
+`5c823db1a627757729b1bee4f3e9adc41199d37ac2e96c28754f201460f2e986`,
+but its wrapper exited after the successful AOSP build because the shell
+inspector was edited concurrently while Bash was still lazily reading it. A
+fresh syntax check and inspection passed; concurrent source edits were then
+stopped and the clean final build above was repeated to obtain an unambiguous
+zero exit.
+
+**Decision, remaining risks, and next gate:** Accept Core 1 as having System
+Providers v1 ABI and exact-product build parity with Compat 1 for this first
+slice. Do not claim physical parity: no OTA was flashed, and the connected
+SM-A336B remains on accepted Compat 1 revision
+`sos.compat1.a3f3bae010bf.b093c3a0b50a`. A clean Core 1 boot may correctly
+withhold saved-Wi-Fi actions because no native credential/provisioning owner
+yet reconstructs framework Wi-Fi state; validated Internet reachability,
+media/app owners, and attention producers are also still absent.
+
+The next hardware gate must capture live daemon and authority snapshots;
+compare Health, thermal, audio, link, and Supplicant facts with device truth;
+provision/select/disconnect/reconnect a saved network without leaking its
+credentials; exercise reversible volume/mute and all unavailable-action
+failures; force daemon and authority restarts; force generated-revision failure
+and stock fallback; verify lock/Recovery coexistence; and run a sustained
+wake/restart/power/thermal soak. Core 0B remains the frozen opt-in migration
+oracle until Core 1 also owns the outstanding unlock, displaced services,
+calls/alarms, and Recovery transition evidence on hardware.

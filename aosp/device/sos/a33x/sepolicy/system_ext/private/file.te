@@ -2,4 +2,6 @@ type sos_authority_exec, system_file_type, exec_type, file_type;
 type sos_node_exec, system_file_type, exec_type, file_type;
 type sos_core_surface_probe_exec, system_file_type, exec_type, file_type;
 type sos_core_host_exec, system_file_type, exec_type, file_type;
+type sos_core_platform_exec, system_file_type, exec_type, file_type;
 type sos_authority_data_file, file_type, data_file_type, core_data_file_type;
+type sos_core_platform_data_file, file_type, data_file_type, core_data_file_type;

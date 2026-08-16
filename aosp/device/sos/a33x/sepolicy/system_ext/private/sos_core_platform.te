@@ -1,0 +1,25 @@
+type sos_core_platform, domain, coredomain;
+init_daemon_domain(sos_core_platform)
+net_domain(sos_core_platform)
+binder_use(sos_core_platform)
+
+# Core 1 replaces framework BatteryManager with the stable native health HAL.
+hal_client_domain(sos_core_platform, hal_health)
+
+# Saved-network facts and selection use the stable Supplicant AIDL HAL. The
+# adapter receives opaque IDs and SSIDs, never credential material.
+hal_client_domain(sos_core_platform, hal_wifi_supplicant)
+
+# Audio policy and AudioFlinger remain native services in the no-Zygote graph.
+binder_call(sos_core_platform, audioserver)
+allow sos_core_platform { audio_service audioserver_service }:service_manager find;
+
+allow sos_core_platform sos_core_platform_data_file:dir create_dir_perms;
+allow sos_core_platform sos_core_platform_data_file:file create_file_perms;
+allow sos_core_platform sos_core_platform_data_file:sock_file create_file_perms;
+
+allow sos_core_platform sysfs_net:dir r_dir_perms;
+allow sos_core_platform sysfs_net:file r_file_perms;
+
+# Media and native application owners expose fixed abstract datagram endpoints.
+allow sos_core_platform self:unix_dgram_socket create_socket_perms;

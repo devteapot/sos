@@ -26,7 +26,7 @@ laboratory into the privileged system and native-ownership phase.
 | Android APK harness | The physical SM-A336B passed the stable-host regression, typed provider effect, durable state/authority recovery, and a 10,000-swap device soak. This remains a regression harness, not the product boundary. |
 | Linux | A permanent GPUI/Wayland host, durable provider/state service, revision supervisor, resident Pi authoring agent, authenticated Smithay compositor, selectable GDM session, and Debian direct-DRM VM gate are implemented. Physical Linux hardware remains unproven. |
 | AOSP Cuttlefish | Pristine Android 17, SOS-as-HOME, and an init-supervised on-device authority passed in x86-64 Cuttlefish. |
-| Samsung a33x | The historical six-stage campaign was completed on physical hardware. Compat 1 is the accepted usable fallback and later passed live System Providers v1. Core 1 is now the only active Core development target; Core 0A is archived and Core 0B is a frozen, opt-in migration oracle. Core 1 has passed the no-Zygote locked/recovery boundary but is not yet a usable unlocked OS. |
+| Samsung a33x | The historical six-stage campaign was completed on physical hardware. Compat 1 is the accepted usable fallback and later passed live System Providers v1. Core 1 is the only active Core development target; Core 0A is archived and Core 0B is a frozen, opt-in migration oracle. Core 1 now builds the same provider ABI through native Health, Supplicant, audio, app-manifest, media, and attention adapters, but that slice has not passed its physical gate and Core 1 is not yet a usable unlocked OS. |
 | Resident agent | Pi runs on Linux and as native ARM64/Bionic Node on the phone. A subscription-backed Codex flow produced and activated a live generated revision on-device without bypassing trusted validation. |
 
 The accepted physical fallback is Compat 1 revision
@@ -272,6 +272,7 @@ risk procedure is in [`docs/samsung-sm-a336b.md`](docs/samsung-sm-a336b.md).
 | `services/sos-agent/` | Resident Pi authoring service and Android runner |
 | `experiences/` | Generated-experience examples and regression fixtures |
 | `aosp/device/sos/` | Cuttlefish and a33x product overlays |
+| `aosp/device/sos/a33x/core/platform_adapter.cpp` | Core 1 native System Providers v1 platform adapter |
 | `packaging/` | Linux systemd and GDM session integration |
 | `tools/` | Reproducible build, run, install, and verification entry points |
 | `docs/` | Architecture decisions, gate reports, and chronological evidence |
@@ -316,11 +317,13 @@ documented external evidence directories and are intentionally not tracked.
   fingerprint, authentication-bound Keystore release, and the physical
   Volume-Up+Volume-Down Recovery chord remain unproven.
 - Core 1 proves the no-Zygote process and recovery boundary while remaining
-  deliberately locked. Native CE unlock and replacements for displaced Android
-  framework services are future work.
+  deliberately locked. Its native System Providers v1 adapter has build/ABI
+  parity, not physical acceptance: saved-Wi-Fi provisioning, validated
+  reachability, media/app owners, attention producers, and provider restart/
+  soak evidence remain open alongside native CE unlock.
 - Core 0A is historical evidence only. Core 0B is retained solely as an
   opt-in comparison target until Core 1 owns native unlock and the displaced
-  power, network, audio, attention, call/alarm, session, update, and recovery
+  unlock, provider hardware behavior, call/alarm, session, update, and recovery
   services.
 - Speaker, earpiece, Bluetooth/call audio, cellular calls/data, and longer
   suspend, thermal, and soak campaigns are not complete across all accepted

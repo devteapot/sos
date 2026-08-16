@@ -1,0 +1,12 @@
+on post-fs-data
+    mkdir /data/misc/sos/platform 0700 system system
+    restorecon_recursive /data/misc/sos/platform
+
+on post-fs-data && property:ro.sos.providers=core-native
+    start wpa_supplicant
+
+service sos_core_platform /system_ext/bin/sos-core-platform
+    class main
+    user system
+    group system inet wifi audio media
+    restart_period 1

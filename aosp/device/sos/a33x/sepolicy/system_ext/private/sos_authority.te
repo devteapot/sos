@@ -19,3 +19,7 @@ allow sos_authority sysfs_thermal:file r_file_perms;
 # Framework-only facts and actions cross one peer-credential-checked abstract
 # socket. No Binder object or Intent crosses into the native authority.
 allow sos_authority system_app:unix_stream_socket connectto;
+
+# Core 1 selects the equally typed native platform adapter instead of the Java
+# bridge. The authority remains the only registry exposed to experiences.
+allow sos_authority sos_core_platform:unix_stream_socket connectto;

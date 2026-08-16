@@ -17,12 +17,12 @@ its capability. It never implements the ceremony.
 
 The init-owned `sos-authority` remains the canonical registry. It reads facts
 that are meaningful without Android directly (wall clock and bounded public
-sysfs network/thermal state). Android battery and charging facts deliberately
-come through the typed framework/health bridge: the platform coredomain does
-not bypass the vendor-private battery-health boundary. The direct-boot
-`SosFrameworkBridge` supplies a JSON document containing only facts that
-require framework services. The two system-UID processes authenticate through
-peer credentials on the existing abstract local socket.
+sysfs network/thermal state). Battery and charging facts deliberately use a
+typed platform adapter: the coredomain does not bypass the vendor-private
+battery-health boundary. Compat 1 and frozen Core 0B select the direct-boot
+`SosFrameworkBridge`; Core 1 selects the native `sos-core-platform` daemon with
+`ro.sos.providers=core-native`. Both adapters return the same ABI 1 JSON
+document over peer-credential-checked abstract local sockets.
 
 The bridge resolves Android-only objects internally:
 
@@ -31,12 +31,19 @@ The bridge resolves Android-only objects internally:
 - active notification attention records and cancellation keys;
 - locale/time-zone presentation and framework battery/thermal status.
 
+Core 1 resolves the corresponding non-framework resources internally: Health
+and Supplicant stable AIDL HALs, native audio services, a signed native
+application manifest, and bounded media/attention state. Its initial app
+manifest is empty and it has no registered media or attention producers, so
+those inventories and capabilities remain truthfully absent.
+
 Only bounded scalar values, visible labels, and opaque selection IDs cross the
 socket. Binder objects, Intents, package/Activity names, notification keys,
-credentials, and permission tokens do not. The Rust authority rejects a bridge
-document whose `abi_version` is not `1`, intersects capabilities with its own
-fixed allowlist, and supplies native facts with no action capabilities when the
-bridge is unavailable.
+credentials, and permission tokens do not. The Rust authority rejects an
+adapter document whose `abi_version` is not `1`, intersects capabilities with
+its own fixed allowlist for both publication and action authorization, and
+supplies native facts with no action capabilities when the adapter is
+unavailable.
 
 Luau receives the merged value at `model.providers`; the complete field and
 effect contract is in [`experience-api.md`](experience-api.md). Android HOME
@@ -49,10 +56,10 @@ system-provider refreshes.
 Luau still emits the Scene ABI's serializable `{ provider, action, payload }`
 envelope. The authority immediately converts that envelope into a closed Rust
 action enum, checks payload bounds and opaque-ID syntax, and requires the
-matching capability from a fresh bridge snapshot. Only the typed enum reaches
-the bridge. Stock and generated revisions use the same path.
+matching capability from a fresh adapter snapshot. Only the typed enum reaches
+the selected adapter. Stock and generated revisions use the same path.
 
-The v1 bridge grants bounded volume/mute, media, saved-Wi-Fi,
+The v1 adapters grant bounded volume/mute, media, saved-Wi-Fi,
 compatible-application launch, and attention-acknowledgement actions when their
 underlying resource is present. Lock, restart, and shutdown variants exist in
 the authority type boundary but are intentionally absent from the granted
@@ -78,9 +85,11 @@ Recovery path.
 ## Verification status and remaining gates
 
 Desktop unit tests cover ABI merging, the absence of package/Activity fields,
-typed payload bounds, missing-capability rejection, coordinated revision/state
-fallback, and Luau compilation/rendering. `javac` against the Android 34 and
-Lineage framework header jars covers the complete framework bridge source.
+typed payload bounds, missing-capability rejection, ABI-mismatch fail-closed
+behavior, attempted privileged-capability injection, coordinated
+revision/state fallback, and Luau compilation/rendering. `javac` against the
+Android 34 and Lineage framework header jars covers the complete framework
+adapter source.
 Exact Compat 1 revision `sos.compat1.a3f3bae010bf.b093c3a0b50a` passed the
 first physical A33x slice on 2026-08-16. It booted signed stock, matched live
 Android clock/power/Wi-Fi/audio/attention facts, completed reversible
@@ -98,3 +107,11 @@ gates; their absent capabilities and rejection paths did pass. The short smoke
 soak does not close a long-duration or thermal-load gate. Display/rotation,
 session/power facts, trusted power confirmation, calls, alarms, notification
 actions beyond acknowledgement, and personal data remain later slices.
+
+Core 1 now has build-level parity for this ABI through the native platform
+adapter described in [`core1-provider-parity.md`](core1-provider-parity.md).
+The exact no-Zygote product compiles and passes package, VINTF, SELinux,
+stable-HAL-linkage, and AVB inspection. It has not yet run this provider slice
+on physical hardware. Saved Wi-Fi provisioning, validated reachability,
+native media/application owners, native attention producers, and the same
+reversible action/restart/soak campaign remain its next acceptance gate.

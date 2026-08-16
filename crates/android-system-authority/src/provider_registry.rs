@@ -79,28 +79,32 @@ impl SystemAction {
     }
 }
 
-pub(crate) trait FrameworkBridge: Send + Sync {
+/// Typed provider adapter below the canonical authority registry. Compat and
+/// Core 0B use the non-rendering framework adapter; Core 1 uses a native
+/// platform daemon. Neither adapter can pass platform handles through this
+/// boundary.
+pub(crate) trait ProviderAdapter: Send + Sync {
     fn snapshot(&self) -> Result<SystemProviders, String>;
     fn execute(&self, action: &SystemAction) -> Result<Value, String>;
 }
 
 #[cfg(not(target_os = "android"))]
-struct UnavailableFrameworkBridge;
+struct UnavailableProviderAdapter;
 
 #[cfg(not(target_os = "android"))]
-impl FrameworkBridge for UnavailableFrameworkBridge {
+impl ProviderAdapter for UnavailableProviderAdapter {
     fn snapshot(&self) -> Result<SystemProviders, String> {
-        Err("headless framework provider bridge is unavailable".into())
+        Err("Android provider adapter is unavailable".into())
     }
 
     fn execute(&self, _action: &SystemAction) -> Result<Value, String> {
-        Err("headless framework provider bridge is unavailable".into())
+        Err("Android provider adapter is unavailable".into())
     }
 }
 
 pub(crate) struct SystemProviderRegistry {
     sysfs_root: PathBuf,
-    bridge: Box<dyn FrameworkBridge>,
+    adapter: Box<dyn ProviderAdapter>,
 }
 
 impl SystemProviderRegistry {
@@ -108,28 +112,28 @@ impl SystemProviderRegistry {
         Self {
             sysfs_root: PathBuf::from("/sys"),
             #[cfg(target_os = "android")]
-            bridge: Box::new(AndroidFrameworkBridge),
+            adapter: android_provider_adapter(),
             #[cfg(not(target_os = "android"))]
-            bridge: Box::new(UnavailableFrameworkBridge),
+            adapter: Box::new(UnavailableProviderAdapter),
         }
     }
 
     #[cfg(test)]
-    pub(crate) fn with_bridge(
+    pub(crate) fn with_adapter(
         sysfs_root: impl Into<PathBuf>,
-        bridge: Box<dyn FrameworkBridge>,
+        adapter: Box<dyn ProviderAdapter>,
     ) -> Self {
         Self {
             sysfs_root: sysfs_root.into(),
-            bridge,
+            adapter,
         }
     }
 
     pub(crate) fn snapshot_model(&self) -> ExperienceModel {
         let mut providers = self.native_snapshot();
-        match self.bridge.snapshot() {
-            Ok(framework) => merge_framework_snapshot(&mut providers, framework),
-            Err(error) => eprintln!("framework_provider_snapshot_unavailable error={error}"),
+        match self.adapter.snapshot() {
+            Ok(platform) => merge_platform_snapshot(&mut providers, platform),
+            Err(error) => eprintln!("platform_provider_snapshot_unavailable error={error}"),
         }
         providers.capabilities.sort_by_key(capability_order);
         providers.capabilities.dedup();
@@ -141,12 +145,17 @@ impl SystemProviderRegistry {
         effect: &ProviderEffect,
     ) -> Result<SystemAction, String> {
         let action = parse_action(effect)?;
-        let capabilities = self
-            .bridge
+        let capability = action.capability();
+        let granted = self
+            .adapter
             .snapshot()
-            .map(|snapshot| snapshot.capabilities)
-            .unwrap_or_default();
-        if !capabilities.contains(&action.capability()) {
+            .map(|snapshot| {
+                snapshot.abi_version == SYSTEM_PROVIDER_ABI_VERSION
+                    && platform_capability_allowed(capability)
+                    && snapshot.capabilities.contains(&capability)
+            })
+            .unwrap_or(false);
+        if !granted {
             return Err(format!(
                 "provider capability is not granted: {}.{}",
                 effect.provider, effect.action
@@ -156,7 +165,7 @@ impl SystemProviderRegistry {
     }
 
     pub(crate) fn execute(&self, action: &SystemAction) -> Result<Value, String> {
-        self.bridge.execute(action)
+        self.adapter.execute(action)
     }
 
     fn native_snapshot(&self) -> SystemProviders {
@@ -165,10 +174,11 @@ impl SystemProviderRegistry {
         #[cfg(not(target_os = "android"))]
         let power = native_power(&self.sysfs_root);
         // Android deliberately keeps battery sysfs labels private to the
-        // vendor health HAL. A platform coredomain must use the narrow bridge
-        // instead of accumulating raw vendor sysfs access.
+        // vendor health HAL. Compat receives health facts from its narrow
+        // framework adapter; Core 1 receives them from the native health-HAL
+        // client. Public thermal zones remain a native fallback for both.
         #[cfg(target_os = "android")]
-        let power = PowerProviderState::default();
+        let power = native_thermal_power(&self.sysfs_root);
         let connectivity = native_connectivity(&self.sysfs_root);
         SystemProviders {
             abi_version: SYSTEM_PROVIDER_ABI_VERSION,
@@ -238,33 +248,33 @@ fn parse_action(effect: &ProviderEffect) -> Result<SystemAction, String> {
     }
 }
 
-fn merge_framework_snapshot(native: &mut SystemProviders, framework: SystemProviders) {
+fn merge_platform_snapshot(native: &mut SystemProviders, platform: SystemProviders) {
     // A version mismatch is a closed boundary: retain native facts and grant
     // no framework-only action capabilities.
-    if framework.abi_version != SYSTEM_PROVIDER_ABI_VERSION {
+    if platform.abi_version != SYSTEM_PROVIDER_ABI_VERSION {
         eprintln!(
-            "framework_provider_abi_rejected expected={} supplied={}",
-            SYSTEM_PROVIDER_ABI_VERSION, framework.abi_version
+            "platform_provider_abi_rejected expected={} supplied={}",
+            SYSTEM_PROVIDER_ABI_VERSION, platform.abi_version
         );
         return;
     }
-    native.observed_at_ms = native.observed_at_ms.max(framework.observed_at_ms);
-    if framework.clock.unix_time_ms != 0 {
-        native.clock = framework.clock;
+    native.observed_at_ms = native.observed_at_ms.max(platform.observed_at_ms);
+    if platform.clock.unix_time_ms != 0 {
+        native.clock = platform.clock;
     }
-    merge_power(&mut native.power, framework.power);
+    merge_power(&mut native.power, platform.power);
     let native_interfaces = native.connectivity.online_interfaces.clone();
-    native.connectivity = framework.connectivity;
+    native.connectivity = platform.connectivity;
     if native.connectivity.online_interfaces.is_empty() {
         native.connectivity.online_interfaces = native_interfaces;
     }
-    native.audio = framework.audio;
-    native.apps = framework.apps;
-    native.attention = framework.attention;
-    native.capabilities = framework
+    native.audio = platform.audio;
+    native.apps = platform.apps;
+    native.attention = platform.attention;
+    native.capabilities = platform
         .capabilities
         .into_iter()
-        .filter(|capability| bridge_capability_allowed(*capability))
+        .filter(|capability| platform_capability_allowed(*capability))
         .collect();
 }
 
@@ -284,7 +294,7 @@ fn merge_power(native: &mut PowerProviderState, framework: PowerProviderState) {
     }
 }
 
-fn bridge_capability_allowed(capability: SystemCapability) -> bool {
+fn platform_capability_allowed(capability: SystemCapability) -> bool {
     matches!(
         capability,
         SystemCapability::AudioSetVolume
@@ -379,6 +389,7 @@ fn native_clock(unix_time_ms: u64) -> ClockProviderState {
     }
 }
 
+#[cfg(any(not(target_os = "android"), test))]
 fn native_power(sysfs_root: &Path) -> PowerProviderState {
     let mut result = PowerProviderState::default();
     if let Ok(entries) = fs::read_dir(sysfs_root.join("class/power_supply")) {
@@ -405,6 +416,14 @@ fn native_power(sysfs_root: &Path) -> PowerProviderState {
     }
     result.thermal_status = hottest_thermal_status(sysfs_root);
     result
+}
+
+#[cfg(target_os = "android")]
+fn native_thermal_power(sysfs_root: &Path) -> PowerProviderState {
+    PowerProviderState {
+        thermal_status: hottest_thermal_status(sysfs_root),
+        ..PowerProviderState::default()
+    }
 }
 
 fn hottest_thermal_status(sysfs_root: &Path) -> Option<ThermalStatus> {
@@ -540,9 +559,9 @@ fn system_property(_name: &str) -> Option<String> {
 struct AndroidFrameworkBridge;
 
 #[cfg(target_os = "android")]
-impl FrameworkBridge for AndroidFrameworkBridge {
+impl ProviderAdapter for AndroidFrameworkBridge {
     fn snapshot(&self) -> Result<SystemProviders, String> {
-        let bytes = framework_bridge_request(4, None)?;
+        let bytes = provider_adapter_request("sos_framework_bridge", 4, None)?;
         serde_json::from_slice(&bytes)
             .map_err(|error| format!("decode framework snapshot: {error}"))
     }
@@ -550,13 +569,46 @@ impl FrameworkBridge for AndroidFrameworkBridge {
     fn execute(&self, action: &SystemAction) -> Result<Value, String> {
         let payload =
             serde_json::to_vec(&action.wire_value()).map_err(|error| error.to_string())?;
-        let bytes = framework_bridge_request(5, Some(&payload))?;
+        let bytes = provider_adapter_request("sos_framework_bridge", 5, Some(&payload))?;
         serde_json::from_slice(&bytes).map_err(|error| format!("decode framework action: {error}"))
     }
 }
 
 #[cfg(target_os = "android")]
-fn framework_bridge_request(command: u8, payload: Option<&[u8]>) -> Result<Vec<u8>, String> {
+struct CoreNativeAdapter;
+
+#[cfg(target_os = "android")]
+impl ProviderAdapter for CoreNativeAdapter {
+    fn snapshot(&self) -> Result<SystemProviders, String> {
+        let bytes = provider_adapter_request("sos_core_platform", 4, None)?;
+        serde_json::from_slice(&bytes)
+            .map_err(|error| format!("decode Core native snapshot: {error}"))
+    }
+
+    fn execute(&self, action: &SystemAction) -> Result<Value, String> {
+        let payload =
+            serde_json::to_vec(&action.wire_value()).map_err(|error| error.to_string())?;
+        let bytes = provider_adapter_request("sos_core_platform", 5, Some(&payload))?;
+        serde_json::from_slice(&bytes)
+            .map_err(|error| format!("decode Core native action: {error}"))
+    }
+}
+
+#[cfg(target_os = "android")]
+fn android_provider_adapter() -> Box<dyn ProviderAdapter> {
+    if system_property("ro.sos.providers").as_deref() == Some("core-native") {
+        Box::new(CoreNativeAdapter)
+    } else {
+        Box::new(AndroidFrameworkBridge)
+    }
+}
+
+#[cfg(target_os = "android")]
+fn provider_adapter_request(
+    socket_name: &str,
+    command: u8,
+    payload: Option<&[u8]>,
+) -> Result<Vec<u8>, String> {
     use std::{
         io::{Read, Write},
         mem::size_of,
@@ -575,9 +627,9 @@ fn framework_bridge_request(command: u8, payload: Option<&[u8]>) -> Result<Vec<u
     let owned = unsafe { OwnedFd::from_raw_fd(raw) };
     let mut address = unsafe { std::mem::zeroed::<libc::sockaddr_un>() };
     address.sun_family = libc::AF_UNIX as libc::sa_family_t;
-    let name = b"sos_framework_bridge";
+    let name = socket_name.as_bytes();
     if name.len() + 1 > address.sun_path.len() {
-        return Err("framework socket name is too long".into());
+        return Err("provider adapter socket name is too long".into());
     }
     address.sun_path[0] = 0;
     for (index, byte) in name.iter().enumerate() {
@@ -606,7 +658,7 @@ fn framework_bridge_request(command: u8, payload: Option<&[u8]>) -> Result<Vec<u
         .and_then(|()| stream.write_all(&[command]))
         .map_err(|error| error.to_string())?;
     if let Some(payload) = payload {
-        let length = u32::try_from(payload.len()).map_err(|_| "framework action is too large")?;
+        let length = u32::try_from(payload.len()).map_err(|_| "provider action is too large")?;
         stream
             .write_all(&length.to_be_bytes())
             .and_then(|()| stream.write_all(payload))
@@ -618,10 +670,10 @@ fn framework_bridge_request(command: u8, payload: Option<&[u8]>) -> Result<Vec<u
         .read_exact(&mut header)
         .map_err(|error| error.to_string())?;
     if u32::from_be_bytes(header[..4].try_into().expect("four-byte magic")) != MAGIC {
-        return Err("framework bridge returned bad protocol magic".into());
+        return Err("provider adapter returned bad protocol magic".into());
     }
     if header[4] != RESPONSE_OK {
-        return Err("framework bridge rejected provider request".into());
+        return Err("provider adapter rejected provider request".into());
     }
     let mut length = [0_u8; 4];
     stream
@@ -629,7 +681,7 @@ fn framework_bridge_request(command: u8, payload: Option<&[u8]>) -> Result<Vec<u
         .map_err(|error| error.to_string())?;
     let length = u32::from_be_bytes(length) as usize;
     if length > MAX_RESPONSE_BYTES {
-        return Err("framework provider response exceeded its size limit".into());
+        return Err("provider adapter response exceeded its size limit".into());
     }
     let mut response = vec![0; length];
     stream
@@ -641,15 +693,17 @@ fn framework_bridge_request(command: u8, payload: Option<&[u8]>) -> Result<Vec<u
 #[cfg(test)]
 mod tests {
     use super::*;
-    use experience_ir::{MediaProviderState, SystemApplication, SystemWifiNetwork};
+    use experience_ir::{
+        AttentionItem, AttentionKind, MediaProviderState, SystemApplication, SystemWifiNetwork,
+    };
     use std::sync::Mutex;
 
-    struct FixtureBridge {
+    struct FixtureAdapter {
         snapshot: SystemProviders,
         actions: Mutex<Vec<SystemAction>>,
     }
 
-    impl FrameworkBridge for FixtureBridge {
+    impl ProviderAdapter for FixtureAdapter {
         fn snapshot(&self) -> Result<SystemProviders, String> {
             Ok(self.snapshot.clone())
         }
@@ -704,14 +758,57 @@ mod tests {
         }
     }
 
+    fn parity_snapshot() -> SystemProviders {
+        let mut snapshot = fixture_snapshot();
+        snapshot.power = PowerProviderState {
+            battery_percent: Some(72),
+            charging: Some(true),
+            charging_source: "usb".into(),
+            battery_temperature_deci_c: Some(301),
+            thermal_status: Some(ThermalStatus::Light),
+        };
+        snapshot.audio.media = MediaProviderState {
+            active: true,
+            playing: true,
+            title: "Native track".into(),
+            artist: "SOS media".into(),
+        };
+        snapshot.attention = AttentionProviderState {
+            items: vec![AttentionItem {
+                id: "attention-1".into(),
+                occurred_at_ms: 42,
+                source: "SOS runtime".into(),
+                kind: AttentionKind::System,
+                urgent: false,
+                title: "Native attention".into(),
+                detail: "Typed journal entry".into(),
+            }],
+            urgent_count: 0,
+        };
+        snapshot.capabilities = vec![
+            SystemCapability::AudioSetVolume,
+            SystemCapability::AudioSetMuted,
+            SystemCapability::MediaPlayPause,
+            SystemCapability::MediaNext,
+            SystemCapability::MediaPrevious,
+            SystemCapability::WifiConnect,
+            SystemCapability::WifiDisconnect,
+            SystemCapability::AppLaunch,
+            SystemCapability::AttentionAcknowledge,
+            // A platform adapter must not grant a trusted-confirmation action.
+            SystemCapability::RequestRestart,
+        ];
+        snapshot
+    }
+
     #[test]
     fn framework_facts_replace_native_placeholders_without_exposing_internals() {
         let temporary = tempfile::tempdir().unwrap();
-        let bridge = FixtureBridge {
+        let adapter = FixtureAdapter {
             snapshot: fixture_snapshot(),
             actions: Mutex::new(Vec::new()),
         };
-        let registry = SystemProviderRegistry::with_bridge(temporary.path(), Box::new(bridge));
+        let registry = SystemProviderRegistry::with_adapter(temporary.path(), Box::new(adapter));
         let model = registry.snapshot_model();
         assert_eq!(model.providers.abi_version, SYSTEM_PROVIDER_ABI_VERSION);
         assert_eq!(model.date, "Sunday, 16 August");
@@ -738,9 +835,9 @@ mod tests {
         fs::write(wifi.join("operstate"), "up\n").unwrap();
         fs::write(thermal.join("temp"), "61000\n").unwrap();
 
-        let registry = SystemProviderRegistry::with_bridge(
+        let registry = SystemProviderRegistry::with_adapter(
             temporary.path(),
-            Box::new(UnavailableFrameworkBridge),
+            Box::new(UnavailableProviderAdapter),
         );
         let providers = registry.snapshot_model().providers;
         assert_eq!(providers.abi_version, SYSTEM_PROVIDER_ABI_VERSION);
@@ -759,9 +856,9 @@ mod tests {
     #[test]
     fn actions_are_typed_bounded_and_capability_controlled() {
         let temporary = tempfile::tempdir().unwrap();
-        let registry = SystemProviderRegistry::with_bridge(
+        let registry = SystemProviderRegistry::with_adapter(
             temporary.path(),
-            Box::new(FixtureBridge {
+            Box::new(FixtureAdapter {
                 snapshot: fixture_snapshot(),
                 actions: Mutex::new(Vec::new()),
             }),
@@ -788,6 +885,81 @@ mod tests {
                 provider: "apps".into(),
                 action: "launch".into(),
                 payload: json!({"app_id": "app-1"}),
+            })
+            .is_err());
+    }
+
+    #[test]
+    fn native_or_framework_adapter_can_supply_the_same_full_provider_abi() {
+        let temporary = tempfile::tempdir().unwrap();
+        let registry = SystemProviderRegistry::with_adapter(
+            temporary.path(),
+            Box::new(FixtureAdapter {
+                snapshot: parity_snapshot(),
+                actions: Mutex::new(Vec::new()),
+            }),
+        );
+        let providers = registry.snapshot_model().providers;
+        assert_eq!(providers.power.battery_percent, Some(72));
+        assert!(providers.audio.media.active);
+        assert_eq!(providers.apps.compatible[0].label, "Calculator");
+        assert_eq!(providers.attention.items[0].id, "attention-1");
+        assert!(providers
+            .capabilities
+            .contains(&SystemCapability::AttentionAcknowledge));
+        assert!(!providers
+            .capabilities
+            .contains(&SystemCapability::RequestRestart));
+
+        for (provider, action, payload) in [
+            ("audio", "set_muted", json!({"muted": true})),
+            ("media", "play_pause", json!({})),
+            ("network", "connect", json!({"network_id": "network-1"})),
+            ("apps", "launch", json!({"app_id": "app-1"})),
+            (
+                "attention",
+                "acknowledge",
+                json!({"attention_id": "attention-1"}),
+            ),
+        ] {
+            registry
+                .parse_and_authorize(&ProviderEffect {
+                    provider: provider.into(),
+                    action: action.into(),
+                    payload,
+                })
+                .unwrap();
+        }
+        assert!(registry
+            .parse_and_authorize(&ProviderEffect {
+                provider: "power".into(),
+                action: "request_restart".into(),
+                payload: json!({}),
+            })
+            .is_err());
+    }
+
+    #[test]
+    fn adapter_abi_mismatch_fails_closed_to_native_facts() {
+        let temporary = tempfile::tempdir().unwrap();
+        let mut incompatible = parity_snapshot();
+        incompatible.abi_version = SYSTEM_PROVIDER_ABI_VERSION + 1;
+        let registry = SystemProviderRegistry::with_adapter(
+            temporary.path(),
+            Box::new(FixtureAdapter {
+                snapshot: incompatible,
+                actions: Mutex::new(Vec::new()),
+            }),
+        );
+        let providers = registry.snapshot_model().providers;
+        assert!(providers.clock.unix_time_ms > 0);
+        assert!(providers.apps.compatible.is_empty());
+        assert!(providers.capabilities.is_empty());
+        assert!(registry
+            .parse_and_authorize(&ProviderEffect {
+                provider: "audio".into(),
+                action: "set_volume".into(),
+                payload: json!({"percent": 50}),
             })
             .is_err());
     }
