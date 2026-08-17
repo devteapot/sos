@@ -7365,3 +7365,32 @@ app/media/attention and calls/alarms owners, attribute any recurring vendor
 EFS denial, and run a longer soak before calling parity acceptance complete.
 The detailed record is
 [`core1-provider-parity.md`](core1-provider-parity.md#final-2026-08-17-hardware-result-partialopen).
+
+## 2026-08-17 — Agent workflow v2: cost-aware hardware gate ownership
+
+**Goal:** Reduce coordination cost without slowing implementation or weakening
+device safety. Keep Sol responsible for architecture, ambiguous diagnosis,
+high-risk review, and coherent code changes; introduce a Terra acceptance gate;
+and let one Luna runner own a complete bounded transaction through authorized
+automatic reboot/boot/soak transitions.
+
+**Changed:** `AGENTS.md` now defines one writer, one device owner, independent
+host concurrency, one event-driven wait per phase, and explicit destructive
+authorization. `.codex/agents/implementor.toml` keeps coherent related work and
+material progress documentation with Sol. New `.codex/agents/gate.toml` makes
+Terra the device/hardware criteria, coordination, and evidence owner.
+`.codex/agents/runner.toml` now requires exact serial/operation/artifact facts,
+permits at most one authorized sideload attempt, follows inherent auto-reboot,
+completes boot observation and soak, and measures rather than infers duration.
+The obsolete `close_agent` lifecycle step was removed.
+
+**Evidence:** Python `tomllib` parsed all three agent TOML files; `git diff
+--check` passed. This was a workflow-only host validation; no device command or
+hardware claim was made.
+
+**Decision / risk / next gate:** Target coordination/model overhead below 15%,
+one wait per phase, and zero ownership violations, inferred durations, or false
+manual reboot requests. The main residual risk is prompt adherence under a
+long recovery transaction. Exercise the workflow on the next explicitly
+authorized hardware gate, then compare actual agent/tool cost, wait count,
+transition messages, and measured transaction timing against those targets.

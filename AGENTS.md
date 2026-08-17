@@ -3,42 +3,61 @@
 ## Progress documentation is part of the work
 
 Every material experiment or architectural change must update
-`docs/progress.md` in the same commit. An entry should record:
+`docs/progress.md` in the same commit. Record the dated goal, changed code or
+environment, evidence (including commands and measurements), failures and
+rejected approaches, decision, remaining risks, and next gate. The Sol writer
+normally makes this update with the related code; do not create a separate
+documentation agent unless the documentation is itself substantial.
 
-- the date and concrete hypothesis or goal;
-- the code, device, or environment that changed;
-- commands and measurements that constitute evidence;
-- failures and fixes, including approaches that were rejected;
-- the resulting decision, remaining risks, and next gate.
+Do not mark a hardware or latency gate complete from desktop-only evidence.
+Keep generated artifacts out of Git, but record an evidence artifact's path,
+revision, byte size, and SHA-256. Use `docs/runtime-evaluation.md` for runtime
+selection, `docs/experiment.md` for the original GPUI Mobile hardware gate,
+and focused milestone reports where needed; `docs/progress.md` stays the
+concise chronological index.
 
-Do not mark a hardware or latency gate complete from a desktop-only test. Keep
-raw generated artifacts out of Git, but record the artifact filename, revision,
-size, and SHA-256 when one is part of the evidence.
+## Agent workflow v2
 
-Use `docs/runtime-evaluation.md` for runtime-selection reasoning,
-`docs/experiment.md` for the original GPUI Mobile hardware gate, and focused
-documents for detailed milestone reports. `docs/progress.md` is the concise
-chronological index linking those deeper records.
+The parent coordinates short phases and never runs long CLI or device work.
+Custom agents in `.codex/agents/` have distinct ownership:
 
-## Multi-agent (required)
+- `implementor` (Sol/high) is the only writer. Use it for architecture,
+  ambiguous diagnosis, high-risk review, and complex or related code changes.
+  Keep a coherent implementation in one Sol task instead of serial tiny tasks.
+- `gate` (Terra/medium) owns acceptance criteria, runner briefs, evidence
+  judgment, and coordination for every device or hardware gate. It does not
+  edit files or touch the device.
+- `runner` (Luna/medium) is the only device owner and executes one complete,
+  bounded host/device transaction, including authorized automatic transitions,
+  boot observation, and soak. It does not design or edit.
 
-The parent thread is the orchestrator. It must not run long CLI itself.
+For an implementation, give Sol files, invariants, acceptance conditions, and
+required evidence. The brief must explicitly say whether `docs/progress.md` is
+required. Safe read-only exploration or unrelated host verification may run
+concurrently when independent, but there is never more than one writer or one
+device owner. Never run concurrent `adb` or `a33xctl` commands.
 
-Custom Codex agents live in `.codex/agents/`. Spawn them by `name`:
-`implementor` (gpt-5.6-sol, high) for repo patches, `runner` (gpt-5.6-luna,
-medium) for host tests and allowlisted device recipes.
+For a device/hardware gate, spawn one Terra gate with the acceptance criteria
+and authorization envelope. Terra issues one bounded transaction to one Luna
+runner and judges the returned evidence. The parent and Terra each use one
+long, event-driven agent wait per phase; no minute polling, status-only
+follow-ups, or repeated "still running" updates. Agents communicate only on a
+state change, failure, approval boundary, or completion.
 
-For every implementation task:
+Every device transaction brief must name the serial, exact operation, terminal
+conditions, evidence paths, and any artifact path plus expected revision,
+size, and SHA-256. Reboot or sideload is forbidden unless the brief explicitly
+authorizes that exact operation for that serial and artifact. A transaction
+may attempt sideload at most once; an unresolved earlier sideload/recovery
+process is a stop-and-escalate condition. The runner follows inherent
+auto-reboot transitions and performs the specified soak without asking for a
+false manual reboot. Any extra manual reboot requires separate explicit
+authorization. Report elapsed time only from command/tool output or captured
+monotonic timestamps, never from wait/yield/timeout values.
 
-1. Spawn `implementor` with a bounded brief (files, invariant, done-when).
-2. Wait for its postcard. Do not ingest diffs.
-3. Spawn `runner` with the implementor's Verify recipe, or a named
-   `a33xctl inspect-*`.
-4. Review outcomes (postcard + screenshot path). If `escalate` is screenshot
-   or sepolicy, the parent may `view_image` or reason; it still must not poll
-   `adb`.
-5. `close_agent` when done.
+## Efficiency targets
 
-Never spawn two writers. Never spawn two runners. Never give `runner`
-reboot/sideload unless the user asked. Parent model and effort are chosen
-per thread at start; do not assume a project default.
+- coordination/model overhead: under 15% of task cost;
+- waits: one event-driven wait per phase;
+- device ownership violations and inferred durations: zero;
+- false manual reboot requests: zero.
