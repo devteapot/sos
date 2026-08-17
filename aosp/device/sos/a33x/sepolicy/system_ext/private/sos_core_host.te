@@ -3,6 +3,10 @@ net_domain(sos_core_host)
 
 # The fixed supervisor re-execs this one signed binary for a clean GPUI child.
 allow sos_core_host sos_core_host_exec:file execute_no_trans;
+# Core's deterministic agent path executes the same immutable Pi bundle as
+# Compat, while the host remains the compile/render/activation authority.
+allow sos_core_host sos_node_exec:file rx_file_perms;
+allow sos_core_host sos_node_exec:file execute_no_trans;
 
 binder_use(sos_core_host)
 binder_call(sos_core_host, surfaceflinger)

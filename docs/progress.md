@@ -7823,3 +7823,79 @@ First run `bash tests/a33xctl-host-test.sh`; then run the next explicitly
 authorized exact Core 1 artifact/serial gate through `inspect-core1-readiness`,
 soak, evidence finalization, manifest generation, and independent verification.
 Android/Compat gates must use their distinct boot-complete/HOME predicate.
+
+## 2026-08-17 — Shared Linux, Compat, and Core Pi runtime
+
+**Goal:** Remove the platform runtime split without weakening AOSP's trusted
+revision boundary: Linux, Compat, and Core must use one prompt policy, bounded
+Pi runtime/tool contract, and packaged runner, while Core live credentials
+remain explicitly out of scope.
+
+**Changed / environment:** `services/sos-agent` now builds the generic
+`dist/agent-runner.cjs` entrypoint. Linux uses its existing resident
+socket/lifecycle commands; Compat and Core use its bounded `stdio` command.
+The shared TypeScript prompt policy and tools enforce context first, validation
+before submission, and byte-for-byte equality between validated and submitted
+source. The one-shot adapter additionally rejects any tool sequence other than
+`get_experience_context`, `validate_experience`, `submit_experience` and returns
+only the exact staged source. Compat retains Android Keystore credential
+storage and foreground lifecycle, but no longer constructs a second prompt.
+Core's deterministic path launches the same immutable Node/Pi/faux bundle
+instead of synthesizing a local Rust tool sequence; the Rust host still
+independently compiles/renders/validates and owns activation. Core SELinux
+policy grants only the fixed host permission to execute the immutable Node
+binary, and product/build inspections require the generic bundle and exact
+prompt documents. Linux packaging and developer tools now execute that same
+bundle. Core's pipe adapter uses nonblocking reads/writes and one explicit
+30-second monotonic deadline; a managed-child guard kills and reaps the process
+on timeout and every post-spawn I/O/error return. The package build safely
+removes only its resolved package-local `dist` before compilation, preventing
+obsolete Android-runner outputs from entering Linux installation copies. The
+prompt loader checks actual combined bytes after reading as well as metadata
+before reading. Generated output remains ignored; the locally built evidence
+artifact was `services/sos-agent/dist/agent-runner.cjs`, 1,874,682 bytes,
+SHA-256
+`cd101d1834e86001b8bace5f8d5c808b60f672ee71171e42d44cc9244897a3e4`,
+from repository base `9f898686ef8c` plus this uncommitted change.
+
+**Evidence / failures / rejected approaches:** `npm run check` passed;
+`npm test` cleaned and rebuilt the single-file bundle and passed all 10 tests,
+including absence of every obsolete `android-runner` output and rejection of
+actual post-read prompt documents above the byte limit, in addition to the
+packaged faux request, exact three-tool order, oversized-prompt rejection, and
+mismatched staged-source rejection. Both
+`cargo ndk -t arm64-v8a -P 31 check -p sos-experience --locked
+--no-default-features --features core-native` and the corresponding Compat
+check without `core-native` passed. `cargo test -p runtime-luau --locked`
+passed 22 tests. `bash -n tools/a33xctl packaging/libexec/sos-agent-login
+packaging/libexec/sos-login-session tools/linux-agent-e2e tools/sosctl` and
+`git diff --check` passed. `cargo test -p sos-experience --lib --locked` was
+attempted and rejected by the host linker because this workstation lacks
+`libxkbcommon` and `libxkbcommon-x11`; compilation reached the final link, and
+the two Android-target checks above cover the changed Rust module.
+`./tools/linux-agent-e2e` then passed the complete existing Linux resident
+path with the generic bundle: its Pi faux prompt emitted context, validation,
+submission, reported the candidate active, and transactionally changed the
+revision from `31f8e1d31b6e...` to `2303ba94d140...`. Retaining an Android-named
+bundle, duplicated Java prompt rules, the Core-local faux tool sequence, or
+accepting live Core credentials without a native ceremony were rejected. Final
+review also rejected the initial blocking Core `read_to_end`/`wait`, the build
+that left stale generated files behind, and the metadata-only prompt size
+check; the bounded child helper, exact clean target, and post-read byte check
+replace those approaches without hardware claims.
+
+**Decision / open risks / next gate:** Adopt this as the shared-runtime source
+milestone only. No AOSP product, OTA, device, SELinux, boot, credential, or
+latency gate ran, so there is no hardware pass. The next runner first repeats
+the exact host recipe `cd services/sos-agent && npm ci --ignore-scripts && npm
+run check && npm test`, then from the repository root runs both `cargo ndk`
+checks above, `cargo test -p runtime-luau --locked`, the listed `bash -n`, and
+`./tools/linux-agent-e2e` and `git diff --check`. After a new Core 1 product
+build produces an exact revision, path, byte size, and SHA-256, Terra must issue
+a separate serial-bound hardware envelope. That runner must require the
+packaged `agent-runner.cjs` identity,
+enforcing no-Zygote Core readiness, one Luau deterministic prompt showing only
+context/validate/submit, successful exact-source activation by the trusted
+host, stable supervisor/experience/authority/platform/Node lifecycle, and no
+relevant crash or enforcing AVC. Live Core provider credentials remain blocked
+on a trusted native credential ceremony and require a later independent gate.

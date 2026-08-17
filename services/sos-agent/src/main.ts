@@ -14,6 +14,7 @@ import {
   type SupportedProvider,
 } from "./runtime.js";
 import { promptAgent, startAgentServer } from "./server.js";
+import { readSystemPrompt } from "./prompt-policy.js";
 
 function option(name: string): string | undefined {
   const index = process.argv.indexOf(name);
@@ -40,27 +41,6 @@ function supportedProvider(value: string): SupportedProvider {
     return value;
   }
   throw new Error("SOS_AGENT_PROVIDER must be openai, anthropic, openai-codex, or openrouter");
-}
-
-async function readSystemPrompt(apiPath: string, examples: string[]): Promise<string> {
-  const documents = await Promise.all([apiPath, ...examples].map((file) => fs.readFile(file, "utf8")));
-  return `You are the resident SOS experience author. You modify the currently running visual experience in response to the user's direct request.
-
-Rules:
-- Always call get_experience_context first.
-- Return complete Luau module source, never a patch.
-- Call validate_experience before submit_experience.
-- Submit only the exact source that validated.
-- Do not claim activation unless submit_experience succeeds.
-- You have no shell, filesystem, process, or general network tools.
-- Preserve the user's current intent and durable state unless they ask for a reset.
-- Every revision must keep a visible Luau-authored agent conversation/composer that renders model.agent and emits agent.prompt. You may redesign and reposition it, but never replace it with a native widget or remove the user's way to request another change.
-
-SOS experience API:
-${documents[0]}
-
-Reference experiences:
-${documents.slice(1).join("\n\n---\n\n")}`;
 }
 
 async function credential(): Promise<string | undefined> {
@@ -142,7 +122,7 @@ async function login(): Promise<void> {
   }
 }
 
-async function main(): Promise<void> {
+export async function runCli(): Promise<void> {
   const command = process.argv[2];
   if (command === "login") {
     await login();
@@ -157,10 +137,10 @@ async function main(): Promise<void> {
 
   const socketPath = required("--socket");
   const backend = new UnixAuthoringBackend(required("--authoring-socket"));
-  const systemPrompt = await readSystemPrompt(required("--api-doc"), [
-    required("--example"),
-    required("--example-secondary"),
-  ]);
+  const systemPrompt = await readSystemPrompt({
+    apiPath: required("--api-doc"),
+    examples: [required("--example"), required("--example-secondary")],
+  });
   const fakeSource = option("--fake-source") ?? process.env.SOS_AGENT_FAKE_SOURCE;
   const statePath = option("--state");
   const provider = supportedProvider(process.env.SOS_AGENT_PROVIDER ?? "openai");
@@ -194,8 +174,3 @@ async function main(): Promise<void> {
     process.once(signal, () => server.close());
   }
 }
-
-main().catch((error: Error) => {
-  console.error(`sos_agent_failed error=${error.message}`);
-  process.exitCode = 1;
-});

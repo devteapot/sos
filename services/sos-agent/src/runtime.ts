@@ -91,6 +91,7 @@ export function createFauxAgentRuntime(
   backend: AuthoringBackend,
   systemPrompt: string,
   candidateSource: string,
+  completionText = "The candidate experience is active.",
 ): Agent {
   const faux = fauxProvider();
   const models = createModels();
@@ -107,7 +108,7 @@ export function createFauxAgentRuntime(
       fauxToolCall("submit_experience", { source: candidateSource }, { id: "submit-1" }),
       { stopReason: "toolUse" },
     ),
-    fauxAssistantMessage("The candidate experience is active."),
+    fauxAssistantMessage(completionText),
   ]);
   return new Agent({
     initialState: {

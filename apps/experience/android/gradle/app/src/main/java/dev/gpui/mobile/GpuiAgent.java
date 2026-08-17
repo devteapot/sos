@@ -20,7 +20,6 @@ import org.json.JSONObject;
 
 import java.io.BufferedReader;
 import java.io.ByteArrayOutputStream;
-import java.io.FileInputStream;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
@@ -56,7 +55,7 @@ public final class GpuiAgent {
     private static final String MODEL_CODEX = "gpt-5.6-sol";
 
     private static final String NODE = "/system_ext/bin/sos-node";
-    private static final String RUNNER = "/system_ext/etc/sos-agent/android-runner.cjs";
+    private static final String RUNNER = "/system_ext/etc/sos-agent/agent-runner.cjs";
     private static final String API_DOC = "/system_ext/etc/sos-agent/experience-api.md";
     private static final String EXAMPLE_PRIMARY = "/system_ext/etc/sos-agent/example-primary.luau";
     private static final String EXAMPLE_SECONDARY = "/system_ext/etc/sos-agent/example-secondary.luau";
@@ -64,7 +63,7 @@ public final class GpuiAgent {
     private static final int MAX_PROCESS_BYTES = 2 * 1024 * 1024;
     private static final int MAX_SOURCE_BYTES = 256 * 1024;
     private static final int MAX_PROMPT_BYTES = 32 * 1024;
-    private static final int MAX_PROMPT_DOCUMENT_BYTES = 1024 * 1024;
+    private static final int MAX_REQUEST_BYTES = 1024 * 1024;
     private static final AtomicBoolean LOGIN_RUNNING = new AtomicBoolean(false);
     private static volatile String sActivity = "Deterministic fake provider ready";
 
@@ -149,7 +148,8 @@ public final class GpuiAgent {
         return true;
     }
 
-    public static String run(Activity activity, String prompt, String currentSource) {
+    public static String run(Activity activity, String prompt, String currentSource,
+            String fauxCandidateSource) {
         try {
             if (prompt == null || prompt.trim().isEmpty()
                     || prompt.getBytes(StandardCharsets.UTF_8).length > MAX_PROMPT_BYTES) {
@@ -160,16 +160,25 @@ public final class GpuiAgent {
                 return failure("The active experience is outside its bounded size");
             }
             String provider = selectedProvider(activity);
-            if (PROVIDER_FAKE.equals(provider)) return failure("The fake provider runs in the trusted HOME");
-            byte[] credential = decryptCredential(activity, provider);
-            if (credential == null) return failure(providerLabel(provider) + " is not configured");
+            byte[] credential = PROVIDER_FAKE.equals(provider)
+                    ? null : decryptCredential(activity, provider);
+            if (!PROVIDER_FAKE.equals(provider) && credential == null) {
+                return failure(providerLabel(provider) + " is not configured");
+            }
+            if (PROVIDER_FAKE.equals(provider)
+                    && (fauxCandidateSource == null || fauxCandidateSource.isEmpty()
+                    || fauxCandidateSource.getBytes(StandardCharsets.UTF_8).length
+                            > MAX_SOURCE_BYTES)) {
+                return failure("The deterministic candidate is outside its bounded size");
+            }
             try {
                 GpuiAgentService.start(activity);
                 sActivity = providerLabel(provider) + " · Pi is proposing an experience";
-                return requestPi(activity, provider, prompt, currentSource, credential);
+                return requestPi(activity, provider, prompt, currentSource, fauxCandidateSource,
+                        credential);
             } finally {
                 GpuiAgentService.stop(activity);
-                Arrays.fill(credential, (byte) 0);
+                if (credential != null) Arrays.fill(credential, (byte) 0);
                 sActivity = providerLabel(provider) + " ready · " + model(provider);
             }
         } catch (Exception ignored) {
@@ -404,17 +413,20 @@ public final class GpuiAgent {
     }
 
     private static String requestPi(Activity activity, String provider, String prompt,
-            String source, byte[] credentialBytes) throws Exception {
+            String source, String fauxCandidateSource, byte[] credentialBytes) throws Exception {
         JSONObject request = new JSONObject()
                 .put("action", "prompt")
                 .put("provider", provider)
-                .put("model", model(provider))
-                .put("credential", new JSONObject(new String(credentialBytes, StandardCharsets.UTF_8)))
                 .put("prompt", prompt)
-                .put("currentSource", source)
-                .put("systemPrompt", systemPrompt());
+                .put("currentSource", source);
+        if (PROVIDER_FAKE.equals(provider)) {
+            request.put("candidateSource", fauxCandidateSource);
+        } else {
+            request.put("model", model(provider)).put("credential",
+                    new JSONObject(new String(credentialBytes, StandardCharsets.UTF_8)));
+        }
         byte[] body = request.toString().getBytes(StandardCharsets.UTF_8);
-        if (body.length > MAX_PROMPT_DOCUMENT_BYTES) return failure("The Pi request is too large");
+        if (body.length > MAX_REQUEST_BYTES) return failure("The Pi request is too large");
         Process process = startPi();
         AtomicReference<byte[]> stdout = new AtomicReference<>();
         AtomicReference<Exception> readFailure = new AtomicReference<>();
@@ -451,19 +463,26 @@ public final class GpuiAgent {
                     || candidate.getBytes(StandardCharsets.UTF_8).length > MAX_SOURCE_BYTES) {
                 return failure("Pi proposed an invalid source size");
             }
-            storeCredential(activity, provider, response.getJSONObject("credential").toString());
+            if (!PROVIDER_FAKE.equals(provider)) {
+                storeCredential(activity, provider,
+                        response.getJSONObject("credential").toString());
+            }
             String summary = response.optString("summary",
                     "Pi proposed a complete replacement experience.");
             if (summary.length() > 2048) summary = summary.substring(0, 2048);
             return new JSONObject().put("ok", true).put("source", candidate)
-                    .put("summary", summary).toString();
+                    .put("summary", summary).put("actions", response.getJSONArray("actions"))
+                    .toString();
         } finally {
             Arrays.fill(responseBytes, (byte) 0);
         }
     }
 
     private static Process startPi() throws Exception {
-        return new ProcessBuilder(NODE, RUNNER).start();
+        return new ProcessBuilder(NODE, RUNNER, "stdio",
+                "--api-doc", API_DOC,
+                "--example", EXAMPLE_PRIMARY,
+                "--example-secondary", EXAMPLE_SECONDARY).start();
     }
 
     private static void drain(InputStream stream) {
@@ -495,30 +514,6 @@ public final class GpuiAgent {
             }
             return output.toByteArray();
         }
-    }
-
-    private static String readDocument(String path) throws Exception {
-        byte[] bytes = readBoundedBytes(new FileInputStream(path), MAX_PROMPT_DOCUMENT_BYTES);
-        try {
-            return new String(bytes, StandardCharsets.UTF_8);
-        } finally {
-            Arrays.fill(bytes, (byte) 0);
-        }
-    }
-
-    private static String systemPrompt() throws Exception {
-        return "You are the resident SOS experience author. You modify the currently running visual experience in response to the user's direct request.\n\n"
-                + "Rules:\n- Always call get_experience_context first.\n"
-                + "- Return complete Luau module source, never a patch.\n"
-                + "- Call validate_experience before submit_experience.\n"
-                + "- Submit only the exact source that validated.\n"
-                + "- Android Pi stages the candidate; the trusted HOME independently compiles, renders, validates, and activates it after Pi exits. Never claim activation from the staging response.\n"
-                + "- You have no shell, filesystem, process, or general network tools.\n"
-                + "- Preserve the user's current intent and durable state unless they ask for a reset.\n"
-                + "- Every revision must keep a visible Luau-authored agent conversation/composer that renders model.agent and emits agent.prompt.\n\n"
-                + "SOS experience API:\n" + readDocument(API_DOC) + "\n\n"
-                + "Reference experiences:\n" + readDocument(EXAMPLE_PRIMARY) + "\n\n---\n\n"
-                + readDocument(EXAMPLE_SECONDARY);
     }
 
     private static String model(String provider) {

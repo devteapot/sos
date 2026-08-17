@@ -1100,7 +1100,7 @@ linux_agent_login() {
   build_linux_agent
   mkdir -p "$LINUX_AGENT_ROOT"
   info "starting Pi device-code login for ${SOS_AGENT_PROVIDER:-openai-codex}"
-  node "$LINUX_AGENT_PACKAGE/dist/src/main.js" login \
+  node "$LINUX_AGENT_PACKAGE/dist/agent-runner.cjs" login \
     --provider "${SOS_AGENT_PROVIDER:-openai-codex}" \
     --credentials "$LINUX_AGENT_CREDENTIALS" \
     --device-code
@@ -1153,7 +1153,7 @@ linux_agent_run() {
     arguments+=(--fake-source "$fake_source")
   fi
   info "starting resident Pi agent at $LINUX_AGENT_SOCKET"
-  node "$LINUX_AGENT_PACKAGE/dist/src/main.js" "${arguments[@]}"
+  node "$LINUX_AGENT_PACKAGE/dist/agent-runner.cjs" "${arguments[@]}"
   local agent_status=$?
   kill "$broker_pid" 2>/dev/null || true
   wait "$broker_pid" 2>/dev/null || true
@@ -1165,7 +1165,7 @@ linux_agent_prompt() {
   [[ "$#" -eq 1 ]] || fail 'usage: ./tools/sosctl linux-agent-prompt "request"'
   [[ -S "$LINUX_AGENT_SOCKET" ]] || \
     fail "resident agent is not running; start ./tools/sosctl linux-agent-run"
-  node "$LINUX_AGENT_PACKAGE/dist/src/main.js" prompt \
+  node "$LINUX_AGENT_PACKAGE/dist/agent-runner.cjs" prompt \
     --socket "$LINUX_AGENT_SOCKET" \
     --request "$1"
 }

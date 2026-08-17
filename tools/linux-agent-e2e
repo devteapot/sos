@@ -112,7 +112,7 @@ wait_for_socket "$test_supervisor_socket" "$test_supervisor_pid" "revision super
 test_broker_pid=$!
 wait_for_socket "$test_authoring_socket" "$test_broker_pid" "authoring broker"
 
-node "$test_agent_package/dist/src/main.js" serve \
+node "$test_agent_package/dist/agent-runner.cjs" serve \
   --socket "$test_agent_socket" \
   --authoring-socket "$test_authoring_socket" \
   --api-doc "$test_repo_root/docs/experience-api.md" \
@@ -124,7 +124,7 @@ test_agent_pid=$!
 wait_for_socket "$test_agent_socket" "$test_agent_pid" "Pi agent"
 
 printf '==> prompting Pi faux provider through the public agent socket\n'
-node "$test_agent_package/dist/src/main.js" prompt \
+node "$test_agent_package/dist/agent-runner.cjs" prompt \
   --socket "$test_agent_socket" \
   --request "Turn this into a calm daily flow"
 

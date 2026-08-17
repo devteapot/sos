@@ -16,20 +16,20 @@ The agent authoring broker rejects a candidate that removes every Luau
 `text_session` with `submit_action = "agent_submit"`, so a successful rewrite
 cannot strand the user without a way to request the next one.
 
-The model receives exactly three tools:
+The model receives exactly three tools on every platform:
 
 1. `get_experience_context` reads the active revision and complete Luau source.
-2. `validate_experience` compiles, migrates, and renders a complete candidate
-   against SOS's deterministic provider snapshot.
-3. `submit_experience` repeats validation, installs a content-addressed
-   revision, stages provider state, and asks the existing supervisor to activate
-   the candidate transactionally.
+2. `validate_experience` stages a complete candidate for validation.
+3. `submit_experience` submits only the exact source accepted by the preceding
+   validation call.
 
 There is deliberately no shell, process, arbitrary filesystem, or general
-network tool. The Pi process runs as `sos-agent`; a separate broker running as
-`sos-supervisor` authenticates its Unix peer credentials before touching the
-revision store. The permanent host still performs the authoritative candidate
-prepare/render. A rejection leaves the prior revision active.
+network tool. On Linux the Pi process runs as `sos-agent`; a separate broker
+running as `sos-supervisor` authenticates its Unix peer credentials before
+touching the revision store. On AOSP, Pi can only stage the exact submitted
+source in its bounded response. In both cases the permanent trusted host
+performs authoritative compile/render/activation. A rejection leaves the prior
+revision active.
 
 ## Deterministic live smoke test
 
@@ -94,7 +94,15 @@ supported. For a developer run, set `SOS_AGENT_API_KEY` as before instead of
 running the OAuth login command. OpenRouter uses Pi's own provider catalog and
 OpenAI-compatible transport; it is not an SOS reimplementation.
 
-## Android native Node path
+## Shared runner and AOSP native Node path
+
+`services/sos-agent/src/runner.ts` is the single packaged Pi entrypoint for
+Linux, Compat, and Core. Its `/usr/local/libexec/sos-agent/dist/agent-runner.cjs`
+Linux commands retain the resident Unix-socket lifecycle. The same immutable
+bundle's `stdio` command supplies AOSP's bounded one-request transport. Shared
+TypeScript owns the prompt policy, provider registry, faux/real Pi runtime,
+request byte limits, and the exact context → validate → submit contract;
+platform adapters still own lifecycle and credential storage.
 
 Android is ARM Linux at the kernel level, but its userspace ABI is Bionic, not
 glibc. A normal Linux ARM64 Node tarball therefore does not run. SOS builds
@@ -107,17 +115,22 @@ bundled Android patch; WebAssembly itself remains enabled.
 
 The OTA places the ARM64/Bionic executable at `/system_ext/bin/sos-node`, its
 NDK C++ runtime at `/system_ext/lib64/libc++_shared.so`, and a single-file Pi
-bundle at `/system_ext/etc/sos-agent/android-runner.cjs`. No WebView executes
-the agent. The platform-signed HOME launches Node as a child in the existing
+bundle at `/system_ext/etc/sos-agent/agent-runner.cjs`. No WebView executes the
+agent. Compat's platform-signed HOME launches Node as a child in the existing
 privileged-app SELinux domain and exchanges one bounded JSON document over
-anonymous stdin/stdout pipes.
+anonymous stdin/stdout pipes. Core launches that same bundle from the fixed
+native host for deterministic faux prompts, so it no longer substitutes a
+Rust-local agent/tool sequence. The faux candidate fixture is passed through
+Pi, which must execute context, validate, and submit before returning it.
 
 Luau exposes provider selection, but never receives a secret. Direct OpenAI
 and OpenRouter keys and Pi's refreshed Codex OAuth document are encrypted at
 rest by an unlock-bound Android Keystore AES-GCM key. Plaintext is never placed
 in argv, environment variables, a file, logs, screenshots, or a WebView. Pi
 stages a complete source candidate; the Rust HOME independently compiles,
-renders, validates, and transactionally activates it.
+renders, validates, and transactionally activates that exact source. Core does
+not yet accept live credentials: a trusted native credential ceremony remains
+a separate gate, and this shared-runtime milestone makes no live-Core claim.
 
 Android temporarily promotes HOME to an unexported `dataSync` foreground
 service while native Pi is waiting on a provider or external OAuth browser.
@@ -200,7 +213,7 @@ flow as the isolated service account:
 ```sh
 sudo install -d -o sos-agent -g sos-ipc -m 0750 /var/lib/sos-agent
 sudo -u sos-agent /usr/local/bin/node \
-  /usr/local/libexec/sos-agent/dist/src/main.js login \
+  /usr/local/libexec/sos-agent/dist/agent-runner.cjs login \
   --provider openai-codex \
   --credentials /var/lib/sos-agent/auth.json \
   --device-code
@@ -224,7 +237,7 @@ For diagnosis, a prompt can still be issued from an authenticated SOS
 maintenance shell:
 
 ```sh
-/usr/local/bin/node /usr/local/libexec/sos-agent/dist/src/main.js prompt \
+/usr/local/bin/node /usr/local/libexec/sos-agent/dist/agent-runner.cjs prompt \
   --socket /run/sos-agent/agent.sock \
   --request "Turn this into a calm daily flow"
 ```

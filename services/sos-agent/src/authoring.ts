@@ -67,6 +67,8 @@ function toolResult(result: unknown) {
 }
 
 export function createAuthoringTools(backend: AuthoringBackend): AgentTool[] {
+  let phase: "context" | "validate" | "submit" = "context";
+  let validatedSource: string | undefined;
   return [
     {
       name: "get_experience_context",
@@ -76,31 +78,38 @@ export function createAuthoringTools(backend: AuthoringBackend): AgentTool[] {
       parameters: Type.Object({}, { additionalProperties: false }),
       executionMode: "sequential",
       async execute(_id, _parameters, signal) {
-        return toolResult(await backend.request({ action: "get_experience_context" }, signal));
+        const result = await backend.request({ action: "get_experience_context" }, signal);
+        phase = "validate";
+        validatedSource = undefined;
+        return toolResult(result);
       },
     },
     {
       name: "validate_experience",
       label: "Validate candidate experience",
       description:
-        "Compile, migrate, and render a complete candidate Luau experience against the deterministic SOS provider snapshot. This does not activate it.",
+        "Request validation of a complete candidate Luau experience. This stages validation only and never proves activation.",
       parameters: Type.Object(
         { source: Type.String({ minLength: 1, maxLength: 262_144 }) },
         { additionalProperties: false },
       ),
       executionMode: "sequential",
       async execute(_id, parameters, signal) {
+        if (phase !== "validate") {
+          throw new Error("validate_experience must follow get_experience_context");
+        }
         const source = (parameters as { source: string }).source;
-        return toolResult(
-          await backend.request({ action: "validate_experience", source }, signal),
-        );
+        const result = await backend.request({ action: "validate_experience", source }, signal);
+        phase = "submit";
+        validatedSource = source;
+        return toolResult(result);
       },
     },
     {
       name: "submit_experience",
-      label: "Activate candidate experience",
+      label: "Submit candidate experience",
       description:
-        "Validate, install, stage, and transactionally activate a complete candidate Luau experience. Use only after validate_experience succeeds with the exact same source.",
+        "Submit the exact complete source accepted by validate_experience to the trusted host. The trusted host alone may compile, render, and activate it.",
       parameters: Type.Object(
         { source: Type.String({ minLength: 1, maxLength: 262_144 }) },
         { additionalProperties: false },
@@ -108,9 +117,13 @@ export function createAuthoringTools(backend: AuthoringBackend): AgentTool[] {
       executionMode: "sequential",
       async execute(_id, parameters, signal) {
         const source = (parameters as { source: string }).source;
-        return toolResult(
-          await backend.request({ action: "submit_experience", source }, signal),
-        );
+        if (phase !== "submit" || source !== validatedSource) {
+          throw new Error("submit_experience source must exactly match the validated candidate");
+        }
+        const result = await backend.request({ action: "submit_experience", source }, signal);
+        phase = "context";
+        validatedSource = undefined;
+        return toolResult(result);
       },
     },
   ];

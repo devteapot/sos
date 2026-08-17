@@ -185,7 +185,7 @@ stage_sos() {
   local authority="$SOS_ROOT/target/aarch64-linux-android/release/sos-android-system-authority"
   local node="$SOS_ROOT/artifacts/sos-node-android-arm64"
   local node_cxx="$SOS_ROOT/artifacts/sos-node-libc++_shared.so"
-  local agent_runner="$SOS_ROOT/services/sos-agent/dist/android-runner.cjs"
+  local agent_runner="$SOS_ROOT/services/sos-agent/dist/agent-runner.cjs"
   local agent_api="$SOS_ROOT/docs/experience-api.md"
   local agent_example_primary="$SOS_ROOT/experiences/default.luau"
   local agent_example_secondary="$SOS_ROOT/experiences/timeflow.luau"
@@ -198,7 +198,7 @@ stage_sos() {
   [[ -x "$authority" ]] || fail "ARM64 SOS authority binary missing"
   [[ -x "$node" ]] || fail "Android ARM64 Node missing; run ./tools/build-android-node"
   [[ -f "$node_cxx" ]] || fail "Android Node libc++ runtime missing; run ./tools/build-android-node"
-  [[ -f "$agent_runner" ]] || fail "Android Pi runner missing; run npm run build:android in services/sos-agent"
+  [[ -f "$agent_runner" ]] || fail "shared Pi runner missing; run npm run build in services/sos-agent"
   [[ -f "$agent_api" && -f "$agent_example_primary" && -f "$agent_example_secondary" ]] || \
     fail "Android Pi prompt documents are missing"
   [[ -f "$bootstrap" ]] || fail "SOS bootstrap experience missing"
@@ -234,8 +234,9 @@ stage_sos() {
     "$LINEAGE_SOS_OVERLAY_DESTINATION/prebuilts/arm64/sos-node"
   install -m 0644 "$node_cxx" \
     "$LINEAGE_SOS_OVERLAY_DESTINATION/prebuilts/arm64/libc++_shared.so"
+  rm -f -- "$LINEAGE_SOS_OVERLAY_DESTINATION/prebuilts/sos-agent/android-runner.cjs"
   install -m 0644 "$agent_runner" \
-    "$LINEAGE_SOS_OVERLAY_DESTINATION/prebuilts/sos-agent/android-runner.cjs"
+    "$LINEAGE_SOS_OVERLAY_DESTINATION/prebuilts/sos-agent/agent-runner.cjs"
   install -m 0644 "$agent_api" \
     "$LINEAGE_SOS_OVERLAY_DESTINATION/prebuilts/sos-agent/experience-api.md"
   install -m 0644 "$agent_example_primary" \
@@ -250,7 +251,7 @@ stage_sos() {
     "$LINEAGE_SOS_OVERLAY_DESTINATION/prebuilts/arm64/sos-android-system-authority" \
     "$LINEAGE_SOS_OVERLAY_DESTINATION/prebuilts/arm64/sos-node" \
     "$LINEAGE_SOS_OVERLAY_DESTINATION/prebuilts/arm64/libc++_shared.so" \
-    "$LINEAGE_SOS_OVERLAY_DESTINATION/prebuilts/sos-agent/android-runner.cjs" \
+    "$LINEAGE_SOS_OVERLAY_DESTINATION/prebuilts/sos-agent/agent-runner.cjs" \
     "$LINEAGE_SOS_OVERLAY_DESTINATION/prebuilts/sos-agent/experience-api.md" \
     "$LINEAGE_SOS_OVERLAY_DESTINATION/prebuilts/sos-agent/example-primary.luau" \
     "$LINEAGE_SOS_OVERLAY_DESTINATION/prebuilts/sos-agent/example-secondary.luau" \
@@ -338,7 +339,7 @@ build_sos_profile() {
   (
     cd "$SOS_ROOT/services/sos-agent"
     npm ci --ignore-scripts
-    npm run build:android
+    npm run build
   )
   info "building the ARM64 on-device SOS authority"
   (
@@ -598,7 +599,7 @@ inspect_compat_profile() {
   local authority="$target_files/SYSTEM_EXT/bin/sos-authority"
   local node="$target_files/SYSTEM_EXT/bin/sos-node"
   local node_cxx="$target_files/SYSTEM_EXT/lib64/libc++_shared.so"
-  local agent_runner="$target_files/SYSTEM_EXT/etc/sos-agent/android-runner.cjs"
+  local agent_runner="$target_files/SYSTEM_EXT/etc/sos-agent/agent-runner.cjs"
   local agent_api="$target_files/SYSTEM_EXT/etc/sos-agent/experience-api.md"
   local agent_example_primary="$target_files/SYSTEM_EXT/etc/sos-agent/example-primary.luau"
   local agent_example_secondary="$target_files/SYSTEM_EXT/etc/sos-agent/example-secondary.luau"
@@ -852,8 +853,8 @@ inspect_compat_profile() {
     fail "packaged SOS Node differs from the built ARM64 binary"
   cmp -s "$node_cxx" "$SOS_ROOT/artifacts/sos-node-libc++_shared.so" || \
     fail "packaged SOS Node libc++ runtime differs from the pinned NDK binary"
-  cmp -s "$agent_runner" "$SOS_ROOT/services/sos-agent/dist/android-runner.cjs" || \
-    fail "packaged Android Pi runner differs from the built bundle"
+  cmp -s "$agent_runner" "$SOS_ROOT/services/sos-agent/dist/agent-runner.cjs" || \
+    fail "packaged shared Pi runner differs from the built bundle"
   cmp -s "$agent_api" "$SOS_ROOT/docs/experience-api.md" || \
     fail "packaged Android Pi API document differs from repository source"
   cmp -s "$agent_example_primary" "$SOS_ROOT/experiences/default.luau" || \
@@ -1035,6 +1036,11 @@ inspect_core_stage() {
   local host_init_rc="$target_files/SYSTEM_EXT/etc/init/sos-core-host.rc"
   local properties="$target_files/SYSTEM_EXT/etc/build.prop"
   local authority="$target_files/SYSTEM_EXT/bin/sos-authority"
+  local node="$target_files/SYSTEM_EXT/bin/sos-node"
+  local agent_runner="$target_files/SYSTEM_EXT/etc/sos-agent/agent-runner.cjs"
+  local agent_api="$target_files/SYSTEM_EXT/etc/sos-agent/experience-api.md"
+  local agent_example_primary="$target_files/SYSTEM_EXT/etc/sos-agent/example-primary.luau"
+  local agent_example_secondary="$target_files/SYSTEM_EXT/etc/sos-agent/example-secondary.luau"
   local system_ext_policy="$target_files/SYSTEM_EXT/etc/selinux/system_ext_sepolicy.cil"
   local bridge_apk="$target_files/SYSTEM_EXT/priv-app/SosFrameworkBridge/SosFrameworkBridge.apk"
   local core_platform="$target_files/SYSTEM_EXT/bin/sos-core-platform"
@@ -1044,7 +1050,8 @@ inspect_core_stage() {
   local artifact
   for artifact in \
     "$host" "$host_runtime" "$host_init_rc" "$properties" "$authority" \
-    "$system_ext_policy"; do
+    "$node" "$agent_runner" "$agent_api" "$agent_example_primary" \
+    "$agent_example_secondary" "$system_ext_policy"; do
     [[ -f "$artifact" ]] || fail "SOS $stage artifact missing: $artifact"
     stat --printf='%n %s bytes\n' "$artifact"
     sha256sum "$artifact"
@@ -1083,6 +1090,22 @@ inspect_core_stage() {
     fail "SOS $stage GPUI provider still depends on Android loopback networking"
   strings "$host_runtime" | grep -F '/data/misc/sos/revision.sock' >/dev/null || \
     fail "SOS $stage GPUI runtime still depends on Android loopback networking"
+  strings "$host_runtime" | grep -F \
+    '/system_ext/etc/sos-agent/agent-runner.cjs' >/dev/null || \
+    fail "SOS $stage GPUI runtime omitted the shared Pi runner boundary"
+  cmp -s "$agent_runner" "$SOS_ROOT/services/sos-agent/dist/agent-runner.cjs" || \
+    fail "SOS $stage packaged Pi runner differs from the shared built bundle"
+  cmp -s "$agent_api" "$SOS_ROOT/docs/experience-api.md" || \
+    fail "SOS $stage packaged Pi API document differs from repository source"
+  cmp -s "$agent_example_primary" "$SOS_ROOT/experiences/default.luau" || \
+    fail "SOS $stage packaged Pi primary example differs from repository source"
+  cmp -s "$agent_example_secondary" "$SOS_ROOT/experiences/timeflow.luau" || \
+    fail "SOS $stage packaged Pi secondary example differs from repository source"
+  [[ ! -e "$target_files/SYSTEM_EXT/etc/sos-agent/android-runner.cjs" ]] || \
+    fail "SOS $stage retained the superseded Android-only Pi runner"
+  grep -F '(allow sos_core_host sos_node_exec (file (' "$system_ext_policy" | \
+    grep -F 'execute_no_trans' >/dev/null || \
+    fail "SOS $stage Core host cannot execute the shared Pi runner"
   grep -F '(allow sos_core_host sos_authority (unix_stream_socket (connectto)))' \
     "$system_ext_policy" >/dev/null || \
     fail "SOS $stage policy cannot connect Core to the revision authority"

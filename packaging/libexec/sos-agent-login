@@ -17,7 +17,7 @@ sos_agent_login_state_home="${XDG_STATE_HOME:-$HOME/.local/state}"
 sos_agent_login_state_dir="$sos_agent_login_state_home/sos/agent"
 sos_agent_login_credentials="$sos_agent_login_state_dir/auth.json"
 sos_agent_login_config="$sos_agent_login_state_dir/config.env"
-sos_agent_login_main="${SOS_AGENT_MAIN:-/usr/local/libexec/sos-agent/dist/src/main.js}"
+sos_agent_login_main="${SOS_AGENT_MAIN:-/usr/local/libexec/sos-agent/dist/agent-runner.cjs}"
 sos_agent_login_provider="${SOS_AGENT_PROVIDER:-openai-codex}"
 sos_agent_login_model="${SOS_AGENT_MODEL:-gpt-5.6-sol}"
 

@@ -2,8 +2,9 @@ import fs from "node:fs/promises";
 import net from "node:net";
 import type { Agent, AgentEvent } from "@earendil-works/pi-agent-core";
 import { saveMessages } from "./runtime.js";
+import { isBoundedPrompt, MAX_PROMPT_BYTES } from "./contract.js";
 
-const MAX_PROMPT_BYTES = 32 * 1024;
+const MAX_PROMPT_REQUEST_BYTES = MAX_PROMPT_BYTES + 1024;
 
 interface PromptRequest {
   action: "prompt";
@@ -45,7 +46,7 @@ export async function startAgentServer(options: AgentServerOptions): Promise<net
     socket.on("data", (chunk: string) => {
       if (handled) return;
       input += chunk;
-      if (Buffer.byteLength(input) > MAX_PROMPT_BYTES) {
+      if (Buffer.byteLength(input) > MAX_PROMPT_REQUEST_BYTES) {
         handled = true;
         send(socket, { type: "failed", error: "prompt request is too large" });
         socket.end();
@@ -104,7 +105,7 @@ async function runPrompt(options: AgentServerOptions, socket: net.Socket, line: 
   let request: PromptRequest;
   try {
     request = JSON.parse(line) as PromptRequest;
-    if (request.action !== "prompt" || typeof request.prompt !== "string" || !request.prompt.trim()) {
+    if (request.action !== "prompt" || !isBoundedPrompt(request.prompt)) {
       throw new Error("expected a non-empty prompt request");
     }
   } catch (error) {

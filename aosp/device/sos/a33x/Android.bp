@@ -227,9 +227,9 @@ cc_prebuilt_library_shared {
 }
 
 prebuilt_etc {
-    name: "sos-agent-android-runner",
-    src: "prebuilts/sos-agent/android-runner.cjs",
-    filename: "android-runner.cjs",
+    name: "sos-agent-runner",
+    src: "prebuilts/sos-agent/agent-runner.cjs",
+    filename: "agent-runner.cjs",
     sub_dir: "sos-agent",
     system_ext_specific: true,
 }

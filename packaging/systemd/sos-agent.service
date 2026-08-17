@@ -16,7 +16,7 @@ StateDirectoryMode=0750
 RuntimeDirectory=sos-agent
 RuntimeDirectoryMode=0750
 EnvironmentFile=/etc/sos/agent.env
-ExecStart=/usr/local/bin/node /usr/local/libexec/sos-agent/dist/src/main.js serve \
+ExecStart=/usr/local/bin/node /usr/local/libexec/sos-agent/dist/agent-runner.cjs serve \
   --socket /run/sos-agent/agent.sock \
   --authoring-socket /run/sos-agent-authoring/authoring.sock \
   --state /var/lib/sos-agent/messages.json \

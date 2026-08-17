@@ -4,7 +4,7 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import type { AuthoringBackend } from "../src/authoring.js";
+import { createAuthoringTools, type AuthoringBackend } from "../src/authoring.js";
 import { createFauxAgentRuntime } from "../src/runtime.js";
 import { startAgentServer } from "../src/server.js";
 
@@ -41,6 +41,25 @@ test("a prompt reaches Pi and uses only the bounded authoring flow", async () =>
 
   await new Promise<void>((resolve) => server.close(() => resolve()));
   await fs.rm(directory, { recursive: true });
+});
+
+test("the shared tools reject a source that differs from the validated candidate", async () => {
+  const actions: string[] = [];
+  const backend: AuthoringBackend = {
+    async request(request) {
+      actions.push(request.action);
+      return { ok: true };
+    },
+  };
+  const tools = createAuthoringTools(backend);
+  const signal = new AbortController().signal;
+  await tools[0]!.execute("context", {}, signal);
+  await tools[1]!.execute("validate", { source: "validated" }, signal);
+  await assert.rejects(
+    tools[2]!.execute("submit", { source: "different" }, signal),
+    /exactly match the validated candidate/,
+  );
+  assert.deepEqual(actions, ["get_experience_context", "validate_experience"]);
 });
 
 function exchange(socketPath: string, request: unknown): Promise<Record<string, unknown>[]> {

@@ -11,12 +11,18 @@ import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { AuthoringBackend } from "./authoring.js";
 import {
   createAgentRuntime,
+  createFauxAgentRuntime,
   createProviderModels,
   type SupportedProvider,
 } from "./runtime.js";
+import { readSystemPrompt, type PromptDocuments } from "./prompt-policy.js";
+import {
+  isBoundedPrompt,
+  isBoundedSource,
+  MAX_SOURCE_BYTES,
+  MAX_STDIO_REQUEST_BYTES,
+} from "./contract.js";
 
-const MAX_REQUEST_BYTES = 1024 * 1024;
-const MAX_SOURCE_BYTES = 256 * 1024;
 const MAX_SUMMARY_BYTES = 2048;
 
 interface CatalogRequest {
@@ -32,17 +38,25 @@ interface LoginRequest {
   provider: "openai-codex";
 }
 
-interface PromptRequest {
+interface LivePromptRequest {
   action: "prompt";
   provider: SupportedProvider;
   model: string;
   credential: Credential;
   prompt: string;
   currentSource: string;
-  systemPrompt: string;
 }
 
-type AndroidRequest = CatalogRequest | SelfTestRequest | LoginRequest | PromptRequest;
+interface FauxPromptRequest {
+  action: "prompt";
+  provider: "faux";
+  prompt: string;
+  currentSource: string;
+  candidateSource: string;
+}
+
+type PromptRequest = LivePromptRequest | FauxPromptRequest;
+type RunnerRequest = CatalogRequest | SelfTestRequest | LoginRequest | PromptRequest;
 
 function send(value: unknown): void {
   process.stdout.write(`${JSON.stringify(value)}\n`);
@@ -69,13 +83,8 @@ function isSupportedProvider(value: unknown): value is SupportedProvider {
   );
 }
 
-async function readRequest(): Promise<AndroidRequest> {
-  process.stdin.setEncoding("utf8");
-  let raw = "";
-  for await (const chunk of process.stdin) {
-    raw += chunk;
-    if (Buffer.byteLength(raw) > MAX_REQUEST_BYTES) throw new Error("request is too large");
-  }
+export function decodeRequest(raw: string): RunnerRequest {
+  if (Buffer.byteLength(raw) > MAX_STDIO_REQUEST_BYTES) throw new Error("request is too large");
   const decoded = JSON.parse(raw) as Record<string, unknown>;
   if (decoded.action === "catalog") return { action: "catalog" };
   if (decoded.action === "self_test") return { action: "self_test" };
@@ -83,20 +92,30 @@ async function readRequest(): Promise<AndroidRequest> {
     return { action: "login", provider: decoded.provider };
   }
   if (
+    decoded.action === "prompt" &&
+    decoded.provider === "faux" &&
+    isBoundedPrompt(decoded.prompt) &&
+    isBoundedSource(decoded.currentSource) &&
+    isBoundedSource(decoded.candidateSource)
+  ) {
+    return {
+      action: "prompt",
+      provider: "faux",
+      prompt: decoded.prompt,
+      currentSource: decoded.currentSource,
+      candidateSource: decoded.candidateSource,
+    };
+  }
+  if (
     decoded.action !== "prompt" ||
     !isSupportedProvider(decoded.provider) ||
     typeof decoded.model !== "string" ||
     !decoded.model ||
     !isCredential(decoded.credential) ||
-    typeof decoded.prompt !== "string" ||
-    !decoded.prompt.trim() ||
-    typeof decoded.currentSource !== "string" ||
-    !decoded.currentSource ||
-    Buffer.byteLength(decoded.currentSource) > MAX_SOURCE_BYTES ||
-    typeof decoded.systemPrompt !== "string" ||
-    !decoded.systemPrompt
+    !isBoundedPrompt(decoded.prompt) ||
+    !isBoundedSource(decoded.currentSource)
   ) {
-    throw new Error("invalid Android Pi request");
+    throw new Error("invalid Pi runner request");
   }
   return {
     action: "prompt",
@@ -105,8 +124,17 @@ async function readRequest(): Promise<AndroidRequest> {
     credential: decoded.credential,
     prompt: decoded.prompt,
     currentSource: decoded.currentSource,
-    systemPrompt: decoded.systemPrompt,
   };
+}
+
+async function readRequest(): Promise<RunnerRequest> {
+  process.stdin.setEncoding("utf8");
+  let raw = "";
+  for await (const chunk of process.stdin) {
+    raw += chunk;
+    if (Buffer.byteLength(raw) > MAX_STDIO_REQUEST_BYTES) throw new Error("request is too large");
+  }
+  return decodeRequest(raw);
 }
 
 async function catalog(): Promise<void> {
@@ -143,12 +171,11 @@ async function selfTest(): Promise<void> {
       return { activated: true, revision_id: "b".repeat(64) };
     },
   };
-  const { createFauxAgentRuntime } = await import("./runtime.js");
-  const agent = createFauxAgentRuntime(backend, "Android native Pi self-test", candidate);
-  await agent.prompt("Run the bounded Android Pi self-test");
+  const agent = createFauxAgentRuntime(backend, "SOS Pi runner self-test", candidate);
+  await agent.prompt("Run the bounded SOS Pi self-test");
   const expected = ["get_experience_context", "validate_experience", "submit_experience"];
   if (JSON.stringify(actions) !== JSON.stringify(expected)) {
-    throw new Error("Android Pi self-test used an unexpected tool sequence");
+    throw new Error("SOS Pi self-test used an unexpected tool sequence");
   }
   send({
     type: "self_test_complete",
@@ -195,14 +222,18 @@ function lastAssistantSummary(messages: AgentMessage[]): string {
   return "Pi proposed a complete replacement experience for trusted validation.";
 }
 
-async function prompt(request: PromptRequest): Promise<void> {
+async function prompt(request: PromptRequest, systemPrompt: string): Promise<void> {
   const credentials = new InMemoryCredentialStore();
-  await credentials.modify(request.provider, async () => request.credential);
+  const live = request.provider !== "faux";
+  if (live) await credentials.modify(request.provider, async () => request.credential);
   let validated: string | undefined;
   let submitted: string | undefined;
+  const actions: string[] = [];
   const backend: AuthoringBackend = {
     async request(action) {
       if (action.action === "get_experience_context") {
+        if (actions.length !== 0) throw new Error("experience context must be the first tool call");
+        actions.push(action.action);
         return {
           revision_id: "0".repeat(64),
           source: request.currentSource,
@@ -213,6 +244,10 @@ async function prompt(request: PromptRequest): Promise<void> {
         throw new Error("candidate source is too large");
       }
       if (action.action === "validate_experience") {
+        if (actions.length !== 1 || actions[0] !== "get_experience_context") {
+          throw new Error("candidate validation must follow experience context");
+        }
+        actions.push(action.action);
         validated = action.source;
         return {
           valid: true,
@@ -220,34 +255,50 @@ async function prompt(request: PromptRequest): Promise<void> {
           schema_version: 3,
         };
       }
+      if (actions.length !== 2 || actions[1] !== "validate_experience") {
+        throw new Error("candidate submission must follow validation");
+      }
       if (validated !== action.source) {
         throw new Error("submitted source differs from the staged candidate");
       }
+      actions.push(action.action);
       submitted = action.source;
       return { accepted: true, activated: false, pending_trusted_host_validation: true };
     },
   };
-  const agent = createAgentRuntime({
-    backend,
-    systemPrompt: request.systemPrompt,
-    provider: request.provider,
-    model: request.model,
-    credentials,
-  });
+  const agent = live
+    ? createAgentRuntime({
+        backend,
+        systemPrompt,
+        provider: request.provider,
+        model: request.model,
+        credentials,
+      })
+    : createFauxAgentRuntime(
+        backend,
+        systemPrompt,
+        request.candidateSource,
+        "The candidate experience is staged for trusted host validation.",
+      );
   await agent.prompt(request.prompt);
   if (!submitted) throw new Error("Pi completed without submitting a candidate experience");
-  const refreshed = await credentials.read(request.provider);
-  if (!refreshed) throw new Error("Pi completed without a provider credential");
+  const expectedActions = ["get_experience_context", "validate_experience", "submit_experience"];
+  if (JSON.stringify(actions) !== JSON.stringify(expectedActions)) {
+    throw new Error("Pi completed without the bounded authoring tool sequence");
+  }
+  const refreshed = live ? await credentials.read(request.provider) : undefined;
+  if (live && !refreshed) throw new Error("Pi completed without a provider credential");
   send({
     type: "prompt_complete",
     provider: request.provider,
     source: submitted,
     summary: lastAssistantSummary(agent.state.messages),
-    credential: refreshed,
+    actions,
+    ...(refreshed ? { credential: refreshed } : {}),
   });
 }
 
-async function main(): Promise<void> {
+export async function runStdio(documents: PromptDocuments): Promise<void> {
   // The registration name is historical; it statically includes Pi's OAuth
   // implementations so a single-file Node bundle can perform Codex login.
   registerBunOAuthFlows();
@@ -263,12 +314,12 @@ async function main(): Promise<void> {
       await login(request);
       break;
     case "prompt":
-      await prompt(request);
+      await prompt(request, await readSystemPrompt(documents));
       break;
   }
 }
 
-main().catch((error: Error) => {
-  send({ type: "error", error: error.message || "Android Pi runner failed" });
+export function reportStdioFailure(error: Error): void {
+  send({ type: "error", error: error.message || "SOS Pi runner failed" });
   process.exitCode = 1;
-});
+}
