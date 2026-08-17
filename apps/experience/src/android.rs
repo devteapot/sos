@@ -350,6 +350,48 @@ pub unsafe extern "C" fn sos_core_main(
     }
 }
 
+/// Run the non-shipping Core 1 provider acceptance probe from the existing
+/// init-owned Core host domain. The export exists only in the explicitly
+/// selected `core-provider-acceptance` test build.
+#[cfg(feature = "core-provider-acceptance")]
+#[no_mangle]
+pub unsafe extern "C" fn sos_core_provider_acceptance_probe(mode: *const c_char) -> i32 {
+    android_logger::init_once(
+        android_logger::Config::default()
+            .with_max_level(log::LevelFilter::Info)
+            .with_tag("sos-core-provider-probe"),
+    );
+    if mode.is_null() {
+        log::error!("core_provider_probe case=mode status=FAIL reason=null_mode");
+        return 1;
+    }
+    let mode = match CStr::from_ptr(mode).to_str() {
+        Ok(mode) => mode,
+        Err(_) => {
+            log::error!("core_provider_probe case=mode status=FAIL reason=invalid_mode");
+            return 1;
+        }
+    };
+    log::info!(
+        "core_provider_probe contract=authority-json-line timeout_ms={}",
+        provider_client::PROVIDER_PROBE_TIMEOUT.as_millis()
+    );
+    let report = android_provider_acceptance::run_probe(mode, provider_client::request_probe);
+    for line in &report.lines {
+        match report.status {
+            android_provider_acceptance::ProbeStatus::Pass => log::info!("{line}"),
+            android_provider_acceptance::ProbeStatus::Skip => log::warn!("{line}"),
+            android_provider_acceptance::ProbeStatus::Fail => log::error!("{line}"),
+        }
+    }
+    log::info!(
+        "core_provider_probe result={} exit_code={}",
+        report.status.label(),
+        report.status.exit_code()
+    );
+    report.status.exit_code()
+}
+
 struct ExperienceHost {
     model: ExperienceModel,
     worker: RuntimeWorker,

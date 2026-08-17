@@ -11,6 +11,7 @@ offline-fallback = ["dep:providers-fake"]
 gate-strict = []
 aosp-system = ["dep:android-authority-protocol"]
 core-native = ["aosp-system"]
+core-provider-acceptance = ["core-native", "dep:android-provider-acceptance"]
 linux-host = []
 
 [lib]
@@ -21,6 +22,7 @@ crate-type = ["cdylib", "staticlib", "lib"]
 anyhow = "1"
 android-activity = { version = "0.6", features = ["native-activity"] }
 android-authority-protocol = { workspace = true, optional = true }
+android-provider-acceptance = { path = "../../crates/android-provider-acceptance", optional = true }
 android_logger = "0.15"
 async-channel.workspace = true
 experience-ir.workspace = true

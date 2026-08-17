@@ -1,8 +1,10 @@
 use std::{
-    io::{BufRead, BufReader, Read, Write},
     sync::atomic::{AtomicU64, Ordering},
     time::Duration,
 };
+
+#[cfg(not(feature = "core-native"))]
+use std::io::{BufRead, BufReader, Read, Write};
 
 #[cfg(not(feature = "core-native"))]
 use std::net::{TcpStream, ToSocketAddrs};
@@ -10,12 +12,15 @@ use std::net::{TcpStream, ToSocketAddrs};
 use std::os::unix::net::UnixStream;
 
 #[cfg(feature = "core-native")]
-use android_authority_protocol::CORE_PROVIDER_SOCKET;
+use android_authority_protocol::{request_provider_over_stream, CORE_PROVIDER_SOCKET};
 
 use experience_ir::{
     ExperienceModel, ProviderEffect, ProviderRequest, ProviderResponse, StateEnvelope,
     StateFaultPoint,
 };
+
+#[cfg(feature = "core-provider-acceptance")]
+pub(super) const PROVIDER_PROBE_TIMEOUT: Duration = Duration::from_millis(5_000);
 use serde_json::Value as JsonValue;
 
 #[cfg(not(feature = "core-native"))]
@@ -121,22 +126,43 @@ pub(super) fn configure_state_fault(point: Option<StateFaultPoint>) -> Result<()
 }
 
 fn request(request: ProviderRequest) -> Result<ProviderResponse, String> {
-    let expected_id = request.request_id();
+    let response = request_raw(request)?;
+    if !response.ok {
+        return Err(response
+            .error
+            .unwrap_or_else(|| "provider rejected request".into()));
+    }
+    Ok(response)
+}
+
+pub(super) fn request_raw(request: ProviderRequest) -> Result<ProviderResponse, String> {
     #[cfg(feature = "core-native")]
-    let stream = connect_core()?;
+    {
+        let stream = connect_core(Duration::from_millis(500))?;
+        return request_provider_over_stream(stream, request);
+    }
     #[cfg(not(feature = "core-native"))]
-    let stream = connect_tcp()?;
-    request_over_stream(stream, request, expected_id)
+    {
+        let expected_id = request.request_id();
+        let stream = connect_tcp()?;
+        request_over_stream(stream, request, expected_id)
+    }
+}
+
+#[cfg(feature = "core-provider-acceptance")]
+pub(super) fn request_probe(request: ProviderRequest) -> Result<ProviderResponse, String> {
+    let stream = connect_core(PROVIDER_PROBE_TIMEOUT)?;
+    request_provider_over_stream(stream, request)
 }
 
 #[cfg(feature = "core-native")]
-fn connect_core() -> Result<UnixStream, String> {
+fn connect_core(timeout: Duration) -> Result<UnixStream, String> {
     let stream = UnixStream::connect(CORE_PROVIDER_SOCKET).map_err(|error| error.to_string())?;
     stream
-        .set_read_timeout(Some(Duration::from_millis(500)))
+        .set_read_timeout(Some(timeout))
         .map_err(|error| error.to_string())?;
     stream
-        .set_write_timeout(Some(Duration::from_millis(500)))
+        .set_write_timeout(Some(timeout))
         .map_err(|error| error.to_string())?;
     Ok(stream)
 }
@@ -159,6 +185,7 @@ fn connect_tcp() -> Result<TcpStream, String> {
     Ok(stream)
 }
 
+#[cfg(not(feature = "core-native"))]
 fn request_over_stream<S: Read + Write>(
     mut stream: S,
     request: ProviderRequest,
@@ -176,11 +203,6 @@ fn request_over_stream<S: Read + Write>(
         serde_json::from_str(&line).map_err(|error| error.to_string())?;
     if response.request_id != expected_id {
         return Err("provider response request id did not match".into());
-    }
-    if !response.ok {
-        return Err(response
-            .error
-            .unwrap_or_else(|| "provider rejected request".into()));
     }
     Ok(response)
 }

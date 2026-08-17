@@ -110,10 +110,20 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fc7eb209b1518d6bb87b283c20095f5228ecda460da70b44f0802523dea6da04"
 
 [[package]]
+name = "android-provider-acceptance"
+version = "0.1.0"
+dependencies = [
+ "experience-ir",
+ "providers-fake",
+ "serde_json",
+]
+
+[[package]]
 name = "android-system-authority"
 version = "0.1.0"
 dependencies = [
  "android-authority-protocol",
+ "android-provider-acceptance",
  "experience-ir",
  "libc",
  "revision-supervisor",
@@ -5774,6 +5784,7 @@ version = "0.1.0"
 dependencies = [
  "android-activity",
  "android-authority-protocol",
+ "android-provider-acceptance",
  "android_logger",
  "anyhow",
  "async-channel 2.5.0",

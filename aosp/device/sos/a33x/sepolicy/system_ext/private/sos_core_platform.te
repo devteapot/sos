@@ -18,6 +18,10 @@ allow sos_core_platform sos_core_platform_data_file:dir create_dir_perms;
 allow sos_core_platform sos_core_platform_data_file:file create_file_perms;
 allow sos_core_platform sos_core_platform_data_file:sock_file create_file_perms;
 
+# Traverse the authority-owned /data/misc/sos parent to reach the separately
+# labeled /data/misc/sos/platform subtree. Do not expose parent contents.
+allow sos_core_platform sos_authority_data_file:dir search;
+
 allow sos_core_platform sysfs_net:dir r_dir_perms;
 allow sos_core_platform sysfs_net:file r_file_perms;
 

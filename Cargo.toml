@@ -2,6 +2,7 @@
 members = [
     "apps/experience",
     "crates/android-authority-protocol",
+    "crates/android-provider-acceptance",
     "crates/android-system-authority",
     "crates/compositor-control-protocol",
     "crates/experience-host-protocol",

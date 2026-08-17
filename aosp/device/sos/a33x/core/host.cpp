@@ -78,6 +78,7 @@ constexpr char kCoreDataDirectory[] = "/data/misc/sos/core";
 constexpr char kHostExecutable[] = "/system_ext/bin/sos-core-host";
 
 using CoreMain = int (*)(ANativeWindow *, int32_t, const char *);
+using CoreProviderAcceptanceProbe = int (*)(const char *);
 
 struct NativeSurface {
   sp<SurfaceComposerClient> client;
@@ -487,6 +488,32 @@ int runBridgeProbe() {
         "user_unlocked=%s",
         reply.value, reply.unlocked ? "true" : "false");
   return 0;
+}
+
+int runCoreProviderAcceptanceProbe() {
+  const std::string mode =
+      android::base::GetProperty("debug.sos.core.provider_probe", "");
+  if (mode.empty()) {
+    ALOGE("core_provider_probe_invocation status=missing-mode");
+    return 1;
+  }
+  void *library = dlopen(kExperienceLibrary, RTLD_NOW | RTLD_LOCAL);
+  if (library == nullptr) {
+    ALOGE("core_provider_probe_invocation status=library-unavailable");
+    return 1;
+  }
+  dlerror();
+  auto probe = reinterpret_cast<CoreProviderAcceptanceProbe>(
+      dlsym(library, "sos_core_provider_acceptance_probe"));
+  if (const char *error = dlerror(); error != nullptr || probe == nullptr) {
+    ALOGE("core_provider_probe_invocation status=non-shipping-probe-absent");
+    dlclose(library);
+    return 2;
+  }
+  const int result = probe(mode.c_str());
+  ALOGI("core_provider_probe_invocation status=complete exit_code=%d", result);
+  dlclose(library);
+  return result;
 }
 
 enum class CompatCommand { Lock, HomeFailed };
@@ -1176,6 +1203,9 @@ int main(int argc, char **argv) {
     return runExperience();
   }
   if (argc == 2 && strcmp(argv[1], "--bridge-probe") == 0) {
+    if (android::base::GetProperty("ro.sos.providers", "") == "core-native") {
+      return runCoreProviderAcceptanceProbe();
+    }
     return runBridgeProbe();
   }
   return supervise();

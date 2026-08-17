@@ -40,6 +40,8 @@
 #include <utility>
 #include <vector>
 
+#include "socket_io.h"
+
 namespace {
 
 using aidl::android::hardware::health::BatteryStatus;
@@ -621,27 +623,19 @@ bool readFully(int descriptor, void* output, size_t length) {
     return true;
 }
 
-bool writeFully(int descriptor, const void* input, size_t length) {
-    size_t offset = 0;
-    while (offset < length) {
-        const ssize_t count = write(descriptor, static_cast<const char*>(input) + offset,
-                                    length - offset);
-        if (count < 0) {
-            if (errno == EINTR) continue;
-            return false;
-        }
-        offset += static_cast<size_t>(count);
-    }
-    return true;
-}
-
 bool sendResponse(int client, uint8_t status, const Json::Value& value) {
     const uint32_t magic = htonl(kMagic);
     const std::string encoded = encodeJson(value);
     const uint32_t length = htonl(static_cast<uint32_t>(encoded.size()));
-    return writeFully(client, &magic, sizeof(magic)) && writeFully(client, &status, sizeof(status)) &&
-            writeFully(client, &length, sizeof(length)) &&
-            writeFully(client, encoded.data(), encoded.size());
+    int sendError = 0;
+    const bool sent = sos::core::sendFullyNoSignal(client, &magic, sizeof(magic), &sendError) &&
+            sos::core::sendFullyNoSignal(client, &status, sizeof(status), &sendError) &&
+            sos::core::sendFullyNoSignal(client, &length, sizeof(length), &sendError) &&
+            sos::core::sendFullyNoSignal(client, encoded.data(), encoded.size(), &sendError);
+    if (!sent) {
+        LOG(WARNING) << "core_platform_response_send_failed error=" << strerror(sendError);
+    }
+    return sent;
 }
 
 void handleClient(int client) {

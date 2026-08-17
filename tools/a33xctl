@@ -276,9 +276,11 @@ build_rom() {
 }
 
 build_sos_profile() {
-  [[ "$#" -eq 1 ]] || \
-    fail "internal usage: build_sos_profile <compat0|compat1|shadow|core0b|core1>"
-  local profile="$1" target_device staged_input_sha apk_flags
+  [[ "$#" -ge 1 && "$#" -le 2 ]] || \
+    fail "internal usage: build_sos_profile <compat0|compat1|shadow|core0b|core1> [provider-probe]"
+  local profile="$1" runtime_variant="${2:-release}"
+  local target_device staged_input_sha apk_flags
+  local core_runtime_features=core-native
   case "$profile" in
     compat0)
       target_device="$LINEAGE_SOS_COMPAT0_DEVICE"
@@ -302,6 +304,14 @@ build_sos_profile() {
       ;;
     *) fail "unsupported SOS profile: $profile" ;;
   esac
+  if [[ "$runtime_variant" == provider-probe ]]; then
+    [[ "$profile" == core1 ]] || \
+      fail "the non-shipping provider probe is restricted to Core 1"
+    core_runtime_features=core-native,core-provider-acceptance
+    info "enabling the non-shipping Core 1 provider acceptance probe"
+  elif [[ "$runtime_variant" != release ]]; then
+    fail "unsupported SOS runtime variant: $runtime_variant"
+  fi
   [[ -f "$LINEAGE_ROOT/build/envsetup.sh" ]] || fail "run init and sync first"
   hydrate_source_lfs
   apply_source_patches
@@ -315,7 +325,7 @@ build_sos_profile() {
       --release \
       --locked \
       --no-default-features \
-      --features core-native
+      --features "$core_runtime_features"
   )
   install -m 0644 \
     "$SOS_ROOT/target/aarch64-linux-android/release/libsos_experience.so" \
@@ -402,6 +412,12 @@ build_core0b() {
 build_core1() {
   [[ "$#" -eq 0 ]] || fail "usage: ./tools/a33xctl build-core1"
   build_sos_profile core1
+}
+
+build_core1_provider_probe() {
+  [[ "$#" -eq 0 ]] || \
+    fail "usage: ./tools/a33xctl build-core1-provider-probe"
+  build_sos_profile core1 provider-probe
 }
 
 build_sos() {
@@ -1164,6 +1180,9 @@ inspect_core_stage() {
       fail "Core 1 platform adapter omitted the stable Supplicant AIDL client"
     strings "$core_platform" | grep -F 'attention_acknowledge' >/dev/null || \
       fail "Core 1 platform adapter omitted native attention actions"
+    strings "$core_platform" | grep -F \
+      'core_platform_response_send_failed error=' >/dev/null || \
+      fail "Core 1 platform adapter omitted peer-close-safe response handling"
     grep -Fx 'on post-fs-data && property:ro.sos.providers=core-native' \
       "$core_platform_rc" >/dev/null || \
       fail "Core 1 does not conditionally start the native Wi-Fi owner"
@@ -1176,6 +1195,14 @@ inspect_core_stage() {
     grep -F '(allow sos_authority sos_core_platform (unix_stream_socket (connectto)))' \
       "$system_ext_policy" >/dev/null || \
       fail "Core 1 authority cannot connect to the native provider adapter"
+    local core_platform_parent_policy
+    core_platform_parent_policy="$(
+      grep -E '^\(allow sos_core_platform sos_authority_data_file ' \
+        "$system_ext_policy" || true
+    )"
+    [[ "$core_platform_parent_policy" == \
+      '(allow sos_core_platform sos_authority_data_file (dir (search)))' ]] || \
+      fail "Core 1 platform parent traversal is missing or broader than dir search"
     ! grep -Eq '^\(allow sos_core_platform sysfs_battery(info)? ' "$system_ext_policy" || \
       fail "Core 1 bypasses the native health HAL with vendor battery sysfs access"
     ! grep -Eq '^\(allow sos_core_platform (wpa_socket|hal_wifi_supplicant_default) ' \
@@ -1205,6 +1232,40 @@ inspect_core0b() {
 inspect_core1() {
   [[ "$#" -eq 0 ]] || fail "usage: ./tools/a33xctl inspect-core1"
   inspect_core_stage core1
+  local host_runtime="$LINEAGE_ROOT/out/target/product/a33x/obj/PACKAGING/target_files_intermediates/lineage_${LINEAGE_SOS_CORE1_DEVICE}-target_files/SYSTEM_EXT/lib64/libsos_core_experience.so"
+  ! readelf -Ws "$host_runtime" | grep -F \
+    ' sos_core_provider_acceptance_probe' >/dev/null || \
+    fail "Core 1 release inspection rejects the non-shipping provider probe"
+}
+
+inspect_core1_provider_probe() {
+  [[ "$#" -eq 0 ]] || \
+    fail "usage: ./tools/a33xctl inspect-core1-provider-probe"
+  inspect_core_stage core1
+  local target_files="$LINEAGE_ROOT/out/target/product/a33x/obj/PACKAGING/target_files_intermediates/lineage_${LINEAGE_SOS_CORE1_DEVICE}-target_files"
+  local host="$target_files/SYSTEM_EXT/bin/sos-core-host"
+  local host_init_rc="$target_files/SYSTEM_EXT/etc/init/sos-core-host.rc"
+  local host_runtime="$target_files/SYSTEM_EXT/lib64/libsos_core_experience.so"
+  readelf -Ws "$host_runtime" | grep -F \
+    ' sos_core_provider_acceptance_probe' >/dev/null || \
+    fail "Core 1 provider probe export is missing"
+  local probe_marker
+  for probe_marker in \
+    'core_provider_probe case=' \
+    'core_provider_probe contract=authority-json-line timeout_ms=' \
+    snapshot security unavailable audio-restore wifi-restore; do
+    strings "$host_runtime" | grep -F "$probe_marker" >/dev/null || \
+      fail "Core 1 provider probe omitted marker: $probe_marker"
+  done
+  strings "$host" | grep -F \
+    'core_provider_probe_invocation status=complete' >/dev/null || \
+    fail "Core 1 host omitted its trusted provider-probe invocation"
+  grep -Fx 'on property:debug.sos.core.bridge_probe=1' \
+    "$host_init_rc" >/dev/null || \
+    fail "Core 1 provider probe omitted its existing trusted init trigger"
+  [[ ! -e "$target_files/SYSTEM_EXT/bin/sos-core-provider-probe" ]] || \
+    fail "Core 1 provider probe must not add a separately packaged executable"
+  info "SOS Core 1 non-shipping provider probe gate passed"
 }
 
 usage() {
@@ -1228,6 +1289,8 @@ commands:
   build-compat      compatibility alias for build-compat1
   build-core-shadow build the manual native display/GPUI probe target
   build-core1       build the no-Zygote native locked/recovery target
+  build-core1-provider-probe
+                    build a non-shipping Core 1 provider-acceptance test OTA
   build-core        compatibility alias for build-core-shadow
   build-sos         compatibility alias for build-compat
   inspect-compat0   verify Compat 0 packaging and boot-chain graph
@@ -1235,6 +1298,8 @@ commands:
   inspect-sos       compatibility alias for inspect-compat1
   inspect-core      verify Core Shadow and retained recovery UI
   inspect-core1     verify no-Zygote native-only packaging
+  inspect-core1-provider-probe
+                    verify the non-shipping trusted provider probe is present
 legacy migration commands (not release-supported):
   build-core0b      require SOS_ENABLE_LEGACY_CORE0B_BUILD=1, then build Core 0B
   inspect-core0b    verify an intentional Core 0B comparison build
@@ -1262,6 +1327,7 @@ case "$command" in
   build-core-shadow) build_core_shadow "$@" ;;
   build-core0b) build_core0b "$@" ;;
   build-core1) build_core1 "$@" ;;
+  build-core1-provider-probe) build_core1_provider_probe "$@" ;;
   build-core) build_core "$@" ;;
   inspect-rom) inspect_rom "$@" ;;
   build-sos) build_sos "$@" ;;
@@ -1271,6 +1337,7 @@ case "$command" in
   inspect-core) inspect_core "$@" ;;
   inspect-core0b) inspect_core0b "$@" ;;
   inspect-core1) inspect_core1 "$@" ;;
+  inspect-core1-provider-probe) inspect_core1_provider_probe "$@" ;;
   -h|--help|help|'') usage ;;
   *) fail "unknown command: $command" ;;
 esac

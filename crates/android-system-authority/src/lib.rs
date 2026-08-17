@@ -5,10 +5,9 @@ use std::{
     path::{Path, PathBuf},
 };
 
+pub use android_authority_protocol::MAX_PROVIDER_REQUEST_BYTES;
 use android_authority_protocol::{RevisionAssetWire, RevisionRequest, RevisionResponse};
-use experience_ir::{
-    ProviderEffect, ProviderRequest, ProviderResponse, StateEnvelope, MAX_STATE_BYTES,
-};
+use experience_ir::{ProviderEffect, ProviderRequest, ProviderResponse, StateEnvelope};
 use revision_supervisor::{RevisionAssetInput, RevisionInput, RevisionStore, VerifiedRevision};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -525,8 +524,6 @@ fn provider_failure(request_id: u64, error: &str) -> ProviderResponse {
         ..provider_response(request_id, false)
     }
 }
-
-pub const MAX_PROVIDER_REQUEST_BYTES: u64 = (MAX_STATE_BYTES + 64 * 1024) as u64;
 
 #[cfg(test)]
 mod tests {

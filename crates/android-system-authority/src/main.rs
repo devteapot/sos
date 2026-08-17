@@ -9,11 +9,10 @@ use std::{
 };
 
 use android_authority_protocol::{
-    RevisionRequest, RevisionResponse, CORE_PROVIDER_SOCKET, CORE_REVISION_SOCKET,
-    MAX_REVISION_REQUEST_BYTES, REVISION_ADDRESS,
+    read_provider_request, write_provider_response, RevisionRequest, RevisionResponse,
+    CORE_PROVIDER_SOCKET, CORE_REVISION_SOCKET, MAX_REVISION_REQUEST_BYTES, REVISION_ADDRESS,
 };
-use android_system_authority::{AndroidSystemAuthority, MAX_PROVIDER_REQUEST_BYTES};
-use experience_ir::{ProviderRequest, ProviderResponse};
+use android_system_authority::AndroidSystemAuthority;
 
 const PROVIDER_ADDRESS: &str = "127.0.0.1:47777";
 
@@ -100,26 +99,13 @@ fn handle_provider<S: Read + Write>(
     mut stream: S,
     authority: &Arc<Mutex<AndroidSystemAuthority>>,
 ) -> std::io::Result<()> {
-    let mut line = String::new();
-    {
-        let mut reader = BufReader::new(&mut stream).take(MAX_PROVIDER_REQUEST_BYTES + 1);
-        reader.read_line(&mut line)?;
-    }
-    if line.len() as u64 > MAX_PROVIDER_REQUEST_BYTES {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            "provider request exceeded its size limit",
-        ));
-    }
-    let request = serde_json::from_str::<ProviderRequest>(&line).map_err(std::io::Error::other)?;
+    let request = read_provider_request(&mut stream)?;
     let request_id = request.request_id();
-    let response: ProviderResponse = authority
+    let response = authority
         .lock()
         .expect("Android authority lock")
         .dispatch_provider(request);
-    serde_json::to_writer(&mut stream, &response).map_err(std::io::Error::other)?;
-    stream.write_all(b"\n")?;
-    stream.flush()?;
+    write_provider_response(&mut stream, &response)?;
     println!(
         "provider_request_completed request_id={request_id} ok={}",
         response.ok
@@ -179,4 +165,85 @@ fn handle_revision<S: Read + Write>(
         response.ok
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        io::Write as _,
+        os::unix::net::UnixStream,
+        sync::{Arc, Mutex},
+        thread,
+    };
+
+    use android_authority_protocol::request_provider_over_stream;
+    use android_provider_acceptance::{run_probe, ProbeStatus};
+    use experience_ir::{ProviderRequest, ProviderResponse};
+
+    use super::{handle_provider, AndroidSystemAuthority};
+
+    fn test_authority() -> (tempfile::TempDir, Arc<Mutex<AndroidSystemAuthority>>) {
+        let temporary = tempfile::tempdir().unwrap();
+        let authority = AndroidSystemAuthority::open(
+            temporary.path().join("revisions"),
+            temporary.path().join("provider.json"),
+            b"return { api_version = 3 }",
+        )
+        .unwrap();
+        (temporary, Arc::new(Mutex::new(authority)))
+    }
+
+    fn round_trip(
+        authority: &Arc<Mutex<AndroidSystemAuthority>>,
+        request: ProviderRequest,
+    ) -> Result<ProviderResponse, String> {
+        let (client, server) = UnixStream::pair().unwrap();
+        let server_authority = Arc::clone(authority);
+        let server = thread::spawn(move || handle_provider(server, &server_authority));
+        let response = request_provider_over_stream(client, request);
+        let server_result = server.join().expect("provider handler thread");
+        if let Err(error) = server_result {
+            return Err(error.to_string());
+        }
+        response
+    }
+
+    #[test]
+    fn probe_snapshot_uses_the_real_authority_handler_and_framing() {
+        let (_temporary, authority) = test_authority();
+        let report = run_probe("snapshot", |request| round_trip(&authority, request));
+        assert_eq!(report.status, ProbeStatus::Pass, "{:?}", report.lines);
+    }
+
+    #[test]
+    fn probe_security_maps_the_real_expected_rejection() {
+        let (_temporary, authority) = test_authority();
+        let report = run_probe("security", |request| round_trip(&authority, request));
+        assert_eq!(report.status, ProbeStatus::Pass, "{:?}", report.lines);
+        assert!(report.lines[0].contains("injected_privileged_capability=rejected"));
+    }
+
+    #[test]
+    fn probe_unavailable_mode_uses_the_real_authority_rejection() {
+        let (_temporary, authority) = test_authority();
+        let report = run_probe("unavailable", |request| round_trip(&authority, request));
+        assert_eq!(report.status, ProbeStatus::Pass, "{:?}", report.lines);
+        assert!(report.lines[0].contains("semantics=explicit_rejection"));
+    }
+
+    #[test]
+    fn authority_reports_broken_pipe_when_client_closes_before_response() {
+        let (_temporary, authority) = test_authority();
+        let (mut client, server) = UnixStream::pair().unwrap();
+        serde_json::to_writer(&mut client, &ProviderRequest::Snapshot { request_id: 77 }).unwrap();
+        client.write_all(b"\n").unwrap();
+        client.flush().unwrap();
+        drop(client);
+
+        let error = handle_provider(server, &authority).unwrap_err();
+        assert!(matches!(
+            error.kind(),
+            std::io::ErrorKind::BrokenPipe | std::io::ErrorKind::ConnectionReset
+        ));
+    }
 }

@@ -6879,3 +6879,489 @@ and stock fallback; verify lock/Recovery coexistence; and run a sustained
 wake/restart/power/thermal soak. Core 0B remains the frozen opt-in migration
 oracle until Core 1 also owns the outstanding unlock, displaced services,
 calls/alarms, and Recovery transition evidence on hardware.
+
+## 2026-08-17 — Codex implementor/runner subagents for SOS threads
+
+**Goal:** Stop the parent Sol thread from burning Codex-sub credits on
+10–30s `adb`/`a33xctl` poll loops and 200k-token mega-threads, by making
+delegation to named subagents the default.
+
+**Changed:** Added project Codex agents
+`.codex/agents/implementor.toml` (gpt-5.6-sol, high; repo patches only) and
+`.codex/agents/runner.toml` (gpt-5.6-luna, medium; host checks and
+allowlisted device recipes with a short postcard). `AGENTS.md` now requires
+the parent to spawn those agents by name and not run long CLI itself. No
+project `.codex/config.toml`; parent model/effort stays a per-thread choice.
+
+**Evidence:** Analysis of 11 t3code Codex rollouts on this repo (14–16 Aug)
+showed 8,215 Sol round-trips, ~13h 26m of `wait`/`write_stdin` polling, and
+~73% of estimated credits spent replaying cached parent context. Codex
+subagents were enabled (`multi_agent_version=v2`) but unused
+(`collaboration_mode=default`). This change is instruction/config only; no
+device or host runtime measurement.
+
+**Decision:** Adopt named `implementor`/`runner` agents. Keep flash/reboot
+off the runner allowlist unless the user names the command. Do not treat
+this as a hardware or latency gate.
+
+**Open risks / next gate:** Parent YOLO/full-access still overrides child
+sandbox, so runner restrictions are instructional. Confirm in the next SOS
+Codex thread that the parent uses `spawn_agent`/`wait_agent` only, that
+`runner` is Luna and owns long yields, and that weekly `used_percent` rises
+slower than the previous Sol-only poll pattern.
+
+## 2026-08-17 — Core 1 on-device acceptance preflight
+
+**Goal / hypothesis:** Run the physical-provider acceptance gate for the
+supplied Core 1 artifact revision `sos.core1.f4d780007972.812bca990cc5`,
+expected to be 1,022,102,986 bytes with SHA-256
+`3216038f337c44bb39f114485765db665908a3700325bac755021f3f251b2d25`,
+without substituting a different build.
+
+**Environment and evidence:** Searches under `/home/carlid/dev` and
+`/home/carlid/sos-samsung-work` did not find the supplied artifact. The only
+nearby local OTA was
+`/home/carlid/dev/lineage-a33x/out/target/product/a33x/lineage-23.0-20260816-UNOFFICIAL-sos_core1_a33x.zip`;
+it is a different 1,021,744,265-byte package with SHA-256
+`4ff51b0c6d963d165ca707e4c1dc9d341aa9efad4f2a792dc56e7c1d3e422ae5`.
+
+The connected SM-A336B (`RFCT50EGFCN`) reported fingerprint
+`samsung/a33xnsxx/essi:15/AP3A.240905.015.A2/A336BXXSEFYH2:user/release-keys`,
+revision `sos.core1.40c433d4fb63.081717db2c0b`, Core stage 1,
+`core-native` providers, no Zygote, encrypted storage, verified boot orange,
+and running native Core processes. `sys.boot_completed` was empty.
+`./tools/a33xctl inspect-core1` passed its static signature, AVB, boot-chain,
+ELF, property, and no-Zygote checks for the different local OTA. The device
+state above was collected separately; `inspect-core1` did not validate the
+current device's live provider values or provider actions. No reboot,
+sideload, flash, or other device mutation was performed.
+
+**Decision, remaining risk, and next gate:** Physical-provider acceptance for
+the supplied artifact remains open; the static inspection of a different OTA
+cannot close it. Make the exact artifact available and explicitly authorize
+its installation, then run the live provider value/action, daemon and
+authority restart, generated-revision failure/recovery coexistence, and
+sustained wake/restart/power/thermal soak matrix documented in
+[`core1-provider-parity.md`](core1-provider-parity.md).
+
+## 2026-08-17 — Core 1 fresh build and interrupted install
+
+**Goal / hypothesis:** Rebuild the provider-parity source into an exact,
+locally available Core 1 OTA, install that signed artifact, and run the live
+acceptance matrix only after confirming that the device booted its revision.
+
+**Build and package evidence:** The source provider-parity markers were
+present. `./tools/a33xctl build-core1` completed successfully in 05:08 and
+produced the raw, untracked OTA below. `./tools/a33xctl inspect-core1` passed
+signature and ZIP integrity, AVB, PIT ceilings, ELF identity, product
+properties, SELinux policy, package contents, and provider-hash checks.
+
+| Artifact | Revision | Bytes | SHA-256 |
+| --- | --- | ---: | --- |
+| `/home/carlid/dev/lineage-a33x/out/target/product/a33x/lineage-23.0-20260817-UNOFFICIAL-sos_core1_a33x.zip` | `sos.core1.40c433d4fb63.1a338e2f0fb5` | 1,022,100,245 | `6262aa874877aae00b46f60882d90cd286a9893010c138ff0bac6669a2942f52` |
+
+**Install attempt and failure:** The authorized sequence was:
+
+```text
+adb reboot sideload-auto-reboot
+adb wait-for-sideload
+adb sideload <exact OTA>
+adb wait-for-device
+```
+
+The first sideload transport reached approximately 30% before its host wrapper
+detached; a second attempt returned `Total xfer: 0.00x`. The device did not
+re-enumerate as Android and instead enumerated over USB as Samsung `04e8:685d`
+in Download mode, with adb unavailable. The booted revision therefore remains
+unconfirmed and no live provider-value, action, restart, recovery-coexistence,
+or soak test ran.
+
+No wipe, factory reset, Odin, Heimdall, individual-partition flash, or
+bootloader action was performed. `a33xctl` has no Download-mode recovery
+recipe, so the user performed the repository-precedent physical Side + Volume
+Down restart. The runner verified that no stale adb sideload wrapper remained.
+After the user reported that the phone was still rebooting, the runner
+completed two project-sanctioned 300-second `adb wait-for-device` windows (10
+minutes total), with USB and adb checks between and after them. No Android,
+Recovery/sideload, or Download transport appeared: the `lsusb`
+Samsung/Android/`04e8` check and `adb devices -l` remained empty. The
+controlled OTA retry was therefore not started, and no new device mutation
+occurred.
+
+For the next recovery attempt, the A33x-specific physical sequence was
+confirmed and documented to the user: keep USB connected; hold Side + Volume
+Down until the screen turns black; immediately release Volume Down while
+keeping Side held and press Volume Up; enter Lineage Recovery; then select
+Apply update -> Apply from ADB, without wiping. During two subsequent bounded
+300-second monitoring windows, the device remained in Samsung Download mode
+as USB `04e8:685d`; the expected Recovery transport `18d1:d001` and
+ADB/sideload never appeared. The exact OTA retry was not started, and the host
+issued no reboot, flash, wipe, or other device mutation.
+
+The user subsequently reached Lineage Recovery's Apply from ADB state. The
+runner positively identified the device on USB `18d1:d001` as:
+
+```text
+RFCT50EGFCN sideload product:a33xnsxx model:SM_A336B device:a33x
+```
+
+The runner reverified the exact OTA's SHA-256 as
+`6262aa874877aae00b46f60882d90cd286a9893010c138ff0bac6669a2942f52`.
+Exactly one `adb sideload` was issued; it exited 0 with `Total xfer: 1.00x`.
+At the time, the user was instructed to return to the Recovery main menu and
+choose Reboot system now, without wiping. Later user clarification supersedes
+that runbook assumption: this Lineage Recovery flow automatically reboots
+after a successful sideload, so manual **Reboot system now** is not required.
+
+Across two bounded 300-second waits after the transfer, the phone remained on
+Recovery USB `18d1:d001` with adb unauthorized (`transport_id 114`) and never
+reached Android. Boot completion, active slot, revision, product properties,
+provider values, and provider actions therefore remain unconfirmed. The host
+issued no second transfer, reboot, wipe, or other device mutation.
+
+Android subsequently booted the exact revision
+`sos.core1.40c433d4fb63.1a338e2f0fb5`. The product identity checks passed:
+`ro.sos.profile=core`, `ro.sos.providers=core-native`, and
+`ro.zygote=no_zygote`; the authority and host processes, provider and revision
+Unix sockets, and native Recovery UI were present. This boot observation does
+not imply that a manual Recovery reboot selection was required. An empty
+`sys.boot_completed` is expected in no-Zygote mode and is not a failure.
+
+**Physical acceptance failure:** `init.svc.sos_core_platform` remained
+`restarting` with repeated exit status 1. The earliest and repeated AVC denied
+the `u:r:sos_core_platform:s0` source directory `{ search }` on the `sos` path
+component labeled `u:object_r:sos_authority_data_file:s0`; no secondary AVC
+class appeared. Source policy labels `/data/misc/sos(/.*)` as authority data
+and `/data/misc/sos/platform(/.*)` as platform data but grants the daemon only
+its own type, identifying missing parent traversal as the smallest justified
+fix. Live `ls -lZ` was permission-denied, so runtime label contents were not
+claimed. The provider snapshot failed, and no provider action mutated the
+device. The remaining live provider/action, restoration, restart/fallback,
+Recovery-coexistence, and soak matrix was not run. Detailed evidence and raw
+artifact metadata are in
+[`core1-provider-parity.md`](core1-provider-parity.md#2026-08-17-physical-device-acceptance-result-failed).
+
+**Decision, remaining risk, and next gate:** The exact OTA installed and
+booted, but do not claim that physical-provider acceptance passed: this
+attempt failed at the earliest provider-daemon blocker. Make the smallest
+SELinux parent-directory traversal fix without broadening the platform
+daemon's authority, rebuild, pass static policy and neverallow checks, reflash,
+and rerun the complete live matrix.
+
+## 2026-08-17 — Core 1 provider parent-traversal fix
+
+**Goal / hypothesis:** Fix the failed physical-provider gate at its earliest
+blocker. The hypothesis is that `sos_core_platform` exits because it can access
+its separately labeled `/data/misc/sos/platform` subtree but cannot search the
+authority-labeled `/data/misc/sos` parent path component.
+
+**Policy and regression change:** Added only
+`allow sos_core_platform sos_authority_data_file:dir search;` to the A33x Core
+platform domain policy. This grants parent traversal without `open`, `read`,
+`write`, `getattr`, create, `add_name`, `remove_name`, or any file permission.
+It does not relabel authority data, broaden authority/capability controls, or
+change the Core 0B product. The Core 1 inspector now gathers every direct
+compiled allow from `sos_core_platform` to `sos_authority_data_file` and
+requires the complete result to equal exactly `(allow sos_core_platform
+sos_authority_data_file (dir (search)))`, so either omission or permission/
+class broadening fails inspection.
+
+**Local evidence:** These fast source checks passed:
+
+```text
+bash -n tools/a33xctl
+policy_rule="$(rg '^allow sos_core_platform sos_authority_data_file:' \
+  aosp/device/sos/a33x/sepolicy/system_ext/private/sos_core_platform.te)"
+test "$policy_rule" = \
+  'allow sos_core_platform sos_authority_data_file:dir search;'
+git diff --check -- \
+  aosp/device/sos/a33x/sepolicy/system_ext/private/sos_core_platform.te \
+  tools/a33xctl docs/core1-provider-parity.md docs/progress.md
+```
+
+Broader directory macros, file access, parent relabeling, and changes to the
+authority's controls were rejected because the observed AVC requested only
+directory `search` and no secondary class appeared.
+
+**Decision, remaining risk, and next gate:** Accept the source patch as the
+smallest justified candidate, not as a passed device fix. No full AOSP build,
+compiled policy/neverallow gate, new signed OTA, or physical re-acceptance run
+has occurred. Run the full Core 1 build and inspection, record the new OTA's
+revision/size/hash, reflash it, verify `sos_core_platform` stays active without
+the parent-search AVC, and then rerun every provider/action, restoration,
+restart/fallback, Recovery-coexistence, and soak test skipped by the failed
+gate. Detailed status remains in
+[`core1-provider-parity.md`](core1-provider-parity.md#minimal-fix-prepared-device-re-acceptance-pending).
+
+## 2026-08-17 — Non-shipping Core 1 provider acceptance probe
+
+**Goal / testability gap:** Make the previously blocked live provider matrix
+independently runnable against the real Android authority and Core platform
+adapter. The existing `provider-state-probe` speaks to the Linux provider
+service and is not evidence for `/data/misc/sos/provider.sock`. A transient
+shell binary is also invalid: the shell domain lacks the trusted Core host's
+DAC and SELinux access to that socket.
+
+**Chosen design and security invariant:** Added a small test-only Rust crate
+that consumes the existing Android provider request/response, effect, state,
+provider, and capability types. A feature-gated C export in the Core runtime
+runs it through the existing init-owned `sos_core_bridge_probe` service and
+`sos_core_host` domain. The named `build-core1-provider-probe` recipe enables
+that export only for a non-shipping test OTA; `inspect-core1-provider-probe`
+requires the export, trusted invocation markers, supported modes, and absence
+of a separate packaged probe executable. Normal `build-core1` excludes the
+feature and normal `inspect-core1` rejects any image containing the export.
+
+No product SELinux permission, authority/provider semantics, platform
+implementation, socket, wire format, credential path, capability allowlist,
+or Core 0B behavior changed. The existing client was refactored only to expose
+its already-decoded raw response internally; normal callers retain identical
+error behavior.
+
+**Probe coverage:** `snapshot` emits redacted presence/count/status records
+for Health, thermal, audio/media, link, Supplicant, apps, attention, and fixed
+capability names. `security` injects a staged privileged restart effect and
+requires rejection before state staging, aborting if a regression accepts the
+stage. `unavailable` uses a reserved bogus opaque ID and requires explicit
+capability rejection. Separately authorized `audio-restore` and `wifi-restore`
+modes capture the initial state, apply one bounded reversible change, observe
+it, restore the exact prior state, and observe restoration. Output omits
+labels, SSIDs, opaque IDs, interface names, titles, provider error payloads,
+and credentials. Exit 0/1/2 means `PASS`/`FAIL`/`SKIP`.
+
+Shell-domain socket grants, transient relabeling, a second authority endpoint,
+duplicated ad-hoc JSON, embedded Wi-Fi secrets, and a probe enabled in normal
+Core 1 builds were rejected as broader or less auditable.
+
+**Local evidence:** Formatting passed. `cargo test --locked -p
+android-provider-acceptance -p android-system-authority` passed six probe and
+10 authority tests, covering snapshot redaction, privileged-effect rejection,
+cleanup of an accidentally accepted stage, explicit unavailable semantics,
+exact audio/Wi-Fi restoration action sequences, and the existing authority
+boundaries. `cargo clippy --locked -p android-provider-acceptance --all-targets
+-- -D warnings`, `cargo check --locked -p sos-experience
+--no-default-features --features core-provider-acceptance`, `bash -n
+tools/a33xctl`, and `git diff --check` passed. No ARM64/API 31 build, AOSP
+build, OTA inspection, adb command, or device action ran in this change.
+
+**Decision, remaining risk, and next gate:** Accept the harness design as a
+non-shipping test facility, not as provider evidence. Run the named ARM64 Core
+1 probe build and inspection, record the signed test OTA metadata, install it
+only with explicit authorization, and verify the fixed platform daemon first.
+Then run read-only/security/unavailable modes, explicitly authorize and run
+the restoring audio/Wi-Fi modes, clear both debug properties, and complete the
+restart/fallback, Recovery-coexistence, and soak matrix. Rebuild normal Core 1
+afterward and require normal inspection to prove the probe export is absent.
+Detailed mode and cleanup rules are in
+[`core1-provider-parity.md`](core1-provider-parity.md#non-shipping-live-acceptance-probe-prepared).
+
+## 2026-08-17 — Core 1 provider probe contract repair
+
+**Goal / hypothesis:** Diagnose the first non-shipping probe OTA failure
+without masking platform crashes or changing product security semantics. The
+hypothesis was that the test client did not honor the real Android authority
+response contract.
+
+**Failed device evidence:** Probe revision
+`sos.core1.40c433d4fb63.940ce909570c` returned snapshot `FAIL
+request_or_decode`, security `FAIL wrong_rejection`, and unavailable `FAIL
+snapshot`, each with exit 1. Audio, Wi-Fi, and later gates were not run.
+`sos_core_platform` received signal 13 and restarted at PIDs 944, 1453, and
+1484, later running as PID 1517. The aggregate raw log stays outside Git as
+`/tmp/core1-probe-matrix.log`, 1,791 bytes, SHA-256
+`271c6ca130736149dbd018db342cf3380730e0b84dedbd3b63a7e34e56f4d859`;
+separate per-mode raw logs were not retained. Cleanup passed on normal revision
+`sos.core1.40c433d4fb63.36d94625c31f`: the probe was absent, services were
+stable, and no AVC appeared.
+
+**Proven contract defects and fix:** The probe reused the normal client helper,
+which collapsed an authority `ok=false` response into a generic error. It
+therefore could not identify the expected capability denial. It also
+inherited the UI's 500 ms socket deadline although the authority's nested
+platform request is allowed two seconds, permitting the probe to close before
+the authority can return a valid response. The feature-gated probe now uses a
+five-second deadline and consumes the raw response; shipping callers retain
+the 500 ms timeout and previous error behavior. Client and authority share one
+newline-JSON framing implementation, and mode reports now distinguish
+transport/framing, load-state, wrong-rejection, and expected-denial outcomes.
+The wire schema, platform adapter, capability/signature checks, SELinux policy,
+product packaging boundary, and Core 0B remain unchanged.
+
+Signal 13 is evidence of a server writing after a client peer closed, but the
+aggregate log does not prove that the corrected outer probe deadline also
+eliminates every platform restart. Ignoring SIGPIPE, weakening fail-closed
+checks, widening the shipping UI timeout, changing the authority's two-second
+platform deadline without a measured product bug, or granting new policy were
+rejected.
+
+**Local evidence:** `cargo test --locked -p android-authority-protocol -p
+android-provider-acceptance -p android-system-authority` passed three framing,
+six probe, ten authority-library, and four real-handler probe tests. These
+cover snapshot success, exact injected-capability denial, unavailable-action
+semantics, EOF, truncated response, and server write after an early client
+close. Focused Clippy passed with warnings denied. The release ARM64/API 31
+`core-provider-acceptance` feature check and host feature check passed.
+The broader Android Clippy command reached the target but stopped on the
+unchanged vendored `gpui-mobile`
+`clone_on_copy` warning at `android/platform.rs:543`. Formatting passed; Bash
+syntax and final diff checks remain part of handoff. No AOSP build, OTA, adb
+call, or device mutation ran here.
+
+**Decision, remaining risk, and next gate:** The harness contract repair is a
+local candidate, not hardware acceptance. Build and inspect a fresh
+non-shipping probe OTA, record its revision/size/hash, install it under the
+existing authorization, and require stable platform/authority services with
+no signal-13 restart while `snapshot`, `security`, and `unavailable` pass.
+Only then run explicitly authorized restoring audio/Wi-Fi modes and the
+remaining restart/fallback, Recovery, and soak matrix. Restore a normal Core 1
+OTA afterward and prove the probe export is absent. Detailed status is in
+[`core1-provider-parity.md`](core1-provider-parity.md#first-probe-ota-attempt-failed-contract-fix-pending-reflash).
+
+## 2026-08-17 — Core 1 platform reply SIGPIPE hardening
+
+**Goal / hypothesis:** Preserve the corrected provider replies while stopping
+a closed authority peer from terminating the long-lived Core platform daemon.
+The narrow hypothesis is that `sos-core-platform` finishes a slow provider
+snapshot after the authority's nested deadline and its plain Unix-stream
+`write()` receives `SIGPIPE`.
+
+**Corrected device evidence:** Snapshot, security, and unavailable on the
+corrected probe image each received a complete `PASS` response and exited 0.
+Snapshot completed at 11:05:54.833 and platform PID 938 received signal 13 at
+11:05:58.262. Security completed at 11:05:57.999, at the same recorded time as
+that signal. Unavailable completed at 11:06:03.278 and platform PID 1550
+received signal 13 at 11:06:04.266. The aggregate raw diagnostic remains
+outside Git as `/tmp/core1-probe-final-diagnostic.log`, 15,211 bytes, SHA-256
+`fd019793daa2261b4b3b0e9eebc1b8844c16976dbc3abd9726a2c7f806449e2d`.
+Clean revision `sos.core1.40c433d4fb63.57ac4b474afb` was stable afterward,
+with the probe absent and no current AVC.
+
+**Proven failure class and code delta:** The Core platform response helper used
+plain `write()` and returned an ignored Boolean. A forked host control with
+default signal disposition reproduces termination by `SIGPIPE` on a closed
+Unix peer. The production helper now uses `send(..., MSG_NOSIGNAL)` per send,
+retries `EINTR`, completes partial sends, returns the concrete socket error,
+and logs one `core_platform_response_send_failed` warning without killing the
+service. Successful frame order and bytes are unchanged. The product inspector
+requires that error-handling marker. No process-wide signal disposition,
+authorization, SELinux, package policy, provider semantics, or Core 0B changed.
+
+The failure class and unsafe primitive are proven; the exact physical
+instruction remains an inference because no on-device stack trace was
+captured. The signal timing and receiving process make the platform response
+helper the smallest supported hypothesis. The ignored Unix reply errors in
+the separate Linux accessibility service are not part of the platform binary
+and were not broadened into this fix. Process-wide `SIGPIPE` masking and
+silently ignored send errors were rejected because they hide unrelated faults
+or discard the peer-close result.
+
+**Local evidence:** The focused C++ test proves that the old primitive dies by
+signal 13, the new helper survives and reports `EPIPE`/`ECONNRESET`, a full
+one-MiB response arrives unchanged, partial sends and `EINTR` are retried, a
+mid-response close is handled, and the next peer still receives a response.
+The test compiles with C++17, warnings as errors, and pthread support. Focused
+Rust/framing tests, ARM64 feature checks, formatting, Bash syntax, and diff
+checks remain in the handoff; no AOSP build or device command ran here.
+
+**Watch item at this stage:** One security-probe AVC denied
+`u:r:hal_wifi_supplicant_default:s0` `efs_file:dir { search }` for name `/`,
+device `sda2`, inode 2, permissive 0. It was absent on clean boot; later probe
+windows reproduced it. Do not add an allow or relabel without source
+attribution.
+
+**Decision, remaining risk, and next gate:** This is a source-level resilience
+candidate, not a passed hardware gate. Rebuild and inspect a signed probe OTA,
+reflash it, rerun the three passing modes while requiring stable platform PIDs
+and no signal-13 exit, then run the explicitly authorized audio/Wi-Fi restore
+and remaining restart/fallback, Recovery, and soak matrix. Restore and inspect
+a normal Core 1 image afterward. Detailed status is in
+[`core1-provider-parity.md`](core1-provider-parity.md#corrected-probe-replies-pass-platform-peer-close-hardening-pending).
+
+## 2026-08-17 — Core 1 provider implementation and final partial retest
+
+**Goal / chronology:** Close the proven platform blockers, exercise every
+currently available provider gate on the SM-A336B, restore a clean shipping
+image, and distinguish passed fixes from provider capabilities that still
+lack runnable hardware state.
+
+The first physical build failed before a snapshot because
+`sos_core_platform` could not search the authority-labeled
+`/data/misc/sos` parent. The only policy change was
+`allow sos_core_platform sos_authority_data_file:dir search;`; the compiled
+inspector requires that exact complete relationship and rejects any other
+class/permission. No file access, relabel, authority broadening, or Core 0B
+change was made. The final image did not reproduce the parent-search AVC, so
+this minimal fix physically passed.
+
+A non-shipping probe was then added through the existing init-owned trusted
+host domain. Normal builds exclude it and normal inspection rejects its
+export. Its first device run exposed two harness defects: a 500 ms client
+deadline was shorter than the authority's permitted two-second nested request,
+and the normal helper collapsed `ok=false` into a generic error. The probe-only
+path now uses five seconds, consumes raw negative responses, and shares the
+authority's newline-JSON framing; the shipping client remains at 500 ms with
+unchanged error behavior. Three framing, six probe, ten authority, and four
+real-handler tests passed.
+
+Complete corrected replies exposed the remaining product signal-13 failure.
+A forked peer-close regression proved that the platform C++ response path's
+plain `write()` can terminate on `SIGPIPE`. The production helper now uses
+per-send `MSG_NOSIGNAL`, retries `EINTR` and partial sends, surfaces/logs
+`BrokenPipe`, and continues with the next peer; no process-wide signal ignore
+was added. `core_platform_socket_io_test status=PASS`, focused Rust/Clippy and
+ARM64 checks passed, and the full AOSP build plus static product inspection
+passed.
+
+**Final probe matrix:** Non-shipping revision
+`sos.core1.40c433d4fb63.f0ecbf1885d5` passed Core/core-native/no-Zygote
+identity, authority/host/platform services, and provider/revision sockets.
+Snapshot passed with exit 0. The prior corrected security and unavailable
+runs passed with exit 0 and a stable platform PID. On the final image,
+`audio-restore` was SKIP/exit 2 because capability/state was unavailable and
+`wifi-restore` was SKIP/exit 2 because there was no saved network; neither
+mutated device state. Platform PID 945 remained stable through the action
+observations. A five-minute soak passed across five 60-second intervals with
+the same PID and sockets and no AVC, crash, or restart.
+
+Named daemon restart/fallback and Native Recovery/lock coexistence were not
+run because there is no supported non-mutating named recipe. Active
+applications, media, attention, calls/alarms, and a longer hardware soak also
+remain open.
+
+Raw final evidence stays outside Git:
+
+| Artifact | Result | Bytes | SHA-256 |
+| --- | --- | ---: | --- |
+| `/tmp/core1-final-snapshot-f0e.log` | snapshot PASS, exit 0 | 1,367 | `90d9bbc234b245a9b20bc729277c31722a7c222f4ae664374ca54ed5f5f497f8` |
+| `/tmp/core1-final-audio-restore-f0e.log` | audio SKIP, exit 2; no mutation | 862 | `aef5bad22d0061d91317e7e0e2754c5bead6fc161f9166665f7b164955e856f4` |
+| `/tmp/core1-final-wifi-restore-f0e.log` | Wi-Fi SKIP, exit 2; no mutation | 1,161 | `7b92a93435ef1eb001d4825bc8ad666965dfdcaf6f61885b2e6f3384524ffdfd` |
+| `/tmp/core1-final-soak-f0e.log` | five-minute stability PASS | 1,005 | `a516b218803afafcc540fa95ee7fa41be25d4cd1b51e0f1b9285f78729564f07` |
+| `/tmp/core1-final-probe-f0e.png` | final screenshot | 17,324 | `fd11466f534905543f75d6c896942cf633250f221ba324e7766890f751de7890` |
+
+The `hal_wifi_supplicant_default` to `efs_file:dir { search }` denial recurred
+during probe windows and was absent on the clean boot. It targets the
+`sec_efs` `/dev/block/sda2` filesystem, but causation and functional impact are
+unproven. No allow or relabel was added; this is a vendor-owner watch item.
+
+**Clean restore:** `build-core1` and `inspect-core1` passed and proved the
+probe absent. The raw cleanup OTA remains outside Git:
+
+| Artifact | Revision | Bytes | SHA-256 |
+| --- | --- | ---: | --- |
+| `/home/carlid/dev/lineage-a33x/out/target/product/a33x/lineage-23.0-20260817-UNOFFICIAL-sos_core1_a33x.zip` | `sos.core1.40c433d4fb63.9fcf8d492e9b` | 1,022,100,714 | `91bb35f1d258b10166076af1dbd4a165beabfb3f4ce502bb2ac2a6b244fafbda` |
+
+The controlled sideload exited 0 with `Total xfer: 1.00x` and automatically
+rebooted. The final boot reached the exact revision with services/sockets
+present, no current AVC or crash, and no probe. Earlier instructions assuming
+a manual **Reboot system now** step are superseded; this Recovery flow
+auto-reboots after sideload.
+
+**Decision / next gate:** The minimal SELinux and SIGPIPE fixes physically
+pass, as do snapshot, security, unavailable semantics, and five-minute
+stability. Overall physical-provider acceptance remains **partial/open**.
+Create capability-bearing audio and saved-Wi-Fi state to exercise restoration,
+add supported named restart/fallback and Recovery/lock recipes, attach active
+app/media/attention and calls/alarms owners, attribute any recurring vendor
+EFS denial, and run a longer soak before calling parity acceptance complete.
+The detailed record is
+[`core1-provider-parity.md`](core1-provider-parity.md#final-2026-08-17-hardware-result-partialopen).
