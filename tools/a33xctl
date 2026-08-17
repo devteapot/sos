@@ -1302,6 +1302,218 @@ inspect_core1_provider_probe() {
   info "SOS Core 1 non-shipping provider probe gate passed"
 }
 
+validate_device_identity() {
+  [[ "$#" -eq 2 ]] || fail "internal usage: validate_device_identity <serial> <revision>"
+  [[ "$1" =~ ^[A-Za-z0-9._:-]+$ ]] || fail "invalid device serial: $1"
+  [[ "$2" =~ ^[A-Za-z0-9._:+-]+$ ]] || fail "invalid expected revision: $2"
+}
+
+adb_readonly() {
+  [[ "$#" -ge 2 ]] || fail "internal usage: adb_readonly <serial> <arguments...>"
+  local serial="$1" adb_binary="${A33XCTL_ADB:-adb}"
+  shift
+  require_command "$adb_binary"
+  "$adb_binary" -s "$serial" "$@"
+}
+
+device_property() {
+  [[ "$#" -eq 2 ]] || fail "internal usage: device_property <serial> <property>"
+  adb_readonly "$1" shell getprop "$2" | tr -d '\r\n'
+}
+
+inspect_core1_readiness() {
+  [[ "$#" -eq 4 && "$1" == --serial && "$3" == --expected-revision ]] || \
+    fail "usage: ./tools/a33xctl inspect-core1-readiness --serial SERIAL --expected-revision REVISION"
+  local serial="$2" expected_revision="$4"
+  validate_device_identity "$serial" "$expected_revision"
+
+  local revision stage lifecycle profile providers ui_owner zygote enforcing
+  revision="$(device_property "$serial" ro.build.version.incremental)"
+  stage="$(device_property "$serial" ro.sos.core.stage)"
+  lifecycle="$(device_property "$serial" ro.sos.lifecycle)"
+  profile="$(device_property "$serial" ro.sos.profile)"
+  providers="$(device_property "$serial" ro.sos.providers)"
+  ui_owner="$(device_property "$serial" ro.sos.ui_owner)"
+  zygote="$(device_property "$serial" ro.zygote)"
+  enforcing="$(adb_readonly "$serial" shell getenforce | tr -d '\r\n')"
+
+  [[ "$revision" == "$expected_revision" ]] || \
+    fail "Core 1 revision mismatch: expected $expected_revision, found $revision"
+  [[ "$stage" == 1 && "$lifecycle" == active && "$profile" == core ]] || \
+    fail "device does not report the active Core 1 product"
+  [[ "$providers" == core-native && "$ui_owner" == native-sos-no-zygote ]] || \
+    fail "device does not report Core 1 native ownership"
+  [[ "$zygote" == no_zygote ]] || fail "Core 1 unexpectedly enables Zygote"
+  [[ "$enforcing" == Enforcing ]] || fail "Core 1 SELinux is not Enforcing"
+
+  local surfaces host_pids authority_pid platform_pid host_service authority_service platform_service
+  surfaces="$(adb_readonly "$serial" shell dumpsys SurfaceFlinger --list)"
+  grep -F 'SOS Core Experience' <<<"$surfaces" >/dev/null || \
+    fail "SOS Core Experience surface is not present"
+  host_pids="$(adb_readonly "$serial" shell pidof sos-core-host 2>/dev/null | tr -d '\r' || true)"
+  authority_pid="$(adb_readonly "$serial" shell pidof sos-authority 2>/dev/null | tr -d '\r' || true)"
+  platform_pid="$(adb_readonly "$serial" shell pidof sos-core-platform 2>/dev/null | tr -d '\r' || true)"
+  [[ "$host_pids" =~ ^[0-9]+[[:space:]]+[0-9]+([[:space:]]+[0-9]+)*$ ]] || \
+    fail "Core 1 supervisor and experience child are not both live"
+  [[ "$authority_pid" =~ ^[0-9]+$ ]] || fail "SOS authority is not live"
+  [[ "$platform_pid" =~ ^[0-9]+$ ]] || fail "SOS platform adapter is not live"
+  host_service="$(device_property "$serial" init.svc.sos_core_host)"
+  authority_service="$(device_property "$serial" init.svc.sos_authority)"
+  platform_service="$(device_property "$serial" init.svc.sos_core_platform)"
+  [[ "$host_service" == running && "$authority_service" == running && \
+    "$platform_service" == running ]] || fail "a required Core 1 init service is not running"
+
+  local logs current_lifecycle_logs relevant_avc relevant_crash avc filtered_avc=''
+  logs="$(adb_readonly "$serial" logcat -d -b all -v threadtime)"
+  current_lifecycle_logs="$(awk '
+    /core1_experience_start ce_available=false/ { seen = 1; retained = "" }
+    seen { retained = retained $0 ORS }
+    END { printf "%s", retained }
+  ' <<<"$logs")"
+  grep -F 'core1_experience_start ce_available=false native_synthetic_password=false' \
+    <<<"$current_lifecycle_logs" >/dev/null || fail "current Core 1 lifecycle marker is absent"
+  grep -F 'SOS experience window is live frame_padding=none' \
+    <<<"$current_lifecycle_logs" >/dev/null || fail "current SOS Core Experience runtime-ready marker is absent"
+  relevant_crash="$(grep -Ei \
+    '(native_gpui_failed|android_authority_fatal|system_revision_activation_failed|Fatal signal.*sos|SIGABRT.*sos|sos.*SIGABRT)' \
+    <<<"$current_lifecycle_logs" || true)"
+  [[ -z "$relevant_crash" ]] || fail "relevant Core 1 crash marker is present after lifecycle start"
+  relevant_avc="$(grep -Ei 'avc:[[:space:]]*denied' <<<"$current_lifecycle_logs" | \
+    grep -E 'scontext=u:r:(sos_core_host|sos_core_platform|sos_authority):s0' || true)"
+  # The native loader's known top-level /data directory probe is non-blocking;
+  # all other enforcing SOS-domain denials remain readiness failures.
+  while IFS= read -r avc; do
+    [[ -n "$avc" ]] || continue
+    if [[ "$avc" == *'scontext=u:r:sos_core_host:s0'* && \
+      "$avc" == *'{ search }'* && "$avc" == *'name="data"'* ]]; then
+      continue
+    fi
+    filtered_avc+="$avc"$'\n'
+  done <<<"$relevant_avc"
+  relevant_avc="${filtered_avc%$'\n'}"
+  [[ -z "$relevant_avc" ]] || fail "relevant enforcing Core 1 AVC is present after lifecycle start"
+
+  printf 'core1_readiness=PASS\nserial=%s\nrevision=%s\nsurface=SOS Core Experience\n' \
+    "$serial" "$revision"
+  printf 'supervisor_experience_pids=%s\nauthority_pid=%s\nplatform_pid=%s\n' \
+    "$host_pids" "$authority_pid" "$platform_pid"
+  printf 'native_lifecycle=PASS\nrelevant_crash=absent\nrelevant_enforcing_avc=absent\n'
+  info "Core 1 readiness inspection passed without Android boot-complete predicates"
+}
+
+evidence_path_is_temporary() {
+  [[ "$#" -eq 1 ]] || fail "internal usage: evidence_path_is_temporary <path>"
+  case "${1##*/}" in
+    .a33xctl-manifest.*|*.tmp|*.part|*.partial|*.swp|*~) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+evidence_manifest_paths() {
+  [[ "$#" -eq 2 ]] || fail "internal usage: evidence_manifest_paths <root> <manifest>"
+  local evidence_root="$1" manifest="$2" path relative
+  while IFS= read -r -d '' path; do
+    [[ "$path" != "$manifest" ]] || continue
+    [[ "$path" != *$'\t'* && "$path" != *$'\n'* ]] || \
+      fail "evidence path contains a tab or newline"
+    relative="$(realpath --relative-to="$evidence_root" "$path")"
+    evidence_path_is_temporary "$relative" && continue
+    printf '%s\0' "$path"
+  done < <(find "$evidence_root" -type f -print0 | LC_ALL=C sort -z)
+}
+
+validate_evidence_paths() {
+  [[ "$#" -eq 1 ]] || fail "internal usage: validate_evidence_paths <root>"
+  local path
+  while IFS= read -r -d '' path; do
+    [[ "$path" != *$'\t'* && "$path" != *$'\n'* ]] || \
+      fail "evidence path contains a tab or newline"
+  done < <(find "$1" -type f -print0)
+}
+
+resolve_evidence_manifest() {
+  [[ "$#" -eq 2 ]] || fail "internal usage: resolve_evidence_manifest <root> <manifest>"
+  local evidence_root manifest
+  evidence_root="$(realpath -e "$1")"
+  [[ -d "$evidence_root" ]] || fail "evidence root is not a directory: $1"
+  manifest="$(realpath -m "$2")"
+  case "$manifest" in
+    "$evidence_root"/*) ;;
+    *) fail "evidence manifest must be inside its evidence root" ;;
+  esac
+  printf '%s\n%s\n' "$evidence_root" "$manifest"
+}
+
+evidence_manifest_generate() {
+  [[ "$#" -eq 4 && "$1" == --root && "$3" == --output ]] || \
+    fail "usage: ./tools/a33xctl evidence-manifest-generate --root DIR --output MANIFEST"
+  require_command realpath
+  require_command sha256sum
+  local -a resolved
+  mapfile -t resolved < <(resolve_evidence_manifest "$2" "$4")
+  local evidence_root="${resolved[0]}" manifest="${resolved[1]}"
+  local manifest_dir temporary path relative before after bytes sha count=0
+  validate_evidence_paths "$evidence_root"
+  manifest_dir="$(dirname "$manifest")"
+  [[ -d "$manifest_dir" ]] || fail "manifest directory does not exist: $manifest_dir"
+  temporary="$(mktemp "$manifest_dir/.a33xctl-manifest.XXXXXX")"
+  trap 'rm -f -- "$temporary"' EXIT
+  while IFS= read -r -d '' path; do
+    relative="$(realpath --relative-to="$evidence_root" "$path")"
+    before="$(stat --printf='%d:%i:%s:%y' "$path")"
+    bytes="$(stat --printf='%s' "$path")"
+    sha="$(sha256sum "$path" | cut -d' ' -f1)"
+    after="$(stat --printf='%d:%i:%s:%y' "$path")"
+    [[ "$before" == "$after" ]] || fail "evidence changed while hashing: $relative"
+    printf '%s\t%s\t%s\n' "$relative" "$bytes" "$sha" >>"$temporary"
+    count=$((count + 1))
+  done < <(evidence_manifest_paths "$evidence_root" "$manifest")
+  [[ "$count" -gt 0 ]] || fail "evidence root contains no finalized files"
+  chmod 0644 "$temporary"
+  mv -f -- "$temporary" "$manifest"
+  trap - EXIT
+  printf 'evidence_manifest=%s\nfiles=%s\n' "$manifest" "$count"
+}
+
+evidence_manifest_verify() {
+  [[ "$#" -eq 4 && "$1" == --root && "$3" == --manifest ]] || \
+    fail "usage: ./tools/a33xctl evidence-manifest-verify --root DIR --manifest MANIFEST"
+  require_command realpath
+  require_command sha256sum
+  local -a resolved
+  mapfile -t resolved < <(resolve_evidence_manifest "$2" "$4")
+  local evidence_root="${resolved[0]}" manifest="${resolved[1]}"
+  validate_evidence_paths "$evidence_root"
+  [[ -f "$manifest" ]] || fail "evidence manifest is missing: $manifest"
+  local path bytes sha extra absolute actual_bytes actual_sha previous='' count=0
+  local expected_paths listed_paths
+  expected_paths="$(while IFS= read -r -d '' absolute; do
+    realpath --relative-to="$evidence_root" "$absolute"
+  done < <(evidence_manifest_paths "$evidence_root" "$manifest"))"
+  listed_paths="$(cut -f1 "$manifest")"
+  [[ "$listed_paths" == "$expected_paths" ]] || \
+    fail "evidence manifest paths are missing, extra, or not deterministically sorted"
+  while IFS=$'\t' read -r path bytes sha extra || [[ -n "$path$bytes$sha$extra" ]]; do
+    [[ -n "$path" && -z "$extra" && "$bytes" =~ ^[0-9]+$ && "$sha" =~ ^[0-9a-f]{64}$ ]] || \
+      fail "malformed evidence manifest row"
+    [[ "$path" != /* && "$path" != ../* && "$path" != */../* ]] || \
+      fail "unsafe evidence manifest path: $path"
+    [[ -z "$previous" || "$previous" < "$path" ]] || \
+      fail "evidence manifest paths are duplicated or unsorted"
+    absolute="$evidence_root/$path"
+    [[ -f "$absolute" ]] || fail "manifested evidence file is missing: $path"
+    actual_bytes="$(stat --printf='%s' "$absolute")"
+    actual_sha="$(sha256sum "$absolute" | cut -d' ' -f1)"
+    [[ "$actual_bytes" == "$bytes" && "$actual_sha" == "$sha" ]] || \
+      fail "evidence identity mismatch: $path"
+    previous="$path"
+    count=$((count + 1))
+  done <"$manifest"
+  [[ "$count" -gt 0 ]] || fail "evidence manifest is empty"
+  printf 'evidence_manifest_verified=PASS\nmanifest=%s\nfiles=%s\n' \
+    "$manifest" "$count"
+}
+
 usage() {
   cat <<'EOF'
 usage: ./tools/a33xctl <command>
@@ -1334,6 +1546,12 @@ commands:
   inspect-core1     verify no-Zygote native-only packaging
   inspect-core1-provider-probe
                     verify the non-shipping trusted provider probe is present
+  inspect-core1-readiness --serial SERIAL --expected-revision REVISION
+                    read-only exact-product Core 1 readiness snapshot
+  evidence-manifest-generate --root DIR --output MANIFEST
+                    atomically record finalized evidence path/size/SHA-256
+  evidence-manifest-verify --root DIR --manifest MANIFEST
+                    independently verify a finalized evidence manifest
 legacy migration commands (not release-supported):
   build-core0b      require SOS_ENABLE_LEGACY_CORE0B_BUILD=1, then build Core 0B
   inspect-core0b    verify an intentional Core 0B comparison build
@@ -1372,6 +1590,9 @@ case "$command" in
   inspect-core0b) inspect_core0b "$@" ;;
   inspect-core1) inspect_core1 "$@" ;;
   inspect-core1-provider-probe) inspect_core1_provider_probe "$@" ;;
+  inspect-core1-readiness) inspect_core1_readiness "$@" ;;
+  evidence-manifest-generate) evidence_manifest_generate "$@" ;;
+  evidence-manifest-verify) evidence_manifest_verify "$@" ;;
   -h|--help|help|'') usage ;;
   *) fail "unknown command: $command" ;;
 esac

@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+[[ "$#" -ge 3 && "$1" == -s && "$2" == MOCKSERIAL ]] || exit 64
+shift 2
+
+case "$*" in
+  'shell getprop ro.build.version.incremental') printf '%s\r\n' 'sos.core1.test.revision' ;;
+  'shell getprop ro.sos.core.stage') printf '1\r\n' ;;
+  'shell getprop ro.sos.lifecycle') printf 'active\r\n' ;;
+  'shell getprop ro.sos.profile') printf 'core\r\n' ;;
+  'shell getprop ro.sos.providers') printf 'core-native\r\n' ;;
+  'shell getprop ro.sos.ui_owner') printf 'native-sos-no-zygote\r\n' ;;
+  'shell getprop ro.zygote') printf 'no_zygote\r\n' ;;
+  'shell getprop init.svc.sos_core_host') printf 'running\r\n' ;;
+  'shell getprop init.svc.sos_authority') printf 'running\r\n' ;;
+  'shell getprop init.svc.sos_core_platform') printf 'running\r\n' ;;
+  'shell getenforce') printf 'Enforcing\r\n' ;;
+  'shell dumpsys SurfaceFlinger --list') printf 'Background\r\nSOS Core Experience\r\n' ;;
+  'shell pidof sos-core-host') printf '921 932\r\n' ;;
+  'shell pidof sos-authority') printf '941\r\n' ;;
+  'shell pidof sos-core-platform') printf '942\r\n' ;;
+  'logcat -d -b all -v threadtime')
+    printf '%s\n' \
+      '08-17 14:45:30.000 I sos-core-host: core1_experience_start ce_available=false native_synthetic_password=false de_storage=true' \
+      '08-17 14:45:30.100 I sos-core-host: native_gpui_start width=1080 height=2400 density=450 ui_owner=native-sos-no-zygote' \
+      '08-17 14:45:31.000 I sos-experience: SOS experience window is live frame_padding=none'
+    ;;
+  *)
+    printf 'unexpected mock adb arguments: %s\n' "$*" >&2
+    exit 65
+    ;;
+esac

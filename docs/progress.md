@@ -7789,3 +7789,37 @@ keystore residuals, audio, compatible application and attention owners, native
 unlock/synthetic password, saved-network provisioning and provider actions,
 and longer-term soak remain open as documented. The working tree remains
 uncommitted, and the original stash remains available for recovery.
+
+## 2026-08-17 — Deterministic Core 1 readiness and evidence tools
+
+**Goal:** Make Core 1 readiness checks product-specific and evidence manifests
+deterministic without touching a device.
+
+**Changed:** `tools/a33xctl` adds a read-only `inspect-core1-readiness` snapshot requiring an
+explicit serial and expected revision. It checks the Core 1 product identity,
+SELinux mode, `SOS Core Experience` surface, init/process state for supervisor,
+experience child, authority, and native platform adapter, and current native
+lifecycle/runtime markers plus relevant post-lifecycle crashes and enforcing
+AVCs. It intentionally never queries either Android boot-complete property.
+The new host-only `evidence-manifest-generate` and
+`evidence-manifest-verify` commands sort finalized relative paths, record byte
+size and SHA-256, exclude the manifest and temporary outputs, detect files that
+change while hashing, publish with an atomic rename, and independently verify
+membership, order, size, and hash. `tests/a33xctl-host-test.sh` and its mock ADB
+fixture cover the happy and wrong-revision readiness paths, deterministic
+self-excluding manifests, temporary-output exclusion, and tamper rejection
+without hardware.
+
+**Evidence / failures / rejected approaches:** `bash -n` passed for the tool,
+host test, and mock fixture; `git diff --check` passed. The targeted host test
+was not executed and remains the immediate host check. No adb, device, build,
+reboot, sideload, soak, or hardware action occurred. Reusing
+`sys.boot_completed` for no-Zygote, self-referential manifests, and a fragile
+polling readiness command were rejected.
+
+**Decision / open risks / next gate:** Adopt the small read-only tooling
+surface, but do not claim hardware readiness or evidence PASS from host checks.
+First run `bash tests/a33xctl-host-test.sh`; then run the next explicitly
+authorized exact Core 1 artifact/serial gate through `inspect-core1-readiness`,
+soak, evidence finalization, manifest generation, and independent verification.
+Android/Compat gates must use their distinct boot-complete/HOME predicate.
