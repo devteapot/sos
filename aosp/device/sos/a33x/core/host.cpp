@@ -953,8 +953,18 @@ int runPreUnlockGate() {
       android::base::GetProperty("ro.sos.core.stage", "shadow");
   if (stage == "compat" || stage == "0b")
     return runPinUnlock(false);
-  if (stage == "1")
-    return runCoreOneLocked();
+  if (stage == "1") {
+    if (android::base::GetBoolProperty("debug.sos.core.lock", false))
+      return runCoreOneLocked();
+    // The stock experience and provider state live in device-encrypted
+    // /data/misc/sos. Core 1 still has no native synthetic-password owner, so
+    // starting here must not claim CE availability or unwrap user storage.
+    // The locked surface remains available as an explicit diagnostic and the
+    // fixed Recovery surface remains the supervisor's failure boundary.
+    ALOGI("core1_experience_start ce_available=false "
+          "native_synthetic_password=false de_storage=true");
+    return 0;
+  }
   ALOGW("native_core_deferred reason=user_ce_locked stage=%s", stage.c_str());
   return kExitAndroidUserLocked;
 }

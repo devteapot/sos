@@ -147,6 +147,8 @@ apply_source_patches() {
     device/samsung/s5e8825-common
     frameworks/base
     device/samsung/s5e8825-common
+    device/samsung/s5e8825-common
+    device/samsung/s5e8825-common
   )
   local -a patches=(
     0001-s5e8825-fix-epicoperator-symbol.patch
@@ -154,6 +156,8 @@ apply_source_patches() {
     0003-s5e8825-package-recovery-init.patch
     0004-frameworks-base-enforce-sos-core-install-policy.patch
     0005-s5e8825-select-no-zygote-for-sos-core1.patch
+    0006-s5e8825-allow-sos-core-tsp-enable.patch
+    0007-s5e8825-chown-tsp-enabled.patch
   )
   local index project patch
   for index in "${!patches[@]}"; do
@@ -955,8 +959,10 @@ inspect_core() {
     '$8 == "android_main" && $7 != "UND" { found = 1 } END { exit !found }' || \
     fail "SOS Core GPUI runtime cannot satisfy NativeActivity glue at load time"
   strings "$host_runtime" | grep -F \
-    'core_input_ready device=sec_touchscreen mode=exclusive' >/dev/null || \
-    fail "SOS Core GPUI runtime does not exclusively own its touchscreen"
+    'core_input_ready device=sec_touchscreen mode=exclusive protocol=mt-slot+btn_touch' >/dev/null || \
+    fail "SOS Core GPUI runtime does not own the Samsung touchscreen with BTN_TOUCH fallback"
+  strings "$host_runtime" | grep -F 'core_input_tsp_enabled path=' >/dev/null || \
+    fail "SOS Core GPUI runtime omitted Samsung TSP enable"
   strings "$host_runtime" | grep -F \
     'core_input_ready device=gpio_keys mode=exclusive' >/dev/null || \
     fail "SOS Core GPUI runtime does not exclusively own its volume keys"
@@ -1054,6 +1060,15 @@ inspect_core_stage() {
     fail "SOS $stage GPUI runtime still reserves Android-style frame bands"
   readelf -Ws "$host_runtime" | grep -F ' sos_core_main' >/dev/null || \
     fail "SOS $stage GPUI runtime does not export sos_core_main"
+  strings "$host_runtime" | grep -F \
+    'core_input_ready device=sec_touchscreen mode=exclusive protocol=mt-slot+btn_touch' >/dev/null || \
+    fail "SOS $stage GPUI runtime omitted Samsung BTN_TOUCH fallback"
+  strings "$host_runtime" | grep -F 'core_input_tsp_enabled path=' >/dev/null || \
+    fail "SOS $stage GPUI runtime omitted Samsung TSP enable"
+  strings "$host_runtime" | grep -F 'core_input_tsp_cycled device=' >/dev/null || \
+    fail "SOS $stage GPUI runtime omitted Samsung TSP open/close start"
+  strings "$host_runtime" | grep -F 'core_native_software_keyboard node=' >/dev/null || \
+    fail "SOS $stage GPUI runtime omitted the Core software keyboard"
   file "$authority" | grep -F 'ARM aarch64' >/dev/null || \
     fail "SOS $stage revision authority is not AArch64"
   strings "$authority" | grep -F 'core_revision=' >/dev/null || \
@@ -1183,6 +1198,12 @@ inspect_core_stage() {
     strings "$core_platform" | grep -F \
       'core_platform_response_send_failed error=' >/dev/null || \
       fail "Core 1 platform adapter omitted peer-close-safe response handling"
+    strings "$core_platform" | grep -F 'core_platform_snapshot_ms' >/dev/null || \
+      fail "Core 1 platform adapter omitted snapshot timing logs"
+    strings "$core_platform" | grep -F 'core_platform_audio_services_absent' >/dev/null || \
+      fail "Core 1 platform adapter omitted audio service fail-fast"
+    strings "$core_platform" | grep -F 'core_platform_audio_probe_timeout' >/dev/null || \
+      fail "Core 1 platform adapter omitted bounded audio probe timeout"
     grep -Fx 'on post-fs-data && property:ro.sos.providers=core-native' \
       "$core_platform_rc" >/dev/null || \
       fail "Core 1 does not conditionally start the native Wi-Fi owner"
@@ -1203,6 +1224,16 @@ inspect_core_stage() {
     [[ "$core_platform_parent_policy" == \
       '(allow sos_core_platform sos_authority_data_file (dir (search)))' ]] || \
       fail "Core 1 platform parent traversal is missing or broader than dir search"
+    local vendor_policy="$target_files/VENDOR/etc/selinux/vendor_sepolicy.cil"
+    [[ -f "$vendor_policy" ]] || fail "Core 1 vendor sepolicy is missing"
+    grep -F 'sysfs_touchscreen_writable' "$vendor_policy" | grep -F 'sos_core_host' >/dev/null || \
+      fail "Core 1 host cannot enable the Samsung TSP sysfs node"
+    grep -Fx '    chown system system /sys/class/sec/tsp/enabled' \
+      "$target_files/VENDOR/etc/init/init.s5e8825.rc" >/dev/null || \
+      fail "Core 1 vendor init does not chown Samsung tsp/enabled to system"
+    grep -Fx '    chmod 0660 /sys/class/sec/tsp/enabled' \
+      "$target_files/VENDOR/etc/init/init.s5e8825.rc" >/dev/null || \
+      fail "Core 1 vendor init does not make Samsung tsp/enabled writable by system"
     ! grep -Eq '^\(allow sos_core_platform sysfs_battery(info)? ' "$system_ext_policy" || \
       fail "Core 1 bypasses the native health HAL with vendor battery sysfs access"
     ! grep -Eq '^\(allow sos_core_platform (wpa_socket|hal_wifi_supplicant_default) ' \
@@ -1218,6 +1249,9 @@ inspect_core_stage() {
     grep -RhsFx 'ro.zygote=no_zygote' \
       "$target_files/VENDOR/build.prop" "$target_files/VENDOR/etc" 2>/dev/null | grep -Fx \
       'ro.zygote=no_zygote' >/dev/null || fail "Core 1 does not select init.no_zygote.rc"
+    strings "$host" | grep -F \
+      'core1_experience_start ce_available=false native_synthetic_password=false' >/dev/null || \
+      fail "Core 1 must start the DE-hosted experience without faking CE unlock"
     strings "$host" | grep -F 'core1_locked_surface_ready native_synthetic_password=false' >/dev/null || \
       fail "Core 1 must expose the native-unlock blocker instead of faking CE unlock"
   fi

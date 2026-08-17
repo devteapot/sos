@@ -15,6 +15,9 @@ PRODUCT_PACKAGES += \
     sos-agent-example-secondary \
     sos-default-experience
 
+SYSTEM_EXT_PUBLIC_SEPOLICY_DIRS += \
+    device/sos/a33x/sepolicy/system_ext/public
+
 SYSTEM_EXT_PRIVATE_SEPOLICY_DIRS += \
     device/sos/a33x/sepolicy/system_ext/private
 

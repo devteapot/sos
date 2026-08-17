@@ -1,0 +1,35 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: SOS bring-up <sos@localhost>
+Date: Sun, 16 Aug 2026 23:59:00 +0200
+Subject: [PATCH] s5e8825-common: Let system write Samsung tsp/enabled
+
+The live sec_ts node is /sys/class/sec/tsp/enabled and is root-owned by
+default. Chown it like the adjacent touchscreen controls so the system-UID
+Core host can power the controller without InputFlinger.
+
+---
+ configs/init/init.s5e8825.rc | 2 ++
+ 1 file changed, 2 insertions(+)
+
+diff --git a/configs/init/init.s5e8825.rc b/configs/init/init.s5e8825.rc
+index 1ca1e9c..2fcf361 100644
+--- a/configs/init/init.s5e8825.rc
++++ b/configs/init/init.s5e8825.rc
+@@ -512,6 +512,7 @@ on boot
+ 
+     # Permissions for Touchscreen
+     chown system system /sys/class/sec/tsp/cmd
++    chown system system /sys/class/sec/tsp/enabled
+     chown system system /sys/class/sec/tsp/input/enabled
+     chown root system /proc/tsp_msg
+     chown system radio /sys/class/sec/tsp/pressure_enable
+@@ -533,6 +534,7 @@ on boot
+     chown system system /sys/class/sec/tsp/ear_detect_enable
+     chown system system /sys/class/sec/tsp/ta_mode
+     chown system system /sys/class/sec/tsp/virtual_prox
++    chmod 0660 /sys/class/sec/tsp/enabled
+     chmod 0660 /sys/class/sec/tsp/input/enabled
+     chmod 0440 /proc/tsp_msg
+ 
+-- 
+2.51.0

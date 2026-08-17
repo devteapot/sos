@@ -1,0 +1,5 @@
+# Samsung's touch controller remains disabled until userspace writes this
+# vendor-owned sysfs node. Keep the grant on the host domain and exact type.
+allow sos_core_host sysfs_sec_touchscreen:dir r_dir_perms;
+allow sos_core_host sysfs_sec_touchscreen:lnk_file r_file_perms;
+allow sos_core_host sysfs_touchscreen_writable:file rw_file_perms;

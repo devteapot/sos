@@ -1,6 +1,6 @@
 use std::{
     env, fs,
-    io::{BufRead, BufReader, Read, Write},
+    io::{Read, Write},
     net::TcpListener,
     os::unix::net::UnixListener,
     path::PathBuf,
@@ -9,8 +9,8 @@ use std::{
 };
 
 use android_authority_protocol::{
-    read_provider_request, write_provider_response, RevisionRequest, RevisionResponse,
-    CORE_PROVIDER_SOCKET, CORE_REVISION_SOCKET, MAX_REVISION_REQUEST_BYTES, REVISION_ADDRESS,
+    read_provider_request, read_revision_request, write_provider_response, write_revision_response,
+    RevisionResponse, CORE_PROVIDER_SOCKET, CORE_REVISION_SOCKET, REVISION_ADDRESS,
 };
 use android_system_authority::AndroidSystemAuthority;
 
@@ -139,27 +139,13 @@ fn handle_revision<S: Read + Write>(
     mut stream: S,
     authority: &Arc<Mutex<AndroidSystemAuthority>>,
 ) -> std::io::Result<()> {
-    let mut line = Vec::new();
-    {
-        let mut reader = BufReader::new(&mut stream).take(MAX_REVISION_REQUEST_BYTES + 1);
-        reader.read_until(b'\n', &mut line)?;
-    }
-    if line.len() as u64 > MAX_REVISION_REQUEST_BYTES {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            "revision request exceeded its size limit",
-        ));
-    }
-    let request =
-        serde_json::from_slice::<RevisionRequest>(&line).map_err(std::io::Error::other)?;
+    let request = read_revision_request(&mut stream)?;
     let request_id = request.request_id();
     let response: RevisionResponse = authority
         .lock()
         .expect("Android authority lock")
         .dispatch_revision(request);
-    serde_json::to_writer(&mut stream, &response).map_err(std::io::Error::other)?;
-    stream.write_all(b"\n")?;
-    stream.flush()?;
+    write_revision_response(&mut stream, &response)?;
     println!(
         "revision_request_completed request_id={request_id} ok={}",
         response.ok
@@ -170,17 +156,18 @@ fn handle_revision<S: Read + Write>(
 #[cfg(test)]
 mod tests {
     use std::{
-        io::Write as _,
+        io::{Read as _, Write as _},
+        net::Shutdown,
         os::unix::net::UnixStream,
         sync::{Arc, Mutex},
         thread,
     };
 
-    use android_authority_protocol::request_provider_over_stream;
+    use android_authority_protocol::{request_provider_over_stream, RevisionRequest};
     use android_provider_acceptance::{run_probe, ProbeStatus};
     use experience_ir::{ProviderRequest, ProviderResponse};
 
-    use super::{handle_provider, AndroidSystemAuthority};
+    use super::{handle_provider, handle_revision, AndroidSystemAuthority};
 
     fn test_authority() -> (tempfile::TempDir, Arc<Mutex<AndroidSystemAuthority>>) {
         let temporary = tempfile::tempdir().unwrap();
@@ -206,6 +193,53 @@ mod tests {
             return Err(error.to_string());
         }
         response
+    }
+
+    fn revision_exchange(
+        authority: &Arc<Mutex<AndroidSystemAuthority>>,
+        bytes: &[u8],
+    ) -> (std::io::Result<()>, Vec<u8>) {
+        let (mut client, server) = UnixStream::pair().unwrap();
+        let server_authority = Arc::clone(authority);
+        let worker = thread::spawn(move || handle_revision(server, &server_authority));
+        client.write_all(bytes).unwrap();
+        client.shutdown(Shutdown::Write).unwrap();
+        let mut response = Vec::new();
+        client.read_to_end(&mut response).unwrap();
+        (worker.join().unwrap(), response)
+    }
+
+    #[test]
+    fn malformed_revision_connections_do_not_poison_the_authority() {
+        let (_temporary, authority) = test_authority();
+
+        let (empty, response) = revision_exchange(&authority, b"");
+        assert_eq!(empty.unwrap_err().kind(), std::io::ErrorKind::UnexpectedEof);
+        assert!(response.is_empty());
+
+        let (truncated, response) =
+            revision_exchange(&authority, br#"{"action":"current","request_id":2}"#);
+        assert_eq!(
+            truncated.unwrap_err().kind(),
+            std::io::ErrorKind::UnexpectedEof
+        );
+        assert!(response.is_empty());
+
+        let (malformed, response) = revision_exchange(&authority, b"{\n");
+        assert_eq!(
+            malformed.unwrap_err().kind(),
+            std::io::ErrorKind::InvalidData
+        );
+        assert!(response.is_empty());
+
+        let mut valid = serde_json::to_vec(&RevisionRequest::Current { request_id: 3 }).unwrap();
+        valid.push(b'\n');
+        let (result, response) = revision_exchange(&authority, &valid);
+        result.unwrap();
+        let decoded: android_authority_protocol::RevisionResponse =
+            serde_json::from_slice(&response).unwrap();
+        assert!(decoded.ok);
+        assert_eq!(decoded.request_id, 3);
     }
 
     #[test]

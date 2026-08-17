@@ -1,5 +1,4 @@
 use std::{
-    io::{BufRead, BufReader, Read, Write},
     sync::atomic::{AtomicU64, Ordering},
     thread,
     time::Duration,
@@ -15,7 +14,7 @@ use android_authority_protocol::CORE_REVISION_SOCKET;
 #[cfg(not(feature = "core-native"))]
 use android_authority_protocol::REVISION_ADDRESS;
 use android_authority_protocol::{
-    RevisionAssetWire, RevisionRequest, RevisionResponse, MAX_REVISION_RESPONSE_BYTES,
+    request_revision_over_stream, RevisionAssetWire, RevisionRequest, RevisionResponse,
 };
 use runtime_luau::{RevisionAsset, RevisionAssetInput};
 use serde_json::Value as JsonValue;
@@ -94,12 +93,11 @@ pub(super) fn inputs(assets: Vec<RevisionAssetWire>) -> Vec<RevisionAssetInput> 
 }
 
 fn request(request: RevisionRequest) -> Result<RevisionResponse, String> {
-    let expected_id = request.request_id();
     #[cfg(feature = "core-native")]
     let stream = connect_core()?;
     #[cfg(not(feature = "core-native"))]
     let stream = connect_tcp()?;
-    request_over_stream(stream, request, expected_id)
+    request_revision_over_stream(stream, request)
 }
 
 #[cfg(feature = "core-native")]
@@ -130,36 +128,6 @@ fn connect_tcp() -> Result<TcpStream, String> {
         .set_write_timeout(Some(Duration::from_secs(2)))
         .map_err(|error| error.to_string())?;
     Ok(stream)
-}
-
-fn request_over_stream<S: Read + Write>(
-    mut stream: S,
-    request: RevisionRequest,
-    expected_id: u64,
-) -> Result<RevisionResponse, String> {
-    serde_json::to_writer(&mut stream, &request).map_err(|error| error.to_string())?;
-    stream.write_all(b"\n").map_err(|error| error.to_string())?;
-    stream.flush().map_err(|error| error.to_string())?;
-
-    let mut line = Vec::new();
-    BufReader::new(stream)
-        .take(MAX_REVISION_RESPONSE_BYTES + 1)
-        .read_until(b'\n', &mut line)
-        .map_err(|error| error.to_string())?;
-    if line.len() as u64 > MAX_REVISION_RESPONSE_BYTES {
-        return Err("revision response exceeded its size limit".into());
-    }
-    let response: RevisionResponse =
-        serde_json::from_slice(&line).map_err(|error| error.to_string())?;
-    if response.request_id != expected_id {
-        return Err("revision response request id did not match".into());
-    }
-    if !response.ok {
-        return Err(response
-            .error
-            .unwrap_or_else(|| "revision authority rejected request".into()));
-    }
-    Ok(response)
 }
 
 fn allocate_request_id() -> u64 {

@@ -24,10 +24,6 @@ impl StateService {
         self.current.clone()
     }
 
-    pub(crate) fn staged(&self, stage_id: u64) -> Option<StateEnvelope> {
-        self.staged.get(&stage_id).cloned()
-    }
-
     pub(crate) fn configure_fault(&mut self, point: Option<StateFaultPoint>) {
         self.fault = point;
     }
@@ -82,16 +78,25 @@ impl StateService {
 
     pub(crate) fn promote(&mut self, stage_id: u64) -> Result<StateEnvelope, String> {
         self.inject(StateFaultPoint::BeforePromote)?;
+        self.validate_promotion(stage_id)?;
         let staged = self
             .staged
             .remove(&stage_id)
             .ok_or_else(|| format!("unknown state stage: {stage_id}"))?;
-        if staged.revision != self.current.revision.saturating_add(1) {
-            return Err("staged state is stale".into());
-        }
         self.current = staged;
         self.inject(StateFaultPoint::AfterPromote)?;
         Ok(self.current.clone())
+    }
+
+    pub(crate) fn validate_promotion(&self, stage_id: u64) -> Result<StateEnvelope, String> {
+        let staged = self
+            .staged
+            .get(&stage_id)
+            .ok_or_else(|| format!("unknown state stage: {stage_id}"))?;
+        if staged.revision != self.current.revision.saturating_add(1) {
+            return Err("staged state is stale".into());
+        }
+        Ok(staged.clone())
     }
 
     pub(crate) fn abort(&mut self, stage_id: u64) -> bool {

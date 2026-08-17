@@ -260,10 +260,10 @@ impl AndroidSystemAuthority {
             .revisions
             .verify(revision_id)
             .map_err(|error| error.to_string())?;
-        let staged = self
-            .state
-            .staged(state_stage_id)
-            .ok_or_else(|| format!("unknown state stage: {state_stage_id}"))?;
+        // Logical conflicts must be rejected before the durable intent is
+        // written. Once the journal exists, every subsequent error is an
+        // integrity boundary that recovery must finish after process restart.
+        let staged = self.state.validate_promotion(state_stage_id)?;
         if staged.source_sha256 != revision.manifest.source.sha256
             || staged.schema_version != revision.manifest.schema_version
         {
@@ -673,6 +673,78 @@ mod tests {
         });
         assert!(!activated.ok);
         assert_eq!(authority.state.load().revision, 0);
+    }
+
+    #[test]
+    fn stale_stage_is_rejected_before_journal_and_next_activation_succeeds() {
+        let temporary = tempfile::tempdir().unwrap();
+        let revision_root = temporary.path().join("revisions");
+        let mut authority = AndroidSystemAuthority::open(
+            &revision_root,
+            temporary.path().join("provider.json"),
+            b"return { api_version = 3, revision = 1 }",
+        )
+        .unwrap();
+        let stale_source = "return { api_version = 3, revision = 2 }";
+        let (stale_revision_id, stale_stage_id) = install_and_stage(&mut authority, stale_source);
+
+        let stock_sha256 = authority
+            .revisions
+            .current()
+            .unwrap()
+            .unwrap()
+            .manifest
+            .source
+            .sha256;
+        let competing_stage = authority
+            .state
+            .stage(0, 1, json!({ "focus": false }), stock_sha256)
+            .unwrap();
+        authority.promote_state(competing_stage).unwrap();
+
+        let rejected = authority.dispatch_revision(RevisionRequest::Activate {
+            request_id: 3,
+            revision_id: stale_revision_id,
+            state_stage_id: stale_stage_id,
+        });
+        assert!(!rejected.ok);
+        assert_eq!(rejected.error.as_deref(), Some("staged state is stale"));
+        assert!(!revision_root.join("activation-journal.json").exists());
+
+        let source = "return { api_version = 3, revision = 3 }";
+        let installed = authority.dispatch_revision(RevisionRequest::Install {
+            request_id: 4,
+            source: source.into(),
+            state: json!({ "candidate": "retry" }),
+            schema_version: 1,
+            experience_api_version: 3,
+            assets: Vec::new(),
+        });
+        assert!(installed.ok);
+        let revision_id = installed.revision_id.unwrap();
+        let source_sha256 = authority
+            .revisions
+            .verify(&revision_id)
+            .unwrap()
+            .manifest
+            .source
+            .sha256;
+        let staged = authority.dispatch_provider(ProviderRequest::StageState {
+            request_id: 5,
+            expected_revision: 1,
+            schema_version: 1,
+            state: json!({ "candidate": "retry" }),
+            source_sha256,
+            effects: Vec::new(),
+        });
+        assert!(staged.ok);
+        let activated = authority.dispatch_revision(RevisionRequest::Activate {
+            request_id: 6,
+            revision_id,
+            state_stage_id: staged.stage_id.unwrap(),
+        });
+        assert!(activated.ok, "{:?}", activated.error);
+        assert_eq!(activated.state.unwrap().revision, 2);
     }
 
     #[test]

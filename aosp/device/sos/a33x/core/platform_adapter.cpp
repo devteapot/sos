@@ -10,6 +10,8 @@
 #include <android-base/strings.h>
 #include <android/binder_manager.h>
 #include <arpa/inet.h>
+#include <binder/IServiceManager.h>
+#include <binder/ProcessState.h>
 #include <dirent.h>
 #include <fcntl.h>
 #include <json/json.h>
@@ -21,6 +23,9 @@
 #include <sys/un.h>
 #include <system/audio.h>
 #include <unistd.h>
+#include <utils/Errors.h>
+#include <utils/String16.h>
+#include <utils/StrongPointer.h>
 
 #include <algorithm>
 #include <array>
@@ -28,15 +33,18 @@
 #include <cerrno>
 #include <chrono>
 #include <climits>
+#include <condition_variable>
 #include <cstdint>
 #include <cstring>
 #include <fstream>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <set>
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -228,6 +236,48 @@ bool persistedMuted() {
     return state && (*state)["muted"].isBool() && (*state)["muted"].asBool();
 }
 
+bool audioServicesReady() {
+    const android::sp<android::IServiceManager> manager = android::defaultServiceManager();
+    if (manager == nullptr) return false;
+    return manager->checkService(android::String16("media.audio_flinger")) != nullptr &&
+            manager->checkService(android::String16("media.audio_policy")) != nullptr;
+}
+
+bool probeMusicVolume(int* index, android::status_t* status, uint64_t timeoutMs) {
+    struct ProbeState {
+        std::mutex mutex;
+        std::condition_variable changed;
+        bool done = false;
+        int index = 0;
+        android::status_t status = android::UNKNOWN_ERROR;
+    };
+    const auto state = std::make_shared<ProbeState>();
+    std::thread worker([state] {
+        int localIndex = 0;
+        const android::status_t localStatus = android::AudioSystem::getStreamVolumeIndex(
+                AUDIO_STREAM_MUSIC, &localIndex, AUDIO_DEVICE_OUT_DEFAULT);
+        std::lock_guard<std::mutex> lock(state->mutex);
+        state->index = localIndex;
+        state->status = localStatus;
+        state->done = true;
+        state->changed.notify_one();
+    });
+    std::unique_lock<std::mutex> lock(state->mutex);
+    if (!state->changed.wait_for(lock, std::chrono::milliseconds(timeoutMs),
+                                [&] { return state->done; })) {
+        worker.detach();
+        return false;
+    }
+    lock.unlock();
+    worker.join();
+    *index = state->index;
+    *status = state->status;
+    return true;
+}
+
+enum class AudioProbe : uint8_t { Pending, Ready, Unavailable };
+AudioProbe gAudioProbe = AudioProbe::Pending;
+
 Json::Value mediaSnapshot() {
     Json::Value media(Json::objectValue);
     media["active"] = false;
@@ -248,15 +298,32 @@ Json::Value audioSnapshot(bool* available) {
     audio["volume_percent"] = nullValue();
     audio["muted"] = nullValue();
     audio["media"] = mediaSnapshot();
-    int index = 0;
-    const android::status_t status = android::AudioSystem::getStreamVolumeIndex(
-            AUDIO_STREAM_MUSIC, &index, AUDIO_DEVICE_OUT_DEFAULT);
-    *available = status == android::OK;
-    if (*available) {
-        index = std::clamp(index, 0, kMusicVolumeMaximum);
-        audio["volume_percent"] = index * 100 / kMusicVolumeMaximum;
-        audio["muted"] = persistedMuted();
+    *available = false;
+    if (gAudioProbe == AudioProbe::Unavailable) return audio;
+    if (!audioServicesReady()) {
+        LOG(WARNING) << "core_platform_audio_services_absent";
+        return audio;
     }
+    int index = 0;
+    android::status_t status = android::UNKNOWN_ERROR;
+    const uint64_t started = nowMs();
+    if (!probeMusicVolume(&index, &status, 250)) {
+        gAudioProbe = AudioProbe::Unavailable;
+        LOG(WARNING) << "core_platform_audio_probe_timeout ms=" << (nowMs() - started);
+        return audio;
+    }
+    const uint64_t elapsed = nowMs() - started;
+    if (status != android::OK || elapsed > 1000) {
+        gAudioProbe = AudioProbe::Unavailable;
+        LOG(WARNING) << "core_platform_audio_unavailable status=" << status
+                     << " ms=" << elapsed;
+        return audio;
+    }
+    gAudioProbe = AudioProbe::Ready;
+    index = std::clamp(index, 0, kMusicVolumeMaximum);
+    audio["volume_percent"] = index * 100 / kMusicVolumeMaximum;
+    audio["muted"] = persistedMuted();
+    *available = true;
     return audio;
 }
 
@@ -309,19 +376,21 @@ bool socketAddress(const std::string& path, sockaddr_un* address, socklen_t* len
     return true;
 }
 
-std::shared_ptr<ISupplicantStaIface> supplicantStaIface() {
+std::shared_ptr<ISupplicantStaIface> supplicantStaIface(bool createIfMissing) {
     const std::string serviceName = std::string(ISupplicant::descriptor) + "/default";
     ndk::SpAIBinder binder(AServiceManager_checkService(serviceName.c_str()));
     std::shared_ptr<ISupplicant> supplicant = ISupplicant::fromBinder(binder);
     if (!supplicant) return nullptr;
     std::shared_ptr<ISupplicantStaIface> interface;
     ndk::ScopedAStatus status = supplicant->getStaInterface("wlan0", &interface);
-    if (!status.isOk() || !interface) {
+    if ((!status.isOk() || !interface) && createIfMissing) {
         status = supplicant->addStaInterface("wlan0", &interface);
     }
-    if (!status.isOk()) {
-        LOG(WARNING) << "core_platform_supplicant_unavailable error="
-                     << status.getDescription();
+    if (!status.isOk() || !interface) {
+        if (createIfMissing) {
+            LOG(WARNING) << "core_platform_supplicant_unavailable error="
+                         << status.getDescription();
+        }
         return nullptr;
     }
     return interface;
@@ -377,7 +446,7 @@ Json::Value connectivitySnapshot(std::vector<SavedNetwork>* networks, bool* wifi
     const bool wifiLinkUp = std::any_of(interfaces.begin(), interfaces.end(), [](const auto& name) {
         return android::base::StartsWith(name, "wlan") || android::base::StartsWith(name, "wifi");
     });
-    const std::shared_ptr<ISupplicantStaIface> interface = supplicantStaIface();
+    const std::shared_ptr<ISupplicantStaIface> interface = supplicantStaIface(false);
     *wifiConnected = wifiLinkUp && interface != nullptr;
     const std::optional<int32_t> selected = selectedNetworkId();
     *networks = savedNetworks(interface, wifiLinkUp ? selected : std::nullopt);
@@ -531,16 +600,23 @@ Json::Value providerSnapshot() {
     bool audioAvailable = false;
     std::vector<SavedNetwork> networks;
     bool wifiConnected = false;
-    const Json::Value audio = audioSnapshot(&audioAvailable);
+    const uint64_t started = nowMs();
+    const Json::Value power = healthSnapshot();
+    const uint64_t afterHealth = nowMs();
     const Json::Value connectivity = connectivitySnapshot(&networks, &wifiConnected);
+    const uint64_t afterConnectivity = nowMs();
+    const Json::Value audio = audioSnapshot(&audioAvailable);
     const std::vector<NativeApp> apps = nativeApps();
     const Json::Value attention = attentionSnapshot();
+    LOG(INFO) << "core_platform_snapshot_ms health=" << (afterHealth - started)
+              << " connectivity=" << (afterConnectivity - afterHealth)
+              << " audio=" << (nowMs() - afterConnectivity);
 
     Json::Value root(Json::objectValue);
     root["abi_version"] = kProviderAbi;
     root["observed_at_ms"] = Json::UInt64(nowMs());
     root["clock"] = emptyClock();
-    root["power"] = healthSnapshot();
+    root["power"] = power;
     root["connectivity"] = connectivity;
     root["audio"] = audio;
     root["apps"] = appsSnapshot(apps);
@@ -577,12 +653,12 @@ bool executeAction(const Json::Value& request) {
         return sendAbstractDatagram("sos_core_media", action);
     }
     if (provider == "network" && action == "disconnect") {
-        const std::shared_ptr<ISupplicantStaIface> interface = supplicantStaIface();
+        const std::shared_ptr<ISupplicantStaIface> interface = supplicantStaIface(true);
         if (!interface || !interface->disconnect().isOk()) return false;
         return persistSelectedNetwork(std::nullopt);
     }
     if (provider == "network" && action == "connect") {
-        const std::shared_ptr<ISupplicantStaIface> interface = supplicantStaIface();
+        const std::shared_ptr<ISupplicantStaIface> interface = supplicantStaIface(true);
         if (!interface) return false;
         const std::string requested = payload["network_id"].asString();
         for (const SavedNetwork& network : savedNetworks(interface, std::nullopt)) {
@@ -696,6 +772,7 @@ int createServer() {
 
 int main() {
     android::base::InitLogging(nullptr, android::base::KernelLogger);
+    android::ProcessState::self()->startThreadPool();
     if (mkdir(kStateDirectory, 0700) != 0 && errno != EEXIST) {
         PLOG(ERROR) << "core_platform_state_directory_failed";
         return 1;

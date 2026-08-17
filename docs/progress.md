@@ -6880,36 +6880,6 @@ wake/restart/power/thermal soak. Core 0B remains the frozen opt-in migration
 oracle until Core 1 also owns the outstanding unlock, displaced services,
 calls/alarms, and Recovery transition evidence on hardware.
 
-## 2026-08-17 — Codex implementor/runner subagents for SOS threads
-
-**Goal:** Stop the parent Sol thread from burning Codex-sub credits on
-10–30s `adb`/`a33xctl` poll loops and 200k-token mega-threads, by making
-delegation to named subagents the default.
-
-**Changed:** Added project Codex agents
-`.codex/agents/implementor.toml` (gpt-5.6-sol, high; repo patches only) and
-`.codex/agents/runner.toml` (gpt-5.6-luna, medium; host checks and
-allowlisted device recipes with a short postcard). `AGENTS.md` now requires
-the parent to spawn those agents by name and not run long CLI itself. No
-project `.codex/config.toml`; parent model/effort stays a per-thread choice.
-
-**Evidence:** Analysis of 11 t3code Codex rollouts on this repo (14–16 Aug)
-showed 8,215 Sol round-trips, ~13h 26m of `wait`/`write_stdin` polling, and
-~73% of estimated credits spent replaying cached parent context. Codex
-subagents were enabled (`multi_agent_version=v2`) but unused
-(`collaboration_mode=default`). This change is instruction/config only; no
-device or host runtime measurement.
-
-**Decision:** Adopt named `implementor`/`runner` agents. Keep flash/reboot
-off the runner allowlist unless the user names the command. Do not treat
-this as a hardware or latency gate.
-
-**Open risks / next gate:** Parent YOLO/full-access still overrides child
-sandbox, so runner restrictions are instructional. Confirm in the next SOS
-Codex thread that the parent uses `spawn_agent`/`wait_agent` only, that
-`runner` is Luna and owns long yields, and that weekly `used_percent` rises
-slower than the previous Sol-only poll pattern.
-
 ## 2026-08-17 — Core 1 on-device acceptance preflight
 
 **Goal / hypothesis:** Run the physical-provider acceptance gate for the
@@ -7366,31 +7336,456 @@ EFS denial, and run a longer soak before calling parity acceptance complete.
 The detailed record is
 [`core1-provider-parity.md`](core1-provider-parity.md#final-2026-08-17-hardware-result-partialopen).
 
-## 2026-08-17 — Agent workflow v2: cost-aware hardware gate ownership
+## 2026-08-17 — Reintegrate Core 1 main-experience bring-up
 
-**Goal:** Reduce coordination cost without slowing implementation or weakening
-device safety. Keep Sol responsible for architecture, ambiguous diagnosis,
-high-risk review, and coherent code changes; introduce a Terra acceptance gate;
-and let one Luna runner own a complete bounded transaction through authorized
-automatic reboot/boot/soak transitions.
+**Goal / stash judgment:** Selectively recover the useful work from the WIP
+stash based on `40c433d` onto current `main`, including the later non-shipping
+provider acceptance probe. Core 1 should boot the same Stock Base experience
+as Compat 1 from device-encrypted storage and use its native provider adapter;
+Compat remains on the unchanged Android/JNI and framework-provider paths.
 
-**Changed:** `AGENTS.md` now defines one writer, one device owner, independent
-host concurrency, one event-driven wait per phase, and explicit destructive
-authorization. `.codex/agents/implementor.toml` keeps coherent related work and
-material progress documentation with Sol. New `.codex/agents/gate.toml` makes
-Terra the device/hardware criteria, coordination, and evidence owner.
-`.codex/agents/runner.toml` now requires exact serial/operation/artifact facts,
-permits at most one authorized sideload attempt, follows inherent auto-reboot,
-completes boot observation and soak, and measures rather than infers duration.
-The obsolete `close_agent` lifecycle step was removed.
+The stash's DE-hosted launch, Samsung `BTN_TOUCH` fallback and TSP enable,
+Core-native GPUI keyboard, read-only Supplicant snapshot, bounded audio probe,
+and snapshot timing are coherent and retained. Its older copies of provider
+framing, SIGPIPE handling, parent-directory SELinux, probe plumbing, tooling,
+and provider documentation were rejected because `8786ec3` already replaces
+them. The stash-wide documentation history and broad design-doc rewrites were
+also not replayed. The authority timeout stays at two seconds rather than
+replaying the stale five-second relaxation, and peer-close safety continues to
+use the tested per-send `MSG_NOSIGNAL` helper rather than a process-wide signal
+handler. The stash itself remains intact for recovery.
 
-**Evidence:** Python `tomllib` parsed all three agent TOML files; `git diff
---check` passed. This was a workflow-only host validation; no device command or
-hardware claim was made.
+**Changed code / environment:** `sos-core-host` now bypasses only Core 1's
+pre-unlock diagnostic surface by default and starts the existing shared GPUI
+entry point from `/data/misc/sos/core`; it neither sets
+`sys.user.0.ce_available` nor unwraps CE. `debug.sos.core.lock=1` retains the
+old locked diagnostic and the supervisor still owns fixed Recovery on child
+failure or the Volume Up+Down chord. Core-native input now recognizes both
+type-B tracking IDs and Samsung `BTN_TOUCH`/legacy axes, cycles and enables the
+sec_ts controller, and exposes a GPUI keyboard through the existing shared
+text-session implementation. All additions are `core-native`-gated.
 
-**Decision / risk / next gate:** Target coordination/model overhead below 15%,
-one wait per phase, and zero ownership violations, inferred durations, or false
-manual reboot requests. The main residual risk is prompt adherence under a
-long recovery transaction. Exercise the workflow on the next explicitly
-authorized hardware gate, then compare actual agent/tool cost, wait count,
-transition messages, and measured transaction timing against those targets.
+The Core platform adapter now starts its Binder pool, avoids creating a
+Supplicant interface during snapshots, logs per-provider latency, and bounds
+the first `AudioSystem` volume read to 250 ms before caching unavailable.
+Missing audio services remain retryable. Product policy exports only the host
+domain needed by the vendor TSP rule; pinned source patches add that vendor
+policy directory and grant the system UID DAC access to the live
+`/sys/class/sec/tsp/enabled` node. `a33xctl` stages those patches and inspects
+the launch, touch, keyboard, TSP, audio, and policy markers. The Android cross
+check used NDK `29.0.14206865`, API 31, and the installed AArch64 target.
+
+**Host evidence:** `cargo fmt --all -- --check`, `bash -n tools/a33xctl`, and
+`git diff --check` passed. With the pinned NDK compiler/linker variables,
+`ANDROID_NDK_ROOT=/home/carlid/Android/Sdk/ndk/29.0.14206865
+ANDROID_NDK_HOME=/home/carlid/Android/Sdk/ndk/29.0.14206865
+CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=/home/carlid/Android/Sdk/ndk/29.0.14206865/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android31-clang++
+CC_aarch64_linux_android=/home/carlid/Android/Sdk/ndk/29.0.14206865/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android31-clang
+CXX_aarch64_linux_android=/home/carlid/Android/Sdk/ndk/29.0.14206865/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android31-clang++
+AR_aarch64_linux_android=/home/carlid/Android/Sdk/ndk/29.0.14206865/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar
+cargo check -p sos-experience --lib --no-default-features --features
+core-native --target aarch64-linux-android` passed in 11.53 s. `cargo test -p
+android-system-authority` passed 14 tests, `cargo test -p
+android-provider-acceptance` passed 6, and `cargo test -p
+android-authority-protocol` passed 3. The matching Android `cargo clippy`
+completed with only the existing `gpui-mobile` `clone_on_copy` and current
+provider-client `needless_return` warnings. Read-only `git apply --reverse --check`
+against `/home/carlid/dev/lineage-a33x/device/samsung/s5e8825-common` confirmed
+both new pinned source patches are already represented in that checkout.
+
+Three rejected checks are environmental/pre-existing rather than passes:
+desktop `cargo test -p sos-experience --lib` compiled the crate but could not
+link because this host lacks `xkbcommon`/`xkbcommon-x11`; Android `cargo check
+... --tests` reached existing target-incompatible tests (`providers_fake`,
+desktop-only embedded validation, and stress parser cfgs); and strict
+`cargo clippy ... -- -D warnings` stopped first in the existing `gpui-mobile`
+warning.
+
+**AOSP build and static gate:** The first host-only runner transaction ran
+`./tools/a33xctl build-core1` and `./tools/a33xctl inspect-core1`; both exited
+0 in 371.527 s. It produced revision
+`sos.core1.9a68f1083157.706c4fd35e3f` (1,022,123,478 bytes, SHA-256
+`366db0294da9c02f2409be160c894acd7827c6e3d49dc8e8a8811f12edbcfc32`),
+but exposed the unconditional `rgb` import warning. Its transcript remains
+historical evidence at
+`/tmp/core1-main-experience-host-8786ec3/build-inspect.log` (1,602,733 bytes,
+SHA-256
+`8c19ab6426797f1fadb909943889078065ad72806a7499b515d2afd91cfbf2cc`).
+That OTA was superseded and is not the device-gate candidate.
+
+The import is now `core-native`-gated. After that cleanup, `cargo fmt --all --
+--check`, `bash -n tools/a33xctl`, and `git diff --check` passed. Using the same
+pinned NDK variables above, both `cargo check -p sos-experience --lib
+--no-default-features --features aosp-system --target aarch64-linux-android`
+and the matching `--features core-native` command passed, confirming both
+sides of the cfg boundary.
+
+A second host-only transaction on HEAD
+`9a68f1083157503097ba95533288837127c136e6` reran
+`./tools/a33xctl build-core1` and `./tools/a33xctl inspect-core1`; both exited
+0 in 228.695 s, and the introduced unused-`rgb` warning was absent. Initial
+and final repository status were identical. This exact post-cleanup build and
+target-files inspection close the current host packaging/policy gate:
+
+| Final device-gate candidate | Revision | Bytes | SHA-256 |
+| --- | --- | ---: | --- |
+| `/home/carlid/dev/lineage-a33x/out/target/product/a33x/lineage_sos_core1_a33x-ota.zip` | `sos.core1.9a68f1083157.a537acc9b4d1` | 1,022,110,439 | `d111c199c56ef7d1e5964b23aa4d9a0743d2243e238d28fd937b4afda8994985` |
+
+Final target-files are at
+`/home/carlid/dev/lineage-a33x/out/target/product/a33x/obj/PACKAGING/target_files_intermediates/lineage_sos_core1_a33x-target_files`.
+The final transcript is
+`/tmp/core1-main-experience-host-postcleanup/build-inspect.log` (1,563,827
+bytes, SHA-256
+`207f65d3f67c2dfa13e95f3d32fb9f8c9556e15695b3f21bf3db116506dc6d8e`).
+Neither transaction performed a device operation; no boot observation or
+hardware claim is made.
+
+**Decision / risks:** Accept the selective integration as the smallest shared
+experience plus bounded Core-native platform delta. The AOSP build/static gate
+passed on the post-cleanup tree. Remaining gates are physical default
+boot into Stock Base with CE still locked, Samsung touch and text entry,
+Recovery chord/retry, provider latency and lifecycle, and a longer soak. Native
+synthetic-password unlock,
+saved-network provisioning, reversible audio when available, native
+media/app/attention owners, calls/alarms, and generated-revision fallback are
+still open; the simple native keyboard is not an Android IME replacement.
+
+**Runner recipe / next gate:** A Terra gate may bind serial `RFCT50EGFCN` to
+the final device-gate candidate's exact OTA path, revision, byte size, and
+SHA-256 above before authorizing one Luna transaction. The transaction may
+sideload that exact artifact once with its inherent auto-reboot, write evidence
+under `/tmp/core1-main-experience-<revision>/`, and terminate on wrong artifact
+identity, unresolved prior recovery/sideload state, sideload failure, wrong
+revision, boot timeout, crash/restart, or completion. Acceptance requires
+Core 1/core-native/no-Zygote/enforcing identity; CE still unavailable; `SOS
+Core Experience` instead of the locked surface; a visible touch hit; keyboard
+focus, committed glyphs, backspace, and submit; a warm provider snapshot below
+500 ms with live Health facts and no read-path Wi-Fi mutation; stable
+host/authority/platform PIDs and no relevant enforcing AVC during a five-minute
+soak. Owner-operated Volume Up+Down must enter fixed Recovery and Volume Up
+must retry Stock Base before the gate can close. Do not infer any of these from
+the host checks above.
+
+## 2026-08-17 — Core 1 main-experience gate: sideload transition rejected
+
+**Goal / authorized artifact:** Install the inspected Core 1 candidate on
+SM-A336B `RFCT50EGFCN` and evaluate default Stock Base boot, physical input,
+native providers, Recovery, and soak. The exact OTA was
+`/home/carlid/dev/lineage-a33x/out/target/product/a33x/lineage_sos_core1_a33x-ota.zip`,
+revision `sos.core1.9a68f1083157.a537acc9b4d1`, 1,022,110,439 bytes, SHA-256
+`d111c199c56ef7d1e5964b23aa4d9a0743d2243e238d28fd937b4afda8994985`.
+
+**Preflight:** Artifact and serial matched. The device was in ordinary `adb
+device` mode on prior revision `sos.core1.40c433d4fb63.9fcf8d492e9b`, with
+stage `1`, profile `core`, providers `core-native`, UI owner
+`native-sos-no-zygote`, SELinux enforcing, and `ro.zygote=no_zygote`. PIDs were
+host supervisor/child 927/931, authority 949, and platform 950. The captured
+surface was the old `SOS CORE 1 / NATIVE RECOVERY / NO ZYGOTE / CE DATA LOCKED
+/ USE RECOVERY` screen.
+
+**Failed transaction:** The runner issued exactly one direct `adb sideload`
+without first transitioning the ordinary adb device into Lineage Recovery
+sideload. It failed closed with `adb: sideload connection failed: closed`; the
+legacy retry also closed. Exit status was 1 after a measured 0.006376 s. No OTA
+bytes were accepted and no reboot occurred. The device remained on the old
+revision with the same screen. The authorized sideload attempt is consumed;
+all intended post-boot, UI, provider, soak, and Recovery criteria remain
+unproven.
+
+Evidence is outside Git under
+`/tmp/core1-main-experience-sos.core1.9a68f1083157.a537acc9b4d1/`:
+
+| Evidence | Bytes | SHA-256 |
+| --- | ---: | --- |
+| `artifact-metadata.txt` | 351 | `7187bdd6c3055a0e19494ada215bdbce014ff1474e814f08b617536661ed9136` |
+| `transaction.log` | 17,186 | `276c81aca6534cf796c2db858b588935bfcca1a659dfeaa4101e4b43665ebba0` |
+| `pre-mutation.png` | 17,324 | `fd11466f534905543f75d6c896942cf633250f221ba324e7766890f751de7890` |
+| `post-failure.png` | 17,324 | `fd11466f534905543f75d6c896942cf633250f221ba324e7766890f751de7890` |
+
+The identical screenshots corroborate that the failed attempt did not change
+the displayed state.
+
+**Decision / next gate:** Reject direct `adb sideload` from ordinary device
+mode as an invalid transaction recipe. No further action is authorized. A new
+explicit authorization must preserve the same serial/artifact binding and
+name the established transition sequence: `adb reboot sideload-auto-reboot`,
+`adb wait-for-sideload`, then one `adb sideload` of the exact OTA, followed by
+the inherent automatic reboot. An unresolved recovery/sideload process remains
+a stop-and-escalate condition. Only a fresh bounded transaction may resume the
+still-open boot/UI/provider/soak/Recovery acceptance gate.
+
+## 2026-08-17 — Core 1 main experience installed; physical gate partial
+
+**Corrected transaction:** A fresh authorization bound serial `RFCT50EGFCN`
+to the same exact OTA path, revision `sos.core1.9a68f1083157.a537acc9b4d1`,
+1,022,110,439-byte size, and SHA-256
+`d111c199c56ef7d1e5964b23aa4d9a0743d2243e238d28fd937b4afda8994985`.
+Preflight found no unresolved prior recovery or sideload process. The runner
+issued `adb -s RFCT50EGFCN reboot sideload-auto-reboot`, reached sideload in a
+measured 31.728574 s, then issued exactly one sideload. It exited 0 with
+`Total xfer: 1.00x` in 77.493834 s. Lineage Recovery performed its inherent
+automatic reboot and adb returned in 72.942698 s. There was no data wipe,
+second sideload, or manual reboot.
+
+**Installed identity and UI:** The device reported the exact expected
+revision, stage `1`, profile `core`, providers `core-native`, UI owner
+`native-sos-no-zygote`, `ro.zygote=no_zygote`, and SELinux Enforcing.
+SurfaceFlinger focus identified `SOS Core Experience`. The screenshot visibly
+showed the shared main experience with live `99% Charging` power, Offline
+network, audio unavailable, applications and attention sections, and the
+customization text field. Host supervisor/child PIDs 924/931, authority PID
+945, and platform PID 946 were stable across the short observation. The final
+AVC query was empty.
+
+CE-related properties returned empty, but the explicit
+`core1_experience_start ce_available=false ...` lifecycle marker was not
+captured; CE/lifecycle evidence is therefore partial, not a completed gate.
+The screenshot's existing `dfddds` text is also rejected as current physical
+touch or keyboard proof because this transaction witnessed no corresponding
+action sequence.
+
+**Verdict:** Installed identity and main-experience rendering pass. Provider
+acceptance, live Health correlation, proof that the snapshot read did not
+mutate Wi-Fi, a warm snapshot below 500 ms, witnessed physical touch and Core
+keyboard typing/backspace/submit, a measured five-minute soak, and the
+owner-operated fixed-Recovery/retry sequence remain unproven. This physical
+gate is **partial/open**.
+
+Final evidence is outside Git under
+`/tmp/core1-main-experience-sos.core1.9a68f1083157.a537acc9b4d1/retry-correct-recovery/`:
+
+| Evidence | Bytes | SHA-256 |
+| --- | ---: | --- |
+| `transaction-transcript.log` | 16,374 | `a66bbb51a03ab62c7792e768f47a0d74f572d226eef7d9dbdca127393e9f1d1a` |
+| `ui-post-boot.png` | 184,186 | `245714adda55abb8ed7c775e3bf5651311ee8315d01830b9b2c9804116c729dd` |
+| `logcat-tail.txt` | 48,280 | `c4d6d7afe2b86d3ebfa3689aa7b65f0cf9a5785e79b7ecdb7babba09c2c32a9c` |
+
+**Physical-action boundary / next gate:** No new destructive authorization is
+needed. The owner must first tap the customization text field, use the Core
+keyboard to type a new recognizable glyph or string, backspace at least one
+glyph, and submit. The owner must then hold Volume Up+Down until fixed Recovery
+appears, capture or observe it, press Volume Up exactly once, and verify return
+to Stock Base. A subsequent read-only runner observation and measured soak may
+collect objective input, lifecycle, provider, PID, AVC, Recovery, and stability
+evidence after those owner actions.
+
+## 2026-08-17 — Keep generated-revision submit transactional and recoverable
+
+**Goal / physical finding:** Diagnose and fix the Core keyboard Enter crash
+without weakening the shared Compat/Core generated-revision transaction. The
+owner's Enter touch ended at 13:38:08.212. The experience then logged
+`agent_submit`, committed state revision 602, validated candidate request 299,
+rendered the candidate, and emitted its focus-loss action. That action committed
+revision 603 at 13:38:09.315 while candidate activation stage 5 was still
+pending. Authority PID 945/TID 961 (`sos-core-revisi`) took SIGABRT at .321;
+the client received EOF, logged `system_revision_activation_failed` for
+revision `0ceaad33...`/stage 5 at .376, and intentionally aborted child PID 931.
+The supervisor correctly caught status 6 and displayed fixed Recovery, but this
+was not an intentional Recovery chord.
+
+The candidate lifecycle already tried to queue input while `pending_frame` was
+set, but `Render::render` moved that frame into a local before building the new
+scene. Focus loss during that build therefore saw no activation marker and
+advanced the shared provider state. `StateService::promote` then found stage 5
+stale only after `activate_response` had written its durable journal; the
+authority treated every post-journal promotion error as fatal. This is a shared
+AOSP-system activation race exposed by Core's new Enter key, not a Core keyboard
+or native-provider failure. A later retry after authority recovery activated a
+revision successfully at 13:38:41.815, corroborating a bounded transaction race
+rather than persistent input or provider breakage.
+
+**Stack/source proof:** The supplied files under the AOSP `symbols/` path are
+actually stripped (`file` and `nm` report no symbols), so `llvm-symbolizer` on
+authority frames `0x124e94 0x107550 0x858fc ...` returned `??`; claiming source
+line symbolization was rejected. The exact shipped binary still proves the path:
+`llvm-objdump` at tombstone frame 3, PC `0x858fc`, shows the immediately preceding
+`adrp/add` loading `.rodata` address `0x16105`, whose string is
+`android_authority_fatal_activation error=`, followed by the call into tombstone
+frame 2 (`0x107548`/reported return PC `0x107550`). The crashing thread name and
+source then bind that fatal helper to the Core revision listener's
+`activate_response` path. The experience tombstone independently matches its
+logged explicit activation-error abort.
+
+Raw evidence remains outside Git:
+
+| Evidence | Bytes | SHA-256 |
+| --- | ---: | --- |
+| `/tmp/core1-main-experience-sos.core1.9a68f1083157.a537acc9b4d1/submit-crash-diagnosis/crash-logcat.raw.txt` | 12,512 | `00a47b166bec4888a3530d14f4ef00370428c884218ac62e59c3fb97abbe33b2` |
+| `/tmp/core1-main-experience-sos.core1.9a68f1083157.a537acc9b4d1/submit-crash-diagnosis/main-system-logcat.raw.txt` | 1,311,662 | `0bf05bafaab2a8f86a72c034670a8c5bb6019f6e7553016d711ab9dded8750bd` |
+| `/tmp/core1-main-experience-sos.core1.9a68f1083157.a537acc9b4d1/submit-crash-diagnosis/kernel-logcat.raw.txt` | 1,625,710 | `2cb38cd76d09ad256e7e6f85b6368920e2526236f44dfb80dfee0bb1e8b300c4` |
+| `/tmp/core1-main-experience-sos.core1.9a68f1083157.a537acc9b4d1/submit-crash-diagnosis/events-logcat.raw.txt` | 27,998 | `53533f7fa1948e3d0216a99e7525f9197d6ce87767a60936c6a86aec0042ef89` |
+| `/tmp/core1-main-experience-sos.core1.9a68f1083157.a537acc9b4d1/submit-crash-diagnosis/derivative-filtered.txt` | 392,205 | `62258d4df1cdf07ee69be2fbb5ea250ef6f9cb9c640dd20bf5d5a1ed6d7743c8` |
+
+**Changed:** A dedicated activation-pending marker now spans candidate scene
+construction through the presentation callback, so candidate-generated focus
+and input events cannot mutate provider state between staging and activation.
+They are dispatched only after success. The authority validates stage freshness
+before writing durable intent: unknown, stale, or source/schema-mismatched stages
+return ordinary bounded request failures, while promotion/current-pointer/journal
+failures after durable intent still abort for restart recovery. Revision request
+and response framing is now shared in `android-authority-protocol`; empty,
+unterminated, malformed, oversized, and wrong-ID messages remain bounded to one
+connection.
+
+On any activation request failure, the experience queries authority before
+deciding. If the candidate is current, a lost response is reconciled as success.
+If the previous revision is still current and its source/state hash agrees, the
+experience discards candidate events, aborts the stale stage, starts a worker for
+that last known-good revision, and surfaces a failed-submit status instead of
+SIGABRT. An unavailable authority, a third revision, inconsistent source/state,
+missing activation metadata, or an incomplete successful response remains a
+strict integrity failure and still enters supervisor Recovery.
+
+**Host evidence:** `cargo test -p android-authority-protocol` passed 5 tests,
+including empty/truncated revision requests and responses. `cargo test -p
+android-system-authority` passed 11 library plus 5 daemon tests; the regression
+advances state after staging, verifies stale activation returns before creating
+the journal, then proves the same authority accepts and activates the next valid
+revision. `cargo clippy -p android-authority-protocol -p
+android-system-authority --all-targets -- -D warnings` passed. With NDK
+`29.0.14206865`, API 31, and the pinned AArch64 compiler/linker variables from
+the reintegration entry, both Android checks passed: `cargo check -p
+sos-experience --lib --no-default-features --features core-native --target
+aarch64-linux-android` and the matching `--features aosp-system` Compat-side
+check. `cargo fmt --all -- --check` and `git diff --check` passed. No device,
+adb, or AOSP build action was performed for this fix. `cargo test -p
+sos-experience --lib` reached the host linker but could not run because this
+workstation lacks `libxkbcommon` and `libxkbcommon-x11`; the two Android target
+checks above are the applicable compile evidence for the changed experience
+path, and the missing desktop libraries remain an environment limitation.
+
+**Rejected approaches / decision / remaining risk:** Do not remove
+`fatal_activation`, ignore durability errors, retry Activate blindly, change the
+Core Enter key, add SELinux access, or classify every EOF as success. Those
+choices either conceal inconsistent durable state, risk double commitment, or
+target the trigger rather than the shared race. Accept the bounded lifecycle,
+pre-journal validation, framing, and reconciliation fix. Host tests do not close
+the physical gate; the old OTA predates this source.
+
+**Next gate:** Build and inspect a new Core 1 OTA, record its exact revision,
+size, and SHA-256, then authorize the established one-sideload automatic-reboot
+transaction on `RFCT50EGFCN`. After boot, type a new recognizable string,
+backspace, and press Enter. Pass requires one successful generated-revision
+activation, no authority or experience PID restart/SIGABRT/fixed Recovery,
+focus/input state commit only after `android_authority_revision_activated`, and
+matching current revision/provider-state source hashes. Repeat generated-revision
+activation through Compat's TCP transport, then complete the still-open provider,
+five-minute soak, and owner Recovery chord/retry gates. A deliberately truncated
+shipping-device response is not required; its deterministic socket regressions
+are host-covered.
+
+**Post-fix AOSP packaging evidence / device-gate candidate:** On HEAD
+`9a68f1083157503097ba95533288837127c136e6`, the host-only transaction ran
+`./tools/a33xctl build-core1` and `./tools/a33xctl inspect-core1`; both exited 0
+in a measured 238.210 s. Initial and final repository status were identical,
+there were no integration-owned compiler warnings, and no adb, device, reboot,
+or sideload action occurred. The inspected output is:
+
+| Artifact | Bytes | SHA-256 |
+| --- | ---: | --- |
+| `/home/carlid/dev/lineage-a33x/out/target/product/a33x/lineage_sos_core1_a33x-ota.zip` (revision `sos.core1.9a68f1083157.ffe6d402644a`) | 1,022,150,544 | `7c25fb3bb09fde68036c3be93d1f314391eb25e6c2995d38016157be65a99b95` |
+| Packaged `sos-authority` | 1,315,104 | `afd28c1ba479f664c0ba574b146c8ab463dbb9009418216bd0d67230087b5c96` |
+| Packaged `sos-core-host` | 84,808 | `727fee4e27f984f58937bd8778b8b807010bc76d354e0e5431be24b5c201d03f` |
+| Packaged `libsos_core_experience.so` | 14,615,192 | `086891fdbe82b111d796673f6ca82638b65de2e746d5edad99797a9ff4a3b058` |
+
+Target files are at
+`/home/carlid/dev/lineage-a33x/out/target/product/a33x/obj/PACKAGING/target_files_intermediates/lineage_sos_core1_a33x-target_files`.
+The transcript is
+`/tmp/core1-main-experience-submit-fix-host/build-inspect.log` (1,564,629
+bytes, SHA-256
+`c787bff28173f775abd7e2eb036753322a69867d6eded892c9da56bc12975219`).
+
+This `ffe6d402644a` OTA supersedes the currently installed `a537acc9b4d1` OTA
+for submit-crash regression; evidence from the old installed build remains
+historical only. The exact next device-gate candidate is the `ffe6d402644a`
+path, revision, size, and SHA-256 above. A bounded transaction must use the
+established Recovery sideload/automatic-reboot path exactly once, then verify
+physical typing, backspace, and Enter without authority/experience restart or
+fixed Recovery; collect provider snapshots over the existing TCP path; complete
+a measured five-minute soak; and finish the owner Recovery chord/retry check.
+Host packaging does not close any of those physical gates.
+
+## 2026-08-17 — Core 1 main experience and submit regression physically pass
+
+**Goal / installed artifact:** Close the physical main-experience gate for the
+selective Core 1 integration and verify the generated-revision submit-race fix
+on SM-A336B `RFCT50EGFCN`. The installed OTA was exactly
+`/home/carlid/dev/lineage-a33x/out/target/product/a33x/lineage_sos_core1_a33x-ota.zip`,
+revision `sos.core1.9a68f1083157.ffe6d402644a`, 1,022,150,544 bytes, SHA-256
+`7c25fb3bb09fde68036c3be93d1f314391eb25e6c2995d38016157be65a99b95`.
+The first authorized transition returned from Recovery to ordinary device mode
+without entering sideload, so no OTA bytes were sent. A separately authorized
+exact retry reached sideload, transferred the OTA once successfully, and used
+Recovery's automatic reboot. There was no wipe, manual reboot, or second
+sideload.
+
+**Readiness and submit regression:** Core-native readiness passed with exact
+stage `1`, profile `core`, providers `core-native`, UI owner
+`native-sos-no-zygote`, `ro.zygote=no_zygote`, SELinux Enforcing, and the native
+main layer visible. Android `sys.boot_completed`/`dev.bootcomplete` are
+intentionally absent on this no-Zygote product. BootAnimation and keystore wait
+state remain known residuals, not readiness signals or failures. Before submit,
+PIDs were supervisor 921, experience child 932, authority 941, platform 942,
+and wpa_supplicant 832.
+
+The owner used physical touch and the Core keyboard to append `fixz`, backspace
+the `z`, and press Enter once. The resulting ADB screenshot showed the generated
+light experience. Logs establish the required transaction order:
+`agent_submit` at 14:45:55.353, `candidate_validated` at .440,
+`android_authority_revision_activated` at .540, then post-activation state
+commit at .579. There was no activation failure, EOF, authority or child
+SIGABRT, fixed Recovery, or PID restart during submit. This closes the
+reproduced Enter/submit crash regression.
+
+**Shipping provider and soak evidence:** A temporary read-only host forward
+from TCP 14777 to device TCP 47777 was removed after collection. One warmup and
+six ABI 1 snapshot responses were all `ok`; measured RTTs were 46.378496,
+35.814879, 24.508872, 24.087448, 33.169951, 22.966833, and 23.980907 ms, all
+below 500 ms. Live Health reported 99% battery, USB charging, temperature
+329→332 deci-C, and no thermal condition. Connectivity remained
+`wifi_enabled=true`, disconnected and unvalidated, with no online interface or
+network. Throughout the measured 300.000521554 s soak, the SOS surface and
+supervisor/child/authority/platform/wpa_supplicant PIDs 921/932/941/942/832
+remained stable. This proves the snapshot read did not mutate Wi-Fi. Audio was
+unavailable and applications/attention were empty; these remain native-owner
+limitations, not fabricated parity.
+
+**Fixed Recovery / retry:** The final owner chord produced
+`core_recovery_chord`, intentional child 932 exit code 100/wait status 25600,
+and `fixed_recovery_ready child_status=25600`. One
+`fixed_recovery_action action=retry` kept supervisor 921 stable and created
+exactly one new experience child, PID 5781; authority/platform/wpa_supplicant
+PIDs 941/942/832 did not change. Fresh lifecycle evidence reported
+`core1_experience_start ce_available=false native_synthetic_password=false`
+and runtime ready. The light main experience returned and PID 5781 remained
+stable for a measured 30.151199286 s, with no SIGABRT or repeated Recovery.
+Four new-child `sos_core_host` `/data` search AVCs are the already documented
+Vulkan loader probes; they do not justify a broad allow.
+
+**Evidence integrity:** The initial soak manifest was rejected because it
+contained stale/self-referential hashes. Raw files were independently rehashed,
+and the final runner wrote a clean audit only after closing its evidence files.
+The final audit files are under
+`/tmp/core1-main-experience-sos.core1.9a68f1083157.ffe6d402644a/final-recovery-observation/`;
+the two prior-soak screenshots are under the sibling
+`post-submit-provider-soak/` directory and are indexed by the audited manifest:
+
+| Evidence | Bytes | SHA-256 |
+| --- | ---: | --- |
+| `final-manifest.tsv` | 1,323 | `a0e0ac9feb7a299a95eb1376d65927f0a55bdb6b70d464843caabc9c746caec4` |
+| `prior-soak-audited-manifest.tsv` | 4,524 | `d623882c430ef18ac9e6ea5586295e3343ce70bad1b0c2d93e9492224b2f704e` |
+| `markers-filtered.txt` | 300,086 | `6d4d0eea1e9be521f4a8f9f2ed09f7c620e4b97cbff57a458bd758d5fd2ba66b` |
+| `screenshot-repeat30.png` | 177,684 | `6b0ff1fa0cc008eeac022045ba967076bb910e3feb5e3a7c453d0ebd52576025` |
+| `../post-submit-provider-soak/screenshot-pre.png` | 174,468 | `e74b19d5a8c1d3d988d62bab5f66ee7b8adfc12d237f6904237954d2de33b625` |
+| `../post-submit-provider-soak/screenshot-final.png` | 174,440 | `c5d95d525511ccdc679175df2b4cbc77a5c08eac02c6588100c8d9a4a8819100` |
+
+**Decision / remaining gates:** Accept the selective stash integration and
+submit-race fix. Terra's Core 1 physical main-experience gate passes for
+identity, shared main UI, CE lifecycle, corroborated physical
+touch/type/backspace/Enter, correct activation ordering, live warm providers,
+no Wi-Fi read mutation, five-minute stability, and fixed-Recovery retry. This
+does not establish full Compat feature parity. Boot-complete/BootAnimation/
+keystore residuals, audio, compatible application and attention owners, native
+unlock/synthetic password, saved-network provisioning and provider actions,
+and longer-term soak remain open as documented. The working tree remains
+uncommitted, and the original stash remains available for recovery.

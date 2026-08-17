@@ -9,6 +9,8 @@ use std::{
 };
 
 use experience_ir::MAX_TEXT_BYTES;
+#[cfg(feature = "core-native")]
+use gpui::rgb;
 use gpui::{
     actions, div, fill, point, prelude::*, px, relative, rgba, size, App, Bounds, ClipboardItem,
     ContentMask, Context, CursorStyle, Element, ElementId, ElementInputHandler, Entity,
@@ -49,6 +51,12 @@ pub struct ImeApplyOutcome {
 static IME_STATES: OnceLock<Mutex<VecDeque<ImeState>>> = OnceLock::new();
 static IME_INSET_BITS: AtomicU32 = AtomicU32::new(0);
 static IME_INSET_CHANGED: AtomicBool = AtomicBool::new(false);
+#[cfg(feature = "core-native")]
+static SOFTWARE_KEYBOARD_VISIBLE: AtomicBool = AtomicBool::new(false);
+#[cfg(feature = "core-native")]
+static SOFTWARE_KEYBOARD_SHIFT: AtomicBool = AtomicBool::new(false);
+#[cfg(feature = "core-native")]
+const SOFTWARE_KEYBOARD_HEIGHT: f32 = 220.0;
 
 pub fn ime_inset() -> f32 {
     f32::from_bits(IME_INSET_BITS.load(Ordering::Acquire))
@@ -65,6 +73,138 @@ pub fn take_ime_states() -> Vec<ImeState> {
         .expect("IME state lock")
         .drain(..)
         .collect()
+}
+
+fn set_ime_inset(logical_bottom: f32) {
+    let inset = logical_bottom.clamp(0.0, 2_048.0);
+    IME_INSET_BITS.store(inset.to_bits(), Ordering::Release);
+    IME_INSET_CHANGED.store(true, Ordering::Release);
+    log::info!("ime_inset_changed logical_bottom={inset:.1}");
+    super::request_host_frame();
+}
+
+#[cfg(feature = "core-native")]
+pub fn software_keyboard_visible() -> bool {
+    SOFTWARE_KEYBOARD_VISIBLE.load(Ordering::Acquire)
+}
+
+#[cfg(feature = "core-native")]
+fn show_software_keyboard(node_id: &str) {
+    ACTIVE_INPUT.with(|active| *active.borrow_mut() = Some(node_id.to_owned()));
+    SOFTWARE_KEYBOARD_VISIBLE.store(true, Ordering::Release);
+    set_ime_inset(SOFTWARE_KEYBOARD_HEIGHT);
+    log::info!("core_native_software_keyboard node={node_id} visible=true");
+}
+
+#[cfg(feature = "core-native")]
+fn hide_software_keyboard(node_id: &str) {
+    let should_hide = ACTIVE_INPUT.with(|active| {
+        if active.borrow().as_deref() == Some(node_id) {
+            *active.borrow_mut() = None;
+            true
+        } else {
+            false
+        }
+    });
+    if should_hide {
+        SOFTWARE_KEYBOARD_VISIBLE.store(false, Ordering::Release);
+        SOFTWARE_KEYBOARD_SHIFT.store(false, Ordering::Release);
+        set_ime_inset(0.0);
+        log::info!("core_native_software_keyboard node={node_id} visible=false");
+    }
+}
+
+#[cfg(feature = "core-native")]
+fn push_software_key(text: &str) {
+    match text {
+        "shift" => {
+            let next = !SOFTWARE_KEYBOARD_SHIFT.load(Ordering::Acquire);
+            SOFTWARE_KEYBOARD_SHIFT.store(next, Ordering::Release);
+            super::request_host_frame();
+        }
+        "hide" => {
+            if let Some(node_id) = active_input_id() {
+                hide_software_keyboard(&node_id);
+            }
+        }
+        other => {
+            PENDING_TEXT.with(|pending| pending.borrow_mut().push(other.to_owned()));
+            if other.len() == 1 && SOFTWARE_KEYBOARD_SHIFT.swap(false, Ordering::AcqRel) {
+                super::request_host_frame();
+            }
+            super::request_host_frame();
+        }
+    }
+}
+
+#[cfg(feature = "core-native")]
+fn keyboard_key(label: &'static str, insert: &'static str) -> impl IntoElement {
+    div()
+        .flex_1()
+        .h(px(42.0))
+        .mx(px(3.0))
+        .rounded(px(8.0))
+        .bg(rgb(0x2B3A33))
+        .text_color(rgb(0xF3F1E8))
+        .text_size(px(16.0))
+        .flex()
+        .items_center()
+        .justify_center()
+        .child(SharedString::from(label))
+        .on_mouse_down(MouseButton::Left, move |_, window, app| {
+            window.prevent_default();
+            app.stop_propagation();
+            push_software_key(insert);
+        })
+}
+
+#[cfg(feature = "core-native")]
+pub fn software_keyboard_overlay() -> impl IntoElement {
+    let shift = SOFTWARE_KEYBOARD_SHIFT.load(Ordering::Acquire);
+    let rows: [[&str; 10]; 3] = if shift {
+        [
+            ["Q", "W", "E", "R", "T", "Y", "U", "I", "O", "P"],
+            ["A", "S", "D", "F", "G", "H", "J", "K", "L", ""],
+            ["Z", "X", "C", "V", "B", "N", "M", "", "", ""],
+        ]
+    } else {
+        [
+            ["q", "w", "e", "r", "t", "y", "u", "i", "o", "p"],
+            ["a", "s", "d", "f", "g", "h", "j", "k", "l", ""],
+            ["z", "x", "c", "v", "b", "n", "m", "", "", ""],
+        ]
+    };
+    let mut overlay = div()
+        .absolute()
+        .left_0()
+        .right_0()
+        .bottom_0()
+        .h(px(SOFTWARE_KEYBOARD_HEIGHT))
+        .px(px(8.0))
+        .pt(px(8.0))
+        .bg(rgb(0x17211B))
+        .flex()
+        .flex_col()
+        .gap(px(6.0));
+    for row in rows {
+        let mut line = div().flex().w_full();
+        for key in row {
+            if !key.is_empty() {
+                line = line.child(keyboard_key(key, key));
+            }
+        }
+        overlay = overlay.child(line);
+    }
+    overlay.child(
+        div()
+            .flex()
+            .w_full()
+            .child(keyboard_key(if shift { "ABC" } else { "⇧" }, "shift"))
+            .child(keyboard_key("space", " "))
+            .child(keyboard_key("⌫", "\x08"))
+            .child(keyboard_key("↵", "\n"))
+            .child(keyboard_key("hide", "hide")),
+    )
 }
 
 #[cfg(not(feature = "core-native"))]
@@ -119,11 +259,7 @@ pub unsafe extern "C" fn Java_dev_gpui_mobile_GpuiActivity_nativeOnImeInset(
     _class: *mut std::ffi::c_void,
     logical_bottom: f32,
 ) {
-    let inset = logical_bottom.clamp(0.0, 2_048.0);
-    IME_INSET_BITS.store(inset.to_bits(), Ordering::Release);
-    IME_INSET_CHANGED.store(true, Ordering::Release);
-    log::info!("ime_inset_changed logical_bottom={inset:.1}");
-    super::request_host_frame();
+    set_ime_inset(logical_bottom);
 }
 
 #[cfg(not(feature = "core-native"))]
@@ -387,11 +523,7 @@ impl NativeTextInput {
     fn activate_mobile_ime(&self) {
         #[cfg(feature = "core-native")]
         {
-            log::warn!(
-                "core_native_ime_unavailable node={}; trusted keyboard gate remains open",
-                self.node_id
-            );
-            return;
+            show_software_keyboard(&self.node_id);
         }
         #[cfg(not(feature = "core-native"))]
         {
@@ -446,7 +578,8 @@ impl NativeTextInput {
     fn deactivate_mobile_ime(&self) {
         #[cfg(feature = "core-native")]
         {
-            return;
+            // Keep the keyboard visible while its keys receive pointer input.
+            // Core 1 has no Android IME; its explicit hide key owns dismissal.
         }
         #[cfg(not(feature = "core-native"))]
         {
@@ -765,6 +898,7 @@ impl NativeTextInput {
                 "\x1b[C" => self.right(&Right, window, cx),
                 "\x1b[H" => self.home(&Home, window, cx),
                 "\x1b[F" => self.end(&End, window, cx),
+                "\n" => self.submit(cx),
                 other => self.replace_text_in_range(None, other, window, cx),
             }
         }

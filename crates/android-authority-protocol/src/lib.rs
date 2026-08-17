@@ -105,6 +105,28 @@ impl RevisionRequest {
     }
 }
 
+pub fn read_revision_request<R: Read>(reader: &mut R) -> std::io::Result<RevisionRequest> {
+    let mut line = Vec::new();
+    {
+        let mut bounded = BufReader::new(reader).take(MAX_REVISION_REQUEST_BYTES + 1);
+        bounded.read_until(b'\n', &mut line)?;
+    }
+    if line.len() as u64 > MAX_REVISION_REQUEST_BYTES {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "revision request exceeded its size limit",
+        ));
+    }
+    if !line.ends_with(b"\n") {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::UnexpectedEof,
+            "revision request ended before its newline delimiter",
+        ));
+    }
+    serde_json::from_slice(&line)
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))
+}
+
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
 pub struct RevisionResponse {
     pub request_id: u64,
@@ -122,13 +144,63 @@ pub struct RevisionResponse {
     pub error: Option<String>,
 }
 
+pub fn write_revision_response<W: Write>(
+    writer: &mut W,
+    response: &RevisionResponse,
+) -> std::io::Result<()> {
+    let mut encoded = serde_json::to_vec(response).map_err(std::io::Error::other)?;
+    encoded.push(b'\n');
+    writer.write_all(&encoded)?;
+    writer.flush()
+}
+
+pub fn request_revision_over_stream<S: Read + Write>(
+    mut stream: S,
+    request: RevisionRequest,
+) -> Result<RevisionResponse, String> {
+    let expected_id = request.request_id();
+    serde_json::to_writer(&mut stream, &request).map_err(|error| error.to_string())?;
+    stream.write_all(b"\n").map_err(|error| error.to_string())?;
+    stream.flush().map_err(|error| error.to_string())?;
+
+    let mut line = Vec::new();
+    BufReader::new(stream)
+        .take(MAX_REVISION_RESPONSE_BYTES + 1)
+        .read_until(b'\n', &mut line)
+        .map_err(|error| error.to_string())?;
+    if line.len() as u64 > MAX_REVISION_RESPONSE_BYTES {
+        return Err("revision response exceeded its size limit".into());
+    }
+    if !line.ends_with(b"\n") {
+        return Err(if line.is_empty() {
+            "revision authority closed the connection before a response".into()
+        } else {
+            "revision authority returned a truncated response".into()
+        });
+    }
+    let response: RevisionResponse =
+        serde_json::from_slice(&line).map_err(|error| error.to_string())?;
+    if response.request_id != expected_id {
+        return Err("revision response request id did not match".into());
+    }
+    if !response.ok {
+        return Err(response
+            .error
+            .unwrap_or_else(|| "revision authority rejected request".into()));
+    }
+    Ok(response)
+}
+
 #[cfg(all(test, unix))]
 mod tests {
     use std::{io::Write as _, net::Shutdown, os::unix::net::UnixStream, thread, time::Duration};
 
     use experience_ir::{ProviderRequest, ProviderResponse};
 
-    use super::{read_provider_request, request_provider_over_stream, write_provider_response};
+    use super::{
+        read_provider_request, read_revision_request, request_provider_over_stream,
+        request_revision_over_stream, write_provider_response, RevisionRequest,
+    };
 
     fn response(request_id: u64) -> ProviderResponse {
         ProviderResponse {
@@ -188,5 +260,40 @@ mod tests {
             write_error.kind(),
             std::io::ErrorKind::BrokenPipe | std::io::ErrorKind::ConnectionReset
         ));
+    }
+
+    #[test]
+    fn revision_server_rejects_empty_and_unterminated_requests() {
+        let empty = read_revision_request(&mut &b""[..]).unwrap_err();
+        assert_eq!(empty.kind(), std::io::ErrorKind::UnexpectedEof);
+        let truncated =
+            read_revision_request(&mut &br#"{"action":"current","request_id":4}"#[..]).unwrap_err();
+        assert_eq!(truncated.kind(), std::io::ErrorKind::UnexpectedEof);
+    }
+
+    fn revision_response_error(response: &'static [u8]) -> String {
+        let (client, mut server) = UnixStream::pair().unwrap();
+        let worker = thread::spawn(move || {
+            read_revision_request(&mut server).unwrap();
+            server.write_all(response).unwrap();
+            server.shutdown(Shutdown::Write).unwrap();
+        });
+        let error =
+            request_revision_over_stream(client, RevisionRequest::Current { request_id: 17 })
+                .unwrap_err();
+        worker.join().unwrap();
+        error
+    }
+
+    #[test]
+    fn revision_client_reports_empty_and_truncated_responses() {
+        assert_eq!(
+            revision_response_error(b""),
+            "revision authority closed the connection before a response"
+        );
+        assert_eq!(
+            revision_response_error(br#"{"request_id":17,"ok":true}"#),
+            "revision authority returned a truncated response"
+        );
     }
 }

@@ -15,10 +15,13 @@ const EV_SYN: u16 = 0x00;
 const EV_KEY: u16 = 0x01;
 const EV_ABS: u16 = 0x03;
 const SYN_REPORT: u16 = 0;
+const ABS_X: u16 = 0x00;
+const ABS_Y: u16 = 0x01;
 const ABS_MT_SLOT: u16 = 0x2f;
 const ABS_MT_POSITION_X: u16 = 0x35;
 const ABS_MT_POSITION_Y: u16 = 0x36;
 const ABS_MT_TRACKING_ID: u16 = 0x39;
+const BTN_TOUCH: u16 = 0x14a;
 const KEY_VOLUMEDOWN: u16 = 114;
 const KEY_VOLUMEUP: u16 = 115;
 const KEY_POWER: u16 = 116;
@@ -61,9 +64,10 @@ impl Default for TouchSlot {
 }
 
 pub fn start(platform: Arc<AndroidPlatform>) -> Result<(), String> {
-    let touch = open_named_input("sec_touchscreen")
+    let touch = cycle_named_input("sec_touchscreen")
         .ok_or_else(|| "Core touchscreen sec_touchscreen is unavailable".to_owned())?;
     grab_input(&touch, "sec_touchscreen")?;
+    enable_samsung_tsp();
     let volume = open_named_input("gpio_keys")
         .ok_or_else(|| "Core volume device gpio_keys is unavailable".to_owned())?;
     grab_input(&volume, "gpio_keys")?;
@@ -83,7 +87,7 @@ pub fn start(platform: Arc<AndroidPlatform>) -> Result<(), String> {
 }
 
 fn run_touch(platform: Arc<AndroidPlatform>, mut input: File) {
-    log::info!("core_input_ready device=sec_touchscreen mode=exclusive");
+    log::info!("core_input_ready device=sec_touchscreen mode=exclusive protocol=mt-slot+btn_touch");
     let mut slots = [TouchSlot::default(); MAX_TOUCH_SLOTS];
     let mut current_slot = 0usize;
     loop {
@@ -91,32 +95,60 @@ fn run_touch(platform: Arc<AndroidPlatform>, mut input: File) {
             log::error!("core_input_stopped device=sec_touchscreen");
             return;
         };
-        match (event.kind, event.code) {
-            (EV_ABS, ABS_MT_SLOT) => {
-                current_slot = (event.value.max(0) as usize).min(MAX_TOUCH_SLOTS - 1);
-            }
-            (EV_ABS, ABS_MT_TRACKING_ID) => {
-                let slot = &mut slots[current_slot];
-                if event.value < 0 {
-                    slot.up_pending = slot.tracking_id >= 0;
-                } else {
-                    slot.tracking_id = event.value;
-                    slot.down_pending = true;
-                    slot.up_pending = false;
-                }
-                slot.dirty = true;
-            }
-            (EV_ABS, ABS_MT_POSITION_X) => {
-                slots[current_slot].x = event.value.max(0) as f32;
-                slots[current_slot].dirty = true;
-            }
-            (EV_ABS, ABS_MT_POSITION_Y) => {
-                slots[current_slot].y = event.value.max(0) as f32;
-                slots[current_slot].dirty = true;
-            }
-            (EV_SYN, SYN_REPORT) => flush_touch_frame(&platform, &mut slots),
-            _ => {}
+        if apply_touch_event(&mut slots, &mut current_slot, event) {
+            flush_touch_frame(&platform, &mut slots);
         }
+    }
+}
+
+fn apply_touch_event(
+    slots: &mut [TouchSlot; MAX_TOUCH_SLOTS],
+    current_slot: &mut usize,
+    event: InputEvent,
+) -> bool {
+    match (event.kind, event.code) {
+        (EV_ABS, ABS_MT_SLOT) => {
+            *current_slot = (event.value.max(0) as usize).min(MAX_TOUCH_SLOTS - 1);
+            false
+        }
+        (EV_ABS, ABS_MT_TRACKING_ID) => {
+            let slot = &mut slots[*current_slot];
+            if event.value < 0 {
+                slot.up_pending = slot.tracking_id >= 0 || slot.down_pending;
+            } else {
+                slot.tracking_id = event.value;
+                slot.down_pending = true;
+                slot.up_pending = false;
+            }
+            slot.dirty = true;
+            false
+        }
+        (EV_ABS, ABS_MT_POSITION_X) | (EV_ABS, ABS_X) => {
+            slots[*current_slot].x = event.value.max(0) as f32;
+            slots[*current_slot].dirty = true;
+            false
+        }
+        (EV_ABS, ABS_MT_POSITION_Y) | (EV_ABS, ABS_Y) => {
+            slots[*current_slot].y = event.value.max(0) as f32;
+            slots[*current_slot].dirty = true;
+            false
+        }
+        (EV_KEY, BTN_TOUCH) => {
+            let slot = &mut slots[*current_slot];
+            if event.value == 1 {
+                if slot.tracking_id < 0 {
+                    slot.tracking_id = 0;
+                }
+                slot.down_pending = true;
+                slot.up_pending = false;
+            } else if event.value == 0 {
+                slot.up_pending = slot.tracking_id >= 0 || slot.down_pending;
+            }
+            slot.dirty = true;
+            false
+        }
+        (EV_SYN, SYN_REPORT) => true,
+        _ => false,
     }
 }
 
@@ -141,6 +173,15 @@ fn flush_touch_frame(platform: &Arc<AndroidPlatform>, slots: &mut [TouchSlot; MA
             action,
             pointer_count: pointer_count.max(1),
         };
+        if matches!(action, 0 | 1) {
+            log::info!(
+                "core_input_touch action={} id={} x={:.0} y={:.0}",
+                if action == 0 { "down" } else { "up" },
+                point.id,
+                point.x,
+                point.y
+            );
+        }
         dispatch_touch(platform, point);
         if slot.up_pending {
             slot.tracking_id = -1;
@@ -260,6 +301,17 @@ fn open_named_input(expected: &str) -> Option<File> {
     })
 }
 
+fn cycle_named_input(expected: &str) -> Option<File> {
+    // Samsung sec_ts uses USE_OPEN_CLOSE. Closing and reopening forces its
+    // userspace-owned start path when probe left the controller powered down.
+    let first = open_named_input(expected)?;
+    drop(first);
+    thread::sleep(Duration::from_millis(200));
+    let second = open_named_input(expected)?;
+    log::info!("core_input_tsp_cycled device={expected}");
+    Some(second)
+}
+
 fn grab_input(input: &File, name: &str) -> Result<(), String> {
     let request = iow(b'E', 0x90, size_of::<libc::c_int>());
     let result = unsafe { libc::ioctl(input.as_raw_fd(), request, 1) };
@@ -270,6 +322,29 @@ fn grab_input(input: &File, name: &str) -> Result<(), String> {
             "Core cannot exclusively own {name}: {}",
             std::io::Error::last_os_error()
         ))
+    }
+}
+
+fn enable_samsung_tsp() {
+    const PATHS: [&str; 4] = [
+        "/sys/class/sec/tsp/input/enabled",
+        "/sys/devices/virtual/sec/tsp/input/enabled",
+        "/sys/class/sec/tsp/enabled",
+        "/sys/devices/virtual/sec/tsp/enabled",
+    ];
+    for path in PATHS {
+        for payload in [b"22,1\n".as_slice(), b"2,1\n".as_slice(), b"1\n".as_slice()] {
+            match std::fs::write(path, payload) {
+                Ok(()) => {
+                    let value = std::fs::read_to_string(path).unwrap_or_default();
+                    log::info!("core_input_tsp_enabled path={path} value={}", value.trim());
+                    return;
+                }
+                Err(error) => {
+                    log::warn!("core_input_tsp_enable_failed path={path} error={error}")
+                }
+            }
+        }
     }
 }
 
@@ -326,4 +401,68 @@ const fn iow(kind: u8, number: u8, size: usize) -> libc::c_int {
         | ((kind as u32) << TYPE_SHIFT)
         | ((number as u32) << NR_SHIFT)
         | ((size as u32) << SIZE_SHIFT)) as libc::c_int
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn event(kind: u16, code: u16, value: i32) -> InputEvent {
+        InputEvent {
+            kind,
+            code,
+            value,
+            ..InputEvent::default()
+        }
+    }
+
+    #[test]
+    fn samsung_btn_touch_without_tracking_id_starts_and_ends_contact() {
+        let mut slots = [TouchSlot::default(); MAX_TOUCH_SLOTS];
+        let mut current = 0;
+        assert!(!apply_touch_event(
+            &mut slots,
+            &mut current,
+            event(EV_ABS, ABS_MT_POSITION_X, 540)
+        ));
+        assert!(!apply_touch_event(
+            &mut slots,
+            &mut current,
+            event(EV_ABS, ABS_MT_POSITION_Y, 1200)
+        ));
+        assert!(!apply_touch_event(
+            &mut slots,
+            &mut current,
+            event(EV_KEY, BTN_TOUCH, 1)
+        ));
+        assert!(apply_touch_event(
+            &mut slots,
+            &mut current,
+            event(EV_SYN, SYN_REPORT, 0)
+        ));
+        assert!(slots[0].down_pending);
+        assert_eq!(slots[0].tracking_id, 0);
+
+        slots[0].down_pending = false;
+        slots[0].dirty = false;
+        assert!(!apply_touch_event(
+            &mut slots,
+            &mut current,
+            event(EV_KEY, BTN_TOUCH, 0)
+        ));
+        assert!(slots[0].up_pending);
+    }
+
+    #[test]
+    fn type_b_tracking_id_still_starts_contact() {
+        let mut slots = [TouchSlot::default(); MAX_TOUCH_SLOTS];
+        let mut current = 0;
+        assert!(!apply_touch_event(
+            &mut slots,
+            &mut current,
+            event(EV_ABS, ABS_MT_TRACKING_ID, 7)
+        ));
+        assert_eq!(slots[0].tracking_id, 7);
+        assert!(slots[0].down_pending);
+    }
 }

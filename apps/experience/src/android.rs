@@ -67,16 +67,18 @@ static CORE_STOP_REQUESTED: AtomicBool = AtomicBool::new(false);
 #[cfg(feature = "core-native")]
 static CORE_EXIT_REASON: AtomicI32 = AtomicI32::new(0);
 
-#[cfg(not(feature = "core-native"))]
 fn request_host_frame() {
-    gpui_mobile::TEXT_INPUT_DIRTY.store(true, Ordering::Release);
     #[cfg(not(feature = "core-native"))]
-    if let Some(platform) = jni::platform() {
-        platform.background_executor().dispatch_on_main_thread(|| {
-            if let Some(window) = jni::platform().and_then(|platform| platform.primary_window()) {
-                window.request_frame();
-            }
-        });
+    {
+        gpui_mobile::TEXT_INPUT_DIRTY.store(true, Ordering::Release);
+        if let Some(platform) = jni::platform() {
+            platform.background_executor().dispatch_on_main_thread(|| {
+                if let Some(window) = jni::platform().and_then(|platform| platform.primary_window())
+                {
+                    window.request_frame();
+                }
+            });
+        }
     }
     #[cfg(feature = "core-native")]
     if let Some(platform) = core_platform_slot()
@@ -415,6 +417,8 @@ struct ExperienceHost {
     surface_taps: HashMap<String, (String, Instant)>,
     pending_focus_restore: Option<String>,
     pending_frame: Option<PendingFrame>,
+    revision_activation_pending: bool,
+    revision_recovery_status: Option<String>,
     stress: Option<StressRun>,
     pending_reconciled_state: Option<StateEnvelope>,
     agent_updates: async_channel::Sender<agent::AgentUpdate>,
@@ -590,6 +594,8 @@ impl ExperienceHost {
             surface_taps: HashMap::new(),
             pending_focus_restore: None,
             pending_frame: None,
+            revision_activation_pending: false,
+            revision_recovery_status: None,
             stress: None,
             pending_reconciled_state: None,
             agent_updates,
@@ -751,7 +757,11 @@ impl ExperienceHost {
                 self.scene = ready.scene;
                 self.state = ready.state;
                 self.state_schema_version = ready.state_schema_version;
-                self.status = None;
+                self.status = self
+                    .revision_recovery_status
+                    .take()
+                    .map(|message| (message, false));
+                self.revision_activation_pending = false;
                 self.accessibility_dirty = true;
                 log::info!(
                     "runtime_worker_ready ui_thread={:?} worker_thread={} initialize_us={}",
@@ -876,10 +886,11 @@ impl ExperienceHost {
     }
 
     fn dispatch_event(&mut self, event: SceneEvent, cx: &mut Context<Self>) {
-        let revision_activation_pending = self
-            .candidates
-            .values()
-            .any(|purpose| *purpose == CandidatePurpose::Regular)
+        let revision_activation_pending = self.revision_activation_pending
+            || self
+                .candidates
+                .values()
+                .any(|purpose| *purpose == CandidatePurpose::Regular)
             || self
                 .pending_frame
                 .as_ref()
@@ -1615,6 +1626,9 @@ impl ExperienceHost {
                     return;
                 };
                 let authority_activation = self.pending_authority_activations.remove(&request_id);
+                if purpose == CandidatePurpose::Regular && authority_activation.is_some() {
+                    self.revision_activation_pending = true;
+                }
                 self.pending_focus_restore = native_input::active_input_id();
                 assets::install(&assets);
                 #[cfg(feature = "aosp-system")]
@@ -1961,18 +1975,62 @@ impl ExperienceHost {
                         );
                         std::process::abort();
                     });
-                    let activated = revision_client::activate(
+                    let activated = match revision_client::activate(
                         activation.revision_id.clone(),
                         activation.state_stage_id,
-                    )
-                    .unwrap_or_else(|error| {
-                        log::error!(
-                            "system_revision_activation_failed revision={} stage_id={} error={error}",
-                            activation.revision_id,
-                            activation.state_stage_id
-                        );
-                        std::process::abort();
-                    });
+                    ) {
+                        Ok(activated) => activated,
+                        Err(error) => {
+                            log::warn!(
+                                "system_revision_activation_request_failed revision={} stage_id={} error={error}; reconciling authority",
+                                activation.revision_id,
+                                activation.state_stage_id
+                            );
+                            let current = revision_client::current_with_retry().unwrap_or_else(
+                                |reconcile_error| {
+                                    log::error!(
+                                        "system_revision_activation_reconcile_failed revision={} activation_error={error} reconcile_error={reconcile_error}",
+                                        activation.revision_id
+                                    );
+                                    std::process::abort();
+                                },
+                            );
+                            match current.revision_id.as_deref() {
+                                Some(revision_id) if revision_id == activation.revision_id => {
+                                    log::warn!(
+                                        "system_revision_activation_response_recovered revision={} stage_id={} activation_error={error}",
+                                        activation.revision_id,
+                                        activation.state_stage_id
+                                    );
+                                    current
+                                }
+                                Some(revision_id) if revision_id == self.system_revision_id => {
+                                    if let Err(recovery_error) = self.restore_authority_revision(
+                                        current,
+                                        activation.state_stage_id,
+                                        error,
+                                        cx,
+                                    ) {
+                                        log::error!(
+                                            "system_revision_activation_restore_failed revision={} error={recovery_error}",
+                                            activation.revision_id
+                                        );
+                                        std::process::abort();
+                                    }
+                                    return;
+                                }
+                                observed => {
+                                    log::error!(
+                                        "system_revision_activation_reconcile_mismatch expected_candidate={} expected_previous={} observed={}",
+                                        activation.revision_id,
+                                        self.system_revision_id,
+                                        observed.unwrap_or("none")
+                                    );
+                                    std::process::abort();
+                                }
+                            }
+                        }
+                    };
                     if activated.revision_id.as_deref() != Some(&activation.revision_id)
                         || activated.source.as_deref() != Some(self.source.as_str())
                     {
@@ -1996,6 +2054,7 @@ impl ExperienceHost {
                     self.state_schema_version = envelope.schema_version;
                     self.state = envelope.state;
                     self.system_revision_id = activation.revision_id.clone();
+                    self.revision_activation_pending = false;
                     let _ = fs::remove_file(file_path(CANDIDATE_FILE));
                     let _ = fs::remove_file(file_path(CANDIDATE_STATE_FILE));
                     log::info!(
@@ -2004,6 +2063,7 @@ impl ExperienceHost {
                         envelope.revision,
                         envelope.source_sha256
                     );
+                    self.dispatch_pending_input_event(cx);
                 }
                 #[cfg(not(feature = "aosp-system"))]
                 let _ = frame.authority_activation;
@@ -2076,6 +2136,70 @@ impl ExperienceHost {
             }
         }
         cx.notify();
+    }
+
+    #[cfg(feature = "aosp-system")]
+    fn restore_authority_revision(
+        &mut self,
+        current: android_authority_protocol::RevisionResponse,
+        stale_stage_id: u64,
+        activation_error: String,
+        cx: &mut Context<Self>,
+    ) -> Result<(), String> {
+        let revision_id = current
+            .revision_id
+            .ok_or_else(|| "authority reconciliation omitted the current revision id".to_owned())?;
+        let source = current
+            .source
+            .ok_or_else(|| "authority reconciliation omitted the current source".to_owned())?;
+        let envelope = current
+            .state
+            .ok_or_else(|| "authority reconciliation omitted the current state".to_owned())?;
+        if envelope.source_sha256 != source_sha256(&source) {
+            return Err("authority reconciliation returned inconsistent source and state".into());
+        }
+        let revision_assets = revision_client::inputs(current.assets);
+        let (worker, ready) = RuntimeWorker::spawn_with_assets(
+            source.clone(),
+            self.model.clone(),
+            envelope.state.clone(),
+            envelope.schema_version,
+            revision_assets.clone(),
+        )
+        .map_err(|error| format!("last known-good worker could not start: {error}"))?;
+        let results = worker.results();
+        self.worker = worker;
+        Self::attach_worker_channels(ready, results, cx);
+        self.scene = loading_scene();
+        self.source = source;
+        self.state = envelope.state;
+        self.remote_state_revision = Some(envelope.revision);
+        self.state_schema_version = envelope.schema_version;
+        self.system_revision_id = revision_id.clone();
+        self.revision_assets = revision_assets;
+        self.pending_focus_restore = None;
+        let discarded_events = self.pending_input_events.len();
+        self.pending_input_events.clear();
+        let _ = fs::remove_file(file_path(CANDIDATE_FILE));
+        let _ = fs::remove_file(file_path(CANDIDATE_STATE_FILE));
+        if let Err(error) = provider_client::abort_state(stale_stage_id) {
+            log::warn!(
+                "system_revision_activation_stage_abort_failed stage_id={stale_stage_id} error={error}"
+            );
+        }
+        self.revision_recovery_status = Some(format!(
+            "Submit was not activated; restored the last known-good experience ({activation_error})"
+        ));
+        self.status = Some(("Restoring the last known-good experience…".into(), false));
+        self.accessibility_dirty = true;
+        log::warn!(
+            "system_revision_activation_restoring revision={} state_revision={} discarded_events={} activation_error={activation_error}",
+            revision_id,
+            envelope.revision,
+            discarded_events
+        );
+        cx.notify();
+        Ok(())
     }
 
     fn complete_stress(&mut self) {
@@ -2599,6 +2723,7 @@ impl Render for ExperienceHost {
             && self.candidates.is_empty()
             && !self.action_in_flight
             && self.pending_frame.is_none()
+            && !self.revision_activation_pending
             && !self.pending_input_events.is_empty()
         {
             self.dispatch_pending_input_event(cx);
@@ -2630,6 +2755,10 @@ impl Render for ExperienceHost {
                     .text_size(px(12.0))
                     .child(SharedString::from(message.clone())),
             );
+        }
+        #[cfg(feature = "core-native")]
+        if native_input::software_keyboard_visible() {
+            root = root.child(native_input::software_keyboard_overlay());
         }
         if let Some(mut frame) = pending_frame.take() {
             frame.commit_to_render_us =
