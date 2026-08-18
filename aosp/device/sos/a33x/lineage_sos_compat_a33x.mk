@@ -13,6 +13,7 @@ PRODUCT_PACKAGES += \
     SosA33xFrameworkOverlay \
     SosCompat1FrameworkOverlay \
     SosShell \
+    sos-agent-runner \
     sos-compat-privapp-permissions \
     sos-compat-ui-removal-marker
 

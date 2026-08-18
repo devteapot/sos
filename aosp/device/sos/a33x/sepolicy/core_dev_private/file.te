@@ -1,0 +1,2 @@
+type sos_node_core_dev_exec, system_file_type, exec_type, file_type;
+type sos_core_dev_credential_exec, system_file_type, exec_type, file_type;

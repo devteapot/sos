@@ -7,6 +7,7 @@ $(call inherit-product, device/sos/a33x/sos_headless_android_adapter_common.mk)
 PRODUCT_NAME := lineage_sos_core0b_a33x
 
 PRODUCT_PACKAGES += \
+    sos-agent-runner \
     sos-ui-removal-marker
 
 PRODUCT_SYSTEM_EXT_PROPERTIES += \

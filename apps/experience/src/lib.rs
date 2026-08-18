@@ -14,7 +14,13 @@ mod assets;
 #[cfg(all(target_os = "linux", feature = "linux-host"))]
 mod compositor_fence;
 #[cfg(any(all(target_os = "android", feature = "core-native"), test))]
+mod core_child_fds;
+#[cfg(any(all(target_os = "android", feature = "core-native"), test))]
 mod core_credential;
+#[cfg(any(all(target_os = "android", feature = "core-dev-credential"), test))]
+mod core_dev_credential;
+#[cfg(any(all(target_os = "android", feature = "core-dev-credential"), test))]
+mod core_dev_product;
 #[cfg(all(target_os = "linux", feature = "linux-host"))]
 mod linux;
 #[cfg(all(target_os = "linux", feature = "linux-host"))]

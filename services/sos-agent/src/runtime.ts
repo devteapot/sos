@@ -17,6 +17,7 @@ import { openaiProvider } from "@earendil-works/pi-ai/providers/openai";
 import { openrouterProvider } from "@earendil-works/pi-ai/providers/openrouter";
 import { Agent, type AgentMessage } from "@earendil-works/pi-agent-core";
 import { createAuthoringTools, type AuthoringBackend } from "./authoring.js";
+import { nodeProviderFetch } from "./provider-fetch.js";
 
 export type SupportedProvider = "openai" | "anthropic" | "openai-codex" | "openrouter";
 
@@ -28,6 +29,7 @@ export interface AgentRuntimeOptions {
   apiKey?: string;
   credentials?: CredentialStore;
   messages?: AgentMessage[];
+  fetch?: typeof globalThis.fetch;
 }
 
 export function createAgentRuntime(options: AgentRuntimeOptions): Agent {
@@ -51,6 +53,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions): Agent {
       models.streamSimple(requestModel, context, {
         ...streamOptions,
         ...(options.apiKey ? { apiKey: options.apiKey } : {}),
+        fetch: options.fetch ?? nodeProviderFetch,
       }),
     toolExecution: "sequential",
   });

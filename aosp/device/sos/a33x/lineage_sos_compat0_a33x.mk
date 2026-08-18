@@ -7,6 +7,7 @@ PRODUCT_NAME := lineage_sos_compat0_a33x
 PRODUCT_PACKAGES += \
     SosA33xFrameworkOverlay \
     SosShell \
+    sos-agent-runner \
     sos-compat-privapp-permissions
 
 PRODUCT_SYSTEM_EXT_PROPERTIES += \

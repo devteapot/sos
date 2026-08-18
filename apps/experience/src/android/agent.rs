@@ -3,6 +3,8 @@ use std::io::{Read, Write};
 #[cfg(feature = "core-native")]
 use std::os::fd::AsRawFd;
 #[cfg(feature = "core-native")]
+use std::os::unix::process::ExitStatusExt;
+#[cfg(feature = "core-native")]
 use std::process::{Child, Command, ExitStatus, Stdio};
 #[cfg(feature = "core-native")]
 use std::sync::{
@@ -26,10 +28,17 @@ use serde::Serialize;
 use zeroize::{Zeroize, Zeroizing};
 
 use crate::android_agent_contract::{
-    expected_model, model_is_exact, reconciled_request_error, verified_action_sequence,
+    expected_model, model_is_exact, reconciled_request_error, safe_failure_category,
+    safe_failure_stage, safe_http_status, ui_failure, verified_action_sequence, AgentUiAttempt,
+    AgentUiFailure,
 };
 #[cfg(feature = "core-native")]
-use crate::android_agent_contract::{pi_timeout_seconds, OPENROUTER_MODEL};
+use crate::android_agent_contract::{
+    pi_timeout_seconds, safe_core_launch_cause, SafeCorePiFailure, CORE_CHILD_LAUNCH,
+    CORE_NODE_ARGS, OPENROUTER_MODEL,
+};
+#[cfg(feature = "core-native")]
+use crate::core_child_fds::restrict_to_standard_fds;
 #[cfg(feature = "core-native")]
 use crate::core_credential::{CeremonySnapshot, CredentialState};
 use crate::deterministic_agent_candidate;
@@ -46,16 +55,37 @@ pub struct AgentStatus {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum AgentUpdate {
-    Started { prompt: String },
-    ToolStarted(String),
-    ToolFinished { name: String, ok: bool },
-    Candidate { source: String, summary: String },
-    Completed,
-    Failed(String),
+    Started {
+        attempt_id: u64,
+        prompt: String,
+    },
+    ToolStarted {
+        attempt_id: u64,
+        name: String,
+    },
+    ToolFinished {
+        attempt_id: u64,
+        name: String,
+        ok: bool,
+    },
+    Candidate {
+        attempt_id: u64,
+        source: String,
+        summary: String,
+    },
+    Completed {
+        attempt_id: u64,
+    },
+    Failed {
+        attempt_id: u64,
+        failure: AgentUiFailure,
+    },
 }
 
 #[derive(Deserialize)]
 struct LiveEnvelope {
+    protocol_version: Option<u8>,
+    terminal: Option<String>,
     #[cfg(not(feature = "core-native"))]
     #[serde(default)]
     ok: Option<bool>,
@@ -106,6 +136,37 @@ fn core_credential() -> &'static Mutex<CredentialState> {
     CORE_CREDENTIAL.get_or_init(|| Mutex::new(CredentialState::default()))
 }
 
+#[cfg(feature = "core-dev-credential")]
+pub(super) fn install_dev_openrouter_credential(key: &[u8]) -> bool {
+    let installed = core_credential()
+        .lock()
+        .expect("Core credential lock")
+        .install_openrouter(key);
+    if installed {
+        CORE_CREDENTIAL_CHANGED.store(true, Ordering::Release);
+        log::info!("core_dev_credential state=set");
+    }
+    installed
+}
+
+#[cfg(feature = "core-dev-credential")]
+pub(super) fn clear_dev_openrouter_credential() {
+    core_credential()
+        .lock()
+        .expect("Core credential lock")
+        .clear();
+    CORE_CREDENTIAL_CHANGED.store(true, Ordering::Release);
+    log::info!("core_dev_credential state=cleared");
+}
+
+#[cfg(feature = "core-dev-credential")]
+pub(super) fn dev_openrouter_credential_configured() -> bool {
+    core_credential()
+        .lock()
+        .expect("Core credential lock")
+        .configured()
+}
+
 #[cfg(feature = "core-native")]
 struct ReapedChild {
     child: Option<Child>,
@@ -136,7 +197,12 @@ impl Drop for ReapedChild {
     fn drop(&mut self) {
         if let Some(child) = self.child.as_mut() {
             let _ = child.kill();
-            let _ = child.wait();
+            match child.wait() {
+                Ok(status) => log_child_exit(status, "forced_cleanup"),
+                Err(_) => log::warn!(
+                    "android_agent_child_exit code=unknown signal=unknown cleanup=wait_failed platform=core"
+                ),
+            }
         }
     }
 }
@@ -272,59 +338,121 @@ pub fn clear_credential() -> Result<(), String> {
     call_bool("clearCredential")
 }
 
+fn accepted_request_marker(attempt: &mut AgentUiAttempt) -> Result<String, &'static str> {
+    let marker = attempt.accepted_marker()?;
+    if !marker.starts_with("android_agent_request_accepted provider=") {
+        return Err("agent request acceptance marker violated its sanitized prefix");
+    }
+    Ok(marker)
+}
+
 pub fn spawn_prompt(
+    attempt: AgentUiAttempt,
     status: AgentStatus,
     prompt: String,
     current_source: String,
     model: ExperienceModel,
     updates: Sender<AgentUpdate>,
-) {
+) -> Result<(), String> {
     let provider = status.provider.clone();
     let model_name = expected_model(&provider).unwrap_or("unsupported");
-    log::info!("android_agent_thread_start provider={provider} model={model_name}");
+    let core_dev_tunnel = attempt.uses_core_dev_fixed_tunnel();
     thread::Builder::new()
         .name("sos-android-agent".into())
         .spawn(move || {
-            let _ = updates.send_blocking(AgentUpdate::Started {
-                prompt: prompt.clone(),
-            });
-            if let Err(error) = run_prompt(&status, &prompt, &current_source, &model, &updates) {
-                let (stage, category) = failure_marker(&error);
-                log::warn!(
-                    "android_agent_failure stage={stage} category={category} model={model_name}"
+            let attempt_id = attempt.attempt_id();
+            let mut attempt = attempt;
+            let accepted_marker = accepted_request_marker(&mut attempt)
+                .expect("agent request acceptance must follow UI dispatch");
+            log::info!("{accepted_marker}");
+            if updates
+                .send_blocking(AgentUpdate::Started {
+                    attempt_id,
+                    prompt: prompt.clone(),
+                })
+                .is_err()
+            {
+                let failure = ui_failure("dispatch", "dispatch_channel");
+                super::log_agent_attempt_event(
+                    attempt
+                        .terminal(Some(failure))
+                        .expect("agent attempt must have one terminal"),
                 );
-                let _ = updates.send_blocking(AgentUpdate::Failed(error));
+                return;
+            }
+            match run_prompt(
+                attempt_id,
+                &status,
+                &prompt,
+                &current_source,
+                &model,
+                &updates,
+                core_dev_tunnel,
+            ) {
+                Ok(()) => {
+                    super::log_agent_attempt_event(
+                        attempt
+                            .terminal(None)
+                            .expect("agent attempt must have one terminal"),
+                    );
+                    let _ = updates.send_blocking(AgentUpdate::Completed { attempt_id });
+                }
+                Err(error) => {
+                    let (stage, category) = failure_marker(&error);
+                    let status = failure_http_status(&error)
+                        .map_or("none".to_owned(), |status| status.to_string());
+                    log::warn!(
+                        "android_agent_request_result attempt={attempt_id} stage={stage} category={category} status={status} model={model_name} correlation=serialized"
+                    );
+                    let failure = ui_failure(stage, category);
+                    super::log_agent_attempt_event(
+                        attempt
+                            .terminal(Some(failure))
+                            .expect("agent attempt must have one terminal"),
+                    );
+                    let _ = updates.send_blocking(AgentUpdate::Failed {
+                        attempt_id,
+                        failure,
+                    });
+                }
             }
         })
-        .expect("Android agent thread must start");
+        .map(|_| ())
+        .map_err(|_| "Android agent thread could not start".to_owned())
 }
 
 fn failure_marker(error: &str) -> (&'static str, &'static str) {
-    if error.contains("[credential/") {
-        ("credential", "credential_error")
-    } else if error.contains("[provider/") {
-        ("provider", "provider_error")
-    } else if error.contains("[validation/invalid_candidate") {
-        ("validation", "invalid_candidate")
-    } else if error.contains("[protocol/wrong_model") {
-        ("protocol", "wrong_model")
-    } else if error.contains("[protocol/tool_sequence") {
-        ("protocol", "tool_sequence")
-    } else if error.contains("[child/") {
-        ("child", "process_failure")
-    } else if error.contains("[bridge/") {
-        ("bridge", "bridge_failure")
-    } else {
-        ("protocol", "request_failed")
-    }
+    let Some((_, tagged)) = error.rsplit_once('[') else {
+        return ("protocol", "unknown");
+    };
+    let Some((stage, rest)) = tagged.split_once('/') else {
+        return ("protocol", "unknown");
+    };
+    let category = rest.split([';', ']']).next();
+    (
+        safe_failure_stage(Some(stage)),
+        safe_failure_category(category),
+    )
+}
+
+fn failure_http_status(error: &str) -> Option<u16> {
+    let marker = "; HTTP ";
+    let start = error.find(marker)? + marker.len();
+    let digits = error[start..].split([';', ']']).next()?;
+    digits
+        .parse()
+        .ok()
+        .filter(|status| (100..=599).contains(status))
 }
 
 fn run_prompt(
+    attempt_id: u64,
     status: &AgentStatus,
     prompt: &str,
     current_source: &str,
     model: &ExperienceModel,
     updates: &Sender<AgentUpdate>,
+    core_dev_tunnel: bool,
 ) -> Result<(), String> {
     let model_name = expected_model(&status.provider).unwrap_or("unsupported");
     log::info!(
@@ -336,36 +464,51 @@ fn run_prompt(
     } else {
         None
     };
-    let candidate = run_live(&status.provider, prompt, current_source, faux_candidate)?;
-    emit_completed_tool(updates, "get_experience_context")?;
-    emit_tool(updates, "validate_experience", || {
+    let candidate = run_live(
+        &status.provider,
+        prompt,
+        current_source,
+        faux_candidate,
+        core_dev_tunnel,
+    )?;
+    emit_completed_tool(attempt_id, updates, "get_experience_context")?;
+    emit_tool(attempt_id, updates, "validate_experience", || {
         validate_candidate(&candidate.source, model)
     })?;
-    emit_completed_tool(updates, "submit_experience")?;
+    emit_completed_tool(attempt_id, updates, "submit_experience")?;
     updates
         .send_blocking(AgentUpdate::Candidate {
+            attempt_id,
             source: candidate.source,
             summary: candidate.summary,
         })
         .map_err(|_| "agent host stopped receiving updates".to_owned())?;
-    let _ = updates.send_blocking(AgentUpdate::Completed);
     Ok(())
 }
 
-fn emit_completed_tool(updates: &Sender<AgentUpdate>, name: &str) -> Result<(), String> {
-    emit_tool(updates, name, || Ok(()))
+fn emit_completed_tool(
+    attempt_id: u64,
+    updates: &Sender<AgentUpdate>,
+    name: &str,
+) -> Result<(), String> {
+    emit_tool(attempt_id, updates, name, || Ok(()))
 }
 
 fn emit_tool<T>(
+    attempt_id: u64,
     updates: &Sender<AgentUpdate>,
     name: &str,
     operation: impl FnOnce() -> Result<T, String>,
 ) -> Result<T, String> {
     updates
-        .send_blocking(AgentUpdate::ToolStarted(name.into()))
+        .send_blocking(AgentUpdate::ToolStarted {
+            attempt_id,
+            name: name.into(),
+        })
         .map_err(|_| "agent host stopped receiving updates".to_owned())?;
     let result = operation();
     let _ = updates.send_blocking(AgentUpdate::ToolFinished {
+        attempt_id,
         name: name.into(),
         ok: result.is_ok(),
     });
@@ -395,48 +538,8 @@ fn validate_candidate(source: &str, model: &ExperienceModel) -> Result<(), Strin
 }
 
 fn structured_failure(envelope: &LiveEnvelope, expected_model: &str) -> String {
-    const STAGES: [&str; 7] = [
-        "request",
-        "credential",
-        "provider",
-        "protocol",
-        "validation",
-        "bridge",
-        "child",
-    ];
-    const CATEGORIES: [&str; 21] = [
-        "invalid_request",
-        "credential_rejected",
-        "provider_rejected",
-        "rate_limited",
-        "provider_unavailable",
-        "provider_error",
-        "tool_sequence",
-        "invalid_candidate",
-        "protocol_error",
-        "internal",
-        "launch_failure",
-        "timeout",
-        "response_timeout",
-        "response_io",
-        "empty_response",
-        "linker_or_exit",
-        "invalid_response",
-        "unexpected_response",
-        "wrong_model",
-        "refresh_failed",
-        "request_io",
-    ];
-    let stage = envelope
-        .stage
-        .as_deref()
-        .filter(|value| STAGES.contains(value))
-        .unwrap_or("protocol");
-    let category = envelope
-        .category
-        .as_deref()
-        .filter(|value| CATEGORIES.contains(value))
-        .unwrap_or("protocol_error");
+    let stage = safe_failure_stage(envelope.stage.as_deref());
+    let category = safe_failure_category(envelope.category.as_deref());
     let (stage, category) = if envelope
         .model
         .as_deref()
@@ -446,19 +549,21 @@ fn structured_failure(envelope: &LiveEnvelope, expected_model: &str) -> String {
     } else {
         (stage, category)
     };
-    let status = envelope
-        .status
-        .filter(|status| (100..=599).contains(status));
-    log::warn!(
-        "android_agent_failure stage={stage} category={category} model={expected_model} status={}",
-        status.map_or("none".to_owned(), |value| value.to_string())
-    );
+    let status = safe_http_status(envelope.status);
     let detail = match category {
         "credential_rejected" => "The provider rejected the configured credential.",
         "provider_rejected" => "The provider rejected this request.",
         "rate_limited" => "The provider rate-limited this request.",
         "provider_unavailable" => "The provider is temporarily unavailable.",
         "provider_error" => "The provider request failed.",
+        "dns_resolution" => "The provider hostname could not be resolved.",
+        "dns_timeout" => "Provider DNS resolution timed out.",
+        "dns_proxy_unavailable" => "The Android DNS proxy was unavailable.",
+        "connect_timeout" => "The provider connection timed out.",
+        "connect_refused" => "The provider connection was refused.",
+        "connect_reset" => "The provider connection was reset.",
+        "network_unreachable" => "The provider network was unreachable.",
+        "tls_failure" => "The provider TLS handshake or certificate validation failed.",
         "invalid_request" => "The Pi request was invalid.",
         "tool_sequence" => "Pi used an invalid authoring tool sequence.",
         "invalid_candidate" => "Pi proposed an invalid candidate.",
@@ -474,6 +579,7 @@ fn structured_failure(envelope: &LiveEnvelope, expected_model: &str) -> String {
         "refresh_failed" => "The refreshed provider credential could not be stored.",
         "request_io" => "The local Pi process could not accept its request.",
         "internal" => "The trusted on-device Pi bridge failed.",
+        "unknown" => "The provider failure category was unknown.",
         _ => "The Pi protocol failed.",
     };
     match status {
@@ -547,27 +653,81 @@ fn common_pi_timeout_error(timeout: Duration) -> String {
 }
 
 #[cfg(feature = "core-native")]
+fn process_status_failure(status: ExitStatus) -> SafeCorePiFailure {
+    if let Some(code) = status.code() {
+        SafeCorePiFailure::unsuccessful_exit(code)
+    } else {
+        SafeCorePiFailure::signal(status.signal().unwrap_or(0))
+    }
+}
+
+#[cfg(feature = "core-native")]
+fn log_child_exit(status: ExitStatus, cleanup: &str) {
+    log::info!(
+        "android_agent_child_exit code={} signal={} cleanup={cleanup} platform=core",
+        status
+            .code()
+            .map_or("none".to_owned(), |code| code.to_string()),
+        status
+            .signal()
+            .map_or("none".to_owned(), |signal| signal.to_string())
+    );
+}
+
+#[cfg(feature = "core-native")]
+fn report_core_pi_failure(failure: SafeCorePiFailure, model: &str) -> String {
+    log::warn!(
+        "android_agent_failure stage={} category={} model={model}{}",
+        failure.stage,
+        failure.category,
+        failure.safe_metadata()
+    );
+    failure.tagged_error(model)
+}
+
+#[cfg(feature = "core-native")]
 fn run_core_pi(
     request: &[u8],
     timeout: Duration,
+    model: &str,
+    core_dev_tunnel: bool,
 ) -> Result<(ExitStatus, Zeroizing<Vec<u8>>), String> {
-    let child = Command::new("/system_ext/bin/sos-node")
-        .args([
-            "/system_ext/etc/sos-agent/agent-runner.cjs",
-            "stdio",
-            "--api-doc",
-            "/system_ext/etc/sos-agent/experience-api.md",
-            "--example",
-            "/system_ext/etc/sos-agent/example-primary.luau",
-            "--example-secondary",
-            "/system_ext/etc/sos-agent/example-secondary.luau",
-        ])
+    let mut command = Command::new(CORE_CHILD_LAUNCH.node_path);
+    command
+        .args(CORE_NODE_ARGS)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .map_err(|error| format!("start common Pi runner: {error}"))?;
-    log::info!("android_agent_child_start pid={} platform=core", child.id());
+        .stderr(Stdio::null());
+    restrict_to_standard_fds(&mut command);
+    let child = command.spawn().map_err(|error| {
+        log::warn!(
+            "android_agent_child_launch_failure cause={} node={} runner={} expected_domain={} platform=core",
+            safe_core_launch_cause(error.kind()),
+            CORE_CHILD_LAUNCH.node_identity,
+            CORE_CHILD_LAUNCH.runner_identity,
+            CORE_CHILD_LAUNCH.expected_domain,
+        );
+        "start common Pi runner".to_owned()
+    })?;
+    #[cfg(feature = "core-dev-credential")]
+    let transport = if core_dev_tunnel {
+        "adb_reverse_connect"
+    } else {
+        "direct"
+    };
+    #[cfg(not(feature = "core-dev-credential"))]
+    let transport = {
+        debug_assert!(!core_dev_tunnel);
+        "direct"
+    };
+    log::info!(
+        "android_agent_child_start pid={} expected_domain={} node={} runner={} provider_identity=openrouter model={model} platform=core hardening=jitless fd_boundary=stdio_only stderr=discarded transport={}",
+        child.id(),
+        CORE_CHILD_LAUNCH.expected_domain,
+        CORE_CHILD_LAUNCH.node_identity,
+        CORE_CHILD_LAUNCH.runner_identity,
+        transport,
+    );
     let mut child = ReapedChild::new(child);
     let mut input = Some(
         child
@@ -616,6 +776,9 @@ fn run_core_pi(
                         written += count;
                         if written == request.len() {
                             input.take();
+                            log::info!(
+                                "android_agent_child_request state=written provider_identity=openrouter model={model}"
+                            );
                         }
                     }
                     Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
@@ -663,12 +826,7 @@ fn run_core_pi(
         poll_until(&mut [], deadline, Duration::from_millis(10), timeout)?;
     }
     let status = child.finish()?;
-    log::info!(
-        "android_agent_child_exit code={} platform=core",
-        status
-            .code()
-            .map_or("signal".to_owned(), |code| code.to_string())
-    );
+    log_child_exit(status, "normal");
     Ok((status, response))
 }
 
@@ -678,6 +836,7 @@ fn run_live(
     prompt: &str,
     current_source: &str,
     faux_candidate: Option<&str>,
+    core_dev_tunnel: bool,
 ) -> Result<LiveCandidate, String> {
     if prompt.is_empty() || prompt.len() > 32 * 1024 {
         return Err("agent prompt is outside the bounded size".into());
@@ -706,6 +865,9 @@ fn run_live(
         credential: CredentialRequest<'a>,
         prompt: &'a str,
         current_source: &'a str,
+        #[cfg(feature = "core-dev-credential")]
+        #[serde(skip_serializing_if = "Option::is_none")]
+        core_dev_proxy: Option<&'static str>,
     }
 
     let credential = faux_candidate
@@ -742,6 +904,8 @@ fn run_live(
             },
             prompt,
             current_source,
+            #[cfg(feature = "core-dev-credential")]
+            core_dev_proxy: core_dev_tunnel.then_some("http://127.0.0.1:37173"),
         })
     }
     .map(Zeroizing::new)
@@ -755,30 +919,47 @@ fn run_live(
         pi_timeout_seconds(provider)
             .ok_or_else(|| "Core selected an unsupported Pi provider".to_owned())?,
     );
-    let (status, response) = run_core_pi(&request, timeout).map_err(|error| {
-        let (category, detail) = if error.contains("timed out") {
-            ("timeout", "The local Pi process timed out.")
-        } else if error.starts_with("start common Pi runner") {
-            ("launch_failure", "The local Pi process could not start.")
-        } else {
-            ("process_io", "The local Pi process failed.")
-        };
-        log::warn!(
-            "android_agent_failure stage=child category={category} model={}",
-            expected_model(provider).unwrap_or("unsupported")
-        );
-        format!(
-            "{detail} [child/{category}; model {}]",
-            expected_model(provider).unwrap_or("unsupported")
-        )
-    })?;
+    let expected_model = expected_model(provider)
+        .ok_or_else(|| "Core selected an unsupported Pi provider".to_owned())?;
+    let (status, response) = run_core_pi(&request, timeout, expected_model, core_dev_tunnel)
+        .map_err(|error| {
+            let failure = if error.contains("timed out") {
+                SafeCorePiFailure::timeout()
+            } else if error.starts_with("start common Pi runner") {
+                SafeCorePiFailure::launch()
+            } else if error.contains("request") || error.contains("stdin") {
+                SafeCorePiFailure::request_io()
+            } else if error.contains("response") || error.contains("stdout") {
+                SafeCorePiFailure::response_io()
+            } else {
+                SafeCorePiFailure::process_io()
+            };
+            report_core_pi_failure(failure, expected_model)
+        })?;
     let line = response
         .split(|byte| *byte == b'\n')
         .rev()
-        .find(|line| !line.is_empty())
-        .ok_or_else(|| "common Pi runner returned no response".to_owned())?;
-    let envelope: LiveEnvelope = serde_json::from_slice(line)
-        .map_err(|_| "common Pi runner returned an invalid response".to_owned())?;
+        .find(|line| !line.is_empty());
+    let Some(line) = line else {
+        let failure = if status.success() {
+            SafeCorePiFailure::empty_response(status.code().unwrap_or(0))
+        } else {
+            process_status_failure(status)
+        };
+        return Err(report_core_pi_failure(failure, expected_model));
+    };
+    let envelope: LiveEnvelope = serde_json::from_slice(line).map_err(|_| {
+        report_core_pi_failure(
+            SafeCorePiFailure::invalid_response(status.code(), status.signal()),
+            expected_model,
+        )
+    })?;
+    if envelope.protocol_version != Some(2) {
+        return Err(report_core_pi_failure(
+            SafeCorePiFailure::invalid_response(status.code(), status.signal()),
+            expected_model,
+        ));
+    }
     let response_type = if envelope.source.is_some() {
         "prompt_complete"
     } else if envelope.category.is_some() {
@@ -786,17 +967,31 @@ fn run_live(
     } else {
         "unexpected"
     };
+    let expected_terminal = if response_type == "prompt_complete" {
+        "completed"
+    } else if response_type == "error" {
+        "failed"
+    } else {
+        "unknown"
+    };
+    if envelope.terminal.as_deref() != Some(expected_terminal) {
+        return Err(report_core_pi_failure(
+            SafeCorePiFailure::invalid_response(status.code(), status.signal()),
+            expected_model,
+        ));
+    }
     log::info!(
-        "android_agent_child_response type={response_type} provider={provider} model={}",
-        expected_model(provider).unwrap_or("unsupported")
+        "android_agent_child_response_header protocol=2 type={response_type} terminal={expected_terminal} provider={provider} model={expected_model}"
     );
-    if !status.success() {
-        let expected_model = expected_model(provider)
-            .ok_or_else(|| "Core selected an unsupported Pi provider".to_owned())?;
+    if envelope.category.is_some() {
         return Err(structured_failure(&envelope, expected_model));
     }
-    let expected_model = expected_model(provider)
-        .ok_or_else(|| "Core selected an unsupported Pi provider".to_owned())?;
+    if !status.success() {
+        return Err(report_core_pi_failure(
+            process_status_failure(status),
+            expected_model,
+        ));
+    }
     if !envelope
         .model
         .as_deref()
@@ -846,7 +1041,9 @@ fn run_live(
     prompt: &str,
     current_source: &str,
     faux_candidate: Option<&str>,
+    core_dev_tunnel: bool,
 ) -> Result<LiveCandidate, String> {
+    debug_assert!(!core_dev_tunnel);
     with_env(|env| {
         let helper = find_app_class(env, HELPER_CLASS)?;
         let activity = activity(env)?;

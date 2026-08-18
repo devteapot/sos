@@ -1,0 +1,1 @@
+portcon tcp 37173 u:object_r:sos_core_dev_proxy_port:s0

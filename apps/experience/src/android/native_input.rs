@@ -606,18 +606,26 @@ impl NativeTextInput {
     }
 
     pub fn apply_ime_state(&mut self, state: ImeState, cx: &mut Context<Self>) -> ImeApplyOutcome {
-        log::info!(
-            "ime_state_applied node_id={} kind={} selection={}:{} marked={}",
-            self.node_id,
-            state.kind,
-            state.selection_start,
-            state.selection_end,
-            state
-                .marked
-                .as_ref()
-                .map(|range| format!("{}:{}", range.start, range.end))
-                .unwrap_or_else(|| "none".into())
-        );
+        if self.submit_action.as_deref() == Some("agent_submit") {
+            log::debug!(
+                "ime_state_applied node_id={} kind={} content=redacted",
+                self.node_id,
+                state.kind,
+            );
+        } else {
+            log::info!(
+                "ime_state_applied node_id={} kind={} selection={}:{} marked={}",
+                self.node_id,
+                state.kind,
+                state.selection_start,
+                state.selection_end,
+                state
+                    .marked
+                    .as_ref()
+                    .map(|range| format!("{}:{}", range.start, range.end))
+                    .unwrap_or_else(|| "none".into())
+            );
+        }
         let mut text = state.text.replace(['\r', '\n'], "");
         if text.len() > MAX_TEXT_BYTES {
             let mut end = MAX_TEXT_BYTES;

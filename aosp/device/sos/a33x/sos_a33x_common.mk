@@ -9,7 +9,6 @@ PRODUCT_PACKAGES += \
     sos-android-system-authority \
     sos-node \
     sos-node-cxx-shared \
-    sos-agent-runner \
     sos-agent-experience-api \
     sos-agent-example-primary \
     sos-agent-example-secondary \

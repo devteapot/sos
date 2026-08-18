@@ -5,6 +5,8 @@ members = [
     "crates/android-provider-acceptance",
     "crates/android-system-authority",
     "crates/compositor-control-protocol",
+    "crates/core-agent-contract-test",
+    "crates/core-dev-credential-protocol-test",
     "crates/experience-host-protocol",
     "crates/experience-ir",
     "crates/linux-input-method",
