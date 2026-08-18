@@ -1,0 +1,36 @@
+ARG DEBIAN_LIVE_IMAGE=debian:13.6-slim@sha256:3a39a0592364683e6bab97937b72cad5a8fa6dcbbee90edb3bb48c7f8e94f258
+FROM ${DEBIAN_LIVE_IMAGE}
+
+ARG DEBIAN_FRONTEND=noninteractive
+ARG DEBIAN_SNAPSHOT=20260809T000000Z
+
+RUN rm -f /etc/apt/sources.list.d/*.list /etc/apt/sources.list.d/*.sources \
+    && printf '%s\n' \
+        "deb [check-valid-until=no] http://snapshot.debian.org/archive/debian/${DEBIAN_SNAPSHOT} trixie main contrib non-free-firmware" \
+        "deb [check-valid-until=no] http://snapshot.debian.org/archive/debian-security/${DEBIAN_SNAPSHOT} trixie-security main contrib non-free-firmware" \
+        > /etc/apt/sources.list \
+    && printf '%s\n' \
+        'Acquire::Check-Valid-Until "false";' \
+        'Acquire::Retries "3";' \
+        > /etc/apt/apt.conf.d/99sos-snapshot \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends \
+        ca-certificates \
+        debootstrap \
+        dosfstools \
+        dpkg-dev \
+        file \
+        grub-common \
+        grub-efi-arm64-bin \
+        live-build \
+        mtools \
+        rsync \
+        squashfs-tools \
+        xorriso \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY build-live-iso /usr/local/bin/sos-build-live-iso
+RUN chmod 0755 /usr/local/bin/sos-build-live-iso
+
+WORKDIR /build
+ENTRYPOINT ["/usr/local/bin/sos-build-live-iso"]

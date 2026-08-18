@@ -1,0 +1,143 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+iso_repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+iso_fail() {
+  printf 'error: %s\n' "$*" >&2
+  exit 1
+}
+
+[[ "$#" -le 2 ]] || iso_fail \
+  "usage: tools/build-linux-iso-container [package-directory] [output-directory]"
+iso_packages="${1:-$iso_repo_root/artifacts/linux-packages}"
+iso_output="${2:-$iso_repo_root/artifacts/linux-iso}"
+[[ "$iso_packages" == /* ]] || iso_packages="$iso_repo_root/$iso_packages"
+[[ "$iso_output" == /* ]] || iso_output="$iso_repo_root/$iso_output"
+[[ -d "$iso_packages" ]] || iso_fail "package directory not found: $iso_packages"
+iso_output_created=false
+if [[ -e "$iso_output" ]]; then
+  [[ -d "$iso_output" ]] || iso_fail "output exists and is not a directory: $iso_output"
+  shopt -s nullglob dotglob
+  iso_output_entries=("$iso_output"/*)
+  shopt -u nullglob dotglob
+  [[ "${#iso_output_entries[@]}" -eq 0 ]] || \
+    iso_fail "output directory is not empty: $iso_output"
+else
+  iso_output_created=true
+fi
+
+iso_engine="${SOS_CONTAINER_ENGINE:-}"
+if [[ -z "$iso_engine" ]]; then
+  if command -v podman >/dev/null 2>&1; then
+    iso_engine=podman
+  elif command -v docker >/dev/null 2>&1; then
+    iso_engine=docker
+  else
+    iso_fail "Podman or Docker is required"
+  fi
+fi
+command -v "$iso_engine" >/dev/null 2>&1 || \
+  iso_fail "container engine not found: $iso_engine"
+
+# shellcheck source=/dev/null
+source "$iso_repo_root/images/debian-13/base-images.lock"
+iso_builder_image="${SOS_LINUX_ISO_BUILDER_IMAGE:-sos-linux-iso-builder:debian13.6}"
+iso_volume="sos-linux-iso-build-$$"
+iso_incomplete=true
+iso_cleanup() {
+  "$iso_engine" volume rm --force "$iso_volume" >/dev/null 2>&1 || true
+  if [[ "$iso_incomplete" == true ]]; then
+    rm -f -- \
+      "$iso_output"/.sos-debian13-live-arm64.iso.* \
+      "$iso_output"/sos-debian13-live-arm64.iso \
+      "$iso_output"/sos-debian13-live-arm64.iso.inspection.txt \
+      "$iso_output"/sos-debian13-live-arm64.iso.manifest
+    if [[ "$iso_output_created" == true ]]; then
+      rmdir -- "$iso_output" 2>/dev/null || true
+    fi
+  fi
+}
+trap iso_cleanup EXIT
+if [[ "$iso_output_created" == true ]]; then
+  mkdir -p "$iso_output"
+fi
+
+printf 'Building pinned Debian 13 ARM64 live-ISO environment (%s).\n' \
+  "$iso_builder_image"
+"$iso_engine" build \
+  --pull \
+  --tag "$iso_builder_image" \
+  --file "$iso_repo_root/packaging/debian-live/Containerfile" \
+  "$iso_repo_root/packaging/debian-live"
+"$iso_engine" volume create "$iso_volume" >/dev/null
+
+iso_run_args=(
+  run
+  --rm
+  --privileged
+  --volume "$iso_volume:/build"
+  --volume "$iso_packages:/packages:ro"
+  --volume "$iso_output:/output"
+  --env "SOS_DEBIAN_SNAPSHOT=$SOS_IMAGE_DEBIAN_SNAPSHOT"
+  "$iso_builder_image"
+)
+if [[ "$iso_engine" == podman ]]; then
+  iso_run_args=(
+    run
+    --rm
+    --privileged
+    --security-opt label=disable
+    --volume "$iso_volume:/build"
+    --volume "$iso_packages:/packages:ro"
+    --volume "$iso_output:/output"
+    --env "SOS_DEBIAN_SNAPSHOT=$SOS_IMAGE_DEBIAN_SNAPSHOT"
+    "$iso_builder_image"
+  )
+fi
+"$iso_engine" "${iso_run_args[@]}"
+
+iso_path="$iso_output/sos-debian13-live-arm64.iso"
+iso_inspection="$iso_path.inspection.txt"
+[[ -f "$iso_path" && -s "$iso_path" ]] || iso_fail "ISO was not produced"
+[[ -f "$iso_inspection" && -s "$iso_inspection" ]] || \
+  iso_fail "ISO inspection was not produced"
+
+iso_size="$(stat -f '%z' "$iso_path" 2>/dev/null || stat -c '%s' "$iso_path")"
+iso_sha256="$(shasum -a 256 "$iso_path" | awk '{print $1}')"
+iso_inspection_size="$(stat -f '%z' "$iso_inspection" 2>/dev/null || stat -c '%s' "$iso_inspection")"
+iso_inspection_sha256="$(shasum -a 256 "$iso_inspection" | awk '{print $1}')"
+iso_builder_id="$("$iso_engine" image inspect "$iso_builder_image" --format '{{.Id}}')"
+iso_revision="$(git -C "$iso_repo_root" rev-parse HEAD)"
+if [[ -n "$(git -C "$iso_repo_root" status --short)" ]]; then
+  iso_revision="$iso_revision-dirty"
+fi
+iso_manifest="$iso_path.manifest"
+iso_manifest_tmp="$iso_output/.sos-debian13-live-arm64.iso.manifest.$$"
+{
+  printf 'format=sos-linux-live-iso-manifest-v1\n'
+  printf 'recipe_revision=%s\n' "$iso_revision"
+  printf 'architecture=arm64\n'
+  printf 'debian_snapshot=%s\n' "$SOS_IMAGE_DEBIAN_SNAPSHOT"
+  printf 'builder_image=%s\n' "$iso_builder_image"
+  printf 'builder_image_id=%s\n' "$iso_builder_id"
+  for iso_package in "$iso_packages"/*.deb; do
+    printf 'package=%s size=%s sha256=%s\n' \
+      "$(basename "$iso_package")" \
+      "$(stat -f '%z' "$iso_package" 2>/dev/null || stat -c '%s' "$iso_package")" \
+      "$(shasum -a 256 "$iso_package" | awk '{print $1}')"
+  done
+  printf 'iso_path=%s\n' "$iso_path"
+  printf 'iso_size=%s\n' "$iso_size"
+  printf 'iso_sha256=%s\n' "$iso_sha256"
+  printf 'inspection_path=%s\n' "$iso_inspection"
+  printf 'inspection_size=%s\n' "$iso_inspection_size"
+  printf 'inspection_sha256=%s\n' "$iso_inspection_sha256"
+} >"$iso_manifest_tmp"
+chmod 0644 "$iso_manifest_tmp"
+mv -- "$iso_manifest_tmp" "$iso_manifest"
+iso_incomplete=false
+
+printf 'linux_iso_container_build_passed path=%s size=%s sha256=%s manifest=%s\n' \
+  "$iso_path" "$iso_size" "$iso_sha256" "$iso_manifest"

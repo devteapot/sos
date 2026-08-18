@@ -1,0 +1,90 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+container_repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+container_fail() {
+  printf 'error: %s\n' "$*" >&2
+  exit 1
+}
+
+[[ "$#" -ge 1 && "$#" -le 2 ]] || container_fail \
+  "usage: tools/build-linux-packages-container <debian-version> [repo-relative-output]"
+container_version="$1"
+container_output="${2:-artifacts/linux-packages}"
+[[ "$container_output" != /* && "$container_output" != .. && "$container_output" != ../* \
+  && "$container_output" != */../* && "$container_output" != */.. ]] || \
+  container_fail "output must stay within the repository: $container_output"
+[[ ! -e "$container_repo_root/$container_output" ]] || \
+  container_fail "output already exists: $container_output"
+
+container_source_revision="$(git -C "$container_repo_root" rev-parse HEAD)"
+if [[ -n "$(git -C "$container_repo_root" status --short)" ]]; then
+  container_source_revision="$container_source_revision-dirty"
+fi
+container_source_epoch="${SOURCE_DATE_EPOCH:-$(git -C "$container_repo_root" show -s --format=%ct HEAD)}"
+container_cargo_jobs="${SOS_CARGO_BUILD_JOBS:-2}"
+[[ "$container_cargo_jobs" =~ ^[1-9][0-9]*$ ]] || \
+  container_fail "SOS_CARGO_BUILD_JOBS must be a positive integer"
+
+container_engine="${SOS_CONTAINER_ENGINE:-}"
+if [[ -z "$container_engine" ]]; then
+  if command -v podman >/dev/null 2>&1; then
+    container_engine=podman
+  elif command -v docker >/dev/null 2>&1; then
+    container_engine=docker
+  else
+    container_fail "Podman or Docker is required"
+  fi
+fi
+command -v "$container_engine" >/dev/null 2>&1 || \
+  container_fail "container engine not found: $container_engine"
+
+container_image="${SOS_LINUX_PACKAGE_BUILDER_IMAGE:-sos-linux-package-builder:debian13.6}"
+container_platform="${SOS_LINUX_PACKAGE_PLATFORM:-}"
+container_build_args=(
+  build
+  --pull
+  --tag "$container_image"
+  --file "$container_repo_root/packaging/debian/Containerfile"
+)
+if [[ -n "$container_platform" ]]; then
+  container_build_args+=(--platform "$container_platform")
+fi
+container_build_args+=("$container_repo_root/packaging/debian")
+
+printf 'Building pinned Debian 13 package environment (%s).\n' "$container_image"
+"$container_engine" "${container_build_args[@]}"
+
+container_run_args=(
+  run
+  --rm
+  --workdir /workspace
+  --volume "$container_repo_root:/workspace"
+)
+if [[ -n "$container_platform" ]]; then
+  container_run_args+=(--platform "$container_platform")
+fi
+if [[ "$container_engine" == podman ]]; then
+  container_run_args+=(--security-opt label=disable --userns=keep-id)
+else
+  container_run_args+=(--user "$(id -u):$(id -g)")
+fi
+if [[ -n "${SOURCE_DATE_EPOCH:-}" ]]; then
+  container_source_epoch="$SOURCE_DATE_EPOCH"
+fi
+container_run_args+=(
+  --env "SOS_SOURCE_REVISION=$container_source_revision"
+  --env "SOURCE_DATE_EPOCH=$container_source_epoch"
+  --env "SOS_CARGO_BUILD_JOBS=$container_cargo_jobs"
+)
+container_run_args+=(
+  "$container_image"
+  ./tools/build-linux-packages
+  "$container_version"
+  "$container_output"
+)
+
+printf 'Building SOS Debian packages in the container.\n'
+"$container_engine" "${container_run_args[@]}"

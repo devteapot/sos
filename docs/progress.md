@@ -8997,3 +8997,159 @@ SHA-256
 run its separate one-sideload Core 1 no-Zygote readiness, exact Pi authority,
 credential-clear, leak/crash/AVC, manifest, and soak gate. No Core hardware
 claim is made here.
+
+## 2026-08-18 — Native Debian packages and pinned reference-image recipe
+
+**Goal:** Replace source-tree mutation as the Linux release boundary with
+versioned Debian packages, then define an immutable-input Debian 13 image that
+contains no source checkout or compiler.
+
+**Changed:** Added deterministic builders for `sos-runtime`, `sos-agent`,
+`sos-desktop-session`, `sos-appliance-session`, and `sos-image-config`.
+The agent package carries the already pinned Node 24.18.0 runtime privately;
+shared-library dependencies come from `dpkg-shlibdeps`; package timestamps use
+`SOURCE_DATE_EPOCH`; and one layout renderer converts the development
+`/usr/local` installation into package-owned `/usr` paths. Added first-boot
+secret/revision initialization and a Debian 13 image recipe locked to the
+previously evidenced ARM64 generic image and the `20260809T000000Z` Debian
+archive snapshot. The image assembler installs only local SOS packages,
+resolves dependencies from that snapshot, removes cloned identity, and emits an
+adjacent input/output hash manifest. Added a Podman/Docker builder based on the
+multi-architecture Debian 13.6 slim manifest digest
+`sha256:3a39a0592364683e6bab97937b72cad5a8fa6dcbbee90edb3bb48c7f8e94f258`;
+it uses the same Debian snapshot, Rust 1.95.0, and verified Node 24.18.0 while
+isolating Cargo targets, npm caches, and Linux agent staging from the host
+checkout.
+
+**Evidence:** `bash -n` and ShellCheck passed over the new builders,
+initializer, renderer, host test, and modified login launchers;
+`./tests/linux-packaging-host-test.sh` returned
+`linux_packaging_host_test_passed architecture=arm64
+snapshot=20260809T000000Z`; and `git diff --check` passed. These static checks
+cover rendered paths, all five package boundaries, lock syntax, and the
+prohibition on source installer/Cargo/npm use inside the image. The Debian
+builder manifest digest was queried from Docker Registry for
+`debian:13.6-slim`; its recorded platform manifests are
+`sha256:38a76d01668772e381ad2826d876627c89e7133e2f8a0f5d567306798b0f2a16`
+for AMD64 and
+`sha256:c94f5ddd41327aa2d4a7cfba7889056c02936182fd76a513fec6160c97181fc0`
+for ARM64.
+
+Podman 6.1.0 built final ARM64 builder image
+`f7a4b4c86aa9f9671f50ec2bc4d79260e3efef30851d95657bc50759b45533b1`
+in an AppleHV VM configured with 8 CPUs, 12 GiB RAM, and a 100 GiB disk.
+The package build used source revision
+`e05f91bb6f0b0a9299b914138d6cd0966b9c82d5-dirty`, source epoch
+`1787036064`, and two Cargo jobs. The locked release build completed in
+3 minutes 52 seconds; npm installed/audited 102 packages with zero
+vulnerabilities; and `artifacts/linux-packages/` contains 46,185,773 logical
+bytes:
+
+- `sos-runtime_0.1.0_arm64.deb`: 7,716,860 bytes, SHA-256
+  `be708f2c486ba35e10bd1f894920b7719f2931018bbeb09f4a8614a596e5ec78`;
+- `sos-agent_0.1.0_arm64.deb`: 38,459,692 bytes, SHA-256
+  `5e47d86a734d8f2695b99924e95195a8d6569b5bd2c0fa5b7427f7ee709bfba6`;
+- `sos-desktop-session_0.1.0_all.deb`: 3,824 bytes, SHA-256
+  `a76db9f14efe276d9e540af8489768cb7a2fbe6476a8f185337e3895b8734999`;
+- `sos-appliance-session_0.1.0_all.deb`: 2,832 bytes, SHA-256
+  `63055a8b9164b5da7b026278244debd48cecd3fe7d73025f895e5a632bfaa767`;
+- `sos-image-config_0.1.0_all.deb`: 2,080 bytes, SHA-256
+  `20ac338e4afa0715a4dc0bb20595d225654c17cb0e11f184012a3cc229247527`;
+- `SHA256SUMS`: 485 bytes, SHA-256
+  `2f98fa9ca9d9887017f5695a3448beb422b24efb09f48d13c3371bbfaf67535c`.
+
+Host `shasum -a 256 -c` independently accepted every package. A fresh
+digest-pinned Debian 13.6 slim container resolved and installed the package
+closure from snapshot `20260809T000000Z`; all six native executables had no
+missing `ldd` dependency; `systemd-analyze verify` accepted the session, agent,
+target, and image-initializer units; package ownership resolved to the intended
+five packages; and private Node reported `v24.18.0`. The first-boot initializer
+created revision
+`31f8e1d31b6e2c91a8a0b0829e5f29934440c64ed8f535bb86d81a5a836c49e5`,
+a 64-byte shell token, and retained the same revision on a second invocation.
+A second same-input package build was byte-for-byte identical for all five
+`.deb` files and `SHA256SUMS`; its duplicate output was removed. This proves
+same-builder package reproducibility, not yet independent-builder
+reproducibility. The clean install and initialization procedure is retained as
+`SOS_CONTAINER_ENGINE=podman ./tools/test-linux-packages-container`.
+
+Two useful failures preceded PASS. The first container run could not resolve
+the Delta worktree's external Git administration directory; the wrapper now
+captures revision, dirty state, and source epoch on the host. The first Rust
+attempt then ran in the user's initial 2 GiB Podman VM and `rustc` compiling
+`wayland-protocols` terminated with signal 9. Kernel OOM evidence was
+unavailable after the VM stopped, but resizing that same VM to 12 GiB and
+limiting Cargo to two jobs eliminated the failure. Neither failed attempt left
+partial packages.
+
+**Decision:** Accept the ARM64 container build, package ownership/dependency
+closure, clean install, initializer idempotence, and same-builder package
+reproducibility. Continue with the package-only image architecture. This is a
+package PASS, not an image boot, physical-hardware, update, or rollback claim;
+keep the source-provisioned Debian VM as the accepted runtime gate until the
+new image passes independently.
+
+**Open risks / next gate:** Build the exact ARM64 QCOW2 from these package
+hashes, record its byte size and SHA-256, boot it, and adapt the boot-session
+verifier so it proves package ownership, machine-identity regeneration,
+first-boot initialization, upgrade/reinstall behavior, and SOS readiness
+without a guest source tree. Independent-builder package reproduction,
+byte-for-byte QCOW2 reproducibility, rollback/A-B layout, signed repository
+metadata, AMD64 base-image identity, physical Linux hardware, and installer
+media remain open.
+
+## 2026-08-18 — Pinned ARM64 live-ISO assembly attempt
+
+**Goal:** Assemble the five verified Debian packages into ARM64 UEFI live media
+that the owner can boot in a VM, while retaining the package hashes and pinned
+`20260809T000000Z` Debian snapshot as the only software inputs.
+
+**Changed:** Added a digest-pinned Debian 13.6 live-build container, a
+package-only live-build recipe, and a Podman/Docker host wrapper. The recipe
+selects an ARM64 GRUB EFI hybrid ISO, installs the SOS package set, enables the
+SOS system session, removes cloned machine identity, and emits an ISO structure
+inspection plus an atomic input/output manifest. Snapshot APT calls now disable
+only `Valid-Until` enforcement, disable the absent `trixie-updates` suite, use
+bounded 30-second HTTP/HTTPS attempts with five retries and no HTTP pipelining,
+and omit live-build's generic hardware-firmware bundles because virtio VM
+devices do not require them.
+
+**Evidence:** Syntax checks, ShellCheck,
+`./tests/linux-packaging-host-test.sh`, and `git diff --check` pass. The first
+full build reached chroot archive setup but rejected the pinned security and
+updates metadata after its `Valid-Until` timestamp. Passing
+`Acquire::Check-Valid-Until=false` through live-build's own `--apt-options` and
+disabling updates allowed the next run to pass that phase, validate all five
+local package hashes, and begin package installation. That run was interrupted
+before an artifact was produced. A subsequent owner-run attempt selected 163
+packages and requested 568 MB, including 522 MB from the snapshot. Repeated
+runtime samples showed the container alive but unchanged at 127.9 MB network
+input and 787.8 MB block output, with APT's HTTP method waiting and no counter
+movement over the sampled intervals. Dependency inspection showed live-build's
+default firmware handling had expanded the VM image with broad AMD, Intel,
+Nvidia, Wi-Fi, and device firmware; that default is now disabled.
+
+The revised detached build used builder image
+`92ffa6cbdef931bfef2921f3d1fffd3a1cc7b900533fa52bf5480964f2a273c5`,
+validated the five package hashes, and completed live-build's binary stage.
+`xorriso` reported a successfully written 236,153-sector hybrid ISO in the
+temporary build volume, followed by `P: Build completed successfully`. The
+container and recorded host wrapper had already exited when inspected, however,
+and neither the container entrypoint's `linux_live_iso_built` marker nor the host
+wrapper's `linux_iso_container_build_passed` marker appears in the closed log.
+The host output directory is empty and the temporary volume has been removed,
+so the built bytes, size, and SHA-256 were not retained. No bootable evidence
+artifact exists from these attempts.
+
+**Decision:** Continue with package-only ARM64 live media, bounded snapshot
+fetches, and no generic firmware bundle. The expiry failure is fixed, but ISO
+assembly remains unproven until a clean build completes and its manifest and
+structure inspection pass.
+
+**Open risks / next gate:** Diagnose why the successful `lb build` did not
+continue through the entrypoint's output-copy and inspection statements, then
+rerun the revised recipe. Record the final ISO path, byte size, SHA-256, builder
+identity, package closure, and elapsed build time; then boot it as ARM64 UEFI
+media and verify SOS readiness, graphics/input, package ownership, first-boot
+identity and secret generation, and absence of relevant service failures. A
+container build or ISO structure check alone is not boot evidence.

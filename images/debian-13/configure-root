@@ -1,0 +1,73 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+configure_fail() {
+  printf 'error: %s\n' "$*" >&2
+  exit 1
+}
+
+[[ "$#" -eq 1 ]] || configure_fail "usage: configure-root <debian-snapshot>"
+configure_snapshot="$1"
+[[ "$configure_snapshot" =~ ^[0-9]{8}T[0-9]{6}Z$ ]] || \
+  configure_fail "invalid Debian snapshot identifier: $configure_snapshot"
+[[ -r /etc/os-release ]] || configure_fail "missing /etc/os-release"
+# shellcheck source=/dev/null
+source /etc/os-release
+[[ "${ID:-}" == debian && "${VERSION_ID:-}" == 13 ]] || \
+  configure_fail "expected Debian 13, found ${ID:-unknown} ${VERSION_ID:-unknown}"
+
+rm -f /etc/apt/sources.list.d/*.list /etc/apt/sources.list.d/*.sources
+cat >/etc/apt/sources.list <<SOURCES
+deb [check-valid-until=no] https://snapshot.debian.org/archive/debian/$configure_snapshot trixie main contrib non-free-firmware
+deb [check-valid-until=no] https://snapshot.debian.org/archive/debian-security/$configure_snapshot trixie-security main contrib non-free-firmware
+SOURCES
+cat >/etc/apt/apt.conf.d/99sos-snapshot <<'APT'
+Acquire::Check-Valid-Until "false";
+APT
+
+configure_policy_created=false
+if [[ ! -e /usr/sbin/policy-rc.d ]]; then
+  printf '#!/bin/sh\nexit 101\n' >/usr/sbin/policy-rc.d
+  chmod 0755 /usr/sbin/policy-rc.d
+  configure_policy_created=true
+fi
+configure_cleanup() {
+  if [[ "$configure_policy_created" == true ]]; then
+    rm -f /usr/sbin/policy-rc.d
+  fi
+}
+trap configure_cleanup EXIT
+
+apt-get update
+DEBIAN_FRONTEND=noninteractive apt-get install -y \
+  /tmp/sos-image-bundle/packages/*.deb
+
+for configure_package in \
+  sos-runtime \
+  sos-agent \
+  sos-desktop-session \
+  sos-appliance-session \
+  sos-image-config; do
+  [[ "$(dpkg-query -W -f='${db:Status-Abbrev}' "$configure_package")" == "ii " ]] || \
+    configure_fail "package did not install cleanly: $configure_package"
+done
+for configure_forbidden in cargo rustc npm cc c++ gcc g++ make; do
+  ! command -v "$configure_forbidden" >/dev/null 2>&1 || \
+    configure_fail "development command remains in image: $configure_forbidden"
+done
+[[ ! -e /root/sos && ! -e /home/sos/sos ]] || \
+  configure_fail "source checkout remains in image"
+
+systemctl enable sos-agent.target
+systemctl set-default sos-session.target
+
+apt-get clean
+rm -rf /var/lib/apt/lists/* /tmp/sos-image-bundle
+if command -v cloud-init >/dev/null 2>&1; then
+  cloud-init clean --logs --seed
+fi
+rm -f /etc/ssh/ssh_host_* /var/lib/dbus/machine-id
+: >/etc/machine-id
+
+printf 'sos_image_root_configured snapshot=%s\n' "$configure_snapshot"

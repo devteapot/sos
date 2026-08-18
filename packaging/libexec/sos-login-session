@@ -31,6 +31,7 @@ sos_login_supervisor_bin="$sos_login_bin_dir/sos-revision-supervisor"
 sos_login_host_bin="$sos_login_bin_dir/sos-experience-host"
 sos_login_authoring_bin="$sos_login_bin_dir/sos-agent-authoring"
 sos_login_agent_main="/usr/local/libexec/sos-agent/dist/agent-runner.cjs"
+sos_login_node="${SOS_NODE_BIN:-$(command -v node || true)}"
 for sos_login_executable in \
   "$sos_login_session_bin" \
   "$sos_login_compositor_bin" \
@@ -87,7 +88,7 @@ sos_login_session_pid=""
 sos_login_authoring_pid=""
 sos_login_agent_pid=""
 # ShellCheck cannot infer that EXIT invokes this callback.
-# shellcheck disable=SC2317
+# shellcheck disable=SC2317,SC2329
 sos_login_cleanup() {
   for sos_login_cleanup_pid in \
     "$sos_login_agent_pid" \
@@ -108,7 +109,7 @@ sos_login_cleanup() {
   fi
 }
 # ShellCheck cannot infer that the signal traps invoke this callback.
-# shellcheck disable=SC2317
+# shellcheck disable=SC2317,SC2329
 sos_login_forward_stop() {
   for sos_login_stop_pid in \
     "$sos_login_agent_pid" \
@@ -165,7 +166,7 @@ sos_login_wait_for_socket "$sos_login_supervisor_socket" \
   sos_login_fail "missing agent authoring broker: $sos_login_authoring_bin"
 [[ -r "$sos_login_agent_main" ]] || \
   sos_login_fail "missing resident agent: $sos_login_agent_main"
-command -v node >/dev/null 2>&1 || sos_login_fail "Node.js is not installed"
+[[ -x "$sos_login_node" ]] || sos_login_fail "missing Node.js runtime: $sos_login_node"
 set -a
 # This file is written by sos-agent-login in the current user's private state directory.
 # shellcheck source=/dev/null
@@ -187,7 +188,7 @@ sos_login_authoring_pid=$!
 sos_login_wait_for_socket "$sos_login_agent_authoring_socket" \
   "$sos_login_authoring_pid" "SOS agent authoring broker"
 
-node "$sos_login_agent_main" serve \
+"$sos_login_node" "$sos_login_agent_main" serve \
   --socket "$sos_login_agent_socket" \
   --authoring-socket "$sos_login_agent_authoring_socket" \
   --state "$sos_login_agent_state_dir/messages.json" \

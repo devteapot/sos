@@ -18,13 +18,16 @@ sos_agent_login_state_dir="$sos_agent_login_state_home/sos/agent"
 sos_agent_login_credentials="$sos_agent_login_state_dir/auth.json"
 sos_agent_login_config="$sos_agent_login_state_dir/config.env"
 sos_agent_login_main="${SOS_AGENT_MAIN:-/usr/local/libexec/sos-agent/dist/agent-runner.cjs}"
+sos_agent_login_node="${SOS_NODE_BIN:-$(command -v node || true)}"
 sos_agent_login_provider="${SOS_AGENT_PROVIDER:-openai-codex}"
 sos_agent_login_model="${SOS_AGENT_MODEL:-gpt-5.6-sol}"
 
-[[ "$sos_agent_login_state_home" == /* && "$sos_agent_login_main" == /* ]] || \
+[[ "$sos_agent_login_state_home" == /* \
+  && "$sos_agent_login_main" == /* \
+  && "$sos_agent_login_node" == /* ]] || \
   sos_agent_login_fail "agent state and program paths must be absolute"
 [[ -r "$sos_agent_login_main" ]] || sos_agent_login_fail "missing resident agent: $sos_agent_login_main"
-command -v node >/dev/null 2>&1 || sos_agent_login_fail "Node.js is not installed"
+[[ -x "$sos_agent_login_node" ]] || sos_agent_login_fail "missing Node.js runtime: $sos_agent_login_node"
 [[ "$sos_agent_login_provider" == openai-codex ]] || \
   sos_agent_login_fail "selectable-session device login currently requires openai-codex"
 [[ "$sos_agent_login_model" =~ ^[A-Za-z0-9._:/-]+$ ]] || \
@@ -38,7 +41,7 @@ if [[ "${1:-}" == --if-needed && -s "$sos_agent_login_credentials" && -s "$sos_a
   exit 0
 fi
 
-node "$sos_agent_login_main" login \
+"$sos_agent_login_node" "$sos_agent_login_main" login \
   --provider "$sos_agent_login_provider" \
   --credentials "$sos_agent_login_credentials" \
   --device-code

@@ -1,0 +1,63 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+initialize_fail() {
+  printf 'sos_image_initialize_failed error=%s\n' "$*" >&2
+  exit 1
+}
+
+[[ "$(id -u)" -eq 0 ]] || initialize_fail "image initialization requires root"
+for initialize_user in sos-compositor sos-provider sos-supervisor sos-host sos-agent; do
+  id "$initialize_user" >/dev/null 2>&1 || initialize_fail "missing system user: $initialize_user"
+done
+getent group sos-ipc >/dev/null 2>&1 || initialize_fail "missing system group: sos-ipc"
+
+install -d -o root -g root -m 0755 /etc/sos
+install -d -o sos-compositor -g sos-ipc -m 0750 /var/lib/sos
+install -d -o sos-provider -g sos-ipc -m 0750 /var/lib/sos/provider
+install -d -o sos-supervisor -g sos-ipc -m 0750 \
+  /var/lib/sos/revisions \
+  /var/lib/sos/staging
+
+if [[ ! -s /etc/sos/shell-token ]]; then
+  initialize_token_tmp="/etc/sos/.shell-token.$$"
+  umask 077
+  od -An -N32 -tx1 /dev/urandom | tr -d ' \n' >"$initialize_token_tmp"
+  chown root:root "$initialize_token_tmp"
+  chmod 0400 "$initialize_token_tmp"
+  mv -n -- "$initialize_token_tmp" /etc/sos/shell-token
+  rm -f -- "$initialize_token_tmp"
+fi
+chown root:root /etc/sos/shell-token
+chmod 0400 /etc/sos/shell-token
+
+initialize_supervisor=/usr/lib/sos/sos-revision-supervisor
+initialize_source=/usr/share/sos/experiences/default.luau
+[[ -x "$initialize_supervisor" ]] || initialize_fail "missing revision supervisor"
+[[ -r "$initialize_source" ]] || initialize_fail "missing default experience"
+
+initialize_current="$(runuser -u sos-supervisor -- \
+  "$initialize_supervisor" status --root /var/lib/sos/revisions)"
+if [[ "$initialize_current" == none ]]; then
+  initialize_state=/var/lib/sos/staging/initial-state.json
+  printf '{}\n' >"$initialize_state"
+  chown sos-supervisor:sos-ipc "$initialize_state"
+  chmod 0640 "$initialize_state"
+  initialize_revision="$(runuser -u sos-supervisor -- \
+    "$initialize_supervisor" install \
+      --root /var/lib/sos/revisions \
+      --source "$initialize_source" \
+      --state "$initialize_state" \
+      --schema 1 \
+      --api 3)"
+  runuser -u sos-supervisor -- \
+    "$initialize_supervisor" bootstrap \
+      --root /var/lib/sos/revisions \
+      --revision "$initialize_revision" >/dev/null
+  rm -f -- "$initialize_state"
+else
+  initialize_revision="$initialize_current"
+fi
+
+printf 'sos_image_initialized revision_id=%s\n' "$initialize_revision"
