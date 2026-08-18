@@ -123,14 +123,45 @@ native host for deterministic faux prompts, so it no longer substitutes a
 Rust-local agent/tool sequence. The faux candidate fixture is passed through
 Pi, which must execute context, validate, and submit before returning it.
 
-Luau exposes provider selection, but never receives a secret. Direct OpenAI
-and OpenRouter keys and Pi's refreshed Codex OAuth document are encrypted at
-rest by an unlock-bound Android Keystore AES-GCM key. Plaintext is never placed
-in argv, environment variables, a file, logs, screenshots, or a WebView. Pi
-stages a complete source candidate; the Rust HOME independently compiles,
-renders, validates, and transactionally activates that exact source. Core does
-not yet accept live credentials: a trusted native credential ceremony remains
-a separate gate, and this shared-runtime milestone makes no live-Core claim.
+Luau exposes provider selection, but never receives a secret. On Compat,
+direct API keys and Pi's refreshed Codex OAuth document remain encrypted at
+rest by an unlock-bound Android Keystore AES-GCM key. Core's OpenRouter action
+instead opens a fixed Rust/GPUI password surface above the generated
+experience and routes its masked input through the Core-native keyboard. The
+20–512-byte visible-ASCII credential exists only in zeroized process memory,
+is cleared on cancel/replacement/removal and normal process exit, and is lost
+on every Core host restart. It never enters the experience model, Luau state,
+revision source, accessibility semantics, argv, environment variables, files,
+logs, or visible screenshots. Core copies it only into the zeroized JSON
+request written to the generic runner's anonymous stdin pipe and accepts a
+refreshed API-key credential only from a successful OpenRouter response.
+
+Both Android profiles pin the exposed OpenRouter choice to
+`deepseek/deepseek-v4-flash-0731`. The stdio decoder rejects any different
+OpenRouter model before provider execution, including the older bare
+`deepseek/deepseek-v4-flash` ID, `latest`, `:free`, and strings for which the
+accepted ID is only a prefix. Every successful stdio prompt
+response repeats the exact selected model (`faux` for the deterministic path),
+and both the Core Rust adapter and Compat Java/Rust bridge reject a mismatch
+before accepting source or refreshed credentials. The verified nonsecret
+provider/model pair is logged for device evidence. Core keeps the faux child
+at a 30-second monotonic deadline and gives a live provider 240 seconds; the
+same managed-child guard kills and reaps either child on timeout or any later
+pipe/parse failure. Pi still stages a complete source candidate; the Rust HOME
+independently compiles, renders, validates, and transactionally activates that
+exact source.
+
+Failure observability is deliberately narrower than the provider response.
+The runner emits only an allowlisted stage/category, the exact nonsecret model,
+an optional numeric HTTP status, and a fixed safe message. Compat and Core
+preserve those fields through the child/bridge boundary and surface the fixed
+message until a new request, provider action, or credential change explicitly
+clears it; routine provider-status polling does not erase it. Child launch,
+exit, timeout, response-type, model, effect-dispatch, and agent-thread markers
+are nonsecret. Stderr is drained or discarded but never surfaced. Credential
+bytes, authorization headers, prompts, active/candidate source, assistant
+response source, raw provider bodies, stderr, and arbitrary exception text are
+never included in failure UI, logs, or failure persistence.
 
 Android temporarily promotes HOME to an unexported `dataSync` foreground
 service while native Pi is waiting on a provider or external OAuth browser.
@@ -143,7 +174,7 @@ The initial Android surface intentionally offers the three requested live
 choices:
 
 - direct OpenAI API key with `gpt-5.6-luna`;
-- OpenRouter API key with `openai/gpt-5.4-mini`;
+- OpenRouter API key with `deepseek/deepseek-v4-flash-0731`;
 - Codex subscription device-code OAuth with `gpt-5.6-sol`.
 
 Pi's provider registry remains underneath this narrow trusted UI, so extending

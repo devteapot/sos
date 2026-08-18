@@ -7899,3 +7899,1101 @@ context/validate/submit, successful exact-source activation by the trusted
 host, stable supervisor/experience/authority/platform/Node lifecycle, and no
 relevant crash or enforcing AVC. Live Core provider credentials remain blocked
 on a trusted native credential ceremony and require a later independent gate.
+
+## 2026-08-17 — Trusted Core OpenRouter ceremony and one-model Android campaign
+
+**Goal:** Close the no-Zygote Core credential gap without exposing a secret to
+generated Luau or adding an Android/JNI dependency, and constrain both Core and
+Compat live OpenRouter execution to the exact canonical model
+`deepseek/deepseek-v4-flash`.
+
+**Changed / environment:** Core now owns a fixed Rust/GPUI OpenRouter dialog
+above the generated surface. It uses a credential-only branch of the existing
+Core-native keyboard, including a fixed letters/numbers/symbols layout and
+fixed Save/Cancel controls. Input is masked and bounded to 20–512 visible ASCII
+bytes. The complete value exists only in a Rust state object and zeroized
+temporary pipe buffers: it is never sent through `ExperienceModel`, provider
+state, revision/state files, Luau, accessibility semantics, logging, argv, or
+environment variables. Drafts and active values are zeroized on cancel,
+replacement, explicit removal, and normal Core process exit. Core storage is
+deliberately memory-only, so a host restart loses the credential. Compat keeps
+its existing unlock-bound Android Keystore behavior.
+
+The Core adapter now selects `openrouter` plus
+`deepseek/deepseek-v4-flash`, places the credential only in the generic
+`agent-runner.cjs` stdin document, and zeroizes both request and response
+buffers. A successful response must identify OpenRouter and carry a valid
+API-key refresh before Core replaces its in-memory credential. The existing
+managed-child kill/reap guard remains active on every post-spawn failure, with
+a 30-second monotonic deadline for faux and an explicit 240-second deadline for
+live OpenRouter; timeout errors name the selected bound. The successful stdio
+response now repeats the exact selected model (`faux` or the pinned live slug).
+Core verifies provider and model before accepting source or refreshed
+credentials. Compat's Java bridge verifies the model before source/credential
+handling, propagates it to Rust, and Rust verifies it again. The verified
+nonsecret provider/model pair is logged for device evidence. Faux remains the
+deterministic diagnostic. The shared stdio decoder rejects every other
+OpenRouter model, Compat's Java constant uses the same exact slug, and product
+inspection requires the slug in the shared bundle and both Android runtimes,
+the fixed Core ceremony marker, and the response-model evidence marker. The
+runner still enforces context first, validation before submission,
+byte-identical staged submission, and the Rust host's independent
+compile/render/scene validation before activation.
+
+**Evidence / failures / rejected approaches:** `npm run check` passed and
+`npm test` rebuilt the generic bundle and passed all 11 tests, including exact
+OpenRouter request/response model identity and rejection of the former slug.
+The ignored
+`services/sos-agent/dist/agent-runner.cjs` from base `0212677d7038` plus this
+change is 1,874,972 bytes with SHA-256
+`8e900a90e6d59d33b614f4c842a4b6f8ca1f676cdf5b324656f40b0deee02b60`.
+The four credential/Android-agent-contract tests passed with temporary empty
+host linker stubs for this workstation's absent `libxkbcommon` and
+`libxkbcommon-x11`; an initial ordinary link failed only on those two missing
+host libraries after successful
+compilation. An exploratory unfiltered library run passed seven of eight tests;
+the existing embedded-experience fixture rejected `audio.set_volume`, which is
+outside this agent/credential change, while both focused filters passed all
+four changed tests. Both ARM64 Android checks passed:
+`cargo ndk -t arm64-v8a -P 31 check -p sos-experience --locked
+--no-default-features --features core-native` and the corresponding Compat
+command without `core-native`. Gradle
+`:app:compileDebugJavaWithJavac` passed for HOME/Compat with only the existing
+Java 8 deprecation warnings. `bash -n tools/a33xctl` passed. Persisting a Core
+key, reusing the generated text-session/model path, adding JNI, accepting an
+arbitrary OpenRouter model, or replacing Pi's provider implementation were
+rejected. No secret or secret-shaped fixture was added or used.
+
+**Host artifact transaction:** A non-device runner then executed the product
+recipe sequentially from this dirty source. The first transaction measured
+Compat build 353.267 s (exit 0), Compat inspection 17.067 s (exit 0), Core
+build 354.801 s (exit 0), and Core inspection 17.990 s (exit 0). Both
+inspectors passed the exact shared-runner identity and pinned-model checks;
+Core additionally passed the trusted ceremony/response-evidence markers and
+the compiled SELinux `sos_core_host` execute permission for the immutable Node
+runner. Transaction PASS was nevertheless rejected: Core's product
+`installclean` removed the just-built Compat OTA, so retaining both only in the
+mutable product output was not a valid preservation approach.
+
+The corrective transaction first preserved and reverified the exact Core OTA,
+then rebuilt Compat in 227.474 s (exit 0), inspected it in 17.176 s (exit 0),
+copied it beside Core, and reverified both stable copies. These are the only
+host-approved candidates for later authorization:
+
+| Profile | Stable path | Revision | Bytes | SHA-256 |
+| --- | --- | --- | ---: | --- |
+| Compat 1 | `/home/carlid/dev/lineage-a33x/sos-agent-openrouter-artifacts-20260817/lineage_sos_compat_a33x-sos.compat1.0212677d7038.64adb75c2630-ota.zip` | `sos.compat1.0212677d7038.64adb75c2630` | 1,042,153,072 | `7fc61b7a124dcdbdb1abf1bccec1c9f1a25d2c0cc69279cc9312fca34eebe88e` |
+| Core 1 | `/home/carlid/dev/lineage-a33x/sos-agent-openrouter-artifacts-20260817/lineage_sos_core1_a33x-sos.core1.0212677d7038.8f0ffcb7cc3d-ota.zip` | `sos.core1.0212677d7038.8f0ffcb7cc3d` | 1,022,140,237 | `05d7849256eabd5296210301fe7e7b9c0df9ff1402fd0cf0e233b919d227d308` |
+
+Both packages contain the identical 1,874,972-byte runner above and the pinned
+91,280,288-byte Android Node, SHA-256
+`e1e6cf7de807baea6fa1d2a81bd6da29d777ab08149645431ebbe283bda33607`.
+The inspected common native runtime is 14,682,200 bytes, SHA-256
+`eeab3ab7e98c8ef85ced9f3b343f29d744f5680bf864affb82c2bf8565031607`;
+the authority is 1,315,104 bytes, SHA-256
+`afd28c1ba479f664c0ba574b146c8ab463dbb9009418216bd0d67230087b5c96`;
+and the final Compat platform-signed APK is 40,821,561 bytes, SHA-256
+`5148c8085b5135d2089e56b5e73a5d21f3aaec73767190c2856f7440b3318a8b`.
+
+The first closed transcript set is indexed by
+`/tmp/sos-agent-openrouter-artifacts-20260817/MANIFEST.txt`, 818 bytes,
+SHA-256 `5a91a7f3f79311afa85345c9e78e843997c189a2bef50981683dea9970108125`.
+The corrective set is indexed by
+`/tmp/sos-agent-openrouter-artifacts-20260817-preserved/MANIFEST.txt`, 553
+bytes, SHA-256
+`d5bf766893732c0d7430892ef4ab389c38c6f16ad3b806de76ebb9ac7f23b536`.
+Each TSV manifest's listed path, byte size, and SHA-256 was independently
+recomputed successfully. Initial and final Git status were identical, and
+`git diff --check` passed. Non-fatal output was limited to the known generated
+Node target-recipe overrides, Java 8/Rust future-compatibility warnings, the
+releasetools hermetic-invocation warning, and OpenSSL's deprecated `rsautl`
+notice. No device, credential, live-provider network request, reboot, sideload,
+or hardware action occurred.
+
+**Decision / remaining risk / next gate:** Adopt the source milestone, with
+Core restart loss as an explicit product constraint. Host product builds and
+offline inspection passed, but no device, credential, live network, SELinux
+runtime, latency, or hardware gate ran, so this is not a live-provider or
+hardware pass. Serial `RFCT50EGFCN` and each stable artifact above require a
+separate explicit one-sideload authorization; Compat then Core is preferred so
+the final installed state is Core. Each campaign must enter the credential
+only through its trusted UI, never record it in evidence, invoke no model except
+`deepseek/deepseek-v4-flash`, prove exact-source activation, clear the
+credential afterward, and audit lifecycle markers, process cleanup, crashes,
+and enforcing AVCs. The Core campaign must use the no-Zygote readiness
+predicate and must not query Android boot-complete properties.
+
+## 2026-08-17 — Compat composer explicitly presents the Android IME
+
+**Goal / hypothesis:** Repair the live Compat agent gate in which tapping the
+GPUI composer activates its Android editor but does not present the soft
+keyboard. The first source change addressed a possible served-editor timing
+race. The later exact-composer retest proved that focus and connection creation
+already complete: Android serves `GpuiImeBridge$BridgeConnection`, but the
+bridge is laid out wholly outside the window at `[-2,-2][-1,-1]`. The remaining
+root cause is therefore the invalid off-window presentation anchor, compounded
+by issuing a weak implicit request before requiring a completed visible layout.
+
+**Changed / root cause:** The earlier generation-checked deferred request is
+retained, and `GpuiImeBridge` now supplies Android a `VISIBLE`, fully
+transparent, non-clickable one-pixel editor at the in-window top/start origin.
+The empty View keeps nonzero framework alpha while its transparent background
+draws no pixel, satisfying OEM visibility predicates without adding UI.
+It explicitly returns `false` from touch handling, so it neither obstructs nor
+consumes native-surface pointer input. IME presentation waits for attachment,
+a non-null window token, completed nonzero layout, a nonempty globally visible
+rectangle, View focus, and window focus. Activation restarts the input
+connection once; attachment, in-window layout, window-focus restoration, and
+`onCreateInputConnection` converge on one replaceable generation-checked show
+runnable. The user-initiated show uses Android's normal explicit flags (`0`),
+not weak `SHOW_IMPLICIT` or sticky `SHOW_FORCED`, and API 30+ presentation
+targets the owning Activity window's `WindowInsetsController`. Activity
+destruction cancels pending work and releases the static bridge state; blur
+still increments the generation and clears the active node before hiding the
+IME. Existing complete composing/selection/commit dispatch remains the only
+text path into the keyed GPUI editor. Core's fixed native keyboard and shared
+agent/runtime/provider contracts are unchanged. Nonsecret diagnostics now
+report request reason/acceptance, window flags and soft-input mode, attachment,
+token, shown/alpha/layout/focus state, visible bounds, size, and IMM active state,
+without logging editor text.
+
+**Prior hardware evidence:** Exact artifact
+`sos.compat1.0212677d7038.64adb75c2630` booted to SOS Home. The protected
+provider credential was configured, but one controlled nonsecret input attempt
+left only `Change this experience…` and made no request. The finalized gate
+files were:
+
+| Path | Bytes | SHA-256 |
+| --- | ---: | --- |
+| `/tmp/sos-live-agent-compat-sos.compat1.0212677d7038.64adb75c2630/resume-attempt-4/composer-focus.raw.txt` | 1,178 | `f2da7cdc9d7dac2fd43886455e75bda4fcf3991f4f1845226afd411d3904aad5` |
+| `/tmp/sos-live-agent-compat-sos.compat1.0212677d7038.64adb75c2630/resume-attempt-4/composer-injection.raw.txt` | 136 | `c1f7cc7b30099bee428af8c6c74f7c538beffe67f0a89daa94498a3ea4993baa` |
+| `/tmp/sos-live-agent-compat-sos.compat1.0212677d7038.64adb75c2630/resume-attempt-4/composer-token-candidate.png` | 199,754 | `f3504bca847e9899abffc00babbb8b4f92aa4e569f1a66481cd3d3c665804ec9` |
+
+The focus capture reported `GpuiImeBridge$BridgeConnection` as the served
+connection and the bridge view as focused, while `mInputShown=false`. This
+rules out missing GPUI focus, missing editor classification, and missing input
+connection creation; it localizes the defect to IME presentation timing. The
+three supplied SHA-256 values were rechecked on the host. No device command,
+product/OTA build, sideload, live request, or hardware retest was performed for
+this source change. Compat-configured
+`:app:compileDebugJavaWithJavac` completed successfully in 0.768 seconds; its
+only diagnostics were the existing Java 8 source/target and deprecated-API
+warnings. `git diff --check` also passed.
+
+**Host artifact experiment:** A later non-device runner built the Compat 1
+product with `./tools/a33xctl build-compat1`, which exited 0 in a measured
+224.398372 seconds, then ran `./tools/a33xctl inspect-compat1`, which exited 0
+in 17.150075 seconds. Total measured wall time was 241.548447 seconds. The
+inspected OTA was copied out of mutable product output to the stable path
+`/home/carlid/dev/lineage-a33x/sos-compat-ime-fix-artifacts-20260817/lineage_sos_compat_a33x-ota.zip`.
+Its revision is `sos.compat1.0212677d7038.c387bc0e3d25`; it is 1,042,211,896
+bytes with SHA-256
+`f9fc74b2fc28aba27f1de0975eb368dc004257e02b2cdebdd11954ab6ea9b9af`.
+
+The finalized host evidence is:
+
+| Path | Bytes | SHA-256 |
+| --- | ---: | --- |
+| `/tmp/sos-compat-ime-fix-artifact-20260817/build-compat1.raw.txt` | 1,541,722 | `ca585c4d1066303394c7170813b9eded4645ed0d900259caa53dab0122435c97` |
+| `/tmp/sos-compat-ime-fix-artifact-20260817/inspect-compat1.raw.txt` | 27,796 | `1b203dc9ce32f367919344bb490cb4d1abc633e1382e2a51c75997a73fae4baa` |
+| `/tmp/sos-compat-ime-fix-artifact-20260817/manifest.tsv` | 746 | `955e71e3f83f8bff8a46974447735b6870d85445f399ef84b57bf9e7c4cdc9a9` |
+| `/tmp/sos-compat-ime-fix-artifact-20260817/manifest-verify.raw.txt` | 160 | `53113ff0ada6fe5b68edbd82de9e44eb9e15f3e0b09a0b9a245a8bbcfb389434` |
+
+Independent deterministic verification of the self-excluding manifest passed.
+Initial and final Git status were identical, and `git diff --check` passed. The
+transaction performed no device or live-provider operation. These host results
+approve the exact artifact only for a later authorization decision; they do
+not establish keyboard presentation, committed-text delivery, live request,
+activation, stability, or soak on hardware.
+
+**First hardware retest — invalid focus target / inconclusive:** One authorized
+sideload of that exact 1,042,211,896-byte artifact completed successfully on
+serial `RFCT50EGFCN`, and the base Android/Compat boot identity passed at
+revision `sos.compat1.0212677d7038.c387bc0e3d25`: `sys.boot_completed=1`,
+`SosHomeActivity` was top-resumed, SELinux was enforcing, and the expected SOS
+host, authority, framework bridge, and experience processes were present. The
+subsequent IME attempt did not establish focus on the agent composer. Its
+screenshot visibly places the blue caret in the unrelated, upper
+`Caffè ☕️ – 明日のデザイン` `note-draft` field; the lower
+`Change this experience…` `agent-prompt` remains an empty placeholder. The
+captured IME state reports `mInputShown=false`, `mServedView=SosHomeActivity`
+`DecorView`, and `mServedInputConnection=null`:
+
+| Path | Bytes | SHA-256 |
+| --- | ---: | --- |
+| `/tmp/sos-live-agent-compat-sos.compat1.0212677d7038.c387bc0e3d25/ime.raw.txt` | 422 | `cebdafc3615421400c92cbe79b70e98f808f8655d094db032e6e202af8ae764f` |
+| `/tmp/sos-live-agent-compat-sos.compat1.0212677d7038.c387bc0e3d25/ime-keyboard-screenshot.png` | 201,166 | `e731b550690890b50fe872c36605bd58f312248271786d62c07a08ee01fe6e0c` |
+
+Source review explains why these observations cannot reject the repair.
+`note-draft` and `agent-prompt` are distinct keyed `text_session` nodes;
+`note-draft` is explicitly autofocus while the composer is not. Android turns
+each node into its own `NativeTextInput`. Mouse-down, GPUI focus, and Android
+virtual-accessibility focus all route the selected node ID through the same
+singleton `GpuiImeBridge`, whose generation selects the active keyed editor.
+The visible caret reflects GPUI's internal focus handle, whereas `mServedView`
+reflects Android's independent View focus/input-method state, so a caret in the
+autofocused note can coexist with a decor-only served view. No captured bridge
+log marker identifies `agent-prompt`, and no served `BridgeConnection` exists
+in this attempt. Treating this as proof that the deferred/lifecycle-aware show
+request failed was therefore rejected. No speculative source change, second
+sideload, credential access, live-provider request, or agent submission was
+made; the configured credential was untouched.
+
+**Authoritative exact-composer retest:** The corrected focus-only retest on the
+same installed revision selected the one visible editable node labeled
+`Ask SOS to change this experience` and tapped its live bounds
+`[132,2274][998,2398]`. The screenshot clearly places the blue caret in that
+lower agent composer. Android accessibility still reports `focused=false`, but
+that is a separate virtual-accessibility focus domain and does not contradict
+GPUI editor focus. More importantly, `dumpsys input_method` reports both
+`mServedView` and `mNextServedView` as `GpuiImeBridge`, with
+`mServedInputConnection` backed by
+`GpuiImeBridge$BridgeConnection`. This proves composer activation and rejects
+the earlier invalid-target interpretation for the corrected attempt. The same
+dump records the bridge at off-window bounds `-2,-2--1,-1`,
+`mInputShown=false`, and no keyboard; limited logging contained none of the
+expected informational markers. No text was entered, no prompt/model request
+began, and the configured credential was untouched.
+
+| Path | Bytes | SHA-256 |
+| --- | ---: | --- |
+| `/tmp/sos-live-agent-compat-sos.compat1.0212677d7038.c387bc0e3d25/ime-retest.raw.txt` | 1,862 | `31a35d47b6d418804e95e29cd2a94d0839ef0aff9c455a8e857c51b87878e085` |
+| `/tmp/sos-live-agent-compat-sos.compat1.0212677d7038.c387bc0e3d25/ime-retest-screenshot.png` | 199,817 | `8d0006c002452fad15e9fa2e128a9aaf817c28c1d098c6ad2584b78fb111092e` |
+
+Both file sizes and hashes were rechecked on the host. Together with source
+inspection, the served connection rules out failure to select the composer,
+missing View focus, editor classification, input-connection creation, Rust
+state routing, or provider execution as the immediate cause. The robust
+boundary is instead a real transparent in-window editor anchor plus a request
+made only after that anchor has a visible layout and window token.
+
+**Bounded host evidence / failures / rejected approaches:** Compat-configured
+offline Gradle Java compilation initially failed after 5.82 seconds because a
+diagnostic used the unavailable `Rect.flattenToShortString()` method. Replacing
+it with the API-compatible `Rect.toShortString()` fixed the only compilation
+error; the repeat
+`:app:compileDebugJavaWithJavac` passed in 5.10 seconds with only the existing
+SDK-XML, Java 8 source/target, and deprecated-API warnings; the final compile
+after the nonzero-alpha visibility and Activity-identity guards also passed in
+4.59 seconds with the same warning classes. `git diff --check` passed. No
+focused JVM test was added because the bridge behavior depends on
+Android ViewRoot/IMM/window-insets lifecycle and this Gradle project has no
+Robolectric or instrumentation test harness; the bounded Java compilation and
+static diff check are the available host checks. Leaving the editor off-window
+and adding more timing delay was rejected because the corrected retest already
+shows a served connection at invalid geometry. `SHOW_FORCED` was rejected
+because it can outlive the editor lifecycle. `SHOW_IMPLICIT` was rejected for
+this direct user interaction in favor of Android's ordinary explicit flags.
+An opaque or touch-consuming proxy editor was rejected because GPUI remains the
+sole visible editor and pointer target. Changing the Rust composer, composing/
+selection/commit routing, generated Luau, provider runtime, shared agent
+contract, or Core keyboard was rejected because none is implicated by the
+served bridge and no provider request began.
+
+**Host artifact result:** A bounded non-device transaction then ran
+`./tools/a33xctl build-compat1`, which exited 0 in a measured 212.628470
+seconds, and `./tools/a33xctl inspect-compat1`, which exited 0 in a measured
+16.993600 seconds. Total measured wall time was 229.622070 seconds. The
+inspector passed, and the resulting OTA was preserved byte-identically outside
+mutable product output at
+`/home/carlid/dev/lineage-a33x/sos-compat-ime-anchor-artifacts-20260817/lineage_sos_compat_a33x-ota.zip`.
+Its revision is `sos.compat1.0212677d7038.20a182effe2d`; it is 1,042,130,049
+bytes with SHA-256
+`e667611d46f6b319775f899cc71cdb63c5b2ec82c648a0b3327cf530e05dc4f2`.
+
+The finalized host evidence is:
+
+| Path | Bytes | SHA-256 |
+| --- | ---: | --- |
+| `/tmp/sos-compat-ime-anchor-artifact-20260817/build-compat1.raw.txt` | 1,541,725 | `941a46db0fff3b66f580b09c60b55b766f10ea6c5ede511aeb7466966fc81d8e` |
+| `/tmp/sos-compat-ime-anchor-artifact-20260817/inspect-compat1.raw.txt` | 27,796 | `bb3c304736d93e79f3ba44005859d9683b4e7ee64411e07ca870349e6ed6deb7` |
+| `/tmp/sos-compat-ime-anchor-artifact-20260817/manifest.tsv` | 841 | `33aea4eb0d24afe8858e5ba5879e8a44c8e95de4248a3b42b547a1e2005bd979` |
+| `/tmp/sos-compat-ime-anchor-artifact-20260817/manifest-verify.raw.txt` | 107 | `adb8f42fe1e07e72a3c9fd075e6e17ab79c9280006ba209d5927130ded821aca` |
+
+The deterministic manifest excludes itself and temporary outputs, and its
+listed paths, byte sizes, and SHA-256 values were independently verified.
+Initial and final Git status were identical, and `git diff --check` passed.
+The transaction performed no device action, credential access, or live-provider
+request. These host results approve only the exact preserved artifact for a
+later authorization decision; hardware IME acceptance remains open.
+
+**Decision / remaining risk / next gate:** Adopt the transparent in-window
+anchor and layout/token-aware explicit show as the narrow Compat repair. Host
+compilation plus exact artifact build and inspection do not prove OEM IME
+presentation, committed-text delivery, request execution, lifecycle behavior,
+latency, stability, or soak, and no hardware PASS is claimed. The next gate
+requires fresh authorization naming the exact preserved artifact above and the
+exact target serial. The device gate must use the live semantic composer
+bounds; require the new in-window bridge bounds, `ime_activate`,
+`ime_input_connection_created`, and `ime_show_requested` diagnostics,
+`GpuiImeBridge$BridgeConnection` served state, `mInputShown=true`, a visible
+keyboard, and the caret in the lower composer; and audit crashes and relevant
+enforcing AVCs. It must not enter text, access the credential, or invoke a live
+provider until focus-only presentation passes and a separately authorized
+continuation permits one nonsecret prompt.
+
+## 2026-08-17 — Restore the Compat system IME service
+
+**Goal / corrected root cause:** Restore text entry without restoring Android's
+system experience. The autonomous `sideload-auto-reboot` transaction passed for
+installed Compat revision `sos.compat1.0212677d7038.20a182effe2d`, and the exact
+composer retest proved that the in-window `GpuiImeBridge` was focused and served
+at `0,0-1,1` with `GpuiImeBridge$BridgeConnection`. The authoritative
+`dumpsys input_method` state instead had an empty `Input Methods:` list,
+`mSelectedMethodId=null`, empty `mLastEnabledInputMethodsStr`, `No input method
+service`, `mInputShown=false`, and `mImeHiddenByDisplayPolicy=true`. No prompt or
+model request ran and the configured credential was untouched. The finalized
+evidence supplied to this source change is:
+
+| Path | Bytes | SHA-256 |
+| --- | ---: | --- |
+| `/tmp/sos-live-agent-compat-sos.compat1.0212677d7038.20a182effe2d/ime.raw` | 1,165 | `fa87bd492bcc9a25a9ef2bef51b943101e0716dc73ca4e77d2af8bab0f196ade` |
+| `/tmp/sos-live-agent-compat-sos.compat1.0212677d7038.20a182effe2d/ime.after` | 6,306 | `82974b56e1320d5b1189b8018de3f283c9c8357eb30d7164f15967803322a02a` |
+| `/tmp/sos-live-agent-compat-sos.compat1.0212677d7038.20a182effe2d/ime-visible.png` | 200,397 | `cbbd23fb9595456ed43f1085dd63beb860749a405ff1a88c4fd2ba4ba8933d2f` |
+
+The regression is in product composition, not editor presentation. LatinIME
+and the original bridge both existed when the bridge landed in `d2844f2` on
+August 8. Commit `74a6c23b` moved Compat onto the shared native-host/UI-removal
+composition on August 16, and the Core 0B/Core 1 split around `f4d7800` retained
+that shared inheritance. The `sos-ui-removal-marker` overrides `LatinIME`, so
+Compat 1 silently lost its only installed IME while Compat 0 retained Android
+ceremonies and LatinIME. This explains why repeated bridge geometry, request
+timing, provider, model, and credential hypotheses could not create a keyboard:
+there was no input method service for Android to bind.
+
+**Changed / architecture:** The native host common fragment now owns only the
+host, runtime, and pre-unlock property. Compat 1, frozen Core 0B, and active
+Core 1 explicitly select their removal marker in their product makefiles. Both
+marker modules share one defaults list, but Core's stable
+`sos-ui-removal-marker` additionally overrides LatinIME; Compat selects
+`sos-compat-ui-removal-marker`, installed under its distinct natural module
+filename, and retains exactly LatinIME from the inherited Android UI list. Compat 0 is
+unchanged. `inspect-compat1` now requires
+`PRODUCT/app/LatinIME/LatinIME.apk`, records its size/hash, and uses `aapt2` to
+verify package `com.android.inputmethod.latin`, application direct-boot
+awareness, absence of a shared UID, and the exported
+`android.permission.BIND_INPUT_METHOD` service plus `android.view.InputMethod`
+action. It still rejects every other removed UI APK. Core 0B/Core 1 inspectors
+continue to reject LatinIME with the full removal list.
+
+The speculative in-window/deferred-show implementation is removed in favor of
+the proven `d2844f2` bridge behavior. Only independently useful lifecycle
+safety remains: destruction drops the static Activity-bound bridge and resets
+the inset observer so a recreated Activity installs a fresh observer, and a
+stale Activity cannot deactivate the new bridge. Composing, selection, commit,
+submit, and inset delivery are otherwise unchanged.
+
+**Platform review / rejected framework change:** At boot, Lineage's
+`InputMethodManagerService` user initialization queries the installed IME
+services into the method map. `onUserReadyLocked` passes
+`resetDefaultEnabledIme=true` when `DEFAULT_INPUT_METHOD` is empty, enabling the
+default system IME; `updateInputMethodsFromSettingsLocked` then calls
+`chooseNewDefaultIMELocked` when no method is selected. Its package monitor has
+the corresponding rebuild/reset/select path for a package change after system
+ready. Therefore the only restored system IME is auto-enabled and selected even
+when secure settings were empty. No settings-writing app is justified.
+LatinIME's manifest marks its application direct-boot-aware and its exported service requires
+`BIND_INPUT_METHOD`; it declares no `sharedUserId`. Compat's WindowManager
+membrane matches only `session.mUid == SYSTEM_UID` for system-window types, so
+LatinIME's application-UID IME window is not silenced. No guessed
+`TYPE_INPUT_METHOD` exception or framework marker was added.
+
+**Bounded host checks / decision / next gate:** `bpfmt -d` produced no diff;
+`bash -n tools/a33xctl` and `git diff --check` passed. A static product-graph
+check proved that the Core and Compat removal sets differ only by LatinIME and
+that each profile explicitly selects the intended module. The new `aapt2`
+assertions passed against the locally built LatinIME intermediate. Compat
+`:app:compileDebugJavaWithJavac` passed in 0.631 seconds with only the existing
+Java 8/deprecated-API warnings. No full product build, device action,
+credential access, or live-provider request ran, and no hardware PASS is
+claimed. Next run, from `/home/carlid/dev/sos`, exactly:
+
+```text
+./tools/a33xctl build-compat1
+./tools/a33xctl inspect-compat1
+SOS_ENABLE_LEGACY_CORE0B_BUILD=1 ./tools/a33xctl build-core0b
+./tools/a33xctl inspect-core0b
+./tools/a33xctl build-core1
+./tools/a33xctl inspect-core1
+```
+
+Preserve each inspected OTA outside mutable output with revision, byte size,
+and SHA-256 before requesting a new serial/artifact-specific hardware gate. The
+hardware gate must first prove that LatinIME is installed, automatically
+enabled/selected, bound under its application UID, visibly shown for the exact
+GPUI composer, and commits nonsecret text with no Android system Activity,
+crash, or relevant enforcing AVC; live-provider execution remains a later,
+separately authorized continuation.
+
+## 2026-08-17 — Separate Compat and Core removal-marker install paths
+
+**Goal / failed build evidence:** Complete the LatinIME profile split without
+allowing two globally defined Soong modules to emit the same installed output.
+The bounded host-only `build-compat1` attempt failed after 130.561 seconds while
+generating Kati install rules. Its finalized raw output is
+`/tmp/sos-ime-profile-split-artifact-20260817/build-compat1.raw.txt`, 670,454
+bytes, SHA-256
+`72336f2c91b374a74b6381f68fd38f2ec0f8b6ae9aaaa2ad70d9679eb3c00714`.
+The generated `installs-lineage_sos_compat_a33x.mk` had duplicate rules at
+lines 279262 and 279298 because both `sos-compat-ui-removal-marker` and the
+globally defined Core `sos-ui-removal-marker` resolved to
+`system_ext/bin/sos-ui-removal-marker`. The build stopped before producing or
+inspecting an artifact; no Core build or device action occurred.
+
+**Diagnosis / correction:** Product selection controls which marker is
+packaged, but it does not make globally visible module install-rule definitions
+mutually exclusive. The Compat marker no longer overrides its stem, so it now
+installs naturally as `system_ext/bin/sos-compat-ui-removal-marker`; Core keeps
+`system_ext/bin/sos-ui-removal-marker`. `inspect-compat1` requires the Compat
+path and rejects the Core path, while the Core 0B/Core 1 inspector requires the
+Core path and rejects the Compat path. The shared override defaults still omit
+LatinIME, only the Core marker adds it, Compat 1 explicitly selects only the
+Compat marker, Core 0B/Core 1 explicitly select only the Core marker, and
+Compat 0 plus the shared native-host fragment select neither. A bounded
+`check-product-graph` preflight enforces those stem, override, and selection
+invariants before any expensive profile build work.
+
+**Completed host validation / rejected preservation attempt:** The static
+`check-product-graph` gate passed. The first resumed transaction also completed
+the Compat build and inspection, but its preservation step searched for the
+generic Lineage 23 package name and targeted an absent destination parent.
+That attempt was rejected and no artifact from it was accepted. The corrected
+resume selected the exact `lineage_sos_compat_a33x-ota.zip` output and preserved
+it before the Core `installclean`, preventing the profile transition from
+invalidating the accepted Compat result.
+
+The corrected Compat build exited 0 in 350.663 seconds and `inspect-compat1`
+exited 0 in 17.5302 seconds. Inspection required LatinIME and the distinct
+Compat marker, rejected the Core marker and every other removed Android UI
+package, and passed the remaining Compat package checks. The preserved result
+is:
+
+| Product | Stable artifact | Revision | Bytes | SHA-256 |
+| --- | --- | --- | ---: | --- |
+| Compat 1 | `/home/carlid/dev/lineage-a33x/sos-ime-profile-split-artifacts-20260817/compat/lineage_sos_compat_a33x-ota.zip` | `sos.compat1.0212677d7038.553ffbcc2487` | 1,065,840,611 | `c6c7a2d15645dee16e3477cec5ff5a769ea7326175f0e4e3ccaf81c5924edcca` |
+
+The Core 1 build then exited 0 in 348.825 seconds and `inspect-core1` exited 0
+in 16.6857 seconds. Inspection required the Core marker, rejected both the
+Compat marker and LatinIME, and passed the no-Zygote lifecycle, native
+credential ceremony, shared runner, pinned model, and SELinux gates. The
+preserved result is:
+
+| Product | Stable artifact | Revision | Bytes | SHA-256 |
+| --- | --- | --- | ---: | --- |
+| Core 1 | `/home/carlid/dev/lineage-a33x/sos-ime-profile-split-artifacts-20260817/core1/lineage_sos_core1_a33x-ota.zip` | `sos.core1.0212677d7038.4d2f2592bb98` | 1,022,150,772 | `0a12fb9abefed4f5dd465d57d763f51034189f3ba91b26b06db24ac53cd48e7b` |
+
+The finalized host evidence is:
+
+| Path | Bytes | SHA-256 |
+| --- | ---: | --- |
+| `/tmp/sos-ime-profile-split-artifact-20260817/resume-attempt-2/build-compat1.raw.txt` | 1,559,910 | `3028dfedbd1b9bdb4b0a27bba28231a97875b7bb7f0da87d5dafabaaa43f5d7f` |
+| `/tmp/sos-ime-profile-split-artifact-20260817/resume-attempt-2/inspect-compat1.raw.txt` | 28,223 | `50cfeccc0e574adc3ef3fd209deff82b039ed19b2282720b32a8677516d5bac7` |
+| `/tmp/sos-ime-profile-split-artifact-20260817/resume-attempt-3/build-core1.raw.txt` | 3,122,545 | `7ca74017fec38b24f61dee92c74ef83edcc691ca55a7f8b0a83f2398d1f1730f` |
+| `/tmp/sos-ime-profile-split-artifact-20260817/resume-attempt-3/inspect-core1.raw.txt` | 24,028 | `2abbc7363b86b76aac16c80d05e8c6e0f187297986a22735ba0280fe84590475` |
+| `/tmp/sos-ime-profile-split-artifact-20260817/resume-attempt-3/manifest.tsv` | 1,494 | `f04b4277489e53bc89d0cc69cf7a2902f4018357878812e012041f5231d10707` |
+
+The deterministic manifest is sorted, excludes itself and temporary outputs,
+and was independently verified. Initial and final Git status were identical,
+and `git diff --check` passed. No device action occurred.
+
+**Decision / remaining risk / next gate:** Host validation now accepts the
+distinct marker filenames as the narrow graph correction; the LatinIME
+root-cause solution and every other Compat/Core removal override remain
+unchanged. This does not establish hardware IME presentation, text commit,
+lifecycle stability, crash/AVC absence, or soak, and no hardware PASS is
+claimed. The next gate requires fresh authorization naming the exact target
+serial and preserved artifacts above. Its product order is Compat 1 followed
+by Core 1, leaving Core 1 as the final installed state.
+
+## 2026-08-17 — Combine the Compat IME service and in-window editor repairs
+
+**Goal / conclusive installed evidence:** Close the source diagnosis for the
+remaining Compat composer keyboard failure without changing Core's native
+keyboard. The autonomous monitored transport for the preserved Compat artifact
+above passed through `device→sideload→device`, including the inherent reboot,
+with `Total xfer: 1.00x`; the installed revision was exactly
+`sos.compat1.0212677d7038.553ffbcc2487`. This establishes the monitored
+transport transition only. The earlier device-gate manifest was not
+independently verified and therefore cannot support an overall PASS.
+
+The first focus attempt targeted the wrong, upper editor and is rejected as an
+IME acceptance gate. In the corrected retest, the runner selected the exact
+lower composer node from its live bounds and tapped `(565,2335)`. The resulting
+screenshot places the caret in that lower composer. Android reports selected
+and current `com.android.inputmethod.latin/.LatinIME`, serves
+`GpuiImeBridge` through `GpuiImeBridge$BridgeConnection`, and has
+`mInputStarted=true`; LatinIME reports `mIsInputViewShown=true`. Nevertheless,
+system-server reports `mInputShown=false`, no keyboard is visible, and the
+served bridge remains outside the window at `-2,-2--1,-1`. Thus the two
+independent regressions are now demonstrated together: Compat had removed its
+system IME, and the restored IME still rejects the zero-alpha, off-window
+editor under the current server/display policy. No text, prompt/model request,
+credential action, or soak occurred.
+
+| Corrected evidence | Bytes | SHA-256 |
+| --- | ---: | --- |
+| `/tmp/sos-live-agent-compat-sos.compat1.0212677d7038.553ffbcc2487/monitored-retry/correct-composer-retest/preflight.txt` | 456 | `f5c8eb58e26dada0afa0d537d160041c90461f48f42aed1587bbb54ed5240581` |
+| `/tmp/sos-live-agent-compat-sos.compat1.0212677d7038.553ffbcc2487/monitored-retry/correct-composer-retest/pre-tap.xml` | 5,148 | `d33983b97459cf21281479ef0e064a7f222709ad670d8483d470ea31823bedb5` |
+| `/tmp/sos-live-agent-compat-sos.compat1.0212677d7038.553ffbcc2487/monitored-retry/correct-composer-retest/tap-event.txt` | 109 | `ee2b7bcbce30bdff432635d288adcac9ce8d22e6edfe1f04ea7f3f138992cba4` |
+| `/tmp/sos-live-agent-compat-sos.compat1.0212677d7038.553ffbcc2487/monitored-retry/correct-composer-retest/post-tap-state.txt` | 1,191 | `d42dc71605b09e72ba59141c07ca0bd61f8eab60de289aec6bb1780080080333` |
+| `/tmp/sos-live-agent-compat-sos.compat1.0212677d7038.553ffbcc2487/monitored-retry/correct-composer-retest/post-tap.png` | 180,343 | `86249d49dff6dce9d4d1970949a8bf3c6a1675ea6ca6e79804e0664df3611457` |
+
+**Changed / combined decision:** Keep the validated product split: Compat
+retains the application-UID, direct-boot-aware LatinIME service while Core's
+removal marker continues to exclude it. Restore the bounded in-window bridge
+solution now justified by the corrected hardware evidence. `GpuiImeBridge`
+uses an empty, transparent, non-interactive 1×1 editor at visible origin
+`(0,0)` with nonzero framework alpha. It never consumes touch dispatch. A show
+request is valid only for the singleton's current Activity, node, focus, and
+activation generation, after attachment, non-null token, layout, visible
+bounds, window focus, a generation-matched input-connection handoff, and
+`InputMethodManager.isActive`. Activation and attachment restart input;
+replaceable callbacks from activation, attachment, layout, window focus, and
+connection creation issue the ordinary explicit `showSoftInput(..., 0)` plus
+the owning Activity window's `WindowInsetsController` request. No
+`SHOW_FORCED` or unbounded repost loop is used. Deactivation and Activity
+destruction advance the generation, cancel queued work, clear the connection
+generation and focus, hide the IME, and destruction also removes the inset
+observer. Existing bounded composing, selection, commit, deletion, submit, and
+`MAX_UTF16` routing is unchanged.
+
+Nonsecret `ime_activate`, `ime_input_connection_created`, and
+`ime_show_requested` logs expose request acceptance and controller request
+state plus the anchor's attachment, token, shown/alpha/layout/focus, size,
+visible bounds, and IMM-active state; they never include editor text.
+`inspect-compat1` now requires those diagnostics and the explicit
+`in_window_nonzero_alpha_noninteractive` bridge contract in the packaged
+Compat APK, so the stale bridge cannot pass inspection. Core inspection and
+the shared agent/provider implementation are unchanged.
+
+**Bounded source checks:** Compat-configured Gradle
+`:app:compileDebugJavaWithJavac` passed in 0.76 seconds with only the existing
+Java 8/deprecated-API warnings. `:app:assembleDebug` plus extraction of every
+new inspector marker from `classes*.dex` passed in 1.30 seconds.
+`bash -n tools/a33xctl` passed in 0.00 seconds,
+`./tools/a33xctl check-product-graph` passed in 0.02 seconds, and
+`git diff --check` passed in 0.01 seconds. No Blueprint file was changed by
+this repair, so `bpfmt` was not required. No full product build, device action,
+credential access, provider request, or hardware PASS was performed or is
+claimed for the new source.
+
+**Final host artifact evidence:** The bounded product transaction then ran the
+static product graph, the Compat build, and the Compat inspector. The product
+graph exited 0 in a measured 0.021397 seconds, `build-compat1` exited 0 in
+225.993626 seconds, and `inspect-compat1` exited 0 in 17.437225 seconds. The
+inspector required and passed LatinIME, the distinct Compat removal marker,
+Core-marker exclusion, and the packaged in-window bridge contract plus all
+nonsecret diagnostic markers.
+
+The exact product OTA was preserved byte-identically outside mutable output:
+
+| Product | Stable artifact | Revision | Bytes | SHA-256 |
+| --- | --- | --- | ---: | --- |
+| Compat 1 | `/home/carlid/sos-final-compat-artifacts-20260817/lineage_sos_compat_a33x-ota-compat1.0212677d7038.46f7415f7285.zip` | `sos.compat1.0212677d7038.46f7415f7285` | 1,065,887,744 | `797e94d06ca7f23ca442c72d078c9f6ca2cf2bfe25b0d5490f1b00d5411fb1db` |
+
+Finalized evidence is rooted at
+`/tmp/sos-final-compat-artifact-20260817/`. Its deterministic,
+self-excluding `evidence.manifest` is 3,140 bytes with SHA-256
+`9e9d1145928d04d524d984cfef882c7ae7a1c43cc2fbe5ce0001b83a37e01541`
+and was independently verified. The separate verifier output is
+`/tmp/sos-final-compat-manifest-verify-20260817.stdout`, SHA-256
+`afdfc799c80103650c09ec6a07ddf19fcbacfa01de651692af331b67ec586f17`.
+Initial and final Git status and diff captures were identical, and
+`git diff --check` passed. This transaction performed no device action or live
+provider request and does not establish hardware IME acceptance.
+
+**Remaining risk / next gate:** Obtain fresh authorization naming the exact
+artifact above and target serial, then use monitored autonomous
+`device→sideload→device` transport. The device gate must derive the exact lower
+composer tap from live bounds; require selected/current LatinIME, an in-window
+`0,0-1,1` served bridge connection, all three bridge log families with viable
+anchor/IMM state, `mInputShown=true`, and a visibly shown keyboard; then perform
+the separately bounded nonsecret live request, credential clearing, crash/AVC
+audit, and soak. No hardware or live-provider PASS is claimed here.
+
+## 2026-08-17 — Repair exact 0731 agent execution and Compat input lifecycle
+
+**Goal / installed finding:** Turn the physical composer result from installed
+Compat revision `sos.compat1.0212677d7038.46f7415f7285` into one bounded
+Compat/Core runtime repair. Physical touch focused the lower composer, opened
+LatinIME, and allowed the user to type and submit `Set darkmode`. One trusted
+agent effect committed, but the capture contains no
+`android_agent_pi_response`, provider completion, or enduring Node child, and
+the UI briefly presented a Pi error. The credential was subsequently removed
+through the trusted UI; the post-clear state has no child or agent service.
+This proves physical text focus/input/submission and a failed request, but it
+does not prove an HTTP response or status.
+
+The confirmed configuration defect is the shipped OpenRouter model ID. The
+user required `deepseek/deepseek-v4-flash-0731`, while the shared runner,
+Compat bridge, Core contract/UI, inspectors, tests, and product documentation
+all pinned the distinct older bare `deepseek/deepseek-v4-flash` ID. All product
+paths now use only the exact `-0731` ID. Exact equality and exact-line artifact
+inspection prevent the older ID, `latest`, `:free`, arbitrary models, or a
+prefix/suffix variant from satisfying the contract.
+
+**Failure observability / secrecy decision:** The shared runner now converts
+provider exceptions into an allowlisted stage/category, fixed safe message,
+exact nonsecret model, and optional validated numeric HTTP status. Compat and
+Core propagate only that structure. Effect dispatch, agent-thread/request
+start, child start/exit/response type, successful response provider/model, and
+sanitized failure stage/category/model/status have nonsecret lifecycle
+markers. Stderr remains drained/discarded and never surfaced. No credential
+bytes, headers, prompt or request source, response/candidate source, raw
+provider body, stderr, or arbitrary exception text enters error UI or logs.
+Routine two-second status polling now preserves a surfaced request error; an
+intentional new request, provider action, or credential change clears it.
+Local launch, child/linker-or-exit, response I/O/protocol, timeout,
+credential/provider rejection, tool-sequence, model, and candidate-validation
+failures are distinguishable without weakening credential secrecy.
+
+**Compat input and automation decision:** A capture-phase left-tap policy now
+checks all live text-session bounds. A real tap outside every session blurs
+GPUI focus, which runs the existing bridge deactivation, clears native input
+ownership, and hides LatinIME. Tapping the active editor keeps focus; tapping
+another editor is left to normal GPUI focus transfer and keeps/reopens the IME.
+This policy is excluded from `core-native`, preserving Core's explicit native
+keyboard. Editable Android virtual nodes now expose `ACTION_CLICK` as a
+deterministic input-focus route in addition to `ACTION_FOCUS`;
+`ACTION_ACCESSIBILITY_FOCUS` no longer doubles as input focus. The existing SOS
+overlay Back still injects `KEYCODE_BACK`, so Android gives an open IME first
+consumption before app navigation; the packaged marker records this platform
+key-dispatch precedence and no persistent Android navigation bar was added.
+
+The earlier automated focus evidence establishes only a boundary. The capture
+does not contain the actual `adb input` argv or exit status. Runner-described
+coordinates `(565,2376)` and later `(565,2300)` were respectively at/near the
+reported composer bounds, both post-states were unfocused with no IME, and no
+native `scene_pointer` marker arrived. No accessibility `ACTION_FOCUS` or
+`ACTION_CLICK` was attempted; only UI hierarchy dumps were taken. Edge/inset
+placement, gesture interception, overlays, and Android injection behavior
+remain hypotheses. The later physical touch did produce pointer down/up plus
+`native_text_focus agent-prompt=true`. Consequently this change does not claim
+an Android InputDispatcher root cause and semantic automation remains a
+separate acceptance path, not a substitute for physical touch.
+
+| Focused evidence | Bytes | SHA-256 |
+| --- | ---: | --- |
+| `/tmp/sos-live-agent-compat-sos.compat1.0212677d7038.46f7415f7285/physical-composer-touch/post-owner-submit/request-window.txt` | 30,866 | `762279d535e751566cf14eb5a397515b23ce24438b40728822484ac30c505fdf` |
+| `/tmp/sos-live-agent-compat-sos.compat1.0212677d7038.46f7415f7285/physical-composer-touch/post-clear/post-clear-state.txt` | 1,520 | `ba7a4261d7079449247789a3cf7c91b787ffd094997011376ceacbdbef6ab96e` |
+| `/tmp/sos-live-agent-compat-sos.compat1.0212677d7038.46f7415f7285/physical-composer-touch/post-clear/post-clear.png` | 182,550 | `b163385543a34a5aaca037bf0a2188efcd32aae96b4d0eaf1544eb05997432e7` |
+| `/tmp/sos-live-agent-compat-sos.compat1.0212677d7038.46f7415f7285/physical-composer-touch/post-clear/post-clear.xml` | 5,154 | `7ce3cc0766df940a6dae8440a390de8a356aaf0f5c05659bb7b9ee93e3714784` |
+
+**Bounded host evidence:** `npm test` rebuilt the shared runner and passed all
+12 tests, including exact-model rejection and a secret-shaped provider failure
+whose output retained only category/status. Compat-configured Gradle
+`:app:compileDebugJavaWithJavac` passed with only the existing Java 8 and
+deprecated-API warnings. `cargo check -p sos-experience --tests` passed. The
+two exact-model/persistent-error tests and the keep/transfer/outside-blur test
+then ran and passed with temporary empty host linker stubs for this
+workstation's absent `libxkbcommon` and `libxkbcommon-x11`. Both ARM64 checks
+passed: `cargo ndk -t arm64-v8a -P 31 check -p
+sos-experience --locked --no-default-features --features aosp-system` and the
+corresponding `core-native` check. The ordinary host `cargo test -p
+sos-experience` reached final linking but could not run because this
+workstation still lacks `libxkbcommon` and `libxkbcommon-x11`; the focused
+changed contracts passed with the temporary stubs, and both Android variants
+compiled. Compat ARM64 clippy with `--no-deps -- -D warnings` passed. Core's
+same strict clippy invocation reached an existing unrelated
+`android/provider_client.rs` `needless_return`; ordinary Core checking passed
+and that unrelated file was not changed. Compat `:app:assembleDebug` passed,
+and direct DEX-string checks found the semantic-click, platform-Back
+precedence, bridge request, child start/exit/response-type, and sanitized
+failure markers. `cargo fmt --all -- --check`, `bash -n tools/a33xctl`,
+`./tools/a33xctl check-product-graph`, and `git diff --check` passed. No full
+product build, device action, credential use, live provider
+request, or hardware PASS occurred in this implementation phase.
+
+**Remaining risk / next gate:** Build and inspect fresh exact Compat 1 and Core
+1 artifacts and record each revision, byte size, and SHA-256. Authorize and
+sideload them separately. On Compat, require both physical touch and semantic
+editable `ACTION_CLICK` to focus, compose/commit/submit correctly; outside tap
+must emit blur/deactivation and hide LatinIME, another editor must transfer
+focus without losing the IME, and overlay Back must first dismiss an open IME.
+For each profile, configure one credential through its trusted ceremony, issue
+one live `deepseek/deepseek-v4-flash-0731` request, require request/child/error
+or completion markers with the exact model, successful candidate validation
+and activation, then clear the credential. Finish with required revision and
+surface/process readiness, crash and enforcing-AVC scrutiny, deterministic
+evidence manifests, and soak. Separate artifact/serial authorization envelopes
+remain mandatory; no new artifact or device acceptance is claimed here.
+
+## 2026-08-17 — Correct the bundled-runner model inspector
+
+**Goal / failed host gate:** Repair an inspection false negative discovered
+after a fresh Compat 1 build, without changing the already-correct packaged
+agent runtime. The build completed in 218.904 seconds and produced revision
+`sos.compat1.0212677d7038.9f8b4d9f48e4`. The following inspection ran for
+18.395 seconds and then rejected the shared runner's OpenRouter model check.
+No device, credential, provider request, sideload, reboot, or other hardware
+operation occurred.
+
+**Diagnosis / rejected inference:** This was not stale packaging. The packaged
+`/system_ext/etc/sos-agent/agent-runner.cjs` is byte-identical to
+`services/sos-agent/dist/agent-runner.cjs`, and the bundle contains the exact
+assignment
+`var PINNED_OPENROUTER_MODEL = "deepseek/deepseek-v4-flash-0731";` plus the
+decoder guard that rejects an OpenRouter request whose model differs from that
+constant. `tools/a33xctl` incorrectly piped a JavaScript text bundle through
+`strings` and required the model slug to occupy an entire output line with
+`grep -Fx`; the actual output line is the complete assignment, so a correct
+bundle could never satisfy that assertion. Conversely, globally forbidding
+the older bare slug in this bundle is invalid: Pi's legitimate provider model
+catalog includes metadata for other OpenRouter models even though SOS request
+decoding and execution enable only the exact pin. Catalog presence is not
+request authority.
+
+**Changed / decision:** `check-agent-runner-contract` now accepts either the
+repository bundle or an explicit packaged-bundle path. It requires exactly one
+`PINNED_OPENROUTER_MODEL` assignment, requires that complete assignment to be
+the exact `-0731` value, explicitly rejects an assignment to the older bare
+value, and requires the compiled OpenRouter request guard to compare against
+the pinned constant. Compat inspection still first proves byte identity with
+the repository bundle, then invokes this assignment/guard check. It no longer
+mistakes unrelated catalog metadata for an enabled SOS request model.
+
+The separate gate manifest failure was operational: the runner recipe will use
+a fresh evidence root and keep the independent verifier output outside the
+manifested tree. No gate-generated `/tmp` evidence was edited, and no new
+repository manifest generator was added.
+
+**Bounded host evidence / next gate:** `bash -n tools/a33xctl`, direct
+`./tools/a33xctl check-agent-runner-contract
+services/sos-agent/dist/agent-runner.cjs`, and `git diff --check` pass. Re-run
+`inspect-compat1` against the already-built revision above, record its exact
+artifact path, byte size and SHA-256 in a fresh finalized evidence root, and
+independently verify that root from an external verifier output. Only after
+that host PASS should the gate continue with the planned fresh Core 1
+build/inspection and separately authorized Compat/Core device campaigns. This
+entry does not claim a product-inspection, device, live-provider, or hardware
+PASS.
+
+## 2026-08-17 — Correct the Core Rust-rodata model inspector
+
+**Goal / r2 gate result:** Continue the non-device agent-runtime product gate
+after correcting the bundled JavaScript inspector. Compat 1 inspection passed
+in 18.219 seconds. The verified stable artifact is:
+
+| Product | Stable artifact | Revision | Bytes | SHA-256 |
+| --- | --- | --- | ---: | --- |
+| Compat 1 | `/home/carlid/sos-agent-e2e-artifacts-20260817-r2/compat1/lineage-23.0-20260817-UNOFFICIAL-sos_compat_a33x.zip` | `sos.compat1.0212677d7038.9f8b4d9f48e4` | 1,066,479,708 | `f46e9959c705c09494cef84ac0bace3287c3634ecc18709762250dcb20176810` |
+
+The subsequent Core 1 build passed in 226.212 seconds and produced revision
+`sos.core1.0212677d7038.4db4c5c7d680`. Core inspection then failed after
+15.712 seconds with `GPUI runtime omitted the pinned OpenRouter campaign
+model`. No device, credential, provider request, sideload, reboot, or other
+hardware operation occurred, so neither product has a new hardware PASS.
+
+**Diagnosis / rejected inference:** The fresh ARM64
+`libsos_core_experience.so` does contain the exact literal
+`deepseek/deepseek-v4-flash-0731`. Raw byte matching finds it. Rust placed
+adjacent constants in the same rodata run, so `strings` emits the model inside
+longer lines such as the concatenated OpenAI/Codex/OpenRouter model table and
+the credential-dialog copy. The inspector's `strings | grep -Fx` therefore
+rejected correct bytes. A raw absence assertion for
+`deepseek/deepseek-v4-flash` is also invalid because that bare text is a prefix
+of the required `-0731` literal; it cannot establish which model is enabled.
+
+**Changed / decision:** Core artifact inspection now uses raw fixed-byte
+matching for the complete `deepseek/deepseek-v4-flash-0731` literal and also
+requires the compiled wrong-response-model rejection marker. It makes no
+standalone-string assumption and removes the invalid prefix-absence check.
+Exact enablement remains enforced at the authority boundary by the Rust
+`model_is_exact` equality contract and its rejection tests, the Core request's
+fixed `OPENROUTER_MODEL`, response-model equality, and the shared bundled
+runner assignment/decoder guard. This changes artifact observation only; it
+does not weaken runtime equality.
+
+**Evidence / next gate:** The r2 manifest at
+`/home/carlid/sos-agent-e2e-artifacts-20260817-r2/manifest.tsv` is 1,892 bytes
+with SHA-256
+`9fb55eb4ac94a93749275e421b18e98231e2ca52539a16f6e524a84bd33ed6e3`.
+Independent verification passed for its 20 finalized files; the external
+verifier output `/tmp/sos-agent-e2e-artifacts-20260817-r2-manifest-verify.txt`
+is 112 bytes with SHA-256
+`29c47091ff245061575805700996c172f51b6c71575ef02be846ca411b2276de`.
+No gate evidence was edited. `bash -n tools/a33xctl`, the direct Core runtime
+contract check against the current built ARM64 library,
+`check-agent-runner-contract` against the current bundle, and `git diff
+--check` pass. Re-run `inspect-core1` against the existing r2 build, then
+preserve and identify the Core OTA and produce a new finalized evidence root
+plus external verifier output. Only a complete host PASS may advance to the
+separately authorized Compat and Core device campaigns described above.
+
+## 2026-08-17 — Accept exact Compat/Core agent-runtime host artifacts
+
+**Goal / r3 gate result:** Close the host artifact phase with stable,
+identity-checked and product-inspected Compat 1 and Core 1 OTAs after the
+host-only Core checker correction. Core identity passed in 0.634 seconds and
+Core inspection passed in 16.714 seconds. The accepted artifacts are:
+
+| Product | Stable artifact | Revision | Bytes | SHA-256 |
+| --- | --- | --- | ---: | --- |
+| Compat 1 | `/home/carlid/sos-agent-e2e-artifacts-20260817-r2/compat1/lineage-23.0-20260817-UNOFFICIAL-sos_compat_a33x.zip` | `sos.compat1.0212677d7038.9f8b4d9f48e4` | 1,066,479,708 | `f46e9959c705c09494cef84ac0bace3287c3634ecc18709762250dcb20176810` |
+| Core 1 | `/home/carlid/sos-agent-e2e-artifacts-20260817-r3/core1/lineage-23.0-20260817-UNOFFICIAL-sos_core1_a33x.zip` | `sos.core1.0212677d7038.4db4c5c7d680` | 1,022,134,360 | `581085630aec57adfd93a93cc6fd428080d192447c403ba9856293f45246d2ef` |
+
+Compat was rechecked as the already accepted r2 artifact; Core passed after
+replacing the invalid standalone-`strings` assumption with the corrected
+compiled-runtime check described above. This is a host artifact PASS only. No
+device or live-provider operation occurred, no credential was used, and no
+hardware or provider success is claimed. Model cost was unavailable.
+
+**Evidence / decision:** The finalized r3 manifest
+`/home/carlid/sos-agent-e2e-artifacts-20260817-r3/manifest.tsv` has SHA-256
+`84718809aec189b71e4a1eb08c877bfa16b6c3668f76a867185f514b2a95031b`.
+Independent external verification passed; verifier output
+`/tmp/sos-agent-e2e-artifacts-20260817-r3-manifest-verify.txt` has SHA-256
+`6aac729ae6c6456f4e3bc90d15e6f0258928de7088ddd5a5310563dca46956b0`.
+No evidence file was edited. Accept both exact OTAs for the next gated phase;
+do not substitute a rebuilt or differently identified artifact.
+
+**Next gate:** Obtain separate, artifact-exact device authorizations for
+serial `RFCT50EGFCN`, Compat first and Core second. Each authorization covers
+only its named OTA and one sideload attempt with its inherent reboot and
+readiness/soak observation. Re-establish the product-specific readiness and
+crash/AVC criteria, verify physical and semantic composer focus plus outside
+tap blur/focus transfer/Back behavior, run one exact
+`deepseek/deepseek-v4-flash-0731` live request, confirm successful candidate
+activation, clear the credential, and complete the required soak. Until those
+separate device gates pass, hardware behavior and provider completion remain
+open risks.
+
+## 2026-08-17 — Invalidate the Compat device gate at the input boundary
+
+**Goal / result:** Exercise the separately authorized Compat 1 artifact on
+serial `RFCT50EGFCN`. The exact installed revision was
+`sos.compat1.0212677d7038.9f8b4d9f48e4`. The runner autonomously entered
+Recovery, performed the single authorized sideload, observed its inherent
+reboot, and passed exact revision, Android boot-complete, SOS HOME, LatinIME
+selection, and relevant enforcing-AVC readiness criteria. The measured gate
+duration was 390.256 seconds; model cost was unavailable.
+
+The gate is invalid because execution crossed its instructed pre-owner input
+boundary. After the synthetic tap, the runner issued
+`adb -s RFCT50EGFCN shell input text TEST` and
+`adb -s RFCT50EGFCN shell input keyevent KEYCODE_DEL` despite the instruction
+not to enter prompt text. Both commands exited 0 and no text appeared. No
+credential was entered, no provider request or prompt submission occurred,
+and no extra reboot or soak occurred. Device ownership was released.
+
+**Focus evidence / confidence boundary:** The exact synthetic tap was
+`adb -s RFCT50EGFCN shell input tap 565 2376`; it exited 0. The composer
+accessibility bounds were `[132,2352][998,2400]`, but afterward the IME still
+reported `mInputShown=false`, there was no served editable view, and the
+fallback/served view was the DecorView. The evidence contains neither a
+semantic accessibility `ACTION_CLICK` attempt nor a native pointer-delivery
+log. Therefore it does not establish an Android injection, InputDispatcher,
+or SOS scene-routing root cause. Bottom-edge clipping or interception is the
+leading hypothesis because the composer occupied the final 48 pixels, but it
+remains unresolved rather than a product conclusion.
+
+**Evidence / decision:** The finalized evidence root is
+`/home/carlid/sos-agent-e2e-device-compat-20260817-r1`; its manifest has
+SHA-256
+`d1909dc93dde03b5ab5f206298b31e271f787189d443e3c268d5f594c2c6ac4c`.
+Independent external verification passed; the verifier output has SHA-256
+`2e304ef3829abd23a4d68155cc64512ccc906d468c7a4aef115f5055987a692c`.
+No evidence file was edited. Preserve the readiness observations, but reject
+this run as acceptance evidence for focus, IME behavior, provider completion,
+credential handling, or soak.
+
+**Next gate:** Obtain new explicit authorization for the same installed
+revision on `RFCT50EGFCN`. Before owner interaction, allow only the precisely
+listed input commands needed to capture pointer/InputDispatcher logs and
+compare a mid-screen note tap with a fully scrolled, safely interior composer
+tap; synthetic text and key commands are forbidden. Do not infer delivery
+from command exit status alone. If that bounded diagnostic completes without
+crossing the boundary, request owner-approved physical focus, outside-tap,
+focus-transfer, Back, exact `deepseek/deepseek-v4-flash-0731` request,
+candidate activation, credential-clear, crash/AVC, and soak checks.
+
+## 2026-08-18 — Preserve Compat IME focus transfer and bind Pi evidence to authority commit
+
+**Goal / terminal Compat evidence:** Close two gaps found on exact Compat
+revision `sos.compat1.0212677d7038.9f8b4d9f48e4`. The finalized evidence root
+is `/home/carlid/sos-agent-e2e-device-compat-20260817-r2`. One live exact
+`deepseek/deepseek-v4-flash-0731` response took 128.017 seconds and produced a
+validated/submitted candidate plus a visible dark UI. Physical field focus,
+outside-tap dismissal, and SOS Back dismissing the IME first passed. Transfer
+between two native fields failed because the old field's blur hid/deactivated
+the IME before the new field's focus reopened it. The capture also lacked
+explicit ordered `get_experience_context -> validate_experience ->
+submit_experience` markers and a durable activation-commit marker, so neither
+action order nor authority commit is promoted to PASS from the visible UI.
+The credential was cleared, no agent child or service leaked, the measured
+soak was 300.006615154 seconds, and no crash, ANR, or relevant enforcing AVC
+was present. Model cost was unavailable. The manifest SHA-256 is
+`c767e3ed8b1abc79b007f582ef79042a2bf47dfd2632511e007108ef663216e4`;
+the external verifier SHA-256 is
+`521f0a6e6761aa2a7ff701964e6cb0325bf74bfb62773ad9cbe4f12937313601`.
+
+**Changed / decision:** Compat input now uses a small epoch state machine at
+the GPUI focus boundary. Blur schedules end-of-effect-cycle resolution;
+same-transition focus of another field invalidates that blur epoch and updates
+the existing Android editor/input connection without hiding the keyboard. A
+blur with no succeeding field focus resolves to bridge deactivation and
+keyboard hide. The outside-tap classifier and Android-first Back dispatch are
+unchanged, and the state machine is excluded from `core-native`, leaving the
+fixed Core keyboard behavior unchanged. Contract tests cover active-field
+retention, transfer, genuine outside blur, wrong-owner blur, and stale epochs;
+an immediate hide with a guessed delay was rejected as timing folklore.
+
+The shared Rust agent boundary now accepts action evidence only when the
+entire fixed three-step allowlist is present exactly once and in order. Only
+after that verification does it emit bounded ordinal action markers containing
+provider/model/action names and no prompt, response body, candidate source, or
+credential. Agent-origin candidates carry a typed submitted/validated/staged/
+committed evidence state. The validated marker follows the Luau worker's
+compile/render/scene acknowledgment; the staged marker follows revision
+installation plus provider-state staging; the commit marker follows exact
+revision/source/state reconciliation from the system authority after the
+presented frame. Manual and reload candidates cannot emit these agent markers,
+and failed, missing, reordered, extra, merely validated, or merely staged
+flows cannot claim commit. Compat and Core share these Rust authority paths.
+`tools/a33xctl` now requires all action/validation/stage/commit markers in both
+packaged runtimes and requires the Compat focus-transition markers.
+
+**Bounded host evidence:** Seven focused contract tests passed using temporary
+empty host linker stubs for this workstation's absent `libxkbcommon` and
+`libxkbcommon-x11`: four model/action/activation tests and three Compat
+tap/focus-epoch tests. `cargo check -p sos-experience --tests`, ARM64 Compat
+`aosp-system` checking, and ARM64 `core-native` checking passed. Compat ARM64
+strict clippy (`--no-deps -- -D warnings`) passed. Core strict clippy reached
+only the pre-existing unrelated `android/provider_client.rs:142`
+`needless_return`; ordinary Core checking passed and that file was not changed.
+Compat-configured Gradle `:app:compileDebugJavaWithJavac` passed with the
+existing SDK XML, Java 8 source/target, and deprecated-API warnings. Final
+`cargo fmt --all -- --check`, `bash -n tools/a33xctl`, `./tools/a33xctl
+check-product-graph`, `./tools/a33xctl check-agent-runner-contract
+services/sos-agent/dist/agent-runner.cjs`, and `git diff --check` passed. The
+debug ARM64 Compat binary build passed, and raw compiled-library checks found
+both focus lifecycle markers plus every ordered-action/validation/stage/commit
+marker; the corresponding Core build and marker checks also passed. The
+full 14-test host run passed 13 tests but retained the unrelated dirty-worktree
+failure in `embedded_experience_is_valid`: the current provider contract
+rejects `audio.set_volume`; all seven focused changed contracts passed. No
+full AOSP/Soong build, device action, live provider request, or hardware PASS
+occurred in this implementation phase.
+
+**Remaining risk / runner recipe:** Build and inspect fresh ARM64 Compat 1 and
+Core 1 artifacts, record each exact path/revision/byte size/SHA-256, and create
+separate authorization envelopes for serial `RFCT50EGFCN`; do not reuse the
+old artifacts as acceptance for this change. Run Compat first with one
+authorized sideload and inherent reboot. Require exact Android/Compat
+readiness, then physically transfer focus in both directions between two
+native fields without any intervening inactive/hide/inset-zero marker or
+visible IME close, while outside tap still deactivates/hides and Back still
+dismisses the IME before SOS navigation. Issue one exact 0731 request and
+require ordinals 1/2/3 for the allowlisted actions, then validation, staging,
+authority commit for one request in order; reject missing, duplicate,
+reordered, or commit-before-ack evidence. Clear the credential, prove no child
+or service leak, complete crash/ANR/AVC scrutiny and the specified soak, close
+all files, generate the deterministic manifest atomically, and independently
+verify it. Only after Compat closes, authorize the separately identified Core
+artifact and repeat the exact-model/action/validation/stage/authority-commit,
+credential-clear, process, crash/AVC, manifest, and soak gate using Core 1's
+no-Zygote readiness predicates. Hardware acceptance remains open until those
+fresh, separate gates pass.
+
+## 2026-08-18 — Accept r4 host artifacts for focus/evidence device gates
+
+**Goal / result:** Build, identity-check, and product-inspect fresh Compat 1
+and Core 1 artifacts containing the focus-lifecycle and authority-bound Pi
+evidence changes above. Both host artifact gates passed. This is a host PASS
+only: no device, credential, live-provider, sideload, reboot, or hardware
+operation occurred, and model cost was unavailable.
+
+| Product | Stable artifact | Revision | Bytes | SHA-256 | Build | Inspect |
+| --- | --- | --- | ---: | --- | ---: | ---: |
+| Compat 1 | `/home/carlid/sos-agent-e2e-artifacts-20260818-r4/compat.ota.zip` | `sos.compat1.0212677d7038.f3ccf618c623` | 1,066,449,144 | `0c2574caa1577f800095aed13190e1b9c9ee0ea492d57b3a3c8423cd32443b49` | 306.134556 s | 19.443815 s |
+| Core 1 | `/home/carlid/sos-agent-e2e-artifacts-20260818-r4/core.ota.zip` | `sos.core1.0212677d7038.26ce1cb8445d` | 1,022,145,556 | `b14e4579ec12aa60673b63c225f7bc2ad3031c667aac0ece6ad54a2671de6b21` | 301.832817 s | 17.398108 s |
+
+**Evidence / decision:** Compat inspection passed retained-LatinIME, exact
+`deepseek/deepseek-v4-flash-0731`, Compat focus-lifecycle markers, ordered Pi
+action-sequence markers, candidate validation/stage/commit markers, native
+runtime, packaging, and boot-contract checks. Core inspection passed the same
+exact-model/action/activation evidence boundaries, required LatinIME absence,
+the native credential path, native runtime/packaging contracts, and Core 1
+no-Zygote gates. The finalized r4 manifest at
+`/home/carlid/sos-agent-e2e-artifacts-20260818-r4/manifest.tsv` has SHA-256
+`6e2910978c4f3037c2ccbf00440decb93faea2562c6e5923e2f1f04f7b15d4eb`
+and passed independent external verification. Repository state remained
+identical across the gate and `git diff --check` passed. No evidence file was
+mutated. Accept only these exact artifacts for the next gates; a rebuilt,
+renamed-with-different-content, or otherwise differently identified artifact
+requires a new host gate and authorization envelope.
+
+**Remaining risk / next gate:** Obtain separate artifact-exact authorization
+for serial `RFCT50EGFCN`, Compat first and Core only after Compat ownership is
+released. The Compat envelope must name `compat.ota.zip`, revision
+`sos.compat1.0212677d7038.f3ccf618c623`, byte size 1,066,449,144, and SHA-256
+`0c2574caa1577f800095aed13190e1b9c9ee0ea492d57b3a3c8423cd32443b49`;
+it covers one sideload attempt, its inherent reboot, Android/Compat readiness,
+physical bidirectional field-transfer/outside-blur/Back checks, one exact 0731
+request with ordered action/validation/stage/authority-commit evidence,
+credential clearing, process-leak and crash/ANR/AVC scrutiny, manifest
+verification, and soak. After that gate closes, separately authorize
+`core.ota.zip`, revision `sos.core1.0212677d7038.26ce1cb8445d`, byte size
+1,022,145,556, and SHA-256
+`b14e4579ec12aa60673b63c225f7bc2ad3031c667aac0ece6ad54a2671de6b21`
+for one sideload attempt, its inherent reboot, Core 1 no-Zygote readiness, the
+same exact-model/action/authority evidence, credential clearing, process and
+crash/AVC scrutiny, manifest verification, and soak. Neither hardware gate is
+yet claimed.
+
+## 2026-08-18 — Pass loaded-runtime Compat focus and exact Pi authority E2E
+
+**Goal / result:** Exercise the exact accepted Compat 1 runtime revision
+`sos.compat1.0212677d7038.f3ccf618c623` on physical hardware. The loaded
+runtime E2E gate passed: exact SOS/Android readiness and retained LatinIME were
+present; traced focus transfer in both directions between the two GPUI native
+fields kept the IME lifecycle active; an outside tap resolved to deactivation
+and keyboard hide; and SOS Back retained Android-first IME consumption.
+
+One live `deepseek/deepseek-v4-flash-0731` request completed with child exit
+code 0. The bounded evidence then recorded the exact verified sequence
+`get_experience_context`, `validate_experience`, `submit_experience` as
+ordinals 1, 2, and 3; candidate validation and staging explicitly remained
+noncommitted; the system authority subsequently acknowledged commit; and the
+result became visible. Full request latency was unavailable, so it is not
+inferred. The measured child-exit-to-authority-commit interval was 0.138
+seconds. Model cost was unavailable. The credential was cleared, no Node, Pi,
+or agent child/service leaked, and no crash, ANR, or relevant enforcing AVC
+was present.
+
+**Soak / evidence:** The monotonic soak ran from `1787035095.107690333` to
+`1787035398.454924965`, a measured 303.347 seconds. The finalized 22-file
+evidence root is
+`/home/carlid/sos-agent-e2e-device-compat-20260818-r3`; its manifest has
+SHA-256
+`a26ae630d8e367243f39ba4a52b21424c832236411773f49887258611e72ca33`.
+Independent external verification passed, and the verifier output has
+SHA-256
+`3e3291750ae33c809297e28c08b0b3e87bcfc2d5545885395b14661eea4b3ac1`.
+No evidence file was edited. Accept this as the terminal hardware PASS for the
+loaded Compat runtime's focus lifecycle, outside dismissal, Android-first
+Back, exact-model action order, validation/staging confidence boundary,
+authority commit, visible activation, credential clearing, leak checks, and
+soak.
+
+**Install-transport confidence boundary:** The autonomous install transaction
+is PARTIAL, not PASS. Its capture omitted both the initial Recovery-entry
+command and the final sideload exit/`Total xfer` evidence. The owner manually
+entered sideload transport and later booted the OS. Exact installed revision
+identity proves which runtime produced the functional evidence, but it does
+not retroactively prove an autonomous Recovery/sideload/reboot lifecycle.
+Do not reuse this run as transport-automation acceptance.
+
+**Decision / next gate:** Preserve the loaded-runtime Compat PASS while
+keeping install transport separately open. Audit the actual autonomous
+procedure and exercise it only within a future exact artifact/serial
+authorization envelope that captures Recovery entry, sideload exit and
+transfer completion, inherent reboot, and readiness without owner-assisted
+transitions. Independently obtain new explicit authorization for the accepted
+Core artifact `/home/carlid/sos-agent-e2e-artifacts-20260818-r4/core.ota.zip`,
+revision `sos.core1.0212677d7038.26ce1cb8445d`, byte size 1,022,145,556, and
+SHA-256
+`b14e4579ec12aa60673b63c225f7bc2ad3031c667aac0ece6ad54a2671de6b21`;
+run its separate one-sideload Core 1 no-Zygote readiness, exact Pi authority,
+credential-clear, leak/crash/AVC, manifest, and soak gate. No Core hardware
+claim is made here.

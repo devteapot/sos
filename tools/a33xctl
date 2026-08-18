@@ -34,6 +34,115 @@ require_command() {
   command -v "$1" >/dev/null 2>&1 || fail "required command not found: $1"
 }
 
+check_agent_runner_contract() {
+  [[ "$#" -le 1 ]] || \
+    fail "usage: ./tools/a33xctl check-agent-runner-contract [BUNDLE]"
+  local runner="${1:-$SOS_ROOT/services/sos-agent/dist/agent-runner.cjs}"
+  local exact_assignment='var PINNED_OPENROUTER_MODEL = "deepseek/deepseek-v4-flash-0731";'
+  local bare_assignment='var PINNED_OPENROUTER_MODEL = "deepseek/deepseek-v4-flash";'
+  local assignment_count
+  [[ -f "$runner" ]] || fail "shared Pi runner bundle is missing: $runner"
+  assignment_count="$(grep -Ec '^var PINNED_OPENROUTER_MODEL = "[^"]+";$' "$runner" || true)"
+  [[ "$assignment_count" == 1 ]] || \
+    fail "shared Pi runner must contain exactly one pinned OpenRouter assignment"
+  ! grep -Fqx "$bare_assignment" "$runner" || \
+    fail "shared Pi runner assigns the older bare OpenRouter model"
+  grep -Fqx "$exact_assignment" "$runner" || \
+    fail "shared Pi runner does not assign the exact 0731 OpenRouter model"
+  grep -F \
+    'decoded.provider === "openrouter" && decoded.model !== PINNED_OPENROUTER_MODEL' \
+    "$runner" >/dev/null || \
+    fail "shared Pi runner omitted exact OpenRouter request enforcement"
+  info "shared Pi runner exact OpenRouter assignment and request guard passed"
+}
+
+check_core_runtime_model_contract() {
+  [[ "$#" -eq 1 ]] || \
+    fail "usage: ./tools/a33xctl check-core-runtime-model-contract RUNTIME"
+  local runtime="$1"
+  [[ -f "$runtime" ]] || fail "Core runtime is missing: $runtime"
+  grep -aF 'deepseek/deepseek-v4-flash-0731' "$runtime" >/dev/null || \
+    fail "Core runtime omitted the pinned OpenRouter campaign model bytes"
+  grep -aF 'Pi returned a response for the wrong model.' "$runtime" >/dev/null || \
+    fail "Core runtime omitted its response-model rejection boundary"
+  info "Core runtime pinned model bytes and mismatch rejection passed"
+}
+
+soong_module_block() {
+  [[ "$#" -eq 2 ]] || fail "internal usage: soong_module_block <type> <name>"
+  local module_type="$1" module_name="$2"
+  awk -v module_type="$module_type" -v module_name="$module_name" '
+    $0 == module_type " {" {
+      in_block = 1
+      block = $0 ORS
+      next
+    }
+    in_block {
+      block = block $0 ORS
+      if ($0 == "}") {
+        if (index(block, "name: \"" module_name "\"") != 0) {
+          printf "%s", block
+          exit
+        }
+        in_block = 0
+        block = ""
+      }
+    }
+  ' "$SOS_ROOT/aosp/device/sos/a33x/Android.bp"
+}
+
+check_product_graph() {
+  [[ "$#" -eq 0 ]] || fail "usage: ./tools/a33xctl check-product-graph"
+  local device_dir="$SOS_ROOT/aosp/device/sos/a33x"
+  local defaults_block core_block compat_block core_overrides profile_file
+  defaults_block="$(soong_module_block cc_defaults sos-ui-removal-marker-defaults)"
+  core_block="$(soong_module_block cc_binary sos-ui-removal-marker)"
+  compat_block="$(soong_module_block cc_binary sos-compat-ui-removal-marker)"
+  [[ -n "$defaults_block" && -n "$core_block" && -n "$compat_block" ]] || \
+    fail "SOS UI-removal marker modules are incomplete"
+  [[ "$defaults_block" != *'"LatinIME"'* ]] || \
+    fail "shared UI-removal defaults must retain LatinIME for Compat"
+  [[ "$core_block" == *'"LatinIME"'* ]] || \
+    fail "Core UI-removal marker must override LatinIME"
+  core_overrides="$(awk '
+    /overrides: \[/ { in_overrides = 1; next }
+    in_overrides && /\],/ { exit }
+    in_overrides {
+      gsub(/[",[:space:]]/, "")
+      if (length != 0) print
+    }
+  ' <<<"$core_block")"
+  [[ "$core_overrides" == LatinIME ]] || \
+    fail "Core and Compat UI-removal sets must differ only by LatinIME"
+  [[ "$compat_block" != *'overrides:'* ]] || \
+    fail "Compat UI-removal marker must use only the shared override set"
+  [[ "$core_block" != *'stem:'* && "$compat_block" != *'stem:'* ]] || \
+    fail "Compat and Core UI-removal markers must have distinct installed filenames"
+
+  profile_file="$device_dir/lineage_sos_compat_a33x.mk"
+  grep -F '    sos-compat-ui-removal-marker' "$profile_file" >/dev/null || \
+    fail "Compat 1 does not select its UI-removal marker"
+  ! grep -F '    sos-ui-removal-marker' "$profile_file" >/dev/null || \
+    fail "Compat 1 must not select the Core UI-removal marker"
+  for profile_file in \
+    "$device_dir/lineage_sos_core0b_a33x.mk" \
+    "$device_dir/lineage_sos_core1_a33x.mk"; do
+    grep -F '    sos-ui-removal-marker' "$profile_file" >/dev/null || \
+      fail "$(basename "$profile_file") does not select the Core UI-removal marker"
+    ! grep -F '    sos-compat-ui-removal-marker' "$profile_file" >/dev/null || \
+      fail "$(basename "$profile_file") must not select the Compat UI-removal marker"
+  done
+  for profile_file in \
+    "$device_dir/lineage_sos_compat0_a33x.mk" \
+    "$device_dir/sos_native_host_common.mk"; do
+    ! grep -F 'sos-ui-removal-marker' "$profile_file" >/dev/null || \
+      fail "$(basename "$profile_file") must not select a profile UI-removal marker"
+    ! grep -F 'sos-compat-ui-removal-marker' "$profile_file" >/dev/null || \
+      fail "$(basename "$profile_file") must not select a profile UI-removal marker"
+  done
+  info "SOS product graph marker split passed"
+}
+
 container() {
   require_command podman
   podman run --rm \
@@ -317,6 +426,7 @@ build_sos_profile() {
   elif [[ "$runtime_variant" != release ]]; then
     fail "unsupported SOS runtime variant: $runtime_variant"
   fi
+  check_product_graph
   [[ -f "$LINEAGE_ROOT/build/envsetup.sh" ]] || fail "run init and sync first"
   hydrate_source_lfs
   apply_source_patches
@@ -609,6 +719,7 @@ inspect_compat_profile() {
   local seapp_contexts="$target_files/SYSTEM_EXT/etc/selinux/system_ext_seapp_contexts"
   local file_contexts="$target_files/SYSTEM_EXT/etc/selinux/system_ext_file_contexts"
   local privapp_permissions="$target_files/SYSTEM_EXT/etc/permissions/privapp-permissions-sos.xml"
+  local latin_ime_apk="$target_files/PRODUCT/app/LatinIME/LatinIME.apk"
   local artifact
   for artifact in \
     "$apk" "$authority" "$node" "$node_cxx" "$agent_runner" "$agent_api" \
@@ -656,6 +767,10 @@ inspect_compat_profile() {
     fail "packaged SOS Compat omitted its STATUS_BAR privapp allowlist"
   grep -F '="dev.gpui.mobile.SosBootReceiver"' <<<"$manifest_dump" >/dev/null || \
     fail "packaged SOS HOME omitted its boot-time ownership policy"
+  if [[ "$profile" == compat0 ]]; then
+    [[ -f "$latin_ime_apk" ]] || \
+      fail "SOS Compat 0 lost its retained Android keyboard"
+  fi
   if [[ "$profile" == compat1 ]]; then
     for component in \
       dev.gpui.mobile.SosCompatChromeService \
@@ -700,6 +815,34 @@ inspect_compat_profile() {
     unzip -p "$apk" 'classes*.dex' | strings | \
       grep -F 'transition_reveal=atomic controls=back,apps,attention,exit' >/dev/null || \
       fail "native Compat chrome can expose a partially rendered transition frame"
+    local ime_bridge_marker
+    for ime_bridge_marker in \
+      'ime_activate focus_requested=' \
+      'ime_input_connection_created active=' \
+      'ime_show_requested reason=' \
+      'legacy_accepted=' \
+      'controller_requested=' \
+      'anchor_contract=in_window_nonzero_alpha_noninteractive' \
+      'attached=' \
+      'token=' \
+      'shown=' \
+      'alpha=' \
+      'laid_out=' \
+      'view_focused=' \
+      'window_focused=' \
+      'size=' \
+      'visible_bounds=' \
+      'imm_active='; do
+      unzip -p "$apk" 'classes*.dex' | strings | \
+        grep -F "$ime_bridge_marker" >/dev/null || \
+        fail "native Compat HOME omitted IME bridge diagnostic: $ime_bridge_marker"
+    done
+    for semantic_marker in \
+      'compat_semantic_input_focus action=click' \
+      'compat_app_action action=back ime_precedence=platform_key_dispatch'; do
+      unzip -p "$apk" 'classes*.dex' | strings | grep -F "$semantic_marker" >/dev/null || \
+        fail "native Compat HOME omitted input marker: $semantic_marker"
+    done
     if unzip -p "$apk" 'classes*.dex' | strings | \
       grep -F 'Android executes the selected app' >/dev/null; then
       fail "native Compat workspace retains Android-owned presentation copy"
@@ -722,11 +865,13 @@ inspect_compat_profile() {
     local host_runtime="$target_files/SYSTEM_EXT/lib64/libsos_core_experience.so"
     local host_init_rc="$target_files/SYSTEM_EXT/etc/init/sos-core-host.rc"
     local bridge_apk="$target_files/SYSTEM_EXT/priv-app/SosFrameworkBridge/SosFrameworkBridge.apk"
-    local marker="$target_files/SYSTEM_EXT/bin/sos-ui-removal-marker"
+    local marker="$target_files/SYSTEM_EXT/bin/sos-compat-ui-removal-marker"
+    local core_marker="$target_files/SYSTEM_EXT/bin/sos-ui-removal-marker"
     local services_jar="$target_files/SYSTEM/framework/services.jar"
     local system_ext_policy="$target_files/SYSTEM_EXT/etc/selinux/system_ext_sepolicy.cil"
     for artifact in \
       "$host" "$host_runtime" "$host_init_rc" "$bridge_apk" "$marker" \
+      "$latin_ime_apk" \
       "$services_jar" "$system_ext_policy"; do
       [[ -f "$artifact" ]] || fail "native Compat artifact missing: $artifact"
       stat --printf='%n %s bytes\n' "$artifact"
@@ -741,6 +886,8 @@ inspect_compat_profile() {
       fail "native Compat GPUI runtime still reserves Android-style frame bands"
     file "$marker" | grep -F 'ARM aarch64' >/dev/null || \
       fail "native Compat UI-removal marker is not AArch64"
+    [[ ! -e "$core_marker" ]] || \
+      fail "native Compat packaged the Core UI-removal marker"
     strings "$host" | grep -F \
       'native_compat_handoff target=sos-home android_system_ui=false' >/dev/null || \
       fail "native Compat host omitted its post-unlock SOS HOME handoff"
@@ -786,6 +933,28 @@ inspect_compat_profile() {
       grep -F 'SOS Compat silenced Android system window type=' >/dev/null || \
       fail "native Compat framework omitted its system-window presentation membrane"
 
+    local latin_ime_manifest latin_ime_service
+    latin_ime_manifest="$(container out/host/linux-x86/bin/aapt2 dump xmltree \
+      --file AndroidManifest.xml "$latin_ime_apk")"
+    grep -F 'package="com.android.inputmethod.latin"' \
+      <<<"$latin_ime_manifest" >/dev/null || \
+      fail "native Compat packaged the wrong system IME"
+    grep -F ':directBootAware' <<<"$latin_ime_manifest" | grep -F '=true' >/dev/null || \
+      fail "native Compat system IME is not direct-boot-aware"
+    ! grep -F ':sharedUserId' <<<"$latin_ime_manifest" >/dev/null || \
+      fail "native Compat system IME must retain its application UID boundary"
+    latin_ime_service="$(grep -F -A8 \
+      '="com.android.inputmethod.latin.LatinIME"' <<<"$latin_ime_manifest")"
+    [[ -n "$latin_ime_service" ]] || \
+      fail "native Compat system IME service is missing"
+    grep -F '="android.permission.BIND_INPUT_METHOD"' \
+      <<<"$latin_ime_service" >/dev/null || \
+      fail "native Compat system IME service lacks BIND_INPUT_METHOD"
+    grep -F ':exported' <<<"$latin_ime_service" | grep -F '=true' >/dev/null || \
+      fail "native Compat system IME service is not exported"
+    grep -F '="android.view.InputMethod"' <<<"$latin_ime_service" >/dev/null || \
+      fail "native Compat system IME service lacks its InputMethod action"
+
     local bridge_manifest
     bridge_manifest="$(container out/host/linux-x86/bin/aapt2 dump xmltree \
       --file AndroidManifest.xml "$bridge_apk")"
@@ -820,6 +989,52 @@ inspect_compat_profile() {
     unzip -p "$bridge_apk" 'classes*.dex' | strings | \
       grep -F 'framework_bridge_home_start result=user-locked' >/dev/null || \
       fail "native Compat framework bridge can initialize HOME before CE unlock"
+    unzip -p "$apk" 'classes*.dex' | strings | \
+      grep -Fx 'deepseek/deepseek-v4-flash-0731' >/dev/null || \
+      fail "Compat HOME omitted the pinned OpenRouter campaign model"
+    if unzip -p "$apk" 'classes*.dex' | strings | \
+      grep -Fx 'deepseek/deepseek-v4-flash' >/dev/null; then
+      fail "Compat HOME retained the older OpenRouter model ID"
+    fi
+    for agent_marker in \
+      'android_agent_bridge_request_start provider=' \
+      'android_agent_child_start executable=sos-node' \
+      'android_agent_child_exit code=' \
+      'android_agent_child_cleanup category=' \
+      'android_agent_child_response type=' \
+      'android_agent_failure stage='; do
+      unzip -p "$apk" 'classes*.dex' | strings | grep -F "$agent_marker" >/dev/null || \
+        fail "Compat HOME omitted sanitized agent lifecycle marker: $agent_marker"
+    done
+    for agent_marker in \
+      'android_agent_effect_dispatch action=' \
+      'android_agent_thread_start provider=' \
+      'android_agent_request_start provider=' \
+      'android_agent_pi_response provider=' \
+      'android_agent_failure stage='; do
+      strings "$host_runtime" | grep -F "$agent_marker" >/dev/null || \
+        fail "native Compat runtime omitted agent lifecycle marker: $agent_marker"
+    done
+    local native_evidence_marker
+    for native_evidence_marker in \
+      'android_agent_action_sequence_verified provider=' \
+      'android_agent_action_verified ordinal=' \
+      'android_agent_candidate_validation_ack request_id=' \
+      'android_agent_activation_stage_ack request_id=' \
+      'android_agent_activation_commit request_id='; do
+      unzip -p "$apk" lib/arm64-v8a/libsos_experience.so | strings | \
+        grep -F "$native_evidence_marker" >/dev/null || \
+        fail "Compat HOME omitted authoritative agent evidence marker: $native_evidence_marker"
+      strings "$host_runtime" | grep -F "$native_evidence_marker" >/dev/null || \
+        fail "native Compat runtime omitted authoritative agent evidence marker: $native_evidence_marker"
+    done
+    for native_evidence_marker in \
+      'compat_ime_focus_transition from=' \
+      'compat_ime_blur_resolved node_id='; do
+      unzip -p "$apk" lib/arm64-v8a/libsos_experience.so | strings | \
+        grep -F "$native_evidence_marker" >/dev/null || \
+        fail "Compat HOME omitted focus lifecycle marker: $native_evidence_marker"
+    done
     ! grep -F '(allow sos_authority sysfs_battery' "$system_ext_policy" >/dev/null || \
       fail "native Compat authority bypasses Android's vendor health boundary"
 
@@ -829,7 +1044,7 @@ inspect_compat_profile() {
       CertInstaller Contacts CredentialManager DeskClock Dialer DocumentsUI EmergencyInfo \
       DeviceAsWebcam DeviceDiagnostics DownloadProviderUi \
       DynamicSystemInstallationService EasterEgg Etar ExactCalculator Gallery2 \
-      Glimpse HTMLViewer IntentResolver Jelly LatinIME \
+      Glimpse HTMLViewer IntentResolver Jelly \
       Launcher3QuickStep LineageParts LineageSetupWizard LiveWallpapersPicker \
       ManagedProvisioning PhotoTable PrintSpooler Profiles \
       QuickAccessWallet Recorder SamsungDAP-custom SamsungDoze Seedvault Settings \
@@ -855,6 +1070,7 @@ inspect_compat_profile() {
     fail "packaged SOS Node libc++ runtime differs from the pinned NDK binary"
   cmp -s "$agent_runner" "$SOS_ROOT/services/sos-agent/dist/agent-runner.cjs" || \
     fail "packaged shared Pi runner differs from the built bundle"
+  check_agent_runner_contract "$agent_runner"
   cmp -s "$agent_api" "$SOS_ROOT/docs/experience-api.md" || \
     fail "packaged Android Pi API document differs from repository source"
   cmp -s "$agent_example_primary" "$SOS_ROOT/experiences/default.luau" || \
@@ -1047,6 +1263,7 @@ inspect_core_stage() {
   local core_platform_rc="$target_files/SYSTEM_EXT/etc/init/sos-core-platform.rc"
   local core_app_manifest="$target_files/SYSTEM_EXT/etc/sos/core-apps.json"
   local marker="$target_files/SYSTEM_EXT/bin/sos-ui-removal-marker"
+  local compat_marker="$target_files/SYSTEM_EXT/bin/sos-compat-ui-removal-marker"
   local artifact
   for artifact in \
     "$host" "$host_runtime" "$host_init_rc" "$properties" "$authority" \
@@ -1093,6 +1310,33 @@ inspect_core_stage() {
   strings "$host_runtime" | grep -F \
     '/system_ext/etc/sos-agent/agent-runner.cjs' >/dev/null || \
     fail "SOS $stage GPUI runtime omitted the shared Pi runner boundary"
+  check_core_runtime_model_contract "$host_runtime"
+  for agent_marker in \
+    'android_agent_effect_dispatch action=' \
+    'android_agent_thread_start provider=' \
+    'android_agent_request_start provider=' \
+    'android_agent_child_start pid=' \
+    'android_agent_child_exit code=' \
+    'android_agent_child_response type=' \
+    'android_agent_failure stage='; do
+    strings "$host_runtime" | grep -F "$agent_marker" >/dev/null || \
+      fail "SOS $stage GPUI runtime omitted sanitized agent lifecycle marker: $agent_marker"
+  done
+  for agent_marker in \
+    'android_agent_action_sequence_verified provider=' \
+    'android_agent_action_verified ordinal=' \
+    'android_agent_candidate_validation_ack request_id=' \
+    'android_agent_activation_stage_ack request_id=' \
+    'android_agent_activation_commit request_id='; do
+    strings "$host_runtime" | grep -F "$agent_marker" >/dev/null || \
+      fail "SOS $stage GPUI runtime omitted authoritative agent evidence marker: $agent_marker"
+  done
+  strings "$host_runtime" | grep -F \
+    'core_agent_credential_ceremony state=opened provider=openrouter model=' >/dev/null || \
+    fail "SOS $stage GPUI runtime omitted the trusted native credential ceremony"
+  strings "$host_runtime" | grep -F \
+    'android_agent_pi_response provider=' >/dev/null || \
+    fail "SOS $stage GPUI runtime omitted response model evidence"
   cmp -s "$agent_runner" "$SOS_ROOT/services/sos-agent/dist/agent-runner.cjs" || \
     fail "SOS $stage packaged Pi runner differs from the shared built bundle"
   cmp -s "$agent_api" "$SOS_ROOT/docs/experience-api.md" || \
@@ -1149,6 +1393,8 @@ inspect_core_stage() {
   [[ ! -e "$system_ui" && ! -e "$launcher" ]] || \
     fail "SOS $stage still packages SystemUI or Launcher3"
   [[ -f "$marker" ]] || fail "SOS $stage UI removal marker is missing"
+  [[ ! -e "$compat_marker" ]] || \
+    fail "SOS $stage packaged the Compat UI-removal marker"
   file "$marker" | grep -F 'ARM aarch64' >/dev/null || \
     fail "SOS $stage UI removal marker is not an AArch64 executable"
   for removed in \
@@ -1549,6 +1795,12 @@ commands:
   hydrate-lfs       fetch and verify the pinned ARM64 WebView LFS object
   apply-patches      apply the audited local a33x source backports
   stage-sos          stage ARM64 SOS product sources and prebuilts
+  check-product-graph
+                    verify profile marker selection and distinct install paths
+  check-agent-runner-contract [BUNDLE]
+                    verify the exact bundled OpenRouter assignment and request guard
+  check-core-runtime-model-contract RUNTIME
+                    verify Core's pinned model bytes and mismatch rejection boundary
   build-recovery    build only the a33x recovery image
   inspect-recovery  report size, SHA-256, file type, and AVB metadata
   build-rom         build the complete a33x LineageOS install package
@@ -1563,7 +1815,7 @@ commands:
   build-core        compatibility alias for build-core-shadow
   build-sos         compatibility alias for build-compat
   inspect-compat0   verify Compat 0 packaging and boot-chain graph
-  inspect-compat1   verify native Compat and absence of Android system UI
+  inspect-compat1   verify native Compat, its system IME, and UI-package removal
   inspect-sos       compatibility alias for inspect-compat1
   inspect-core      verify Core Shadow and retained recovery UI
   inspect-core1     verify no-Zygote native-only packaging
@@ -1593,6 +1845,9 @@ case "$command" in
   hydrate-lfs) hydrate_source_lfs "$@" ;;
   apply-patches) apply_source_patches "$@" ;;
   stage-sos) stage_sos "$@" ;;
+  check-product-graph) check_product_graph "$@" ;;
+  check-agent-runner-contract) check_agent_runner_contract "$@" ;;
+  check-core-runtime-model-contract) check_core_runtime_model_contract "$@" ;;
   build-recovery) build_recovery "$@" ;;
   inspect-recovery) inspect_recovery "$@" ;;
   build-rom) build_rom "$@" ;;

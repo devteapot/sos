@@ -84,5 +84,5 @@ test("the SOS runtime registers Pi's OpenRouter provider", () => {
   const provider = models.getProvider("openrouter");
 
   assert.equal(provider?.baseUrl, "https://openrouter.ai/api/v1");
-  assert.ok(models.getModel("openrouter", "openai/gpt-5.4-mini"));
+  assert.ok(models.getModel("openrouter", "deepseek/deepseek-v4-flash-0731"));
 });

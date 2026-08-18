@@ -50,8 +50,11 @@ fixed workspaces are not direct-boot-aware and the bridge refuses to start them
 before CE unlock.
 
 Compat 1 packages the Core fixed pre-unlock host and non-rendering LockSettings
-bridge, removes the inherited Android UI package set, and blocks Activity
-launches from remaining system packages. The framework applies that block both
+bridge, removes the inherited Android UI package set except for the LatinIME
+input service, and blocks Activity launches from remaining system packages.
+LatinIME is retained only as the framework IME implementation behind GPUI's
+host-owned editor; its setup/settings Activities remain unreachable through
+the same system-Activity policy. The framework applies that block both
 to the caller's initially resolved target and to the final target after
 interception, legacy permission review, or ephemeral-installer redirection. A
 framework window membrane also makes system-UID system windows transparent,
@@ -63,8 +66,9 @@ system experience.
 The product split is composition, not an experience fork. Core and Compat build
 the same Rust `ExperienceHost`. A standalone SurfaceComposer/raw-input adapter
 hosts it in Core; a NativeActivity/task adapter hosts it in Compat. Shared make
-fragments own the native host/runtime/autostart/removal package set used by
-Compat, frozen Core 0B, and active Core 1. Compat-only code is restricted to headless Android
+fragments own the native host/runtime/autostart set, while each product
+explicitly selects its package-removal marker: Compat retains LatinIME and the
+Core profiles do not. Compat-only code is restricted to headless Android
 framework/task facts and the fixed controls required around a selected app.
 
 Compat's fixed Android-hosted surfaces share one full-frame window policy,
@@ -88,8 +92,11 @@ contents of one explicitly selected compatible non-system Android app, and
 nothing else. Package visibility is limited to exported launcher Activities;
 legacy targets that require Android's permission-review ceremony are excluded.
 Stock keyguard, status/navigation bars, notification/quick-settings shade,
-Settings, permission and install dialogs, chooser/file picker, IME, setup,
-dialer/emergency UI, crash/ANR dialogs, and Recovery are forbidden. Missing SOS
+Settings, permission and install dialogs, chooser/file picker, IME settings or
+setup Activities, setup, dialer/emergency UI, crash/ANR dialogs, and Recovery
+are forbidden. The LatinIME keyboard window is the narrow exception: it is an
+input service for the SOS-owned GPUI editor, not a system-surface fallback.
+Missing SOS
 replacements fail closed instead of opening the Android implementation.
 
 Core never packages the SOS Activity. It packages two native bring-up
@@ -111,8 +118,9 @@ stages accept Volume Up+Down as a direct Recovery reboot chord.
 
 ## Why Zygote remains at Core 0
 
-SystemUI, Launcher, Settings, and LatinIME are visible Android products, but
-Zygote and `system_server` also host or coordinate working telephony, network,
+SystemUI, Launcher, and Settings are visible Android products, while LatinIME
+combines a required keyboard service with setup/settings UI. Zygote and
+`system_server` also host or coordinate working telephony, network,
 Bluetooth, NFC, permissions, storage, and credential services. Removing them is
 therefore a service migration, not a UI cleanup.
 
@@ -181,7 +189,7 @@ Current physical status on the SM-A336B:
 | Physical touch dispatch and volume chord | Compat physical touch dispatch passed: eight native no-credential unlock completions were observed across owner-operated lock/wake/ENTER cycles. The Volume Up+Down Recovery chord remains pending owner interaction. |
 | Trusted lockscreen/FBE/Gatekeeper/Keystore ceremony | Implementation exists for a bounded PIN bridge in Core 0B, but the test handset has `CredentialType: NONE`; no real PIN, Gatekeeper throttle, fingerprint, or authentication-bound key release was exercised. Core 1 therefore remains honestly locked. |
 | JNI-free Core provider baseline | Passed for native provider/revision Unix IPC, read-only network state, deterministic native-agent status/candidates, and a bounded semantic document. No Java VM fallback was used for the Core UI. |
-| Native platform-service replacement | The first provider ABI slice now builds without Zygote: health power facts, Supplicant saved-network selection, native audio, signed application inventory, and media/attention paths. Physical execution, native Wi-Fi provisioning and validation, active media/app/attention producers, live-agent credential ceremony, assistive delivery/actions, phone, Bluetooth, NFC, and other displaced services remain pending. |
+| Native platform-service replacement | The first provider ABI slice now builds without Zygote: health power facts, Supplicant saved-network selection, native audio, signed application inventory, media/attention paths, and a fixed memory-only Rust/GPUI OpenRouter credential ceremony. Physical execution of that ceremony and a live `deepseek/deepseek-v4-flash-0731` prompt, native Wi-Fi provisioning and validation, active media/app/attention producers, assistive delivery/actions, phone, Bluetooth, NFC, and other displaced services remain pending. |
 | Trusted urgent attention | Pending for calls, alarms, security, battery, thermal, and recovery warnings. |
 | Removal of Android Java UI and user-install surface | Passed for Core 0B presentation ownership: principal UI APKs are absent, PackageInstaller sessions are rejected, and all Activity starts are blocked. PackageInstaller remains as a non-rendering bootstrap invariant because PackageManager requires exactly one installer. |
 
@@ -194,7 +202,7 @@ Current physical status on the SM-A336B:
 | Quick Settings | Typed network, audio, display, battery, and power provider actions. |
 | Status bar | Experience-owned presentation over trusted system facts. |
 | Lockscreen | Fixed signed native experience on Compat and Core; generated code cannot handle PIN, fingerprint, unlock state, or lockout. Android keyguard is never a visible fallback. |
-| Android IME | Removed from Compat and Core. Both require an SOS-native composition-aware keyboard, with fixed trusted PIN entry. Until that exists, text requests that depend on Android IME fail closed. |
+| Android IME | Compat retains the direct-boot-aware LatinIME service as the keyboard behind the GPUI-owned composing editor; its Activities are blocked and SOS remains presentation owner around it. Frozen Core 0B and active no-Zygote Core 1 exclude LatinIME and use the SOS-native composition-aware keyboard, with fixed trusted PIN entry. |
 | Settings | Generated provider surfaces for ordinary changes and fixed native confirmation for credentials, permissions, destructive actions, and recovery. |
 | APKs | Explicit non-system application workspace on Compat, with SOS controls retained and system-package Activities blocked. Legacy Core 0B blocks all Activity rendering; active Core 1 has no Zygote or APK process. Inherited, non-executable system APK payloads remain image-size debt until the later pruning pass. |
 

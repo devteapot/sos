@@ -2,6 +2,10 @@
 mod agent_bridge;
 #[cfg(target_os = "android")]
 mod android;
+#[cfg(any(target_os = "android", test))]
+mod android_agent_contract;
+#[cfg(any(all(target_os = "android", not(feature = "core-native")), test))]
+mod android_interaction_contract;
 #[cfg(any(
     target_os = "android",
     all(target_os = "linux", feature = "linux-host")
@@ -9,6 +13,8 @@ mod android;
 mod assets;
 #[cfg(all(target_os = "linux", feature = "linux-host"))]
 mod compositor_fence;
+#[cfg(any(all(target_os = "android", feature = "core-native"), test))]
+mod core_credential;
 #[cfg(all(target_os = "linux", feature = "linux-host"))]
 mod linux;
 #[cfg(all(target_os = "linux", feature = "linux-host"))]

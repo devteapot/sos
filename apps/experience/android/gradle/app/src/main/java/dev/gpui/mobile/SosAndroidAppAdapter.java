@@ -72,7 +72,7 @@ final class SosAndroidAppAdapter {
         new Thread(() -> {
             try {
                 new Instrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_BACK);
-                Log.i(TAG, "compat_app_action action=back");
+                Log.i(TAG, "compat_app_action action=back ime_precedence=platform_key_dispatch");
             } catch (RuntimeException error) {
                 Log.e(TAG, "compat_app_back_failed", error);
             }

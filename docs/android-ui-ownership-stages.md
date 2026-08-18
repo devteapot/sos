@@ -25,7 +25,7 @@ oracle; it is not part of normal builds or release support.
 | Stage | Boot and UI owner | Android runtime | Recovery boundary |
 | --- | --- | --- | --- |
 | Compat 0 | Historical bring-up evidence only. A platform-signed persistent SOS process owns HOME while Android still draws keyguard, status/navigation, permissions, calls, and other ceremonies. It is not the intended Compat experience. | Full, including Android UI. | Android UI and Recovery. |
-| Compat 1 | SOS owns every system surface. Source combines the shared fixed native boot/runtime lock with a restartable, full-frame Rust/GPUI HOME and trusted SOS controls; only the contents of an explicitly selected compatible non-system Android application may appear. Revision `sos.compat1.19d8a653fbd7.220e268c228f` passed the rebuilt exact-image hardware gate, including owner-confirmed side-button lock/wake and native touchscreen ENTER. | Zygote, `system_server`, PackageManager, WindowManager, and app processes remain. SystemUI, Launcher, Settings, chooser/file-picker/IME, setup, dialer, and the other inherited UI packages are removed. Framework policy aborts both initially resolved and framework-redirected system-package Activity launches, suppresses crash/ANR UI, and makes system-UID system windows non-presenting and non-interactive. | The persistent native supervisor first restarts a missing HOME through the headless bridge and owns fixed Recovery only if that bounded restart cannot restore the heartbeat. The GPUI NativeActivity is deliberately restartable and unavailable before CE unlock. Android is an application runtime, never a presentation fallback. |
+| Compat 1 | SOS owns every system surface except the keyboard window requested by its own GPUI editor. Source combines the shared fixed native boot/runtime lock with a restartable, full-frame Rust/GPUI HOME and trusted SOS controls; only that system input service and the contents of an explicitly selected compatible non-system Android application may appear. Revision `sos.compat1.19d8a653fbd7.220e268c228f` passed the rebuilt exact-image hardware gate, including owner-confirmed side-button lock/wake and native touchscreen ENTER. | Zygote, `system_server`, PackageManager, WindowManager, and app processes remain. SystemUI, Launcher, Settings, chooser/file-picker, setup, dialer, and the other inherited UI packages are removed; direct-boot-aware LatinIME remains solely as the GPUI editor's input service. Framework policy blocks LatinIME's setup/settings Activities like every other system-package Activity, suppresses crash/ANR UI, and makes system-UID system windows non-presenting and non-interactive. LatinIME runs under its application UID, outside that system-UID window rule. | The persistent native supervisor first restarts a missing HOME through the headless bridge and owns fixed Recovery only if that bounded restart cannot restore the heartbeat. The GPUI NativeActivity is deliberately restartable and unavailable before CE unlock. Android is an application runtime, never a presentation fallback. |
 | Shadow | Android boots normally. The disabled init services expose a one-frame SurfaceComposer probe and the supervised native GPUI shell for manual tests. | Full; no SOS APK is packaged. | Fixed SOS recovery can retry or expose the still-live Android UI. |
 | Core 0A | Android performs its existing credential ceremony. When `sys.user.0.ce_available=true`, init starts the native GPUI supervisor, which owns the top display layer and grabs touch/volume input. | Full framework remains installed behind the native layer, but PackageInstaller rejects non-system installation callers. A direct-boot framework bridge is packaged for forward compatibility but is not the unlock owner. | Fixed SOS recovery can retry or expose Android. |
 | Core 0B | Init starts the fixed native lock surface once SurfaceFlinger is available. A direct-boot, persistent system-UID process has no Activity and exposes only status and bounded PIN verification over an abstract Unix socket. After LockSettings releases CE storage, GPUI replaces the lock layer. | Zygote and `system_server` remain for headless phone/network/Bluetooth/NFC, LockSettings, Gatekeeper, Keystore, and vendor-backed services. The inherited launcher, SystemUI, settings, chooser, file picker, IME, media/PIM apps, setup/provisioning UI, and other ordinary UI APKs are overridden out. Mixed service/UI packages required by retained headless frameworks stay installed: notably, PackageManager requires exactly one installer package during bootstrap, so `PackageInstaller` remains present while session policy rejects user installs and the immutable Activity policy prevents its UI from rendering. The opaque native/fixed-recovery layer remains presentation owner. | Fixed SOS recovery retries the native host; Android is not offered as a UI fallback. Holding Volume Up+Down asks init to reboot into Recovery. |
@@ -61,9 +61,11 @@ that require Android's permission-review ceremony. The user selects one
 remaining Activity, Android creates its normal task, and persistent SOS controls
 remain above it. Android app content is allowed; Android system content is not.
 A request that would normally open PermissionController, PackageInstaller,
-Settings, DocumentsUI, a chooser, an IME, keyguard, or another system Activity
-is blocked after final framework resolution until SOS has a native broker for
-that capability. This stage does not isolate app files, permissions, or UIDs. A
+Settings, DocumentsUI, a chooser, LatinIME setup/settings, keyguard, or another
+system Activity is blocked after final framework resolution until SOS has a
+native broker for that capability. The LatinIME input service may create only
+the keyboard requested through the GPUI-owned editor. This stage does not
+isolate app files, permissions, or UIDs. A
 later security-containment gate must choose a separate Android user, managed
 profile, or virtualization boundary before the workspace can be called a data
 sandbox.
@@ -77,8 +79,10 @@ widgets, navigation, lockscreen, dialogs, or recovery UI.
 Core and Compat do not fork the experience implementation. Both build the same
 Rust `ExperienceHost`; Core supplies a standalone SurfaceComposer/input adapter
 and Compat supplies the NativeActivity/task adapter. Shared product fragments
-select the same native host, runtime, autostart property, and UI-removal marker
-for Compat, Core 0B, and Core 1 so package policy cannot drift independently.
+select the same native host, runtime, and autostart property. Product makefiles
+explicitly select a Compat removal marker that retains LatinIME or the Core
+marker that excludes it, preventing a shared conditional from changing the
+package boundary implicitly.
 
 The former platform `Button`/`TextView` Compat prototypes are removed. The
 workspace, attention journal, and permanent app controls use one small fixed

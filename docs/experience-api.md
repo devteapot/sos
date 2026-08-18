@@ -395,6 +395,16 @@ revealed. Linux keeps this semantic/editing contract and supplies its own
 Wayland input-method-v2 client and semantic service instead of Android's
 TalkBack and input-method services.
 
+On Compat, a physical tap outside every `text_session` clears GPUI text focus,
+deactivates the bridge, and hides the system IME. A tap inside another session
+uses normal GPUI focus transfer and retains the IME. Editable virtual
+accessibility nodes expose both `ACTION_FOCUS` and `ACTION_CLICK`; either is a
+deterministic semantic route to input focus, while
+`ACTION_ACCESSIBILITY_FOCUS` remains accessibility-only. The SOS overlay Back
+control still injects the platform Back key, so Android consumes an open IME
+before ordinary app navigation. Core retains its explicit native keyboard and
+does not use this Compat-only outside-tap policy.
+
 ## Validation and authority boundary
 
 Before presentation the host enforces, among other checks:

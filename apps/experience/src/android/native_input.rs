@@ -19,15 +19,22 @@ use gpui::{
     SharedString, Style, Subscription, TextRun, UTF16Selection, UnderlineStyle, WeakEntity, Window,
 };
 use unicode_segmentation::UnicodeSegmentation as _;
+#[cfg(feature = "core-native")]
+use zeroize::Zeroize;
 
 use super::{accessibility, ExperienceHost};
+#[cfg(not(feature = "core-native"))]
+use crate::android_interaction_contract::CompatImeFocusLifecycle;
 #[cfg(not(feature = "core-native"))]
 use gpui_mobile::android::jni::{activity, find_app_class, get_string, with_env};
 #[cfg(not(feature = "core-native"))]
 use jni::objects::{JObject, JValue};
 
 thread_local! {
+    #[cfg(feature = "core-native")]
     static ACTIVE_INPUT: RefCell<Option<String>> = const { RefCell::new(None) };
+    #[cfg(not(feature = "core-native"))]
+    static COMPAT_IME_FOCUS: RefCell<CompatImeFocusLifecycle> = RefCell::new(CompatImeFocusLifecycle::default());
     static PENDING_TEXT: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
 }
 
@@ -56,7 +63,11 @@ static SOFTWARE_KEYBOARD_VISIBLE: AtomicBool = AtomicBool::new(false);
 #[cfg(feature = "core-native")]
 static SOFTWARE_KEYBOARD_SHIFT: AtomicBool = AtomicBool::new(false);
 #[cfg(feature = "core-native")]
+static SOFTWARE_KEYBOARD_SYMBOLS: AtomicBool = AtomicBool::new(false);
+#[cfg(feature = "core-native")]
 const SOFTWARE_KEYBOARD_HEIGHT: f32 = 220.0;
+#[cfg(feature = "core-native")]
+const CORE_CREDENTIAL_INPUT_ID: &str = "trusted-core-agent-credential";
 
 pub fn ime_inset() -> f32 {
     f32::from_bits(IME_INSET_BITS.load(Ordering::Acquire))
@@ -109,6 +120,7 @@ fn hide_software_keyboard(node_id: &str) {
     if should_hide {
         SOFTWARE_KEYBOARD_VISIBLE.store(false, Ordering::Release);
         SOFTWARE_KEYBOARD_SHIFT.store(false, Ordering::Release);
+        SOFTWARE_KEYBOARD_SYMBOLS.store(false, Ordering::Release);
         set_ime_inset(0.0);
         log::info!("core_native_software_keyboard node={node_id} visible=false");
     }
@@ -120,6 +132,12 @@ fn push_software_key(text: &str) {
         "shift" => {
             let next = !SOFTWARE_KEYBOARD_SHIFT.load(Ordering::Acquire);
             SOFTWARE_KEYBOARD_SHIFT.store(next, Ordering::Release);
+            super::request_host_frame();
+        }
+        "symbols" => {
+            let next = !SOFTWARE_KEYBOARD_SYMBOLS.load(Ordering::Acquire);
+            SOFTWARE_KEYBOARD_SYMBOLS.store(next, Ordering::Release);
+            SOFTWARE_KEYBOARD_SHIFT.store(false, Ordering::Release);
             super::request_host_frame();
         }
         "hide" => {
@@ -161,7 +179,14 @@ fn keyboard_key(label: &'static str, insert: &'static str) -> impl IntoElement {
 #[cfg(feature = "core-native")]
 pub fn software_keyboard_overlay() -> impl IntoElement {
     let shift = SOFTWARE_KEYBOARD_SHIFT.load(Ordering::Acquire);
-    let rows: [[&str; 10]; 3] = if shift {
+    let symbols = SOFTWARE_KEYBOARD_SYMBOLS.load(Ordering::Acquire);
+    let rows: [[&str; 10]; 3] = if symbols {
+        [
+            ["1", "2", "3", "4", "5", "6", "7", "8", "9", "0"],
+            ["-", "_", ".", "/", ":", "@", "#", "+", "=", ""],
+            ["!", "$", "%", "&", "*", "?", "~", "", "", ""],
+        ]
+    } else if shift {
         [
             ["Q", "W", "E", "R", "T", "Y", "U", "I", "O", "P"],
             ["A", "S", "D", "F", "G", "H", "J", "K", "L", ""],
@@ -199,12 +224,45 @@ pub fn software_keyboard_overlay() -> impl IntoElement {
         div()
             .flex()
             .w_full()
-            .child(keyboard_key(if shift { "ABC" } else { "⇧" }, "shift"))
+            .child(keyboard_key(if symbols { "ABC" } else { "123" }, "symbols"))
+            .child(keyboard_key(if shift { "abc" } else { "⇧" }, "shift"))
             .child(keyboard_key("space", " "))
             .child(keyboard_key("⌫", "\x08"))
             .child(keyboard_key("↵", "\n"))
             .child(keyboard_key("hide", "hide")),
     )
+}
+
+#[cfg(feature = "core-native")]
+pub fn activate_core_credential_keyboard() {
+    PENDING_TEXT.with(|pending| {
+        for value in pending.borrow_mut().drain(..) {
+            let mut value = value;
+            value.zeroize();
+        }
+    });
+    show_software_keyboard(CORE_CREDENTIAL_INPUT_ID);
+}
+
+#[cfg(feature = "core-native")]
+pub fn take_core_credential_input() -> Vec<String> {
+    let active =
+        ACTIVE_INPUT.with(|active| active.borrow().as_deref() == Some(CORE_CREDENTIAL_INPUT_ID));
+    if !active {
+        return Vec::new();
+    }
+    PENDING_TEXT.with(|pending| pending.borrow_mut().drain(..).collect())
+}
+
+#[cfg(feature = "core-native")]
+pub fn deactivate_core_credential_keyboard() {
+    PENDING_TEXT.with(|pending| {
+        for value in pending.borrow_mut().drain(..) {
+            let mut value = value;
+            value.zeroize();
+        }
+    });
+    hide_software_keyboard(CORE_CREDENTIAL_INPUT_ID);
 }
 
 #[cfg(not(feature = "core-native"))]
@@ -263,14 +321,14 @@ pub unsafe extern "C" fn Java_dev_gpui_mobile_GpuiActivity_nativeOnImeInset(
 }
 
 #[cfg(not(feature = "core-native"))]
-fn install_mobile_keyboard_callback(node_id: &str) {
-    ACTIVE_INPUT.with(|active| *active.borrow_mut() = Some(node_id.to_owned()));
+fn install_mobile_keyboard_callback(_node_id: &str) {
     gpui_mobile::set_text_input_callback(Some(Box::new(|text| {
         PENDING_TEXT.with(|pending| pending.borrow_mut().push(text.to_owned()));
     })));
     gpui_mobile::TEXT_INPUT_DIRTY.store(true, std::sync::atomic::Ordering::Release);
 }
 
+#[cfg(feature = "core-native")]
 fn clear_mobile_keyboard_callback(node_id: &str) {
     let should_clear = ACTIVE_INPUT.with(|active| {
         if active.borrow().as_deref() == Some(node_id) {
@@ -286,7 +344,54 @@ fn clear_mobile_keyboard_callback(node_id: &str) {
 }
 
 pub fn active_input_id() -> Option<String> {
-    ACTIVE_INPUT.with(|active| active.borrow().clone())
+    #[cfg(feature = "core-native")]
+    {
+        ACTIVE_INPUT.with(|active| active.borrow().clone())
+    }
+    #[cfg(not(feature = "core-native"))]
+    {
+        COMPAT_IME_FOCUS.with(|lifecycle| lifecycle.borrow().active().map(str::to_owned))
+    }
+}
+
+#[cfg(not(feature = "core-native"))]
+fn begin_compat_ime_blur(node_id: &str) -> Option<u64> {
+    COMPAT_IME_FOCUS.with(|lifecycle| lifecycle.borrow_mut().begin_blur(node_id))
+}
+
+#[cfg(not(feature = "core-native"))]
+fn resolve_compat_ime_blur(expected_node_id: &str, epoch: u64) {
+    let deactivated = COMPAT_IME_FOCUS.with(|lifecycle| lifecycle.borrow_mut().resolve_blur(epoch));
+    let Some(node_id) = deactivated else {
+        log::info!(
+            "compat_ime_blur_resolved node_id={expected_node_id} epoch={epoch} outcome=transfer lifecycle=active"
+        );
+        return;
+    };
+    debug_assert_eq!(node_id, expected_node_id);
+    gpui_mobile::set_text_input_callback(None);
+    let _ = with_env(|env| {
+        let helper = find_app_class(env, "dev.gpui.mobile.GpuiImeBridge")?;
+        let activity = activity(env)?;
+        let node_id = env
+            .new_string(&node_id)
+            .map_err(|error| error.to_string())?;
+        env.call_static_method(
+            &helper,
+            jni::jni_str!("deactivate"),
+            jni::jni_sig!("(Landroid/app/Activity;Ljava/lang/String;)V"),
+            &[JValue::Object(&activity), JValue::Object(&node_id)],
+        )
+        .map_err(|error| {
+            env.exception_clear();
+            error.to_string()
+        })?;
+        Ok(())
+    });
+    gpui_mobile::hide_keyboard();
+    log::info!(
+        "compat_ime_blur_resolved node_id={expected_node_id} epoch={epoch} outcome=deactivate lifecycle=inactive"
+    );
 }
 
 actions!(
@@ -368,10 +473,19 @@ impl NativeTextInput {
             this.activate_mobile_ime();
             this.notify_focus(true, cx);
         });
-        let blurred = cx.on_blur(&focus_handle, window, |this, _, cx| {
-            this.deactivate_mobile_ime();
-            clear_mobile_keyboard_callback(&this.node_id);
-            gpui_mobile::hide_keyboard();
+        let blurred = cx.on_blur(&focus_handle, window, |this, window, cx| {
+            #[cfg(feature = "core-native")]
+            {
+                let _ = window;
+                this.deactivate_mobile_ime();
+                clear_mobile_keyboard_callback(&this.node_id);
+                gpui_mobile::hide_keyboard();
+            }
+            #[cfg(not(feature = "core-native"))]
+            if let Some(epoch) = begin_compat_ime_blur(&this.node_id) {
+                let node_id = this.node_id.clone();
+                window.defer(cx, move |_, _| resolve_compat_ime_blur(&node_id, epoch));
+            }
             this.marked_range = None;
             accessibility::mark_state_changed();
             this.notify_focus(false, cx);
@@ -446,6 +560,18 @@ impl NativeTextInput {
                 .as_ref()
                 .map(|range| self.range_to_utf16(range)),
         }
+    }
+
+    #[cfg(not(feature = "core-native"))]
+    pub fn bounds(&self) -> Option<[f32; 4]> {
+        self.last_bounds.map(|bounds| {
+            [
+                f32::from(bounds.origin.x),
+                f32::from(bounds.origin.y),
+                f32::from(bounds.size.width),
+                f32::from(bounds.size.height),
+            ]
+        })
     }
 
     pub fn set_selection_from_accessibility(
@@ -528,7 +654,14 @@ impl NativeTextInput {
         #[cfg(not(feature = "core-native"))]
         {
             gpui_mobile::set_text_input_callback(None);
-            ACTIVE_INPUT.with(|active| *active.borrow_mut() = Some(self.node_id.clone()));
+            let transition =
+                COMPAT_IME_FOCUS.with(|lifecycle| lifecycle.borrow_mut().focus(&self.node_id));
+            log::info!(
+                "compat_ime_focus_transition from={} to={} epoch={} lifecycle=active",
+                transition.from.as_deref().unwrap_or("none"),
+                transition.to,
+                transition.epoch
+            );
             let state = self.accessibility_state();
             let result = with_env(|env| {
                 let helper = find_app_class(env, "dev.gpui.mobile.GpuiImeBridge")?;
@@ -575,33 +708,10 @@ impl NativeTextInput {
         }
     }
 
+    #[cfg(feature = "core-native")]
     fn deactivate_mobile_ime(&self) {
-        #[cfg(feature = "core-native")]
-        {
-            // Keep the keyboard visible while its keys receive pointer input.
-            // Core 1 has no Android IME; its explicit hide key owns dismissal.
-        }
-        #[cfg(not(feature = "core-native"))]
-        {
-            let _ = with_env(|env| {
-                let helper = find_app_class(env, "dev.gpui.mobile.GpuiImeBridge")?;
-                let activity = activity(env)?;
-                let node_id = env
-                    .new_string(&self.node_id)
-                    .map_err(|error| error.to_string())?;
-                env.call_static_method(
-                    &helper,
-                    jni::jni_str!("deactivate"),
-                    jni::jni_sig!("(Landroid/app/Activity;Ljava/lang/String;)V"),
-                    &[JValue::Object(&activity), JValue::Object(&node_id)],
-                )
-                .map_err(|error| {
-                    env.exception_clear();
-                    error.to_string()
-                })?;
-                Ok(())
-            });
-        }
+        // Keep the keyboard visible while its keys receive pointer input.
+        // Core 1 has no Android IME; its explicit hide key owns dismissal.
     }
 
     fn notify_change(&self, cx: &mut Context<Self>) {
@@ -885,7 +995,7 @@ impl NativeTextInput {
     }
 
     fn drain_mobile_input(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let active = ACTIVE_INPUT.with(|active| active.borrow().as_deref() == Some(&self.node_id));
+        let active = active_input_id().as_deref() == Some(&self.node_id);
         if !active {
             return;
         }

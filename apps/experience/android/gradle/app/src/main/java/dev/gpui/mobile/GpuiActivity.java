@@ -134,6 +134,7 @@ public class GpuiActivity extends NativeActivity {
     @Override
     protected void onDestroy() {
         sActivityCreated = false;
+        GpuiImeBridge.activityDestroyed(this);
         GpuiMediaSession.release();
         super.onDestroy();
     }

@@ -4,6 +4,11 @@ use std::io::{Read, Write};
 use std::os::fd::AsRawFd;
 #[cfg(feature = "core-native")]
 use std::process::{Child, Command, ExitStatus, Stdio};
+#[cfg(feature = "core-native")]
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Mutex, OnceLock,
+};
 use std::thread;
 #[cfg(feature = "core-native")]
 use std::time::{Duration, Instant};
@@ -15,7 +20,18 @@ use gpui_mobile::android::jni::{activity, find_app_class, get_string, with_env};
 #[cfg(not(feature = "core-native"))]
 use jni::objects::{JObject, JValue};
 use serde::Deserialize;
+#[cfg(feature = "core-native")]
+use serde::Serialize;
+#[cfg(feature = "core-native")]
+use zeroize::{Zeroize, Zeroizing};
 
+use crate::android_agent_contract::{
+    expected_model, model_is_exact, reconciled_request_error, verified_action_sequence,
+};
+#[cfg(feature = "core-native")]
+use crate::android_agent_contract::{pi_timeout_seconds, OPENROUTER_MODEL};
+#[cfg(feature = "core-native")]
+use crate::core_credential::{CeremonySnapshot, CredentialState};
 use crate::deterministic_agent_candidate;
 
 #[cfg(not(feature = "core-native"))]
@@ -45,9 +61,32 @@ struct LiveEnvelope {
     ok: Option<bool>,
     source: Option<String>,
     summary: Option<String>,
-    error: Option<String>,
+    stage: Option<String>,
+    category: Option<String>,
+    status: Option<u16>,
     #[serde(default)]
     actions: Vec<String>,
+    model: Option<String>,
+    #[cfg(feature = "core-native")]
+    provider: Option<String>,
+    #[cfg(feature = "core-native")]
+    credential: Option<ApiCredential>,
+}
+
+#[cfg(feature = "core-native")]
+#[derive(Deserialize)]
+struct ApiCredential {
+    #[serde(rename = "type")]
+    kind: String,
+    key: String,
+}
+
+#[cfg(feature = "core-native")]
+impl Drop for ApiCredential {
+    fn drop(&mut self) {
+        self.kind.zeroize();
+        self.key.zeroize();
+    }
 }
 
 struct LiveCandidate {
@@ -56,11 +95,16 @@ struct LiveCandidate {
 }
 
 #[cfg(feature = "core-native")]
-const CORE_PI_TIMEOUT_SECONDS: u64 = 30;
-#[cfg(feature = "core-native")]
-const CORE_PI_TIMEOUT: Duration = Duration::from_secs(CORE_PI_TIMEOUT_SECONDS);
-#[cfg(feature = "core-native")]
 const MAX_PI_RESPONSE_BYTES: usize = 2 * 1024 * 1024;
+#[cfg(feature = "core-native")]
+static CORE_CREDENTIAL: OnceLock<Mutex<CredentialState>> = OnceLock::new();
+#[cfg(feature = "core-native")]
+static CORE_CREDENTIAL_CHANGED: AtomicBool = AtomicBool::new(false);
+
+#[cfg(feature = "core-native")]
+fn core_credential() -> &'static Mutex<CredentialState> {
+    CORE_CREDENTIAL.get_or_init(|| Mutex::new(CredentialState::default()))
+}
 
 #[cfg(feature = "core-native")]
 struct ReapedChild {
@@ -99,11 +143,80 @@ impl Drop for ReapedChild {
 
 #[cfg(feature = "core-native")]
 pub fn status() -> Result<AgentStatus, String> {
-    Ok(AgentStatus {
-        provider: "fake".into(),
-        configured: true,
-        activity: "Deterministic native provider ready".into(),
+    let configured = core_credential()
+        .lock()
+        .expect("Core credential lock")
+        .configured();
+    Ok(if configured {
+        AgentStatus {
+            provider: "openrouter".into(),
+            configured: true,
+            activity: format!("OpenRouter ready · {OPENROUTER_MODEL}"),
+        }
+    } else {
+        AgentStatus {
+            provider: "fake".into(),
+            configured: true,
+            activity: "Deterministic native provider ready".into(),
+        }
     })
+}
+
+#[cfg(feature = "core-native")]
+pub fn credential_snapshot() -> CeremonySnapshot {
+    core_credential()
+        .lock()
+        .expect("Core credential lock")
+        .snapshot()
+}
+
+#[cfg(feature = "core-native")]
+pub fn take_credential_changed() -> bool {
+    CORE_CREDENTIAL_CHANGED.swap(false, Ordering::AcqRel)
+}
+
+#[cfg(feature = "core-native")]
+pub fn apply_credential_input(text: &str) -> bool {
+    let mut state = core_credential().lock().expect("Core credential lock");
+    let was_visible = state.snapshot().visible;
+    let applied = state.apply_input(text);
+    if was_visible && !state.snapshot().visible {
+        CORE_CREDENTIAL_CHANGED.store(true, Ordering::Release);
+        log::info!("core_agent_credential_ceremony state=saved");
+    }
+    applied
+}
+
+#[cfg(feature = "core-native")]
+pub fn save_credential() -> bool {
+    let saved = core_credential()
+        .lock()
+        .expect("Core credential lock")
+        .save();
+    CORE_CREDENTIAL_CHANGED.store(true, Ordering::Release);
+    log::info!(
+        "core_agent_credential_ceremony state={}",
+        if saved { "saved" } else { "rejected" }
+    );
+    saved
+}
+
+#[cfg(feature = "core-native")]
+pub fn cancel_credential() {
+    core_credential()
+        .lock()
+        .expect("Core credential lock")
+        .cancel();
+    CORE_CREDENTIAL_CHANGED.store(true, Ordering::Release);
+    log::info!("core_agent_credential_ceremony state=cancelled");
+}
+
+#[cfg(feature = "core-native")]
+pub fn zeroize_credential_on_exit() {
+    core_credential()
+        .lock()
+        .expect("Core credential lock")
+        .clear();
 }
 
 #[cfg(not(feature = "core-native"))]
@@ -136,9 +249,7 @@ pub fn apply_status(conversation: &mut AgentConversation, status: &AgentStatus) 
     if !conversation.busy {
         conversation.activity = status.activity.clone();
     }
-    if conversation.available {
-        conversation.error = None;
-    }
+    conversation.error = reconciled_request_error(conversation.error.take(), false);
 }
 
 pub fn configure_openai() -> Result<(), String> {
@@ -168,6 +279,9 @@ pub fn spawn_prompt(
     model: ExperienceModel,
     updates: Sender<AgentUpdate>,
 ) {
+    let provider = status.provider.clone();
+    let model_name = expected_model(&provider).unwrap_or("unsupported");
+    log::info!("android_agent_thread_start provider={provider} model={model_name}");
     thread::Builder::new()
         .name("sos-android-agent".into())
         .spawn(move || {
@@ -175,10 +289,34 @@ pub fn spawn_prompt(
                 prompt: prompt.clone(),
             });
             if let Err(error) = run_prompt(&status, &prompt, &current_source, &model, &updates) {
+                let (stage, category) = failure_marker(&error);
+                log::warn!(
+                    "android_agent_failure stage={stage} category={category} model={model_name}"
+                );
                 let _ = updates.send_blocking(AgentUpdate::Failed(error));
             }
         })
         .expect("Android agent thread must start");
+}
+
+fn failure_marker(error: &str) -> (&'static str, &'static str) {
+    if error.contains("[credential/") {
+        ("credential", "credential_error")
+    } else if error.contains("[provider/") {
+        ("provider", "provider_error")
+    } else if error.contains("[validation/invalid_candidate") {
+        ("validation", "invalid_candidate")
+    } else if error.contains("[protocol/wrong_model") {
+        ("protocol", "wrong_model")
+    } else if error.contains("[protocol/tool_sequence") {
+        ("protocol", "tool_sequence")
+    } else if error.contains("[child/") {
+        ("child", "process_failure")
+    } else if error.contains("[bridge/") {
+        ("bridge", "bridge_failure")
+    } else {
+        ("protocol", "request_failed")
+    }
 }
 
 fn run_prompt(
@@ -188,12 +326,17 @@ fn run_prompt(
     model: &ExperienceModel,
     updates: &Sender<AgentUpdate>,
 ) -> Result<(), String> {
+    let model_name = expected_model(&status.provider).unwrap_or("unsupported");
+    log::info!(
+        "android_agent_request_start provider={} model={model_name}",
+        status.provider
+    );
     let faux_candidate = if status.provider == "fake" {
         Some(deterministic_agent_candidate(current_source))
     } else {
         None
     };
-    let candidate = run_live(prompt, current_source, faux_candidate)?;
+    let candidate = run_live(&status.provider, prompt, current_source, faux_candidate)?;
     emit_completed_tool(updates, "get_experience_context")?;
     emit_tool(updates, "validate_experience", || {
         validate_candidate(&candidate.source, model)
@@ -231,16 +374,114 @@ fn emit_tool<T>(
 
 fn validate_candidate(source: &str, model: &ExperienceModel) -> Result<(), String> {
     if source.is_empty() || source.len() > 256 * 1024 {
-        return Err("agent candidate is outside the bounded source size".into());
+        return Err(
+            "The agent candidate is outside the bounded source size. [validation/invalid_candidate]"
+                .into(),
+        );
     }
-    let runtime = runtime_luau::LuauRuntime::compile(source)
-        .map_err(|error| format!("agent candidate did not compile: {error}"))?;
+    let runtime = runtime_luau::LuauRuntime::compile(source).map_err(|_| {
+        "The agent candidate did not compile. [validation/invalid_candidate]".to_owned()
+    })?;
     let scene = runtime
         .render(model, &runtime.initial_state())
-        .map_err(|error| format!("agent candidate did not render: {error}"))?;
+        .map_err(|_| {
+            "The agent candidate did not render. [validation/invalid_candidate]".to_owned()
+        })?;
     experience_ir::validate_scene(&scene)
         .map(|_| ())
-        .map_err(|error| format!("agent candidate scene is invalid: {error}"))
+        .map_err(|_| {
+            "The agent candidate scene is invalid. [validation/invalid_candidate]".to_owned()
+        })
+}
+
+fn structured_failure(envelope: &LiveEnvelope, expected_model: &str) -> String {
+    const STAGES: [&str; 7] = [
+        "request",
+        "credential",
+        "provider",
+        "protocol",
+        "validation",
+        "bridge",
+        "child",
+    ];
+    const CATEGORIES: [&str; 21] = [
+        "invalid_request",
+        "credential_rejected",
+        "provider_rejected",
+        "rate_limited",
+        "provider_unavailable",
+        "provider_error",
+        "tool_sequence",
+        "invalid_candidate",
+        "protocol_error",
+        "internal",
+        "launch_failure",
+        "timeout",
+        "response_timeout",
+        "response_io",
+        "empty_response",
+        "linker_or_exit",
+        "invalid_response",
+        "unexpected_response",
+        "wrong_model",
+        "refresh_failed",
+        "request_io",
+    ];
+    let stage = envelope
+        .stage
+        .as_deref()
+        .filter(|value| STAGES.contains(value))
+        .unwrap_or("protocol");
+    let category = envelope
+        .category
+        .as_deref()
+        .filter(|value| CATEGORIES.contains(value))
+        .unwrap_or("protocol_error");
+    let (stage, category) = if envelope
+        .model
+        .as_deref()
+        .is_some_and(|model| model != expected_model)
+    {
+        ("protocol", "wrong_model")
+    } else {
+        (stage, category)
+    };
+    let status = envelope
+        .status
+        .filter(|status| (100..=599).contains(status));
+    log::warn!(
+        "android_agent_failure stage={stage} category={category} model={expected_model} status={}",
+        status.map_or("none".to_owned(), |value| value.to_string())
+    );
+    let detail = match category {
+        "credential_rejected" => "The provider rejected the configured credential.",
+        "provider_rejected" => "The provider rejected this request.",
+        "rate_limited" => "The provider rate-limited this request.",
+        "provider_unavailable" => "The provider is temporarily unavailable.",
+        "provider_error" => "The provider request failed.",
+        "invalid_request" => "The Pi request was invalid.",
+        "tool_sequence" => "Pi used an invalid authoring tool sequence.",
+        "invalid_candidate" => "Pi proposed an invalid candidate.",
+        "wrong_model" => "Pi returned a response for the wrong model.",
+        "launch_failure" => "The local Pi process could not start.",
+        "timeout" => "The local Pi process timed out.",
+        "response_timeout" => "The local Pi response reader timed out.",
+        "response_io" => "The local Pi response could not be read.",
+        "empty_response" => "The local Pi process returned no response.",
+        "linker_or_exit" => "The local Pi process exited before returning a response.",
+        "invalid_response" => "The local Pi process returned an invalid response.",
+        "unexpected_response" => "The local Pi process returned an unexpected response type.",
+        "refresh_failed" => "The refreshed provider credential could not be stored.",
+        "request_io" => "The local Pi process could not accept its request.",
+        "internal" => "The trusted on-device Pi bridge failed.",
+        _ => "The Pi protocol failed.",
+    };
+    match status {
+        Some(status) => {
+            format!("{detail} [{stage}/{category}; HTTP {status}; model {expected_model}]")
+        }
+        None => format!("{detail} [{stage}/{category}; model {expected_model}]"),
+    }
 }
 
 #[cfg(feature = "core-native")]
@@ -268,12 +509,11 @@ fn poll_until(
     descriptors: &mut [libc::pollfd],
     deadline: Instant,
     maximum_wait: Duration,
+    timeout: Duration,
 ) -> Result<(), String> {
     let remaining = deadline
         .checked_duration_since(Instant::now())
-        .ok_or_else(|| {
-            format!("common Pi runner timed out after {CORE_PI_TIMEOUT_SECONDS} seconds")
-        })?;
+        .ok_or_else(|| common_pi_timeout_error(timeout))?;
     let milliseconds = remaining
         .min(maximum_wait)
         .as_millis()
@@ -293,15 +533,24 @@ fn poll_until(
         }
     }
     if Instant::now() >= deadline {
-        return Err(format!(
-            "common Pi runner timed out after {CORE_PI_TIMEOUT_SECONDS} seconds"
-        ));
+        return Err(common_pi_timeout_error(timeout));
     }
     Ok(())
 }
 
 #[cfg(feature = "core-native")]
-fn run_core_pi(request: &[u8]) -> Result<(ExitStatus, Vec<u8>), String> {
+fn common_pi_timeout_error(timeout: Duration) -> String {
+    format!(
+        "common Pi runner timed out after {} seconds",
+        timeout.as_secs()
+    )
+}
+
+#[cfg(feature = "core-native")]
+fn run_core_pi(
+    request: &[u8],
+    timeout: Duration,
+) -> Result<(ExitStatus, Zeroizing<Vec<u8>>), String> {
     let child = Command::new("/system_ext/bin/sos-node")
         .args([
             "/system_ext/etc/sos-agent/agent-runner.cjs",
@@ -318,6 +567,7 @@ fn run_core_pi(request: &[u8]) -> Result<(ExitStatus, Vec<u8>), String> {
         .stderr(Stdio::null())
         .spawn()
         .map_err(|error| format!("start common Pi runner: {error}"))?;
+    log::info!("android_agent_child_start pid={} platform=core", child.id());
     let mut child = ReapedChild::new(child);
     let mut input = Some(
         child
@@ -336,9 +586,9 @@ fn run_core_pi(request: &[u8]) -> Result<(ExitStatus, Vec<u8>), String> {
     set_nonblocking(input.as_ref().unwrap().as_raw_fd())?;
     set_nonblocking(output.as_ref().unwrap().as_raw_fd())?;
 
-    let deadline = Instant::now() + CORE_PI_TIMEOUT;
+    let deadline = Instant::now() + timeout;
     let mut written = 0;
-    let mut response = Vec::new();
+    let mut response = Zeroizing::new(Vec::new());
     while input.is_some() || output.is_some() {
         let mut descriptors = [
             libc::pollfd {
@@ -352,7 +602,7 @@ fn run_core_pi(request: &[u8]) -> Result<(ExitStatus, Vec<u8>), String> {
                 revents: 0,
             },
         ];
-        poll_until(&mut descriptors, deadline, Duration::from_secs(1))?;
+        poll_until(&mut descriptors, deadline, Duration::from_secs(1), timeout)?;
 
         if let Some(stream) = input.as_mut() {
             let events = descriptors[0].revents;
@@ -410,35 +660,118 @@ fn run_core_pi(request: &[u8]) -> Result<(ExitStatus, Vec<u8>), String> {
         {
             break;
         }
-        poll_until(&mut [], deadline, Duration::from_millis(10))?;
+        poll_until(&mut [], deadline, Duration::from_millis(10), timeout)?;
     }
-    Ok((child.finish()?, response))
+    let status = child.finish()?;
+    log::info!(
+        "android_agent_child_exit code={} platform=core",
+        status
+            .code()
+            .map_or("signal".to_owned(), |code| code.to_string())
+    );
+    Ok((status, response))
 }
 
 #[cfg(feature = "core-native")]
 fn run_live(
+    provider: &str,
     prompt: &str,
     current_source: &str,
     faux_candidate: Option<&str>,
 ) -> Result<LiveCandidate, String> {
-    let candidate = faux_candidate.ok_or_else(|| {
-        "Core live-agent credentials require a trusted native ceremony".to_owned()
-    })?;
     if prompt.is_empty() || prompt.len() > 32 * 1024 {
         return Err("agent prompt is outside the bounded size".into());
     }
-    let request = serde_json::to_vec(&serde_json::json!({
-        "action": "prompt",
-        "provider": "faux",
-        "prompt": prompt,
-        "currentSource": current_source,
-        "candidateSource": candidate,
-    }))
-    .map_err(|error| format!("encode Pi request: {error}"))?;
+    #[derive(Serialize)]
+    #[serde(rename_all = "camelCase")]
+    struct FauxRequest<'a> {
+        action: &'static str,
+        provider: &'static str,
+        prompt: &'a str,
+        current_source: &'a str,
+        candidate_source: &'a str,
+    }
+    #[derive(Serialize)]
+    struct CredentialRequest<'a> {
+        #[serde(rename = "type")]
+        kind: &'static str,
+        key: &'a str,
+    }
+    #[derive(Serialize)]
+    #[serde(rename_all = "camelCase")]
+    struct LiveRequest<'a> {
+        action: &'static str,
+        provider: &'static str,
+        model: &'static str,
+        credential: CredentialRequest<'a>,
+        prompt: &'a str,
+        current_source: &'a str,
+    }
+
+    let credential = faux_candidate
+        .is_none()
+        .then(|| {
+            core_credential()
+                .lock()
+                .expect("Core credential lock")
+                .credential()
+                .ok_or_else(|| "OpenRouter is not configured".to_owned())
+        })
+        .transpose()?
+        .map(Zeroizing::new);
+    let request = if let Some(candidate) = faux_candidate {
+        serde_json::to_vec(&FauxRequest {
+            action: "prompt",
+            provider: "faux",
+            prompt,
+            current_source,
+            candidate_source: candidate,
+        })
+    } else {
+        let credential = credential
+            .as_deref()
+            .and_then(|value| std::str::from_utf8(value).ok())
+            .ok_or_else(|| "OpenRouter credential is not valid ASCII".to_owned())?;
+        serde_json::to_vec(&LiveRequest {
+            action: "prompt",
+            provider: "openrouter",
+            model: OPENROUTER_MODEL,
+            credential: CredentialRequest {
+                kind: "api_key",
+                key: credential,
+            },
+            prompt,
+            current_source,
+        })
+    }
+    .map(Zeroizing::new)
+    .map_err(|_| {
+        "The bounded Pi request could not be encoded. [protocol/protocol_error]".to_owned()
+    })?;
     if request.len() > 1024 * 1024 {
         return Err("Pi request is outside the bounded size".into());
     }
-    let (status, response) = run_core_pi(&request)?;
+    let timeout = Duration::from_secs(
+        pi_timeout_seconds(provider)
+            .ok_or_else(|| "Core selected an unsupported Pi provider".to_owned())?,
+    );
+    let (status, response) = run_core_pi(&request, timeout).map_err(|error| {
+        let (category, detail) = if error.contains("timed out") {
+            ("timeout", "The local Pi process timed out.")
+        } else if error.starts_with("start common Pi runner") {
+            ("launch_failure", "The local Pi process could not start.")
+        } else {
+            ("process_io", "The local Pi process failed.")
+        };
+        log::warn!(
+            "android_agent_failure stage=child category={category} model={}",
+            expected_model(provider).unwrap_or("unsupported")
+        );
+        format!(
+            "{detail} [child/{category}; model {}]",
+            expected_model(provider).unwrap_or("unsupported")
+        )
+    })?;
     let line = response
         .split(|byte| *byte == b'\n')
         .rev()
@@ -446,12 +779,57 @@ fn run_live(
         .ok_or_else(|| "common Pi runner returned no response".to_owned())?;
     let envelope: LiveEnvelope = serde_json::from_slice(line)
         .map_err(|_| "common Pi runner returned an invalid response".to_owned())?;
-    if !status.success() || envelope.source.is_none() {
-        return Err(envelope
-            .error
-            .unwrap_or_else(|| "common Pi runner did not produce a candidate".into()));
+    let response_type = if envelope.source.is_some() {
+        "prompt_complete"
+    } else if envelope.category.is_some() {
+        "error"
+    } else {
+        "unexpected"
+    };
+    log::info!(
+        "android_agent_child_response type={response_type} provider={provider} model={}",
+        expected_model(provider).unwrap_or("unsupported")
+    );
+    if !status.success() {
+        let expected_model = expected_model(provider)
+            .ok_or_else(|| "Core selected an unsupported Pi provider".to_owned())?;
+        return Err(structured_failure(&envelope, expected_model));
     }
-    verify_actions(&envelope.actions)?;
+    let expected_model = expected_model(provider)
+        .ok_or_else(|| "Core selected an unsupported Pi provider".to_owned())?;
+    if !envelope
+        .model
+        .as_deref()
+        .is_some_and(|model| model_is_exact(provider, model))
+    {
+        return Err(format!(
+            "Pi returned a response for the wrong model. [protocol/wrong_model; model {expected_model}]"
+        ));
+    }
+    log::info!("android_agent_pi_response provider={provider} model={expected_model}");
+    if envelope.source.is_none() {
+        return Err("common Pi runner did not produce a candidate".into());
+    }
+    emit_verified_actions(provider, expected_model, &envelope.actions)?;
+    if faux_candidate.is_none() {
+        if envelope.provider.as_deref() != Some("openrouter") {
+            return Err("common Pi runner returned the wrong live provider".into());
+        }
+        let refreshed = envelope
+            .credential
+            .as_ref()
+            .filter(|credential| credential.kind == "api_key")
+            .ok_or_else(|| {
+                "common Pi runner omitted the refreshed OpenRouter credential".to_owned()
+            })?;
+        if !core_credential()
+            .lock()
+            .expect("Core credential lock")
+            .accept_refreshed("openrouter", refreshed.key.as_bytes())
+        {
+            return Err("common Pi runner returned an invalid OpenRouter credential".into());
+        }
+    }
     Ok(LiveCandidate {
         source: envelope
             .source
@@ -464,6 +842,7 @@ fn run_live(
 
 #[cfg(not(feature = "core-native"))]
 fn run_live(
+    provider: &str,
     prompt: &str,
     current_source: &str,
     faux_candidate: Option<&str>,
@@ -471,14 +850,17 @@ fn run_live(
     with_env(|env| {
         let helper = find_app_class(env, HELPER_CLASS)?;
         let activity = activity(env)?;
-        let prompt = JObject::from(env.new_string(prompt).map_err(|error| error.to_string())?);
+        let prompt = JObject::from(
+            env.new_string(prompt)
+                .map_err(|_| "Pi prompt could not cross the trusted bridge".to_owned())?,
+        );
         let source = JObject::from(
             env.new_string(current_source)
-                .map_err(|error| error.to_string())?,
+                .map_err(|_| "Pi source could not cross the trusted bridge".to_owned())?,
         );
         let candidate = JObject::from(
             env.new_string(faux_candidate.unwrap_or_default())
-                .map_err(|error| error.to_string())?,
+                .map_err(|_| "Pi candidate could not cross the trusted bridge".to_owned())?,
         );
         let result = env
             .call_static_method(
@@ -502,12 +884,21 @@ fn run_live(
         }
         let envelope: LiveEnvelope = serde_json::from_str(&get_string(env, &result))
             .map_err(|_| "Pi returned an invalid candidate envelope".to_owned())?;
+        let expected_model = expected_model(provider).ok_or_else(|| {
+            "trusted Android bridge selected an unsupported Pi provider".to_owned()
+        })?;
         if envelope.ok != Some(true) {
-            return Err(envelope
-                .error
-                .unwrap_or_else(|| "Pi did not produce a candidate".into()));
+            return Err(structured_failure(&envelope, expected_model));
         }
-        verify_actions(&envelope.actions)?;
+        if !envelope
+            .model
+            .as_deref()
+            .is_some_and(|model| model_is_exact(provider, model))
+        {
+            return Err("trusted Android bridge returned the wrong Pi model".into());
+        }
+        log::info!("android_agent_pi_response provider={provider} model={expected_model}");
+        emit_verified_actions(provider, expected_model, &envelope.actions)?;
         Ok(LiveCandidate {
             source: envelope
                 .source
@@ -519,20 +910,50 @@ fn run_live(
     })
 }
 
-fn verify_actions(actions: &[String]) -> Result<(), String> {
-    const EXPECTED: [&str; 3] = [
-        "get_experience_context",
-        "validate_experience",
-        "submit_experience",
-    ];
-    (actions.iter().map(String::as_str).eq(EXPECTED))
-        .then_some(())
-        .ok_or_else(|| "Pi runner used an unexpected tool sequence".into())
+fn emit_verified_actions(provider: &str, model: &str, actions: &[String]) -> Result<(), String> {
+    let actions = verified_action_sequence(actions).ok_or_else(|| {
+        "Pi used an invalid authoring tool sequence. [protocol/tool_sequence]".to_owned()
+    })?;
+    log::info!(
+        "android_agent_action_sequence_verified provider={provider} model={model} count={}",
+        actions.len()
+    );
+    for (index, action) in actions.iter().enumerate() {
+        log::info!(
+            "android_agent_action_verified ordinal={} action={} provider={provider} model={model}",
+            index + 1,
+            action
+        );
+    }
+    Ok(())
 }
 
 #[cfg(feature = "core-native")]
 fn call_bool(_method: &str) -> Result<(), String> {
-    Err("Core agent credentials require a trusted native ceremony".into())
+    let mut state = core_credential().lock().expect("Core credential lock");
+    match _method {
+        "configureOpenRouter" => {
+            state.begin();
+            CORE_CREDENTIAL_CHANGED.store(true, Ordering::Release);
+            log::info!("core_agent_credential_ceremony state=opened provider=openrouter model={OPENROUTER_MODEL}");
+            Ok(())
+        }
+        "useFake" => {
+            state.use_faux();
+            CORE_CREDENTIAL_CHANGED.store(true, Ordering::Release);
+            Ok(())
+        }
+        "clearCredential" => {
+            state.clear();
+            CORE_CREDENTIAL_CHANGED.store(true, Ordering::Release);
+            log::info!("core_agent_credential_ceremony state=cleared");
+            Ok(())
+        }
+        "configureOpenAi" | "configureCodex" => {
+            Err("Core live agents support only the pinned OpenRouter provider".into())
+        }
+        _ => Err("unsupported trusted Core agent action".into()),
+    }
 }
 
 #[cfg(not(feature = "core-native"))]
@@ -549,9 +970,9 @@ fn call_bool(method: &str) -> Result<(), String> {
                 &[JValue::Object(&activity)],
             )
             .and_then(|value| value.z())
-            .map_err(|error| {
+            .map_err(|_error| {
                 env.exception_clear();
-                error.to_string()
+                "trusted agent helper rejected the request".to_owned()
             })?;
         ok.then_some(())
             .ok_or_else(|| "trusted agent helper rejected the request".into())

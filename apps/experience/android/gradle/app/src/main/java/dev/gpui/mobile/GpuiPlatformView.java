@@ -209,7 +209,7 @@ public class GpuiPlatformView {
             if ("status".equals(node.role)) {
                 info.setLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);
             }
-            if (node.clickAction != null && !node.clickAction.isEmpty()) {
+            if (node.editable || (node.clickAction != null && !node.clickAction.isEmpty())) {
                 info.setClickable(true);
                 info.addAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_CLICK);
             }
@@ -259,7 +259,6 @@ public class GpuiPlatformView {
             if (action == AccessibilityNodeInfo.ACTION_ACCESSIBILITY_FOCUS) {
                 accessibilityFocus = virtualViewId;
                 sendEvent(node, AccessibilityEvent.TYPE_VIEW_ACCESSIBILITY_FOCUSED);
-                GpuiActivity.dispatchAccessibilityAction("focus", node.id, "");
                 return true;
             }
             if (action == AccessibilityNodeInfo.ACTION_CLEAR_ACCESSIBILITY_FOCUS) {
@@ -269,6 +268,13 @@ public class GpuiPlatformView {
             }
             if (action == AccessibilityNodeInfo.ACTION_FOCUS && node.editable) {
                 GpuiActivity.dispatchAccessibilityAction("focus", node.id, "");
+                Log.i(TAG, "compat_semantic_input_focus action=focus");
+                return true;
+            }
+            if (action == AccessibilityNodeInfo.ACTION_CLICK && node.editable) {
+                GpuiActivity.dispatchAccessibilityAction("focus", node.id, "");
+                sendEvent(node, AccessibilityEvent.TYPE_VIEW_CLICKED);
+                Log.i(TAG, "compat_semantic_input_focus action=click");
                 return true;
             }
             if (action == AccessibilityNodeInfo.ACTION_CLICK && node.clickAction != null) {

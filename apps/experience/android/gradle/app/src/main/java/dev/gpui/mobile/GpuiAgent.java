@@ -12,6 +12,7 @@ import android.security.keystore.KeyGenParameterSpec;
 import android.security.keystore.KeyProperties;
 import android.text.InputType;
 import android.util.Base64;
+import android.util.Log;
 import android.view.WindowManager;
 import android.widget.EditText;
 import android.widget.Toast;
@@ -37,6 +38,7 @@ import javax.crypto.spec.GCMParameterSpec;
 
 /** Trusted on-device bridge to Pi running in native Android/Bionic Node. */
 public final class GpuiAgent {
+    private static final String TAG = "GpuiAgent";
     private static final String PREFS = "sos_agent_credentials";
     private static final String KEY_ALIAS = "sos.agent.credentials.v2";
     private static final String LEGACY_KEY_ALIAS = "sos.openai.api-key.v1";
@@ -51,7 +53,7 @@ public final class GpuiAgent {
     private static final String PROVIDER_OPENROUTER = "openrouter";
     private static final String PROVIDER_CODEX = "openai-codex";
     private static final String MODEL_OPENAI = "gpt-5.6-luna";
-    private static final String MODEL_OPENROUTER = "openai/gpt-5.4-mini";
+    private static final String MODEL_OPENROUTER = "deepseek/deepseek-v4-flash-0731";
     private static final String MODEL_CODEX = "gpt-5.6-sol";
 
     private static final String NODE = "/system_ext/bin/sos-node";
@@ -150,6 +152,7 @@ public final class GpuiAgent {
 
     public static String run(Activity activity, String prompt, String currentSource,
             String fauxCandidateSource) {
+        String provider = PROVIDER_FAKE;
         try {
             if (prompt == null || prompt.trim().isEmpty()
                     || prompt.getBytes(StandardCharsets.UTF_8).length > MAX_PROMPT_BYTES) {
@@ -159,7 +162,7 @@ public final class GpuiAgent {
                     || currentSource.getBytes(StandardCharsets.UTF_8).length > MAX_SOURCE_BYTES) {
                 return failure("The active experience is outside its bounded size");
             }
-            String provider = selectedProvider(activity);
+            provider = selectedProvider(activity);
             byte[] credential = PROVIDER_FAKE.equals(provider)
                     ? null : decryptCredential(activity, provider);
             if (!PROVIDER_FAKE.equals(provider) && credential == null) {
@@ -174,6 +177,8 @@ public final class GpuiAgent {
             try {
                 GpuiAgentService.start(activity);
                 sActivity = providerLabel(provider) + " · Pi is proposing an experience";
+                Log.i(TAG, "android_agent_bridge_request_start provider=" + provider
+                        + " model=" + model(provider));
                 return requestPi(activity, provider, prompt, currentSource, fauxCandidateSource,
                         credential);
             } finally {
@@ -181,9 +186,19 @@ public final class GpuiAgent {
                 if (credential != null) Arrays.fill(credential, (byte) 0);
                 sActivity = providerLabel(provider) + " ready · " + model(provider);
             }
+        } catch (PiFailure failure) {
+            sActivity = "Pi request failed";
+            Log.w(TAG, "android_agent_failure stage=" + failure.stage
+                    + " category=" + failure.category
+                    + " model=" + model(provider)
+                    + (failure.status == null ? "" : " status=" + failure.status));
+            return failure.toJson(model(provider));
         } catch (Exception ignored) {
             sActivity = "Pi request failed";
-            return failure("The trusted on-device Pi request failed");
+            Log.w(TAG, "android_agent_failure stage=bridge category=internal model="
+                    + model(provider));
+            return failure("bridge", "internal", model(provider), null,
+                    "The trusted on-device Pi bridge failed.");
         }
     }
 
@@ -426,8 +441,17 @@ public final class GpuiAgent {
                     new JSONObject(new String(credentialBytes, StandardCharsets.UTF_8)));
         }
         byte[] body = request.toString().getBytes(StandardCharsets.UTF_8);
-        if (body.length > MAX_REQUEST_BYTES) return failure("The Pi request is too large");
-        Process process = startPi();
+        if (body.length > MAX_REQUEST_BYTES) {
+            return failure("request", "invalid_request", model(provider), null,
+                    "The Pi request is outside its bounded size.");
+        }
+        Process process;
+        try {
+            process = startPi();
+        } catch (Exception ignored) {
+            throw new PiFailure("child", "launch_failure", null,
+                    "The local Pi process could not start.");
+        }
         AtomicReference<byte[]> stdout = new AtomicReference<>();
         AtomicReference<Exception> readFailure = new AtomicReference<>();
         Thread outputReader = new Thread(() -> {
@@ -440,38 +464,91 @@ public final class GpuiAgent {
         outputReader.start();
         drain(process.getErrorStream());
         try (OutputStream output = process.getOutputStream()) {
-            output.write(body);
+            try {
+                output.write(body);
+            } catch (Exception ignored) {
+                destroyAndReap(process, "request_io");
+                throw new PiFailure("child", "request_io", null,
+                        "The local Pi process could not accept its request.");
+            }
         } finally {
             Arrays.fill(body, (byte) 0);
         }
         if (!process.waitFor(240, TimeUnit.SECONDS)) {
-            process.destroyForcibly();
-            throw new IllegalStateException("Pi request timed out");
+            destroyAndReap(process, "timeout");
+            throw new PiFailure("child", "timeout", null,
+                    "The local Pi process timed out.");
         }
+        int exitCode = process.exitValue();
+        Log.i(TAG, "android_agent_child_exit code=" + exitCode
+                + " provider=" + provider + " model=" + model(provider));
         outputReader.join(5000);
-        if (readFailure.get() != null) throw readFailure.get();
+        if (outputReader.isAlive()) {
+            throw new PiFailure("child", "response_timeout", exitCode,
+                    "The local Pi response reader did not finish.");
+        }
+        if (readFailure.get() != null) {
+            throw new PiFailure("child", "response_io", exitCode,
+                    "The local Pi response could not be read.");
+        }
         byte[] responseBytes = stdout.get();
-        if (responseBytes == null) throw new IllegalStateException("Pi returned no response");
+        if (responseBytes == null || responseBytes.length == 0) {
+            throw new PiFailure("child", exitCode == 0 ? "empty_response" : "linker_or_exit",
+                    exitCode, exitCode == 0
+                            ? "The local Pi process returned no response."
+                            : "The local Pi process exited before returning a response.");
+        }
         try {
             String[] lines = new String(responseBytes, StandardCharsets.UTF_8).trim().split("\\n");
-            JSONObject response = new JSONObject(lines[lines.length - 1]);
-            if (!"prompt_complete".equals(response.optString("type"))) {
-                return failure(response.optString("error", "Pi did not produce an experience"));
+            JSONObject response;
+            try {
+                response = new JSONObject(lines[lines.length - 1]);
+            } catch (Exception ignored) {
+                throw new PiFailure("protocol", "invalid_response", exitCode,
+                        "The local Pi process returned an invalid response.");
+            }
+            String responseType = response.optString("type");
+            String safeResponseType = "prompt_complete".equals(responseType)
+                    ? "prompt_complete" : "error".equals(responseType) ? "error" : "unexpected";
+            Log.i(TAG, "android_agent_child_response type=" + safeResponseType
+                    + " provider=" + provider + " model=" + model(provider));
+            if ("error".equals(responseType)) {
+                return sanitizedRunnerFailure(response, model(provider), exitCode);
+            }
+            if (!"prompt_complete".equals(responseType)) {
+                throw new PiFailure("protocol", "unexpected_response", exitCode,
+                        "The local Pi process returned an unexpected response type.");
+            }
+            if (exitCode != 0) {
+                throw new PiFailure("child", "linker_or_exit", exitCode,
+                        "The local Pi process exited unsuccessfully.");
+            }
+            String responseModel = response.optString("model");
+            if (!model(provider).equals(responseModel)) {
+                return failure("protocol", "wrong_model", model(provider), null,
+                        "Pi returned a response for the wrong model.");
             }
             String candidate = response.getString("source");
             if (candidate.isEmpty()
                     || candidate.getBytes(StandardCharsets.UTF_8).length > MAX_SOURCE_BYTES) {
-                return failure("Pi proposed an invalid source size");
+                return failure("validation", "invalid_candidate", model(provider), null,
+                        "Pi proposed a candidate outside the bounded source size.");
             }
             if (!PROVIDER_FAKE.equals(provider)) {
-                storeCredential(activity, provider,
-                        response.getJSONObject("credential").toString());
+                try {
+                    storeCredential(activity, provider,
+                            response.getJSONObject("credential").toString());
+                } catch (Exception ignored) {
+                    throw new PiFailure("credential", "refresh_failed", null,
+                            "The refreshed provider credential could not be stored.");
+                }
             }
             String summary = response.optString("summary",
                     "Pi proposed a complete replacement experience.");
             if (summary.length() > 2048) summary = summary.substring(0, 2048);
             return new JSONObject().put("ok", true).put("source", candidate)
-                    .put("summary", summary).put("actions", response.getJSONArray("actions"))
+                    .put("summary", summary).put("model", responseModel)
+                    .put("actions", response.getJSONArray("actions"))
                     .toString();
         } finally {
             Arrays.fill(responseBytes, (byte) 0);
@@ -479,10 +556,23 @@ public final class GpuiAgent {
     }
 
     private static Process startPi() throws Exception {
-        return new ProcessBuilder(NODE, RUNNER, "stdio",
+        Process process = new ProcessBuilder(NODE, RUNNER, "stdio",
                 "--api-doc", API_DOC,
                 "--example", EXAMPLE_PRIMARY,
                 "--example-secondary", EXAMPLE_SECONDARY).start();
+        Log.i(TAG, "android_agent_child_start executable=sos-node");
+        return process;
+    }
+
+    private static void destroyAndReap(Process process, String category) {
+        process.destroyForcibly();
+        boolean reaped = false;
+        try {
+            reaped = process.waitFor(5, TimeUnit.SECONDS);
+        } catch (InterruptedException ignored) {
+            Thread.currentThread().interrupt();
+        }
+        Log.i(TAG, "android_agent_child_cleanup category=" + category + " reaped=" + reaped);
     }
 
     private static void drain(InputStream stream) {
@@ -530,11 +620,86 @@ public final class GpuiAgent {
         return "Deterministic fake provider";
     }
 
+    private static String sanitizedRunnerFailure(JSONObject response, String expectedModel,
+            int exitCode) {
+        String stage = safeValue(response.optString("stage"),
+                new String[] {"request", "credential", "provider", "protocol", "validation"},
+                "protocol");
+        String category = safeValue(response.optString("category"), new String[] {
+                "invalid_request", "credential_rejected", "provider_rejected", "rate_limited",
+                "provider_unavailable", "provider_error", "tool_sequence", "invalid_candidate",
+                "protocol_error"
+        }, "protocol_error");
+        String responseModel = response.optString("model");
+        if (!responseModel.isEmpty() && !expectedModel.equals(responseModel)) {
+            stage = "protocol";
+            category = "wrong_model";
+        }
+        Integer status = response.has("status") ? response.optInt("status", -1) : null;
+        if (status != null && (status < 100 || status > 599)) status = null;
+        String message = safeFailureMessage(category, status);
+        Log.w(TAG, "android_agent_failure stage=" + stage + " category=" + category
+                + " model=" + expectedModel
+                + (status == null ? "" : " status=" + status)
+                + " child_exit=" + exitCode);
+        return failure(stage, category, expectedModel, status, message);
+    }
+
+    private static String safeValue(String value, String[] allowed, String fallback) {
+        for (String candidate : allowed) if (candidate.equals(value)) return value;
+        return fallback;
+    }
+
+    private static String safeFailureMessage(String category, Integer status) {
+        if ("credential_rejected".equals(category)) {
+            return "The provider rejected the configured credential.";
+        }
+        if ("rate_limited".equals(category)) return "The provider rate-limited this request.";
+        if ("provider_unavailable".equals(category)) {
+            return "The provider is temporarily unavailable.";
+        }
+        if ("provider_rejected".equals(category)) return "The provider rejected this request.";
+        if ("tool_sequence".equals(category)) return "Pi used an invalid authoring tool sequence.";
+        if ("invalid_candidate".equals(category)) return "Pi proposed an invalid candidate.";
+        if ("invalid_request".equals(category)) return "The Pi request was invalid.";
+        return status == null ? "The Pi protocol failed."
+                : "The Pi protocol failed with HTTP status " + status + ".";
+    }
+
     private static String failure(String error) {
+        return failure("bridge", "internal", null, null, error);
+    }
+
+    private static String failure(String stage, String category, String model, Integer status,
+            String error) {
         try {
-            return new JSONObject().put("ok", false).put("error", error).toString();
+            JSONObject result = new JSONObject().put("ok", false)
+                    .put("stage", stage).put("category", category).put("error", error);
+            if (model != null) result.put("model", model);
+            if (status != null) result.put("status", status);
+            return result.toString();
         } catch (Exception ignored) {
-            return "{\"ok\":false,\"error\":\"Agent request failed\"}";
+            return "{\"ok\":false,\"stage\":\"bridge\",\"category\":\"internal\","
+                    + "\"error\":\"The trusted on-device Pi bridge failed.\"}";
+        }
+    }
+
+    private static final class PiFailure extends Exception {
+        final String stage;
+        final String category;
+        final Integer status;
+        final String safeMessage;
+
+        PiFailure(String stage, String category, Integer status, String safeMessage) {
+            super(safeMessage);
+            this.stage = stage;
+            this.category = category;
+            this.status = status;
+            this.safeMessage = safeMessage;
+        }
+
+        String toJson(String model) {
+            return failure(stage, category, model, status, safeMessage);
         }
     }
 

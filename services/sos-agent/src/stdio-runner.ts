@@ -24,6 +24,128 @@ import {
 } from "./contract.js";
 
 const MAX_SUMMARY_BYTES = 2048;
+export const PINNED_OPENROUTER_MODEL = "deepseek/deepseek-v4-flash-0731";
+
+export interface SanitizedRunnerFailure {
+  type: "error";
+  stage: "request" | "credential" | "provider" | "protocol" | "validation";
+  category:
+    | "invalid_request"
+    | "credential_rejected"
+    | "provider_rejected"
+    | "rate_limited"
+    | "provider_unavailable"
+    | "provider_error"
+    | "tool_sequence"
+    | "invalid_candidate"
+    | "protocol_error";
+  error: string;
+  model?: string | undefined;
+  status?: number;
+}
+
+class RunnerFailure extends Error {
+  constructor(readonly failure: SanitizedRunnerFailure) {
+    super(failure.error);
+  }
+}
+
+function numericHttpStatus(error: unknown): number | undefined {
+  if (!error || typeof error !== "object") return undefined;
+  const candidate = error as Record<string, unknown>;
+  for (const value of [candidate.status, candidate.statusCode]) {
+    if (typeof value === "number" && Number.isInteger(value) && value >= 100 && value <= 599) {
+      return value;
+    }
+  }
+  const response = candidate.response;
+  if (response && typeof response === "object") {
+    const value = (response as Record<string, unknown>).status;
+    if (typeof value === "number" && Number.isInteger(value) && value >= 100 && value <= 599) {
+      return value;
+    }
+  }
+  return undefined;
+}
+
+export function sanitizeRunnerFailure(
+  error: unknown,
+  model?: string,
+): SanitizedRunnerFailure {
+  if (error instanceof RunnerFailure) return error.failure;
+  const knownMessage = error instanceof Error ? error.message : "";
+  if (
+    knownMessage === "invalid Pi runner request" ||
+    knownMessage === "request is too large" ||
+    error instanceof SyntaxError
+  ) {
+    return {
+      type: "error",
+      stage: "request",
+      category: "invalid_request",
+      error: "The Pi runner request was invalid.",
+      model,
+    };
+  }
+  const status = numericHttpStatus(error);
+  if (status === 401 || status === 403) {
+    return {
+      type: "error",
+      stage: "credential",
+      category: "credential_rejected",
+      error: "The provider rejected the configured credential.",
+      model,
+      status,
+    };
+  }
+  if (status === 429) {
+    return {
+      type: "error",
+      stage: "provider",
+      category: "rate_limited",
+      error: "The provider rate-limited this request.",
+      model,
+      status,
+    };
+  }
+  if (status !== undefined && status >= 500) {
+    return {
+      type: "error",
+      stage: "provider",
+      category: "provider_unavailable",
+      error: "The provider is temporarily unavailable.",
+      model,
+      status,
+    };
+  }
+  if (status !== undefined) {
+    return {
+      type: "error",
+      stage: "provider",
+      category: "provider_rejected",
+      error: "The provider rejected this request.",
+      model,
+      status,
+    };
+  }
+  return {
+    type: "error",
+    stage: "provider",
+    category: "provider_error",
+    error: "The provider request failed.",
+    model,
+  };
+}
+
+function fail(failure: Omit<SanitizedRunnerFailure, "type">): never {
+  throw new RunnerFailure({ type: "error", ...failure });
+}
+
+export function promptResponseModel(
+  request: { provider: "faux" } | { provider: SupportedProvider; model: string },
+): string {
+  return request.provider === "faux" ? "faux" : request.model;
+}
 
 interface CatalogRequest {
   action: "catalog";
@@ -111,6 +233,7 @@ export function decodeRequest(raw: string): RunnerRequest {
     !isSupportedProvider(decoded.provider) ||
     typeof decoded.model !== "string" ||
     !decoded.model ||
+    (decoded.provider === "openrouter" && decoded.model !== PINNED_OPENROUTER_MODEL) ||
     !isCredential(decoded.credential) ||
     !isBoundedPrompt(decoded.prompt) ||
     !isBoundedSource(decoded.currentSource)
@@ -142,7 +265,7 @@ async function catalog(): Promise<void> {
     openai: "gpt-5.6-luna",
     anthropic: "claude-sonnet-4-6",
     "openai-codex": "gpt-5.6-sol",
-    openrouter: "openai/gpt-5.4-mini",
+    openrouter: PINNED_OPENROUTER_MODEL,
   };
   const providers = Object.entries(defaults).map(([provider, model]) => ({
     provider,
@@ -225,14 +348,32 @@ function lastAssistantSummary(messages: AgentMessage[]): string {
 async function prompt(request: PromptRequest, systemPrompt: string): Promise<void> {
   const credentials = new InMemoryCredentialStore();
   const live = request.provider !== "faux";
-  if (live) await credentials.modify(request.provider, async () => request.credential);
+  if (live) {
+    try {
+      await credentials.modify(request.provider, async () => request.credential);
+    } catch {
+      fail({
+        stage: "credential",
+        category: "protocol_error",
+        error: "The credential could not be prepared for the provider.",
+        model: request.model,
+      });
+    }
+  }
   let validated: string | undefined;
   let submitted: string | undefined;
   const actions: string[] = [];
   const backend: AuthoringBackend = {
     async request(action) {
       if (action.action === "get_experience_context") {
-        if (actions.length !== 0) throw new Error("experience context must be the first tool call");
+        if (actions.length !== 0) {
+          fail({
+            stage: "protocol",
+            category: "tool_sequence",
+            error: "Pi used an invalid authoring tool sequence.",
+            model: live ? request.model : "faux",
+          });
+        }
         actions.push(action.action);
         return {
           revision_id: "0".repeat(64),
@@ -241,11 +382,21 @@ async function prompt(request: PromptRequest, systemPrompt: string): Promise<voi
         };
       }
       if (Buffer.byteLength(action.source) > MAX_SOURCE_BYTES) {
-        throw new Error("candidate source is too large");
+        fail({
+          stage: "validation",
+          category: "invalid_candidate",
+          error: "Pi proposed a candidate outside the bounded source size.",
+          model: live ? request.model : "faux",
+        });
       }
       if (action.action === "validate_experience") {
         if (actions.length !== 1 || actions[0] !== "get_experience_context") {
-          throw new Error("candidate validation must follow experience context");
+          fail({
+            stage: "protocol",
+            category: "tool_sequence",
+            error: "Pi used an invalid authoring tool sequence.",
+            model: live ? request.model : "faux",
+          });
         }
         actions.push(action.action);
         validated = action.source;
@@ -256,10 +407,20 @@ async function prompt(request: PromptRequest, systemPrompt: string): Promise<voi
         };
       }
       if (actions.length !== 2 || actions[1] !== "validate_experience") {
-        throw new Error("candidate submission must follow validation");
+        fail({
+          stage: "protocol",
+          category: "tool_sequence",
+          error: "Pi used an invalid authoring tool sequence.",
+          model: live ? request.model : "faux",
+        });
       }
       if (validated !== action.source) {
-        throw new Error("submitted source differs from the staged candidate");
+        fail({
+          stage: "validation",
+          category: "invalid_candidate",
+          error: "Pi submitted a candidate different from the validated source.",
+          model: live ? request.model : "faux",
+        });
       }
       actions.push(action.action);
       submitted = action.source;
@@ -280,17 +441,42 @@ async function prompt(request: PromptRequest, systemPrompt: string): Promise<voi
         request.candidateSource,
         "The candidate experience is staged for trusted host validation.",
       );
-  await agent.prompt(request.prompt);
-  if (!submitted) throw new Error("Pi completed without submitting a candidate experience");
+  try {
+    await agent.prompt(request.prompt);
+  } catch (error) {
+    if (error instanceof RunnerFailure) throw error;
+    throw new RunnerFailure(sanitizeRunnerFailure(error, live ? request.model : "faux"));
+  }
+  if (!submitted) {
+    fail({
+      stage: "protocol",
+      category: "tool_sequence",
+      error: "Pi completed without submitting a candidate experience.",
+      model: live ? request.model : "faux",
+    });
+  }
   const expectedActions = ["get_experience_context", "validate_experience", "submit_experience"];
   if (JSON.stringify(actions) !== JSON.stringify(expectedActions)) {
-    throw new Error("Pi completed without the bounded authoring tool sequence");
+    fail({
+      stage: "protocol",
+      category: "tool_sequence",
+      error: "Pi completed without the bounded authoring tool sequence.",
+      model: live ? request.model : "faux",
+    });
   }
   const refreshed = live ? await credentials.read(request.provider) : undefined;
-  if (live && !refreshed) throw new Error("Pi completed without a provider credential");
+  if (live && !refreshed) {
+    fail({
+      stage: "credential",
+      category: "protocol_error",
+      error: "Pi completed without a refreshed provider credential.",
+      model: request.model,
+    });
+  }
   send({
     type: "prompt_complete",
     provider: request.provider,
+    model: promptResponseModel(request),
     source: submitted,
     summary: lastAssistantSummary(agent.state.messages),
     actions,
@@ -319,7 +505,7 @@ export async function runStdio(documents: PromptDocuments): Promise<void> {
   }
 }
 
-export function reportStdioFailure(error: Error): void {
-  send({ type: "error", error: error.message || "SOS Pi runner failed" });
+export function reportStdioFailure(error: unknown): void {
+  send(sanitizeRunnerFailure(error));
   process.exitCode = 1;
 }

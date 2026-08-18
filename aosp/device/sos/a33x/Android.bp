@@ -81,8 +81,8 @@ cc_binary {
     ],
 }
 
-cc_binary {
-    name: "sos-ui-removal-marker",
+cc_defaults {
+    name: "sos-ui-removal-marker-defaults",
     srcs: ["core/ui_removal_marker.cpp"],
     compile_multilib: "64",
     system_ext_specific: true,
@@ -121,7 +121,6 @@ cc_binary {
         "HTMLViewer",
         "IntentResolver",
         "Jelly",
-        "LatinIME",
         "Launcher3QuickStep",
         "LineageParts",
         "LineageSetupWizard",
@@ -151,6 +150,23 @@ cc_binary {
         "VpnDialogs",
         "messaging",
     ],
+}
+
+// Core excludes LatinIME in addition to the shared Android UI package set.
+cc_binary {
+    name: "sos-ui-removal-marker",
+    defaults: ["sos-ui-removal-marker-defaults"],
+    overrides: [
+        "LatinIME",
+    ],
+}
+
+// Compat keeps the Android application runtime's system IME service, but no
+// other inherited Android UI package. Its distinct installed filename avoids
+// colliding with the globally defined Core marker during graph generation.
+cc_binary {
+    name: "sos-compat-ui-removal-marker",
+    defaults: ["sos-ui-removal-marker-defaults"],
 }
 
 android_app {

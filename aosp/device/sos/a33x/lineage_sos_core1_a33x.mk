@@ -11,7 +11,8 @@ PRODUCT_NAME := lineage_sos_core1_a33x
 
 PRODUCT_PACKAGES += \
     sos-core-app-manifest \
-    sos-core-platform-adapter
+    sos-core-platform-adapter \
+    sos-ui-removal-marker
 
 PRODUCT_SYSTEM_EXT_PROPERTIES += \
     ro.sos.block_android_activities=true \

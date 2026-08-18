@@ -4,7 +4,12 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { decodeRequest } from "../src/stdio-runner.js";
+import {
+  decodeRequest,
+  PINNED_OPENROUTER_MODEL,
+  promptResponseModel,
+  sanitizeRunnerFailure,
+} from "../src/stdio-runner.js";
 import { buildSystemPrompt } from "../src/prompt-policy.js";
 
 test("the package build removes obsolete Android-only runner outputs", async () => {
@@ -48,6 +53,7 @@ test("the packaged runner applies the bounded faux Pi contract", async () => {
     );
     assert.equal(response.type, "prompt_complete");
     assert.equal(response.provider, "faux");
+    assert.equal(response.model, "faux");
     assert.equal(response.source, candidate);
     assert.deepEqual(response.actions, [
       "get_experience_context",
@@ -74,6 +80,55 @@ test("the shared request contract rejects oversized prompts", () => {
       ),
     /invalid Pi runner request/,
   );
+});
+
+test("the bounded OpenRouter request accepts only the campaign model", () => {
+  const request = {
+    action: "prompt",
+    provider: "openrouter",
+    model: PINNED_OPENROUTER_MODEL,
+    credential: { type: "api_key", key: "x" },
+    prompt: "Make this calmer",
+    currentSource: "return { api_version = 3 }",
+  };
+  assert.equal(
+    (decodeRequest(JSON.stringify(request)) as { model: string }).model,
+    "deepseek/deepseek-v4-flash-0731",
+  );
+  assert.equal(
+    promptResponseModel({ provider: "openrouter", model: PINNED_OPENROUTER_MODEL }),
+    "deepseek/deepseek-v4-flash-0731",
+  );
+  for (const model of [
+    "deepseek/deepseek-v4-flash",
+    "deepseek/deepseek-v4-flash-latest",
+    "deepseek/deepseek-v4-flash-0731:free",
+    "deepseek/deepseek-v4-flash-0731-extra",
+    "openai/gpt-5.4-mini",
+  ]) {
+    assert.throws(
+      () => decodeRequest(JSON.stringify({ ...request, model })),
+      /invalid Pi runner request/,
+    );
+  }
+});
+
+test("runner failures expose only bounded categories and safe numeric status", () => {
+  const secret = "sk-or-v1-do-not-surface";
+  const failure = sanitizeRunnerFailure({
+    status: 401,
+    message: `Authorization: Bearer ${secret}`,
+    response: { body: `raw provider body ${secret}` },
+  }, PINNED_OPENROUTER_MODEL);
+  assert.deepEqual(failure, {
+    type: "error",
+    stage: "credential",
+    category: "credential_rejected",
+    error: "The provider rejected the configured credential.",
+    model: PINNED_OPENROUTER_MODEL,
+    status: 401,
+  });
+  assert.ok(!JSON.stringify(failure).includes(secret));
 });
 
 test("the prompt policy rejects the actual combined document bytes", () => {

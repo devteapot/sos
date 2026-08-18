@@ -47,7 +47,12 @@ use gpui_mobile::packages::deeplink;
 use runtime_luau::{CandidateTimings, RuntimeWorker, WorkerReady, WorkerResult};
 use serde_json::{json, Value as JsonValue};
 use sha2::{Digest, Sha256};
+#[cfg(feature = "core-native")]
+use zeroize::Zeroize;
 
+use crate::android_agent_contract::{AgentActivationEvidence, AgentActivationPhase};
+#[cfg(not(feature = "core-native"))]
+use crate::android_interaction_contract::{text_tap_outcome, TextTapOutcome};
 use crate::assets::{self, SosAssets, ALBUM_ASSET};
 use crate::pointer_input;
 use crate::scene_surface;
@@ -128,6 +133,7 @@ struct PendingFrame {
     render_build_us: u64,
     callback_scheduled_at: Instant,
     authority_activation: Option<PendingAuthorityActivation>,
+    agent_activation: Option<AgentActivationEvidence>,
 }
 
 #[cfg_attr(not(feature = "aosp-system"), allow(dead_code))]
@@ -338,6 +344,7 @@ pub unsafe extern "C" fn sos_core_main(
     let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         run_experience(SharedPlatform::new(platform));
     }));
+    agent::zeroize_credential_on_exit();
     *core_platform_slot().lock().expect("Core platform lock") = None;
     if outcome.is_err() {
         log::error!("Core GPUI host unwound into its fixed native boundary");
@@ -408,6 +415,7 @@ struct ExperienceHost {
     next_request_id: u64,
     candidates: HashMap<u64, CandidatePurpose>,
     pending_authority_activations: HashMap<u64, PendingAuthorityActivation>,
+    pending_agent_activations: HashMap<u64, AgentActivationEvidence>,
     action_in_flight: bool,
     pending_input_events: VecDeque<SceneEvent>,
     input_state_shadow: HashMap<String, String>,
@@ -428,6 +436,34 @@ struct ExperienceHost {
 }
 
 impl ExperienceHost {
+    #[cfg(not(feature = "core-native"))]
+    fn blur_compat_input_on_outside_tap(
+        &mut self,
+        event: &gpui::MouseDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if event.button != MouseButton::Left {
+            return;
+        }
+        let active = native_input::active_input_id();
+        let bounds = self
+            .inputs
+            .iter()
+            .filter(|(id, _)| find_text_session(&self.scene.root, id).is_some())
+            .filter_map(|(id, input)| input.read(cx).bounds().map(|bounds| (id.as_str(), bounds)));
+        if text_tap_outcome(
+            active.as_deref(),
+            bounds,
+            f32::from(event.position.x),
+            f32::from(event.position.y),
+        ) == TextTapOutcome::OutsideInputs
+        {
+            log::info!("compat_ime_outside_tap outcome=blur");
+            window.blur();
+        }
+    }
+
     fn new(cx: &mut Context<Self>) -> Self {
         #[cfg(feature = "aosp-system")]
         let authority_current = revision_client::current_with_retry()
@@ -585,6 +621,7 @@ impl ExperienceHost {
             next_request_id: 1,
             candidates: HashMap::new(),
             pending_authority_activations: HashMap::new(),
+            pending_agent_activations: HashMap::new(),
             action_in_flight: false,
             pending_input_events: VecDeque::new(),
             input_state_shadow: HashMap::new(),
@@ -1291,6 +1328,18 @@ impl ExperienceHost {
     }
 
     fn submit_candidate_source(&mut self, candidate_source: String) {
+        self.submit_candidate_source_with_origin(candidate_source, false);
+    }
+
+    fn submit_agent_candidate_source(&mut self, candidate_source: String) {
+        self.submit_candidate_source_with_origin(candidate_source, true);
+    }
+
+    fn submit_candidate_source_with_origin(
+        &mut self,
+        candidate_source: String,
+        from_verified_agent: bool,
+    ) {
         if self.stress.is_some()
             || self.action_in_flight
             || self
@@ -1305,6 +1354,10 @@ impl ExperienceHost {
         let submitted_at = Instant::now();
         self.candidates
             .insert(request_id, CandidatePurpose::Regular);
+        if from_verified_agent {
+            self.pending_agent_activations
+                .insert(request_id, AgentActivationEvidence::submitted(request_id));
+        }
         self.status = Some(("Compiling candidate on Luau worker…".into(), true));
         log::info!(
             "script_submitted request_id={request_id} ui_thread={:?} source_bytes={}",
@@ -1320,8 +1373,19 @@ impl ExperienceHost {
             submitted_at,
         ) {
             self.candidates.remove(&request_id);
+            self.pending_agent_activations.remove(&request_id);
             self.status = Some((format!("Candidate could not start: {error}"), false));
         }
+    }
+
+    fn advance_agent_activation(&mut self, request_id: u64, phase: AgentActivationPhase) -> bool {
+        let Some(evidence) = self.pending_agent_activations.get_mut(&request_id) else {
+            return false;
+        };
+        evidence
+            .advance(phase)
+            .expect("agent activation evidence must advance in authoritative order");
+        true
     }
 
     fn start_stress(&mut self, request: StressRequest) {
@@ -1417,6 +1481,11 @@ impl ExperienceHost {
                 #[cfg(not(feature = "aosp-system"))]
                 let _ = &assets;
                 if purpose == CandidatePurpose::Regular {
+                    if self.advance_agent_activation(request_id, AgentActivationPhase::Validated) {
+                        log::info!(
+                            "android_agent_candidate_validation_ack request_id={request_id} phase=validated authority_committed=false"
+                        );
+                    }
                     log::info!(
                         "candidate_validated request_id={} queue_us={} compile_us={} render_us={} worker_total_us={}",
                         request_id,
@@ -1428,6 +1497,7 @@ impl ExperienceHost {
                     let Some(expected_revision) = self.remote_state_revision else {
                         let _ = self.worker.discard_candidate(request_id);
                         self.candidates.remove(&request_id);
+                        self.pending_agent_activations.remove(&request_id);
                         self.status = Some((
                             "Candidate requires the external state service".into(),
                             false,
@@ -1446,6 +1516,7 @@ impl ExperienceHost {
                     if let Err(error) = write_state_envelope(CANDIDATE_STATE_FILE, &envelope) {
                         let _ = self.worker.discard_candidate(request_id);
                         self.candidates.remove(&request_id);
+                        self.pending_agent_activations.remove(&request_id);
                         self.status =
                             Some((format!("Could not persist staged revision: {error}"), false));
                         return;
@@ -1465,6 +1536,7 @@ impl ExperienceHost {
                                 let _ = fs::remove_file(file_path(CANDIDATE_STATE_FILE));
                                 let _ = self.worker.discard_candidate(request_id);
                                 self.candidates.remove(&request_id);
+                                self.pending_agent_activations.remove(&request_id);
                                 self.status =
                                     Some((format!("Could not install revision: {error}"), false));
                                 return;
@@ -1482,11 +1554,18 @@ impl ExperienceHost {
                                 let _ = fs::remove_file(file_path(CANDIDATE_STATE_FILE));
                                 let _ = self.worker.discard_candidate(request_id);
                                 self.candidates.remove(&request_id);
+                                self.pending_agent_activations.remove(&request_id);
                                 self.status =
                                     Some((format!("Could not stage revision: {error}"), false));
                                 return;
                             }
                         };
+                        if self.advance_agent_activation(request_id, AgentActivationPhase::Staged) {
+                            log::info!(
+                                "android_agent_activation_stage_ack request_id={request_id} revision={} state_stage_id={stage_id} phase=staged authority_committed=false",
+                                revision_id
+                            );
+                        }
                         self.pending_authority_activations.insert(
                             request_id,
                             PendingAuthorityActivation {
@@ -1502,6 +1581,7 @@ impl ExperienceHost {
                         if let Err(error) = self.worker.commit_candidate(request_id) {
                             self.candidates.remove(&request_id);
                             self.pending_authority_activations.remove(&request_id);
+                            self.pending_agent_activations.remove(&request_id);
                             let _ = provider_client::abort_state(stage_id);
                             let _ = fs::remove_file(file_path(CANDIDATE_STATE_FILE));
                             self.status =
@@ -1527,11 +1607,17 @@ impl ExperienceHost {
                                 let _ = fs::remove_file(file_path(CANDIDATE_STATE_FILE));
                                 let _ = self.worker.discard_candidate(request_id);
                                 self.candidates.remove(&request_id);
+                                self.pending_agent_activations.remove(&request_id);
                                 self.status =
                                     Some((format!("Could not stage revision: {error}"), false));
                                 return;
                             }
                         };
+                        if self.advance_agent_activation(request_id, AgentActivationPhase::Staged) {
+                            log::info!(
+                                "android_agent_activation_stage_ack request_id={request_id} revision={revision} state_stage_id={stage_id} phase=staged authority_committed=false"
+                            );
+                        }
                         let committed = match provider_client::commit_staged_state(
                             stage_id,
                             expected_revision,
@@ -1544,6 +1630,7 @@ impl ExperienceHost {
                                 let _ = fs::remove_file(file_path(CANDIDATE_STATE_FILE));
                                 let _ = self.worker.discard_candidate(request_id);
                                 self.candidates.remove(&request_id);
+                                self.pending_agent_activations.remove(&request_id);
                                 self.status =
                                     Some((format!("Could not commit revision: {error}"), false));
                                 return;
@@ -1566,6 +1653,7 @@ impl ExperienceHost {
                     );
                         if let Err(error) = self.worker.commit_candidate(request_id) {
                             self.candidates.remove(&request_id);
+                            self.pending_agent_activations.remove(&request_id);
                             self.source = source;
                             self.state = committed.state;
                             self.state_schema_version = committed.schema_version;
@@ -1581,6 +1669,7 @@ impl ExperienceHost {
                 }
                 if let Err(error) = self.worker.commit_candidate(request_id) {
                     self.candidates.remove(&request_id);
+                    self.pending_agent_activations.remove(&request_id);
                     if purpose == CandidatePurpose::Stress {
                         self.fail_stress(format!("commit failed: {error}"));
                     } else {
@@ -1595,6 +1684,7 @@ impl ExperienceHost {
                 ..
             } => {
                 let purpose = self.candidates.remove(&request_id);
+                self.pending_agent_activations.remove(&request_id);
                 log::warn!(
                     "script_rejected request_id={} error={} queue_us={} compile_us={} render_us={} worker_total_us={}",
                     request_id,
@@ -1626,6 +1716,7 @@ impl ExperienceHost {
                     return;
                 };
                 let authority_activation = self.pending_authority_activations.remove(&request_id);
+                let agent_activation = self.pending_agent_activations.remove(&request_id);
                 if purpose == CandidatePurpose::Regular && authority_activation.is_some() {
                     self.revision_activation_pending = true;
                 }
@@ -1668,6 +1759,7 @@ impl ExperienceHost {
                     render_build_us: 0,
                     callback_scheduled_at: Instant::now(),
                     authority_activation,
+                    agent_activation,
                 });
             }
             WorkerResult::ActionCompleted {
@@ -1835,6 +1927,18 @@ impl ExperienceHost {
 
     fn execute_agent_effects(&mut self, effects: Vec<ProviderEffect>) {
         for effect in effects {
+            log::info!("android_agent_effect_dispatch action={}", effect.action);
+            if matches!(
+                effect.action.as_str(),
+                "configure_openai"
+                    | "configure_openrouter"
+                    | "configure_codex"
+                    | "use_fake"
+                    | "clear_credential"
+                    | "prompt"
+            ) {
+                self.model.agent.error = None;
+            }
             let result = match effect.action.as_str() {
                 "configure_openai" => agent::configure_openai(),
                 "configure_openrouter" => agent::configure_openrouter(),
@@ -1856,9 +1960,19 @@ impl ExperienceHost {
                     effect.action
                 )),
             };
-            if let Err(error) = result {
+            if let Err(error) = &result {
                 self.status = Some((format!("Agent action failed: {error}"), false));
                 log::warn!("android_agent_action_failed action={}", effect.action);
+            }
+            #[cfg(feature = "core-native")]
+            if result.is_ok() {
+                match effect.action.as_str() {
+                    "configure_openrouter" => native_input::activate_core_credential_keyboard(),
+                    "use_fake" | "clear_credential" => {
+                        native_input::deactivate_core_credential_keyboard()
+                    }
+                    _ => {}
+                }
             }
         }
         if let Ok(status) = agent::status() {
@@ -1906,7 +2020,7 @@ impl ExperienceHost {
             agent::AgentUpdate::Candidate { source, summary } => {
                 push_agent_message(&mut self.model, AgentMessageRole::Assistant, summary);
                 self.model.agent.activity = "Validating the proposed experience".into();
-                self.submit_candidate_source(source);
+                self.submit_agent_candidate_source(source);
             }
             agent::AgentUpdate::Completed => {
                 self.model.agent.busy = false;
@@ -1961,7 +2075,7 @@ impl ExperienceHost {
         }
     }
 
-    fn frame_presented(&mut self, frame: PendingFrame, cx: &mut Context<Self>) {
+    fn frame_presented(&mut self, mut frame: PendingFrame, cx: &mut Context<Self>) {
         let visible_us = micros(frame.timings.submitted_at.elapsed());
         let frame_callback_us = micros(frame.callback_scheduled_at.elapsed());
         let post_worker_us = visible_us.saturating_sub(frame.timings.worker_total_us);
@@ -1969,7 +2083,7 @@ impl ExperienceHost {
             CandidatePurpose::Regular => {
                 #[cfg(feature = "aosp-system")]
                 {
-                    let activation = frame.authority_activation.unwrap_or_else(|| {
+                    let activation = frame.authority_activation.take().unwrap_or_else(|| {
                         log::error!(
                             "system candidate reached presentation without activation metadata"
                         );
@@ -2063,10 +2177,33 @@ impl ExperienceHost {
                         envelope.revision,
                         envelope.source_sha256
                     );
+                    if let Some(mut evidence) = frame.agent_activation.take() {
+                        evidence
+                            .advance(AgentActivationPhase::Committed)
+                            .expect("agent activation commit requires staged authority evidence");
+                        log::info!(
+                            "android_agent_activation_commit request_id={} revision={} state_revision={} source_sha256={} phase=committed authority=system",
+                            evidence.request_id(),
+                            activation.revision_id,
+                            envelope.revision,
+                            envelope.source_sha256
+                        );
+                    }
                     self.dispatch_pending_input_event(cx);
                 }
                 #[cfg(not(feature = "aosp-system"))]
-                let _ = frame.authority_activation;
+                {
+                    let _ = frame.authority_activation.take();
+                    if let Some(mut evidence) = frame.agent_activation.take() {
+                        evidence
+                            .advance(AgentActivationPhase::Committed)
+                            .expect("agent activation commit requires staged host evidence");
+                        log::info!(
+                            "android_agent_activation_commit request_id={} phase=committed authority=host-presented",
+                            evidence.request_id()
+                        );
+                    }
+                }
                 self.status = Some((
                     format!("Luau revision visible in {} ms", visible_us / 1_000),
                     true,
@@ -2593,8 +2730,117 @@ impl scene_surface::SceneSurfaceHost for ExperienceHost {
     }
 }
 
+#[cfg(feature = "core-native")]
+fn core_credential_overlay() -> impl IntoElement {
+    let snapshot = agent::credential_snapshot();
+    let error = snapshot.error.map(SharedString::from);
+    let cancel = div()
+        .flex_1()
+        .h(px(48.0))
+        .rounded(px(12.0))
+        .bg(rgb(0xD7D4C9))
+        .text_color(rgb(0x17211B))
+        .flex()
+        .items_center()
+        .justify_center()
+        .child("Cancel")
+        .on_mouse_down(MouseButton::Left, |_, window, app| {
+            window.prevent_default();
+            app.stop_propagation();
+            agent::cancel_credential();
+            native_input::deactivate_core_credential_keyboard();
+            request_host_frame();
+        });
+    let save = div()
+        .flex_1()
+        .h(px(48.0))
+        .rounded(px(12.0))
+        .bg(rgb(0x2F684B))
+        .text_color(rgb(0xFFFFFF))
+        .flex()
+        .items_center()
+        .justify_center()
+        .child("Save")
+        .on_mouse_down(MouseButton::Left, |_, window, app| {
+            window.prevent_default();
+            app.stop_propagation();
+            if agent::save_credential() {
+                native_input::deactivate_core_credential_keyboard();
+            }
+            request_host_frame();
+        });
+    let mut card =
+        div()
+            .w_full()
+            .max_w(px(620.0))
+            .p(px(22.0))
+            .rounded(px(18.0))
+            .bg(rgb(0xF3F1E8))
+            .text_color(rgb(0x17211B))
+            .flex()
+            .flex_col()
+            .gap(px(12.0))
+            .child(div().text_size(px(22.0)).child("Configure OpenRouter"))
+            .child(div().text_size(px(13.0)).child(
+                "Memory-only until this Core process exits · deepseek/deepseek-v4-flash-0731",
+            ))
+            .child(
+                div()
+                    .h(px(44.0))
+                    .px(px(12.0))
+                    .rounded(px(10.0))
+                    .bg(rgb(0xFFFFFF))
+                    .text_size(px(18.0))
+                    .flex()
+                    .items_center()
+                    .child(SharedString::from(snapshot.masked))
+                    .on_mouse_down(MouseButton::Left, |_, window, app| {
+                        window.prevent_default();
+                        app.stop_propagation();
+                        native_input::activate_core_credential_keyboard();
+                        request_host_frame();
+                    }),
+            );
+    if let Some(error) = error {
+        card = card.child(div().text_color(rgb(0x8C3A36)).child(error));
+    }
+    card = card.child(div().flex().gap(px(10.0)).child(cancel).child(save));
+    div()
+        .absolute()
+        .top_0()
+        .left_0()
+        .right_0()
+        .bottom(px(220.0))
+        .p(px(18.0))
+        .bg(gpui::rgba(0x17211BDD))
+        .flex()
+        .items_center()
+        .justify_center()
+        .on_mouse_down(MouseButton::Left, |_, window, app| {
+            window.prevent_default();
+            app.stop_propagation();
+        })
+        .child(card)
+}
+
 impl Render for ExperienceHost {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        #[cfg(feature = "core-native")]
+        for mut text in native_input::take_core_credential_input() {
+            agent::apply_credential_input(&text);
+            text.zeroize();
+            if !agent::credential_snapshot().visible {
+                native_input::deactivate_core_credential_keyboard();
+            }
+        }
+        #[cfg(feature = "core-native")]
+        if agent::take_credential_changed() {
+            self.model.agent.error = None;
+            if let Ok(status) = agent::status() {
+                agent::apply_status(&mut self.model.agent, &status);
+                self.refresh_model_from_authority();
+            }
+        }
         if native_input::take_ime_inset_changed() && native_input::ime_inset() > 0.0 {
             if let Some(scroll_target) = native_input::active_input_id() {
                 let timer = cx.background_executor().timer(Duration::from_millis(50));
@@ -2741,6 +2987,12 @@ impl Render for ExperienceHost {
             .size_full()
             .bg(rgb(0xF3F1E8))
             .child(content);
+        #[cfg(not(feature = "core-native"))]
+        {
+            root = root.capture_any_mouse_down(cx.listener(|this, event, window, cx| {
+                this.blur_compat_input_on_outside_tap(event, window, cx)
+            }));
+        }
         if let Some((message, accepted)) = &self.status {
             root = root.child(
                 div()
@@ -2755,6 +3007,10 @@ impl Render for ExperienceHost {
                     .text_size(px(12.0))
                     .child(SharedString::from(message.clone())),
             );
+        }
+        #[cfg(feature = "core-native")]
+        if agent::credential_snapshot().visible {
+            root = root.child(core_credential_overlay());
         }
         #[cfg(feature = "core-native")]
         if native_input::software_keyboard_visible() {
