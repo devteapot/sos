@@ -216,6 +216,17 @@ This helper currently supports the subscription-backed `openai-codex` device
 flow. Keep using the appliance credential/drop-in procedure below for API-key
 providers.
 
+The helper validates `auth.json` offline through the agent's credential store
+and inspects `config.env` exactly before an `--if-needed` login, reporting each
+as `absent`, `invalid`, or `preserved`. A valid credential with missing or
+mismatched config repairs only the config and does not repeat OAuth.
+Authentication does not pre-create the agent state directory. If it fails, the
+helper returns the original agent/login status, removes only empty directories
+created by that attempt, and emits `sos_agent_login_incomplete`; any existing
+credential or configuration file is preserved for explicit repair. A
+successful provider flow must leave a regular, nonempty `auth.json` before the
+helper atomically installs `config.env`.
+
 Without credentials, the graphical login refuses to start and names the helper
 required to repair it. An unexpected agent or broker exit ends the SOS login so
 it cannot silently present a dead agent as available.

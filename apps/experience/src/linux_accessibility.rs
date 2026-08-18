@@ -5,7 +5,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{Arc, Condvar, Mutex},
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use experience_ir::{Content, Scene, SceneNode, SemanticRole};
@@ -138,19 +138,8 @@ fn handle(
             Ok(Request::Wait {
                 after_generation,
                 timeout_ms,
-            }) => {
-                let current = shared.0.lock().expect("accessibility snapshot lock");
-                let current = if current.generation <= after_generation {
-                    shared
-                        .1
-                        .wait_timeout(current, Duration::from_millis(timeout_ms.min(30_000)))
-                        .expect("accessibility wait")
-                        .0
-                } else {
-                    current
-                };
-                json!({"ok": true, "snapshot": current.clone()})
-            }
+                focused,
+            }) => wait_response(shared, after_generation, timeout_ms, focused.as_deref()),
             Ok(Request::Action { action }) if valid_action(&action) => {
                 match actions.try_send(action) {
                     Ok(()) => json!({"ok": true}),
@@ -175,11 +164,78 @@ enum Request {
     Wait {
         after_generation: u64,
         timeout_ms: u64,
+        #[serde(default)]
+        focused: Option<String>,
     },
     Action {
         #[serde(flatten)]
         action: Action,
     },
+}
+
+#[derive(Debug)]
+struct WaitOutcome {
+    snapshot: Snapshot,
+    elapsed_ms: u64,
+    timed_out: bool,
+}
+
+fn snapshot_satisfies_wait(
+    snapshot: &Snapshot,
+    after_generation: u64,
+    focused: Option<&str>,
+) -> bool {
+    snapshot.generation > after_generation
+        && focused.is_none_or(|expected| snapshot.focused.as_deref() == Some(expected))
+}
+
+fn wait_for_snapshot(
+    shared: &Arc<(Mutex<Snapshot>, Condvar)>,
+    after_generation: u64,
+    timeout_ms: u64,
+    focused: Option<&str>,
+) -> WaitOutcome {
+    let started = Instant::now();
+    let timeout = Duration::from_millis(timeout_ms.min(30_000));
+    let current = shared.0.lock().expect("accessibility snapshot lock");
+    let current = shared
+        .1
+        .wait_timeout_while(current, timeout, |snapshot| {
+            !snapshot_satisfies_wait(snapshot, after_generation, focused)
+        })
+        .expect("accessibility wait")
+        .0;
+    let timed_out = !snapshot_satisfies_wait(&current, after_generation, focused);
+    WaitOutcome {
+        snapshot: current.clone(),
+        elapsed_ms: started.elapsed().as_millis().try_into().unwrap_or(u64::MAX),
+        timed_out,
+    }
+}
+
+fn wait_response(
+    shared: &Arc<(Mutex<Snapshot>, Condvar)>,
+    after_generation: u64,
+    timeout_ms: u64,
+    focused: Option<&str>,
+) -> serde_json::Value {
+    let outcome = wait_for_snapshot(shared, after_generation, timeout_ms, focused);
+    let wait = json!({
+        "after_generation": after_generation,
+        "expected_focus": focused,
+        "elapsed_ms": outcome.elapsed_ms,
+        "timed_out": outcome.timed_out,
+    });
+    if outcome.timed_out {
+        json!({
+            "ok": false,
+            "error": "accessibility wait timed out",
+            "snapshot": outcome.snapshot,
+            "wait": wait,
+        })
+    } else {
+        json!({"ok": true, "snapshot": outcome.snapshot, "wait": wait})
+    }
 }
 
 fn valid_action(action: &Action) -> bool {
@@ -256,6 +312,17 @@ mod tests {
     use super::*;
     use experience_ir::{Interaction, Semantics};
 
+    fn publish_test_snapshot(
+        shared: &Arc<(Mutex<Snapshot>, Condvar)>,
+        generation: u64,
+        focused: Option<&str>,
+    ) {
+        let mut snapshot = shared.0.lock().unwrap();
+        snapshot.generation = generation;
+        snapshot.focused = focused.map(str::to_owned);
+        shared.1.notify_all();
+    }
+
     #[test]
     fn semantic_tree_preserves_hierarchy_and_actions() {
         let scene = Scene {
@@ -286,5 +353,67 @@ mod tests {
         assert_eq!(nodes[1].parent.as_deref(), Some("root"));
         assert!(nodes[0].scrollable);
         assert!(nodes[1].activate);
+    }
+
+    #[test]
+    fn focus_wait_skips_a_stale_generation_before_the_focused_generation() {
+        let shared = Arc::new((
+            Mutex::new(Snapshot {
+                generation: 41,
+                focused: Some("daily-flow-root".into()),
+                ..Default::default()
+            }),
+            Condvar::new(),
+        ));
+        let waiting = shared.clone();
+        let waiter =
+            thread::spawn(move || wait_for_snapshot(&waiting, 41, 1_000, Some("note-draft")));
+
+        publish_test_snapshot(&shared, 42, Some("music-toggle"));
+        publish_test_snapshot(&shared, 43, Some("note-draft"));
+
+        let outcome = waiter.join().unwrap();
+        assert!(!outcome.timed_out);
+        assert_eq!(outcome.snapshot.generation, 43);
+        assert_eq!(outcome.snapshot.focused.as_deref(), Some("note-draft"));
+    }
+
+    #[test]
+    fn focus_wait_times_out_on_a_new_generation_with_the_wrong_focus() {
+        let shared = Arc::new((
+            Mutex::new(Snapshot {
+                generation: 42,
+                focused: Some("music-toggle".into()),
+                ..Default::default()
+            }),
+            Condvar::new(),
+        ));
+
+        let response = wait_response(&shared, 41, 0, Some("note-draft"));
+        assert_eq!(response["ok"], false);
+        assert_eq!(response["error"], "accessibility wait timed out");
+        assert_eq!(response["snapshot"]["generation"], 42);
+        assert_eq!(response["snapshot"]["focused"], "music-toggle");
+        assert_eq!(response["wait"]["after_generation"], 41);
+        assert_eq!(response["wait"]["expected_focus"], "note-draft");
+        assert_eq!(response["wait"]["timed_out"], true);
+        assert!(response["wait"]["elapsed_ms"].is_u64());
+    }
+
+    #[test]
+    fn focus_wait_requires_a_new_generation_even_when_focus_already_matches() {
+        let shared = Arc::new((
+            Mutex::new(Snapshot {
+                generation: 41,
+                focused: Some("note-draft".into()),
+                ..Default::default()
+            }),
+            Condvar::new(),
+        ));
+
+        let response = wait_response(&shared, 41, 0, Some("note-draft"));
+        assert_eq!(response["ok"], false);
+        assert_eq!(response["snapshot"]["generation"], 41);
+        assert_eq!(response["wait"]["timed_out"], true);
     }
 }

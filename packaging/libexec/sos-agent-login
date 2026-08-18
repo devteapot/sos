@@ -31,22 +31,156 @@ command -v node >/dev/null 2>&1 || sos_agent_login_fail "Node.js is not installe
   sos_agent_login_fail "model ID contains unsupported characters"
 
 umask 077
-install -d -m 0700 "$sos_agent_login_state_home" \
-  "$sos_agent_login_state_home/sos" "$sos_agent_login_state_dir"
-if [[ "${1:-}" == --if-needed && -s "$sos_agent_login_credentials" && -s "$sos_agent_login_config" ]]; then
+sos_agent_login_state_home_preexisting=false
+sos_agent_login_sos_dir_preexisting=false
+sos_agent_login_state_dir_preexisting=false
+[[ ! -d "$sos_agent_login_state_home" ]] || sos_agent_login_state_home_preexisting=true
+[[ ! -d "$sos_agent_login_state_home/sos" ]] || sos_agent_login_sos_dir_preexisting=true
+[[ ! -d "$sos_agent_login_state_dir" ]] || sos_agent_login_state_dir_preexisting=true
+sos_agent_login_config_tmp=""
+sos_agent_login_credential_validation=unknown
+
+sos_agent_login_file_state() {
+  local sos_agent_login_file="$1"
+  if [[ -f "$sos_agent_login_file" \
+    && ! -L "$sos_agent_login_file" \
+    && -O "$sos_agent_login_file" \
+    && -r "$sos_agent_login_file" \
+    && -s "$sos_agent_login_file" ]]; then
+    printf preserved
+  elif [[ -e "$sos_agent_login_file" || -L "$sos_agent_login_file" ]]; then
+    printf invalid
+  else
+    printf absent
+  fi
+}
+
+sos_agent_login_config_file_state() {
+  local sos_agent_login_file="$1"
+  local -a sos_agent_login_config_lines=()
+  if [[ "$(sos_agent_login_file_state "$sos_agent_login_file")" != preserved ]]; then
+    sos_agent_login_file_state "$sos_agent_login_file"
+    return 0
+  fi
+  mapfile -t sos_agent_login_config_lines <"$sos_agent_login_file"
+  if [[ "${#sos_agent_login_config_lines[@]}" -eq 2 \
+    && "${sos_agent_login_config_lines[0]}" == "SOS_AGENT_PROVIDER=$sos_agent_login_provider" \
+    && "${sos_agent_login_config_lines[1]}" == "SOS_AGENT_MODEL=$sos_agent_login_model" ]]; then
+    printf preserved
+  else
+    printf invalid
+  fi
+}
+
+sos_agent_login_write_config() {
+  [[ -d "$sos_agent_login_state_dir" && -O "$sos_agent_login_state_dir" ]] || \
+    sos_agent_login_fail "agent credential directory is missing or is not owned by the login user: $sos_agent_login_state_dir"
+  sos_agent_login_config_tmp="$sos_agent_login_state_dir/.config.env.$$"
+  printf 'SOS_AGENT_PROVIDER=%s\nSOS_AGENT_MODEL=%s\n' \
+    "$sos_agent_login_provider" "$sos_agent_login_model" >"$sos_agent_login_config_tmp"
+  chmod 0600 "$sos_agent_login_config_tmp"
+  mv -- "$sos_agent_login_config_tmp" "$sos_agent_login_config"
+  sos_agent_login_config_tmp=""
+}
+
+# Finish explicitly after authentication errors so reporting does not depend on
+# the shell's errexit behavior. The EXIT trap remains a guard for other errors.
+sos_agent_login_finish() {
+  local sos_agent_login_status="$1"
+  local sos_agent_login_credentials_state sos_agent_login_config_state
+  local sos_agent_login_directory_state
+  trap - EXIT
+  set +e
+  if [[ -n "$sos_agent_login_config_tmp" ]]; then
+    rm -f -- "$sos_agent_login_config_tmp"
+  fi
+  if [[ "$sos_agent_login_status" -ne 0 ]]; then
+    sos_agent_login_credentials_state="$(sos_agent_login_file_state "$sos_agent_login_credentials")"
+    if [[ "$sos_agent_login_credential_validation" == invalid \
+      && "$sos_agent_login_credentials_state" == preserved ]]; then
+      sos_agent_login_credentials_state=invalid
+    fi
+    sos_agent_login_config_state="$(sos_agent_login_config_file_state "$sos_agent_login_config")"
+    if [[ "$sos_agent_login_credentials_state" == absent \
+      && "$sos_agent_login_config_state" == absent ]]; then
+      [[ "$sos_agent_login_state_dir_preexisting" == true ]] || \
+        rmdir -- "$sos_agent_login_state_dir" 2>/dev/null || true
+      [[ "$sos_agent_login_sos_dir_preexisting" == true ]] || \
+        rmdir -- "$sos_agent_login_state_home/sos" 2>/dev/null || true
+      [[ "$sos_agent_login_state_home_preexisting" == true ]] || \
+        rmdir -- "$sos_agent_login_state_home" 2>/dev/null || true
+    fi
+    sos_agent_login_directory_state=preserved
+    [[ -e "$sos_agent_login_state_dir" ]] || sos_agent_login_directory_state=absent
+    printf 'sos_agent_login_incomplete credentials=%s config=%s state_dir=%s retry=%s\n' \
+      "$sos_agent_login_credentials_state" \
+      "$sos_agent_login_config_state" \
+      "$sos_agent_login_directory_state" \
+      /usr/local/libexec/sos/sos-agent-login >&2
+  fi
+  exit "$sos_agent_login_status"
+}
+
+# ShellCheck cannot infer that EXIT invokes this callback.
+# shellcheck disable=SC2317
+sos_agent_login_cleanup() {
+  local sos_agent_login_status="$?"
+  sos_agent_login_finish "$sos_agent_login_status"
+}
+trap sos_agent_login_cleanup EXIT
+
+sos_agent_login_credentials_state="$(sos_agent_login_file_state "$sos_agent_login_credentials")"
+sos_agent_login_config_state="$(sos_agent_login_config_file_state "$sos_agent_login_config")"
+if [[ "$sos_agent_login_credentials_state" == invalid ]]; then
+  sos_agent_login_fail "credential path is empty, non-regular, linked, or not owned by this user; preserved for repair: $sos_agent_login_credentials"
+fi
+if [[ "$sos_agent_login_credentials_state" == preserved ]]; then
+  sos_agent_login_credential_status=0
+  node "$sos_agent_login_main" credential-status \
+    --provider "$sos_agent_login_provider" \
+    --credentials "$sos_agent_login_credentials" || sos_agent_login_credential_status=$?
+  if [[ "$sos_agent_login_credential_status" -ne 0 ]]; then
+    sos_agent_login_credential_validation=invalid
+    printf 'sos_agent_login_preflight_failed error=existing credential store is invalid; preserved for repair: %s\n' \
+      "$sos_agent_login_credentials" >&2
+    exit "$sos_agent_login_credential_status"
+  fi
+  sos_agent_login_credential_validation=valid
+fi
+if [[ "${1:-}" == --if-needed \
+  && "$sos_agent_login_credentials_state" == preserved \
+  && "$sos_agent_login_config_state" == preserved ]]; then
   printf 'sos_agent_login_ready credentials=%s\n' "$sos_agent_login_credentials"
   exit 0
 fi
+if [[ "${1:-}" == --if-needed \
+  && "$sos_agent_login_credentials_state" == preserved ]]; then
+  printf 'sos_agent_login_preflight credentials=preserved config=%s action=write-config\n' \
+    "$sos_agent_login_config_state"
+  sos_agent_login_write_config
+  printf 'sos_agent_login_configured provider=%s model=%s\n' \
+    "$sos_agent_login_provider" "$sos_agent_login_model"
+  exit 0
+fi
+if [[ "${1:-}" == --if-needed ]]; then
+  printf 'sos_agent_login_preflight credentials=%s config=%s action=authenticate\n' \
+    "$sos_agent_login_credentials_state" "$sos_agent_login_config_state"
+fi
 
+sos_agent_login_auth_status=0
 node "$sos_agent_login_main" login \
   --provider "$sos_agent_login_provider" \
   --credentials "$sos_agent_login_credentials" \
-  --device-code
+  --device-code || sos_agent_login_auth_status=$?
+if [[ "$sos_agent_login_auth_status" -ne 0 ]]; then
+  sos_agent_login_finish "$sos_agent_login_auth_status"
+fi
 
-sos_agent_login_config_tmp="$sos_agent_login_state_dir/.config.env.$$"
-printf 'SOS_AGENT_PROVIDER=%s\nSOS_AGENT_MODEL=%s\n' \
-  "$sos_agent_login_provider" "$sos_agent_login_model" >"$sos_agent_login_config_tmp"
-chmod 0600 "$sos_agent_login_config_tmp"
-mv -- "$sos_agent_login_config_tmp" "$sos_agent_login_config"
+[[ -f "$sos_agent_login_credentials" \
+  && ! -L "$sos_agent_login_credentials" \
+  && -O "$sos_agent_login_credentials" \
+  && -s "$sos_agent_login_credentials" ]] || \
+  sos_agent_login_fail "agent login returned success without a regular nonempty credential file at $sos_agent_login_credentials"
+sos_agent_login_write_config
 printf 'sos_agent_login_configured provider=%s model=%s\n' \
   "$sos_agent_login_provider" "$sos_agent_login_model"

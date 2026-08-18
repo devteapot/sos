@@ -66,6 +66,206 @@ test("the packaged runner applies the bounded faux Pi contract", async () => {
   }
 });
 
+test("the packaged Linux login uses the embedded Codex OAuth flow", async () => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "sos-agent-linux-login-"));
+  const home = path.join(directory, "home");
+  const bin = path.join(directory, "bin");
+  const mockFetch = path.join(directory, "mock-fetch.mjs");
+  const credentialPath = path.join(home, ".local/state/sos/agent/auth.json");
+  const configPath = path.join(home, ".local/state/sos/agent/config.env");
+  try {
+    await Promise.all([fs.mkdir(home), fs.mkdir(bin)]);
+    await fs.writeFile(
+      path.join(bin, "id"),
+      "#!/bin/sh\nif [ \"$1\" = -u ]; then printf '1000\\n'; else exec /usr/bin/id \"$@\"; fi\n",
+      { mode: 0o755 },
+    );
+    await fs.writeFile(
+      mockFetch,
+      [
+        "const encoded = (value) => Buffer.from(JSON.stringify(value)).toString('base64url');",
+        "const accessToken = `${encoded({ alg: 'none' })}.${encoded({ 'https://api.openai.com/auth': { chatgpt_account_id: 'account-test' } })}.signature`;",
+        "globalThis.fetch = async (input) => {",
+        "  const url = String(input);",
+        "  if (url.endsWith('/api/accounts/deviceauth/usercode')) return Response.json({ device_auth_id: 'device-test', user_code: 'CODE-TEST', interval: 0 });",
+        "  if (url.endsWith('/api/accounts/deviceauth/token')) return Response.json({ authorization_code: 'authorization-test', code_verifier: 'verifier-test' });",
+        "  if (url.endsWith('/oauth/token')) return Response.json({ access_token: accessToken, refresh_token: 'refresh-test', expires_in: 3600 });",
+        "  throw new Error(`unexpected OAuth request: ${url}`);",
+        "};",
+        "",
+      ].join("\n"),
+    );
+    const environment: NodeJS.ProcessEnv = {
+      ...process.env,
+      HOME: home,
+      NODE_OPTIONS: `--import=${mockFetch}`,
+      PATH: `${bin}${path.delimiter}${process.env.PATH ?? ""}`,
+      SOS_AGENT_MAIN: path.resolve("dist/agent-runner.cjs"),
+    };
+    delete environment.XDG_STATE_HOME;
+
+    const result = await runChild(
+      "bash",
+      [path.resolve("../../packaging/libexec/sos-agent-login"), "--if-needed"],
+      environment,
+    );
+    assert.equal(result.code, 0, result.stderr);
+    assert.match(result.stdout, /sos_agent_login_preflight credentials=absent config=absent/);
+    assert.match(result.stdout, /Open this URL in your browser:/);
+    assert.match(result.stdout, /Enter code: CODE-TEST/);
+    assert.doesNotMatch(`${result.stdout}\n${result.stderr}`, /endsWith/);
+    const document = JSON.parse(await fs.readFile(credentialPath, "utf8")) as Record<
+      string,
+      Record<string, unknown>
+    >;
+    const credential = document["openai-codex"];
+    assert.equal(credential?.type, "oauth");
+    assert.match(String(credential?.access), /^[^.]+\.[^.]+\.signature$/);
+    assert.equal(credential?.refresh, "refresh-test");
+    assert.equal(typeof credential?.expires, "number");
+    assert.equal(credential?.accountId, "account-test");
+    assert.equal(
+      await fs.readFile(configPath, "utf8"),
+      "SOS_AGENT_PROVIDER=openai-codex\nSOS_AGENT_MODEL=gpt-5.6-sol\n",
+    );
+    assert.equal((await fs.stat(credentialPath)).mode & 0o777, 0o600);
+    assert.equal((await fs.stat(configPath)).mode & 0o777, 0o600);
+
+    const ready = await runChild(
+      "bash",
+      [path.resolve("../../packaging/libexec/sos-agent-login"), "--if-needed"],
+      environment,
+    );
+    assert.equal(ready.code, 0, ready.stderr);
+    assert.match(ready.stdout, /sos_agent_credential_ready provider=openai-codex/);
+    assert.match(ready.stdout, /sos_agent_login_ready credentials=/);
+    assert.doesNotMatch(ready.stdout, /Enter code:/);
+
+    await fs.writeFile(configPath, "SOS_AGENT_PROVIDER=openai-codex\nSOS_AGENT_MODEL=stale\n");
+    const repaired = await runChild(
+      "bash",
+      [path.resolve("../../packaging/libexec/sos-agent-login"), "--if-needed"],
+      environment,
+    );
+    assert.equal(repaired.code, 0, repaired.stderr);
+    assert.match(
+      repaired.stdout,
+      /sos_agent_login_preflight credentials=preserved config=invalid action=write-config/,
+    );
+    assert.doesNotMatch(repaired.stdout, /Enter code:/);
+    assert.equal(
+      await fs.readFile(configPath, "utf8"),
+      "SOS_AGENT_PROVIDER=openai-codex\nSOS_AGENT_MODEL=gpt-5.6-sol\n",
+    );
+  } finally {
+    await fs.rm(directory, { recursive: true });
+  }
+});
+
+test("failed Linux login cleans new empty state and preserves existing credentials", async () => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "sos-agent-login-state-"));
+  const bin = path.join(directory, "bin");
+  const main = path.join(directory, "agent-runner.cjs");
+  try {
+    await fs.mkdir(bin);
+    await Promise.all([
+      fs.writeFile(
+        path.join(bin, "id"),
+        "#!/bin/sh\nif [ \"$1\" = -u ]; then printf '1000\\n'; else exec /usr/bin/id \"$@\"; fi\n",
+        { mode: 0o755 },
+      ),
+      fs.writeFile(
+        path.join(bin, "node"),
+        [
+          "#!/bin/sh",
+          "if [ \"${2:-}\" = credential-status ]; then exit 0; fi",
+          "printf 'sos_agent_failed error=mock authentication rejected\\n' >&2",
+          "exit 23",
+          "",
+        ].join("\n"),
+        { mode: 0o755 },
+      ),
+      fs.writeFile(main, "// readable mock runner\n"),
+    ]);
+    const launcher = path.resolve("../../packaging/libexec/sos-agent-login");
+    const baseEnvironment: NodeJS.ProcessEnv = {
+      ...process.env,
+      // Debian 13 runs Bash 5.2; retain its documented compatibility level on newer hosts.
+      BASH_COMPAT: "5.2",
+      PATH: `${bin}${path.delimiter}${process.env.PATH ?? ""}`,
+      SOS_AGENT_MAIN: main,
+    };
+    delete baseEnvironment.XDG_STATE_HOME;
+
+    const freshHome = path.join(directory, "fresh-home");
+    await fs.mkdir(freshHome);
+    const fresh = await runChild("bash", [launcher, "--if-needed"], {
+      ...baseEnvironment,
+      HOME: freshHome,
+    });
+    assert.equal(fresh.code, 23);
+    assert.equal(
+      fresh.stderr,
+      "sos_agent_failed error=mock authentication rejected\n" +
+        "sos_agent_login_incomplete credentials=absent config=absent state_dir=absent " +
+        "retry=/usr/local/libexec/sos/sos-agent-login\n",
+    );
+    await assert.rejects(
+      fs.access(path.join(freshHome, ".local/state/sos/agent")),
+      (error: NodeJS.ErrnoException) => error.code === "ENOENT",
+    );
+    await assert.rejects(
+      fs.access(path.join(freshHome, ".local/state")),
+      (error: NodeJS.ErrnoException) => error.code === "ENOENT",
+    );
+
+    const emptyHome = path.join(directory, "empty-home");
+    const emptyState = path.join(emptyHome, ".local/state/sos/agent");
+    await fs.mkdir(emptyState, { recursive: true, mode: 0o700 });
+    const empty = await runChild("bash", [launcher, "--if-needed"], {
+      ...baseEnvironment,
+      HOME: emptyHome,
+    });
+    assert.equal(empty.code, 23);
+    assert.equal(
+      empty.stderr,
+      "sos_agent_failed error=mock authentication rejected\n" +
+        "sos_agent_login_incomplete credentials=absent config=absent state_dir=preserved " +
+        "retry=/usr/local/libexec/sos/sos-agent-login\n",
+    );
+    assert.equal((await fs.stat(emptyState)).isDirectory(), true);
+    assert.deepEqual(await fs.readdir(emptyState), []);
+
+    const existingHome = path.join(directory, "existing-home");
+    const existingState = path.join(existingHome, ".local/state/sos/agent");
+    const existingCredential = path.join(existingState, "auth.json");
+    const existingConfig = path.join(existingState, "config.env");
+    const preservedCredential = '{"openai-codex":{"type":"oauth","access":"existing"}}\n';
+    const preservedConfig =
+      "SOS_AGENT_PROVIDER=openai-codex\nSOS_AGENT_MODEL=gpt-5.6-sol\n";
+    await fs.mkdir(existingState, { recursive: true, mode: 0o700 });
+    await Promise.all([
+      fs.writeFile(existingCredential, preservedCredential, { mode: 0o600 }),
+      fs.writeFile(existingConfig, preservedConfig, { mode: 0o600 }),
+    ]);
+    const existing = await runChild("bash", [launcher], {
+      ...baseEnvironment,
+      HOME: existingHome,
+    });
+    assert.equal(existing.code, 23);
+    assert.equal(
+      existing.stderr,
+      "sos_agent_failed error=mock authentication rejected\n" +
+        "sos_agent_login_incomplete credentials=preserved config=preserved " +
+        "state_dir=preserved retry=/usr/local/libexec/sos/sos-agent-login\n",
+    );
+    assert.equal(await fs.readFile(existingCredential, "utf8"), preservedCredential);
+    assert.equal(await fs.readFile(existingConfig, "utf8"), preservedConfig);
+  } finally {
+    await fs.rm(directory, { recursive: true });
+  }
+});
+
 test("the shared request contract rejects oversized prompts", () => {
   assert.throws(
     () =>
@@ -159,5 +359,21 @@ function exchange(arguments_: string[], request: unknown): Promise<Record<string
       resolve(JSON.parse(line) as Record<string, unknown>);
     });
     child.stdin.end(JSON.stringify(request));
+  });
+}
+
+function runChild(
+  command: string,
+  arguments_: string[],
+  env: NodeJS.ProcessEnv,
+): Promise<{ code: number | null; stdout: string; stderr: string }> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, arguments_, { env, stdio: ["ignore", "pipe", "pipe"] });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.setEncoding("utf8").on("data", (chunk: string) => (stdout += chunk));
+    child.stderr.setEncoding("utf8").on("data", (chunk: string) => (stderr += chunk));
+    child.once("error", reject);
+    child.once("close", (code) => resolve({ code, stdout, stderr }));
   });
 }

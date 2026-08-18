@@ -11,6 +11,7 @@ import {
   type CredentialStore,
   type MutableModels,
 } from "@earendil-works/pi-ai";
+import { registerBunOAuthFlows } from "@earendil-works/pi-ai/bun-oauth";
 import { anthropicProvider } from "@earendil-works/pi-ai/providers/anthropic";
 import { openaiCodexProvider } from "@earendil-works/pi-ai/providers/openai-codex";
 import { openaiProvider } from "@earendil-works/pi-ai/providers/openai";
@@ -19,6 +20,17 @@ import { Agent, type AgentMessage } from "@earendil-works/pi-agent-core";
 import { createAuthoringTools, type AuthoringBackend } from "./authoring.js";
 
 export type SupportedProvider = "openai" | "anthropic" | "openai-codex" | "openrouter";
+
+let bundledOAuthFlowsRegistered = false;
+
+function registerBundledOAuthFlows(): void {
+  if (bundledOAuthFlowsRegistered) return;
+  // Pi's historical Bun entry point statically embeds the OAuth modules. SOS
+  // also needs it for its single-file Node/CommonJS bundle: that bundle has no
+  // import.meta.url from which Pi's fallback loader could resolve a module.
+  registerBunOAuthFlows();
+  bundledOAuthFlowsRegistered = true;
+}
 
 export interface AgentRuntimeOptions {
   backend: AuthoringBackend;
@@ -60,6 +72,7 @@ export function createProviderModels(
   provider: SupportedProvider,
   credentials?: CredentialStore,
 ): MutableModels {
+  registerBundledOAuthFlows();
   const models = createModels(credentials ? { credentials } : undefined);
   switch (provider) {
     case "openai":

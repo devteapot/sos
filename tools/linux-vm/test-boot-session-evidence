@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+vm_tools_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+vm_repo_root="$(cd "$vm_tools_dir/../.." && pwd)"
+# shellcheck source=tools/linux-vm/boot-session-evidence-lib
+source "$vm_tools_dir/boot-session-evidence-lib"
+
+vm_contract="$(sos_agent_history_contract \
+  'Turn this into a spatial time flow' \
+  'The candidate experience is active.' \
+  <"$vm_repo_root/tests/fixtures/linux-agent-history.json")"
+[[ "$vm_contract" == '{"request":"Turn this into a spatial time flow","completion":"The candidate experience is active.","request_matches":1,"completion_matches":1}' ]]
+
+if sos_agent_history_contract \
+  'Turn this into a spatial time flow' \
+  'A completion that was not persisted.' \
+  <"$vm_repo_root/tests/fixtures/linux-agent-history.json" >/dev/null; then
+  printf 'error: missing persisted completion passed the evidence contract\n' >&2
+  exit 1
+fi
+
+for vm_marker in \
+  linux_boot_agent_initial_snapshot \
+  linux_boot_agent_final_snapshot \
+  linux_boot_agent_before_status \
+  linux_boot_agent_after_status \
+  linux_boot_agent_history_contract \
+  linux_boot_session_identity \
+  linux_boot_process_identity \
+  'linux_boot_lifecycle_state status=passed' \
+  'linux_boot_cleanup_audit status=passed'; do
+  grep -Fq "$vm_marker" "$vm_tools_dir/verify-boot-session"
+done
+for vm_marker in \
+  sos_login_session_ready \
+  sos_login_logind_identity \
+  sos_login_initial_status \
+  sos_login_surface_identity \
+  sos_login_rewrite_ \
+  sos_login_logout_observed \
+  sos_login_cleanup_passed; do
+  grep -Fq "$vm_marker" "$vm_repo_root/packaging/libexec/sos-login-session"
+done
+
+printf 'boot_session_evidence_contract_passed history_exact=true success_markers=true gdm_markers=true\n'

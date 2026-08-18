@@ -82,12 +82,72 @@ rsync -a \
 ssh -p 2222 sos@127.0.0.1 '~/sos/tools/linux-vm/provision-debian'
 ```
 
+Acceptance runners can capture each host command without a handwritten command
+description:
+
+```sh
+./tools/evidence-run --root "$evidence_root" --name phase-e-verify-boot-session -- \
+  env SOS_LINUX_VM_ROOT="$vm_root" SOS_LINUX_VM_GUEST_ROOT=/home/sos/sos \
+  ./tools/linux-vm/verify-boot-session
+```
+
+The evidence runner refuses to overwrite a record, rejects likely secret-bearing
+arguments, preserves the command's exit status, and atomically renames each
+member of one matched `.raw`/`.meta` pair. Metadata contains the literal
+shell-escaped argv, each
+individual argument, working directory, UTC and monotonic boundaries, elapsed
+nanoseconds, and status. Put multiline remote bodies in a tracked script or a
+separately identified input file; do not replace literal argv with descriptions
+such as `ssh ...`, and never put credentials in argv. Finalize all such pairs
+before generating the sorted, self-excluding manifest.
+
+Generate the manifest with the existing campaign generator, then audit it with
+the standalone read-only verifier. The verifier takes both paths explicitly,
+validates the three-column TSV schema, C-byte order and uniqueness, safe
+relative paths, the exact self-excluding finalized file set, sizes and SHA-256
+values, and byte-identical deterministic regeneration. It is an independent
+Python implementation and is invoked as an executable, so external acceptance
+does not depend on a multiline `python -c` argument:
+
+```sh
+./tools/a33xctl evidence-manifest-generate \
+  --root "$evidence_root" --output "$evidence_root/manifest.tsv"
+./tools/evidence-manifest-verify \
+  --root "$evidence_root" --manifest "$evidence_root/manifest.tsv"
+```
+
+### Phase F privilege and private-runtime matrix
+
+Phase F keeps evidence privilege explicit. The campaign must first pass
+`sudo -n true`; no command may prompt. Metadata inventory records paths,
+types, sizes, modes, numeric owners and, where needed, device/inode identity,
+but never credential or private-runtime file contents.
+
+| Context | Operations |
+| --- | --- |
+| Login user, no sudo | Credential/config `find` and `stat`; both login helpers; installer top level; the GDM SOS session; same-UID process identity; `tools/linux-vm/inventory-sos-runtime --root /run/user/$(id -u)`. |
+| Login user, readable system interfaces | Installed-payload `stat`/`sha256sum` and absence checks; `systemctl is-active`, `get-default`, and `show`; `loginctl show-seat`/`show-session`; `ps`, same-UID `pgrep`, `id`, and `getent`. |
+| Explicit `sudo -n`, read-only | Bounded AccountsService metadata/identity; `/etc/gdm3/daemon.conf` metadata, hash, and exact `DefaultSession`; bounded system journal records; cross-UID `/proc` executable identity; unreadable GDM-greeter runtime metadata. |
+| Explicit `sudo -n`, mutation | Root-owned installation cleanup or restoration and `systemctl set-default`, `enable`, `disable`, `start`, or `stop`. Logout remains selectable-session `Ctrl+Alt+Backspace`, never privileged session termination. |
+
+The runtime helper scans only top-level names matching the product-created
+`sos-session.XXXXXX` form and descends only those exact matches. It neither
+walks nor reports unrelated `/run/user/<uid>` trees such as
+`systemd/inaccessible`, and it rejects root execution so the ownership/access
+boundary remains under test. A Phase F capture is therefore:
+
+```sh
+ssh -p 2222 sos@127.0.0.1 \
+  'cd /home/sos/sos && tools/linux-vm/inventory-sos-runtime --root /run/user/$(id -u)'
+```
+
 `provision-debian` refuses non-Debian-13 guests, installs the pinned GPUI/Zed
-Linux development libraries plus Weston/Xvfb/Mesa and the direct
-GBM/libinput/libseat/udev/seatd stack, installs Rust 1.95.0 with rustfmt and
-Clippy through Debian's `rustup` package, fetches the locked dependency graph,
-and links the four session binaries plus both compositor backends. Log out and
-back in if it adds render/input group membership.
+Linux development libraries plus GStreamer test sources/PNG encoding,
+Weston/Xvfb/XWayland/X11 utilities/Mesa, and the direct
+GBM/libinput/libseat/udev/seatd stack. It also installs Rust 1.95.0 with
+rustfmt and Clippy through Debian's `rustup` package, fetches the locked
+dependency graph, and links the four session binaries plus both compositor
+backends. Log out and back in if it adds render/input group membership.
 
 ## Automated acceptance gate
 
@@ -159,6 +219,29 @@ reboots the VM. Set `SOS_LINUX_VM_GUEST_ROOT` when the guest worktree uses a
 different absolute path. SSH remains only the test controller; it does not
 launch or own the compositor session.
 
+Before installation, the verifier prints the absolute guest source root and
+SHA-256 identities for `tools/linux-vm/provision-debian` and the actual agent
+manifest at `services/sos-agent/package.json`. It runs the locked agent package
+sequence `npm ci --ignore-scripts`, `npm run check`, `npm test`, and a final
+`npm run build`, then reports the built
+`services/sos-agent/dist/agent-runner.cjs` path, byte size, and SHA-256. The
+provisioner runs and reports the same sequence, so an acceptance capture need
+not infer test or bundle completion from a later consumer.
+
+The resident-agent subgate waits on accessibility snapshot generations for at
+most the authoring broker's 30-second operation timeout. It passes only when
+one semantic snapshot contains the exact user request, the exact packaged faux
+provider completion, `Ready`, and an empty editable composer after the new
+revision is presented. It also requires the same completion in the persisted
+agent history. A successful run prints the complete initial/final semantic JSON,
+complete before/after daemon-status JSON, an exact request/completion object
+derived from the persisted JSON plus its path/size/SHA-256, and safe PID/PPID/
+UID/user/executable identities for the session owner, compositor, platform
+authority, supervisor, host proxy, experience host, authoring broker, and
+resident agent. It never prints credential values. Failure prints the same
+semantic/status/history diagnostics plus the bounded journals. The timeout is a
+bound on an explicit completion predicate, not a sleep used as evidence.
+
 The verifier requires a clean reference guest with no existing `/var/lib/sos`,
 `/etc/sos`, `/usr/local/libexec/sos`, or SOS unit files. It proves active
 logind seat0/tty1 ownership, a recovery-view page flip before provider startup,
@@ -171,6 +254,30 @@ installation it created. Its leading result is:
 ```text
 linux_boot_session_passed ... evidence=drm_page_flip
 ```
+
+The suspend/output lifecycle subgate emits a pass checkpoint for each VT
+request and log match, freezer command and kernel entry/exit match, connector
+request and disconnect/reconnect match, and same-PID liveness assertion. A
+readable `/sys/power/mem_sleep` is captured before the freezer test; its one
+selected `s2idle` or `deep` mode must match a new kernel entry followed by a
+kernel suspend exit. If that sysfs selector is unavailable, the same supported
+mode and ordered entry/exit pair must be unambiguous in the new kernel journal.
+A successful lifecycle run also prints the terminal VT, both virtual-connector
+states, `pm_test`, available and selected `mem_sleep` mode, unchanged owner PID,
+and the exact direct-session pause/activation, KMS initialization/disconnect, and
+significant page-flip journal records. The boot contract prints the exact
+logind-session fields and process identities before destructive recovery tests.
+A normal uninstall passes only after all installed SOS paths, units, service
+accounts, the IPC group and login membership, and matching processes are
+absent; both normal and failure cleanup print the same
+`linux_boot_cleanup_audit status=passed|failed ...` category contract, and the
+normal path retains `linux_boot_cleanup_passed` as its terminal marker. A
+failure emits `linux_boot_lifecycle_failed phase=...` with the assertion line,
+current session PID, VT/connector/`pm_test`/`mem_sleep` state, relevant
+compositor journal, and kernel PM journal before the verifier restores the
+disposable guest. A nonzero SSH result without that marker is classified as
+lifecycle
+transport/bootstrap failure rather than as one of the product assertions.
 
 ## Current status
 

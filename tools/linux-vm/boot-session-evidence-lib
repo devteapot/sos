@@ -1,0 +1,19 @@
+# Shared, pure evidence formatting helpers for the boot-session gate.
+
+sos_agent_history_contract() {
+  local sos_history_request="$1"
+  local sos_history_completion="$2"
+  jq -ce \
+    --arg request "$sos_history_request" \
+    --arg completion "$sos_history_completion" '
+      [paths(strings) as $path | select(getpath($path) == $request) | $path] as $request_paths
+      | [paths(strings) as $path | select(getpath($path) == $completion) | $path] as $completion_paths
+      | select(($request_paths | length) > 0 and ($completion_paths | length) > 0)
+      | {
+          request: getpath($request_paths[-1]),
+          completion: getpath($completion_paths[-1]),
+          request_matches: ($request_paths | length),
+          completion_matches: ($completion_paths | length)
+        }
+    '
+}

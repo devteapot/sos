@@ -1,0 +1,112 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+evidence_fail() {
+  printf 'error: %s\n' "$*" >&2
+  exit 1
+}
+
+evidence_usage='usage: tools/evidence-run --root ABSOLUTE_DIR --name RECORD_NAME -- COMMAND [ARG ...]'
+evidence_root=""
+evidence_name=""
+while [[ "$#" -gt 0 ]]; do
+  case "$1" in
+    --root)
+      [[ "$#" -ge 2 ]] || evidence_fail "$evidence_usage"
+      evidence_root="$2"
+      shift 2
+      ;;
+    --name)
+      [[ "$#" -ge 2 ]] || evidence_fail "$evidence_usage"
+      evidence_name="$2"
+      shift 2
+      ;;
+    --)
+      shift
+      break
+      ;;
+    *)
+      evidence_fail "$evidence_usage"
+      ;;
+  esac
+done
+
+[[ "$evidence_root" == /* && "$evidence_root" != *$'\n'* ]] || \
+  evidence_fail "evidence root must be an absolute single-line path"
+[[ "$evidence_name" =~ ^[a-z0-9][a-z0-9._-]*$ ]] || \
+  evidence_fail "record name must contain only lowercase letters, digits, dot, underscore, or dash"
+[[ "$#" -gt 0 ]] || evidence_fail "$evidence_usage"
+
+# Literal argv belongs in evidence, but credentials do not. Campaign commands
+# must refer to private credential files instead of placing secret material in
+# environment assignments or options.
+shopt -s nocasematch
+for evidence_argument in "$@"; do
+  [[ "$evidence_argument" != *$'\n'* && "$evidence_argument" != *$'\r'* ]] || \
+    evidence_fail "command arguments must be single-line values"
+  if [[ "$evidence_argument" =~ (^|[-_])(API[-_]?KEY|PASSWORD|SECRET|TOKEN|CREDENTIALS?)= ]]; then
+    evidence_fail "refusing to record a potentially secret-bearing argument; pass a credential-file path instead"
+  fi
+done
+shopt -u nocasematch
+
+for evidence_command in date mkdir mv pwd python3 rm tee; do
+  command -v "$evidence_command" >/dev/null 2>&1 || \
+    evidence_fail "required command not found: $evidence_command"
+done
+
+mkdir -p -- "$evidence_root"
+evidence_root="$(cd "$evidence_root" && pwd -P)"
+evidence_raw="$evidence_root/$evidence_name.raw"
+evidence_meta="$evidence_root/$evidence_name.meta"
+[[ ! -e "$evidence_raw" && ! -e "$evidence_meta" ]] || \
+  evidence_fail "refusing to overwrite evidence record: $evidence_name"
+
+evidence_nonce="$BASHPID-$RANDOM"
+evidence_raw_tmp="$evidence_root/.$evidence_name.raw.tmp-$evidence_nonce"
+evidence_meta_tmp="$evidence_root/.$evidence_name.meta.tmp-$evidence_nonce"
+evidence_cleanup_temporary() {
+  rm -f -- "$evidence_raw_tmp" "$evidence_meta_tmp"
+}
+trap evidence_cleanup_temporary EXIT HUP INT TERM
+
+evidence_cwd="$(pwd -P)"
+printf -v evidence_command_literal '%q ' "$@"
+evidence_command_literal="${evidence_command_literal% }"
+evidence_utc_start="$(date --utc +%Y-%m-%dT%H:%M:%S.%NZ)"
+evidence_monotonic_start_ns="$(python3 -c 'import time; print(time.monotonic_ns())')"
+
+set +e
+"$@" 2>&1 | tee "$evidence_raw_tmp"
+evidence_pipeline_status=("${PIPESTATUS[@]}")
+set -e
+evidence_status="${evidence_pipeline_status[0]}"
+evidence_tee_status="${evidence_pipeline_status[1]}"
+[[ "$evidence_tee_status" -eq 0 ]] || \
+  evidence_fail "could not capture raw output for $evidence_name"
+
+evidence_monotonic_end_ns="$(python3 -c 'import time; print(time.monotonic_ns())')"
+evidence_utc_end="$(date --utc +%Y-%m-%dT%H:%M:%S.%NZ)"
+evidence_elapsed_ns=$((evidence_monotonic_end_ns - evidence_monotonic_start_ns))
+mv -- "$evidence_raw_tmp" "$evidence_raw"
+
+{
+  printf 'command=%s\n' "$evidence_command_literal"
+  printf 'cwd=%q\n' "$evidence_cwd"
+  printf 'argv_count=%s\n' "$#"
+  evidence_index=0
+  for evidence_argument in "$@"; do
+    printf 'argv_%s=%q\n' "$evidence_index" "$evidence_argument"
+    evidence_index=$((evidence_index + 1))
+  done
+  printf 'utc_start=%s\n' "$evidence_utc_start"
+  printf 'utc_end=%s\n' "$evidence_utc_end"
+  printf 'monotonic_start_ns=%s\n' "$evidence_monotonic_start_ns"
+  printf 'monotonic_end_ns=%s\n' "$evidence_monotonic_end_ns"
+  printf 'elapsed_ns=%s\n' "$evidence_elapsed_ns"
+  printf 'status=%s\n' "$evidence_status"
+} >"$evidence_meta_tmp"
+mv -- "$evidence_meta_tmp" "$evidence_meta"
+trap - EXIT HUP INT TERM
+exit "$evidence_status"

@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+fail() {
+  printf 'error: %s\n' "$*" >&2
+  exit 1
+}
+
+[[ "$#" -eq 2 && "$1" == --root ]] || \
+  fail "usage: tools/linux-vm/inventory-sos-runtime --root /run/user/UID"
+[[ "$(id -u)" -ne 0 ]] || fail "run the SOS runtime inventory as the login user, not root"
+command -v find >/dev/null 2>&1 || fail "required command not found: find"
+command -v realpath >/dev/null 2>&1 || fail "required command not found: realpath"
+command -v sort >/dev/null 2>&1 || fail "required command not found: sort"
+
+runtime_root="$(realpath -e -- "$2")"
+[[ "$runtime_root" == /* && -d "$runtime_root" ]] || fail "runtime root must be an existing absolute directory"
+[[ -O "$runtime_root" ]] || fail "runtime root must belong to the login user"
+
+export LC_ALL=C
+shopt -s nullglob
+candidates=("$runtime_root"/sos-session.*)
+sessions=0
+entries=0
+
+for candidate in "${candidates[@]}"; do
+  basename="${candidate##*/}"
+  [[ "$basename" =~ ^sos-session\.[[:alnum:]]{6}$ ]] || continue
+  sessions=$((sessions + 1))
+  while IFS= read -r -d '' path; do
+    [[ "$path" != *$'\t'* && "$path" != *$'\n'* && "$path" != *$'\r'* ]] || \
+      fail "SOS runtime path contains a control delimiter"
+    find "$path" -maxdepth 0 -printf \
+      'path=%p\ttype=%y\tbytes=%s\tmode=%m\tuid=%U\tgid=%G\tdevice_inode=%D:%i\n'
+    entries=$((entries + 1))
+  done < <(find "$candidate" -xdev -print0 | sort -z)
+done
+
+printf 'sos_runtime_inventory=PASS root=%s sessions=%s entries=%s\n' \
+  "$runtime_root" "$sessions" "$entries"

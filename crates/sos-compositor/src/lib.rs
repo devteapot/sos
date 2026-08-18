@@ -44,6 +44,17 @@ pub fn run() -> Result<()> {
     let xwayland_display_file = options
         .optional("--xwayland-display-file")
         .map(PathBuf::from);
+    let xwayland_display = options
+        .optional("--xwayland-display")
+        .map(|value| {
+            value
+                .parse::<u32>()
+                .with_context(|| format!("invalid XWayland display number: {value}"))
+        })
+        .transpose()?;
+    if xwayland_display.is_some() && xwayland_display_file.is_none() {
+        bail!("--xwayland-display requires --xwayland-display-file");
+    }
     let shell_token = match (
         options.optional("--shell-token"),
         options.optional("--shell-token-file"),
@@ -67,6 +78,7 @@ pub fn run() -> Result<()> {
         "--ready-file",
         "--backend",
         "--xwayland-display-file",
+        "--xwayland-display",
     ])?;
 
     let mut event_loop: EventLoop<'static, CompositorData> = EventLoop::try_new()?;
@@ -104,7 +116,7 @@ pub fn run() -> Result<()> {
         other => bail!("unsupported compositor backend: {other}"),
     };
     if let Some(display_file) = xwayland_display_file {
-        xwayland::start(&mut event_loop, &mut data, display_file)?;
+        xwayland::start(&mut event_loop, &mut data, display_file, xwayland_display)?;
     }
 
     println!(
@@ -199,5 +211,5 @@ impl Options {
 }
 
 fn usage() -> &'static str {
-    "usage: sos-compositor --socket NAME --control-socket PATH (--shell-token TOKEN | --shell-token-file PATH) [--ready-file PATH] [--backend nested|drm] [--xwayland-display-file PATH]"
+    "usage: sos-compositor --socket NAME --control-socket PATH (--shell-token TOKEN | --shell-token-file PATH) [--ready-file PATH] [--backend nested|drm] [--xwayland-display-file PATH] [--xwayland-display NUMBER]"
 }

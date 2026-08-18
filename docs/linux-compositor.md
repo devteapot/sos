@@ -137,12 +137,21 @@ recovery, and maps `weston-simple-shm` as the compatibility client. It requires:
   quiesced;
 - a new authenticated PID after forced host failure;
 - shell/native-compatibility role classification and fixed placement;
-- an opt-in real `Xwayland` process and bounded rootless `xmessage` window.
+- an opt-in real `Xwayland` process whose `Xwayland -version` probe succeeds,
+  whose exact PID is a child of the compositor, and whose titled rootless
+  `xmessage` surface is mapped at the bounded policy position; and
+- exact, preflight-empty Xvfb and XWayland display allocations that never
+  overwrite another session's socket or lock; and
+- deterministic teardown proving that every gate-owned PID, both exact
+  campaign socket/lock pairs, and the disposable run directory are absent.
 
 Expected leading output:
 
 ```text
 linux_nested_compositor_passed activation_pid=... restarted_pid=... revision_id=... evidence=nested_backend_submit
+xwayland_pid=... parent_pid=... client_pid=... display=:... version=Xwayland ...
+xwayland_surface=... title="SOS XWayland compatibility gate" ...
+linux_nested_cleanup_passed owned_pids_absent=true run_dir_absent=true x_socket_absent=true x_lock_absent=true xvfb_display=:... xwayland_display=:...
 ```
 
 The gate passes both on the ARM64 Ubuntu 24.04 development host and inside the

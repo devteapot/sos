@@ -168,6 +168,24 @@ SOS_AGENT_MODEL=gpt-5.6-sol \
   /usr/local/libexec/sos/sos-agent-login
 ```
 
+The launcher emits a bounded evidence contract suitable for the first
+interactive GDM gate. `sos_login_session_ready` records the exact initial
+revision, permanent host PID, login-session owner PID, UID/user, Shell surface,
+and DRM-page-flip evidence after authority and host readiness. Separate
+`sos_login_process_identity` records give PID/PPID/UID/user/executable identity
+for the launcher, session, compositor, provider/platform authority, supervisor,
+host proxy, actual experience host, authoring broker, and agent. A background
+observer emits `sos_login_rewrite_passed` only after it sees a different valid
+revision, unchanged host PID, equal authority revision, and a changed persisted
+history SHA-256; the record includes both revision IDs and both history
+identities without printing conversation or credential contents. The selectable
+logout chord emits `sos_login_logout_observed`, and the EXIT path emits
+`sos_login_cleanup_passed` only after all recorded top-level/component PIDs,
+every same-UID matching product executable/agent command, and the private
+runtime directory are absent. Capture the child journal itself for
+the exact KMS connector/page-flip and mapped-Shell records; these markers do not
+turn a static install into an interactive PASS.
+
 The installer completes authentication before offering a successful handoff.
 If credentials are later removed, the SOS login refuses to start and its journal
 names the login helper rather than presenting a composer backed by no agent.

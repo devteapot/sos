@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+test_repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+test_run="$test_repo_root/tools/evidence-run"
+test_root="$(mktemp -d /tmp/sos-evidence-run-test.XXXXXX)"
+cleanup_test() {
+  [[ "$test_root" == /tmp/sos-evidence-run-test.* ]] && rm -r -- "$test_root"
+}
+trap cleanup_test EXIT
+
+fail() {
+  printf 'error: %s\n' "$*" >&2
+  exit 1
+}
+
+"$test_run" --root "$test_root" --name success -- \
+  bash -c 'printf "value=%s\\n" "$1"' bash 'space and $literal'
+[[ "$(cat "$test_root/success.raw")" == 'value=space and $literal' ]]
+grep -Fx 'status=0' "$test_root/success.meta" >/dev/null
+grep -Fx 'argv_count=5' "$test_root/success.meta" >/dev/null
+grep -Fx 'argv_4=space\ and\ \$literal' "$test_root/success.meta" >/dev/null
+grep -Fx "cwd=$(printf '%q' "$test_repo_root")" "$test_root/success.meta" >/dev/null
+
+set +e
+"$test_run" --root "$test_root" --name failure -- \
+  bash -c 'printf "bounded failure\\n" >&2; exit 23'
+test_failure_status=$?
+set -e
+[[ "$test_failure_status" -eq 23 ]]
+grep -Fx 'bounded failure' "$test_root/failure.raw" >/dev/null
+grep -Fx 'status=23' "$test_root/failure.meta" >/dev/null
+
+if "$test_run" --root "$test_root" --name success -- true >/dev/null 2>&1; then
+  fail "runner overwrote an existing record"
+fi
+if "$test_run" --root "$test_root" --name secret -- \
+  env api_token=do-not-record true >/dev/null 2>&1; then
+  fail "runner accepted a secret-bearing argument"
+fi
+[[ ! -e "$test_root/secret.raw" && ! -e "$test_root/secret.meta" ]]
+if find "$test_root" -maxdepth 1 -type f -name '*.tmp-*' | grep . >/dev/null; then
+  fail "runner left temporary files"
+fi
+
+printf 'evidence_run_contract_passed success_status=0 failure_status=23 matched_pairs=2 overwrite_refused=true secret_argument_refused=true temporary_files_absent=true\n'

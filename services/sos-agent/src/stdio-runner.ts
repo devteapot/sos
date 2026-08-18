@@ -6,7 +6,6 @@ import {
   type AuthPrompt,
   type Credential,
 } from "@earendil-works/pi-ai";
-import { registerBunOAuthFlows } from "@earendil-works/pi-ai/bun-oauth";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { AuthoringBackend } from "./authoring.js";
 import {
@@ -485,9 +484,6 @@ async function prompt(request: PromptRequest, systemPrompt: string): Promise<voi
 }
 
 export async function runStdio(documents: PromptDocuments): Promise<void> {
-  // The registration name is historical; it statically includes Pi's OAuth
-  // implementations so a single-file Node bundle can perform Codex login.
-  registerBunOAuthFlows();
   const request = await readRequest();
   switch (request.action) {
     case "catalog":
