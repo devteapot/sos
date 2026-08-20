@@ -1,0 +1,4 @@
+interface:
+  display_name: "SOS Device Gate"
+  short_description: "Run complete SOS hardware acceptance gates"
+  default_prompt: "Use $sos-device-gate to run this SOS device gate through one complete lifecycle."

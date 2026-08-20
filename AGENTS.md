@@ -26,77 +26,41 @@ selection, `docs/experiment.md` for the original GPUI Mobile hardware gate,
 and focused milestone reports where needed; `docs/progress.md` stays the
 concise chronological index.
 
-## Agent workflow v2
+## Execution invariants
 
-The parent coordinates short phases and never runs long CLI or device work.
-Custom agents in `.codex/agents/` have distinct ownership:
+Use the focused workflows in `.agents/skills/` when their descriptions match
+the task. Skills own procedural detail; this file retains only invariants that
+apply across workflows. Let the harness decide whether independent work
+benefits from delegation. Do not require a fixed agent hierarchy, model,
+reasoning level, or agent-per-phase sequence.
 
-- `implementor` (Sol/high) is the only writer. Use it for architecture,
-  ambiguous diagnosis, high-risk review, and complex or related code changes.
-  Keep a coherent implementation milestone in one Sol task instead of serial
-  tiny tasks. After that milestone completes, a new root cause discovered by a
-  hardware run gets a fresh Sol implementor; explicitly finish the prior
-  writer first and never overlap writers.
-- `gate` (Terra/medium) owns acceptance criteria, runner briefs, evidence
-  judgment, and coordination for every device or hardware gate. It does not
-  edit files or touch the device.
-- `runner` (Luna/medium) is the only device owner and executes one complete,
-  bounded host/device transaction, including authorized automatic transitions,
-  boot observation, and soak. It does not design or edit.
+Keep one coherent owner for related diagnosis and implementation instead of
+starting a new thread for every symptom. There is never more than one writer or
+one device owner. Safe read-only exploration and unrelated host verification
+may run concurrently when genuinely independent. Never run concurrent `adb` or
+`a33xctl` commands.
 
-For an implementation, give Sol files, invariants, acceptance conditions, and
-required evidence. The brief must explicitly say whether `docs/progress.md` is
-required. Safe read-only exploration or unrelated host verification may run
-concurrently when independent, but there is never more than one writer or one
-device owner. Never run concurrent `adb` or `a33xctl` commands. Named custom
-roles must be spawned with `agent_type` and `fork_turns: "none"`; do not retry
-the invalid full-history plus named-role form.
+Long commands and device transitions use event-driven waits sized for the
+operation. Do not minute-poll agents or tools, send status-only follow-ups, or
+replay large context merely to observe unchanged state. Communicate when state
+meaningfully changes, a terminal failure needs judgment, or the task completes.
 
-For a device/hardware gate, spawn one Terra gate with the acceptance criteria
-and authorization envelope. Terra activates one Luna runner, which remains the
-sole device owner for the complete lifecycle of the same artifact and
-authorization envelope. At later state-change boundaries Terra follows up or
-reactivates that same runner instead of spawning observers. A replacement is
-allowed only when the artifact/envelope changes or the runner is genuinely
-unusable, and only after ownership is explicitly released. The parent and
-Terra each use one long, event-driven agent wait per actual phase; no minute
-polling, status-only follow-ups, or repeated "still running" updates. Agents
-communicate only on a state change, failure, approval boundary, or completion.
+The user's requested task defines the operating scope. Complete routine
+intermediate steps, automatic transitions, evidence collection, and safe
+evidence-driven retries without asking for confirmation at every boundary. Do
+not silently expand the task to a different device or destructive operation.
 
-Every device transaction brief must name the serial, exact operation, terminal
-conditions, evidence paths, and any artifact path plus expected revision,
-size, and SHA-256. User authorization of that exact envelope covers routine
-entry into the required Recovery/sideload transport, one sideload attempt, its
-inherent automatic reboot, readiness observation, and the specified soak; do
-not pause for authorization between those inherent transitions. A different
-artifact or serial, wipe, slot change, bootloader/Download mode, extra manual
-reboot, or second sideload attempt always requires new explicit authorization.
-An unresolved earlier sideload/recovery process is a stop-and-escalate
-condition. Report elapsed time only from command/tool output or captured
-monotonic timestamps, never from wait/yield/timeout values.
-
-Readiness predicates are product-specific. Core 1/no-Zygote must never use
-`sys.boot_completed` or `dev.bootcomplete`: require the exact expected revision,
-the `SOS Core Experience` surface, running supervisor and experience child,
-running authority and platform adapter, the current native lifecycle marker,
-and no relevant crash or enforcing SOS AVC. Android/Compat instead requires
-the exact revision, `sys.boot_completed=1`, its expected HOME/surface and
-required Android plus SOS processes, with the same crash/AVC scrutiny.
-
-Evidence comes only from command/tool output and captured files, never
-model-written summaries or timeout/yield inference. Finalize and close every
-evidence file before generating a deterministic manifest. Each manifest lists
-path, byte size, and SHA-256, excludes itself and temporary outputs, is written
-atomically, and must be independently verified before PASS. Terra owns the
-host-side criterion and evidence audit; the Sol parent reviews only ambiguous
-or high-risk failures, avoiding a serialized duplicate audit.
+Evidence comes from command output and captured files, never model-written
+facts or timeout/yield inference. Report elapsed time from tool output or
+captured monotonic timestamps. Finalize evidence files before hashing or
+manifest generation.
 
 ## Efficiency targets
 
 - coordination/model overhead: under 15% of task cost;
-- waits: one event-driven wait per phase;
-- device-runner sessions per artifact/authorization envelope: 1;
-- avoidable authorization pauses: zero;
+- waits: one event-driven wait per actual phase;
+- device owners per gate lifecycle: 1;
+- avoidable user interruptions: zero;
 - product-readiness timeout classification errors: zero;
 - evidence-manifest verification failures at PASS: zero;
 - record measured wall time and model-weighted cost per gate;

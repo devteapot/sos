@@ -1,0 +1,4 @@
+interface:
+  display_name: "SOS Linux Acceptance"
+  short_description: "Run the SOS Linux acceptance campaign"
+  default_prompt: "Use $sos-linux-acceptance to execute this SOS Linux acceptance campaign."

@@ -1,0 +1,4 @@
+interface:
+  display_name: "SOS Runtime Debug"
+  short_description: "Diagnose SOS runtime failures coherently"
+  default_prompt: "Use $sos-runtime-debug to diagnose and resolve this SOS runtime failure."
