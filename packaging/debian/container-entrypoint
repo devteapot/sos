@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+builder_workspace="${SOS_WORKSPACE:-/workspace}"
+builder_arch="$(dpkg --print-architecture)"
+export HOME="${SOS_BUILDER_HOME:-/tmp/sos-linux-package-builder-home}"
+export CARGO_HOME="${SOS_CARGO_HOME:-$builder_workspace/.cache/linux-package-builder/cargo}"
+export CARGO_TARGET_DIR="${SOS_CARGO_TARGET_DIR:-$builder_workspace/.cache/linux-package-builder/target/$builder_arch}"
+export CARGO_BUILD_JOBS="${SOS_CARGO_BUILD_JOBS:-2}"
+export NPM_CONFIG_CACHE="${SOS_NPM_CACHE:-$builder_workspace/.cache/linux-package-builder/npm}"
+export RUSTUP_HOME=/opt/rustup
+export PATH="/opt/cargo/bin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+
+mkdir -p "$HOME" "$CARGO_HOME" "$CARGO_TARGET_DIR" "$NPM_CONFIG_CACHE"
+
+exec "$@"

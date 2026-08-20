@@ -1,0 +1,301 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+package_repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$package_repo_root"
+
+package_fail() {
+  printf 'error: %s\n' "$*" >&2
+  exit 1
+}
+
+[[ "$#" -ge 1 && "$#" -le 2 ]] || package_fail \
+  "usage: tools/build-linux-packages <debian-version> [output-directory]"
+package_version="$1"
+package_output="${2:-$package_repo_root/artifacts/linux-packages}"
+[[ "$package_version" =~ ^[0-9][0-9A-Za-z.+~-]*$ ]] || \
+  package_fail "invalid Debian package version: $package_version"
+[[ ! -e "$package_output" ]] || package_fail "output already exists: $package_output"
+
+[[ -r /etc/os-release ]] || package_fail "package builds require Debian 13"
+# shellcheck source=/dev/null
+source /etc/os-release
+[[ "${ID:-}" == debian && "${VERSION_ID:-}" == 13 ]] || \
+  package_fail "package builds require Debian 13, found ${ID:-unknown} ${VERSION_ID:-unknown}"
+
+for package_command in \
+  cargo curl dpkg dpkg-deb dpkg-shlibdeps node npm sha256sum tar; do
+  command -v "$package_command" >/dev/null 2>&1 || \
+    package_fail "required command not found: $package_command"
+done
+package_node_build_version="$(node --version | sed 's/^v//')"
+[[ "$(printf '%s\n' 22.19.0 "$package_node_build_version" | sort -V | sed -n '1p')" == 22.19.0 ]] || \
+  package_fail "agent package build requires Node 22.19.0 or newer"
+
+package_arch="$(dpkg --print-architecture)"
+package_node_version=24.18.0
+case "$package_arch" in
+  arm64)
+    package_node_arch=arm64
+    package_node_sha256=58c9520501f6ae2b52d5b210444e24b9d0c029a58c5011b797bc1fe7105886f6
+    ;;
+  amd64)
+    package_node_arch=x64
+    package_node_sha256=55aa7153f9d88f28d765fcdad5ae6945b5c0f98a36881703817e4c450fa76742
+    ;;
+  *)
+    package_fail "unsupported Debian architecture: $package_arch"
+    ;;
+esac
+
+if [[ -n "${SOS_SOURCE_REVISION:-}" ]]; then
+  package_revision="$SOS_SOURCE_REVISION"
+  [[ "$package_revision" =~ ^[0-9a-f]{40}(-dirty)?$ ]] || \
+    package_fail "SOS_SOURCE_REVISION must be a full Git revision with optional -dirty suffix"
+else
+  command -v git >/dev/null 2>&1 || \
+    package_fail "git is required when SOS_SOURCE_REVISION is not supplied"
+  package_revision="$(git rev-parse HEAD)"
+  if [[ -n "$(git status --short)" ]]; then
+    package_revision="$package_revision-dirty"
+  fi
+fi
+if [[ -n "${SOURCE_DATE_EPOCH:-}" ]]; then
+  package_source_epoch="$SOURCE_DATE_EPOCH"
+else
+  command -v git >/dev/null 2>&1 || \
+    package_fail "git is required when SOURCE_DATE_EPOCH is not supplied"
+  package_source_epoch="$(git show -s --format=%ct HEAD)"
+fi
+[[ "$package_source_epoch" =~ ^[0-9]+$ ]] || package_fail "SOURCE_DATE_EPOCH must be an integer"
+export LC_ALL=C
+export TZ=UTC
+export SOURCE_DATE_EPOCH="$package_source_epoch"
+
+package_work="$(mktemp -d -t sos-packages.XXXXXX)"
+package_incomplete=true
+package_cleanup() {
+  rm -rf -- "$package_work"
+  if [[ "$package_incomplete" == true ]]; then
+    rm -rf -- "$package_output"
+  fi
+}
+trap package_cleanup EXIT
+mkdir -p "$package_output"
+package_target_dir="${CARGO_TARGET_DIR:-$package_repo_root/target}"
+package_agent_source="$package_work/sos-agent-source"
+mkdir -p "$package_agent_source"
+cp -a \
+  services/sos-agent/package-lock.json \
+  services/sos-agent/package.json \
+  services/sos-agent/scripts \
+  services/sos-agent/src \
+  services/sos-agent/test \
+  services/sos-agent/tsconfig.json \
+  "$package_agent_source/"
+
+printf 'Building SOS release binaries for Debian %s/%s.\n' "$VERSION_ID" "$package_arch"
+cargo build --locked --release \
+  -p sos-compositor --features direct-backend --bin sos-compositor \
+  -p sos-experience --features linux-host --bin sos-experience-host \
+  -p revision-supervisor --bin sos-revision-supervisor \
+  -p provider-state-service --bin sos-provider-state-service \
+  -p sos-linux-session --bin sos-linux-session \
+  -p sos-linux-session --bin sos-agent-authoring
+(
+  cd "$package_agent_source"
+  npm ci --ignore-scripts
+  npm run build
+)
+
+package_node_archive="$package_work/node.tar.xz"
+curl --fail --location --silent --show-error \
+  "https://nodejs.org/dist/v$package_node_version/node-v$package_node_version-linux-$package_node_arch.tar.xz" \
+  --output "$package_node_archive"
+printf '%s  %s\n' "$package_node_sha256" "$package_node_archive" \
+  | sha256sum --check --status
+mkdir -p "$package_work/node"
+tar -xJf "$package_node_archive" -C "$package_work/node" --strip-components=1
+
+"$package_repo_root/tools/render-linux-packaging" \
+  "$package_work/rendered" \
+  /usr/lib/sos \
+  /usr/lib/sos-agent \
+  /usr/lib/sos-agent/node/bin/node
+
+package_runtime_stage="$package_work/sos-runtime"
+install -d -m 0755 \
+  "$package_runtime_stage/usr/lib/sos" \
+  "$package_runtime_stage/usr/share/sos/experiences" \
+  "$package_runtime_stage/usr/share/doc/sos"
+for package_binary in \
+  sos-compositor \
+  sos-experience-host \
+  sos-provider-state-service \
+  sos-revision-supervisor \
+  sos-linux-session \
+  sos-agent-authoring; do
+  install -m 0755 "$package_target_dir/release/$package_binary" \
+    "$package_runtime_stage/usr/lib/sos/$package_binary"
+done
+for package_experience in default.luau daily-flow.luau timeflow.luau; do
+  install -m 0644 "experiences/$package_experience" \
+    "$package_runtime_stage/usr/share/sos/experiences/$package_experience"
+done
+install -m 0644 docs/experience-api.md "$package_runtime_stage/usr/share/doc/sos/experience-api.md"
+install -m 0644 docs/linux-stable-host.md "$package_runtime_stage/usr/share/doc/sos/linux-stable-host.md"
+printf 'package_version=%s\nsource_revision=%s\nsource_date_epoch=%s\n' \
+  "$package_version" "$package_revision" "$package_source_epoch" \
+  >"$package_runtime_stage/usr/share/doc/sos/build-info"
+
+package_shlibs="$package_work/shlibs"
+mkdir -p "$package_shlibs/debian"
+cat >"$package_shlibs/debian/control" <<'CONTROL'
+Source: sos-runtime
+Section: misc
+Priority: optional
+Maintainer: SOS Project <noreply@example.invalid>
+
+Package: sos-runtime
+Architecture: any
+Description: SOS native Linux runtime
+CONTROL
+package_shlib_args=()
+for package_binary in "$package_runtime_stage"/usr/lib/sos/*; do
+  package_shlib_args+=("-e$package_binary")
+done
+package_runtime_depends="$(
+  cd "$package_shlibs"
+  dpkg-shlibdeps -O "${package_shlib_args[@]}"
+)"
+package_runtime_depends="${package_runtime_depends#shlibs:Depends=}"
+[[ -n "$package_runtime_depends" ]] || package_fail "dpkg-shlibdeps returned no runtime dependencies"
+package_runtime_depends="$package_runtime_depends, bash, coreutils, util-linux"
+
+package_agent_stage="$package_work/sos-agent"
+install -d -m 0755 \
+  "$package_agent_stage/usr/lib/sos-agent" \
+  "$package_agent_stage/usr/lib/sos-agent/node/bin" \
+  "$package_agent_stage/usr/share/doc/sos"
+cp -a "$package_agent_source/dist" "$package_agent_source/node_modules" \
+  "$package_agent_stage/usr/lib/sos-agent/"
+install -m 0644 "$package_agent_source/package.json" \
+  "$package_agent_stage/usr/lib/sos-agent/package.json"
+install -m 0755 "$package_work/node/bin/node" \
+  "$package_agent_stage/usr/lib/sos-agent/node/bin/node"
+install -m 0644 "$package_work/node/LICENSE" \
+  "$package_agent_stage/usr/share/doc/sos/node-license"
+install -m 0644 docs/sos-agent.md "$package_agent_stage/usr/share/doc/sos/sos-agent.md"
+
+package_desktop_stage="$package_work/sos-desktop-session"
+install -d -m 0755 \
+  "$package_desktop_stage/usr/lib/sos" \
+  "$package_desktop_stage/usr/share/wayland-sessions"
+install -m 0755 "$package_work/rendered/libexec/sos-login-session" \
+  "$package_desktop_stage/usr/lib/sos/sos-login-session"
+install -m 0755 "$package_work/rendered/libexec/sos-agent-login" \
+  "$package_desktop_stage/usr/lib/sos/sos-agent-login"
+install -m 0644 "$package_work/rendered/wayland-sessions/sos.desktop" \
+  "$package_desktop_stage/usr/share/wayland-sessions/sos.desktop"
+
+package_appliance_stage="$package_work/sos-appliance-session"
+install -d -m 0755 \
+  "$package_appliance_stage/usr/lib/systemd/system" \
+  "$package_appliance_stage/usr/lib/sysusers.d"
+for package_unit in \
+  sos-agent-authoring.service \
+  sos-agent.service \
+  sos-agent.target \
+  sos-session.service \
+  sos-session.target; do
+  install -m 0644 "$package_work/rendered/systemd/$package_unit" \
+    "$package_appliance_stage/usr/lib/systemd/system/$package_unit"
+done
+install -m 0644 packaging/sysusers.d/sos.conf \
+  "$package_appliance_stage/usr/lib/sysusers.d/sos.conf"
+mkdir -p "$package_appliance_stage/DEBIAN"
+cat >"$package_appliance_stage/DEBIAN/postinst" <<'POSTINST'
+#!/bin/sh
+set -e
+systemd-sysusers /usr/lib/sysusers.d/sos.conf
+if [ -d /run/systemd/system ]; then
+  systemctl daemon-reload
+fi
+POSTINST
+chmod 0755 "$package_appliance_stage/DEBIAN/postinst"
+cat >"$package_appliance_stage/DEBIAN/postrm" <<'POSTRM'
+#!/bin/sh
+set -e
+if [ -d /run/systemd/system ]; then
+  systemctl daemon-reload
+fi
+POSTRM
+chmod 0755 "$package_appliance_stage/DEBIAN/postrm"
+
+package_image_stage="$package_work/sos-image-config"
+install -d -m 0755 \
+  "$package_image_stage/usr/lib/sos" \
+  "$package_image_stage/usr/lib/systemd/system" \
+  "$package_image_stage/usr/lib/systemd/system/sos-session.service.d"
+install -m 0755 packaging/image/sos-image-initialize \
+  "$package_image_stage/usr/lib/sos/sos-image-initialize"
+install -m 0644 packaging/image/sos-image-initialize.service \
+  "$package_image_stage/usr/lib/systemd/system/sos-image-initialize.service"
+install -m 0644 packaging/image/sos-session-image.conf \
+  "$package_image_stage/usr/lib/systemd/system/sos-session.service.d/10-image-initialize.conf"
+
+package_build_one() {
+  local package_name="$1"
+  local package_architecture="$2"
+  local package_depends="$3"
+  local package_description="$4"
+  local package_stage="$package_work/$package_name"
+  local package_installed_size
+  package_installed_size="$(du -sk "$package_stage" | awk '{print $1}')"
+  mkdir -p "$package_stage/DEBIAN"
+  cat >"$package_stage/DEBIAN/control" <<CONTROL
+Package: $package_name
+Version: $package_version
+Section: misc
+Priority: optional
+Architecture: $package_architecture
+Maintainer: SOS Project <noreply@example.invalid>
+Installed-Size: $package_installed_size
+Depends: $package_depends
+Description: $package_description
+ Built from SOS revision $package_revision for the pinned Debian 13 platform.
+CONTROL
+  find "$package_stage" -print0 \
+    | xargs -0 touch --no-dereference --date="@$package_source_epoch"
+  dpkg-deb --root-owner-group -Zxz -z9 --build \
+    "$package_stage" \
+    "$package_output/${package_name}_${package_version}_${package_architecture}.deb"
+}
+
+package_build_one sos-runtime "$package_arch" \
+  "$package_runtime_depends" \
+  "SOS compositor, experience host, authority, and revision runtime"
+package_build_one sos-agent "$package_arch" \
+  "sos-runtime (= $package_version), ca-certificates, libc6, libstdc++6" \
+  "SOS resident authoring agent with pinned private Node runtime"
+package_build_one sos-desktop-session all \
+  "sos-runtime (= $package_version), sos-agent (= $package_version), bash, coreutils" \
+  "Selectable SOS Wayland desktop session"
+package_build_one sos-appliance-session all \
+  "sos-runtime (= $package_version), sos-agent (= $package_version), systemd, init-system-helpers" \
+  "System users and boot-owned SOS appliance units"
+package_build_one sos-image-config all \
+  "sos-appliance-session (= $package_version), util-linux" \
+  "First-boot policy for the pinned SOS reference image"
+
+(
+  cd "$package_output"
+  for package_deb in *.deb; do
+    printf '%s  %s\n' "$(sha256sum "$package_deb" | awk '{print $1}')" "$package_deb"
+  done
+) >"$package_output/SHA256SUMS"
+package_incomplete=false
+
+printf 'linux_packages_built version=%s architecture=%s output=%s\n' \
+  "$package_version" "$package_arch" "$package_output"

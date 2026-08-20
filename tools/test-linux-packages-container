@@ -1,0 +1,63 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+package_test_repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+package_test_directory="${1:-$package_test_repo_root/artifacts/linux-packages}"
+[[ "$package_test_directory" == /* ]] || \
+  package_test_directory="$package_test_repo_root/$package_test_directory"
+
+package_test_fail() {
+  printf 'error: %s\n' "$*" >&2
+  exit 1
+}
+
+[[ "$#" -le 1 ]] || package_test_fail \
+  "usage: tools/test-linux-packages-container [package-directory]"
+[[ -d "$package_test_directory" ]] || \
+  package_test_fail "package directory not found: $package_test_directory"
+for package_test_name in \
+  sos-runtime \
+  sos-agent \
+  sos-desktop-session \
+  sos-appliance-session \
+  sos-image-config; do
+  package_test_matches=("$package_test_directory"/"${package_test_name}_"*.deb)
+  [[ "${#package_test_matches[@]}" -eq 1 && -f "${package_test_matches[0]}" ]] || \
+    package_test_fail "expected exactly one package for $package_test_name"
+done
+
+package_test_engine="${SOS_CONTAINER_ENGINE:-}"
+if [[ -z "$package_test_engine" ]]; then
+  if command -v podman >/dev/null 2>&1; then
+    package_test_engine=podman
+  elif command -v docker >/dev/null 2>&1; then
+    package_test_engine=docker
+  else
+    package_test_fail "Podman or Docker is required"
+  fi
+fi
+command -v "$package_test_engine" >/dev/null 2>&1 || \
+  package_test_fail "container engine not found: $package_test_engine"
+
+# shellcheck source=/dev/null
+source "$package_test_repo_root/images/debian-13/base-images.lock"
+package_test_base_image='debian:13.6-slim@sha256:3a39a0592364683e6bab97937b72cad5a8fa6dcbbee90edb3bb48c7f8e94f258'
+package_test_run_args=(
+  run
+  --rm
+  --volume "$package_test_directory:/packages:ro"
+  --volume "$package_test_repo_root/tests/linux-packages-container-test.sh:/package-test:ro"
+  --env "SOS_DEBIAN_SNAPSHOT=$SOS_IMAGE_DEBIAN_SNAPSHOT"
+  "$package_test_base_image"
+  /package-test
+)
+if [[ "$package_test_engine" == podman ]]; then
+  package_test_run_args=(run --rm --security-opt label=disable \
+    --volume "$package_test_directory:/packages:ro" \
+    --volume "$package_test_repo_root/tests/linux-packages-container-test.sh:/package-test:ro" \
+    --env "SOS_DEBIAN_SNAPSHOT=$SOS_IMAGE_DEBIAN_SNAPSHOT" \
+    "$package_test_base_image" /package-test)
+fi
+
+"$package_test_engine" "${package_test_run_args[@]}"

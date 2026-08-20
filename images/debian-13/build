@@ -1,0 +1,121 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+image_recipe_root="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+image_repo_root="$(cd "$image_recipe_root/../.." && pwd)"
+
+image_fail() {
+  printf 'error: %s\n' "$*" >&2
+  exit 1
+}
+
+[[ "$#" -ge 2 && "$#" -le 3 ]] || image_fail \
+  "usage: images/debian-13/build <base-qcow2> <package-directory> [output-qcow2]"
+image_base="$1"
+image_packages="$2"
+image_output="${3:-$image_repo_root/artifacts/linux-image/sos-debian13-arm64.qcow2}"
+image_manifest="$image_output.manifest"
+
+[[ "$(uname -s)" == Linux ]] || image_fail "image assembly requires Linux with libguestfs"
+for image_command in dpkg-deb git qemu-img sha256sum sha512sum stat virt-customize; do
+  command -v "$image_command" >/dev/null 2>&1 || \
+    image_fail "required command not found: $image_command"
+done
+[[ -f "$image_base" ]] || image_fail "base image not found: $image_base"
+[[ -d "$image_packages" ]] || image_fail "package directory not found: $image_packages"
+[[ ! -e "$image_output" && ! -e "$image_manifest" ]] || \
+  image_fail "output already exists: $image_output"
+
+# shellcheck source=/dev/null
+source "$image_recipe_root/base-images.lock"
+[[ "$(basename "$image_base")" == "$SOS_IMAGE_BASE_FILENAME" ]] || \
+  image_fail "expected base filename $SOS_IMAGE_BASE_FILENAME"
+[[ "$(stat -c '%s' "$image_base")" == "$SOS_IMAGE_BASE_SIZE" ]] || \
+  image_fail "base image byte size does not match lock"
+[[ "$(sha256sum "$image_base" | awk '{print $1}')" == "$SOS_IMAGE_BASE_SHA256" ]] || \
+  image_fail "base image SHA-256 does not match lock"
+[[ "$(sha512sum "$image_base" | awk '{print $1}')" == "$SOS_IMAGE_BASE_SHA512" ]] || \
+  image_fail "base image SHA-512 does not match lock"
+
+image_work="$(mktemp -d -t sos-image.XXXXXX)"
+image_incomplete=true
+image_manifest_tmp=""
+image_cleanup() {
+  rm -rf -- "$image_work"
+  [[ -z "$image_manifest_tmp" ]] || rm -f -- "$image_manifest_tmp"
+  if [[ "$image_incomplete" == true ]]; then
+    rm -f -- "$image_output" "$image_manifest"
+  fi
+}
+trap image_cleanup EXIT
+mkdir -p "$image_work/sos-image-bundle/packages" "$(dirname "$image_output")"
+install -m 0755 "$image_recipe_root/configure-root" \
+  "$image_work/sos-image-bundle/configure-root"
+
+image_version=""
+for image_name in \
+  sos-runtime \
+  sos-agent \
+  sos-desktop-session \
+  sos-appliance-session \
+  sos-image-config; do
+  image_matches=("$image_packages"/"${image_name}_"*.deb)
+  [[ "${#image_matches[@]}" -eq 1 && -f "${image_matches[0]}" ]] || \
+    image_fail "expected exactly one package for $image_name"
+  image_package="${image_matches[0]}"
+  [[ "$(dpkg-deb --field "$image_package" Package)" == "$image_name" ]] || \
+    image_fail "package metadata mismatch: $image_package"
+  image_package_version="$(dpkg-deb --field "$image_package" Version)"
+  if [[ -z "$image_version" ]]; then
+    image_version="$image_package_version"
+  fi
+  [[ "$image_package_version" == "$image_version" ]] || \
+    image_fail "SOS package versions do not agree"
+  image_package_arch="$(dpkg-deb --field "$image_package" Architecture)"
+  [[ "$image_package_arch" == all || "$image_package_arch" == "$SOS_IMAGE_ARCH" ]] || \
+    image_fail "package architecture does not match $SOS_IMAGE_ARCH: $image_package"
+  install -m 0644 "$image_package" "$image_work/sos-image-bundle/packages/"
+done
+
+qemu-img convert -f qcow2 -O qcow2 "$image_base" "$image_output"
+virt-customize \
+  --format qcow2 \
+  --add "$image_output" \
+  --network \
+  --copy-in "$image_work/sos-image-bundle:/tmp" \
+  --run-command "/tmp/sos-image-bundle/configure-root $SOS_IMAGE_DEBIAN_SNAPSHOT"
+qemu-img check "$image_output"
+
+image_revision="$(git -C "$image_repo_root" rev-parse HEAD)"
+if [[ -n "$(git -C "$image_repo_root" status --short)" ]]; then
+  image_revision="$image_revision-dirty"
+fi
+image_manifest_tmp="$(mktemp "$(dirname "$image_manifest")/.sos-image-manifest.XXXXXX")"
+{
+  printf 'format=sos-linux-image-manifest-v1\n'
+  printf 'recipe_revision=%s\n' "$image_revision"
+  printf 'package_version=%s\n' "$image_version"
+  printf 'architecture=%s\n' "$SOS_IMAGE_ARCH"
+  printf 'debian_snapshot=%s\n' "$SOS_IMAGE_DEBIAN_SNAPSHOT"
+  printf 'base_path=%s\n' "$image_base"
+  printf 'base_size=%s\n' "$SOS_IMAGE_BASE_SIZE"
+  printf 'base_sha256=%s\n' "$SOS_IMAGE_BASE_SHA256"
+  printf 'base_sha512=%s\n' "$SOS_IMAGE_BASE_SHA512"
+  for image_package in "$image_work"/sos-image-bundle/packages/*.deb; do
+    printf 'package=%s size=%s sha256=%s\n' \
+      "$(basename "$image_package")" \
+      "$(stat -c '%s' "$image_package")" \
+      "$(sha256sum "$image_package" | awk '{print $1}')"
+  done
+  printf 'image_path=%s\n' "$image_output"
+  printf 'image_size=%s\n' "$(stat -c '%s' "$image_output")"
+  printf 'image_sha256=%s\n' "$(sha256sum "$image_output" | awk '{print $1}')"
+} >"$image_manifest_tmp"
+chmod 0644 "$image_manifest_tmp"
+mv -- "$image_manifest_tmp" "$image_manifest"
+image_manifest_tmp=""
+image_incomplete=false
+
+printf 'linux_image_built version=%s output=%s manifest=%s\n' \
+  "$image_version" "$image_output" "$image_manifest"

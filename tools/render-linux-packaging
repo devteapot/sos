@@ -1,0 +1,72 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+render_repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+render_fail() {
+  printf 'error: %s\n' "$*" >&2
+  exit 1
+}
+
+[[ "$#" -eq 4 ]] || render_fail \
+  "usage: tools/render-linux-packaging <output> <sos-lib-dir> <agent-dir> <node-bin>"
+
+render_output="$1"
+render_sos_lib_dir="$2"
+render_agent_dir="$3"
+render_node_bin="$4"
+
+for render_path in "$render_sos_lib_dir" "$render_agent_dir" "$render_node_bin"; do
+  [[ "$render_path" =~ ^/[A-Za-z0-9._/+:-]+$ ]] || \
+    render_fail "installation paths must be absolute and shell-safe: $render_path"
+done
+[[ ! -e "$render_output" ]] || render_fail "output already exists: $render_output"
+
+mkdir -p \
+  "$render_output/libexec" \
+  "$render_output/systemd" \
+  "$render_output/wayland-sessions"
+
+render_one() {
+  local render_source="$1"
+  local render_destination="$2"
+  sed \
+    -e "s|/usr/local/libexec/sos-agent|$render_agent_dir|g" \
+    -e "s|/usr/local/libexec/sos|$render_sos_lib_dir|g" \
+    -e "s|/usr/local/bin/node|$render_node_bin|g" \
+    -e "s|^sos_login_node=.*$|sos_login_node=\"\${SOS_NODE_BIN:-$render_node_bin}\"|" \
+    -e "s|^sos_agent_login_node=.*$|sos_agent_login_node=\"\${SOS_NODE_BIN:-$render_node_bin}\"|" \
+    "$render_source" >"$render_destination"
+  if [[ -x "$render_source" ]]; then
+    chmod 0755 "$render_destination"
+  else
+    chmod 0644 "$render_destination"
+  fi
+}
+
+for render_name in sos-agent-login sos-login-session; do
+  render_one \
+    "$render_repo_root/packaging/libexec/$render_name" \
+    "$render_output/libexec/$render_name"
+done
+for render_name in \
+  sos-agent-authoring.service \
+  sos-agent.service \
+  sos-agent.target \
+  sos-session.service \
+  sos-session.target; do
+  render_one \
+    "$render_repo_root/packaging/systemd/$render_name" \
+    "$render_output/systemd/$render_name"
+done
+render_one \
+  "$render_repo_root/packaging/wayland-sessions/sos.desktop" \
+  "$render_output/wayland-sessions/sos.desktop"
+
+if grep -R -n '/usr/local/libexec/sos\|/usr/local/bin/node' "$render_output"; then
+  render_fail "rendered package files retain source-install paths"
+fi
+
+printf 'linux_packaging_rendered output=%s sos_lib=%s agent_dir=%s node=%s\n' \
+  "$render_output" "$render_sos_lib_dir" "$render_agent_dir" "$render_node_bin"

@@ -1,0 +1,123 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+live_fail() {
+  printf 'error: %s\n' "$*" >&2
+  exit 1
+}
+
+live_snapshot="${SOS_DEBIAN_SNAPSHOT:?SOS_DEBIAN_SNAPSHOT is required}"
+live_packages="${SOS_PACKAGE_DIRECTORY:-/packages}"
+live_output="${SOS_ISO_OUTPUT_DIRECTORY:-/output}"
+[[ "$live_snapshot" =~ ^[0-9]{8}T[0-9]{6}Z$ ]] || \
+  live_fail "invalid Debian snapshot: $live_snapshot"
+[[ -d "$live_packages" ]] || live_fail "package directory not found: $live_packages"
+[[ -d "$live_output" ]] || live_fail "output directory not found: $live_output"
+
+cd "$live_packages"
+sha256sum --check SHA256SUMS
+for live_package_name in \
+  sos-runtime \
+  sos-agent \
+  sos-desktop-session \
+  sos-appliance-session \
+  sos-image-config; do
+  live_package_matches=("${live_package_name}_"*.deb)
+  [[ "${#live_package_matches[@]}" -eq 1 && -f "${live_package_matches[0]}" ]] || \
+    live_fail "expected exactly one package for $live_package_name"
+  live_package_arch="$(dpkg-deb --field "${live_package_matches[0]}" Architecture)"
+  [[ "$live_package_arch" == arm64 || "$live_package_arch" == all ]] || \
+    live_fail "package is not ARM64-compatible: ${live_package_matches[0]}"
+done
+
+rm -rf /build/*
+cd /build
+lb config \
+  --mode debian \
+  --architectures arm64 \
+  --distribution trixie \
+  --archive-areas "main contrib non-free-firmware" \
+  --mirror-bootstrap "http://snapshot.debian.org/archive/debian/$live_snapshot/" \
+  --mirror-chroot "http://snapshot.debian.org/archive/debian/$live_snapshot/" \
+  --mirror-chroot-security "http://snapshot.debian.org/archive/debian-security/$live_snapshot/" \
+  --mirror-binary "http://snapshot.debian.org/archive/debian/$live_snapshot/" \
+  --mirror-binary-security "http://snapshot.debian.org/archive/debian-security/$live_snapshot/" \
+  --binary-images iso-hybrid \
+  --bootloaders grub-efi \
+  --debian-installer none \
+  --apt-options "--yes -o Acquire::Check-Valid-Until=false -o Acquire::Retries=5 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30" \
+  --apt-pipeline 0 \
+  --apt-recommends false \
+  --apt-secure true \
+  --firmware-binary false \
+  --firmware-chroot false \
+  --updates false \
+  --iso-volume SOS_DEBIAN13 \
+  --image-name sos-debian13-live-arm64 \
+  --bootappend-live "boot=live components hostname=sos-debian13 username=sos quiet"
+
+mkdir -p \
+  config/apt \
+  config/hooks/live \
+  config/package-lists \
+  config/packages.chroot
+cat >config/apt/apt.conf.chroot <<'APT'
+Acquire::Check-Valid-Until "false";
+Acquire::Retries "3";
+APT
+cat >config/package-lists/sos.list.chroot <<'PACKAGES'
+busybox
+ca-certificates
+dbus
+initramfs-tools
+kmod
+libgl1-mesa-dri
+libpam-systemd
+linux-image-arm64
+live-boot
+live-config
+live-config-systemd
+mesa-vulkan-drivers
+network-manager
+systemd-sysv
+udev
+util-linux
+PACKAGES
+cat >config/hooks/live/0100-sos-image.hook.chroot <<'HOOK'
+#!/bin/sh
+set -eu
+systemctl enable sos-agent.target
+systemctl set-default sos-session.target
+rm -f /etc/ssh/ssh_host_* /var/lib/dbus/machine-id
+: >/etc/machine-id
+HOOK
+chmod 0755 config/hooks/live/0100-sos-image.hook.chroot
+install -m 0644 "$live_packages"/*.deb config/packages.chroot/
+
+lb build
+
+live_iso_matches=(sos-debian13-live-arm64*.hybrid.iso)
+[[ "${#live_iso_matches[@]}" -eq 1 && -f "${live_iso_matches[0]}" ]] || \
+  live_fail "live-build did not produce exactly one hybrid ISO"
+live_iso="${live_iso_matches[0]}"
+live_output_iso="$live_output/sos-debian13-live-arm64.iso"
+live_output_inspection="$live_output/sos-debian13-live-arm64.iso.inspection.txt"
+[[ ! -e "$live_output_iso" && ! -e "$live_output_inspection" ]] || \
+  live_fail "ISO output already exists"
+
+live_output_tmp="$live_output/.sos-debian13-live-arm64.iso.$$"
+install -m 0644 "$live_iso" "$live_output_tmp"
+mv -- "$live_output_tmp" "$live_output_iso"
+{
+  file "$live_output_iso"
+  xorriso -indev "$live_output_iso" -report_el_torito plain
+  xorriso -indev "$live_output_iso" -find / -name 'vmlinuz*' -print
+  xorriso -indev "$live_output_iso" -find / -name 'initrd*' -print
+  xorriso -indev "$live_output_iso" -find / -name 'filesystem.squashfs' -print
+} >"$live_output_inspection" 2>&1
+
+printf 'linux_live_iso_built path=%s size=%s sha256=%s\n' \
+  "$live_output_iso" \
+  "$(stat -c '%s' "$live_output_iso")" \
+  "$(sha256sum "$live_output_iso" | awk '{print $1}')"

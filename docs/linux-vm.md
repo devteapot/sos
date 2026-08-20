@@ -208,3 +208,19 @@ VM gate.
 References: [Debian Cloud images](https://wiki.debian.org/Cloud),
 [Debian cloud image comparison](https://wiki.debian.org/Cloud/SystemsComparison),
 and the [QEMU invocation manual](https://www.qemu.org/docs/master/system/invocation.html).
+
+## Package-only pinned image
+
+The source-provisioned VM above remains the development and diagnostic gate.
+The first package-only image recipe is in
+[`images/debian-13/README.md`](../images/debian-13/README.md). It builds five
+native Debian packages outside the image, verifies the already-evidenced Debian
+13.6 ARM64 generic image by filename, byte size, SHA-256, and SHA-512, resolves
+runtime dependencies only against an immutable Debian snapshot, and installs
+the packages into a fresh QCOW2 without copying the repository or a compiler.
+
+This is currently an implemented, statically checked recipe rather than a
+completed image gate. It must not replace the source-provisioned VM evidence
+until a Debian 13 builder has produced the packages, the exact assembled image
+has booted through `sos-session.target`, and the package lifecycle and
+boot-session verifiers have passed against that artifact.

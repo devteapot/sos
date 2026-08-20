@@ -1,0 +1,9 @@
+# Immutable base accepted by the first SOS Debian 13 image recipe.
+# Add another architecture only after recording the official artifact's exact
+# filename and both independently verified digests.
+SOS_IMAGE_ARCH=arm64
+SOS_IMAGE_BASE_FILENAME=debian-13-generic-arm64.qcow2
+SOS_IMAGE_BASE_SIZE=428736512
+SOS_IMAGE_BASE_SHA256=0e68f071dec0215f5d8c7e6f51898213951a6c1a4859f1b980fb4d479255e2bc
+SOS_IMAGE_BASE_SHA512=e8ed94e83edded072c66b8871beff8243e0b846ac53980847e2ae44c6d47a8a55579181390b6c85939e85e2a821014ae87e9684930c0509a045212753c8d7916
+SOS_IMAGE_DEBIAN_SNAPSHOT=20260809T000000Z
