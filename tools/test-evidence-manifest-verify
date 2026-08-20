@@ -1,0 +1,86 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+generator="$repo_root/tools/a33xctl"
+verifier="$repo_root/tools/evidence-manifest-verify"
+test_root="$(mktemp -d /tmp/sos-evidence-manifest-test.XXXXXX)"
+trap 'rm -rf -- "$test_root"' EXIT
+
+expect_failure() {
+  local expected_code="$1" root="$2" manifest="$3" output
+  if output="$($verifier --root "$root" --manifest "$manifest" 2>&1)"; then
+    printf 'manifest fixture unexpectedly passed: %s\n' "$expected_code" >&2
+    exit 1
+  fi
+  grep -F "evidence_manifest_audit=FAIL code=$expected_code " <<<"$output" >/dev/null
+}
+
+make_case() {
+  local name="$1"
+  cp -a "$test_root/evidence" "$test_root/$name"
+}
+
+mkdir -p "$test_root/evidence/nested"
+printf 'alpha\n' >"$test_root/evidence/a.txt"
+printf 'bravo\n' >"$test_root/evidence/nested/b.txt"
+printf 'unfinished\n' >"$test_root/evidence/ignored.partial"
+manifest="$test_root/evidence/manifest.tsv"
+"$generator" evidence-manifest-generate --root "$test_root/evidence" --output "$manifest" >/dev/null
+[[ "$(cut -f1 "$manifest")" == $'a.txt\nnested/b.txt' ]]
+
+before_identity="$(find "$test_root/evidence" -type f -printf '%P\t%s\t%T@\n' | LC_ALL=C sort | sha256sum)"
+first_output="$($verifier --root "$test_root/evidence" --manifest "$manifest")"
+second_output="$($verifier --root "$test_root/evidence" --manifest "$manifest")"
+[[ "$first_output" == "$second_output" ]]
+grep -Fx 'evidence_manifest_audit=PASS' <<<"$first_output" >/dev/null
+grep -Fx 'files=2' <<<"$first_output" >/dev/null
+grep -Fx "manifest_sha256=$(sha256sum "$manifest" | cut -d' ' -f1)" <<<"$first_output" >/dev/null
+grep -Fx "regenerated_sha256=$(sha256sum "$manifest" | cut -d' ' -f1)" <<<"$first_output" >/dev/null
+after_identity="$(find "$test_root/evidence" -type f -printf '%P\t%s\t%T@\n' | LC_ALL=C sort | sha256sum)"
+[[ "$before_identity" == "$after_identity" ]]
+
+make_case sha256
+printf 'ALPHA\n' >"$test_root/sha256/a.txt"
+expect_failure identity "$test_root/sha256" "$test_root/sha256/manifest.tsv"
+
+make_case size
+printf 'larger-alpha\n' >"$test_root/size/a.txt"
+expect_failure identity "$test_root/size" "$test_root/size/manifest.tsv"
+
+make_case malformed
+printf 'a.txt\t6\n' >"$test_root/malformed/manifest.tsv"
+expect_failure schema "$test_root/malformed" "$test_root/malformed/manifest.tsv"
+
+make_case duplicate
+sed -n '1p' "$test_root/duplicate/manifest.tsv" >>"$test_root/duplicate/manifest.tsv"
+expect_failure ordering "$test_root/duplicate" "$test_root/duplicate/manifest.tsv"
+
+make_case unsorted
+tac "$test_root/unsorted/manifest.tsv" >"$test_root/unsorted/manifest.tsv.new"
+mv "$test_root/unsorted/manifest.tsv.new" "$test_root/unsorted/manifest.tsv"
+expect_failure ordering "$test_root/unsorted" "$test_root/unsorted/manifest.tsv"
+
+make_case unsafe
+first_identity="$(cut -f2- "$test_root/unsafe/manifest.tsv" | sed -n '1p')"
+printf '../a.txt\t%s\n' "$first_identity" >"$test_root/unsafe/manifest.tsv"
+sed -n '2p' "$test_root/evidence/manifest.tsv" >>"$test_root/unsafe/manifest.tsv"
+expect_failure unsafe_path "$test_root/unsafe" "$test_root/unsafe/manifest.tsv"
+
+make_case missing
+sed -n '1p' "$test_root/missing/manifest.tsv" >"$test_root/missing/manifest.tsv.new"
+mv "$test_root/missing/manifest.tsv.new" "$test_root/missing/manifest.tsv"
+expect_failure file_set "$test_root/missing" "$test_root/missing/manifest.tsv"
+
+make_case self
+manifest_identity="$(stat --printf='%s' "$test_root/self/manifest.tsv")\t$(sha256sum "$test_root/self/manifest.tsv" | cut -d' ' -f1)"
+printf 'manifest.tsv\t%b\n' "$manifest_identity" >>"$test_root/self/manifest.tsv"
+expect_failure self_included "$test_root/self" "$test_root/self/manifest.tsv"
+
+make_case noncanonical
+sed '1s/\t6\t/\t06\t/' "$test_root/noncanonical/manifest.tsv" >"$test_root/noncanonical/manifest.tsv.new"
+mv "$test_root/noncanonical/manifest.tsv.new" "$test_root/noncanonical/manifest.tsv"
+expect_failure schema "$test_root/noncanonical" "$test_root/noncanonical/manifest.tsv"
+
+printf 'evidence_manifest_verifier_tests=PASS fixtures=valid,read_only,deterministic,size,sha256,schema,unique,sorted,safe,exact_set,self_excluding,canonical\n'

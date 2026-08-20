@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+inventory="$repo_root/tools/linux-vm/inventory-sos-runtime"
+test_root="$(mktemp -d /tmp/sos-runtime-inventory-test.XXXXXX)"
+cleanup() {
+  chmod 700 "$test_root/systemd/inaccessible/dir" 2>/dev/null || true
+  rm -rf -- "$test_root"
+}
+trap cleanup EXIT
+
+mkdir -p "$test_root/systemd/inaccessible/dir"
+printf 'unrelated-hidden-value\n' >"$test_root/systemd/inaccessible/dir/hidden"
+chmod 000 "$test_root/systemd/inaccessible/dir"
+mkdir -p "$test_root/sos-session.A1b2C3/cache"
+printf 'private-runtime-content\n' >"$test_root/sos-session.A1b2C3/session-token"
+mkdir -p "$test_root/sos-session.not-exact/ignored"
+
+first_output="$($inventory --root "$test_root")"
+second_output="$($inventory --root "$test_root")"
+[[ "$first_output" == "$second_output" ]]
+grep -F "path=$test_root/sos-session.A1b2C3" <<<"$first_output" >/dev/null
+grep -F "path=$test_root/sos-session.A1b2C3/cache" <<<"$first_output" >/dev/null
+grep -F "path=$test_root/sos-session.A1b2C3/session-token" <<<"$first_output" >/dev/null
+grep -F "sos_runtime_inventory=PASS root=$test_root sessions=1 entries=3" <<<"$first_output" >/dev/null
+! grep -F 'systemd' <<<"$first_output" >/dev/null
+! grep -F 'not-exact' <<<"$first_output" >/dev/null
+! grep -F 'unrelated-hidden-value' <<<"$first_output" >/dev/null
+! grep -F 'private-runtime-content' <<<"$first_output" >/dev/null
+
+rm -rf -- "$test_root/sos-session.A1b2C3" "$test_root/sos-session.not-exact"
+empty_output="$($inventory --root "$test_root")"
+grep -F "sos_runtime_inventory=PASS root=$test_root sessions=0 entries=0" <<<"$empty_output" >/dev/null
+
+printf 'sos_runtime_inventory_tests=PASS exact_top_level_only=true unrelated_inaccessible_skipped=true contents_absent=true deterministic=true\n'

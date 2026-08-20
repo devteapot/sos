@@ -338,8 +338,8 @@ pub(super) struct LinuxExperienceHost {
     surface_gestures: HashMap<String, GestureSession>,
     surface_taps: HashMap<String, (String, Instant)>,
     status: Option<(String, bool)>,
-    provider_refresh: Option<(u64, ExperienceModel)>,
-    queued_provider_model: Option<ExperienceModel>,
+    provider_refresh: Option<u64>,
+    model_refresh_queued: bool,
     next_provider_request_id: u64,
     provider_access: Option<LinuxProviderAccess>,
     agent_socket: Option<PathBuf>,
@@ -413,7 +413,7 @@ impl LinuxExperienceHost {
             surface_taps: HashMap::new(),
             status: Some(("Booting committed SOS revision…".into(), true)),
             provider_refresh: None,
-            queued_provider_model: None,
+            model_refresh_queued: false,
             next_provider_request_id: 1,
             provider_access,
             agent_socket,
@@ -494,6 +494,10 @@ impl LinuxExperienceHost {
     }
 
     fn request_model_refresh(&mut self, model: ExperienceModel, cx: &mut Context<Self>) {
+        // `self.model` is the canonical live model. Worker renders are snapshots
+        // of it and must never restore an older conversation when their result
+        // arrives after a newer streamed agent update.
+        self.model = model;
         if self.provider_refresh.is_some()
             || self.action_in_flight
             || self.preparing.is_some()
@@ -501,16 +505,16 @@ impl LinuxExperienceHost {
             || self.pending_commit.is_some()
             || self.pending_presentation.is_some()
         {
-            self.queued_provider_model = Some(model);
+            self.model_refresh_queued = true;
             return;
         }
         let request_id = self.next_provider_request_id;
         self.next_provider_request_id = self.next_provider_request_id.wrapping_add(1).max(1);
         match self
             .worker
-            .refresh_model(request_id, model.clone(), self.state.clone())
+            .refresh_model(request_id, self.model.clone(), self.state.clone())
         {
-            Ok(()) => self.provider_refresh = Some((request_id, model)),
+            Ok(()) => self.provider_refresh = Some(request_id),
             Err(error) => {
                 self.status = Some((format!("Provider refresh could not start: {error}"), false));
                 cx.notify();
@@ -519,8 +523,9 @@ impl LinuxExperienceHost {
     }
 
     fn dispatch_queued_provider_model(&mut self, cx: &mut Context<Self>) {
-        if let Some(model) = self.queued_provider_model.take() {
-            self.request_model_refresh(model, cx);
+        if self.model_refresh_queued {
+            self.model_refresh_queued = false;
+            self.request_model_refresh(self.model.clone(), cx);
         }
     }
 
@@ -1014,7 +1019,10 @@ impl LinuxExperienceHost {
                 self.state = state;
                 self.state_schema_version = state_schema_version;
                 self.active_revision_id = revision_id;
-                self.model = commit.revision.model;
+                let (committed_model, agent_changed) =
+                    merge_committed_model(commit.revision.model, &self.model);
+                self.model = committed_model;
+                self.model_refresh_queued |= agent_changed;
                 if let Some(access) = &self.provider_access {
                     access.activate(&self.active_revision_id);
                 }
@@ -1043,20 +1051,41 @@ impl LinuxExperienceHost {
                 scene,
                 worker_us,
             } => {
-                let Some((expected, model)) = self.provider_refresh.take() else {
+                let Some(expected) = self.provider_refresh.take() else {
                     return;
                 };
                 if expected != request_id {
-                    self.provider_refresh = Some((expected, model));
+                    self.provider_refresh = Some(expected);
                     return;
                 }
-                self.model = model;
-                self.scene = scene;
-                self.status = None;
-                eprintln!(
-                    "sos_provider_model_refreshed request_id={request_id} worker_us={worker_us} revision_id={}",
-                    self.active_revision_id
-                );
+                if !install_refreshed_scene(&mut self.scene, scene, self.model_refresh_queued) {
+                    eprintln!(
+                        "sos_provider_model_refresh_superseded request_id={request_id} worker_us={worker_us} revision_id={}",
+                        self.active_revision_id
+                    );
+                } else {
+                    self.status = None;
+                    eprintln!(
+                        "sos_provider_model_refreshed request_id={request_id} worker_us={worker_us} revision_id={}",
+                        self.active_revision_id
+                    );
+                    if !self.model.agent.busy {
+                        if let Some(message) = self
+                            .model
+                            .agent
+                            .messages
+                            .iter()
+                            .rev()
+                            .find(|message| message.role == AgentMessageRole::Assistant)
+                        {
+                            eprintln!(
+                                "sos_agent_completion_visible messages={} assistant_bytes={}",
+                                self.model.agent.messages.len(),
+                                message.text.len()
+                            );
+                        }
+                    }
+                }
                 self.dispatch_queued_provider_model(cx);
                 cx.notify();
             }
@@ -1065,17 +1094,23 @@ impl LinuxExperienceHost {
                 error,
                 worker_us,
             } => {
-                if self
-                    .provider_refresh
-                    .as_ref()
-                    .is_some_and(|(expected, _)| *expected == request_id)
-                {
-                    self.provider_refresh = None;
+                let Some(expected) = self.provider_refresh.take() else {
+                    return;
+                };
+                if expected != request_id {
+                    self.provider_refresh = Some(expected);
+                    return;
                 }
-                self.status = Some((format!("Provider update rejected: {error}"), false));
-                eprintln!(
-                    "sos_provider_model_rejected request_id={request_id} worker_us={worker_us} error={error}"
-                );
+                if self.model_refresh_queued {
+                    eprintln!(
+                        "sos_provider_model_rejection_superseded request_id={request_id} worker_us={worker_us} error={error}"
+                    );
+                } else {
+                    self.status = Some((format!("Provider update rejected: {error}"), false));
+                    eprintln!(
+                        "sos_provider_model_rejected request_id={request_id} worker_us={worker_us} error={error}"
+                    );
+                }
                 self.dispatch_queued_provider_model(cx);
                 cx.notify();
             }
@@ -2448,6 +2483,27 @@ fn push_agent_message(model: &mut ExperienceModel, role: AgentMessageRole, text:
     }
 }
 
+fn merge_committed_model(
+    mut committed: ExperienceModel,
+    live: &ExperienceModel,
+) -> (ExperienceModel, bool) {
+    let agent_changed = committed.agent != live.agent;
+    committed.agent = live.agent.clone();
+    (committed, agent_changed)
+}
+
+fn install_refreshed_scene(
+    current: &mut Scene,
+    refreshed: Scene,
+    newer_model_queued: bool,
+) -> bool {
+    if newer_model_queued {
+        return false;
+    }
+    *current = refreshed;
+    true
+}
+
 fn append_assistant_delta(model: &mut ExperienceModel, delta: &str) {
     if delta.is_empty() {
         return;
@@ -2689,6 +2745,62 @@ mod tests {
         assert_eq!(event.pointer_count, Some(1));
         assert_eq!(event.pressure, Some(1.0));
         assert_eq!(event.phase.as_deref(), Some("move"));
+    }
+
+    #[test]
+    fn live_rewrite_preserves_the_newest_agent_conversation() {
+        let mut captured = providers_fake::snapshot();
+        captured.agent.available = true;
+        captured.agent.busy = true;
+        captured.agent.activity = "Using experience installer…".into();
+        push_agent_message(
+            &mut captured,
+            AgentMessageRole::User,
+            "Turn this into a spatial time flow".into(),
+        );
+
+        let mut live = captured.clone();
+        append_assistant_delta(&mut live, "The candidate experience is active.");
+        live.agent.busy = false;
+        live.agent.activity = "Ready".into();
+
+        let mut committed = providers_fake::snapshot();
+        committed.greeting = "Candidate revision".into();
+        committed.agent = captured.agent.clone();
+        let (merged, needs_refresh) = merge_committed_model(committed, &live);
+
+        assert!(needs_refresh);
+        assert_eq!(merged.greeting, "Candidate revision");
+        assert_eq!(merged.agent, live.agent);
+        assert_eq!(merged.agent.messages.len(), 2);
+        assert_eq!(
+            merged.agent.messages[0].text,
+            "Turn this into a spatial time flow"
+        );
+        assert_eq!(
+            merged.agent.messages[1].text,
+            "The candidate experience is active."
+        );
+        assert_eq!(merged.agent.activity, "Ready");
+    }
+
+    #[test]
+    fn stale_model_refresh_does_not_publish_an_older_semantic_scene() {
+        let mut visible = Scene {
+            root: SceneNode {
+                id: Some("current-agent-history".into()),
+                ..Default::default()
+            },
+        };
+        let stale = Scene {
+            root: SceneNode {
+                id: Some("stale-agent-history".into()),
+                ..Default::default()
+            },
+        };
+
+        assert!(!install_refreshed_scene(&mut visible, stale, true));
+        assert_eq!(visible.root.id.as_deref(), Some("current-agent-history"));
     }
 
     #[test]

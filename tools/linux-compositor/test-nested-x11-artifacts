@@ -1,0 +1,138 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+test_tools_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+test_repo_root="$(cd "$test_tools_dir/../.." && pwd)"
+# shellcheck source=tools/linux-compositor/nested-x11-artifacts-lib
+source "$test_tools_dir/nested-x11-artifacts-lib"
+
+test_root="$(mktemp -d /tmp/sos-nested-x11-test.XXXXXX)"
+test_owner_pid=""
+cleanup_test() {
+  if [[ -n "$test_owner_pid" ]] && kill -0 "$test_owner_pid" 2>/dev/null; then
+    kill "$test_owner_pid" 2>/dev/null || true
+    wait "$test_owner_pid" 2>/dev/null || true
+  fi
+  [[ "$test_root" == /tmp/sos-nested-x11-test.* ]] && rm -r -- "$test_root"
+}
+trap cleanup_test EXIT
+
+fail() {
+  printf 'error: %s\n' "$*" >&2
+  exit 1
+}
+
+start_fixture() {
+  local test_socket="$1"
+  local test_lock="$2"
+  "$test_repo_root/tests/fixtures/linux-x11-socket-owner" "$test_socket" &
+  test_owner_pid=$!
+  printf '%10s\n' "$test_owner_pid" >"$test_lock"
+  for _ in {1..200}; do
+    [[ -S "$test_socket" ]] && break
+    kill -0 "$test_owner_pid" 2>/dev/null || fail 'fixture socket owner exited early'
+    sleep 0.01
+  done
+  [[ -S "$test_socket" ]] || fail 'fixture socket was not created'
+}
+
+stop_fixture() {
+  kill "$test_owner_pid"
+  wait "$test_owner_pid" 2>/dev/null || true
+  test_owner_pid=""
+}
+
+case_root="$test_root/absent-created-cleaned"
+mkdir -p "$case_root/.X11-unix"
+printf 'gdm socket 1024\n' >"$case_root/.X11-unix/X1024"
+printf 'gdm lock 1024\n' >"$case_root/.X1024-lock"
+printf 'gdm socket 1025\n' >"$case_root/.X11-unix/X1025"
+printf 'gdm lock 1025\n' >"$case_root/.X1025-lock"
+SOS_NESTED_X11_ROOT="$case_root"
+export SOS_NESTED_X11_ROOT
+sos_nested_x_record_display absent_case 71 "$(id -u)"
+start_fixture "$absent_case_socket" "$absent_case_lock"
+sos_nested_x_capture_created absent_case "$test_owner_pid"
+stop_fixture
+sos_nested_x_cleanup_created absent_case
+[[ ! -e "$absent_case_socket" && ! -L "$absent_case_socket" ]]
+[[ ! -e "$absent_case_lock" && ! -L "$absent_case_lock" ]]
+[[ "$(cat "$case_root/.X11-unix/X1024")" == 'gdm socket 1024' ]]
+[[ "$(cat "$case_root/.X1024-lock")" == 'gdm lock 1024' ]]
+[[ "$(cat "$case_root/.X11-unix/X1025")" == 'gdm socket 1025' ]]
+[[ "$(cat "$case_root/.X1025-lock")" == 'gdm lock 1025' ]]
+
+case_root="$test_root/preexisting-refused"
+mkdir -p "$case_root/.X11-unix"
+SOS_NESTED_X11_ROOT="$case_root"
+printf 'baseline\n' >"$case_root/.X72-lock"
+if sos_nested_x_record_display refused_case 72 "$(id -u)" 2>/dev/null; then
+  fail 'preexisting display artifact was accepted'
+fi
+[[ "$(cat "$case_root/.X72-lock")" == baseline ]]
+sos_nested_x_select_display selected_case 72 73 "$(id -u)"
+[[ "$selected_case_display" == 73 ]]
+[[ "$(cat "$case_root/.X72-lock")" == baseline ]]
+
+case_root="$test_root/wrong-type"
+mkdir -p "$case_root/.X11-unix"
+SOS_NESTED_X11_ROOT="$case_root"
+sos_nested_x_record_display wrong_type_case 74 "$(id -u)"
+printf 'not a socket\n' >"$wrong_type_case_socket"
+printf '%10s\n' "$$" >"$wrong_type_case_lock"
+if sos_nested_x_capture_created wrong_type_case "$$" 2>/dev/null; then
+  fail 'wrong-type display artifact was captured'
+fi
+if sos_nested_x_cleanup_created wrong_type_case 2>/dev/null; then
+  fail 'wrong-type display artifact was cleaned'
+fi
+[[ -f "$wrong_type_case_socket" && -f "$wrong_type_case_lock" ]]
+
+case_root="$test_root/wrong-owner"
+mkdir -p "$case_root/.X11-unix"
+SOS_NESTED_X11_ROOT="$case_root"
+sos_nested_x_record_display wrong_owner_case 75 "$(( $(id -u) + 1 ))"
+start_fixture "$wrong_owner_case_socket" "$wrong_owner_case_lock"
+if sos_nested_x_capture_created wrong_owner_case "$test_owner_pid" 2>/dev/null; then
+  fail 'wrong-owner display artifacts were captured'
+fi
+stop_fixture
+if sos_nested_x_cleanup_created wrong_owner_case 2>/dev/null; then
+  fail 'wrong-owner display artifacts were cleaned'
+fi
+[[ -S "$wrong_owner_case_socket" && -f "$wrong_owner_case_lock" ]]
+
+case_root="$test_root/no-false-pass"
+mkdir -p "$case_root/.X11-unix"
+SOS_NESTED_X11_ROOT="$case_root"
+sos_nested_x_record_display marker_case 76 "$(id -u)"
+start_fixture "$marker_case_socket" "$marker_case_lock"
+sos_nested_x_capture_created marker_case "$test_owner_pid"
+set +e
+marker_output="$({
+  marker_status=0
+  sos_nested_x_cleanup_created marker_case || marker_status=1
+  if [[ "$marker_status" -eq 0 ]]; then
+    printf 'linux_nested_cleanup_passed\n'
+  fi
+  exit "$marker_status"
+} 2>/dev/null)"
+marker_status=$?
+set -e
+[[ "$marker_status" -ne 0 ]]
+[[ "$marker_output" != *linux_nested_cleanup_passed* ]]
+[[ -S "$marker_case_socket" && -f "$marker_case_lock" ]]
+stop_fixture
+sos_nested_x_cleanup_created marker_case
+
+for test_marker in \
+  'sos_nested_x_select_display gate_xvfb_x11' \
+  'sos_nested_x_select_display gate_xwayland_x11' \
+  'sos_nested_x_cleanup_created gate_xvfb_x11' \
+  'sos_nested_x_cleanup_created gate_xwayland_x11' \
+  'x_socket_absent=true x_lock_absent=true'; do
+  grep -Fq "$test_marker" "$test_tools_dir/verify-nested"
+done
+
+printf 'nested_x11_artifact_tests_passed absent_created_cleaned=true preexisting_refused_preserved=true alternate_selected=true wrong_owner_type_preserved=true gdm_x1024_x1025_preserved=true false_cleanup_pass_absent=true\n'

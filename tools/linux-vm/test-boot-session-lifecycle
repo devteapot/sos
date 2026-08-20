@@ -1,0 +1,65 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+vm_tools_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=tools/linux-vm/boot-session-lifecycle-lib
+source "$vm_tools_dir/boot-session-lifecycle-lib"
+
+fail() {
+  printf 'error: %s\n' "$*" >&2
+  exit 1
+}
+
+assert_equal() {
+  local expected="$1"
+  local actual="$2"
+  local description="$3"
+  [[ "$actual" == "$expected" ]] || \
+    fail "$description: expected '$expected', got '$actual'"
+}
+
+[[ "$#" -eq 0 ]] || fail "usage: tools/linux-vm/test-boot-session-lifecycle"
+
+assert_equal deep "$(sos_selected_mem_sleep_mode 's2idle [deep]')" \
+  'deep mem_sleep selection'
+assert_equal s2idle "$(sos_selected_mem_sleep_mode '[s2idle] deep')" \
+  's2idle mem_sleep selection'
+if sos_selected_mem_sleep_mode 's2idle deep' >/dev/null 2>&1; then
+  fail 'mem_sleep text without a selected mode was accepted'
+fi
+if sos_selected_mem_sleep_mode 's2idle [disk]' >/dev/null 2>&1; then
+  fail 'unsupported selected mem_sleep mode was accepted'
+fi
+
+vm_deep_cycle_log='kernel: PM: suspend entry (deep)
+kernel: PM: suspend debug: Waiting for 5 second(s).
+kernel: PM: suspend exit'
+assert_equal 1 "$(sos_suspend_entry_count deep <<<"$vm_deep_cycle_log")" \
+  'deep entry count'
+assert_equal 0 "$(sos_suspend_entry_count s2idle <<<"$vm_deep_cycle_log")" \
+  'mode-specific s2idle entry count'
+assert_equal 1 "$(sos_suspend_cycle_count deep <<<"$vm_deep_cycle_log")" \
+  'deep entry/exit cycle count'
+assert_equal 0 "$(sos_suspend_cycle_count s2idle <<<"$vm_deep_cycle_log")" \
+  'wrong-mode cycle count'
+
+vm_s2idle_cycle_log='kernel: PM: suspend exit
+kernel: PM: suspend entry (s2idle)
+kernel: unrelated message
+kernel: PM: suspend exit
+kernel: PM: suspend entry (s2idle)'
+assert_equal 2 "$(sos_suspend_entry_count s2idle <<<"$vm_s2idle_cycle_log")" \
+  's2idle entry count'
+assert_equal 1 "$(sos_suspend_cycle_count s2idle <<<"$vm_s2idle_cycle_log")" \
+  'only ordered, complete s2idle cycle count'
+
+vm_replaced_mode_log='kernel: PM: suspend entry (deep)
+kernel: PM: suspend entry (s2idle)
+kernel: PM: suspend exit'
+assert_equal 0 "$(sos_suspend_cycle_count deep <<<"$vm_replaced_mode_log")" \
+  'different later entry invalidates an unpaired deep entry'
+assert_equal 1 "$(sos_suspend_cycle_count s2idle <<<"$vm_replaced_mode_log")" \
+  'later s2idle entry pairs with its subsequent exit'
+
+printf 'linux_boot_lifecycle_parser_tests_passed modes=s2idle,deep ordered_entry_exit=true\n'

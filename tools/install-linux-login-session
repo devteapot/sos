@@ -13,7 +13,8 @@ sos_install_fail() {
 [[ "$#" -eq 1 && "$1" == install ]] || \
   sos_install_fail "usage: tools/install-linux-login-session install"
 [[ "$(id -u)" -ne 0 ]] || sos_install_fail "run this command as a normal user; it invokes sudo only for installation"
-for sos_install_command in cargo install node npm pkg-config sudo; do
+for sos_install_command in \
+  cargo install loginctl node npm pgrep pkg-config ps readlink sha256sum stat sudo tee; do
   command -v "$sos_install_command" >/dev/null 2>&1 || \
     sos_install_fail "required command not found: $sos_install_command"
 done

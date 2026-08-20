@@ -4,12 +4,16 @@ set -euo pipefail
 
 gate_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$gate_root"
-for gate_command in cargo gst-launch-1.0 jq python3 sed weston weston-simple-shm Xvfb Xwayland xmessage; do
+# shellcheck source=tools/linux-compositor/nested-x11-artifacts-lib
+source "$gate_root/tools/linux-compositor/nested-x11-artifacts-lib"
+for gate_command in awk cargo fuser gst-launch-1.0 id jq pgrep ps python3 sed stat tr weston weston-simple-shm Xvfb Xwayland xargs xmessage; do
   command -v "$gate_command" >/dev/null 2>&1 || {
     printf 'error: required command not found: %s\n' "$gate_command" >&2
     exit 1
   }
 done
+gate_xwayland_version="$(Xwayland -version 2>&1)"
+grep -F 'Xwayland' <<<"$gate_xwayland_version" >/dev/null
 
 gate_run_dir="$(mktemp -d /tmp/sos-nested-compositor.XXXXXX)"
 gate_runtime_dir="$gate_run_dir/runtime"
@@ -45,8 +49,28 @@ gate_compatibility_pid=""
 gate_input_pid=""
 gate_ime_pid=""
 gate_x11_pid=""
+gate_xwayland_pid=""
+gate_expected_uid="$(id -u)"
 
 cleanup_nested_gate() {
+  local gate_status="$?"
+  local gate_cleanup_status=0
+  trap - EXIT
+  set +e
+  if [[ -n "${gate_xwayland_x11_display-}" \
+    && -z "${gate_xwayland_x11_socket_created-}" \
+    && -n "$gate_compositor_pid" ]] \
+    && kill -0 "$gate_compositor_pid" 2>/dev/null \
+    && [[ -S "$gate_xwayland_x11_socket" && -f "$gate_xwayland_x11_lock" ]]; then
+    sos_nested_x_capture_created gate_xwayland_x11 "$gate_compositor_pid" || gate_cleanup_status=1
+  fi
+  if [[ -n "${gate_xvfb_x11_display-}" \
+    && -z "${gate_xvfb_x11_socket_created-}" \
+    && -n "$gate_xvfb_pid" ]] \
+    && kill -0 "$gate_xvfb_pid" 2>/dev/null \
+    && [[ -S "$gate_xvfb_x11_socket" && -f "$gate_xvfb_x11_lock" ]]; then
+    sos_nested_x_capture_created gate_xvfb_x11 "$gate_xvfb_pid" || gate_cleanup_status=1
+  fi
   if [[ -n "$gate_session_pid" ]] && kill -0 "$gate_session_pid" 2>/dev/null; then
     SOS_LINUX_REVISION_ROOT="$gate_revision_root" \
       ./tools/sosctl linux-stop >/dev/null 2>&1 || true
@@ -58,17 +82,36 @@ cleanup_nested_gate() {
     "$gate_x11_pid" \
     "$gate_compatibility_pid" \
     "$gate_compositor_pid" \
+    "$gate_xwayland_pid" \
     "$gate_weston_pid" \
     "$gate_xvfb_pid"; do
     if [[ -n "$gate_pid" ]] && kill -0 "$gate_pid" 2>/dev/null; then
       kill "$gate_pid" 2>/dev/null || true
       wait "$gate_pid" 2>/dev/null || true
     fi
+    for _ in {1..200}; do
+      ! kill -0 "$gate_pid" 2>/dev/null && break
+      sleep 0.01
+    done
+    if [[ -n "$gate_pid" ]] && kill -0 "$gate_pid" 2>/dev/null; then
+      printf 'error: nested gate owned PID survived cleanup: %s\n' "$gate_pid" >&2
+      gate_cleanup_status=1
+    fi
   done
+  sos_nested_x_cleanup_created gate_xwayland_x11 || gate_cleanup_status=1
+  sos_nested_x_cleanup_created gate_xvfb_x11 || gate_cleanup_status=1
   if [[ "$gate_run_dir" == /tmp/sos-nested-compositor.* && -d "$gate_run_dir" ]]; then
     chmod -R u+w "$gate_run_dir" 2>/dev/null || true
-    rm -r -- "$gate_run_dir"
+    rm -r -- "$gate_run_dir" || gate_cleanup_status=1
   fi
+  [[ ! -e "$gate_run_dir" ]] || gate_cleanup_status=1
+  if [[ "$gate_status" -eq 0 && "$gate_cleanup_status" -eq 0 ]]; then
+    printf 'linux_nested_cleanup_passed owned_pids_absent=true run_dir_absent=true x_socket_absent=true x_lock_absent=true xvfb_display=:%s xwayland_display=:%s\n' \
+      "$gate_xvfb_x11_display" "$gate_xwayland_x11_display"
+  elif [[ "$gate_status" -eq 0 ]]; then
+    gate_status=1
+  fi
+  exit "$gate_status"
 }
 trap cleanup_nested_gate EXIT
 
@@ -197,18 +240,27 @@ cargo build --locked \
   -p provider-state-service --bin sos-provider-state-service \
   -p sos-linux-session --bin sos-linux-session
 
-Xvfb -displayfd 1 -screen 0 1280x800x24 \
-  >"$gate_run_dir/display" 2>"$gate_run_dir/xvfb.log" &
+sos_nested_x_select_display gate_xvfb_x11 64 127 "$gate_expected_uid"
+printf 'linux_nested_x11_preflight role=xvfb display=:%s socket=%s socket_before=%s lock=%s lock_before=%s\n' \
+  "$gate_xvfb_x11_display" "$gate_xvfb_x11_socket" \
+  "$gate_xvfb_x11_socket_before" "$gate_xvfb_x11_lock" "$gate_xvfb_x11_lock_before"
+Xvfb ":$gate_xvfb_x11_display" -screen 0 1280x800x24 \
+  >"$gate_run_dir/xvfb.out" 2>"$gate_run_dir/xvfb.log" &
 gate_xvfb_pid=$!
 for _ in {1..200}; do
-  [[ -s "$gate_run_dir/display" ]] && break
+  [[ -S "$gate_xvfb_x11_socket" && -f "$gate_xvfb_x11_lock" ]] && break
   kill -0 "$gate_xvfb_pid" 2>/dev/null || {
     sed -n '1,120p' "$gate_run_dir/xvfb.log"
     exit 1
   }
   sleep 0.01
 done
-gate_display=":$(tr -d '\r\n' < "$gate_run_dir/display")"
+sos_nested_x_capture_created gate_xvfb_x11 "$gate_xvfb_pid"
+gate_display=":$gate_xvfb_x11_display"
+printf '%s\n' "$gate_xvfb_x11_display" >"$gate_run_dir/display"
+printf 'linux_nested_x11_created role=xvfb display=%s socket_identity=%s lock_identity=%s lock_pid=%s uid=%s\n' \
+  "$gate_display" "$gate_xvfb_x11_socket_created" \
+  "$gate_xvfb_x11_lock_created" "$gate_xvfb_pid" "$gate_expected_uid"
 
 DISPLAY="$gate_display" XDG_RUNTIME_DIR="$gate_runtime_dir" \
   weston --backend=x11-backend.so --socket=wayland-outer \
@@ -224,6 +276,10 @@ for _ in {1..500}; do
   sleep 0.01
 done
 
+sos_nested_x_select_display gate_xwayland_x11 64 127 "$gate_expected_uid"
+printf 'linux_nested_x11_preflight role=xwayland display=:%s socket=%s socket_before=%s lock=%s lock_before=%s\n' \
+  "$gate_xwayland_x11_display" "$gate_xwayland_x11_socket" \
+  "$gate_xwayland_x11_socket_before" "$gate_xwayland_x11_lock" "$gate_xwayland_x11_lock_before"
 DISPLAY="$gate_display" \
 XDG_RUNTIME_DIR="$gate_runtime_dir" \
 WAYLAND_DISPLAY=wayland-outer \
@@ -234,6 +290,7 @@ RUST_LOG=sos_compositor=info \
     --control-socket "$gate_control_socket" \
     --shell-token "$gate_token" \
     --xwayland-display-file "$gate_xwayland_display_file" \
+    --xwayland-display "$gate_xwayland_x11_display" \
     >"$gate_run_dir/compositor.out" 2>"$gate_run_dir/compositor.log" &
 gate_compositor_pid=$!
 for _ in {1..1000}; do
@@ -248,6 +305,15 @@ for _ in {1..1000}; do
 done
 [[ -S "$gate_runtime_dir/wayland-sos" ]]
 [[ -S "$gate_control_socket" ]]
+for _ in {1..500}; do
+  [[ -S "$gate_xwayland_x11_socket" && -f "$gate_xwayland_x11_lock" ]] && break
+  kill -0 "$gate_compositor_pid" 2>/dev/null || break
+  sleep 0.01
+done
+sos_nested_x_capture_created gate_xwayland_x11 "$gate_compositor_pid"
+printf 'linux_nested_x11_created role=xwayland display=:%s socket_identity=%s lock_identity=%s lock_pid=%s uid=%s\n' \
+  "$gate_xwayland_x11_display" "$gate_xwayland_x11_socket_created" \
+  "$gate_xwayland_x11_lock_created" "$gate_compositor_pid" "$gate_expected_uid"
 
 DISPLAY="$gate_display" \
 XDG_RUNTIME_DIR="$gate_runtime_dir" \
@@ -347,9 +413,23 @@ for gate_accessibility_action in next previous activate scroll_forward; do
 done
 gate_accessibility_generation="$(accessibility_call '{"method":"snapshot"}' | jq -r '.snapshot.generation')"
 [[ "$(accessibility_call '{"method":"action","kind":"focus","target":"note-draft"}' | jq -r '.ok')" == true ]]
-gate_accessibility_wait="$(accessibility_call "{\"method\":\"wait\",\"after_generation\":$gate_accessibility_generation,\"timeout_ms\":2000}")"
-[[ "$(jq -r '.ok' <<<"$gate_accessibility_wait")" == true ]]
-[[ "$(jq -r '.snapshot.focused' <<<"$gate_accessibility_wait")" == note-draft ]]
+gate_accessibility_wait="$(
+  accessibility_call \
+    "{\"method\":\"wait\",\"after_generation\":$gate_accessibility_generation,\"timeout_ms\":2000,\"focused\":\"note-draft\"}"
+)"
+if ! jq -e \
+  --argjson after_generation "$gate_accessibility_generation" \
+  '.ok and .snapshot.generation > $after_generation and .snapshot.focused == "note-draft"' \
+  <<<"$gate_accessibility_wait" >/dev/null; then
+  printf 'error: accessibility focus did not propagate after generation %s: %s\n' \
+    "$gate_accessibility_generation" \
+    "$(jq -c . <<<"$gate_accessibility_wait")" >&2
+  false
+fi
+printf 'linux_accessibility_focus_passed target=note-draft after_generation=%s generation=%s wait_elapsed_ms=%s\n' \
+  "$gate_accessibility_generation" \
+  "$(jq -r '.snapshot.generation' <<<"$gate_accessibility_wait")" \
+  "$(jq -r '.wait.elapsed_ms' <<<"$gate_accessibility_wait")"
 [[ "$(accessibility_call '{"method":"action","kind":"set_selection","target":"note-draft","value":"0:7"}' | jq -r '.ok')" == true ]]
 [[ "$(accessibility_call '{"method":"action","kind":"copy","target":"note-draft"}' | jq -r '.ok')" == true ]]
 [[ "$(accessibility_call '{"method":"action","kind":"cut","target":"note-draft"}' | jq -r '.ok')" == true ]]
@@ -492,8 +572,13 @@ for _ in {1..500}; do
   sleep 0.01
 done
 [[ "$(cat "$gate_xwayland_display_file")" =~ ^:[0-9]+$ ]]
+[[ "$(cat "$gate_xwayland_display_file")" == ":$gate_xwayland_x11_display" ]]
+gate_xwayland_pid="$(pgrep -P "$gate_compositor_pid" -x Xwayland)"
+[[ "$gate_xwayland_pid" =~ ^[1-9][0-9]*$ ]]
+[[ "$(ps -o ppid= -p "$gate_xwayland_pid" | xargs)" == "$gate_compositor_pid" ]]
 DISPLAY="$(cat "$gate_xwayland_display_file")" \
-  xmessage -buttons OK:0 -default OK 'SOS XWayland compatibility gate' \
+  xmessage -title 'SOS XWayland compatibility gate' \
+  -buttons OK:0 -default OK 'SOS XWayland compatibility gate' \
   >"$gate_run_dir/xwayland-client.log" 2>&1 &
 gate_x11_pid=$!
 for _ in {1..500}; do
@@ -503,6 +588,8 @@ for _ in {1..500}; do
 done
 grep -q 'rootless XWayland ready' "$gate_run_dir/compositor.log"
 grep -q 'mapped bounded XWayland window' "$gate_run_dir/compositor.log"
+gate_xwayland_surface="$(grep 'mapped bounded XWayland window' "$gate_run_dir/compositor.log" | tail -n 1)"
+grep -F 'title="SOS XWayland compatibility gate"' <<<"$gate_xwayland_surface" >/dev/null
 
 XDG_RUNTIME_DIR="$gate_runtime_dir" WAYLAND_DISPLAY=wayland-sos \
   weston-simple-shm >"$gate_run_dir/compatibility.log" 2>&1 &
@@ -558,7 +645,12 @@ printf 'authority_revision=%s\n' "$gate_authority_revision"
 printf 'native_text=%s input_quiesce_suppressed_events=%s\n' \
   "$(jq -r '.current.state.draft' "$gate_revision_root/authority.json")" \
   "$gate_suppressed_events"
+printf 'xwayland_pid=%s parent_pid=%s client_pid=%s display=%s version=%s\n' \
+  "$gate_xwayland_pid" "$gate_compositor_pid" "$gate_x11_pid" \
+  "$(cat "$gate_xwayland_display_file")" \
+  "$(sed -n '1p' <<<"$gate_xwayland_version")"
+printf 'xwayland_surface=%s\n' "$gate_xwayland_surface"
 grep -E 'attached input-method|cursor-rectangle|selected=Some' "$gate_run_dir/ime.log"
 grep -E \
-  'authenticated SOS shell|mapped fixed-policy|presented armed shell revision' \
+  'authenticated SOS shell|mapped fixed-policy|rootless XWayland ready|mapped bounded XWayland window|presented armed shell revision' \
   "$gate_run_dir/compositor.log"

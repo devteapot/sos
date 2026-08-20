@@ -122,10 +122,27 @@ async function login(): Promise<void> {
   }
 }
 
+async function credentialStatus(): Promise<void> {
+  const provider = supportedProvider(
+    option("--provider") ?? process.env.SOS_AGENT_PROVIDER ?? "openai-codex",
+  );
+  const credentialPath = required("--credentials");
+  const stored = await new JsonCredentialStore(credentialPath).read(provider);
+  if (!stored) throw new Error(`no ${provider} credential is stored at ${credentialPath}`);
+  if (provider === "openai-codex" && stored.type !== "oauth") {
+    throw new Error(`the ${provider} credential at ${credentialPath} is not OAuth`);
+  }
+  process.stdout.write(`sos_agent_credential_ready provider=${provider} path=${credentialPath}\n`);
+}
+
 export async function runCli(): Promise<void> {
   const command = process.argv[2];
   if (command === "login") {
     await login();
+    return;
+  }
+  if (command === "credential-status") {
+    await credentialStatus();
     return;
   }
   if (command === "prompt") {
@@ -133,7 +150,9 @@ export async function runCli(): Promise<void> {
     process.exitCode = exitCode;
     return;
   }
-  if (command !== "serve") throw new Error("usage: sos-agent serve|login|prompt [options]");
+  if (command !== "serve") {
+    throw new Error("usage: sos-agent serve|login|credential-status|prompt [options]");
+  }
 
   const socketPath = required("--socket");
   const backend = new UnixAuthoringBackend(required("--authoring-socket"));

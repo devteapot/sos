@@ -20,6 +20,9 @@ vm_dependencies=(
   g++
   gcc
   git
+  gstreamer1.0-plugins-base
+  gstreamer1.0-plugins-good
+  gstreamer1.0-tools
   jq
   libasound2-dev
   libfontconfig-dev
@@ -45,11 +48,14 @@ vm_dependencies=(
   musl-tools
   pipewire
   pkgconf
+  python3
   rustup
   seatd
   weston
+  x11-utils
   xdg-desktop-portal
   xvfb
+  xwayland
 )
 
 sudo apt-get update
@@ -108,7 +114,15 @@ cargo build --locked -p sos-linux-session --bin sos-agent-authoring
 (
   cd services/sos-agent
   npm ci --ignore-scripts
+  npm run check
+  npm test
   npm run build
+  [[ -s dist/agent-runner.cjs ]]
+  printf 'sos_agent_package_passed package_path=%s bundle_path=%s bundle_bytes=%s bundle_sha256=%s sequence=npm-ci,check,test,build\n' \
+    services/sos-agent/package.json \
+    services/sos-agent/dist/agent-runner.cjs \
+    "$(stat -c '%s' dist/agent-runner.cjs)" \
+    "$(sha256sum dist/agent-runner.cjs | awk '{ print $1 }')"
 )
 
 printf 'Debian 13 Linux host/compositor dependencies, Rust %s, and Node %s are ready.\n' \

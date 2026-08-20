@@ -1,0 +1,250 @@
+# Exact X11 display artifact accounting for the nested compositor gate.
+
+sos_nested_x_artifact_identity() {
+  local sos_nested_x_path="$1"
+  if [[ ! -e "$sos_nested_x_path" && ! -L "$sos_nested_x_path" ]]; then
+    printf 'absent\n'
+    return 0
+  fi
+  stat -c '%d:%i:%u:%f' -- "$sos_nested_x_path"
+}
+
+sos_nested_x_assign() {
+  local sos_nested_x_name="$1"
+  local sos_nested_x_value="$2"
+  printf -v "$sos_nested_x_name" '%s' "$sos_nested_x_value"
+}
+
+sos_nested_x_value() {
+  local sos_nested_x_name="$1"
+  printf '%s' "${!sos_nested_x_name-}"
+}
+
+sos_nested_x_paths() {
+  local sos_nested_x_prefix="$1"
+  local sos_nested_x_display="$2"
+  local sos_nested_x_root="${SOS_NESTED_X11_ROOT:-/tmp}"
+  [[ "$sos_nested_x_prefix" =~ ^[a-zA-Z_][a-zA-Z0-9_]*$ ]] || {
+    printf 'error: invalid X11 artifact state prefix: %s\n' "$sos_nested_x_prefix" >&2
+    return 1
+  }
+  [[ "$sos_nested_x_display" =~ ^[0-9]+$ ]] || {
+    printf 'error: invalid X11 display number: %s\n' "$sos_nested_x_display" >&2
+    return 1
+  }
+  sos_nested_x_assign "${sos_nested_x_prefix}_display" "$sos_nested_x_display"
+  sos_nested_x_assign \
+    "${sos_nested_x_prefix}_socket" \
+    "$sos_nested_x_root/.X11-unix/X$sos_nested_x_display"
+  sos_nested_x_assign \
+    "${sos_nested_x_prefix}_lock" \
+    "$sos_nested_x_root/.X${sos_nested_x_display}-lock"
+}
+
+sos_nested_x_record_display() {
+  local sos_nested_x_prefix="$1"
+  local sos_nested_x_display="$2"
+  local sos_nested_x_expected_uid="$3"
+  local sos_nested_x_socket sos_nested_x_lock
+  local sos_nested_x_socket_before sos_nested_x_lock_before
+
+  sos_nested_x_paths "$sos_nested_x_prefix" "$sos_nested_x_display" || return 1
+  sos_nested_x_socket="$(sos_nested_x_value "${sos_nested_x_prefix}_socket")"
+  sos_nested_x_lock="$(sos_nested_x_value "${sos_nested_x_prefix}_lock")"
+  sos_nested_x_socket_before="$(sos_nested_x_artifact_identity "$sos_nested_x_socket")" || return 1
+  sos_nested_x_lock_before="$(sos_nested_x_artifact_identity "$sos_nested_x_lock")" || return 1
+  sos_nested_x_assign "${sos_nested_x_prefix}_expected_uid" "$sos_nested_x_expected_uid"
+  sos_nested_x_assign "${sos_nested_x_prefix}_socket_before" "$sos_nested_x_socket_before"
+  sos_nested_x_assign "${sos_nested_x_prefix}_lock_before" "$sos_nested_x_lock_before"
+  sos_nested_x_assign "${sos_nested_x_prefix}_socket_created" ''
+  sos_nested_x_assign "${sos_nested_x_prefix}_lock_created" ''
+
+  if [[ "$sos_nested_x_socket_before" != absent || "$sos_nested_x_lock_before" != absent ]]; then
+    printf 'error: refusing preexisting X11 display artifacts for :%s: socket=%s lock=%s\n' \
+      "$sos_nested_x_display" "$sos_nested_x_socket_before" "$sos_nested_x_lock_before" >&2
+    return 1
+  fi
+}
+
+sos_nested_x_select_display() {
+  local sos_nested_x_prefix="$1"
+  local sos_nested_x_first="$2"
+  local sos_nested_x_last="$3"
+  local sos_nested_x_expected_uid="$4"
+  local sos_nested_x_display sos_nested_x_socket sos_nested_x_lock
+
+  [[ "$sos_nested_x_first" =~ ^[0-9]+$ && "$sos_nested_x_last" =~ ^[0-9]+$ ]] || {
+    printf 'error: invalid X11 display range: %s..%s\n' \
+      "$sos_nested_x_first" "$sos_nested_x_last" >&2
+    return 1
+  }
+  for ((sos_nested_x_display = sos_nested_x_first; sos_nested_x_display <= sos_nested_x_last; sos_nested_x_display++)); do
+    sos_nested_x_paths "$sos_nested_x_prefix" "$sos_nested_x_display" || return 1
+    sos_nested_x_socket="$(sos_nested_x_value "${sos_nested_x_prefix}_socket")"
+    sos_nested_x_lock="$(sos_nested_x_value "${sos_nested_x_prefix}_lock")"
+    if [[ "$(sos_nested_x_artifact_identity "$sos_nested_x_socket")" == absent \
+      && "$(sos_nested_x_artifact_identity "$sos_nested_x_lock")" == absent ]]; then
+      sos_nested_x_record_display \
+        "$sos_nested_x_prefix" "$sos_nested_x_display" "$sos_nested_x_expected_uid"
+      return
+    fi
+  done
+  printf 'error: no unused X11 display in exact range %s..%s\n' \
+    "$sos_nested_x_first" "$sos_nested_x_last" >&2
+  return 1
+}
+
+sos_nested_x_capture_created() {
+  local sos_nested_x_prefix="$1"
+  local sos_nested_x_expected_lock_pid="$2"
+  local sos_nested_x_display sos_nested_x_socket sos_nested_x_lock sos_nested_x_expected_uid
+  local sos_nested_x_socket_identity sos_nested_x_lock_identity sos_nested_x_lock_pid
+
+  sos_nested_x_display="$(sos_nested_x_value "${sos_nested_x_prefix}_display")"
+  sos_nested_x_socket="$(sos_nested_x_value "${sos_nested_x_prefix}_socket")"
+  sos_nested_x_lock="$(sos_nested_x_value "${sos_nested_x_prefix}_lock")"
+  sos_nested_x_expected_uid="$(sos_nested_x_value "${sos_nested_x_prefix}_expected_uid")"
+  [[ -n "$sos_nested_x_display" && -n "$sos_nested_x_socket" && -n "$sos_nested_x_lock" ]] || {
+    printf 'error: X11 display state was not recorded before startup\n' >&2
+    return 1
+  }
+  [[ "$(sos_nested_x_value "${sos_nested_x_prefix}_socket_before")" == absent \
+    && "$(sos_nested_x_value "${sos_nested_x_prefix}_lock_before")" == absent ]] || {
+    printf 'error: X11 display :%s was not absent before startup\n' "$sos_nested_x_display" >&2
+    return 1
+  }
+  [[ -S "$sos_nested_x_socket" && ! -L "$sos_nested_x_socket" ]] || {
+    printf 'error: X11 display :%s socket is absent or not a socket: %s\n' \
+      "$sos_nested_x_display" "$sos_nested_x_socket" >&2
+    return 1
+  }
+  [[ -f "$sos_nested_x_lock" && ! -L "$sos_nested_x_lock" ]] || {
+    printf 'error: X11 display :%s lock is absent or not a regular file: %s\n' \
+      "$sos_nested_x_display" "$sos_nested_x_lock" >&2
+    return 1
+  }
+  [[ "$(stat -c '%u' -- "$sos_nested_x_socket")" == "$sos_nested_x_expected_uid" \
+    && "$(stat -c '%u' -- "$sos_nested_x_lock")" == "$sos_nested_x_expected_uid" ]] || {
+    printf 'error: X11 display :%s artifacts have an unexpected owner\n' \
+      "$sos_nested_x_display" >&2
+    return 1
+  }
+  sos_nested_x_lock_pid="$(tr -d '[:space:]' <"$sos_nested_x_lock")"
+  [[ "$sos_nested_x_lock_pid" == "$sos_nested_x_expected_lock_pid" ]] || {
+    printf 'error: X11 display :%s lock PID %s does not match expected owner %s\n' \
+      "$sos_nested_x_display" "$sos_nested_x_lock_pid" "$sos_nested_x_expected_lock_pid" >&2
+    return 1
+  }
+  fuser -s "$sos_nested_x_socket" || {
+    printf 'error: X11 display :%s socket has no live owner during capture\n' \
+      "$sos_nested_x_display" >&2
+    return 1
+  }
+
+  sos_nested_x_socket_identity="$(sos_nested_x_artifact_identity "$sos_nested_x_socket")" || return 1
+  sos_nested_x_lock_identity="$(sos_nested_x_artifact_identity "$sos_nested_x_lock")" || return 1
+  sos_nested_x_assign "${sos_nested_x_prefix}_socket_created" "$sos_nested_x_socket_identity"
+  sos_nested_x_assign "${sos_nested_x_prefix}_lock_created" "$sos_nested_x_lock_identity"
+}
+
+sos_nested_x_display_owner_pids() {
+  local sos_nested_x_display="$1"
+  ps -eo pid=,comm=,args= | awk -v display=":$sos_nested_x_display" '
+    $2 == "Xvfb" || $2 == "Xwayland" {
+      for (field = 3; field <= NF; field++) {
+        if ($field == display) {
+          print $1
+          break
+        }
+      }
+    }
+  '
+}
+
+sos_nested_x_cleanup_created() {
+  local sos_nested_x_prefix="$1"
+  local sos_nested_x_display sos_nested_x_socket sos_nested_x_lock sos_nested_x_expected_uid
+  local sos_nested_x_socket_created sos_nested_x_lock_created
+  local sos_nested_x_path sos_nested_x_kind sos_nested_x_expected sos_nested_x_actual
+  local sos_nested_x_owner_pids sos_nested_x_status=0
+
+  sos_nested_x_display="$(sos_nested_x_value "${sos_nested_x_prefix}_display")"
+  [[ -n "$sos_nested_x_display" ]] || return 0
+  sos_nested_x_socket="$(sos_nested_x_value "${sos_nested_x_prefix}_socket")"
+  sos_nested_x_lock="$(sos_nested_x_value "${sos_nested_x_prefix}_lock")"
+  sos_nested_x_expected_uid="$(sos_nested_x_value "${sos_nested_x_prefix}_expected_uid")"
+  sos_nested_x_socket_created="$(sos_nested_x_value "${sos_nested_x_prefix}_socket_created")"
+  sos_nested_x_lock_created="$(sos_nested_x_value "${sos_nested_x_prefix}_lock_created")"
+
+  sos_nested_x_owner_pids="$(sos_nested_x_display_owner_pids "$sos_nested_x_display")"
+  if [[ -n "$sos_nested_x_owner_pids" ]]; then
+    printf 'error: X11 display :%s still has X server owners: %s\n' \
+      "$sos_nested_x_display" "$(xargs <<<"$sos_nested_x_owner_pids")" >&2
+    sos_nested_x_status=1
+  fi
+  for sos_nested_x_path in "$sos_nested_x_socket" "$sos_nested_x_lock"; do
+    if [[ -e "$sos_nested_x_path" || -L "$sos_nested_x_path" ]] \
+      && fuser -s "$sos_nested_x_path"; then
+      printf 'error: X11 display :%s artifact still has a process owner: %s\n' \
+        "$sos_nested_x_display" "$sos_nested_x_path" >&2
+      sos_nested_x_status=1
+    fi
+  done
+
+  for sos_nested_x_kind in socket lock; do
+    if [[ "$sos_nested_x_kind" == socket ]]; then
+      sos_nested_x_path="$sos_nested_x_socket"
+      sos_nested_x_expected="$sos_nested_x_socket_created"
+    else
+      sos_nested_x_path="$sos_nested_x_lock"
+      sos_nested_x_expected="$sos_nested_x_lock_created"
+    fi
+    if [[ ! -e "$sos_nested_x_path" && ! -L "$sos_nested_x_path" ]]; then
+      continue
+    fi
+    sos_nested_x_actual="$(sos_nested_x_artifact_identity "$sos_nested_x_path")" || {
+      sos_nested_x_status=1
+      continue
+    }
+    if [[ -z "$sos_nested_x_expected" || "$sos_nested_x_actual" != "$sos_nested_x_expected" ]]; then
+      printf 'error: preserving unproven or replaced X11 %s for :%s: expected=%s actual=%s\n' \
+        "$sos_nested_x_kind" "$sos_nested_x_display" \
+        "${sos_nested_x_expected:-uncaptured}" "$sos_nested_x_actual" >&2
+      sos_nested_x_status=1
+      continue
+    fi
+    if [[ "$(stat -c '%u' -- "$sos_nested_x_path")" != "$sos_nested_x_expected_uid" ]]; then
+      printf 'error: preserving wrong-owner X11 %s for :%s\n' \
+        "$sos_nested_x_kind" "$sos_nested_x_display" >&2
+      sos_nested_x_status=1
+      continue
+    fi
+    if [[ "$sos_nested_x_kind" == socket ]]; then
+      [[ -S "$sos_nested_x_path" && ! -L "$sos_nested_x_path" ]] || {
+        printf 'error: preserving wrong-type X11 socket for :%s\n' \
+          "$sos_nested_x_display" >&2
+        sos_nested_x_status=1
+      }
+    else
+      [[ -f "$sos_nested_x_path" && ! -L "$sos_nested_x_path" ]] || {
+        printf 'error: preserving wrong-type X11 lock for :%s\n' \
+          "$sos_nested_x_display" >&2
+        sos_nested_x_status=1
+      }
+    fi
+  done
+  [[ "$sos_nested_x_status" -eq 0 ]] || return "$sos_nested_x_status"
+
+  for sos_nested_x_path in "$sos_nested_x_socket" "$sos_nested_x_lock"; do
+    if [[ -e "$sos_nested_x_path" || -L "$sos_nested_x_path" ]]; then
+      rm -- "$sos_nested_x_path" || sos_nested_x_status=1
+    fi
+  done
+  if [[ -e "$sos_nested_x_socket" || -L "$sos_nested_x_socket" \
+    || -e "$sos_nested_x_lock" || -L "$sos_nested_x_lock" ]]; then
+    printf 'error: X11 display :%s artifact cleanup did not reach exact absence\n' \
+      "$sos_nested_x_display" >&2
+    sos_nested_x_status=1
+  fi
+  return "$sos_nested_x_status"
+}

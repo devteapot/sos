@@ -13,6 +13,8 @@ sos_login_fail() {
   sos_login_fail "XDG_RUNTIME_DIR must be an absolute path supplied by the display manager"
 [[ -d "$XDG_RUNTIME_DIR" && -O "$XDG_RUNTIME_DIR" ]] || \
   sos_login_fail "XDG_RUNTIME_DIR must exist and belong to the login user"
+[[ -n "${XDG_SESSION_ID:-}" ]] || \
+  sos_login_fail "XDG_SESSION_ID must be supplied by the display manager"
 
 sos_login_bin_dir="${SOS_INSTALL_ROOT:-/usr/local/libexec/sos}"
 sos_login_default_source="${SOS_DEFAULT_EXPERIENCE:-/usr/share/sos/experiences/default.luau}"
@@ -86,9 +88,25 @@ sos_login_supervisor_socket="$sos_login_revision_root/run/supervisor.sock"
 sos_login_session_pid=""
 sos_login_authoring_pid=""
 sos_login_agent_pid=""
+sos_login_monitor_pid=""
+sos_login_initial_revision=""
+sos_login_initial_host_pid=""
+sos_login_owned_component_pids=()
 # ShellCheck cannot infer that EXIT invokes this callback.
 # shellcheck disable=SC2317
 sos_login_cleanup() {
+  local sos_login_exit_status="$?"
+  local sos_login_top_level_absent=true
+  local sos_login_components_absent=true
+  local sos_login_matching_processes_absent=true
+  local sos_login_runtime_absent=true
+  local sos_login_process_path sos_login_process_uid sos_login_process_executable
+  trap - EXIT HUP INT TERM
+  set +e
+  if [[ -n "$sos_login_monitor_pid" ]] && kill -0 "$sos_login_monitor_pid" 2>/dev/null; then
+    kill -TERM "$sos_login_monitor_pid" 2>/dev/null || true
+    wait "$sos_login_monitor_pid" 2>/dev/null || true
+  fi
   for sos_login_cleanup_pid in \
     "$sos_login_agent_pid" \
     "$sos_login_authoring_pid" \
@@ -103,9 +121,54 @@ sos_login_cleanup() {
     "$sos_login_session_pid"; do
     [[ -z "$sos_login_cleanup_pid" ]] || wait "$sos_login_cleanup_pid" 2>/dev/null || true
   done
+  for sos_login_cleanup_pid in \
+    "$sos_login_agent_pid" \
+    "$sos_login_authoring_pid" \
+    "$sos_login_session_pid"; do
+    if [[ -n "$sos_login_cleanup_pid" ]] && kill -0 "$sos_login_cleanup_pid" 2>/dev/null; then
+      sos_login_top_level_absent=false
+    fi
+  done
+  for sos_login_cleanup_pid in "${sos_login_owned_component_pids[@]}"; do
+    if [[ -n "$sos_login_cleanup_pid" ]] && kill -0 "$sos_login_cleanup_pid" 2>/dev/null; then
+      sos_login_components_absent=false
+    fi
+  done
+  for sos_login_process_path in /proc/[0-9]*; do
+    sos_login_process_uid="$(stat -c '%u' "$sos_login_process_path" 2>/dev/null)" || continue
+    [[ "$sos_login_process_uid" == "$(id -u)" ]] || continue
+    sos_login_process_executable="$(readlink -f "$sos_login_process_path/exe" 2>/dev/null)" || continue
+    if [[ "$sos_login_process_executable" == "$sos_login_session_bin" \
+      || "$sos_login_process_executable" == "$sos_login_compositor_bin" \
+      || "$sos_login_process_executable" == "$sos_login_provider_bin" \
+      || "$sos_login_process_executable" == "$sos_login_supervisor_bin" \
+      || "$sos_login_process_executable" == "$sos_login_host_bin" \
+      || "$sos_login_process_executable" == "$sos_login_authoring_bin" ]]; then
+      sos_login_matching_processes_absent=false
+    fi
+    if tr '\0' '\n' <"$sos_login_process_path/cmdline" 2>/dev/null \
+      | grep -Fxq "$sos_login_agent_main"; then
+      sos_login_matching_processes_absent=false
+    fi
+  done
   if [[ "$sos_login_runtime" == "$XDG_RUNTIME_DIR"/sos-session.* && -d "$sos_login_runtime" ]]; then
-    rm -r -- "$sos_login_runtime"
+    rm -r -- "$sos_login_runtime" || sos_login_runtime_absent=false
   fi
+  [[ ! -e "$sos_login_runtime" ]] || sos_login_runtime_absent=false
+  if [[ "$sos_login_top_level_absent" == true \
+    && "$sos_login_components_absent" == true \
+    && "$sos_login_matching_processes_absent" == true \
+    && "$sos_login_runtime_absent" == true ]]; then
+    printf 'sos_login_cleanup_passed top_level_pids_absent=true component_pids_absent=true matching_product_processes_absent=true runtime_absent=true\n'
+  else
+    printf 'sos_login_cleanup_failed top_level_pids_absent=%s component_pids_absent=%s matching_product_processes_absent=%s runtime_absent=%s\n' \
+      "$sos_login_top_level_absent" \
+      "$sos_login_components_absent" \
+      "$sos_login_matching_processes_absent" \
+      "$sos_login_runtime_absent" >&2
+    [[ "$sos_login_exit_status" -ne 0 ]] || sos_login_exit_status=1
+  fi
+  exit "$sos_login_exit_status"
 }
 # ShellCheck cannot infer that the signal traps invoke this callback.
 # shellcheck disable=SC2317
@@ -201,6 +264,176 @@ sos_login_wait_for_socket "$sos_login_agent_socket" \
 printf 'sos_login_agent_started pid=%s socket=%s\n' \
   "$sos_login_agent_pid" "$sos_login_agent_socket"
 
+sos_login_status_revision() {
+  sed -n 's/.*"active_revision"[[:space:]]*:[[:space:]]*"\([0-9a-f]*\)".*/\1/p' <<<"$1"
+}
+
+sos_login_status_host_pid() {
+  sed -n 's/.*"host_pid"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' <<<"$1"
+}
+
+sos_login_authority_revision() {
+  sed -n 's/.*"revision_id"[[:space:]]*:[[:space:]]*"\([0-9a-f]*\)".*/\1/p' \
+    "$sos_login_authority_file" | head -n 1
+}
+
+sos_login_process_identity() {
+  local sos_login_role="$1"
+  local sos_login_pid="$2"
+  local sos_login_ppid sos_login_uid sos_login_user sos_login_executable
+  [[ "$sos_login_pid" =~ ^[1-9][0-9]*$ ]] || \
+    sos_login_fail "invalid $sos_login_role PID: $sos_login_pid"
+  sos_login_ppid="$(ps -o ppid= -p "$sos_login_pid" | xargs)"
+  sos_login_uid="$(ps -o uid= -p "$sos_login_pid" | xargs)"
+  sos_login_user="$(ps -o user= -p "$sos_login_pid" | xargs)"
+  sos_login_executable="$(readlink -f "/proc/$sos_login_pid/exe")"
+  printf 'sos_login_process_identity role=%s pid=%s ppid=%s uid=%s user=%s executable=%s\n' \
+    "$sos_login_role" \
+    "$sos_login_pid" \
+    "$sos_login_ppid" \
+    "$sos_login_uid" \
+    "$sos_login_user" \
+    "$sos_login_executable"
+}
+
+sos_login_status=""
+for _ in {1..3000}; do
+  sos_login_status="$($sos_login_supervisor_bin daemon-status \
+    --root "$sos_login_revision_root" 2>/dev/null || true)"
+  sos_login_initial_revision="$(sos_login_status_revision "$sos_login_status")"
+  sos_login_initial_host_pid="$(sos_login_status_host_pid "$sos_login_status")"
+  if [[ "$sos_login_initial_revision" =~ ^[0-9a-f]{64}$ \
+    && "$sos_login_initial_host_pid" =~ ^[1-9][0-9]*$ ]]; then
+    break
+  fi
+  kill -0 "$sos_login_session_pid" 2>/dev/null || \
+    sos_login_fail "SOS session exited before publishing revision and host identity"
+  sleep 0.01
+done
+[[ "$sos_login_initial_revision" =~ ^[0-9a-f]{64}$ \
+  && "$sos_login_initial_host_pid" =~ ^[1-9][0-9]*$ ]] || \
+  sos_login_fail "SOS session did not publish revision and host identity"
+[[ "$(sos_login_authority_revision)" == "$sos_login_initial_revision" ]] || \
+  sos_login_fail "initial supervisor and authority revisions differ"
+printf 'sos_login_initial_status=%s\n' "$sos_login_status"
+
+sos_login_compositor_pid="$(pgrep -P "$sos_login_session_pid" -f "^$sos_login_compositor_bin")"
+sos_login_provider_pid="$(pgrep -P "$sos_login_session_pid" -f "^$sos_login_provider_bin")"
+sos_login_supervisor_pid="$(pgrep -P "$sos_login_session_pid" -f "^$sos_login_supervisor_bin")"
+sos_login_actual_host_pid="$(pgrep -P "$sos_login_session_pid" -f "^$sos_login_host_bin")"
+sos_login_owned_component_pids=(
+  "$sos_login_compositor_pid"
+  "$sos_login_provider_pid"
+  "$sos_login_supervisor_pid"
+  "$sos_login_initial_host_pid"
+  "$sos_login_actual_host_pid"
+)
+for sos_login_direct_child_pid in \
+  "$sos_login_compositor_pid" \
+  "$sos_login_provider_pid" \
+  "$sos_login_supervisor_pid" \
+  "$sos_login_actual_host_pid"; do
+  [[ "$(ps -o ppid= -p "$sos_login_direct_child_pid" | xargs)" == "$sos_login_session_pid" ]] || \
+    sos_login_fail "SOS component parentage does not match the session owner"
+done
+[[ "$(ps -o ppid= -p "$sos_login_initial_host_pid" | xargs)" == "$sos_login_supervisor_pid" ]] || \
+  sos_login_fail "host proxy parentage does not match the revision supervisor"
+for sos_login_launcher_child_pid in "$sos_login_authoring_pid" "$sos_login_agent_pid"; do
+  [[ "$(ps -o ppid= -p "$sos_login_launcher_child_pid" | xargs)" == "$BASHPID" ]] || \
+    sos_login_fail "agent component parentage does not match the login launcher"
+done
+sos_login_process_identity login-launcher "$BASHPID"
+sos_login_process_identity session-owner "$sos_login_session_pid"
+sos_login_process_identity compositor "$sos_login_compositor_pid"
+sos_login_process_identity platform-authority "$sos_login_provider_pid"
+sos_login_process_identity supervisor "$sos_login_supervisor_pid"
+sos_login_process_identity host-proxy "$sos_login_initial_host_pid"
+sos_login_process_identity experience-host "$sos_login_actual_host_pid"
+sos_login_process_identity authoring-broker "$sos_login_authoring_pid"
+sos_login_process_identity resident-agent "$sos_login_agent_pid"
+sos_login_logind_active="$(loginctl show-session "$XDG_SESSION_ID" -p Active --value)"
+sos_login_logind_seat="$(loginctl show-session "$XDG_SESSION_ID" -p Seat --value)"
+sos_login_logind_type="$(loginctl show-session "$XDG_SESSION_ID" -p Type --value)"
+sos_login_logind_leader="$(loginctl show-session "$XDG_SESSION_ID" -p Leader --value)"
+sos_login_logind_name="$(loginctl show-session "$XDG_SESSION_ID" -p Name --value)"
+sos_login_logind_user="$(loginctl show-session "$XDG_SESSION_ID" -p User --value)"
+[[ "$sos_login_logind_active" == yes \
+  && -n "$sos_login_logind_seat" \
+  && "$sos_login_logind_type" == wayland \
+  && "$sos_login_logind_leader" =~ ^[1-9][0-9]*$ \
+  && "$sos_login_logind_name" == "$(id -un)" \
+  && "$sos_login_logind_user" == "$(id -u)" ]] || \
+  sos_login_fail "GDM logind session identity is incomplete or inconsistent"
+printf 'sos_login_logind_identity session=%s active=%s seat=%s type=%s leader=%s name=%s user=%s\n' \
+  "$XDG_SESSION_ID" \
+  "$sos_login_logind_active" \
+  "$sos_login_logind_seat" \
+  "$sos_login_logind_type" \
+  "$sos_login_logind_leader" \
+  "$sos_login_logind_name" \
+  "$sos_login_logind_user"
+printf 'sos_login_session_ready revision_id=%s host_pid=%s session_pid=%s logind_session=%s uid=%s user=%s desktop=SOS type=wayland surface=Shell evidence=drm_page_flip\n' \
+  "$sos_login_initial_revision" \
+  "$sos_login_initial_host_pid" \
+  "$sos_login_session_pid" \
+  "$XDG_SESSION_ID" \
+  "$(id -u)" \
+  "$(id -un)"
+printf 'sos_login_surface_identity role=Shell revision_id=%s compositor_pid=%s evidence=drm_page_flip\n' \
+  "$sos_login_initial_revision" "$sos_login_compositor_pid"
+
+sos_login_initial_history_bytes=absent
+sos_login_initial_history_sha256=absent
+if [[ -f "$sos_login_agent_state_dir/messages.json" ]]; then
+  sos_login_initial_history_bytes="$(stat -c '%s' "$sos_login_agent_state_dir/messages.json")"
+  sos_login_initial_history_sha256="$(sha256sum "$sos_login_agent_state_dir/messages.json" | awk '{ print $1 }')"
+fi
+sos_login_rewrite_evidence="$sos_login_runtime/rewrite-evidence"
+sos_login_monitor_rewrite() {
+  local sos_login_monitor_status sos_login_monitor_revision sos_login_monitor_host
+  local sos_login_monitor_authority sos_login_monitor_history_bytes sos_login_monitor_history_sha256
+  local sos_login_monitor_result
+  while kill -0 "$sos_login_session_pid" 2>/dev/null; do
+    sos_login_monitor_status="$($sos_login_supervisor_bin daemon-status \
+      --root "$sos_login_revision_root" 2>/dev/null || true)"
+    sos_login_monitor_revision="$(sos_login_status_revision "$sos_login_monitor_status")"
+    sos_login_monitor_host="$(sos_login_status_host_pid "$sos_login_monitor_status")"
+    if [[ "$sos_login_monitor_revision" =~ ^[0-9a-f]{64}$ \
+      && "$sos_login_monitor_revision" != "$sos_login_initial_revision" \
+      && -f "$sos_login_agent_state_dir/messages.json" ]]; then
+      sos_login_monitor_history_bytes="$(stat -c '%s' "$sos_login_agent_state_dir/messages.json")"
+      sos_login_monitor_history_sha256="$(sha256sum "$sos_login_agent_state_dir/messages.json" | awk '{ print $1 }')"
+      if [[ "$sos_login_monitor_history_sha256" != "$sos_login_initial_history_sha256" ]]; then
+        sos_login_monitor_authority="$(sos_login_authority_revision)"
+        sos_login_monitor_result=failed
+        if [[ "$sos_login_monitor_host" == "$sos_login_initial_host_pid" \
+          && "$sos_login_monitor_authority" == "$sos_login_monitor_revision" ]]; then
+          sos_login_monitor_result=passed
+        fi
+        printf 'sos_login_rewrite_%s initial_revision=%s active_revision=%s initial_host_pid=%s active_host_pid=%s host_pid_unchanged=%s authority_revision=%s authority_equal=%s history_path=%s history_initial_bytes=%s history_initial_sha256=%s history_bytes=%s history_sha256=%s history_changed=true\n' \
+          "$sos_login_monitor_result" \
+          "$sos_login_initial_revision" \
+          "$sos_login_monitor_revision" \
+          "$sos_login_initial_host_pid" \
+          "$sos_login_monitor_host" \
+          "$([[ "$sos_login_monitor_host" == "$sos_login_initial_host_pid" ]] && printf true || printf false)" \
+          "$sos_login_monitor_authority" \
+          "$([[ "$sos_login_monitor_authority" == "$sos_login_monitor_revision" ]] && printf true || printf false)" \
+          "$sos_login_agent_state_dir/messages.json" \
+          "$sos_login_initial_history_bytes" \
+          "$sos_login_initial_history_sha256" \
+          "$sos_login_monitor_history_bytes" \
+          "$sos_login_monitor_history_sha256" \
+          | tee "$sos_login_rewrite_evidence"
+        return
+      fi
+    fi
+    sleep 0.25
+  done
+}
+sos_login_monitor_rewrite &
+sos_login_monitor_pid=$!
+
 set +e
 sos_login_finished_pid=""
 wait -n -p sos_login_finished_pid \
@@ -210,6 +443,11 @@ if [[ "$sos_login_finished_pid" != "$sos_login_session_pid" ]]; then
   printf 'sos_login_session_failed component=background-agent pid=%s status=%s\n' \
     "$sos_login_finished_pid" "$sos_login_status" >&2
   [[ "$sos_login_status" -ne 0 ]] || sos_login_status=1
+else
+  printf 'sos_login_logout_observed session_pid=%s status=%s rewrite_observed=%s\n' \
+    "$sos_login_session_pid" \
+    "$sos_login_status" \
+    "$([[ -s "$sos_login_rewrite_evidence" ]] && printf true || printf false)"
 fi
 set -e
 exit "$sos_login_status"

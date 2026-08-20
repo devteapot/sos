@@ -8997,3 +8997,2077 @@ SHA-256
 run its separate one-sideload Core 1 no-Zygote readiness, exact Pi authority,
 credential-clear, leak/crash/AVC, manifest, and soak gate. No Core hardware
 claim is made here.
+
+## 2026-08-18 — Invalidate Linux x86-64 r2 at the provisioning boundary
+
+**Goal / result:** Re-run the Debian 13 x86-64 VM acceptance campaign from
+exact source revision `e05f91bb6f0b0a9299b914138d6cd0966b9c82d5e`. Phase A
+(`tools/linux-vm/provision-debian`) returned status 0 in 5.45034 seconds, but
+its raw npm/build output was not captured, so it is not evidence-complete.
+Phase B (`tools/linux-agent-e2e`) passed in 15.2916 seconds, changing the
+active revision from
+`31f8e1d31b6e2c91a8a0b0829e5f29934440c64ed8f535bb86d81a5a836c49e5`
+to `2303ba94d14063341fe75ff71666b7aa3a8dcd1e1e9f80616708ae8147a302f0`.
+The generated `services/sos-agent/dist/agent-runner.cjs` was 1,878,811 bytes
+with SHA-256
+`3eee6e7922fb82e344277793a435bb8edd36a2c183050b638a3c6ca13d3bc99a`.
+Phase C (`tools/linux-compositor/verify-nested`) then failed at its command
+preflight in 0.252858 seconds because `gst-launch-1.0` was absent. Phases D,
+E, and F were not run. Total measured r2 wall time was 112.077606266 seconds;
+the VM accepted `systemctl poweroff`, QEMU exited, and its QMP socket was
+absent at final capture.
+
+**Changed / decision:** The Debian provisioner now explicitly installs
+`gstreamer1.0-tools`, `gstreamer1.0-plugins-base`, and
+`gstreamer1.0-plugins-good`, which provide the verifier's GStreamer command,
+`videotestsrc`, and PNG encoder. A command/package audit also made `python3`,
+`xwayland`, and `x11-utils` explicit for the nested and direct verifiers;
+`x11-utils` supplies `xmessage` and its XTest runtime dependency. Weston and
+`weston-simple-shm`, Xvfb, jq, Cargo/Rust, and seatd were already explicit in
+the provisioner, while GDM, rsync, SSH, and the systemd base are explicit in
+the reference VM contract: cloud-init explicitly installs the first three,
+and the Debian generic image boots under systemd. Relying on the GNOME image
+to pull these gate tools transitively was rejected. Installing only
+`gstreamer1.0-tools` was also insufficient because the verifier requires the
+separate source and PNG plugin elements.
+
+**Evidence / confidence boundary:** The finalized nine-file evidence root is
+`/home/carlid/sos-linux-x86_64-acceptance-20260818-r2`. Its 778-byte
+`manifest.tsv` has SHA-256
+`ec10443093134e0897c4b641e6c43d30b2232e990f480f97b4ad1c71cebd0ed4`.
+Independent verification passed; the 115-byte verifier output at
+`/tmp/sos-linux-x86_64-acceptance-20260818-r2-manifest-verify.txt` has
+SHA-256
+`823a2c8b3df3c89849dfbb22a263fe318b0b996965e81e62439e48f26f485602`.
+This r2 result establishes only the Phase B host contract; it does not pass
+provisioning, compositor, direct DRM, boot/GDM, physical hardware, or latency
+gates.
+
+**Remaining risk / next gate:** Static host checks can prove the provisioner
+syntax and explicit package contract, but the changed package installation
+and GStreamer element discovery remain untested until a VM run. Re-run r3
+from an exact recorded source state, capture complete Phase A output, and
+require `gst-launch-1.0` plus the `videotestsrc`, `pngenc`, and `filesink`
+elements before repeating the nested, direct DRM, and boot/GDM phases. Close
+and independently verify all evidence before any PASS; make no physical
+hardware or latency claim from the VM campaign.
+
+## 2026-08-18 — Invalidate Linux x86-64 r3 at the boot lifecycle boundary
+
+**Goal / result:** Repeat the Debian 13 x86-64 acceptance campaign after
+making the missing GStreamer/X11 dependencies explicit. The run used HEAD
+`e05f91bb6f0b0a9299b914138d6cd0966b9c82d5e` with dirty changes to
+`docs/linux-vm.md`, `docs/progress.md`, and
+`tools/linux-vm/provision-debian`. The deterministic initial and final diffs
+were byte-identical: 5,473 bytes with SHA-256
+`66fd73aaa41dd3b66e84bd88983d86c594154be9bef27a27854947df7e822256`.
+Provisioning passed in 40.82 seconds. Phase A captured
+`npm ci --ignore-scripts` passing in 4.33 seconds and `npm run check` passing
+in 2.70 seconds, but the runner's external logging wrapper stopped before
+capturing `npm test`, the required final `npm run build`, or a bundle
+path/byte-size/SHA-256 identity. Phase A is therefore incomplete, not PASS.
+
+Phase B passed in 7.35 seconds and changed revision
+`31f8e1d31b6e2c91a8a0b0829e5f29934440c64ed8f535bb86d81a5a836c49e5`
+to `2303ba94d14063341fe75ff71666b7aa3a8dcd1e1e9f80616708ae8147a302f0`.
+Phase C passed in 33.70 seconds: activation PID 8876 recovered as PID 9323
+on revision
+`2303ba94d14063341fe75ff71666b7aa3a8dcd1e1e9f80616708ae8147a302f0`
+with `nested_backend_submit` evidence. Phase D passed in 14.65 seconds:
+activation PID 9666 recovered as PID 9936 on revision
+`250b157308407df4ed48c8e45351e69a0d82534ba001b6ff214c6a3348c0a326`,
+and its transcript contains three armed-revision DRM page-flip fences. Phase E
+failed in 61.66 seconds after its resident-agent/Luau subgate had passed on
+revision
+`3eef9a00f71362045a3c167454b293d25cc5d565e4eddcecee1de49e3690a9c7`
+with experience-host PID 1005, agent PID 951, authoring-broker PID 937, and
+positive `drm_page_flip` evidence. Its only terminal diagnostic was
+`error: packaged compositor did not survive suspend/output lifecycle
+campaign`. Phase F was not run. Total measured wall time was 325.86 seconds.
+
+**Failure diagnosis / rejected evidence:** The captured Phase E artifact does
+not support selecting which lifecycle assertion failed. The remote body wrote
+no checkpoint, assertion line, compositor journal excerpt, kernel PM excerpt,
+counter value, connector state, or current PID; its outer command substitution
+replaced every nonzero remote result with the same generic error. The lack of
+a Python traceback or sysfs-shell diagnostic makes a silent readiness, journal
+count/match, or PID equality assertion more likely than a VT ioctl, freezer
+write, or connector write failure, but it does not distinguish VT pause,
+freezer resume, VT activation, kernel entry/exit matching, disconnect,
+reconnect, or process liveness. Elapsed time is not used to infer the failed
+loop. Cleanup is not the originating failure: the EXIT restoration ran after
+the nonzero result, and the later audit found `graphical.target`, active GDM
+and seatd, an inactive SOS target, no matching product process, and no
+`/var/lib/sos` or `/etc/sos`. That audit did not enumerate every installed
+agent/share path, unit, account, or group, so full uninstall cleanliness also
+remains insufficiently evidenced. Treating the generic wrapper message as a
+compositor crash, or the wrapper's omissions as product behavior, was
+rejected.
+
+The guest-source audit also failed because it hashed `package.json` at the
+guest repository root, while the only manifest is
+`services/sos-agent/package.json`. That external command is invalid evidence;
+it does not show a missing synced manifest. The repository-owned provisioner
+and boot verifier now run the complete agent sequence in order—locked install,
+check, test, and a final build—require a nonempty bundle, and print its correct
+repository-relative path, byte size, and SHA-256. The boot verifier also prints
+the absolute guest root plus hashes of the correctly addressed provisioner and
+agent manifest. No change was made to the runner's external logging wrapper.
+
+**Verifier decision:** Keep every existing lifecycle criterion. The boot
+verifier now emits phase-specific pass evidence and, on failure, a
+`linux_boot_lifecycle_failed` marker naming the exact VT request/log match,
+freezer command/kernel match, connector request/log match, campaign-log
+presence, or same-PID liveness phase. Its failure record includes the assertion
+line, expected/current PID, active VT, connector and `pm_test` state, relevant
+compositor journal, and kernel PM journal before EXIT restoration. The generic
+outer error now distinguishes a marked remote assertion from an unmarked
+transport/bootstrap failure. This is diagnostic hardening, not a claim that
+the unknown r3 product/verifier failure is fixed. No VM or device was operated
+while making this change.
+
+Host-side validation passed `bash -n` for the provisioner and boot verifier,
+separate `bash -n` parsing of the 56-line build and 160-line lifecycle remote
+heredocs, an exact audit of all 18 lifecycle phase markers, and
+`git diff --check`. The full local agent sequence completed in 8.3 seconds:
+all 12 Node tests passed, and the final bundle was 1,878,811 bytes with
+SHA-256
+`3eee6e7922fb82e344277793a435bb8edd36a2c183050b638a3c6ca13d3bc99a`.
+ShellCheck was unavailable on this host, so it is not claimed. The new
+guest/boot and lifecycle paths remain VM-unexecuted pending r4.
+
+**Evidence / confidence boundary:** The finalized r3 evidence root is
+`/home/carlid/sos-linux-x86_64-acceptance-20260818-r3`. Its 1,701-byte
+`manifest.tsv` has SHA-256
+`050fe0a46e0e2604a9a3fbff974bff0061ffebc2de3e0ddd5136829569a330bb`;
+all 19 rows passed independent verification. The 97-byte external verifier
+output at
+`/tmp/sos-linux-x86_64-acceptance-20260818-r3-manifest-verify.txt` has
+SHA-256
+`e68d5216630367277e141d79f62fca73b1ab404bdcbaf598bc3d0b7144920b0c`.
+The run establishes provisioning plus the Phase B/C/D functional results and
+the Phase E agent/visible-revision subgate only. It makes no physical-hardware,
+panel/touch latency, VM freezer or platform suspend/resume, memory, thermal, or
+overall Linux acceptance claim.
+
+**Remaining risk / exact r4 gate:** Start from a clean reference Debian 13
+x86-64 guest and freshly record this repaired dirty source identity before and
+after the run. Capture provisioning and the verifier's exact
+`npm-ci,check,test,build` package marker with the correct manifest and bundle
+paths, bundle byte size, and SHA-256; do not substitute the provisioner's
+earlier build for the verifier's packaged build. Repeat Phases B, C, and D.
+Run Phase E once and require the resident-agent revision activation, every
+phase-specific VT/freezer/kernel-log/output/same-PID checkpoint, the remaining
+boot recovery assertions, the final `linux_boot_session_passed` line, reboot
+to graphical target, and an exhaustive absence audit covering all installed
+SOS paths, units, users, group, and processes. If any lifecycle phase fails,
+stop after collecting its new marker and diagnostics; do not infer a root
+cause or patch the compositor without those logs. Run the previously specified
+Phase F only after Phase E passes. Close every artifact before atomically
+creating a self-excluding deterministic manifest, independently verify every
+row, and retain the VM-only confidence boundary.
+
+## 2026-08-18 — Diagnose Linux x86-64 r4 semantic completion loss
+
+**Goal / result:** Audit the complete r4 evidence and repair the packaged-agent
+completion loss without weakening the boot gate. The campaign used source HEAD
+`e05f91bb6f0b0a9299b914138d6cd0966b9c82d5e` and an unchanged initial/final
+dirty diff of 27,803 bytes, SHA-256
+`80d2bd22cdbef846de78d7eba56334a5b5df280d29e8e3b9bde2cf50bd630d65`.
+Provisioning, Phase A, and Phase E used the same tested final agent bundle:
+1,878,811 bytes, SHA-256
+`3eee6e7922fb82e344277793a435bb8edd36a2c183050b638a3c6ca13d3bc99a`.
+Phase B passed in 7.47 seconds and changed revision
+`31f8e1d31b6e2c91a8a0b0829e5f29934440c64ed8f535bb86d81a5a836c49e5`
+to `2303ba94d14063341fe75ff71666b7aa3a8dcd1e1e9f80616708ae8147a302f0`.
+Phase C passed in 16.95 seconds, recovered PID 3923 as PID 4307, and captured
+its nested submit fences. Phase D passed in 13.82 seconds, recovered PID 4752
+as PID 5030 on revision
+`250b157308407df4ed48c8e45351e69a0d82534ba001b6ff214c6a3348c0a326`,
+and captured three `drm_page_flip` fences.
+
+Phase E failed after 75.05 seconds. Its packaged agent submitted and activated
+the request through all three expected tools, the active revision changed to a
+different valid SHA-256 revision without changing the host PID, the new scene
+had positive `drm_page_flip` presentation evidence, and agent/broker ownership
+checks passed. The terminal generation-11 semantic snapshot contained the
+exact `YOU message`, `agent-status` `Ready`, and an empty editable composer,
+but no completed `SOS message`; the verifier reported `agent completion
+missing from semantic snapshot`. No lifecycle checkpoint ran and Phase F was
+not run.
+
+**Diagnosis / fix:** The failure is a host model-ordering race, not an omitted
+agent completion, semantic filter, or verifier delay. The tested faux provider
+emits the exact completion text before `completed`; the agent server persists
+the ordered messages before sending `completed`; the Rust bridge consumes the
+single socket in FIFO order; and the Linux host sets `Ready` only for that
+`completed` update. The r4 state therefore proves that completion crossed the
+agent boundary and was later lost in the host. `LinuxExperienceHost` kept the
+model snapshot paired with an asynchronous render request and restored it when
+that render completed. A render started before the text delta could therefore
+land between the delta and `completed`; `completed` then marked the restored
+no-assistant model `Ready`. Candidate commit also restored the model captured
+at prepare time, exposing the same loss across the live rewrite boundary.
+
+The host now treats `self.model` as the canonical live model, regards worker
+renders only as scene snapshots, suppresses a stale scene when a newer model is
+queued, and renders the latest canonical model next. Candidate commit merges
+the current agent conversation into the new revision model, preserving both
+the old user turn and new assistant turn while allowing the candidate's other
+model fields to win. A completion-visible journal marker records message count
+and assistant byte count. Unit tests cover live-rewrite conversation merge and
+stale-scene suppression. The boot verifier now waits on semantic generation
+events, within the existing 30-second authoring/accessibility contract, for
+the exact user message, exact completion, `Ready`, and empty composer; it also
+requires persisted completion history and records its identity. Failure now
+captures both semantic snapshots, both daemon statuses, persisted-history
+identity/presence, and agent, broker, and session journals before restoration.
+
+The related GDM live-rewrite cleanup path remains bounded: one worker thread
+owns at most one prepared Luau runtime, commit takes that candidate and replaces
+(and drops) the old runtime, and discard drops the prepared runtime; no process
+is spawned per candidate. The activation retains the exact experience-host PID.
+At service teardown, the system-session owner terminates and waits for its
+supervisor, provider, and compositor children, while systemd's mixed kill mode
+bounds any remaining service process tree. No cleanup change was needed for the
+semantic repair.
+
+The repository-owned nested gate now uses the valid `Xwayland -version` probe,
+records the exact Xwayland PID and compositor parent, requires the exact titled
+mapped surface, and emits a cleanup marker only after every owned PID and the
+temporary directory are absent. The r4 runner's `Xwayland --version` command
+was invalid. Its aggregate raw files also lacked per-command status/timing, an
+initial source raw ledger, exact Xwayland PID/surface capture, and a positive
+deterministic nested-cleanup record. Those wrapper/ledger behaviors are not
+repository-owned and were not patched here.
+
+**Validation / rejected approaches:** Host-only validation passed
+`cargo check -p sos-experience --features linux-host --tests`, both new focused
+Rust tests, `cargo clippy -p sos-experience --features linux-host --tests --no-deps -- -D warnings`,
+`cargo fmt --all -- --check`, `bash -n` for the provisioner, boot verifier, and
+nested verifier, separate parsing of the boot verifier's build,
+agent, and lifecycle heredocs, and `git diff --check`. The ordinary focused
+Rust test command compiled but could not link because this host lacks
+`libxkbcommon` and `libxkbcommon-x11`; rerunning with temporary empty linker
+stubs exercised both pure unit tests successfully. The full library run with
+those stubs passed 27 of 28 tests, including both new tests, but the unrelated
+pre-existing `embedded_experience_is_valid` test rejected
+`audio.set_volume` as a disallowed provider action. The local agent
+`npm run check && npm test && npm run build` sequence passed all 12 tests and
+reproduced the 1,878,811-byte bundle with the SHA-256 above. ShellCheck was
+unavailable, and this host has no Xwayland executable, so the nested gate was
+syntax-checked but not locally executed. No VM or device was operated.
+Arbitrary sleeps, accepting `Ready`
+without the assistant, changing the packaged agent/protocol, filtering out the
+user history, and patching external runner wrappers were rejected because
+they either weaken acceptance or do not address the proven stale overwrite.
+
+**Evidence / confidence boundary:** Cleanup restored `graphical.target` and
+active GDM, seatd, and SSH, removed all five SOS service users, left the `sos`
+login user outside `sos-ipc`, and removed the product paths; the later cleanup
+reported already-absent units and paths. Poweroff completed and the final host
+audit found no QEMU PID or QMP socket. The direct supported minimum campaign
+interval is 419.43 seconds. The finalized evidence root is
+`/home/carlid/sos-linux-x86_64-acceptance-20260818-r4`. Its 22-row,
+1,940-byte `manifest.tsv` has SHA-256
+`fe588687084870304b55ae973b8e096d8772a898feb5677670d7bd7a45ac50a1`.
+The independent 472-byte verifier record at
+`/tmp/sos-linux-x86_64-acceptance-20260818-r4-manifest-verify.txt` has SHA-256
+`4c5b9ac3e10b2122478b7c1b8c5ad9e827c47dc393d6c3463f743663b49d59ff`.
+R4 did not retain the Phase E agent/broker/session journals, exact before/after
+revision and PID values, or persisted message file, so those details cannot be
+retrospectively claimed. The r4 B/C/D results apply only to its recorded source
+tree; the repair is locally tested but VM-unexecuted and makes no physical
+hardware, panel/touch latency, freezer, suspend/resume, thermal, memory, or
+overall acceptance claim.
+
+**Remaining risk / exact r5 gate:** Begin with a clean Debian 13 x86-64 VM and
+record an initial source ledger before any guest mutation: HEAD, status, dirty
+file list, diff byte size, and diff SHA-256; capture the matching final ledger.
+For every runner command record raw output, wall and monotonic start/end, and
+exit status. Use `Xwayland -version`. Require identical provision/Phase A/E
+bundle paths, size, and SHA-256 after the full install/check/test/build sequence.
+Repeat B, C, and D, including the exact nested Xwayland PID/parent/display,
+titled surface record, and positive cleanup marker. In E, require exact
+before/after revisions and host/agent/broker PIDs, all tool and presentation
+markers, the event-driven exact semantic completion predicate, persisted
+history path/size/SHA-256, no prompt failure, and then every VT, freezer,
+kernel-log, output, and same-PID lifecycle checkpoint plus the remaining boot
+recovery assertions and terminal boot PASS. Run F only after E passes. Restore
+and audit all installed paths, units, users, group membership, and processes;
+close every artifact before atomically generating a sorted, self-excluding
+manifest and independently verify every row. Retain the VM-only boundary.
+
+## 2026-08-18 — Diagnose Linux x86-64 r8 selected suspend-mode mismatch
+
+**Goal / result:** Audit the complete r8 Debian 13 x86-64 campaign, retain its
+successful semantic/history repair, and correct only the lifecycle verifier's
+selected-mode assumption. The run used source HEAD
+`e05f91bb6f0b0a9299b914138d6cd0966b9c82d5e` with dirty paths
+`apps/experience/src/linux.rs`, `docs/linux-compositor.md`,
+`docs/linux-vm.md`, `docs/progress.md`,
+`tools/linux-compositor/verify-nested`, `tools/linux-vm/provision-debian`, and
+`tools/linux-vm/verify-boot-session`. The independently captured initial and
+final diffs were byte-identical: 61,327 bytes, SHA-256
+`0fdc344aa5f076dec91adabdee1b22502f772616543066e6e7bcd14e1b9f6860`.
+The Phase E guest-source marker bound `/home/sos/sos` to provisioner SHA-256
+`30db0f10af039e4fb25bb497e7b098f6a8a7d44ff78651cd54440a740ba0dc3e`
+and `services/sos-agent/package.json` SHA-256
+`4691b055beb89a5e42c92aa3fec14ef456d3c39538270c48b2e44144e8d276f5`.
+
+Provisioning passed in 17.86 seconds. Phase A then passed the separately
+captured locked install in 3.99 seconds, TypeScript check in 2.25 seconds, all
+12 Node tests in 2.77 seconds, and final build in 2.46 seconds (11.47 seconds
+in total). Provisioning and Phase E also ran the complete
+`npm-ci,check,test,build` sequence. The tested and packaged
+`services/sos-agent/dist/agent-runner.cjs` was 1,878,811 bytes with SHA-256
+`3eee6e7922fb82e344277793a435bb8edd36a2c183050b638a3c6ca13d3bc99a`.
+
+Phase B passed in 6.84 seconds and changed revision
+`31f8e1d31b6e2c91a8a0b0829e5f29934440c64ed8f535bb86d81a5a836c49e5`
+to `2303ba94d14063341fe75ff71666b7aa3a8dcd1e1e9f80616708ae8147a302f0`.
+Phase C passed in 21.13 seconds on that active revision: PID 4063 activated
+and recovered as PID 4517; XWayland PID 2921 had compositor parent 2887 and
+client PID 4614 on display `:1`; and the initial, activated, and recovered
+`nested_backend_submit` fences were respectively commit/submit sequences
+`1/611`, `16/625`, and `114/701`. The exact titled compatibility surface and
+positive owned-PID/run-directory cleanup marker were present. Phase D passed
+in 14.38 seconds: PID 4871 activated revision
+`250b157308407df4ed48c8e45351e69a0d82534ba001b6ff214c6a3348c0a326`
+and recovered as PID 5148, with initial, activated, and recovered
+`drm_page_flip` fences `1/37`, `143/51`, and `4033/76`.
+
+Phase E returned status 1 after 52.73 seconds, but its resident-agent semantic
+subgate passed completely before the lifecycle failure. It booted revision
+`31f8e1d31b6e2c91a8a0b0829e5f29934440c64ed8f535bb86d81a5a836c49e5`
+and activated
+`3eef9a00f71362045a3c167454b293d25cc5d565e4eddcecee1de49e3690a9c7`
+without changing supervisor-reported host PID 1010. The actual experience
+process was PID 1014, the resident agent PID 951, authoring broker PID 941,
+session owner PID 883, and compositor PID 957. The initial and activated DRM
+presentation fences were `1/26` and `310/54`, with the activated fence armed
+after commit sequence 309. All three bounded tools ran, the exact semantic
+snapshot contained the user request, exact assistant completion, `Ready`, and
+empty editable composer, and the completion-visible marker reported two
+messages and 35 assistant bytes. Persisted history
+`/var/lib/sos-agent/messages.json` was 58,158 bytes, SHA-256
+`c82e8aed3c3ae90664e68dc9ed99f3db73bc61e2c22a860592a4a1f891ccfe66`,
+with the exact completion present.
+
+**Exact failure / decision:** The lifecycle subgate passed 8 of its 18
+checkpoints: active session, readiness log, valid owner PID, VT pause request
+to tty2, pause-log increment `0 -> 1`, freezer/resume command, VT resume
+request to tty1, and activation-log increment `0 -> 1`. It then failed
+`freezer-entry-log-match` at line 108 because both pre/post counters matched
+only the hard-coded `PM: suspend entry (s2idle)`. The Debian
+`6.12.101+deb13-amd64` kernel instead recorded the complete actual sequence
+`PM: suspend entry (deep)`, `PM: suspend debug: Waiting for 5 second(s).`, and
+`PM: suspend exit`. The compositor recorded `direct session paused` at
+10:34:11.399728 UTC and `direct session activated` at 10:34:16.615247 UTC;
+the failure capture retained tty1, connected `Virtual-1`, disconnected
+`Virtual-2`, `pm_test=[none]`, and unchanged current/expected main PID 883.
+This is a verifier false negative at one exact kernel-log predicate, not
+evidence that the compositor, output, or session owner failed.
+
+The lifecycle gate now captures the selected `/sys/power/mem_sleep` value when
+that selector exists, accepts only selected `s2idle` or `deep`, and requires a
+new exact entry for that mode followed by a subsequent suspend exit. If the
+selector is unavailable, the new journal interval must unambiguously contain
+one of those two modes and its ordered entry/exit pair. The same 18 named
+checkpoints remain; the entry and exit records now include the actual mode and
+entry/paired-cycle counts, and the remote parser must match the host-side
+SHA-256 before it is sourced. A shared pure shell parser and focused test cover
+both modes, wrong-mode rejection, missing/unsupported selection, an unmatched
+entry, an exit before entry, and replacement by a later different-mode entry.
+Failure evidence now also captures `mem_sleep` and the resolved mode. No VT
+pause/reactivation, compositor-log, same-PID liveness, connector
+disconnect/reconnect, or output-log assertion was removed or relaxed.
+
+Hard-coding `deep` was rejected because it would reproduce the same bug on an
+`s2idle` host. Accepting any suspend entry independently of the selected mode,
+or counting an entry and exit without ordering them, was rejected because it
+could join unrelated evidence. Forcing `s2idle` before the test was rejected
+because the gate must prove the kernel mode the guest actually selected.
+Dropping the compositor pause/reactivation or later output/liveness checks was
+rejected because r8 did not invalidate those acceptance criteria.
+
+The repository-owned normal uninstall now asserts and emits one positive
+marker only after every installed SOS product/runtime path, all five units,
+all five service accounts, `sos-ipc`, the login user's IPC membership, and
+matching installed-product processes are absent while graphical target, GDM,
+and seatd are restored. The failure cleanup emits category-specific true/false
+absence evidence. R8 itself did not have those markers: its restoration file
+contains only `graphical.target`, three `active` values, and a monotonic start,
+without a terminal status or explicit product path/unit/account/group/process
+absence audit. The later host audit proves QEMU, its PID file, QMP socket, and
+port 2222 were absent, but cannot retrospectively close that guest-uninstall
+evidence gap.
+
+**Validation / evidence boundary:** Host-only validation passed the focused
+shell parser test, direct replay of r8's raw Phase E log as one `deep` entry,
+zero `s2idle` entries, and one ordered `deep` cycle, `bash -n` for the helper,
+its test, and the complete boot verifier, separate syntax parsing of the
+lifecycle and cleanup remote bodies,
+an audit retaining all 18 lifecycle phase markers, `git diff --check`,
+`cargo check -p sos-experience --features linux-host --tests`, both focused
+semantic/history Rust unit tests, and `cargo fmt --all -- --check`. ShellCheck
+was unavailable. No VM or device was operated for this repair. R8's
+individually finalized `.meta` commands total 128.90 seconds; the directly
+captured inclusive campaign interval was 243.48 seconds. Model-weighted cost
+was not available. Phase F was not run.
+
+The finalized evidence root is
+`/home/carlid/sos-linux-x86_64-acceptance-20260818-r8`. Its sorted,
+self-excluding `manifest.tsv` (excluding itself and `ready.tmp`) has exactly
+38 rows and 3,211 bytes, SHA-256
+`39e9875670abb7ce0b7994287b06d8ef95af77f492ca3ee8ee02c30aaa212836`;
+all rows, sizes, hashes, sort order, and exact file set were independently
+verified. The external 339-byte verifier record is
+`/tmp/sos-linux-x86_64-acceptance-20260818-r8-manifest-verify.txt`, SHA-256
+`45a83d592ca8a0088dc22039e93c274c1a488439f3ff9ed24a9905376c49b262`.
+R8 establishes A-D and the Phase E semantic/history subgate for its exact
+source. It does not pass all of E or overall acceptance and makes no physical
+suspend/resume, physical hardware, panel/touch latency, thermal, memory, or
+long-soak claim; the observed freezer transaction was a VM `pm_test=freezer`
+operation, not physical suspend.
+
+**Remaining risk / exact r9 gate:** Start from the clean Debian 13 x86-64
+reference guest and record byte-identical initial/final source ledgers,
+including the new lifecycle helper and test. Repeat provisioning and A-D with
+the exact command timings, revisions, PIDs, fences, bundle identity, XWayland
+surface, and cleanup evidence above. Run E once. Require the semantic revision,
+unchanged host PID, exact completion snapshot, persisted-history identity, and
+no prompt failure; then require a captured sysfs selected mode or an
+unambiguous journal fallback, its exact matching kernel entry followed by an
+exit, all 18 lifecycle checkpoints, owner PID 883-equivalent unchanged across
+freezer and output operations, both connector log transitions, all remaining
+boot recovery assertions, and terminal `linux_boot_session_passed`. Require
+the new positive exhaustive uninstall marker after graphical/GDM/seatd
+restoration. Run the previously specified Phase F only after E passes. Close
+all evidence before atomically generating the sorted self-excluding manifest,
+independently verify every row, and retain the VM-only confidence boundary.
+
+## 2026-08-18 — Reject Linux x86-64 r9 at the evidence boundary and harden A–F capture
+
+**Goal / result:** Audit the complete r9 Debian 13 x86-64 campaign and preserve
+its product result without promoting incomplete evidence to overall acceptance.
+The run used source HEAD `e05f91bb6f0b0a9299b914138d6cd0966b9c82d5` with
+the same nine dirty paths before and after: `apps/experience/src/linux.rs`,
+`docs/linux-compositor.md`, `docs/linux-vm.md`, `docs/progress.md`,
+`tools/linux-compositor/verify-nested`,
+`tools/linux-vm/boot-session-lifecycle-lib`,
+`tools/linux-vm/provision-debian`,
+`tools/linux-vm/test-boot-session-lifecycle`, and
+`tools/linux-vm/verify-boot-session`. The independently captured initial and
+final binary diffs were identical at 78,278 bytes, SHA-256
+`49b0134654f6cca518b843c34dba2bfb86cd02f52fd5f789ca987fc66440a342`.
+The two untracked inputs were
+`tools/linux-vm/boot-session-lifecycle-lib`, 1,177 bytes, SHA-256
+`1fbdf514e46b401dc1e20d78d1d5db54f2db591d35b67855dd093b71b5153212`,
+and `tools/linux-vm/test-boot-session-lifecycle`, 2,425 bytes, SHA-256
+`c757a2b792fe6c3384e3e13781bc79614e7fa510d666776bea7e50cb15ff095c`.
+The synchronized guest ledger matched the host ledger. The guest was Debian 13
+x86-64 under KVM on kernel `6.12.101+deb13-amd64`.
+
+Provisioning's captured command was
+`ssh -p 2222 -o BatchMode=yes -o ConnectTimeout=5 -o
+StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null sos@127.0.0.1
+'~/sos/tools/linux-vm/provision-debian'`; it returned 0 in
+23.743505117 seconds. Phase A returned 0 for `npm ci --ignore-scripts` in
+4.132710939 seconds, `npm run check` in 2.205432787 seconds, all 12 tests in
+2.717067491 seconds, and final `npm run build` in 2.482883943 seconds. Its
+bundle was `/home/sos/sos/services/sos-agent/dist/agent-runner.cjs`, 1,878,811
+bytes, SHA-256
+`3eee6e7922fb82e344277793a435bb8edd36a2c183050b638a3c6ca13d3bc99a`;
+provisioning and Phase E produced the same size and hash.
+
+Phase B's product command `cd /home/sos/sos && ./tools/linux-agent-e2e`
+returned 0 in 6.824779893 seconds and changed revision
+`31f8e1d31b6e2c91a8a0b0829e5f29934440c64ed8f535bb86d81a5a836c49e5`
+to `2303ba94d14063341fe75ff71666b7aa3a8dcd1e1e9f80616708ae8147a302f0`
+through the exact context/validate/submit sequence. Phase C's product command
+`cd /home/sos/sos && ./tools/linux-compositor/verify-nested` returned 0 in
+14.599715379 seconds. PID 8132 activated the same `2303ba94…` revision and
+recovered as PID 8510; its initial, activated, and recovered
+`nested_backend_submit` fences were commit/submit sequences `1/280`, `14/293`,
+and `108/362`. XWayland PID 7441 had compositor parent 7410 and client PID 8609
+on display `:1`; the exact `SOS XWayland compatibility gate` surface mapped,
+the IME/native-input checks passed, and both internal and external owned-process/
+temporary-root cleanup markers passed.
+
+Phase D's product command
+`cd /home/sos/sos && ./tools/linux-vm/verify-direct-session` returned 0 in
+14.769011403 seconds. PID 9509 activated revision
+`250b157308407df4ed48c8e45351e69a0d82534ba001b6ff214c6a3348c0a326`
+and recovered as PID 9806. The initial, activated, and recovered
+`drm_page_flip` fences were `1/34`, `148/48`, and `3808/67`, with two captured
+recovery-view page flips. The input/quiesce/output assertions passed, and
+cleanup restored `graphical.target`, GDM, seatd, and SSH with no owned process
+or temporary root left.
+
+**Phase E functional result:** The exact captured host command
+`SOS_LINUX_VM_ROOT=/home/carlid/dev/sos/.cache/linux-vm
+SOS_LINUX_VM_GUEST_ROOT=/home/sos/sos
+./tools/linux-vm/verify-boot-session` returned 0 in 63.090603739 seconds. It
+booted revision `31f8e1d3…`, then the resident faux Pi flow activated revision
+`3eef9a00f71362045a3c167454b293d25cc5d565e4eddcecee1de49e3690a9c7`
+without changing supervisor-reported host PID 1108; agent PID 957 and authoring
+broker PID 942 completed all three tools. Persisted history was 58,158 bytes,
+SHA-256 `90790d824fa411d49a811b811bb1d99d4417334c6b3c94224e3f7a16c4c75ab9`,
+and its exact completion predicate passed.
+
+The lifecycle owner remained PID 878 across all 18 named checkpoints. Sysfs
+reported `s2idle [deep]`, selecting `deep`; the new kernel interval contained
+one matching entry and one ordered paired exit. VT pause/resume moved tty1 to
+tty2 and back with compositor counters `0 -> 1` in each direction. The primary
+connector disconnect counter changed `0 -> 1`, reconnect/KMS initialization
+changed `1 -> 2`, and the same owner PID survived both. The later boot campaign
+activated `2303ba94…` in host PID 1108, recovered the host as PID 1913,
+restarted the whole session as owner PID 2023/host PID 2108 after provider
+failure, and recovered an uncatchably killed lifecycle owner as PID 2299.
+Session 1 remained the active logind seat, `NRestarts=2`, and the terminal
+record was `linux_boot_session_passed`.
+
+The captured E presentation history was initial boot `1/18`, agent revision
+`48/46`, direct candidate `173/66`, rollback to the agent revision `195/81`,
+rollback forward to the candidate `219/94`, same-revision host recovery
+`230/108`, provider-triggered whole-session recovery `1/11`, and lifecycle-owner
+recovery `1/12`; every record used `drm_page_flip`. Normal uninstall emitted
+the positive exhaustive marker only after all product paths and units, five
+service accounts, `sos-ipc`, login membership, and matching processes were
+absent with graphical target, GDM, and seatd active. The independent post-E
+guest audit agreed, and poweroff left no target QEMU process, PID file, QMP
+socket, port-2222 listener, or SSH response. The preserved overlay ended at
+38,925,500,416 apparent bytes; its backing image remained unchanged and image
+checks reported no corruption.
+
+**Evidence failure / rejected approaches:** Overall r9 is FAIL at Phase E's
+evidence contract, and Phase F was not run. The successful E transcript omitted
+the complete semantic snapshot that simultaneously proved the exact request,
+exact assistant completion, `Ready`, and empty editable composer; it also
+omitted the successful before/after daemon status, persisted exact values, full
+session/component PID-UID-parentage identities, terminal connector state, and
+matching compositor connector records. Those values existed in assertions or
+failure diagnostics but were discarded on success. In addition, many `.meta`
+commands literally contained descriptive abbreviations such as `ssh ...` or
+`audit ...`, so they are not replayable command records, and
+`post-poweroff-observation.meta` had no `post-poweroff-observation.raw` partner.
+Treating assertions with no emitted value as raw evidence, reconstructing
+literal commands from prose, or accepting manifest integrity as proof of
+capture completeness was rejected. The product-functional E result and its 18
+checkpoints remain useful, but they do not retroactively close those omissions.
+
+The finalized immutable evidence root is
+`/home/carlid/sos-linux-x86_64-acceptance-20260818-r9`. Its sorted,
+self-excluding `manifest.tsv` has 138 rows, 13,054 bytes, SHA-256
+`83424b0982756984214d17132d8e6227005837efd9c913a3afe4a33b1e6922c7`.
+Every listed row, size, hash, sort order, and the exact listed file set passed
+independent verification, while the separate pair audit correctly failed on
+the missing `.raw`. The 904-byte external verifier record at
+`/tmp/sos-linux-x86_64-acceptance-20260818-r9-manifest-verify.txt` has SHA-256
+`96a598c24bc77515c47451ca8cf6c9cb6d883f948e6426a1404c597821810d4e`.
+The directly captured inclusive interval was 1,059.667801969 seconds;
+model-weighted cost was unavailable and is not inferred. R9 establishes
+provisioning and functional A–E only for its exact source. It makes no Phase F,
+physical-hardware, platform-suspend, latency, memory, thermal, or overall Linux
+acceptance claim.
+
+**Repository hardening / validation target:** Successful Phase E now emits the
+same exact semantic snapshots, daemon statuses, and persisted request/completion
+contract that failure diagnosis receives, plus safe process PID/PPID/UID/user/
+executable identities across session, compositor, platform authority,
+supervisor, host proxy, experience host, broker, and agent. Lifecycle success
+emits terminal VT/connector/power-mode state and exact matching compositor
+records; normal and failure cleanup share the same audit vocabulary. The GDM
+launcher now emits initial revision/session/process/DRM-Shell identities,
+observes only a changed history hash plus exact old/new revision, authority, and
+unchanged-host invariants, then emits explicit logout and exhaustive owned-PID,
+matching-product-process, and runtime cleanup markers. It does not print
+credentials or arbitrary conversation
+content. A repository evidence runner records literal argv, UTC/monotonic times,
+status, and a matched `.raw`/`.meta` pair with individually atomic final renames
+while refusing overwrites and
+likely secret-bearing arguments. Handwritten descriptive command metadata and
+putting local VM absolute paths into product launchers were rejected.
+
+Host-only validation passed `bash -n` for the evidence runner/tests, boot
+evidence helper/test, complete boot verifier, GDM installer, and login launcher;
+separate `bash -n` parsing passed for the verifier's build, agent, lifecycle,
+boot assertion, and uninstall remote bodies. `tools/test-evidence-run` proved
+success and status-23 capture, matched pairs, literal-argument escaping,
+non-overwrite behavior, secret-assignment refusal, and temporary-file cleanup.
+`tools/linux-vm/test-boot-session-evidence` proved the exact persisted
+request/completion fixture plus all successful E/GDM output markers, and the
+existing lifecycle parser suite still passed both supported modes and ordered
+entry/exit matching. `git diff --check` passed. A fresh read-only audit verified
+all 138 r9 manifest rows and the external verifier identities above without
+modifying the archive. ShellCheck was unavailable. No VM or device was operated
+for this hardening, so every new runtime evidence path remains unexecuted.
+
+**Remaining risk / exact r10 full A–F gate:** Start from a clean Debian 13
+x86-64 reference guest and a newly recorded exact source ledger; r9's diff and
+untracked identities cannot identify this hardening. Use `tools/evidence-run`
+for every host command, including expected failures and audits, and require
+literal argv, one `.raw` for every `.meta`, no secret-bearing argv, and no
+temporary output. Run the exact provisioner; Phase A `npm ci --ignore-scripts`,
+`npm run check`, `npm test`, and final `npm run build`; Phase B
+`tools/linux-agent-e2e`; Phase C `tools/linux-compositor/verify-nested`; Phase D
+`tools/linux-vm/verify-direct-session`; and Phase E
+`tools/linux-vm/verify-boot-session`. Re-require all prior functional criteria,
+bundle identities, revisions, PIDs, presentation fences, cleanup, selected-mode
+and 18-checkpoint evidence. Additionally require E's full successful semantic/
+status/history records, all safe process identities and parentage, exact
+connector state/logs, shared cleanup audit, and terminal PASS before proceeding.
+
+Only then run Phase F once: install through
+`tools/install-linux-login-session install`, select SOS through GDM, prove the
+authenticated active logind seat and exact initial `sos_login_session_ready`,
+all process and mapped-Shell/connector/page-flip identities, complete one visible
+resident-agent rewrite, and require `sos_login_rewrite_passed` with different
+old/new 64-hex revisions, unchanged host PID, equal authority, and changed
+history identity. Capture the exact semantic completion separately without
+credential content. Inject the selectable-session `Ctrl+Alt+Backspace` logout,
+require `sos_login_logout_observed`, `sos_login_cleanup_passed`, return of the
+GDM greeter, absence of every recorded product PID/private runtime, and final
+GNOME/guest restoration. Power off, prove final source and VM state, close all
+files, atomically generate the sorted self-excluding manifest, and independently
+verify exact file set, rows, sizes, hashes, order, and no later writes. Retain
+the VM-only boundary regardless of r10's result.
+
+## 2026-08-18 — Reject Linux x86-64 r16 at shared-agent login and repair bundled OAuth startup
+
+**Goal / source and environment identity:** Run the complete Debian 13
+x86-64 A–F acceptance sequence from exact HEAD
+`e05f91bb6f0b0a9299b914138d6cd0966b9c82d5`. Initial and final source captures
+were identical. The tracked diff artifact was 116,374 bytes with SHA-256
+`59eb84e3ee4963baf153fae12a97a5f6ddaeb650dc2c23df293aeaf60e16eb99`
+and covered `apps/experience/src/linux.rs`, `docs/linux-compositor.md`,
+`docs/linux-stable-host.md`, `docs/linux-vm.md`, `docs/progress.md`,
+`packaging/libexec/sos-login-session`, `tools/install-linux-login-session`,
+`tools/linux-compositor/verify-nested`, `tools/linux-vm/provision-debian`, and
+`tools/linux-vm/verify-boot-session`. The seven-file untracked ledger was also
+identical at both boundaries:
+
+- `tests/fixtures/linux-agent-history.json`: 235 bytes,
+  `03505f460c2b67a38e27aa82e85d379a4f4562b0ff4bfc8ce421a8513b314cf5`;
+- `tools/evidence-run`: 3,984 bytes,
+  `50c08af1e093137097f030300ba7dd8fcf91163d04f2e0c4f1c55dcd8cd7d131`;
+- `tools/linux-vm/boot-session-evidence-lib`: 798 bytes,
+  `d4762ab73af50aec3ca089253475ba7af836866c118b65c347296fabb698c14e`;
+- `tools/linux-vm/boot-session-lifecycle-lib`: 1,177 bytes,
+  `1fbdf514e46b401dc1e20d78d1d5db54f2db591d35b67855dd093b71b5153212`;
+- `tools/linux-vm/test-boot-session-evidence`: 1,739 bytes,
+  `79a97e996e63f4716f5b49c555930e86469cdb6479c968bad3b3f096f284eddf`;
+- `tools/linux-vm/test-boot-session-lifecycle`: 2,425 bytes,
+  `c757a2b792fe6c3384e3e13781bc79614e7fa510d666776bea7e50cb15ff095c`;
+- `tools/test-evidence-run`: 1,808 bytes,
+  `72b41a3457322d7c61334f66f84dc6008790662f6ccda089934a1df3aac26809`.
+
+The 713-byte aggregate hash ledger itself had SHA-256
+`eabfefa7b82c7f34bc4e3dc66d28049d6544d6721561c2774f47e89f26fd766b`.
+Host and guest per-file hashes matched after sync. Preflight found x86-64 KVM
+read/write access, no prior VM PID/QMP socket/overlay owner/port-2222 listener,
+and refused SSH as expected. The VM used native KVM QEMU PID 2013590 and the
+unchanged 436,404,224-byte backing image with SHA-256
+`d4e6f5d1e9f571c198a65b45ab1adae6c5734607614e72f9661d84ce5881e5fc`.
+
+**Provisioning and phases A–D:** Provisioning returned 0 in 18.164301362
+seconds, proved the Debian 13 dependency set, Rust 1.95.0 and Node 24.18.0,
+ran the locked agent sequence, and emitted the package marker. The separately
+captured Phase A commands all passed: `npm ci --ignore-scripts` in 3.984572920
+seconds, `npm run check` in 2.345506303 seconds, all 12 tests in
+2.982993384 seconds, and the final `npm run build` in 2.566962298 seconds.
+The resulting `services/sos-agent/dist/agent-runner.cjs` was 1,878,811 bytes
+with SHA-256
+`3eee6e7922fb82e344277793a435bb8edd36a2c183050b638a3c6ca13d3bc99a`.
+
+Phase B passed in 6.794630287 seconds and changed the active revision from
+`31f8e1d31b6e2c91a8a0b0829e5f29934440c64ed8f535bb86d81a5a836c49e5`
+to `2303ba94d14063341fe75ff71666b7aa3a8dcd1e1e9f80616708ae8147a302f0`
+through the exact context/validate/submit flow. Phase C passed in
+14.876430552 seconds: activation PID 3902 recovered as PID 4268 on revision
+`2303ba94d14063341fe75ff71666b7aa3a8dcd1e1e9f80616708ae8147a302f0`;
+the initial, activated, and recovered `nested_backend_submit` presentation
+fences were commit/submit sequences `1/367`, `16/382`, and `94/447`.
+XWayland PID 3077 had compositor parent 3046 and client PID 4366, the bounded
+surface and native IME/text checks passed with 198 quiesce-suppressed events,
+and owned-process/run-root cleanup passed. Phase D passed in 14.310455846
+seconds: activation PID 4698 recovered as PID 4997 on revision
+`250b157308407df4ed48c8e45351e69a0d82534ba001b6ff214c6a3348c0a326`;
+its three `drm_page_flip` fences were `1/36`, `146/50`, and `3783/71`, with
+recovery-view page flips before both initial and recovered presentation.
+
+**Phase E:** The boot/session command returned 0 in 62.628998357 seconds.
+The resident faux Pi request changed revision
+`31f8e1d31b6e2c91a8a0b0829e5f29934440c64ed8f535bb86d81a5a836c49e5`
+to `3eef9a00f71362045a3c167454b293d25cc5d565e4eddcecee1de49e3690a9c7`
+without changing supervisor-reported host-proxy PID 1011. The successful
+semantic capture changed from generation 2 with the empty editable agent
+composer to generation 11 with exact request `Turn this into a spatial time
+flow`, exact completion `The candidate experience is active.`, `Ready`, and
+an empty editable composer. Persisted history was 58,154 bytes with SHA-256
+`e9d7f05c277810b8554d417dbbf37a7751e44fe316defcea026060fd18da1c66`;
+each exact request/completion occurred once.
+
+The active logind identity was session 1, seat0/tty1, Wayland, leader and
+session owner PID 894, user `sos-compositor` UID 995. Safe component identities
+were compositor PID 945/PPID 894/UID 995; platform authority PID 1008/PPID
+894/UID 994; supervisor PID 1010/PPID 894/UID 993; host proxy PID 1011/PPID
+1010/UID 993; experience host PID 1015/PPID 894/UID 992; authoring broker PID
+943/PPID 1/UID 993; and resident Node agent PID 955/PPID 1/UID 991. Sysfs
+reported `s2idle [deep]` and the verifier selected `deep`. All 18/18 named
+lifecycle markers passed while owner PID 894 remained unchanged: VT pause and
+resume each advanced `0 -> 1`, one ordered freezer entry/exit pair matched,
+the primary connector disconnect advanced `0 -> 1`, reconnect/KMS
+initialization advanced `1 -> 2`, and post-transition liveness passed. Terminal
+state was tty1, Virtual-1 connected and Virtual-2 disconnected.
+
+Every captured presentation fence used `drm_page_flip`: initial `1/19`, agent
+revision `61/43`, candidate revision `226/62`, rollback to the agent revision
+`248/79`, forward to the candidate `272/92`, same-revision host recovery
+`287/110`, whole-session recovery `1/11`, and lifecycle-owner recovery `1/11`.
+The terminal PASS recorded original owner PID 894, activation host PID 1011,
+recovered host PID 2039, restarted owner PID 2148, restarted host PID 2240,
+lifecycle-recovered owner PID 2426, final revision
+`2303ba94d14063341fe75ff71666b7aa3a8dcd1e1e9f80616708ae8147a302f0`,
+and `NRestarts=2`. Normal cleanup proved every product path/unit, account,
+group, login membership, and matching process absent with graphical target,
+GDM, and seatd active.
+
+**Phase F failure and confidence boundary:** The one installer command ran for
+157.090773063 seconds, completed the release build and locked npm install/build,
+installed the selectable-session payload, and then invoked its required
+`sos-agent-login --if-needed`. That helper failed before emitting a device-code
+event with `sos_agent_failed error=Cannot read properties of undefined
+(reading 'endsWith')`. No successful OAuth login, interactive GDM SOS login,
+resident rewrite, logout, or selectable-session cleanup evidence exists;
+the terminal record's `phase_f_login_not_attempted=true` refers to the GDM
+login phase, not to invocation of the failed helper. The r16 capture also did
+not inspect `${HOME}/.local/state/sos/agent`, so it cannot establish whether
+the old launcher left only empty directories or any partial user-state file.
+The bounded partial uninstall proved the installed system paths absent, GDM,
+seatd, SSH, and graphical target active, and no SOS/Node process or private
+runtime. Orderly poweroff left no QEMU process, PID file, QMP socket,
+port-2222 listener, or SSH response. The healthy preserved overlay ended at
+39,067,648,000 apparent bytes; its backing size/hash were unchanged.
+
+The supported campaign interval is 558.557128403 seconds, computed directly
+from captured monotonic endpoints 330329367062733 and 330887924191136. Record
+`096-measured-timings` is separately failed evidence: its literal
+single-argument Python program contained backslash-plus-`n` text and raised a
+`SyntaxError`. That argument was composed by the external runner; no
+repository timing helper generated it, so patching `tools/evidence-run` or a
+product script was rejected. Elapsed values above come from the individual
+metadata and the endpoint subtraction, never from that failed consolidation.
+
+The finalized evidence root is
+`/home/carlid/sos-linux-x86_64-acceptance-20260818-r16`. Its sorted,
+self-excluding `manifest.tsv` has 194 rows, 19,679 bytes, and SHA-256
+`8f441c8efd9a65952bf4bee967ebdacfed5992b7578622516ee64437ef2dcdeb`.
+Independent verification passed exact file set, format, order, uniqueness,
+sizes, hashes, and deterministic regeneration. The 249-byte verifier output at
+`/tmp/sos-linux-x86_64-acceptance-20260818-r16-manifest-verify.txt` has SHA-256
+`18afed3b7b84cda96ad5da1de0d79801b079c7906c2faa7f3b9e65fc819337ea`.
+Model-weighted cost was unavailable.
+
+**Root cause / changed code:** Pi 0.84.1's OAuth loader uses
+`import.meta.url.endsWith(".js")` only when no statically bundled OAuth loader
+has been registered. SOS already called the historical
+`registerBunOAuthFlows()` entry point from its Android/stdio path, so that path
+used embedded OAuth modules. Linux `sos-agent-login` enters the separate CLI
+path through `runCli()` and never made the registration. In the esbuild
+CommonJS artifact, `import.meta` becomes an empty `import_meta` object; its
+optional `url` value is therefore `undefined`, producing the exact r16
+`endsWith` exception before any network prompt. The missing value was Pi's
+module-resolution URL, not `HOME`, `XDG_STATE_HOME`, the credential path, or an
+OAuth response field.
+
+The shared provider-model constructor now idempotently registers Pi's static
+OAuth flows before any provider can log in, refresh, or derive request auth.
+This preserves the existing Android/stdio behavior and fixes both Linux CLI
+login and the latent Linux resident-agent refresh path without changing the Pi
+pin, OAuth protocol, or bundle format. Moving only the stdio call, converting
+the artifact to ESM, upgrading Pi without evidence, or translating every auth
+error into a generic bundle failure were rejected: the shared registration is
+the narrow cross-platform boundary, and real provider/authentication failures
+still propagate with their original nonzero status and diagnostic.
+
+`sos-agent-login` no longer pre-creates the per-user state tree before OAuth.
+It validates an existing OAuth document offline through the same JSON store,
+checks config content without sourcing it, and deterministically classifies
+credentials and config as absent, invalid, or preserved. A valid credential
+with absent/mismatched config repairs only the config rather than repeating
+OAuth. A new successful flow must leave a regular nonempty credential file;
+the helper atomically writes only `config.env`, preserves any real credential/
+config on failure, reports `sos_agent_login_incomplete`, and removes only
+empty directories newly created by that failed attempt. It neither reads
+credentials into evidence nor deletes them. The installer's path usage remains
+coherent: it invokes the installed helper as the desktop user, and both that
+helper and the selectable-session launcher resolve the same
+`${XDG_STATE_HOME:-$HOME/.local/state}/sos/agent/{auth.json,config.env}` paths.
+
+Host-only repair validation passed `npm run check`, `npm test` with 14/14
+tests, and a final `npm run build`. The generated local repair bundle at
+`services/sos-agent/dist/agent-runner.cjs` is 1,879,763 bytes with SHA-256
+`eb4e2aaea63b41042744579a25da380b9a783b4624687d5be273217611dc59ff`;
+it remains generated/ignored and is not an r16 acceptance artifact.
+`cargo test --locked -p sos-linux-session` passed six library tests and one
+integration test, `cargo fmt --all -- --check` passed, and
+`tools/test-evidence-run`, `tools/linux-vm/test-boot-session-evidence`, and
+`tools/linux-vm/test-boot-session-lifecycle` passed their evidence, semantic/
+GDM-marker, and both-mode ordered-lifecycle contracts. `bash -n` passed all
+changed login/install/evidence/VM shell scripts and `git diff --check` passed.
+ShellCheck was unavailable. The new packaged-CommonJS regression exercised the
+exact Linux `sos-agent-login --if-needed` route with `XDG_STATE_HOME` absent and
+mocked only the three OpenAI device-flow responses; it observed the device
+code, persisted a mode-0600 OAuth document and config, and did not reach Pi's
+dynamic `import.meta.url` loader. Repeat preflight validated the stored JSON
+offline, and a stale config was repaired without another OAuth request.
+Failure regressions preserved exit status 23 and the original auth diagnostic,
+removed a new empty state tree, and retained an existing credential
+byte-for-byte. No VM, device, live credential, or live provider request was
+used for the repair.
+
+**Decision / remaining risk / exact r17 gate:** Overall r16 is FAIL at Phase F;
+A–E remain evidence for this exact superseded source only. The embedded-flow
+fix and state semantics have host regression coverage but still need a clean
+Debian 13 VM run. R17 must record a new complete source ledger, prove clean VM
+ownership, repeat provisioning; Phase A's locked install/check/all tests/final
+build plus bundle path/bytes/SHA; Phase B's exact old/new revision and bounded
+tool sequence; Phase C's activation/recovery PIDs, three nested fences,
+XWayland/IME/input and cleanup; Phase D's activation/recovery PIDs, three DRM
+fences, recovery views and restoration; and Phase E's full semantic/status/
+history records, exact process/session parentage, selected supported suspend
+mode, all 18 lifecycle markers, unchanged owner checks, connector/KMS records,
+recovery identities, exhaustive cleanup, and terminal PASS.
+
+Only after A–E pass may R17 run Phase F once. Require the installer and one
+`sos-agent-login --if-needed` to emit deterministic preflight, a real device
+code and successful credential/config completion; inspect only regular-file,
+ownership, mode, nonempty, lock/temp absence, and bounded state markers without
+capturing credential content. Then select SOS through GDM, prove the active
+authenticated logind seat, exact session/process/Shell/connector/page-flip
+identities, one visible resident-agent rewrite with different old/new 64-hex
+revisions, unchanged host PID, equal authority and changed history identity,
+and the exact semantic completion. Inject the selectable-session logout,
+require logout and exhaustive cleanup markers, GDM greeter return, absence of
+every recorded PID/private runtime, and final GNOME/guest restoration. On any
+login failure, require the original nonzero auth failure plus deterministic
+`sos_agent_login_incomplete` state and prove either a newly empty tree was
+removed or prior credentials were explicitly preserved; never delete a real
+credential as cleanup. Finally power off, prove source/overlay/backing/QEMU
+state, close all evidence, atomically generate and independently verify the
+sorted self-excluding manifest, and capture timings from valid command
+metadata. Even a complete R17 PASS is VM-only: it makes no physical-hardware,
+platform-suspend, production-GPU, latency, memory, thermal, or model-cost claim.
+
+## 2026-08-18 — Reject Linux x86-64 r17 at the Bash 5.2 login-state regression
+
+**Goal / source and evidence identity:** R17 attempted the complete Debian 13
+x86-64 A–F acceptance sequence from HEAD
+`e05f91bb6f0b0a9299b914138d6cd0966b9c82d5`. Initial and final HEAD, tracked
+status, tracked-diff size/hash, and untracked pathname lists matched. The
+captured tracked diff was 152,484 bytes with SHA-256
+`fcfd386590dcac488a139efcdea1651659800d810b61f0c45257d190b17bd6d6`.
+Source closure is nevertheless incomplete: the seven untracked paths received
+per-file size/hash records only at the initial boundary, not at the final
+boundary, so the matching final pathname list does not prove their final
+contents. Also, `003-source-tracked-diff-identity.raw` mislabeled the diff's
+mtime as `sha256`; the separate initial records `003-source-tracked-diff-size`
+and `004-source-tracked-diff-sha` and final records 067/068 contain the valid
+size and digest. This new repair supersedes the captured r17 source.
+
+The guest prelaunch audit found an already existing empty
+`/home/sos/.local/state/sos/agent` directory owned by `sos`/UID 1000 with mode
+0700 and no credential available. The post-failure audit found the same empty
+directory and no child entry. That path was pre-existing guest state, not the
+test's temporary `fresh-home`: the test stopped at the missing-marker
+assertion, then removed its temporary root in `finally`, so r17 does not prove
+whether the fresh test tree had already been removed before that assertion.
+
+**Provisioning failure / confidence boundary:** Provisioning returned status 1
+after 31.454518893 seconds. Its locked agent sequence passed TypeScript checking
+and the test-internal build, then ran 14 tests with 13 passes and one failure:
+`Linux login cleans new empty state and preserves existing credentials`
+expected `sos_agent_login_incomplete credentials=absent config=absent
+state_dir=absent`, while stderr contained only
+`sos_agent_failed error=mock authentication rejected`. The authentication
+status remained 23. The test-internal build produced the expected ignored
+`services/sos-agent/dist/agent-runner.cjs`, 1,879,763 bytes with SHA-256
+`eb4e2aaea63b41042744579a25da380b9a783b4624687d5be273217611dc59ff`.
+Provisioning stopped before its separate final `npm run build` and package
+marker, so no independent Phase A build artifact exists. Phases B–F were not
+run and no selectable-session or live-provider login was attempted.
+
+The VM was powered off orderly and cleanup recorded no PID file, QMP socket,
+QEMU process, port-2222 listener, or overlay error. The healthy overlay's
+apparent size changed from 39,067,648,000 to 39,079,641,088 bytes; the unchanged
+backing image was 436,404,224 bytes with SHA-256
+`d4e6f5d1e9f571c198a65b45ab1adae6c5734607614e72f9661d84ce5881e5fc`.
+Because the run stopped during provisioning, there is no A–F acceptance result
+and no supported campaign duration or model-weighted cost. The evidence root is
+`/home/carlid/sos-linux-x86_64-acceptance-20260818-r17`. Its self-excluding
+`manifest.tsv` has 94 sorted unique rows, 9,527 bytes, and SHA-256
+`01caea262d34add2c9d01982b47bfa605547bcc2c3edcef500efea5d7c57960f`.
+A fresh read-only audit passed exact file set, format, order, uniqueness, sizes,
+hashes, and deterministic regeneration. The existing 255-byte external
+verifier output at
+`/tmp/sos-linux-x86_64-acceptance-20260818-r17-manifest-verify.txt` has SHA-256
+`f3e8c3620f913c4db52f7635a0747a149caf2b5c230cee29978f9da4478c25e8`.
+
+**Root cause / changed code:** The failure was not stdout/stderr loss, a stale
+launcher path, credential deletion, or the mock runner masking its exit. The
+EXIT trap began with status 23, classified credentials as absent, and then
+stopped while assigning config state. `sos_agent_login_config_file_state` used
+a bare `return` on its absent/invalid path. When that function ran through a
+command substitution inside an EXIT trap, Bash 5.2 propagated the pre-trap
+status 23 from the bare return; active `errexit` then aborted the trap before
+empty-directory policy and the incomplete marker. Bash 5.3 returned 0 in the
+same path, explaining the earlier local pass. A host-side reproduction on GNU
+Bash 5.2.21 observed assignment status 23 for the bare return and 0 for
+`return 0`; Bash 5.3.9 observed 0 for both.
+
+`packaging/libexec/sos-agent-login` now gives config-state classification an
+explicit successful return, captures the login command's exact status, and
+calls a common finalizer directly after authentication rejection rather than
+depending on implicit `errexit`/EXIT behavior. The finalizer disables errexit,
+re-inspects credentials and config, removes only non-pre-existing directories
+that are still empty, always attempts the deterministic incomplete marker, and
+exits with the original authentication status. The EXIT trap remains the guard
+for other failures. It does not unlink a credential or config file: any
+pre-existing empty state directory remains, and any pre-existing valid files
+remain byte-for-byte.
+
+The regression in `services/sos-agent/test/runner.test.ts` now declares Bash
+5.2 compatibility, proves all three failure-state policies, and retains status
+23 plus the original auth diagnostic in each case: a fresh empty tree is
+removed and reports `absent/absent/absent`; a pre-existing empty state
+directory remains empty and reports `absent/absent/preserved`; and
+pre-existing valid credential/config files survive byte-for-byte and report
+`preserved/preserved/preserved`. A host-side Bash 5.2.21 container exercised
+the packaged script independently and passed the same three cases.
+
+Validation passed `npm run check`, full `npm test` (14/14), and a separate final
+`npm run build`; the ignored bundle remained 1,879,763 bytes with SHA-256
+`eb4e2aaea63b41042744579a25da380b9a783b4624687d5be273217611dc59ff`.
+`tools/test-evidence-run`, `tools/linux-vm/test-boot-session-evidence`, and
+`tools/linux-vm/test-boot-session-lifecycle` passed. `bash -n` passed all 12
+changed/new login, session, evidence, install, compositor, provision, and boot
+shell files, and `git diff --check` passed. ShellCheck was unavailable. These
+are host-only repair checks; no VM, device, live credential, or provider was
+used.
+
+**Decision / remaining risk / exact r18 gate:** R17 is FAIL at provisioning and
+is rejected in full. Its source closure is incomplete, its test-created fresh
+tree was not retained for audit, it has no separate Phase A final build, and
+B–F have no evidence. The repair has real Bash 5.2 regression coverage but is
+not Debian-guest or selectable-session evidence. R18 must start a clean Debian
+13 x86-64 VM transaction with a new exact source ledger, including initial and
+final per-file size/hash identities for every untracked input. Provisioning and
+Phase A must run `npm ci --ignore-scripts`, `npm run check`, all 14 tests, and a
+separate final `npm run build`, record the bundle identity/package marker, and
+prove on the guest that auth rejection returns its original status and marker:
+newly created empty directories are absent, a pre-existing empty state
+directory is preserved, and pre-existing valid credentials/config remain
+byte-identical. No failure cleanup may unlink a nonempty, invalid, linked, or
+pre-existing state object.
+
+Only after A passes may R18 run Phase B `tools/linux-agent-e2e`, Phase C
+`tools/linux-compositor/verify-nested`, Phase D
+`tools/linux-vm/verify-direct-session`, and Phase E
+`tools/linux-vm/verify-boot-session`, with all prior exact revisions, bounded Pi
+tool sequence, semantic/history records, process parentage, presentation
+fences, selected suspend mode, 18 lifecycle markers, recovery identities, and
+exhaustive cleanup criteria. Only after A–E pass may Phase F install and run
+one real `sos-agent-login --if-needed`, prove bounded credential/config state,
+the authenticated GDM SOS session and visible resident rewrite, inject logout,
+prove return to the greeter and absence of every session PID/private runtime,
+and restore GNOME. Then power off, prove final source/overlay/backing/QEMU
+state, close evidence before atomically generating the sorted self-excluding
+manifest, and independently verify exact set/order/size/hash regeneration.
+R18 remains VM-only regardless of result and makes no physical-hardware,
+production-GPU, platform-suspend, latency, memory, thermal, or model-cost claim.
+
+## 2026-08-18 — Reject Linux x86-64 r19 at the Phase F AccountsService evidence boundary
+
+**Goal / exact source closure:** R19 ran the full Debian 13 x86-64 campaign
+through A–E and the first part of F from HEAD
+`e05f91bb6f0b0a9299b914138d6cd0966b9c82d5`. Initial and final HEAD, porcelain
+status, tracked diff, untracked pathname list, per-file untracked identities,
+and generated host bundle identity were byte-identical. The 162,993-byte
+tracked diff had SHA-256
+`3925dd8172497b6ee2b5ffd9c0392dcef117a45c442507e15547764c94b6fd38`
+and covered `apps/experience/src/linux.rs`, `docs/linux-compositor.md`,
+`docs/linux-stable-host.md`, `docs/linux-vm.md`, `docs/progress.md`,
+`docs/sos-agent.md`, `packaging/libexec/sos-agent-login`,
+`packaging/libexec/sos-login-session`, `services/sos-agent/src/main.ts`,
+`services/sos-agent/src/runtime.ts`, `services/sos-agent/src/stdio-runner.ts`,
+`services/sos-agent/test/runner.test.ts`,
+`tools/install-linux-login-session`, `tools/linux-compositor/verify-nested`,
+`tools/linux-vm/provision-debian`, and
+`tools/linux-vm/verify-boot-session`. The full initial/final untracked ledger
+was:
+
+- `tests/fixtures/linux-agent-history.json`: 235 bytes, mode 0644,
+  UID:GID 1000:1000, SHA-256
+  `03505f460c2b67a38e27aa82e85d379a4f4562b0ff4bfc8ce421a8513b314cf5`;
+- `tools/evidence-run`: 3,984 bytes, mode 0755, UID:GID 1000:1000,
+  SHA-256
+  `50c08af1e093137097f030300ba7dd8fcf91163d04f2e0c4f1c55dcd8cd7d131`;
+- `tools/linux-vm/boot-session-evidence-lib`: 798 bytes, mode 0644,
+  UID:GID 1000:1000, SHA-256
+  `d4762ab73af50aec3ca089253475ba7af836866c118b65c347296fabb698c14e`;
+- `tools/linux-vm/boot-session-lifecycle-lib`: 1,177 bytes, mode 0644,
+  UID:GID 1000:1000, SHA-256
+  `1fbdf514e46b401dc1e20d78d1d5db54f2db591d35b67855dd093b71b5153212`;
+- `tools/linux-vm/test-boot-session-evidence`: 1,739 bytes, mode 0755,
+  UID:GID 1000:1000, SHA-256
+  `79a97e996e63f4716f5b49c555930e86469cdb6479c968bad3b3f096f284eddf`;
+- `tools/linux-vm/test-boot-session-lifecycle`: 2,425 bytes, mode 0755,
+  UID:GID 1000:1000, SHA-256
+  `c757a2b792fe6c3384e3e13781bc79614e7fa510d666776bea7e50cb15ff095c`;
+- `tools/test-evidence-run`: 1,808 bytes, mode 0755, UID:GID 1000:1000,
+  SHA-256
+  `72b41a3457322d7c61334f66f84dc6008790662f6ccda089934a1df3aac26809`.
+
+The matching initial/final 403-byte stat ledgers had SHA-256
+`965440ff3f6e2425beedfca43b9846d8b14217b7db6ded01123e4df88e866902`,
+the matching 713-byte hash ledgers had SHA-256
+`eabfefa7b82c7f34bc4e3dc66d28049d6544d6721561c2774f47e89f26fd766b`,
+and the matching 1,116-byte combined ledgers had SHA-256
+`6970cc6b189ec83d387c405240d7ca38f5b73511b6e9b2dad708babb8b066bed`.
+Direct comparison passed for every boundary record. The host bundle also
+remained 1,879,763 bytes with SHA-256
+`eb4e2aaea63b41042744579a25da380b9a783b4624687d5be273217611dc59ff`.
+
+Preflight proved Debian 13.6, kernel `6.12.101+deb13-amd64`, native KVM QEMU
+PID 2307838,
+graphical target plus GDM, seatd, and SSH active, no installed SOS unit, and an
+otherwise empty existing `/home/sos/.local/state/sos/agent` directory owned by
+`sos` with mode 0700. The clean QMP status was running. Provisioning returned
+0 in 16.793291913 seconds and reported Rust 1.95.0, Node 24.18.0, the locked
+package sequence, and the expected package marker.
+
+**Phases A–D:** The four separately captured Phase A commands returned 0:
+`npm ci --ignore-scripts` took 4.170410455 seconds, `npm run check` took
+2.548634142 seconds, all 14 tests passed in 3.269105927 seconds, and the final
+`npm run build` took 2.717819988 seconds. The guest bundle was exactly
+1,879,763 bytes with SHA-256
+`eb4e2aaea63b41042744579a25da380b9a783b4624687d5be273217611dc59ff`;
+the package manifest SHA-256 was
+`4691b055beb89a5e42c92aa3fec14ef456d3c39538270c48b2e44144e8d276f5`.
+
+Phase B passed in 6.989749502 seconds and changed revision
+`31f8e1d31b6e2c91a8a0b0829e5f29934440c64ed8f535bb86d81a5a836c49e5`
+to `2303ba94d14063341fe75ff71666b7aa3a8dcd1e1e9f80616708ae8147a302f0`
+through the exact context, validate, and submit sequence. Phase C passed in
+30.389650558 seconds on that revision: activation PID 4562 recovered as PID
+4964; initial, activated, and recovered `nested_backend_submit` fences were
+commit/submit `1/556`, `14/568`, and `100/638`. XWayland PID 3483 had
+compositor parent 3451 and client PID 5061 on display `:1`; window 4194340,
+title `SOS XWayland compatibility gate`, position 280,140, and
+`override_redirect=false` supplied the bounded compatibility surface. Native
+text/IME checks passed with 176 input-quiesce-suppressed events, and
+`linux_nested_cleanup_passed` proved owned PIDs and the run directory absent.
+
+Phase D passed in 14.682525935 seconds: activation PID 5397 recovered as PID
+5691 on revision
+`250b157308407df4ed48c8e45351e69a0d82534ba001b6ff214c6a3348c0a326`.
+Its initial, activated, and recovered `drm_page_flip` fences were `1/35`,
+`147/49`, and `3790/70`, with a recovery-view page flip before initial shell
+presentation and another before recovered-shell presentation. The bounded
+verifier returned 0 through its GDM-restoring EXIT path; the following boot
+phase began normally. This is VM VirtIO DRM evidence, not physical GPU or
+latency evidence.
+
+**Phase E exact evidence:** The boot/session verifier returned 0 in
+64.929758005 seconds. Its semantic snapshot moved from generation 2 with the
+empty editable stock composer to generation 10 with exact request `Turn this
+into a spatial time flow`, exact completion `The candidate experience is
+active.`, `Ready`, and an empty editable composer. The complete persisted
+history was 58,154 bytes with SHA-256
+`02dfbeb7118ff49e9a7a5e12a85471cc0f1380575927cecf44ff0a6918a8bde8`;
+the exact request and completion each occurred once. Supervisor status changed
+revision
+`31f8e1d31b6e2c91a8a0b0829e5f29934440c64ed8f535bb86d81a5a836c49e5`
+to `3eef9a00f71362045a3c167454b293d25cc5d565e4eddcecee1de49e3690a9c7`
+with host-proxy PID 1010 unchanged.
+
+Active logind session 1 was Wayland on seat0/tty1, leader PID 877, user
+`sos-compositor`, UID 995. Safe identities were session owner PID 877/PPID
+1/UID 995/user `sos-compositor`; compositor 952/877/995/`sos-compositor`;
+platform authority 1007/877/994/`sos-provider`; supervisor
+1009/877/993/`sos-supervisor`; host proxy
+1010/1009/993/`sos-supervisor`; experience host 1014/877/992/`sos-host`;
+authoring broker 941/1/993/`sos-supervisor`; and resident Node agent
+955/1/991/`sos-agent`, with their exact installed executable paths captured.
+Sysfs exposed
+`s2idle [deep]` and the verifier selected `deep`. All 18 named lifecycle
+checkpoints passed with owner PID 877 unchanged: active session, readiness-log
+match, lifecycle-owner identity, VT pause request and `0 -> 1` log match,
+freezer-resume command, VT resume request and `0 -> 1` log match, one `deep`
+freezer entry and its paired exit, post-freezer liveness, campaign-log
+presence, disconnect request and `0 -> 1` match, post-disconnect liveness,
+reconnect request and `1 -> 2` KMS match, and post-reconnect liveness. Terminal
+state was tty1, `Virtual-1` connected, and `Virtual-2` disconnected; the exact
+disconnect record named connector handle 37 and CRTC handle 36 before KMS
+reinitialization of `Virtual-1`.
+
+Every selected fence was `drm_page_flip`: initial `1/19`, agent revision
+`44/46`, candidate revision `208/65`, rollback to the agent revision `230/80`,
+forward to the candidate `257/92`, same-revision host recovery `271/107`,
+whole-session recovery `1/12`, and lifecycle-owner recovery `1/13`. Terminal
+`linux_boot_session_passed` recorded original owner PID 877, activation
+host-proxy PID 1010, recovered host-proxy PID 2044, restarted owner PID 2152,
+restarted host-proxy PID 2240, lifecycle-recovered owner PID 2426, final
+revision
+`2303ba94d14063341fe75ff71666b7aa3a8dcd1e1e9f80616708ae8147a302f0`,
+and `NRestarts=2`. Normal cleanup proved all owned product paths and units,
+accounts, IPC group, login membership, and matching processes absent with
+graphical target, GDM, and seatd restored.
+
+**Phase F partial success and decisive failure:** The one normal-user installer
+command returned 0 in 81.759022404 seconds. It completed the release build and
+locked npm install/build, installed the selectable-session payload, performed
+one real `openai-codex` device-code authorization successfully, saved the
+credential, and emitted `sos_agent_login_configured provider=openai-codex
+model=gpt-5.6-sol`. The one-time code and credential contents are deliberately
+not repeated here. Bounded metadata only showed
+`/home/sos/.local/state/sos/agent` as a 4,096-byte directory, mode 0700,
+`sos:sos`; `auth.json` as a nonempty 2,091-byte regular file, mode 0600,
+`sos:sos`; and `config.env` as a 60-byte regular file, mode 0600, `sos:sos`.
+No content or hash of either private file was captured. Installed metadata was
+`/usr/local/libexec/sos/sos-login-session` 20,993 bytes/mode 0755,
+`/usr/local/libexec/sos/sos-agent-login` 8,423 bytes/mode 0755,
+`/usr/share/wayland-sessions/sos.desktop` 214 bytes/mode 0644, and
+`/usr/local/libexec/sos-agent/dist/agent-runner.cjs` 1,879,763 bytes/mode
+0775, all `root:root`; the installed bundle hash matched Phase A. GDM, seatd,
+and SSH remained active. `/etc/gdm3/daemon.conf` was a 554-byte mode-0644
+`root:root` regular file with SHA-256
+`ceee968ce021213814ef4f87e19f6e76fcb0333170786dd0c006760ad61810af`.
+
+The next strict evidence command attempted an unprivileged
+`find /var/lib/AccountsService/users -maxdepth 1 -type f ...`. It returned
+status 1 with `Permission denied` in 0.129130664 seconds because the external
+runner omitted `sudo`. The campaign correctly stopped before selecting SOS in
+GDM. There is therefore no authenticated GDM SOS session, mapped Shell,
+selectable-session DRM page flip, resident rewrite, logout, or GDM-session
+cleanup evidence. Installation and successful provider authorization are not
+a substitute for any of those missing predicates.
+
+Terminal cleanup deliberately preserved the credential and configuration with
+the same bounded size/mode/ownership metadata and did not read, hash, or delete
+them. It removed the installed `/usr/local/libexec/sos`,
+`/usr/local/libexec/sos-agent`, `/usr/share/sos`, `/usr/share/doc/sos`, and
+`sos.desktop` payloads; their absence checks passed. It restored
+`graphical.target`, enabled and started seatd, kept GDM and SSH active, observed
+seat0 at greeter session `c1`, found no matching product process and no
+`/run/user/1000/sos-session.*`, and proved the GDM configuration size/hash
+unchanged. QMP was still running before an orderly poweroff; afterward there
+was no QEMU process, PID file, QMP socket, port-2222 listener, or SSH response.
+The healthy overlay changed from 39,089,209,344 to 41,453,486,080 apparent
+bytes with zero check errors. Its 436,404,224-byte backing image remained
+SHA-256
+`d4e6f5d1e9f571c198a65b45ab1adae6c5734607614e72f9661d84ce5881e5fc`.
+Final source and bundle closure matched the initial records exactly.
+
+The supported campaign interval is exactly 1,871.073933310 seconds, from
+captured monotonic nanoseconds 334081083420078 through 335952157353388; it is
+not inferred from a tool timeout. Model-weighted cost was unavailable. The
+finalized evidence root is
+`/home/carlid/sos-linux-x86_64-acceptance-20260818-r19`. Its sorted,
+self-excluding `manifest.tsv` has 300 unique rows, 31,018 bytes, and SHA-256
+`432d86078aac3da6a53c8b14dc86159b8303d5aaea7b96917da782c9b4fb23fd`.
+The campaign's 118-byte external verifier record was captured at
+`/tmp/sos-linux-x86_64-acceptance-20260818-r19-manifest-audit/008-manifest-verify.raw`
+with SHA-256
+`4afef51bc030945f2e5e32e322bca362d07f8aeb545f3dae4d609abb1f1403ed`;
+that temporary verifier record is no longer present. A fresh read-only audit
+of the sealed evidence independently verified all 300 listed paths, sizes,
+and hashes, exact file-set equality, C-sort order, uniqueness, 150 matched
+`.meta`/`.raw` pairs, self-exclusion, and deterministic regeneration of the
+same manifest digest.
+
+**Phase F privilege-contract audit:** The failed AccountsService command was
+composed by the external campaign runner, not by a repository script.
+`tools/evidence-run` faithfully captured its literal unprivileged remote argv
+and status; it does not choose privilege. Repository search found no
+Phase F/AccountsService inventory helper to repair. The installer already
+rejects root, invokes the installed login helper as the desktop user, and uses
+`sudo` only for root-owned installation writes; `sos-agent-login` and
+`sos-login-session` also reject root and enforce user ownership of credential,
+state, and runtime paths. Changing these product boundaries, teaching the
+evidence recorder to inject privilege, or weakening the strict command failure
+was rejected. No product code changed for this runner-only omission.
+
+The complete r20 command privilege contract is:
+
+- Run credential preflight, both login helpers, the installer top level, the
+  GDM SOS session, credential/config `find` and `stat`, the user's
+  `/run/user/<uid>` inventory, and same-UID PID/executable checks as the
+  authenticated desktop user. Record only credential/config path, regular-file
+  type, nonempty byte size, owner/group, mode, and lock/temp absence—never
+  content or hashes. Root would mask the ownership and access properties under
+  test.
+- Run readable installed-payload `stat`/`sha256sum`, payload-absence `find`,
+  `systemctl is-active|get-default|show`, `loginctl show-seat|show-session`,
+  `ps`/same-UID `pgrep`, and read-only `id`/`getent` user/group inventories as
+  the normal user. These interfaces require no privilege and their
+  unprivileged readability is part of the contract. Avoid `systemctl status`
+  because it mixes status with journal output.
+- Use explicit noninteractive `sudo -n` for every AccountsService inventory
+  or identity under `/var/lib/AccountsService/users`, GDM configuration
+  metadata/hash reads under `/etc/gdm3`, bounded system-journal reads needed
+  for GDM/session/KMS evidence, any cross-UID `/proc` executable identity, and
+  any GDM-greeter runtime path that cannot be read by the login user. Do not
+  capture AccountsService file contents; use path/type/size/mode/owner and a
+  hash only when before/after equality is required. Bound journal capture to
+  the recorded post-authentication GDM interval and exact UID/session/process
+  selectors so no device code or credential material enters evidence.
+- Use explicit noninteractive `sudo -n` for all campaign-authored root state
+  changes:
+  `systemctl set-default|enable|disable|start|stop`, root-installed payload
+  removal, and any necessary configuration restoration. The normal-user
+  installer may retain its narrowly internal `sudo` calls only after a
+  separate `sudo -n true` gate proves passwordless noninteractive escalation.
+  Logout itself must use the selectable-session `Ctrl+Alt+Backspace` path, not
+  privileged session termination. Phase F creates no system user or group, so
+  user/group operations are inventories only.
+
+**Decision / remaining risk / exact r20 gate:** Overall r19 is **FAIL** because
+Phase F stopped before GDM; A–E pass only for this exact source. It makes no
+interactive GDM acceptance, physical-hardware, production-GPU,
+platform-suspend, latency, memory, thermal, or model-cost claim. Continuing
+after the failed evidence command, silently retrying it with privilege in the
+same campaign, treating OAuth/install success as session acceptance, deleting
+the new real credential during cleanup, or patching unrelated product code
+were rejected. The credential is intentionally preserved on the healthy
+overlay; remaining risk is the entire first authenticated GDM session,
+resident real-provider rewrite, DRM presentation, logout/cleanup, and GNOME
+restoration path.
+
+R20 must open one fresh complete A–F transaction with a new exact initial/final
+source ledger, all untracked per-file identities, clean VM/QEMU ownership, and
+the privilege contract above. Repeat provisioning and Phase A's locked
+install, check, all 14 tests, final build, and bundle identity; Phase B's exact
+old/new revision and bounded tool
+sequence; Phase C's PIDs, XWayland/surface/IME records, three nested fences,
+recovery, and cleanup; Phase D's PIDs, three DRM fences, recovery views, and
+GDM restoration; and Phase E's full semantic/status/history records, process
+parentage, selected supported suspend mode, all 18 lifecycle checkpoints,
+connector/KMS records, all recovery identities, exhaustive cleanup, and
+terminal PASS.
+
+Only after A–E pass may Phase F begin. Before any authentication-capable
+command, inspect `auth.json` and `config.env` metadata as user and require
+regular, nonempty, mode-0600 `sos:sos` files with no lock/temp sibling. Run the
+repository `packaging/libexec/sos-agent-login --if-needed` as the normal user
+with `SOS_AGENT_MAIN=/home/sos/sos/services/sos-agent/dist/agent-runner.cjs`
+bound to the exact Phase A guest bundle and explicit
+`SOS_AGENT_PROVIDER=openai-codex`/`SOS_AGENT_MODEL=gpt-5.6-sol`; require offline
+credential validation and
+`sos_agent_login_ready`. If it reports absent/invalid state or attempts
+`action=authenticate`, stop F: r20 is authorized to reuse the preserved
+credential and must not start a second device-code flow. Then run the installer
+once as user after `sudo -n true` and require the installed helper's same
+ready/no-reauth result plus exact installed payload identity.
+After that preserved-credential preflight passes, select SOS through GDM once.
+Require the authenticated active logind seat, `sos_login_session_ready`, all
+safe process identities, mapped
+Shell and connector/page-flip journal records, one visible resident-agent
+rewrite, `sos_login_rewrite_passed` with different old/new 64-hex revisions,
+unchanged host PID, equal authority, changed history SHA-256, and the exact
+semantic completion without credential content.
+
+Inject `Ctrl+Alt+Backspace`; require `sos_login_logout_observed`,
+`sos_login_cleanup_passed`, return of the GDM greeter, absence of every
+recorded product PID and private runtime, and preservation of credential/config
+metadata. Select GNOME through GDM to restore the prior desktop selection and
+prove the AccountsService and GDM before/after identities under `sudo -n`,
+normal graphical/GDM/seatd/SSH state, and no installed product after bounded
+cleanup. Then power off, prove overlay/backing/QEMU and final source closure,
+finalize every evidence file, atomically generate the sorted self-excluding
+manifest, and independently verify exact file set, rows, sizes, hashes, order,
+uniqueness, and no later writes. R20 remains a VM-only gate regardless of its
+result.
+
+## 2026-08-18 — Reject Linux x86-64 r24 at nested accessibility focus causality
+
+**Goal / exact source closure:** R24 attempted the complete Debian 13 x86-64
+A–F campaign from
+`/home/carlid/.t3/worktrees/sos/t3code-e2a4bacf`, branch
+`t3code/rerun-linux-baseline`, HEAD
+`e05f91bb6f0b0a9299b914138d6cd0966b9c82d5`. Initial and final HEAD,
+branch, status, tracked and staged diffs, untracked list, and untracked
+stat/hash ledgers were byte-identical. The 181,932-byte tracked diff had
+SHA-256
+`dd5d886a965f180e74012bd240aa0d201876bb8e0e8389d07ef03577408c8d3d`;
+the 803-byte status had
+`1a23051d37d6a0ee49857c40dcb4e66247ac75611911967c422bb8984f668125`,
+the empty staged diff had
+`e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`,
+and the 251-byte untracked list had
+`c867d921f64628fce65e26989c7828ca987ddf7c1e95ca7787fa1f33bf379c48`.
+The matching UID:GID 1000:1000 untracked inputs were:
+
+- `tests/fixtures/linux-agent-history.json`: 235 bytes/0644,
+  `03505f460c2b67a38e27aa82e85d379a4f4562b0ff4bfc8ce421a8513b314cf5`;
+- `tools/evidence-run`: 3,984 bytes/0755,
+  `50c08af1e093137097f030300ba7dd8fcf91163d04f2e0c4f1c55dcd8cd7d131`;
+- `tools/linux-vm/boot-session-evidence-lib`: 798 bytes/0644,
+  `d4762ab73af50aec3ca089253475ba7af836866c118b65c347296fabb698c14e`;
+- `tools/linux-vm/boot-session-lifecycle-lib`: 1,177 bytes/0644,
+  `1fbdf514e46b401dc1e20d78d1d5db54f2db591d35b67855dd093b71b5153212`;
+- `tools/linux-vm/test-boot-session-evidence`: 1,739 bytes/0755,
+  `79a97e996e63f4716f5b49c555930e86469cdb6479c968bad3b3f096f284eddf`;
+- `tools/linux-vm/test-boot-session-lifecycle`: 2,425 bytes/0755,
+  `c757a2b792fe6c3384e3e13781bc79614e7fa510d666776bea7e50cb15ff095c`;
+- `tools/test-evidence-run`: 1,808 bytes/0755,
+  `72b41a3457322d7c61334f66f84dc6008790662f6ccda089934a1df3aac26809`.
+
+The matching 382-byte stat ledger had
+`a3e04dc7bea3c6977ae65a6e177397b6107af79b307dafd595b77e09a93a3ee3`
+and the matching 713-byte hash ledger had
+`eabfefa7b82c7f34bc4e3dc66d28049d6544d6721561c2774f47e89f26fd766b`.
+Records 173–178 passed direct comparisons. The host bundle remained
+1,879,763 bytes/0755 with SHA-256
+`eb4e2aaea63b41042744579a25da380b9a783b4624687d5be273217611dc59ff`.
+
+**Phase 0 and phases A–B:** Preflight found no prior runtime path,
+port-2222 listener, QMP socket, or overlay owner and SSH was refused as
+expected. Native-KVM QEMU PID 2936448 ran `sos-debian13` with 8 vCPUs, 12,288
+MiB and VirtIO GPU. The guest was Debian 13.6, kernel
+`6.12.101+deb13-amd64`, x86-64, with graphical target, GDM, seatd, and SSH
+active and greeter c1 on seat0/tty1. Provisioning returned 0 in
+22.321426278 seconds, proved Rust 1.95.0 and Node 24.18.0, passed its locked
+14-test agent sequence, and emitted the package marker.
+
+Phase A's separately captured commands all returned 0:
+`npm ci --ignore-scripts` in 4.075127657 seconds, `npm run check` in
+2.496308333 seconds, 14/14 tests in 3.277501580 seconds, and the separate
+final `npm run build` in 2.763783005 seconds. Guest and host bundle copies
+were 1,879,763 bytes with SHA-256
+`eb4e2aaea63b41042744579a25da380b9a783b4624687d5be273217611dc59ff`;
+guest `package.json` had
+`4691b055beb89a5e42c92aa3fec14ef456d3c39538270c48b2e44144e8d276f5`.
+Phase B returned 0 in 7.037623651 seconds and changed revision
+`31f8e1d31b6e2c91a8a0b0829e5f29934440c64ed8f535bb86d81a5a836c49e5`
+to `2303ba94d14063341fe75ff71666b7aa3a8dcd1e1e9f80616708ae8147a302f0`
+through the exact context/validate/submit flow.
+
+**Phase C failure / confidence boundary:** `verify-nested` returned status 1
+in 15.016399917 seconds at source line 375. Permanent host PID 4672 booted the
+initial revision above and activated the Phase B revision without a PID
+change. Initial and activated `nested_backend_submit` fences passed at
+commit/submit `1/294` and `19/310`. Activation dropped zero host events and
+suppressed 196 compositor events while restoring Shell focus. Native text
+focused `note-draft`, submitted exact `wayland`, and committed requests 1–8
+through authority revision 10. Accessibility handled `next`, `previous`,
+`activate`, and `scroll_forward`; their asynchronous work committed requests
+9 and 10 through authority revisions 11 and 12. It then logged exact
+`sos_accessibility_action kind=focus target=note-draft`.
+
+The focus action acknowledgement and subsequent wait both had `.ok=true`
+(lines 372 and 374 completed), but the returned wait snapshot failed exact
+`.snapshot.focused == "note-draft"` at line 375. The old failure path did not
+preserve baseline generation, returned generation, or returned focus, so no
+more specific snapshot value can be claimed. No focus-false event, host exit,
+revision change, stale-scene installation, or compositor focus loss was
+recorded. XWayland mapping, native IME, recovery, and the third fence were not
+reached. Phases D–F were not run. No GDM selection/configuration change was
+attempted; closure retained active graphical/GDM/seatd/SSH and the same c1
+Debian-gdm Wayland greeter, leader 925, on seat0/tty1.
+
+Credential metadata was identical preflight, after A, and at closure:
+`/home/sos/.local/state/sos/agent` was a 4,096-byte mode-0700 `sos:sos`
+directory, `auth.json` a 2,091-byte mode-0600 `sos:sos` regular file, and
+`config.env` a 60-byte mode-0600 `sos:sos` regular file; no private content or
+hash was captured. Cleanup recorded and removed gate-owned `/tmp/.X1-lock` and
+`/tmp/.X11-unix/X1`, then powered off orderly. No QEMU process, PID file, QMP
+socket, port-2222 listener, SSH response, or overlay owner remained. The
+healthy overlay grew from 41,468,035,072 to 41,503,555,584 apparent bytes and
+had zero check errors. Its 436,404,224-byte backing remained SHA-256
+`d4e6f5d1e9f571c198a65b45ab1adae6c5734607614e72f9661d84ce5881e5fc`.
+Campaign duration was exactly 1262.945136789 seconds from captured monotonic
+342069270751830 through 343332215888619, never inferred from a timeout.
+Model-weighted cost was unavailable.
+
+The finalized evidence root is
+`/home/carlid/sos-linux-x86_64-acceptance-20260818-r24`. Its sorted,
+self-excluding manifest has 360 rows, 35,721 bytes, SHA-256
+`d29c69495a198ed0082dfb7890da06b3504773d4862e0eaf44aaba5e4e8da26d`.
+Independent exact-set/order/uniqueness/size/hash/pairing/self-exclusion/
+manifest-last/regeneration audit passed. External verifier outputs are
+`/tmp/sos-linux-x86_64-acceptance-20260818-r24-manifest-audit/002-manifest-verify.raw`
+(118 bytes,
+`ba2fa7ad50c90d61696f0929cd461670d86ec9100512b2a0f8238c6f594a7e81`)
+and `009-external-exact-audit.raw` in that directory (199 bytes,
+`ab4ae1dfcd6d3a3aa4435611b301e102274435ec28b8011feca21be207630177`).
+
+**Root cause / changed code:** This was a command-ack versus semantic
+generation race, not stale model state or focus loss. Action `.ok=true` only
+means `try_send` accepted the action. Old `wait` blocked only while generation
+was at/below the baseline, then returned `.ok=true` for the first newer
+snapshot—even on timeout—without binding it to focus. Earlier activate/scroll
+commits could publish that unrelated generation before the focus action's
+render. The focus handler itself assigns `semantic_focus = note-draft` before
+its recorded action log.
+
+`apps/experience/src/linux_accessibility.rs` now accepts an optional exact
+`focused` wait predicate and loops on the condition variable until both a
+strictly newer generation and exact focus exist. Timeout returns `.ok=false`
+with full terminal snapshot, baseline generation, expected focus, captured
+monotonic elapsed milliseconds, and `timed_out=true`. Focused tests cover a
+stale/wrong intermediate generation followed by focused generation, newer
+wrong-focus timeout, and matching-but-not-new timeout.
+`tools/linux-compositor/verify-nested` requests `focused=note-draft`,
+independently checks strict generation advance plus exact focus, and prints the
+compact full diagnostic response on failure; success emits the exact baseline,
+focused generation, and measured wait milliseconds. Arbitrary sleep,
+any-generation acceptance, weakened focus, and changing the correct semantic
+model were rejected. Prior semantic-history and stale-scene fixes remain
+intact.
+
+Host checks passed
+`cargo check --locked -p sos-experience --features linux-host --tests`,
+`cargo fmt --all -- --check`, `bash -n tools/linux-compositor/verify-nested`,
+and `git diff --check`. The first focused `cargo test` attempt compiled but
+could not link because this host lacks the development linker names
+`libxkbcommon.so` and `libxkbcommon-x11.so`. A removed-after-use temporary
+link directory mapped those names to the host's
+`/usr/lib64/libxkbcommon.so.0` and the repository-adjacent Android emulator's
+`libxkbcommon-x11.so.0`; with only `LIBRARY_PATH`/`LD_LIBRARY_PATH` pointed at
+that directory, the four focused `linux_accessibility::tests` passed. A wider
+library run passed 30/31 tests, including both pre-existing semantic-history
+tests, but the unrelated pre-existing
+`tests::embedded_experience_is_valid` failed because the default experience
+contains disallowed `audio.set_volume`; neither that experience nor its
+provider registry changed in this repair. ShellCheck was unavailable. No VM,
+compositor, device, credential, or provider was used for the repair.
+
+**Decision / exact r25 gate:** R24 is **FAIL** at Phase C; Phase 0/A/B apply
+only to superseded r24 source, C is incomplete, and D–F have no result. R25
+must run one fresh complete Debian 13 x86-64 A–F transaction with exact
+initial/final source and untracked identities, clean VM ownership, metadata-
+only credential audit, bundle identity, and deterministic manifest closure.
+Repeat provisioning; A's locked install/check/all tests/separate build; and
+B's exact different initial/active revisions and context/validate/submit flow.
+
+Phase C must record baseline and terminal accessibility generations, prove
+strict advance with exact `focused=note-draft`, and retain all timeout fields
+on failure. It must pass native text/clipboard/IME, providers, exact XWayland
+PID/parent/client/display/bounded titled surface, activation/recovery PIDs,
+three nested fences, suppressed-event count, revision/authority agreement, and
+owned-process/run-root cleanup. D must pass activation/recovery PIDs, three
+VirtIO DRM fences, recovery-view ordering, and GDM restoration. E must pass
+exact semantic/status/history and process parentage, selected supported
+suspend mode, all 18 lifecycle checkpoints, connector/KMS transitions, all
+three recovery classes, exhaustive cleanup, and terminal PASS.
+
+Before F login, capture GDM before/active/restored identity and require
+`DefaultSession=sos.desktop`. F must metadata-validate preserved credentials
+without private content/hashes or unauthorized reauthentication, use the
+exact A bundle/provider/model, install once, and prove authenticated GDM SOS,
+`sos_login_session_ready`, mapped Shell/DRM, one visible resident rewrite with
+different revisions, unchanged host PID, equal authority, changed history,
+and exact semantic completion. Finally inject selectable-session
+`Ctrl+Alt+Backspace`, prove logout, exhaustive session/PID/runtime cleanup,
+credential preservation, greeter return, GNOME/GDM restoration and normal
+graphical/GDM/seatd/SSH; power off; close all evidence; atomically generate
+and independently verify the exact sorted self-excluding manifest. R25 remains
+VM-only and makes no physical-hardware, production-GPU, platform-suspend,
+latency, memory, thermal, or model-cost claim.
+
+## 2026-08-18 — Reject Linux x86-64 r27 cleanup false PASS and bind exact X11 artifacts
+
+**Goal / exact source closure:** R27 attempted the complete Debian 13 x86-64
+A–F campaign from
+`/home/carlid/.t3/worktrees/sos/t3code-e2a4bacf`, branch
+`t3code/rerun-linux-baseline`, HEAD
+`e05f91bb6f0b0a9299b914138d6cd0966b9c82d5`. Initial and final source
+ledgers were byte-identical: each is 204,914 bytes with SHA-256
+`bb9fc6c2d159cdb01dd17156650d5e9c705ac318f03250637ecbdd8f099a2545`.
+They retained the same tracked/staged/untracked identities and the same
+1,879,763-byte host bundle with SHA-256
+`eb4e2aaea63b41042744579a25da380b9a783b4624687d5be273217611dc59ff`.
+
+**Phase 0 and phases A–B:** Preflight found no prior target PID file, QMP
+socket, overlay owner, or port-2222 listener. Native-KVM QEMU PID 3224105 ran
+`sos-debian13` with 8 host x86-64 CPUs, 12,288 MiB, and VirtIO GPU. QMP
+`query-status`, `query-cpus-fast`, and `query-memory-size-summary`, each run
+with exact environment
+`SOS_LINUX_VM_ROOT=/home/carlid/dev/sos/.cache/linux-vm` and
+`SOS_LINUX_VM_NAME=sos-debian13`, proved running state and that topology. The
+guest was Debian 13, kernel `6.12.101+deb13-amd64`, x86-64, with graphical
+target, GDM, seatd, and SSH active and Debian-gdm greeter c1 on seat0/tty1.
+Provisioning returned 0 in 16.319233258 seconds, retained Rust 1.95.0 and Node
+24.18.0, passed its locked 14-test package sequence, and reproduced the exact
+bundle identity above plus package SHA-256
+`4691b055beb89a5e42c92aa3fec14ef456d3c39538270c48b2e44144e8d276f5`.
+
+Phase A's separately captured commands all returned 0: `npm ci
+--ignore-scripts` in 3.868347065 seconds, `npm run check` in 2.332535612
+seconds, 14/14 tests in 3.100291290 seconds, and the separate final `npm run
+build` in 2.516708170 seconds. Guest bundle mode after the final build was
+0775 with the same bytes and hash. Phase B returned 0 in 6.881949451 seconds
+and changed revision
+`31f8e1d31b6e2c91a8a0b0829e5f29934440c64ed8f535bb86d81a5a836c49e5`
+to `2303ba94d14063341fe75ff71666b7aa3a8dcd1e1e9f80616708ae8147a302f0`
+through the exact `get_experience_context`, `validate_experience`, and
+`submit_experience` flow.
+
+**Phase C functional PASS, cleanup FAIL:** `tools/linux-compositor/verify-nested`
+returned 0 in 18.072912334 seconds. Accessibility advanced generation 23 to
+24 with exact `focused=note-draft` and measured `wait_elapsed_ms=0`. Permanent
+host PID 4632 activated the Phase B revision and recovered after forced failure
+as PID 5016. The three `nested_backend_submit` fences were initial
+commit/submit 1/460, activation 15/473, and recovery 101/542. Activation
+suppressed 166 compositor events while restoring Shell focus. Native text,
+clipboard, providers, revision/authority agreement, and compatibility mapping
+passed; final native text was `Caffè ☕️ – 明日のデザイン你号é`. The IME
+attached through input-method-v2, published cursor rectangle `241,434 0x28`,
+and selected `你号` from candidates `你好`/`你号`.
+
+Compositor PID 3656 owned rootless XWayland child PID 3688 on display `:1`;
+the exact `xmessage` client was PID 5119. XWayland 24.1.6 mapped the titled
+`SOS XWayland compatibility gate` surface as window 4194340 at x=280, y=140,
+`override_redirect=false`. The verifier then emitted
+`linux_nested_cleanup_passed owned_pids_absent=true run_dir_absent=true`, but
+the immediately captured inventory still contained `/tmp/.X11-unix/X1`, a
+socket owned by `sos:sos`, and `/tmp/.X1-lock`. Only Debian-gdm XWayland
+`:1024` remained in the process audit; `/tmp/.X11-unix/X1024`, X1025, and
+their locks were preexisting GDM artifacts, with X1025 confirmed owned by
+`Debian-gdm:Debian-gdm`. Therefore the cleanup marker was a false PASS even
+though functional Phase C passed. Phases D–F were not run.
+
+The closure command removed only the stale campaign X1 pair before its
+ill-scoped attempt to remove Debian-gdm X1025 failed with `Operation not
+permitted`; X1024 and X1025 remained. That shared-display cleanup approach is
+rejected: campaign cleanup must never glob, infer from a general inventory, or
+remove GDM's X1024/X1025 artifacts. Credential metadata remained unchanged:
+`/home/sos/.local/state/sos/agent` was a 4,096-byte mode-0700 `sos:sos`
+directory containing only the 2,091-byte mode-0600 `auth.json` and 60-byte
+mode-0600 `config.env`; no credential content or hash was captured. Exact-env
+QMP `system_powerdown` completed orderly in 3.040179416 seconds, after which no
+target QEMU process, PID file, QMP socket, overlay owner, or port-2222 listener
+remained. The healthy overlay grew from 41,516,662,784 to
+41,522,888,704 apparent bytes and retained zero check errors. Its
+436,404,224-byte backing remained SHA-256
+`d4e6f5d1e9f571c198a65b45ab1adae6c5734607614e72f9661d84ce5881e5fc`.
+Campaign duration was exactly 605.520675054 seconds from captured monotonic
+345422699265400 through 346028219940454; model-weighted cost was unavailable.
+
+The finalized evidence root is
+`/home/carlid/sos-linux-x86_64-acceptance-20260818-r27`. Its sorted,
+self-excluding manifest has 178 rows, 17,312 bytes, SHA-256
+`577a479682482913b6c2891335cf06380cf4fc002c8c735b28afac77139be011`.
+The external verifier output is
+`/tmp/sos-linux-x86_64-acceptance-20260818-r27-manifest-verify.raw` (118 bytes,
+SHA-256
+`4f3052aa26290686181b4fcf5caacdb0dc37a776ef30e3431ba51b5191b3c0bf`),
+which records PASS and the exact 178-file set.
+
+**Root cause / changed code:** Smithay allocates the X11 lock and listening
+sockets in the compositor before spawning the XWayland child; the lock records
+the compositor PID and the child inherits the listening descriptors. The r27
+`:1` pair was therefore the inner Smithay/XWayland allocation, not Xvfb's
+outer display. Terminating the compositor by signal bypassed Rust `Drop`
+cleanup, while the verifier proved only owned-PID and run-directory absence,
+so the exact X11 pair escaped its PASS predicate. Dynamic Xvfb and Smithay
+display selection also did not preserve before/created identities.
+
+`sos-compositor` now accepts an optional exact `--xwayland-display` alongside
+the display evidence file, rejects any preexisting socket or lock before
+asking Smithay to spawn, and passes that exact display to Smithay. The nested
+verifier selects distinct unused displays in its bounded 64–127 campaign
+range for Xvfb and XWayland, records exact pre-start absence, captures created
+device/inode/UID/mode identities tied to the Xvfb or compositor lock PID, and
+requires the published XWayland display to equal the allocation. Its EXIT
+trap captures early-start artifacts when possible, terminates and waits all
+campaign owners, proves no exact X server or socket/lock owner remains,
+preserves any absent-before but uncaptured, replaced, wrong-owner, or
+wrong-type object, removes only matching campaign identities, and asserts
+both exact pairs absent before emitting cleanup PASS. No glob or cleanup path
+can reach GDM X1024/X1025. The earlier generation-bound focus repair remains
+unchanged.
+
+The shell fixture suite covers absent-created-cleaned, preexisting refusal and
+alternate selection, wrong type, wrong expected owner, live-owner refusal,
+preservation of exact X1024/X1025 baselines, and suppression of the cleanup
+marker while an artifact remains. It passed with
+`nested_x11_artifact_tests_passed ... gdm_x1024_x1025_preserved=true
+false_cleanup_pass_absent=true`. Host checks passed `cargo check --locked -p
+sos-compositor --lib`, `cargo fmt --all -- --check`, Bash syntax for the
+verifier/library/fixture/test, the fixture test, and `git diff --check`.
+`cargo test --locked -p sos-compositor --lib` first compiled but could not
+link because this host lacks the development name `libxkbcommon.so`; a
+removed-after-use temporary directory mapped it to `/lib64/libxkbcommon.so.0`,
+after which all 10 compositor library tests passed. ShellCheck and host Xvfb
+were unavailable, so no nested compositor, VM, device, credential, or provider
+was used for this repair. The remaining risk is the unrerun integration of
+the exact display allocation with Debian's real Xvfb and XWayland processes;
+r28 Phase C is the next gate for that behavior and for the final absence
+marker.
+
+**Decision / exact r28 gate:** R27 is **FAIL** at Phase C cleanup. Its Phase
+0/A/B results and Phase C functional result apply only to superseded r27
+source; C has no acceptable terminal PASS and D–F have no result. R28 must run
+one fresh complete Debian 13 x86-64 A–F transaction with exact initial/final
+source and untracked identities, metadata-only credential audit, exact bundle
+identity, and deterministic manifest closure. Every VM start/status/topology/
+poweroff QMP command must carry
+`SOS_LINUX_VM_ROOT=/home/carlid/dev/sos/.cache/linux-vm` and
+`SOS_LINUX_VM_NAME=sos-debian13`. Repeat provisioning; A's locked install,
+check, all tests, and separate build; and B's different initial/active
+revisions through the exact context/validate/submit sequence.
+
+Phase C must retain the generation-bound focus, native text/clipboard/IME,
+provider, three-fence, activation/recovery PID, exact XWayland child/client/
+display/titled-surface, suppressed-event, and authority proofs. It must also
+record preexisting and created identities for both exact Xvfb and XWayland
+socket/lock pairs, prove all owners terminated, prove only the run-created
+expected-owner/type identities were removed, assert both pairs absent before
+cleanup PASS, and prove Debian-gdm X1024/X1025 identities unchanged. D must
+pass activation/recovery PIDs, three VirtIO DRM fences, recovery-view ordering,
+and GDM restoration. E must pass exact semantic/status/history and parentage,
+the selected supported suspend mode, all 18 lifecycle checkpoints, connector/
+KMS transitions, all three recovery classes, exhaustive cleanup, and terminal
+PASS.
+
+Before F login, capture GDM before/active/restored identity and require exact
+`DefaultSession=sos.desktop`. F must metadata-validate preserved credentials
+without content/hashes or reauthentication, use the exact A bundle/provider/
+model, install once, and prove authenticated GDM SOS,
+`sos_login_session_ready`, mapped Shell/DRM, one visible resident rewrite with
+different revisions, unchanged host PID, equal authority, changed history,
+and exact semantic completion. Then inject selectable-session
+`Ctrl+Alt+Backspace`, prove logout and exhaustive session/PID/runtime cleanup,
+credential preservation, greeter return, GNOME/GDM restoration and normal
+graphical/GDM/seatd/SSH; power off through the exact QMP environment; close all
+evidence; atomically generate and independently verify the sorted,
+self-excluding exact manifest. R28 remains VM-only and makes no physical-
+hardware, production-GPU, platform-suspend, latency, memory, thermal, or
+model-cost claim.
+
+## 2026-08-18 — Reject Linux x86-64 r28 at safe Phase F preflight and harden evidence closure
+
+**Goal / exact source closure:** R28 attempted one complete Debian 13 x86-64
+A–F transaction from
+`/home/carlid/.t3/worktrees/sos/t3code-e2a4bacf`, branch
+`t3code/rerun-linux-baseline`, HEAD
+`e05f91bb6f0b0a9299b914138d6cd0966b9c82d5`. Initial and final worktree,
+HEAD, branch, status, tracked diff, staged diff, untracked list, host bundle,
+and every untracked identity compared byte-for-byte. The matching 1,070-byte
+porcelain status had SHA-256
+`5b68a6d9a092e0fcfa675cf6ccd7f369317f0bbc5f8cea39fdf7004dd0e47084`;
+the matching 221,864-byte tracked diff had SHA-256
+`d394dfd16207c4e3d33e8b93c8dbf9744d7bd3ae4a8ce49751a35b948158e23f`;
+the staged diff was empty; and the matching 386-byte untracked list had
+SHA-256
+`e05d10e39f04b550de19c871b4172b8624ece45f5e399cf008fec912091c92d9`.
+The tracked source set was `apps/experience/src/linux.rs`,
+`apps/experience/src/linux_accessibility.rs`,
+`crates/sos-compositor/src/lib.rs`, `crates/sos-compositor/src/xwayland.rs`,
+`docs/linux-compositor.md`, `docs/linux-stable-host.md`, `docs/linux-vm.md`,
+`docs/progress.md`, `docs/sos-agent.md`,
+`packaging/libexec/sos-agent-login`,
+`packaging/libexec/sos-login-session`, `services/sos-agent/src/main.ts`,
+`services/sos-agent/src/runtime.ts`,
+`services/sos-agent/src/stdio-runner.ts`,
+`services/sos-agent/test/runner.test.ts`,
+`tools/install-linux-login-session`,
+`tools/linux-compositor/verify-nested`,
+`tools/linux-vm/provision-debian`, and
+`tools/linux-vm/verify-boot-session`.
+
+The complete initial/final untracked ledger was:
+
+- `tests/fixtures/linux-agent-history.json`: 235 bytes, mode 0644,
+  UID:GID 1000:1000, SHA-256
+  `03505f460c2b67a38e27aa82e85d379a4f4562b0ff4bfc8ce421a8513b314cf5`;
+- `tests/fixtures/linux-x11-socket-owner`: 314 bytes, mode 0755,
+  UID:GID 1000:1000, SHA-256
+  `fb6a3cd131fd1e23678dbcca7b0dd02581eae266056755ae7db7ad1430428537`;
+- `tools/evidence-run`: 3,984 bytes, mode 0755, UID:GID 1000:1000,
+  SHA-256
+  `50c08af1e093137097f030300ba7dd8fcf91163d04f2e0c4f1c55dcd8cd7d131`;
+- `tools/linux-compositor/nested-x11-artifacts-lib`: 10,878 bytes, mode
+  0644, UID:GID 1000:1000, SHA-256
+  `4fbadeb9de4fc1449b1e9277fd82837515e94d912c06717afa08480e5a6502af`;
+- `tools/linux-compositor/test-nested-x11-artifacts`: 5,116 bytes, mode
+  0755, UID:GID 1000:1000, SHA-256
+  `85ee379b8ea04f76d24f7e5a430e4546cb45c8378870a374312598672976fcf8`;
+- `tools/linux-vm/boot-session-evidence-lib`: 798 bytes, mode 0644,
+  UID:GID 1000:1000, SHA-256
+  `d4762ab73af50aec3ca089253475ba7af836866c118b65c347296fabb698c14e`;
+- `tools/linux-vm/boot-session-lifecycle-lib`: 1,177 bytes, mode 0644,
+  UID:GID 1000:1000, SHA-256
+  `1fbdf514e46b401dc1e20d78d1d5db54f2db591d35b67855dd093b71b5153212`;
+- `tools/linux-vm/test-boot-session-evidence`: 1,739 bytes, mode 0755,
+  UID:GID 1000:1000, SHA-256
+  `79a97e996e63f4716f5b49c555930e86469cdb6479c968bad3b3f096f284eddf`;
+- `tools/linux-vm/test-boot-session-lifecycle`: 2,425 bytes, mode 0755,
+  UID:GID 1000:1000, SHA-256
+  `c757a2b792fe6c3384e3e13781bc79614e7fa510d666776bea7e50cb15ff095c`;
+- `tools/test-evidence-run`: 1,808 bytes, mode 0755, UID:GID 1000:1000,
+  SHA-256
+  `72b41a3457322d7c61334f66f84dc6008790662f6ccda089934a1df3aac26809`.
+
+The host bundle remained 1,879,763 bytes, mode 0755, with SHA-256
+`eb4e2aaea63b41042744579a25da380b9a783b4624687d5be273217611dc59ff`.
+No source changed during the captured campaign.
+
+**Phase 0 and phases A–B — PASS:** Preflight found no target PID file, QMP
+socket, overlay owner, or port-2222 listener. Native-KVM QEMU PID 3240598 ran
+`sos-debian13` with 8 host x86-64 CPUs, 12,288 MiB and one two-output VirtIO
+GPU. QMP status/topology/memory, and later poweroff, all used the exact
+environment `SOS_LINUX_VM_ROOT=/home/carlid/dev/sos/.cache/linux-vm` and
+`SOS_LINUX_VM_NAME=sos-debian13`. The guest was Debian 13.6, kernel
+`6.12.101+deb13-amd64`, x86-64, with graphical target, GDM, seatd and SSH
+active and Debian-gdm greeter c1 on seat0/tty1. Provisioning returned 0 in
+20.078820958 seconds, retained Rust 1.95.0, Node 24.18.0 and npm 11.16.0,
+passed its locked 14-test package sequence, and reproduced package SHA-256
+`4691b055beb89a5e42c92aa3fec14ef456d3c39538270c48b2e44144e8d276f5`
+and the exact bundle identity above.
+
+Phase A's four separately captured commands returned 0: `npm ci
+--ignore-scripts` in 4.179793623 seconds, `npm run check` in 2.427226988
+seconds, 14/14 direct Node tests in 0.837249602 seconds, and the separate final
+`npm run build` in 2.664366553 seconds. The final guest bundle was the same
+1,879,763 bytes and hash, mode 0775. Phase B returned 0 in 7.026354362 seconds
+and changed revision
+`31f8e1d31b6e2c91a8a0b0829e5f29934440c64ed8f535bb86d81a5a836c49e5`
+to `2303ba94d14063341fe75ff71666b7aa3a8dcd1e1e9f80616708ae8147a302f0`
+through the exact `get_experience_context`, `validate_experience`, and
+`submit_experience` sequence.
+
+**Phase C — PASS, including r27 cleanup regression:** The nested verifier
+returned 0 in 22.265124628 seconds. Accessibility advanced generation 18 to
+19 with exact `focused=note-draft` and measured `wait_elapsed_ms=0`.
+Permanent host PID 7157 activated the Phase B revision and recovered after
+forced failure as PID 7515. Initial, activation, and recovery
+`nested_backend_submit` fences were commit/submit `1/609`, `14/622`, and
+`94/689`. Native text, clipboard, provider and authority proofs passed; input
+quiesce suppressed 154 events and terminal native text was
+`Caffè ☕️ – 明日のデザイン你号é`. XWayland 24.1.6 PID 5977 had compositor
+parent PID 5954 and exact client PID 7615 on `:65`; window 4194340 titled
+`SOS XWayland compatibility gate` mapped at 280,140 with
+`override_redirect=false`. The IME attached through input-method-v2, reported
+cursor rectangle `241,434 0x28`, and selected `你号` from the bounded
+candidate history.
+
+The dual-display cleanup contract allocated Xvfb `:64` and XWayland `:65`
+only after exact socket/lock absence. X64's created socket and lock identities
+were `34:790:1000:c1ff` and `34:789:1000:8124` with lock PID 5902; X65's were
+`34:802:1000:c1fd` and `34:801:1000:81b4` with lock PID 5954. Terminal checks
+proved both exact pairs and every owner absent before
+`linux_nested_cleanup_passed`. The unrelated Debian-gdm X1024 socket/lock
+remained byte-identical in metadata as device/inode `34:23`/`34:22`,
+UID:GID 112:116, modes 0775/0444; X1025 likewise remained `34:25`/`34:24`,
+112:116, 0775/0444. The only terminal shared X11 artifacts were those four
+GDM paths. This closes r27's false cleanup PASS for the real Debian Xvfb and
+XWayland integration.
+
+**Phases D–E — PASS:** Phase D returned 0 in 14.722285438 seconds. Host PID
+8356 activated revision
+`250b157308407df4ed48c8e45351e69a0d82534ba001b6ff214c6a3348c0a326`
+and recovered as PID 8650. Its initial, activation and recovery VirtIO
+`drm_page_flip` fences were `1/35`, `150/49`, and `3758/73`, with recovery
+view page flips ordered before initial and recovered shell presentation.
+Graphical target, GDM, seatd and SSH were active afterward and greeter c2 was
+active on seat0/tty1.
+
+Phase E returned 0 in 67.137888800 seconds and reached terminal
+`linux_boot_session_passed`. The system session began at boot revision
+`31f8e1d3…`; its exact semantic snapshot advanced generation 2 to 11 and
+contained once each request `Turn this into a spatial time flow` and
+completion `The candidate experience is active.`, exact `Ready`, and an empty
+composer. The agent activation revision was
+`3eef9a00f71362045a3c167454b293d25cc5d565e4eddcecee1de49e3690a9c7`
+with unchanged host proxy PID 1006, resident agent PID 951 and broker PID 938.
+Persisted semantic history was 58,158 bytes at
+`/var/lib/sos-agent/messages.json`, SHA-256
+`5daebaaae3010da1ca7fc705a5d6ee9cace5bb927c125d8d11fbe7c645bf8753`,
+with one exact request and one exact completion.
+
+The initial process chain was session owner 880, compositor 952, platform
+authority 1003, supervisor 1005, host proxy 1006, experience host 1010,
+broker 938 and agent 951 with the recorded separated UIDs and parentage. The
+DRM commit/submit sequence covered boot `1/23`, agent revision `188/51`,
+rollback `360/71`, reactivation `391/91`, second rollback `422/104`, host
+recovery `436/120`, full-service recovery `1/12`, and lifecycle recovery
+`1/11`. The final revision was the Phase B revision; the three recovery
+classes reported recovered host PID 2055, restarted main/host PIDs 2163/2253,
+and lifecycle-recovered main PID 2439 with `NRestarts=2`.
+
+All 18 lifecycle checkpoints passed. Sysfs exposed `s2idle [deep]` and the
+selected `deep` mode matched one ordered kernel freezer entry/exit pair;
+VT tty1→tty2→tty1, pause/activation, same-PID 880 liveness, Virtual-1
+disconnect/reconnect and KMS reinitialization all matched their new logs.
+Cleanup proved all campaign-installed paths, units, accounts, group, login
+membership and product processes absent, restored graphical target/GDM/seatd,
+and emitted both cleanup PASS markers. Post-E checks independently confirmed
+the exhaustive absence set, normal graphical/GDM/seatd/SSH state, greeter c1,
+and unchanged credential metadata.
+
+**Phase F — preflight FAIL with no state change:** The credential directory
+was 4,096 bytes/mode 0700 `sos:sos`; its only bounded files were the 2,091-byte
+mode-0600 `auth.json` and 60-byte mode-0600 `config.env`, with no lock or temp
+sibling. The next normal-user preflight ran literal
+`find /run/user/1000 -xdev -maxdepth 4 -printf ...`. It enumerated unrelated
+desktop and systemd paths, then attempted to descend
+`/run/user/1000/systemd/inaccessible/dir`; the intentional mode-000 directory
+returned `Permission denied`, so the command exited 1 in 0.135765488 seconds.
+The strict campaign stopped immediately. No authentication helper, installer,
+GDM selection or configuration mutation, SOS login, resident rewrite, logout,
+or GNOME restoration action ran.
+
+Failure audit found no GDM backup, no installed SOS payload or selectable
+session, no `sos-session.*` runtime, and no product process. The GDM
+configuration remained 554 bytes/mode 0644 `root:root` with SHA-256
+`ceee968ce021213814ef4f87e19f6e76fcb0333170786dd0c006760ad61810af`;
+AccountsService still reported user 1000 with empty XSession and automatic
+login false; credential metadata was unchanged; graphical target, GDM, seatd
+and SSH remained active; and Debian-gdm greeter c1 remained the active
+seat0/tty1 session. Retrying with a broad privileged walk, ignoring the
+nonzero result, or continuing into authentication/install after failed
+preflight were rejected.
+
+**Closure and evidence:** Exact-env QMP `system_powerdown` returned 0, QEMU
+exited in the captured 2.016178055-second wait, and no target process, PID
+file, QMP socket, port-2222 listener or SSH response remained. The healthy
+overlay at
+`/home/carlid/dev/sos/.cache/linux-vm/sos-debian13.qcow2` grew from
+41,522,888,704 to 45,140,410,368 apparent bytes, remained a mode-0644
+`carlid:carlid` regular qcow2, and had zero check errors. Its
+436,404,224-byte backing
+`/home/carlid/dev/sos/.cache/linux-vm-base/debian-13-generic-amd64.qcow2`
+remained mode 0644 `carlid:carlid` with SHA-256
+`d4e6f5d1e9f571c198a65b45ab1adae6c5734607614e72f9661d84ce5881e5fc`.
+Final source/bundle identities exactly matched initial capture. Campaign
+duration was exactly 2,390.133760129 seconds from captured monotonic
+347196711048235 through 349586844808364, never from a timeout; model-weighted
+cost was unavailable.
+
+The sealed evidence root is
+`/home/carlid/sos-linux-x86_64-acceptance-20260818-r28`. Its finalized sorted,
+self-excluding `manifest.tsv` has 938 rows, 95,305 bytes and SHA-256
+`5a891d7f1ae0f233495d52ef48e0a90455c20e58f03e38c88a12faf32ffce0d6`.
+Repository generation, repository verification and byte-identical
+deterministic regeneration all passed. The separate runner external audit did
+not inspect a bad row: its multiline Python body was passed through `-c` with
+literal `\n` characters and Python rejected the argv with `SyntaxError`. The
+gate-captured record was
+`/tmp/sos-linux-x86_64-acceptance-20260818-r28-manifest-audit/009-external-exact-audit.raw`,
+2,944 bytes, SHA-256
+`9dc23b4ccfee2c675d647eb725692cf353bf3a9e37a2e48c651d451c67ddddc1`;
+that temporary record is no longer available. Therefore external audit is
+FAIL even though the internal exact checks passed.
+
+**Evidence-harness repair:** `tools/linux-vm/inventory-sos-runtime` is a
+normal-user, metadata-only inventory that accepts an explicit runtime root,
+matches only exact product-created top-level `sos-session.XXXXXX` names, and
+descends only those matches. It rejects root and never touches unrelated
+`systemd/inaccessible`; its fixture proves exact-match inclusion, invalid-name
+exclusion, safe behavior beside a real mode-000 unrelated subtree, absence of
+file contents, empty cleanup state and deterministic output. The Phase F
+privilege matrix in `docs/linux-vm.md` now assigns user-owned runtime and
+credential checks to the login user, readable system APIs to the normal user,
+and bounded AccountsService/GDM/journal/cross-UID metadata plus root mutations
+to explicit noninteractive `sudo -n`.
+
+`tools/evidence-manifest-verify` is a standalone executable, read-only Python
+implementation independent of the Bash generator in `tools/a33xctl`. With
+explicit `--root` and `--manifest`, it validates the exact three-column schema,
+canonical decimal sizes/lowercase SHA-256, safe UTF-8 relative paths, strict
+C-byte sorting and uniqueness, exact self/temporary-excluding regular-file
+set, stable byte sizes and hashes, and byte-identical deterministic
+regeneration. Its fixtures cover valid/read-only/deterministic operation,
+separate size and SHA-256 mismatches, malformed and noncanonical schema,
+duplicate and unsorted paths, traversal, missing files and self-inclusion. This rejects inline
+Python `-c`, coupling the external audit to the generator implementation, or
+modifying the sealed evidence during verification.
+
+Host-only checks passed Bash syntax across all 18 changed/new shell files,
+temporary-cache Python bytecode compilation, `tools/test-evidence-run`, both
+boot-session parser fixtures, the nested-X11 fixture,
+`tools/linux-vm/test-runtime-inventory`,
+`tools/test-evidence-manifest-verify`, and `tests/a33xctl-host-test.sh`.
+`npm run check` and all 14 agent tests passed. `cargo fmt --all -- --check`,
+both relevant Cargo checks, all 10 compositor library tests, all 7 Linux-host
+tests and all 4 Linux accessibility tests passed. The Rust tests used a
+removed-after-use temporary linker directory for this host's versioned
+libxkbcommon libraries. A fresh standalone audit of the sealed r28 root
+independently returned 938 files, 95,305 bytes and the exact manifest and
+regeneration SHA-256 above; `git diff --check` also passed. ShellCheck was
+unavailable. No VM, device, credential, provider, or evidence file was
+modified by this repair validation.
+
+**Decision / remaining risk / exact r29 gate:** Overall r28 is **FAIL** at
+Phase F preflight. A–E pass only for the exact r28 source; there is no accepted
+selectable SOS login, real-provider rewrite, logout or restoration result, and
+the original external audit body did not execute. R28 makes no physical-hardware,
+production-GPU, platform-suspend, latency, memory, thermal or model-cost
+claim. Remaining risk is the entire Phase F state-changing path plus real-guest
+use of the new narrow inventory and standalone manifest verifier.
+
+R29 must run one fresh complete Debian 13 x86-64 A–F transaction with a new
+exact initial/final source ledger and per-untracked identities. Every VM start,
+status/topology and poweroff QMP command must carry exact
+`SOS_LINUX_VM_ROOT=/home/carlid/dev/sos/.cache/linux-vm` and
+`SOS_LINUX_VM_NAME=sos-debian13`. Repeat provisioning; A's locked install,
+check, all tests and separate final build; B's different initial/active
+revisions through exact context/validate/submit; C's generation-bound focus,
+native text/clipboard/IME/providers, exact Xvfb/XWayland allocations and
+cleanup, X1024/X1025 preservation, PIDs, three fences and authority; D's PIDs,
+three DRM fences, recovery ordering and GDM restoration; and E's exact
+semantic/status/history/parentage, selected supported `deep` mode, all 18
+lifecycle checkpoints, connector/KMS transitions, all three recovery classes,
+exhaustive cleanup and terminal PASS.
+
+Only after A–E pass may F first capture exact GDM before identity and require
+the effective `DefaultSession=sos.desktop` under bounded `sudo -n`; a missing
+or different value is a pre-authentication stop. Run
+`tools/linux-vm/inventory-sos-runtime --root /run/user/1000` as user before
+install/login and require `sessions=0 entries=0`; never use a general
+`find /run/user/1000`. Metadata-validate the preserved credentials without
+contents/hashes or reauthentication; bind the login helper to the exact A
+bundle and explicit provider/model; install once; prove authenticated GDM SOS,
+`sos_login_session_ready`, mapped Shell/DRM, one visible rewrite with different
+revisions, unchanged host PID, equal authority, changed history and exact
+semantic completion. Inject selectable-session `Ctrl+Alt+Backspace`; prove
+logout, every recorded PID absent, the tested exact runtime inventory empty,
+credential preservation, greeter return, GNOME selection, exact GDM restored
+identity and normal graphical/GDM/seatd/SSH state. Then power off through the
+exact QMP environment, finalize all evidence, generate the manifest atomically,
+and execute `tools/evidence-manifest-verify --root "$evidence_root" --manifest
+"$evidence_root/manifest.tsv"` directly as the independent external audit;
+PASS requires exact set/schema/order/uniqueness/size/hash/self-exclusion and
+deterministic-regeneration output from that executable.
+
+## 2026-08-18 — Complete x86-64 Linux software-baseline rerun (r36)
+
+**Goal:** Revalidate the entire Linux path after the shared agent/runtime
+changes on the existing Fedora-hosted Debian 13 x86-64 VM, including a real
+selectable GDM SOS session, keyboard-driven live rewrite, logout, restoration,
+and deterministic evidence closure. This is a VM software-baseline result, not
+a physical-hardware, production-GPU, latency, thermal, or Framework claim.
+
+**Exact source and agent:** The campaign ran HEAD
+`e05f91bb6f0b0a9299b914138d6cd0966b9c82d5e`. Its initial and final tracked
+binary diff were both 242,583 bytes with SHA-256
+`9d3ed9181acde9b0c148c72c1fd26b5f97b391837d02b70450e47dcd912025f9`;
+the recorded status and all 14 untracked file hashes also matched. The guest
+agent bundle was 1,879,763 bytes, mode 0775, SHA-256
+`eb4e2aaea63b41042744579a25da380b9a783b4624687d5be273217611dc59ff`.
+
+**Agent and compositor phases — PASS:** Provisioning returned 0 in
+28.626504643 seconds. The four independent agent commands returned 0:
+`npm ci --ignore-scripts` in 3.745931603 seconds, `npm run check` in
+2.301657383 seconds, all 14/14 direct Node tests in 2.964738243 seconds, and
+the final `npm run build` in 2.528092434 seconds. `./tools/linux-agent-e2e`
+returned 0 in 7.003554611 seconds with exact context/validate/submit ordering
+and revision
+`31f8e1d31b6e2c91a8a0b0829e5f29934440c64ed8f535bb86d81a5a836c49e5`
+to `2303ba94d14063341fe75ff71666b7aa3a8dcd1e1e9f80616708ae8147a302f0`.
+
+The nested verifier returned 0 in 18.564213213 seconds. It proved strict
+generation-bound `focused=note-draft`, exact Xvfb `:64` and XWayland `:65`
+ownership and cleanup, XWayland PID/parent/client identity, the titled mapped
+compatibility surface, native text/clipboard/IME/provider behavior, and three
+ordered `nested_backend_submit` fences. Activation kept host PID 4428 and
+forced recovery used PID 4792 at revision `2303ba94…302f0`.
+
+The direct DRM verifier returned 0 in 14.419425927 seconds. Host PID 5165
+activated revision
+`250b157308407df4ed48c8e45351e69a0d82534ba001b6ff214c6a3348c0a326`
+and recovered as PID 5436. Initial, activated, and recovery-view presentation
+all produced ordered real VirtIO `drm_page_flip` evidence before normal GDM,
+seatd, graphical-target, and SSH restoration.
+
+The boot-owned verifier returned 0 in 63.169640884 seconds and emitted
+`linux_boot_session_passed`. Its exact semantic history contained the request
+and completion once, `Ready`, and an empty composer. The boot revision
+`31f8e1d3…` changed to
+`3eef9a00f71362045a3c167454b293d25cc5d565e4eddcecee1de49e3690a9c7`
+with host PID 1010 unchanged, then completed rollback/recovery to the Phase-B
+revision. The separated process chain was session owner 892, compositor 950,
+platform authority 1007, supervisor 1009, host proxy 1010, experience host
+1014, broker 941, and agent 955. All 18 lifecycle checkpoints passed in the
+selected supported `deep` suspend mode, including stable main PID, freezer
+entry/exit, VT, connector/KMS cycle, DRM recovery fences, three recovery
+classes, and exhaustive native cleanup.
+
+**Interactive GDM session — PASS:** The preserved 2,091-byte mode-0600
+`auth.json` and 60-byte mode-0600 `config.env` passed metadata-only checks;
+`sos-agent-login --if-needed` reported credential/login ready without
+reauthentication. The tested runtime inventory was empty before install. The
+single installer returned 0 in 91.511604761 seconds and installed the exact
+agent bundle. GDM needed the complete selector set: `DefaultSession=sos.desktop`
+and `XSession=sos` alone first launched GNOME; adding AccountsService
+`Session=sos` and `SessionType=wayland` selected SOS. That rejected partial
+selector setup was restored inside the same transaction before acceptance.
+
+The accepted Wayland login was logind session 37 on seat0/tty2. It mapped the
+Shell with initial revision `31f8e1d3…`, `drm_page_flip`, and the recorded
+process identities: login launcher 3745, session owner 3761, compositor 3763,
+platform authority 3815, supervisor 3821, host proxy 3823, experience host
+3828, authoring broker 3953, and resident agent 3956. QMP delivered real
+tablet/keyboard input to type and submit `make a spatial time flow`. The agent
+executed `get_experience_context`, `validate_experience`, and
+`submit_experience`; revision
+`94434a2f7171affe44fd63ac3532c9dc850ec7800460680c75c10f18a30ebc92`
+presented at DRM commit/submit 55817/155. `sos_login_rewrite_passed` proved the
+same host PID 3823, matching authority revision, visible two-message
+completion, and changed 76,662-byte history with SHA-256
+`5b6ea4f239df09de1aa058f5d79024362324abb787cddc6d2615cd230b7ff686`.
+The final screenshot visibly shows the generated `SPATIAL DAY` time-flow UI.
+
+QMP `Ctrl+Alt+Backspace` triggered the product logout path. It emitted
+`linux_login_session_stopped reason=user_logout`,
+`sos_login_logout_observed ... status=0 rewrite_observed=true`, and
+`sos_login_cleanup_passed` with top-level/component/product-process/runtime
+absence. The exact original GDM file was restored at 554 bytes with SHA-256
+`ceee968ce021213814ef4f87e19f6e76fcb0333170786dd0c006760ad61810af`;
+the temporary AccountsService selector and backup were removed; the installed
+SOS payload/session entry were removed; the tested final runtime inventory was
+`sessions=0 entries=0`; and the preserved credential metadata remained exact.
+Graphical target, GDM, seatd, and SSH were active and the screenshot showed the
+Debian 13 greeter on seat0/tty1.
+
+Three read-only evidence invocations were corrected without product mutation:
+shell redirection prevented one privileged `/proc` environment read; one
+combined cleanup record supplied the runtime inventory's obsolete `--uid`
+form before the succeeding exact `--root /run/user/1000` record; and one
+closure record named the old backing path before the succeeding exact backing
+identity record. These records are retained in the manifest; none is used as
+the acceptance proof.
+
+**Closure and evidence:** QEMU PID 3745281 powered off orderly. The PID file,
+QMP socket, ports 2222/5901, SSH response, and `/proc/3745281` were absent.
+The overlay remained a healthy 100-GiB virtual qcow2 with zero check errors,
+57,713,347,072 apparent bytes and 57,715,726,848 allocated bytes. Its
+436,404,224-byte backing remained SHA-256
+`d4e6f5d1e9f571c198a65b45ab1adae6c5734607614e72f9661d84ce5881e5fc`.
+Captured monotonic campaign duration was exactly 1,121.175424324 seconds;
+model-weighted cost was unavailable.
+
+The sealed root is
+`/home/carlid/sos-linux-x86_64-acceptance-20260818-r36`. Its sorted,
+self-excluding manifest has 163 rows, 15,476 bytes, SHA-256
+`6a46f0965702228d17176bfd5e4141b09bd17060b9d298206a280cea67d69ab3`.
+`tools/evidence-manifest-verify` independently passed exact file set, schema,
+ordering, uniqueness, size, hash, self-exclusion, and byte-identical
+regeneration. External verifier output is
+`/tmp/sos-linux-x86_64-acceptance-20260818-r36-manifest-verify.txt`, 360 bytes,
+SHA-256 `e83f77e988d9597a900693c6e03db60f675f37b6c308635fe52dceeb35f35eac`.
+
+**Decision / remaining risk / next gate:** The complete x86-64 Debian VM
+software baseline is **PASS** for this exact source and bundle: agent package,
+agent E2E, nested compositor, direct DRM, boot-owned session, and interactive
+GDM login/rewrite/logout/cleanup all passed. The baseline does not close any
+physical Framework, production-GPU, suspend-platform, latency, memory,
+thermal, or model-cost gate. The next gate may move to the Framework only
+with a fresh exact artifact/source ledger and hardware-specific acceptance
+evidence; no Linux software rerun is required unless source or bundle identity
+changes again.

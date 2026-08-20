@@ -1,0 +1,291 @@
+#!/usr/bin/env python3
+
+"""Read-only, exact verifier for finalized SOS evidence manifests."""
+
+from __future__ import annotations
+
+import argparse
+import fnmatch
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+import stat
+import sys
+
+
+TEMPORARY_BASENAMES = (
+    ".a33xctl-manifest.*",
+    "*.tmp",
+    "*.part",
+    "*.partial",
+    "*.swp",
+    "*~",
+)
+SIZE_RE = re.compile(rb"(?:0|[1-9][0-9]*)\Z")
+SHA256_RE = re.compile(rb"[0-9a-f]{64}\Z")
+
+
+class AuditError(Exception):
+    def __init__(self, code: str, detail: str) -> None:
+        super().__init__(detail)
+        self.code = code
+        self.detail = detail
+
+
+def fail(code: str, detail: str) -> None:
+    raise AuditError(code, detail)
+
+
+def display_path(path: str) -> str:
+    return json.dumps(path, ensure_ascii=True, separators=(",", ":"))
+
+
+def temporary_path(path: Path) -> bool:
+    return any(fnmatch.fnmatchcase(path.name, pattern) for pattern in TEMPORARY_BASENAMES)
+
+
+def resolve_inputs(root_arg: str, manifest_arg: str) -> tuple[Path, Path]:
+    try:
+        root = Path(root_arg).resolve(strict=True)
+    except OSError as error:
+        fail("root", f"cannot resolve evidence root: {error}")
+    if not root.is_dir():
+        fail("root", f"evidence root is not a directory: {root}")
+
+    try:
+        manifest = Path(manifest_arg).resolve(strict=True)
+    except OSError as error:
+        fail("manifest", f"cannot resolve evidence manifest: {error}")
+    if not manifest.is_file():
+        fail("manifest", f"evidence manifest is not a regular file: {manifest}")
+    try:
+        manifest.relative_to(root)
+    except ValueError:
+        fail("manifest", "evidence manifest must be inside its evidence root")
+    return root, manifest
+
+
+def validate_relative_path(path_bytes: bytes, line_number: int) -> str:
+    try:
+        path = path_bytes.decode("utf-8", errors="strict")
+    except UnicodeDecodeError:
+        fail("schema", f"line {line_number}: path is not valid UTF-8")
+    parts = path.split("/")
+    if not path or path.startswith("/") or any(part in ("", ".", "..") for part in parts):
+        fail("unsafe_path", f"line {line_number}: unsafe relative path {display_path(path)}")
+    if "\0" in path or "\t" in path or "\n" in path or "\r" in path:
+        fail("unsafe_path", f"line {line_number}: path contains a control delimiter")
+    return path
+
+
+def parse_manifest(manifest_bytes: bytes, manifest_relative: str) -> list[tuple[str, int, str]]:
+    if not manifest_bytes:
+        fail("schema", "manifest is empty")
+    if not manifest_bytes.endswith(b"\n"):
+        fail("schema", "manifest must end with one newline-delimited row")
+
+    rows: list[tuple[str, int, str]] = []
+    previous: bytes | None = None
+    for line_number, line in enumerate(manifest_bytes[:-1].split(b"\n"), start=1):
+        fields = line.split(b"\t")
+        if len(fields) != 3:
+            fail("schema", f"line {line_number}: expected exactly three tab-separated fields")
+        path_bytes, size_bytes, sha_bytes = fields
+        path = validate_relative_path(path_bytes, line_number)
+        if path == manifest_relative:
+            fail("self_included", f"line {line_number}: manifest lists itself")
+        if not SIZE_RE.fullmatch(size_bytes):
+            fail("schema", f"line {line_number}: byte size is not canonical decimal")
+        if not SHA256_RE.fullmatch(sha_bytes):
+            fail("schema", f"line {line_number}: SHA-256 is not 64 lowercase hexadecimal digits")
+        if previous is not None and previous >= path_bytes:
+            fail("ordering", f"line {line_number}: paths are duplicated or not C-byte sorted")
+        previous = path_bytes
+        rows.append((path, int(size_bytes), sha_bytes.decode("ascii")))
+    if not rows:
+        fail("schema", "manifest contains no evidence rows")
+    return rows
+
+
+def stat_identity(value: os.stat_result) -> tuple[int, int, int, int, int]:
+    return (value.st_dev, value.st_ino, value.st_size, value.st_mtime_ns, value.st_ctime_ns)
+
+
+def open_readonly(path: Path) -> int:
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        return os.open(path, flags)
+    except OSError as error:
+        fail("read", f"cannot open evidence file {display_path(str(path))}: {error}")
+
+
+def stable_file_identity(path: Path) -> tuple[int, str]:
+    descriptor = open_readonly(path)
+    digest = hashlib.sha256()
+    try:
+        before = os.fstat(descriptor)
+        if not stat.S_ISREG(before.st_mode):
+            fail("file_type", f"evidence path is not a regular file: {display_path(str(path))}")
+        while chunk := os.read(descriptor, 1024 * 1024):
+            digest.update(chunk)
+        after = os.fstat(descriptor)
+    except OSError as error:
+        fail("read", f"cannot hash evidence file {display_path(str(path))}: {error}")
+    finally:
+        os.close(descriptor)
+
+    try:
+        path_after = path.lstat()
+    except OSError as error:
+        fail("changed", f"evidence path disappeared while hashing {display_path(str(path))}: {error}")
+    if stat_identity(before) != stat_identity(after) or stat_identity(after) != stat_identity(path_after):
+        fail("changed", f"evidence changed while hashing {display_path(str(path))}")
+    return after.st_size, digest.hexdigest()
+
+
+def stable_manifest_bytes(path: Path) -> tuple[bytes, tuple[int, int, int, int, int]]:
+    descriptor = open_readonly(path)
+    retained = bytearray()
+    try:
+        before = os.fstat(descriptor)
+        if not stat.S_ISREG(before.st_mode):
+            fail("manifest", "evidence manifest is not a regular file")
+        while chunk := os.read(descriptor, 1024 * 1024):
+            retained.extend(chunk)
+        after = os.fstat(descriptor)
+    except OSError as error:
+        fail("manifest", f"cannot read evidence manifest: {error}")
+    finally:
+        os.close(descriptor)
+    try:
+        path_after = path.lstat()
+    except OSError as error:
+        fail("changed", f"evidence manifest disappeared while reading: {error}")
+    identity = stat_identity(after)
+    if stat_identity(before) != identity or identity != stat_identity(path_after):
+        fail("changed", "evidence manifest changed while reading")
+    return bytes(retained), identity
+
+
+def inventory(root: Path, manifest: Path) -> list[tuple[str, int, str]]:
+    files: list[tuple[bytes, str, Path]] = []
+
+    def walk_error(error: OSError) -> None:
+        fail("walk", f"cannot inventory evidence root: {error}")
+
+    for directory, _, names in os.walk(root, topdown=True, followlinks=False, onerror=walk_error):
+        directory_path = Path(directory)
+        for name in names:
+            path = directory_path / name
+            if path == manifest or temporary_path(path):
+                continue
+            try:
+                path_stat = path.lstat()
+            except OSError as error:
+                fail("walk", f"cannot stat evidence path {display_path(str(path))}: {error}")
+            if not stat.S_ISREG(path_stat.st_mode):
+                continue
+            relative = path.relative_to(root).as_posix()
+            if "\0" in relative or "\t" in relative or "\n" in relative or "\r" in relative:
+                fail("unsafe_path", "evidence file path contains a control delimiter")
+            try:
+                key = relative.encode("utf-8", errors="strict")
+            except UnicodeEncodeError:
+                fail("unsafe_path", "evidence file path is not valid UTF-8")
+            files.append((key, relative, path))
+
+    rows: list[tuple[str, int, str]] = []
+    for _, relative, path in sorted(files, key=lambda item: item[0]):
+        size, sha256 = stable_file_identity(path)
+        rows.append((relative, size, sha256))
+    return rows
+
+
+def bounded_paths(paths: list[str]) -> str:
+    retained = paths[:8]
+    suffix = "" if len(paths) <= len(retained) else f",...(+{len(paths) - len(retained)})"
+    return "[" + ",".join(display_path(path) for path in retained) + suffix + "]"
+
+
+def render(rows: list[tuple[str, int, str]]) -> bytes:
+    return b"".join(
+        path.encode("utf-8")
+        + b"\t"
+        + str(size).encode("ascii")
+        + b"\t"
+        + sha256.encode("ascii")
+        + b"\n"
+        for path, size, sha256 in rows
+    )
+
+
+def audit(root_arg: str, manifest_arg: str) -> None:
+    root, manifest = resolve_inputs(root_arg, manifest_arg)
+    manifest_bytes, manifest_identity = stable_manifest_bytes(manifest)
+    manifest_relative = manifest.relative_to(root).as_posix()
+    listed = parse_manifest(manifest_bytes, manifest_relative)
+    actual = inventory(root, manifest)
+    try:
+        manifest_after = manifest.lstat()
+    except OSError as error:
+        fail("changed", f"evidence manifest disappeared during audit: {error}")
+    if stat_identity(manifest_after) != manifest_identity:
+        fail("changed", "evidence manifest changed during audit")
+
+    listed_paths = {path for path, _, _ in listed}
+    actual_paths = {path for path, _, _ in actual}
+    if listed_paths != actual_paths:
+        missing = sorted(actual_paths - listed_paths, key=lambda path: path.encode("utf-8"))
+        extra = sorted(listed_paths - actual_paths, key=lambda path: path.encode("utf-8"))
+        fail(
+            "file_set",
+            f"unlisted={bounded_paths(missing)} nonexistent={bounded_paths(extra)}",
+        )
+
+    actual_by_path = {path: (size, sha256) for path, size, sha256 in actual}
+    for path, expected_size, expected_sha256 in listed:
+        actual_size, actual_sha256 = actual_by_path[path]
+        if actual_size != expected_size or actual_sha256 != expected_sha256:
+            fail(
+                "identity",
+                f"identity mismatch for {display_path(path)}: "
+                f"listed_bytes={expected_size} actual_bytes={actual_size} "
+                f"listed_sha256={expected_sha256} actual_sha256={actual_sha256}",
+            )
+
+    regenerated = render(actual)
+    if regenerated != manifest_bytes:
+        fail("regeneration", "deterministic regeneration differs from manifest bytes")
+
+    manifest_sha256 = hashlib.sha256(manifest_bytes).hexdigest()
+    regenerated_sha256 = hashlib.sha256(regenerated).hexdigest()
+    print("evidence_manifest_audit=PASS")
+    print(f"root={root}")
+    print(f"manifest={manifest}")
+    print(f"files={len(actual)}")
+    print(f"manifest_bytes={len(manifest_bytes)}")
+    print(f"manifest_sha256={manifest_sha256}")
+    print(f"regenerated_sha256={regenerated_sha256}")
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--root", required=True, help="finalized evidence directory")
+    parser.add_argument("--manifest", required=True, help="manifest inside the evidence directory")
+    arguments = parser.parse_args()
+    try:
+        audit(arguments.root, arguments.manifest)
+    except AuditError as error:
+        print(
+            f"evidence_manifest_audit=FAIL code={error.code} "
+            f"detail={json.dumps(error.detail, ensure_ascii=True, separators=(',', ':'))}",
+            file=sys.stderr,
+        )
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -1,0 +1,15 @@
+[
+  {
+    "role": "user",
+    "content": "Turn this into a spatial time flow"
+  },
+  {
+    "role": "assistant",
+    "content": [
+      {
+        "type": "text",
+        "text": "The candidate experience is active."
+      }
+    ]
+  }
+]

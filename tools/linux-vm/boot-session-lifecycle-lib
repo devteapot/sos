@@ -1,0 +1,52 @@
+# Shared, pure parsing helpers for the boot-session suspend lifecycle gate.
+
+sos_selected_mem_sleep_mode() {
+  [[ "$#" -eq 1 ]] || return 2
+  awk '
+    {
+      for (field = 1; field <= NF; field += 1) {
+        if ($field ~ /^\[[^][]+\]$/) {
+          selected = substr($field, 2, length($field) - 2)
+          selected_count += 1
+        }
+      }
+    }
+    END {
+      if (selected_count != 1 || (selected != "s2idle" && selected != "deep")) {
+        exit 1
+      }
+      print selected
+    }
+  ' <<<"$1"
+}
+
+sos_suspend_entry_count() {
+  [[ "$#" -eq 1 ]] || return 2
+  case "$1" in
+    s2idle|deep) ;;
+    *) return 2 ;;
+  esac
+  awk -v expected_entry="PM: suspend entry ($1)" '
+    index($0, expected_entry) { count += 1 }
+    END { print count + 0 }
+  '
+}
+
+sos_suspend_cycle_count() {
+  [[ "$#" -eq 1 ]] || return 2
+  case "$1" in
+    s2idle|deep) ;;
+    *) return 2 ;;
+  esac
+  awk -v expected_entry="PM: suspend entry ($1)" '
+    index($0, "PM: suspend entry (") {
+      awaiting_exit = index($0, expected_entry) > 0
+      next
+    }
+    awaiting_exit && index($0, "PM: suspend exit") {
+      cycles += 1
+      awaiting_exit = 0
+    }
+    END { print cycles + 0 }
+  '
+}

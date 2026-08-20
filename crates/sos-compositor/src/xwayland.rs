@@ -1,7 +1,10 @@
 //! Optional rootless XWayland compatibility envelope.
 
 use std::{
-    fs::OpenOptions, io::Write as _, os::unix::fs::OpenOptionsExt as _, path::PathBuf,
+    fs::OpenOptions,
+    io::{ErrorKind, Write as _},
+    os::unix::fs::OpenOptionsExt as _,
+    path::PathBuf,
     process::Stdio,
 };
 
@@ -29,6 +32,7 @@ pub(crate) fn start(
     event_loop: &mut EventLoop<'static, CompositorData>,
     data: &mut CompositorData,
     display_file: PathBuf,
+    display_number: Option<u32>,
 ) -> Result<()> {
     let parent = display_file
         .parent()
@@ -41,9 +45,31 @@ pub(crate) fn start(
             display_file.display()
         );
     }
+    if let Some(display_number) = display_number {
+        for path in [
+            PathBuf::from(format!("/tmp/.X11-unix/X{display_number}")),
+            PathBuf::from(format!("/tmp/.X{display_number}-lock")),
+        ] {
+            match path.symlink_metadata() {
+                Ok(_) => anyhow::bail!(
+                    "refusing preexisting X11 display artifact for :{display_number}: {}",
+                    path.display()
+                ),
+                Err(error) if error.kind() == ErrorKind::NotFound => {}
+                Err(error) => {
+                    return Err(error).with_context(|| {
+                        format!(
+                            "inspect X11 display artifact for :{display_number}: {}",
+                            path.display()
+                        )
+                    });
+                }
+            }
+        }
+    }
     let (xwayland, client) = XWayland::spawn(
         &data.display_handle,
-        None,
+        display_number,
         std::iter::empty::<(String, String)>(),
         true,
         Stdio::null(),
