@@ -1,2 +1,3 @@
 type sos_provider_port, port_type;
 type sos_revision_port, port_type;
+type sos_agent_https_port, port_type;

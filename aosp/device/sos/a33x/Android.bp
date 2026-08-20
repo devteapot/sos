@@ -55,6 +55,20 @@ cc_binary {
     ],
 }
 
+// Packaged only by the explicit Core development-credential product switch.
+// It has one stdin-only protocol and never accepts credential bytes in argv.
+cc_binary {
+    name: "sos-core-dev-credential",
+    srcs: ["core/dev_credential_client.cpp"],
+    compile_multilib: "64",
+    system_ext_specific: true,
+    cflags: [
+        "-Wall",
+        "-Werror",
+        "-Wextra",
+    ],
+}
+
 cc_binary {
     name: "sos-core-platform-adapter",
     stem: "sos-core-platform",
@@ -230,6 +244,20 @@ cc_prebuilt_binary {
     },
 }
 
+// Packaged only by Core-dev. Its distinct executable label enters the sole
+// agent domain permitted to reach the fixed adb-reverse loopback port.
+cc_prebuilt_binary {
+    name: "sos-node-core-dev",
+    srcs: ["prebuilts/arm64/sos-node"],
+    stem: "sos-node-core-dev",
+    compile_multilib: "64",
+    check_elf_files: false,
+    system_ext_specific: true,
+    strip: {
+        none: true,
+    },
+}
+
 cc_prebuilt_library_shared {
     name: "sos-node-cxx-shared",
     srcs: ["prebuilts/arm64/libc++_shared.so"],
@@ -246,6 +274,17 @@ prebuilt_etc {
     name: "sos-agent-runner",
     src: "prebuilts/sos-agent/agent-runner.cjs",
     filename: "agent-runner.cjs",
+    sub_dir: "sos-agent",
+    system_ext_specific: true,
+}
+
+// Core-dev uses a distinct immutable path. Keeping the module output and
+// install identity distinct prevents Soong from emitting two Make recipes for
+// one destination even when only one module belongs to the selected product.
+prebuilt_etc {
+    name: "sos-agent-runner-core-dev",
+    src: "prebuilts/sos-agent/agent-runner-core-dev.cjs",
+    filename: "agent-runner-core-dev.cjs",
     sub_dir: "sos-agent",
     system_ext_specific: true,
 }

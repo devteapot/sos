@@ -8997,3 +8997,2167 @@ SHA-256
 run its separate one-sideload Core 1 no-Zygote readiness, exact Pi authority,
 credential-clear, leak/crash/AVC, manifest, and soak gate. No Core hardware
 claim is made here.
+
+## 2026-08-18 — Harden Core Node startup and reduce credential transcription risk
+
+**Goal / terminal Core r1 result:** Diagnose and remediate the failed exact
+Core 1 live-agent request without granting executable-memory authority or
+introducing remote secret injection. The installed artifact was
+`/home/carlid/sos-agent-e2e-artifacts-20260818-r4/core.ota.zip`, revision
+`sos.core1.0212677d7038.26ce1cb8445d`, 1,022,145,556 bytes, SHA-256
+`b14e4579ec12aa60673b63c225f7bc2ad3031c667aac0ece6ad54a2671de6b21`.
+Sideload, Core no-Zygote readiness, and credential cleanup passed, but the
+exact live request did not. Request handling started at `09:15:34.679`; the
+Node child as `sos_core_host` was denied reading `/proc/meminfo` at `.783`,
+then denied `{ execmem }` on its own process at `.787`, and the old generic
+`stage=protocol category=request_failed` marker followed at `.845`. That is a
+measured 0.166 seconds from request start to failure marker, not provider
+latency. The finalized evidence root is
+`/home/carlid/sos-agent-e2e-device-core-20260818-r1`; `manifest.tsv` has
+SHA-256
+`cb562456f7d2b40368d48c46b655bf15a7943f720b83ddf3a8aea9b64c2ab0c2`.
+The external verifier `/tmp/sos-core-manifest-independent-20260818-r1.txt`
+recorded SHA-256
+`f9a3c9047a4b0a205305aec48a541dc6a9c655023f6e989458e83b3bf9e7b6d8`.
+This remains a terminal Core request failure, not a hardware or provider PASS.
+
+**Changed / decision:** The immutable AArch64 `sos-node` prebuilt contains
+the supported `--jitless` option and V8's `wasm_jitless` path. Core now places
+`--jitless` before the fixed runner script in a tested argument contract and
+emits a sanitized `hardening=jitless` launch marker. This avoids V8's JIT and
+WebAssembly executable-code path rather than allowing `execmem`. Node also
+reads the system memory total during fixed startup, so Core policy adds only
+`open read` on `proc_meminfo`; it adds no map, ioctl, write, append, watch, or
+executable-memory permission. A new source check and built-artifact inspector
+require the argv ordering, prove the packaged Node supports `--jitless`,
+require the hardened runtime marker and exact meminfo rule, and reject any
+compiled Core-host process `execmem` allow. A dedicated child domain was
+rejected for this milestone: the fixed signed Node/runner already inherits the
+intended Core host boundary, and jitless removes the exceptional authority
+that caused startup to fail. Hardware evidence must still prove this inherited
+domain is sufficient without another relevant AVC.
+
+Core child handling now maps launch, timeout, request I/O, response I/O,
+observation I/O, unsuccessful numeric exit, signal, empty successful response,
+and invalid response to distinct machine-readable safe categories. Exit and
+signal reports contain only numeric `child_exit` or `signal` metadata. A valid
+sanitized runner error still preserves its allowlisted provider category and
+bounded HTTP status. Child stderr remains discarded, and no stderr, provider
+body, request or response body, key, payload, argv secret, or environment
+secret is logged or returned.
+
+The trusted Core OpenRouter ceremony remains memory-only, non-persistent,
+masked, and zeroized on cancel/exit. It now prefills and protects the fixed
+`sk-or-v1-` prefix, groups suffix mask characters in fours, and displays the
+suffix character count, reducing long-key transcription and deletion errors
+without reveal, clipboard, history, network, ADB/USB injection, or any change
+to generic text fields or Compat's IME. Broad `execmem`, remote secret entry,
+temporary plaintext reveal, and the separate Compat InputMethodService
+milestone were explicitly rejected.
+
+**Bounded host evidence:** `cargo check -p sos-experience --tests` passed.
+Direct isolated Rust test binaries passed all six agent-contract tests and all
+four credential-ceremony tests, including exact argv order, distinct safe
+failure mappings, prefix protection, grouped counting, replacement, cancel,
+clear, and zeroized lifecycle behavior. ARM64 Android
+`cargo check -p sos-experience --target aarch64-linux-android
+--no-default-features --features core-native` passed with the pinned NDK 29
+Clang/LLVM tools supplied through target-specific compiler, archiver, and
+linker variables. `bash -n tools/a33xctl`, `./tools/a33xctl
+check-core-agent-hardening`, `cargo fmt --all -- --check`, and `git diff
+--check` passed. The ordinary host `cargo test -p sos-experience --lib`
+compiled the changed crate but could not link because this workstation lacks
+`libxkbcommon` and `libxkbcommon-x11`; the focused standalone tests above ran
+the changed contracts instead. No Soong/product build, device operation,
+credential use, or live provider call occurred.
+
+**Remaining risk / next gate:** Rebuild and inspect Core 1 only: the runtime,
+Core credential UI, and Core SELinux policy changed, while all additions to
+shared Rust contracts are gated to `core-native` and no Compat packaged input
+changed. Run `./tools/a33xctl check-core-agent-hardening`, then
+`./tools/a33xctl build-core1` and `./tools/a33xctl inspect-core1`; preserve the
+new OTA and record its exact revision, byte size, and SHA-256 in a finalized,
+independently verified host evidence root. Do not reuse the r4 Core artifact.
+After a new artifact/serial authorization envelope, run one Core sideload and
+inherent reboot, require exact Core no-Zygote readiness, enter a real key only
+through the physical trusted ceremony, and issue one exact
+`deepseek/deepseek-v4-flash-0731` request. Require the jitless launch marker,
+successful child/response/action/validation/stage/authority-commit evidence,
+no relevant AVC (especially `execmem` or `proc_meminfo`), credential clearing,
+no child leak, crash scrutiny, deterministic manifest verification, and the
+specified soak. This implementation does not claim that hardware PASS.
+
+## 2026-08-18 — Core r2 DNS remediation and development-only credential injection
+
+**Goal / terminal r2 evidence:** The exact Core artifact
+`/home/carlid/sos-agent-e2e-artifacts-20260818-r2/core.ota.zip`, revision
+`sos.core1.e05f91bb6f0b.f73060a1ee5a`, 1,022,153,785 bytes, SHA-256
+`c2bb7b842c4bfde49205fb474e272dc25d164f7a61d79c4af24a29aacc0ee96e`,
+passed its one-sideload transport and Core no-Zygote readiness gate. The
+sideload transfer took 77.093500 seconds, return-to-ADB took 87.813800 seconds,
+and readiness inspection took 0.828757 seconds. The exact
+`deepseek/deepseek-v4-flash-0731` request then failed from request start at
+`10:32:36.127` to the sanitized failure marker at `10:32:36.693`, a measured
+0.566 seconds. No required action, validation, stage, authority-commit, or UI
+marker followed and no child remained. The old `execmem` and `proc_meminfo`
+denials were absent, but the Node `MainThread` in `sos_core_host` was denied
+`{ read }` on `net_dns_prop` at `10:32:36.659`. The runner incorrectly surfaced
+that terminal connection startup failure as `stage=protocol
+category=tool_sequence`.
+
+The finalized evidence root is
+`/home/carlid/sos-agent-e2e-device-core-20260818-r2`.
+`post-request-audit-corrected.txt` is 4,813 bytes with SHA-256
+`f27a546508832acd3f93bfcbea0ca3462b69a9670f39f1d330045c1a1c3b2480`;
+`failure-followup-audit.txt` is 3,868 bytes with SHA-256
+`c163a8488156f91716c3af751bd8843295d3566f9dd390ebaba8759ba5fcf03e`.
+The credential entered for r2 remains only in the running old Core process and
+still requires cleanup by the device owner; no host-side credential or device
+operation was performed during this remediation.
+
+**Changed / decision:** Core SELinux now uses only
+`get_prop(sos_core_host, net_dns_prop)` for Bionic/Node resolver startup. It
+adds no DNS-property write, broader property family, data/network authority,
+or executable-memory permission. The shared Pi runner now inspects Pi's
+terminal assistant error before deciding whether the authoring tool sequence
+is structurally missing and performs a fixed OpenRouter hostname lookup before
+provider execution so resolver startup has an unambiguous category.
+DNS-resolution and connection failures are separate
+sanitized `transport/dns_failure` and `transport/connection_failure`
+categories; HTTP/provider failures remain provider categories, Rust-owned
+process launch/I/O/exit/signal failures remain child categories, malformed
+wire responses remain protocol categories, and `tool_sequence` is used only
+when there is no prior terminal transport error and the actual bounded tool
+order is invalid or incomplete. Raw error text, provider body, stderr,
+request/response body, payload, and credential remain excluded from logs and
+UI errors.
+
+Long manual entry of a disposable OpenRouter key is no longer required for
+development artifacts. `build-core1-dev` enables a dedicated Rust feature and
+the precise `SOS_ENABLE_CORE_DEV_CREDENTIAL_BUILD=1` product switch; the
+product makefile rejects that switch outside `userdebug`/`eng`. It alone
+packages `sos-core-dev-credential` and `ro.sos.dev_credential=1`. The endpoint
+also requires both that property and `ro.debuggable=1`, binds one dedicated
+abstract local socket, authenticates exact ADB shell uid 2000 plus
+`SO_PEERSEC=u:r:shell:s0`, accepts only a versioned set/clear frame of at most
+512 credential bytes with two-second I/O timeouts, serializes updates through
+the existing `CredentialState` mutex, sets the existing changed marker, and
+zeroizes bounded key buffers. Clear does not depend on request success and is
+available while the Core experience remains running.
+
+`core1-dev-set-openrouter-key` validates the active Core 1 revision/product and
+development gates, selects exactly one ready ADB device unless `--serial` is
+given, disables terminal echo, accepts one line through stdin, and streams it
+to the dedicated client. The key is never placed in process argv, shell
+history, environment, properties, files, clipboard, screenshots, or normal
+logs. Set/clear return fixed secret-free acknowledgements only.
+`core1-dev-clear-openrouter-key` uses the same fail-closed product and peer
+boundary. Ordinary `build-core1` omits the Rust endpoint feature; ordinary
+inspection rejects the endpoint marker, client binary, and enabling property,
+while the development inspector requires all three. SELinux grants shell only
+`connectto` in userdebug/eng and carries an explicit user-build neverallow.
+`adb shell input text`, temporary/persistent files, clipboard transport,
+system properties containing the key, build-time embedded credentials, and a
+general-purpose debug control plane were rejected.
+
+**Bounded host evidence:** `npm test` rebuilt the shared agent bundle and
+passed all 14 tests, including secret-safe DNS/connection classification.
+`cargo check -p sos-experience --tests` passed. The exact ARM64 Android feature
+combination passed `cargo ndk -t arm64-v8a -P 31 check -p sos-experience
+--no-default-features --features core-native,core-dev-credential`. The pinned
+AOSP Clang `-std=c++20 -Wall -Werror -Wextra -fsyntax-only` check passed for
+the dedicated client. `cargo fmt --all -- --check`, `bash -n` for the CLI and
+host fixtures, and `git diff --check` passed. A focused host `cargo test`
+compiled the changed Rust tests but could not link because the workstation
+lacks unversioned `libxkbcommon` and `libxkbcommon-x11`; no test assertion
+failed. No Soong/full product build, device operation, or provider call was
+performed, so no hardware PASS is claimed.
+
+**Remaining risk / next gate:** A Core-only rebuild is sufficient: only the
+Core runtime, Core product composition, its dedicated client, shared runner,
+and Core policy changed. First run the focused host checks and host CLI mock,
+then `./tools/a33xctl build-core1-dev` and
+`./tools/a33xctl inspect-core1-dev`; preserve the OTA with exact revision,
+size, and SHA-256 in a finalized independently verified evidence root. Also
+build/inspect ordinary Core 1 once to prove the client, property, and endpoint
+are absent. After a new exact artifact/serial authorization envelope, perform
+one sideload and inherent reboot, require exact Core no-Zygote readiness, then
+use the hidden one-paste set command and one exact live request. Require the
+secret-free set marker, no credential bytes in argv/properties/files/logs,
+successful child/response/action/validation/stage/commit/UI evidence, no
+relevant AVC (especially `net_dns_prop` or `execmem`), no child residue, then
+run the dedicated clear command even if the request fails and require only its
+secret-free clear marker. Finish crash/leak scrutiny, deterministic manifest
+verification, and the authorized soak.
+
+## 2026-08-18 — Confine Core agent DNS and reject obsolete net.dns policy
+
+**Goal / failed host gate:** Make the Core DNS remediation compatible with
+Android's platform SELinux invariants without weakening enforcement or
+granting network authority to the trusted render/compile/activation host. The
+first ordinary Core product build stopped at the platform neverallow before
+producing an OTA; no artifact or device operation followed. Evidence is under
+`artifacts/host-gates/core-dev-20260818-01`. `build-core1.txt` is 530,178
+bytes, SHA-256
+`75278daed28fd61517bf457134501354772354f0dd8f06b1ed67290b17bd6abb`,
+and records a measured 211.570464128-second build. Lines 344–370 show
+`system/sepolicy/private/domain.te:2037` rejecting the expanded
+`allow sos_core_host net_dns_prop:file { read getattr map open }` in both
+Recovery and system_ext policy compilation. `process-preflight.txt` is 4,063
+bytes with SHA-256
+`6f8f3a2d2d6813f343db0eb8470e06067a8927e4b9be0d8fa9fd6e38c9360cca`.
+The finalized `host-evidence-manifest.tsv` was independently verified.
+
+**Architecture / decision:** The platform rule says that `net.dns*` is being
+removed and permits file reads only to init, system_server, vendor_init, and
+dumpstate. `sos_core_host` was already a `coredomain`, so adding or moving the
+same property rule to another ordinary coredomain cannot satisfy that
+contract. Core now transitions only the immutable `sos-node` entrypoint from
+`sos_core_host` into the dedicated `sos_core_agent` coredomain. The coredomain
+attribute is required for a system_ext entrypoint; it is not used as a DNS
+exception. The child receives only its inherited bounded stdin/stdout pipes,
+the exact `proc_meminfo { open read }` startup grant, Android's supported
+dnsproxyd and fwmarkd Unix-socket paths, a TCP client socket, and name-connect
+to an SOS-labelled TCP 443 port. It does not receive `net_domain`, raw/UDP
+networking, bind authority, arbitrary destination ports, host data, Binder,
+graphics, input, platform-adapter, authority, or development credential
+socket permissions. The trusted UI host loses `net_domain`, direct Node
+execution, and the obsolete TCP provider/revision grants. Policy neverallows
+structurally prohibit IP sockets in the host, `net_dns_prop` access in either
+domain, and `execmem` in both domains.
+
+Granting the obsolete property to a coredomain, transitioning Node while
+retaining that grant, leaving `net_domain` in the host, inheriting the host
+domain with `execute_no_trans`, patching the platform exception list, using a
+permissive domain, or hiding the denial with a custom `dontaudit` were
+rejected. The standard `domain_auto_trans` boundary retains Android's normal
+secure-exec behavior; no SOS source policy adds a permissive or dontaudit rule.
+The existing `--jitless`, no-`execmem`, stdin-only credential, no persistence,
+peer authentication, Core-dev-only packaging/runtime gates, ordinary-Core
+exclusion, and transport-before-tool-sequence error ordering are unchanged.
+
+**Bounded host evidence:** `bash -n tools/a33xctl`,
+`./tools/a33xctl check-core-agent-hardening`,
+`./tools/a33xctl check-core-dev-credential`,
+`bash tests/a33xctl-host-test.sh`, and `git diff --check` passed. The hardening
+check now requires the coredomain transition, inherited-pipe and exact meminfo
+rules, supported DNS/fwmark proxy path, TCP-443 label, and child cleanup; it
+rejects host network sockets, Node `execute_no_trans`, any SOS
+`net_dns_prop` allow/get/set, permissive/dontaudit source, and Core host/agent
+`execmem`. The built-artifact inspector requires the compiled transition,
+entrypoint, exact meminfo and DNS-proxy allows and rejects compiled host IP,
+net.dns, or executable-memory authority. A focused in-memory expansion of the
+changed system_ext rules passed the tree's `secilc -v -m -M true -G -c 30`
+against the existing platform CIL in 4.8 seconds; no lunch, Soong, product
+build, device operation, or live provider call was run. Rust, TypeScript, and
+ARM64 application sources did not change in this bounded remediation, so the
+prior milestone's passing focused application/ARM64 checks remain applicable.
+
+**Remaining risk / next gate:** The focused CIL replay proves syntax and the
+platform neverallow relationship but is not an ordinary product build. Both
+ordinary Core and Core-dev must be rebuilt because they share this SELinux
+transition; preserve and inspect each output separately. Run the source gates,
+then `./tools/a33xctl build-core1` and `./tools/a33xctl inspect-core1`, followed
+by `./tools/a33xctl build-core1-dev` and
+`./tools/a33xctl inspect-core1-dev`. Require both builds to pass Recovery and
+system_ext policy compilation, require the compiled agent transition/DNS
+proxy/TCP-443 confinement, and re-prove ordinary exclusion plus development
+inclusion. Finalize independently verified host manifests containing each
+artifact's path, revision, byte size, and SHA-256. No hardware PASS is claimed;
+only after a fresh artifact/serial authorization envelope should the device
+gate test exact Core no-Zygote readiness, the development set/request/clear
+lifecycle, successful live DNS/TLS/request/action/commit/UI evidence, no
+relevant enforcing AVC or crash, no leaked child, and the specified soak.
+
+## 2026-08-18 — Compile the Core-dev credential client against Bionic
+
+**Goal / failed host gate:** Complete the paired ordinary/Core-dev host build
+gate without weakening bounded secret handling. The finalized evidence root is
+`artifacts/host-gates/core-dev-20260818-02`. Its 529,822-byte
+`build-core1-dev.txt`, SHA-256
+`69c07b68df2c678da05e3099b21d818826e1323c0c1adc767bc1e7f8456cc0ac`,
+records a 203.183324584-second failed development build. Lines 399–405 are the
+first actionable failure: Android clang, using `-nostdlibinc`, the Bionic
+headers, and target `aarch64-linux-android10000`, rejects undeclared
+`explicit_bzero` in the `SecretBuffer` destructor. The later lines 920–923
+`ninja: Missing restat` observation (`Image` older than `.config`) occurred
+after that compile failure while other work was still draining and is
+secondary fallout, not an independently established root cause.
+
+Ordinary Core built and inspected successfully. The preserved exact artifact
+is
+`artifacts/host-gates/core-dev-20260818-02/artifact-set/sos.core1.e05f91bb6f0b.294faad24721-ordinary-ota.zip`,
+revision `sos.core1.e05f91bb6f0b.294faad24721`, 1,022,136,198 bytes, SHA-256
+`baf89a7f8a5bc1c4fac3f67116d87684eca9a8580a6db0d613f8dbcc8bc6991`.
+No development OTA was produced. The host manifests were independently
+verified; no device operation or hardware PASS followed.
+
+**Changed / decision:** The Android client now calls Bionic's
+`memset_explicit`, declared by `<string.h>` since API 34, over the complete
+fixed-capacity secret array in its destructor. Unlike ordinary `memset` or
+`std::fill`, that API guarantees the erasure is not optimized away; the current
+platform module targets API 10000, where the declaration and libc symbol are
+available. The fixed 513-byte allocation, maximum 512-byte credential,
+stdin-only read, short-lived stack ownership, argv/property/build gates,
+secret-free output, and absence of file or log transport are unchanged.
+
+`check-core-dev-credential` now resolves Soong's selected clang version from
+the configured Lineage checkout and compiles the exact client source as an
+AArch64 Android platform target with `-nostdlibinc`, platform libc++, Bionic,
+libbase, the module's C++20/no-exceptions/no-RTTI configuration, and warnings
+as errors. This catches missing or API-incompatible Android declarations that
+a desktop-header syntax check cannot. No SELinux or product-composition file
+changed in this remediation: the dedicated `sos_core_agent` DNS proxy/TCP-443
+confinement, no-`execmem` invariant, ordinary production exclusion, and
+explicit development injection contracts remain intact.
+
+**Bounded host evidence:** `./tools/a33xctl check-core-dev-credential` passed
+the strengthened exact-source Android/Bionic compile, and
+`./tools/a33xctl check-core-agent-hardening` passed. The mock-only
+`bash tests/a33xctl-host-test.sh`, `bash -n` over that test and `tools/a33xctl`,
+the pinned AOSP clang-format dry run over the client, and `git diff --check`
+passed. No lunch, Soong, complete product build, device operation, or provider
+call was run in this remediation.
+
+**Remaining risk / next gate:** The focused Android compile establishes the
+correct declaration and frontend/module compatibility but does not produce or
+link a product artifact. Rebuild and inspect both ordinary Core 1 and Core-dev
+for the fresh artifact set: although the fixed client is packaged only in the
+development image, the revision identity hashes the complete shared staged
+device tree, so the preserved pre-fix ordinary artifact must not be paired
+with the new development artifact as one post-fix source set. Run the source
+gates, then `./tools/a33xctl build-core1` plus `inspect-core1`, followed by
+`build-core1-dev` plus `inspect-core1-dev`; require ordinary exclusion,
+development inclusion, the shared compiled policy invariants, and separately
+finalized, independently verified artifact identities and manifests before a
+new hardware authorization envelope.
+
+## 2026-08-18 — Give Core-dev an immutable product identity
+
+**Goal / terminal r3 host evidence:** Diagnose the reported Core-dev packaging
+failure without accepting or installing an ambiguous artifact. The finalized
+host root is `artifacts/host-gates/core-dev-20260818-03`; its 2,028-byte
+`host-evidence-manifest.tsv` has SHA-256
+`7738021863c33b97f375fdf7df9e6b64a9145578aaa04c56f073aedaf5c94a2c`.
+The independently verified 350-byte artifact manifest has SHA-256
+`40c3c4a921f41e068d5b01116ab6219d47ada10e772da6f6895b9c22c9e3c027`.
+Ordinary Core built in 381.147699930 seconds and inspected in 18.361229205
+seconds. Its accepted artifact is
+`artifacts/host-gates/core-dev-20260818-03/artifact-set/sos.core1.e05f91bb6f0b.85ca93719b2b-ordinary-ota.zip`,
+revision `sos.core1.e05f91bb6f0b.85ca93719b2b`, 1,022,166,846 bytes, SHA-256
+`86d046d024075fa4f375d34accdbd6cfee09dd23be62b09565083d28b5bbc8eb`.
+Core-dev built in 350.978178612 seconds and its inspection failed in
+18.041304196 seconds at line 337 with the message that the client was absent.
+The rejected artifact remains preserved only as
+`artifacts/host-gates/core-dev-20260818-03/artifact-set/sos.core1.e05f91bb6f0b.45c3e250577d-dev-ota-rejected.zip`,
+revision `sos.core1.e05f91bb6f0b.45c3e250577d`, 1,022,152,827 bytes, SHA-256
+`fc30518bfca5eaea44db47195696439167c9ae4fdbde8de6d5f665b8af7b1d27`.
+No device operation or hardware PASS followed.
+
+**Root cause / decision:** The failure text was a false absence diagnosis, not
+proof that Soong omitted the module: `build-core1-dev.txt` line 11342 records
+`SYSTEM_EXT/bin/sos-core-dev-credential` being added to target-files. The
+inspector used host `-x` on an unpacked target-files entry; those files do not
+preserve the final image execute bit as their host mode. The authoritative
+`META/system_ext_filesystem_config.txt` records the installed mode. The
+inspector now requires a regular file at the exact system_ext path and exact
+`0 2000 755 capabilities=0x0` image metadata, while ordinary inspection
+requires both the file and metadata entry to be absent.
+
+The old design still had a real reproducibility defect: ordinary and dev used
+the same `lineage_sos_core1_a33x` product, target-files directory and OTA name,
+with an ad hoc shell environment switch and the same `sos.core1` revision
+namespace. It could overwrite one variant with the other and made product
+identity depend on caller intent. Core-dev is now the registered, non-shipping
+`lineage_sos_core1_dev_a33x-userdebug` product. Its makefile unconditionally
+selects the dedicated client and `ro.sos.dev_credential=1`, rejects `user`, and
+sets `ro.sos.build_variant=core1-dev-credential`; ordinary Core sets
+`core1-ordinary` and never references the client. The CLI selects the distinct
+product and `sos.core1dev.<source>.<inputs>` revision namespace in the same
+branch that enables the `core-dev-credential` Rust feature. Target-files,
+package names and AVB product fingerprints are consequently disjoint. The
+Samsung no-Zygote selection now explicitly includes both product names.
+Keeping the shared product plus a late environment variable, trusting host
+mode bits, or mutating a completed image were rejected.
+
+**Inspector and bounded host evidence:** Core inspection derives the variant
+from target-files contents: exact `ro.sos.build_variant`, revision namespace,
+and AVB product fingerprint, then checks the runtime feature markers, client,
+filesystem metadata, development property, and the existing compiled policy
+confinement. Device readiness likewise requires a consistent ordinary or dev
+revision/property tuple, and credential commands accept only `sos.core1dev`
+with the exact dev property plus `ro.debuggable=1`. Direct GNU Make expansion
+passed for both product files, proved ordinary exclusion and exact dev
+package/properties, and rejected a `user` dev expansion. The incremental
+Samsung source patch applies cleanly over the existing no-Zygote patch.
+`./tools/a33xctl check-product-graph`, `check-core-dev-credential` (including
+the exact AArch64 Bionic compile), `check-core-agent-hardening`, the mock host
+test, Bash syntax checks, `cargo check -p sos-experience --tests`, `cargo fmt
+--all -- --check`, and the exact ARM64 Android
+`core-native,core-dev-credential` Cargo check passed. No lunch, Soong/full
+product build, device operation, credential, or provider call was run in this
+remediation.
+
+**Remaining risk / next gate:** Both images require a fresh rebuild: product
+composition, image identity, inspector rules, and the staged device-tree hash
+changed. Do not reuse or rename either r3 artifact, especially the rejected
+dev OTA. Run the source gates, then `build-core1` plus `inspect-core1`, followed
+by `build-core1-dev` plus `inspect-core1-dev`. Preserve the two distinct OTAs
+and target-files roots; require ordinary exclusion, dev inclusion and 0755
+filesystem metadata, exact ordinary/dev property and revision namespaces, AVB
+product identity, compiled no-Zygote/policy invariants, and independently
+verified manifests with path, byte size and SHA-256. Only a fresh accepted
+Core-dev artifact may define a later device authorization envelope; no
+hardware claim is made here.
+
+## 2026-08-18 — Make the a33x source patch bootstrap series-aware
+
+**Goal / terminal r4 host evidence:** Preserve the immutable ordinary/Core-dev
+product split while repairing the source bootstrap failure before another full
+build. The finalized and independently verified failed-gate root is
+`artifacts/host-gates/core-dev-20260818-04`. Its 1,740-byte
+`host-evidence-manifest.tsv` has SHA-256
+`227ce91c6f8e9fa8f428ef3174673029aa9f6de2d93dc3c44518a370a7190492`;
+the 217-byte artifact manifest has SHA-256
+`574da9b08c3cce0523423c974e6b5149613ea7d2fb0e30880fbab65d9b1660`.
+The source revision was `e05f91bb6f0b0a9299b914138d6cd0966b9c82d5`.
+Product-graph, Core hardening, development-credential/Bionic compile, host
+mock, Bash syntax and diff checks all passed in respectively 0.020677657,
+0.029229189, 0.595108485, 0.303495013, 0.004776570 and 0.009277818
+seconds. Ordinary Core built in 349.654816592 seconds and inspected in
+18.077148404 seconds. Its accepted r4 artifact is
+`artifacts/host-gates/core-dev-20260818-04/artifact-set/sos.core1.e05f91bb6f0b.036045ca4e01-ordinary-ota.zip`,
+revision `sos.core1.e05f91bb6f0b.036045ca4e01`, 1,022,158,595 bytes,
+SHA-256
+`4994eaae194175a6e34610606cca9c880d39218adf6bbc15960c0ed5b29905a9`.
+Core-dev then stopped before artifact creation in 0.418578584 seconds when
+patch 0005 failed at `common.mk:15`. No device access or hardware claim
+occurred.
+
+**Root cause / decision:** Patches 0005 and 0008 are a valid dependent ordered
+sequence: 0005 introduces the ordinary Core no-Zygote conditional and 0008
+extends that exact line to the distinct Core-dev product. After the ordinary
+build had applied the complete sequence, bootstrap tested 0005 alone. Neither
+its forward form nor its reverse form matches the post-0008 file, so the old
+per-patch reverse-check misclassified the correct final tree as a conflict.
+Patch fuzz, rejects, skipped failures, ad hoc checkout edits, and order changes
+were rejected.
+
+Bootstrap now pins all three affected Lineage project revisions and all eight
+patch SHA-256 values, constructs each complete per-project result in a
+temporary Git index from `HEAD`, and compares only patch-owned paths with the
+pinned baseline and canonical final result. A clean project receives patches
+in the exact global 0001–0008 order; a complete project is an idempotent no-op;
+any mixed or foreign state fails before mutation. A second preflight requires
+the complete result after application. Repository product composition remains
+single-owned by the checksum/delete staging overlay under
+`aosp/device/sos/a33x` (`AndroidProducts.mk`, the two Core product files and
+`sos_core1_common.mk`); the ordered patches own only their external Samsung,
+vendor and framework checkout paths. Ordinary and development invocations
+therefore share one canonical source bootstrap without overwriting or
+conditionally creating product files.
+
+Patch 0008 now records its explicit dependency on 0005; its diff is unchanged
+and its new provenance SHA-256 is
+`842d80ad1d2e18c2199f253f9d645cb1b92685f6633d1c2cc299278369b03c0a`.
+Because build identity hashes the ordered patch inputs, both ordinary and dev
+must receive fresh revisions and artifacts; the otherwise accepted r4
+ordinary OTA cannot be reused as post-remediation evidence.
+
+**Focused evidence:** `./tools/a33xctl check-patch-series` passed against the
+real complete checkout and reported all eight exact ordered hashes.
+`tests/a33xctl-patch-series-test.sh` sparse-cloned the pinned baseline paths
+into disposable worktrees, applied the complete stack, applied it a second
+time, and proved a byte-identical diff plus final canonical state. Two direct
+`./tools/a33xctl apply-patches` calls also passed as no-ops on the real final
+tree. `./tools/a33xctl check-product-graph`, `check-core-agent-hardening`,
+`check-core-dev-credential`, the existing host mock, Bash syntax checks and
+`git diff --check` passed. No lunch, Soong/full build, device command,
+credential use or provider call ran in this remediation.
+
+**Remaining risk / next gate:** The temporary-index and sparse-worktree gates
+prove applicability and idempotence, not image production. Start a fresh host
+evidence root and run `check-patch-series`, the patch-series test,
+`check-product-graph`, `check-core-agent-hardening`,
+`check-core-dev-credential`, the host mock and shell/diff checks. Then rebuild
+and inspect ordinary Core with `build-core1` / `inspect-core1`, followed by
+Core-dev with `build-core1-dev` / `inspect-core1-dev`. Require new distinct
+`sos.core1` and `sos.core1dev` revisions, ordinary development exclusion, dev
+inclusion and 0755 metadata, exact product fingerprints/properties, compiled
+no-Zygote and policy invariants, and finalized independently verified
+manifests before defining any hardware authorization envelope.
+
+## 2026-08-18 — Bind Core-dev capability to its hardened product contract
+
+**Goal / terminal r6 device evidence:** Remediate the Core-dev readiness-only
+failure without enabling broad Android debugging. On serial `RFCT50EGFCN`, the
+exact OTA
+`artifacts/host-gates/core-dev-20260818-06/artifact-set/sos.core1dev.e05f91bb6f0b.de1c4db550bb-dev-ota.zip`,
+revision `sos.core1dev.e05f91bb6f0b.de1c4db550bb`, was 1,022,156,750
+bytes with SHA-256
+`99f63dfac0c20b4dfd772d8522aaa9d7facd1139d81388fd1691bae7dcaaaea`.
+The exact sideload passed with exit 0 and `Total xfer: 1.00x` in
+85.145654875 seconds; the inherent return to the device transport passed in
+79.335597623 seconds. Readiness then failed in 0.467502212 seconds only at the
+Core-dev product tuple in `tools/a33xctl` lines 2208–2211. No credential set,
+clear, or provider request was attempted.
+
+The independently verified read-only diagnostic root is
+`artifacts/device-gates/core-dev-20260818-06-rfct50egfcn-diag-01`.
+Its 458-byte `diagnostic-manifest.tsv` has SHA-256
+`2b9d9bd915bffa84f3300ce042439cb088b3ebe7218e1936842b7d9027d2dae6`.
+The 4,145-byte `device-snapshot.txt` (SHA-256
+`40ce97f603fda00742a42fe2eac32a5303d33cce64ad180d9c34830eef32bcc8`)
+records the exact safe values: correct `sos.core1dev` revision,
+`ro.sos.build_variant=core1-dev-credential`,
+`ro.sos.dev_credential=1`, `ro.build.type=userdebug`, and
+`ro.debuggable=0`. It also proves the client existed as executable
+`0755 root:shell`, although the old image still gave it the generic
+`u:object_r:system_file:s0` label. The 2,908-byte
+`readiness-source-context.txt` has SHA-256
+`114d20cad182a7aaaef31122cd1ae029b77d995ca8ce735973877ff9231fd246`.
+
+**Root cause / decision:** The global value is deliberate, not a malformed
+Core product. Pinned Lineage `vendor/lineage/config/common.mk` sets
+`PRODUCT_NOT_DEBUGGABLE_IN_USERDEBUG := true`; the platform
+`gen_build_prop.py` consequently emits `ro.debuggable=0`, disabling broad
+target debugging and adb root while retaining the `userdebug` build type.
+The Rust endpoint, installed client, host set/clear validation, and readiness
+had incorrectly treated `ro.debuggable=1` as the development capability.
+Setting that global property to 1, weakening verified boot or SELinux,
+granting adb root, broadening Android debugging, or trusting caller flags and
+runtime-writable properties were rejected.
+
+Core-dev now has one exact product contract shared by the endpoint semantics
+and mirrored at its C++/host boundaries: a strict
+`sos.core1dev.<12-lower-hex>.<12-lower-hex>` revision, immutable
+`ro.sos.build_variant=core1-dev-credential`, immutable
+`ro.sos.dev_credential=1`, the registered `ro.build.type=userdebug`, and the intentional
+`ro.debuggable=0` hardening assertion. Global debuggability is no longer an
+enable switch. The endpoint remains compile-time gated by the distinct
+`core-dev-credential` Rust feature; only the registered distinct product
+packages the stdin-only client. The client now carries the dedicated
+`sos_core_dev_credential_exec` image label, and readiness plus set/clear
+validate its fixed path, `0755 root:shell` metadata and exact label before any
+request. Ordinary `sos.core1` continues to exclude the package, feature and
+property and fails every dev command.
+
+Every product mismatch now reports only a safe marker name plus expected and
+sanitized actual value, localizing revision, build type, immutable marker,
+debugging posture, client presence, mode, owner, group or label failures
+without printing a secret. The hidden terminal prompt, stdin-only transfer,
+bounded memory-only set/clear, zeroization, peer uid plus `SO_PEERSEC`,
+production policy exclusion, dedicated `sos_core_agent` DNS proxy/TCP-443
+path, no host networking or `execmem`, and transport-before-tool-sequence
+classification are unchanged.
+
+**Focused host evidence:** `./tools/a33xctl check-patch-series`,
+`check-product-graph`, `check-core-agent-hardening`, and
+`check-core-dev-credential` passed; the last includes the exact AArch64
+Bionic client compile and source proof for Lineage's deliberate debugging
+posture. `tests/a33xctl-host-test.sh` passed the observed
+`userdebug + ro.debuggable=0` readiness, pseudo-terminal hidden set, and clear
+paths, ordinary exclusion, and safe diagnostic rejection for a wrong
+revision, wrong build type, wrong marker, and missing client. A standalone
+Rust product-contract binary passed 2/2 focused tests. `cargo check -p
+sos-experience --tests` and the pinned NDK 29 AArch64 Android check with
+`--no-default-features --features core-native,core-dev-credential` passed.
+`cargo fmt --all -- --check`, Bash syntax checks, and the mock host test
+passed. The ordinary `cargo test -p sos-experience --lib
+core_dev_credential::tests` compiled the changed crate but could not link
+because the workstation lacks `libxkbcommon` and `libxkbcommon-x11`; the
+link-free check and standalone focused contract tests cover the changed Rust
+logic. No product build, device command, credential, or provider call occurred
+in this remediation.
+
+**Remaining risk / next gate:** Rebuild and inspect both ordinary Core and
+Core-dev. The shared system-ext SELinux type/context inputs changed even
+though ordinary Core still excludes the client, and the development runtime
+and client contract changed; neither the r6 OTA nor any earlier artifact can
+be reused. Run `check-patch-series`, the patch-series test,
+`check-product-graph`, `check-core-agent-hardening`,
+`check-core-dev-credential`, the host mock, Bash/format/diff checks, then
+`build-core1` plus `inspect-core1`, followed by `build-core1-dev` plus
+`inspect-core1-dev`. Preserve fresh distinct OTAs and target-files evidence
+with exact revisions, byte sizes, SHA-256 values and independently verified
+manifests. Require ordinary exclusion and `ro.debuggable=0`; require Core-dev
+feature/client inclusion, `0755 root:shell` plus the dedicated label, the
+exact immutable markers and `ro.debuggable=0`. Only then authorize one fresh
+Core-dev sideload/inherent reboot/readiness transaction and proceed through
+set, request, clear, crash/AVC scrutiny, manifest verification and soak. This
+implementation does not claim a hardware PASS.
+
+## 2026-08-18 — Repair Core target-files SYSTEM-property inspection
+
+**Goal / failed r7 host gate:** Preserve the hardened `ro.debuggable=0`
+artifact assertion for both ordinary Core 1 and Core-dev while making the
+inspector read the property from the actual staged SYSTEM partition data. The
+r7 source gates and ordinary build passed, with `build-core1` exiting 0 in
+299.410686949 seconds. `inspect-core1` then exited 1 after 17.447966941
+seconds at `tools/a33xctl` line 1864 under `set -u`:
+`system_properties: unbound variable`. Core-dev build and inspection did not
+run, no artifact was accepted, and the device was untouched.
+
+The finalized evidence root is
+`artifacts/host-gates/core-dev-20260818-07`. Its independently verified
+1,212-byte `host-evidence-manifest.tsv` has SHA-256
+`2624b105401e801c2db9ba419207fc893ee165be70ccfab7fb7d60fb79033c91`.
+The 23,454-byte `inspect-core1.txt` has SHA-256
+`4a3563f0967207a63225d0eb05aca032fb9e4c9ddb3525291753396f797707cc`;
+the 521-byte `transaction-result.txt` has SHA-256
+`4c45018c99a9a1d1cf3307aac842097de04df1579171fd2bcb626f4c987acb30`.
+The failed inspection identified the unaccepted ordinary output as revision
+`sos.core1.e05f91bb6f0b.a33768b9e2f9`, 1,022,163,055 bytes, SHA-256
+`eac70a0543dba71e8072223339e20249ff34621483967abf56a5a91587fdcd58`.
+
+**Root cause / decision:** `inspect_core_stage` added a grep against
+`$system_properties` but never initialized that local, so nounset stopped the
+inspection before it could evaluate the image. The shared validator now
+resolves exactly `SYSTEM/build.prop` below the selected target-files root,
+rejects a missing or empty file with a fixed secret-safe diagnostic, copies
+that staged image input into a disposable inspection directory, initializes
+the checked path before use, and always removes the directory. It requires
+exactly `ro.debuggable=0` for both ordinary and development variants and also
+retains Core-dev's exact `ro.build.type=userdebug` assertion. It never falls
+back to `SYSTEM_EXT/etc/build.prop` or a source-tree property file. The large
+inspector and focused host harness source the same narrow validator.
+
+**Focused evidence:** `tests/a33xctl-host-test.sh` passed under
+`set -euo pipefail`. Its matrix exercised ordinary and Core-dev against
+missing, empty, exact `ro.debuggable=0`, and weakened `ro.debuggable=1`
+SYSTEM data, using target and temporary paths containing spaces and proving
+the Core-dev wrong-build-type rejection and the disposable directory empty
+after every pass and rejection. A direct call
+of the same validator passed against r7's generated ordinary target-files.
+`./tools/a33xctl check-product-graph`, `check-core-agent-hardening`, and
+`check-core-dev-credential` passed. `bash -n` over the CLI, host test, and ADB
+fixture, `cargo fmt --all -- --check`, and `git diff --check` passed. No full
+build, complete package inspection, device operation, credential, or provider
+call ran during this repair.
+
+**Remaining risk / next gate:** This inspector-only change does not alter the
+staged device tree, patch series, packaged binaries, or content-derived
+revision inputs. The already-generated r7 ordinary source output can therefore
+be re-inspected to prove the immediate regression without rebuilding and must
+retain the same revision. It was not accepted or copied into the r7 artifact
+set, however, and the paired host-gate policy may still require a fresh full
+ordinary/Core-dev transaction. The runner should execute the source gates,
+then `inspect-core1` against the existing ordinary output if permitted;
+otherwise run `build-core1` then `inspect-core1`. Follow with
+`build-core1-dev` and `inspect-core1-dev`, requiring both inspectors to prove
+actual SYSTEM `ro.debuggable=0`, all ordinary exclusion and Core-dev inclusion
+contracts, distinct finalized artifacts, and independently verified
+manifests. This implementation does not claim an artifact or hardware PASS.
+
+## 2026-08-18 — Give the Core-dev credential client an executable capability boundary
+
+**Goal / terminal r8 evidence:** Repair the false Core-dev readiness failure
+without broadening ADB shell or weakening the hardened product. The accepted
+r8 sideload artifact was revision
+`sos.core1dev.e05f91bb6f0b.98fc6094998a`, 1,022,167,071 bytes, SHA-256
+`86194432936d6aa34cd344062a578549b560d403e0b4c77ad4532ed0ae7abf88`.
+The transport transaction in
+`artifacts/device-gates/core-dev-20260818-08-rfct50egfcn` passed, but
+readiness stopped before any credential or provider request with the safe
+marker `client.presence expected=present actual=missing`.
+
+The independently verified, read-only diagnostic root is
+`artifacts/device-gates/core-dev-20260818-08-rfct50egfcn-diag-01`. It proves
+the exact client does exist on dm-4 at inode 29 and is byte-identical to the
+host target: 51,344 bytes, SHA-256
+`2c09ca31a722e51fe7a7f62b778318bf9dfa95ceabe18dc3188879f11995b5c8`.
+Enforcing SELinux correctly denied shell `getattr`/`test -e` against the
+dedicated `sos_core_dev_credential_exec` type. The same evidence retained the
+intended global `ro.debuggable=0` and exact immutable Core-dev markers. No key
+was entered, no set/clear request ran, and no provider request ran.
+
+**Root cause / rejected approaches / decision:** Readiness incorrectly used a
+shell-domain file-stat as a presence test after the image had gained its
+dedicated executable label. Granting shell broad system-ext/file access,
+relabelling the binary as `shell_exec`, executing the client in shell,
+`permissive`/`dontaudit`, or weakening production neverallows would turn the
+diagnostic around by destroying the intended boundary and were rejected.
+
+The immutable entrypoint now performs a `userdebug_or_eng` automatic
+transition from shell into the dedicated `sos_core_dev_credential` domain.
+That uid-2000 domain receives only its entrypoint, inherited ADB stdio, its own
+Unix stream socket, and `connectto` for the Core host. It receives no explicit
+network, filesystem, property, log, Binder, service-manager, or capability
+authority, and shell is unconditionally forbidden from connecting directly.
+The endpoint now accepts only uid 2000 plus exact
+`u:r:sos_core_dev_credential:s0`; the former shell-context allow and peer
+contract are gone. The client no longer links libbase or reads properties.
+The feature-gated endpoint remains the owner of the immutable product check,
+so ordinary Core excludes the binary, endpoint, property, and any effective
+transition while user policy omits the transition itself.
+
+Protocol v1 gained a zero-payload `probe` operation. It authenticates the
+transitioned peer, decodes a bounded frame, reaches the product-gated
+endpoint, returns only `core_dev_credential=READY`, and does not call either
+credential mutation path. Core-dev readiness and both set/clear commands now
+run this executable handshake; ordinary readiness relies on immutable runtime
+markers while the target-files inspector proves actual binary/endpoint/
+property exclusion. Safe host diagnostics separately classify missing
+executable, SELinux execution denial, endpoint unavailable, rejected
+peer/product, and protocol mismatch. Set still reads one hidden host-stdin
+line only after a successful probe, set/clear payloads remain bounded and
+memory-only, and both C++ and Rust buffers retain explicit/RAII zeroization.
+
+**Focused host evidence:** `./tools/a33xctl check-core-dev-credential` passed,
+including user/userdebug macro expansion, a focused matching CIL compile with
+the pinned `secilc`, policy-negative checks, exact product expansion, and the
+Bionic AArch64 C++ compile. `tests/a33xctl-host-test.sh` passed readiness,
+preflighted hidden-stdin set and clear, ordinary denial, and all five safe
+probe-error categories. The link-independent protocol crate ran 5/5 tests,
+including probe non-mutation, clear after rejected set, set/clear decoding,
+exact uid/domain peer acceptance, and malformed/bounded-frame rejection. Host Rust test compilation
+passed, and the pinned NDK 29 AArch64 check with
+`core-native,core-dev-credential` passed after supplying the target LLVM
+archiver. Bash syntax, `cargo fmt --all -- --check`, and `git diff --check`
+passed. The full desktop experience test binary still cannot link because
+this workstation lacks unversioned `libxkbcommon` and
+`libxkbcommon-x11`; the focused executable tests and host compile cover the
+changed protocol without that unrelated GUI dependency. No full build or
+device operation ran for this implementation, and it does not claim hardware
+PASS.
+
+**Remaining risk / next gate:** Both ordinary Core and Core-dev require fresh
+builds because the shared system-ext policy changes; Core-dev also changes the
+client and endpoint payload. Run `check-patch-series`,
+`tests/a33xctl-patch-series-test.sh`, `check-product-graph`,
+`check-core-agent-hardening`, `check-core-dev-credential`, the protocol test,
+host mock, syntax/format/diff checks, then `build-core1` plus `inspect-core1`
+and `build-core1-dev` plus `inspect-core1-dev`. Require ordinary target-files
+to exclude the binary, endpoint and property so no transition can be effective,
+and require Core-dev target-files to contain the exact 0755 root:shell
+entrypoint label, dedicated domain transition, no shell socket allow, and
+probe strings. Record
+fresh artifact revisions, sizes, SHA-256 values and independently verified
+manifests. Only after those host gates pass should a newly authorized
+Core-dev sideload/inherent reboot/readiness transaction prove
+`core_dev_credential=READY` with crash/AVC scrutiny before any set/request/
+clear/soak sequence.
+
+## 2026-08-18 — Make the Core-dev v1 credential protocol one cross-language contract
+
+**Goal / terminal r9 evidence:** Remediate the first device execution of the
+dedicated Core-dev client without relaxing protocol or peer validation. The
+paired r9 host gate at `artifacts/host-gates/core-dev-20260818-09` passed and
+preserved the exact Core-dev OTA
+`artifact-set/sos.core1dev.e05f91bb6f0b.cd7b7f965926-dev-ota.zip`, revision
+`sos.core1dev.e05f91bb6f0b.cd7b7f965926`, 1,022,171,787 bytes, SHA-256
+`d163849f5f314403b6d55e7ba0954d820e88a639728e2847e30d401dd7639f48`.
+On serial `RFCT50EGFCN`, Recovery entry passed in 2.241820492 seconds, the one
+authorized sideload passed with exit 0 and `Total xfer: 1.00x` in
+78.761798839 seconds, and the inherent wait for the device passed in
+79.951946469 seconds. Core-dev readiness then exited 1 after 0.559423817
+seconds at the zero-payload client handshake with the safe aggregate
+`endpoint.protocol expected=v1 actual=mismatch`. No credential was entered;
+set, provider request and clear did not run. The finalized device root is
+`artifacts/device-gates/core-dev-20260818-09-rfct50egfcn`, whose independently
+verified 997-byte `device-evidence-manifest.tsv` has SHA-256
+`0f98c7fe9cb213d6f76c018d337a82f203502e40a549dd326a64690c65d2d128`.
+
+The independently verified read-only follow-up is
+`artifacts/device-gates/core-dev-20260818-09-rfct50egfcn-diag-01`. Its
+289-byte `device-diagnostic-manifest.tsv` has SHA-256
+`3128aaac41c8fe99452c73529575ff99de8863440ea7721d5500917a8940f93f`.
+The 626-byte `device-protocol-snapshot.txt` (SHA-256
+`afc9eb4d8b72a1ba4dc0faf99dcfec60f9a1de2298001f1e1f68e5b54104f0e2`)
+confirmed the expected Core-dev product, `userdebug`, `ro.debuggable=0`,
+no-Zygote lifecycle, enforcing SELinux and required native process domains in
+1.403296775 seconds. It found no endpoint/protocol/peer/socket/AVC rejection
+marker and intentionally did not rerun the probe or mutate credential state.
+Thus the preserved r9 evidence proves that execution reached the protocol
+boundary, but cannot identify whether the aggregate came from request
+rejection, bad acknowledgement magic/version/status, or short I/O.
+
+**Root-cause boundary / rejected relaxation / decision:** A byte audit found
+the checked-in C++ and Rust v1 happy-path values nominally equal—`SOSK`,
+version 1, operation byte, big-endian unsigned 16-bit payload length, and a
+six-byte `SOSK/version/status` acknowledgement—but found that those values and
+layouts were independently declared. The Rust server also treated all bytes
+through peer EOF as one frame, while the client constructed the frame through
+independent writes, and the Rust-only include test never compiled or executed
+the production C++ exchange. Finally, the client collapsed bad acknowledgement
+magic, version, protocol-rejection status and short I/O into two aggregate
+outcomes. This combination allowed the r9 boundary failure to escape host
+testing and left no preserved branch-level evidence. The unavailable r9
+branch is not guessed here. Accepting version 2, accepting unknown
+magic/opcodes/status, changing status meanings, retrying, weakening the exact
+uid/SELinux peer check, or merely relabelling the old aggregate was rejected.
+
+`dev_credential_protocol_v1.h` is now the sole numeric wire definition and
+documents explicit golden request and acknowledgement vectors. Both the
+production C++ client and generated Rust constants consume it; either Cargo
+package fails its build if a required definition is missing, duplicated or
+non-numeric. Compile-time assertions bind the C++ array/layout sizes and
+maximum payload. The client constructs and explicitly erases one bounded
+contiguous request frame, writes it with partial-write handling, half-closes
+its write side, reads exactly one acknowledgement with partial-read handling,
+and safely distinguishes unavailable connect, short I/O, bad magic, bad
+version, protocol-rejection status, unknown status, wrong peer and rejected
+request. It never prints a frame or payload.
+
+The Rust endpoint now reads an exact eight-byte header, validates magic and
+version, decodes the big-endian length, bounds allocation before reading an
+exact payload, requires EOF with no trailing byte, and maps malformed or
+short input to the canonical protocol-mismatch acknowledgement. Probe remains
+zero-payload and invokes neither set nor clear. Set remains a bounded,
+zeroized, visible-ASCII `sk-or-v1-` value received only from the dedicated
+client's hidden stdin; clear remains payload-free. The feature/product gate,
+uid 2000 plus exact `u:r:sos_core_dev_credential:s0` peer check, dedicated
+domain, no-network policy and ordinary production exclusion are unchanged.
+
+**Focused host evidence:** `cargo test --locked -p
+core-dev-credential-protocol-test --lib -- --test-threads=1` compiled the
+actual production C++ client logic and ran it against the actual Rust parser
+and request dispatcher over Unix streams; all 9 tests passed. They cover exact
+probe/set/clear golden bytes, a synthetic non-secret set fixture with no
+payload output, probe non-mutation, rejected set followed by clear,
+fragmented request and acknowledgement writes, zero payload, bad
+magic/version/opcode/status, oversized and short frames, every defined status
+and disconnects. `./tools/a33xctl check-core-dev-credential` passed the same
+cross-language suite, pinned Bionic AArch64 C++ compile, policy compile and
+source/product exclusions. `tests/a33xctl-host-test.sh` passed the expanded
+safe diagnostic matrix. `cargo check --locked -p sos-experience --tests` and
+the pinned NDK 29 `cargo ndk -t arm64-v8a -P 31 check -p sos-experience
+--locked --no-default-features --features
+core-native,core-dev-credential` passed. Cargo format, Bash syntax and
+`git diff --check` passed. No product build, device command, credential or
+provider operation ran in this remediation, and it does not claim hardware
+PASS.
+
+**Remaining risk / next gate:** The r9 branch was not retained, so only a
+fresh device run can prove the remediated binaries and, on failure, preserve
+the new exact secret-free category. Rebuild and inspect both ordinary Core 1
+and Core-dev because the shared Rust build input and development client/runtime
+payload changed. Run `check-patch-series`, the patch-series test,
+`check-product-graph`, `check-core-agent-hardening`,
+`check-core-dev-credential`, the cross-language protocol test, host mock,
+format/syntax/diff checks, then `build-core1`/`inspect-core1` followed by
+`build-core1-dev`/`inspect-core1-dev`. Require fresh distinct revisions,
+ordinary endpoint/client/property exclusion, exact Core-dev package/feature/
+policy inclusion, and independently verified manifests. Only after that
+paired host gate passes should a newly authorized transaction for serial
+`RFCT50EGFCN` perform one exact Core-dev sideload, inherent reboot, no-Zygote
+readiness and zero-payload probe. If probe passes, continue once through
+hidden synthetic/disposable set, provider request, mandatory clear, crash/AVC
+scrutiny, deterministic manifest verification and soak; if it fails, stop
+before any credential and preserve the exact new client category plus the
+server's safe rejection category. No r9 artifact may be reused.
+
+## 2026-08-18 — Accept the exact framed Core-dev status line without rebuilding r10
+
+**Goal / r10 gate evidence:** Determine whether the r10 readiness aggregate
+was a product failure or a host acceptance failure, then repair only the
+failing layer. The exact installed OTA is
+`sos.core1dev.e05f91bb6f0b.45b6c9467985`, 1,022,178,758 bytes, SHA-256
+`286d6ab695b1ed2871b7dbbea12d9982d14dcf4e075569fcf0cfc162c6ac0b4f`.
+The finalized root
+`artifacts/device-gates/core-dev-20260818-10-rfct50egfcn` records Recovery
+entry in 2.359517643 seconds, one sideload with exit 0 and `Total xfer: 1.00x`
+in 78.760980319 seconds, and inherent device return in 81.807627777 seconds.
+Readiness stopped in 0.528203630 seconds at
+`endpoint.protocol expected=v1 actual=mismatch`; no credential, provider
+request, clear, extra reboot, or second sideload ran. Its independently
+verified 810-byte manifest has SHA-256
+`c159c07697006ab8a01e42a254f6135bf70b03f0f2205a2cac07323e5415f09c`.
+
+The independently verified read-only root
+`artifacts/device-gates/core-dev-20260818-10-rfct50egfcn-diag-01` has a
+484-byte manifest with SHA-256
+`0099a3c9aa8887a4f5b7edc0c2a46980c5c56740c004399d3a50cb2df4d7f72e`.
+Its 1.922600322-second snapshot proves the exact revision, `userdebug` with
+`ro.debuggable=0`, enforcing SELinux, expected native domains, and the
+installed client and experience library byte-identical to the r10 targets:
+the root:shell 0755 client labeled
+`u:object_r:sos_core_dev_credential_exec:s0` is 51,296 bytes with SHA-256
+`d7956d941bbb1d9c4a5e5dabff9a0c590a1933302e17bb392518512fdbbb44b9`;
+the root:root 0644 library is 14,710,536 bytes with SHA-256
+`c4465419d6dfae0c9b6d96b513d73eef44c719be312aea1ef6018fa7b4680a93`.
+Exactly one direct zero-payload production probe returned the canonical
+newline-terminated `core_dev_credential=READY`, exit 0, in 0.042109757
+seconds. Its 111-byte record has SHA-256
+`89fc15792bbfdbf3887c89bd1dc1553015896073e649d653de9d57576cc9f270`.
+That probe is a PASS for the client/endpoint handshake only, not completion of
+the remaining hardware gate.
+
+**Root cause / change:** `tools/a33xctl` converted client output to a shell
+scalar and compared it with an unframed token. That implicit trailing-newline
+stripping could neither validate the protocol-required terminator nor safely
+distinguish the canonical deployed reply from CRLF, missing termination,
+extra lines, or binary bytes; r10 therefore became a false negative at the
+host harness. One shared parser now captures stdout and stderr separately,
+checks the raw stdout byte count, and accepts exactly one ASCII status token
+terminated by LF or CRLF. It rejects a missing terminator, additional newline
+or output, prefix/suffix/whitespace changes, NUL/binary data, wrong status,
+and a nonzero client exit without printing captured output. Probe, readiness,
+hidden-stdin set, and clear all use that parser. Probe failures retain the
+existing secret-safe execution, presence, availability, peer, magic, version,
+status, I/O, and aggregate categories.
+
+**Host evidence / decision / next gate:** The byte-level ADB mock reproduces
+r10's exact LF reply and passes it through full readiness, also accepts the
+intentional CRLF equivalent, and rejects missing/double newline, prefix,
+suffix, whitespace, extra output, NUL, wrong status and nonzero-exit cases.
+It additionally passes CRLF probe preflight plus set/clear acknowledgements
+and rejects extra clear output. `tests/a33xctl-host-test.sh`, the product,
+hardening, Core-dev and cross-language protocol checks, Bash syntax, format,
+and diff hygiene pass; ShellCheck remains unavailable on this host. Only host
+tooling, mocks, tests and this ledger changed, so the image payload, OTA bytes
+and content-derived revision are unchanged and no rebuild or sideload is
+required. Reuse the currently installed exact r10 image: a runner should run
+`./tools/a33xctl inspect-core1-readiness --serial RFCT50EGFCN
+--expected-revision sos.core1dev.e05f91bb6f0b.45b6c9467985`, preserve and
+manifest its output, and require the complete no-Zygote readiness predicates
+plus the zero-payload probe. The remaining live gate is the separately
+authorized hidden disposable set, provider request, mandatory clear,
+crash/AVC scrutiny, deterministic manifest verification and soak; this host
+repair does not claim that gate passed.
+
+## 2026-08-18 — Move the Core-dev client to a no-PTY ADB shell transport
+
+**Goal / continuation and diagnostic evidence:** Reuse the installed exact r10
+image while determining why the corrected strict status parser still received
+no acknowledgement. The independently verified continuation root
+`artifacts/device-gates/core-dev-20260818-10-rfct50egfcn-cont-01` retried the
+exact readiness command against revision
+`sos.core1dev.e05f91bb6f0b.45b6c9467985`; it again stopped at
+`endpoint.protocol expected=v1 actual=mismatch`, before any credential or
+provider request. Its 449-byte manifest has SHA-256
+`7a0aeb23991ccd4e4375fc78d0e2ca3eb522aca75ab97e2abe7ec9edd86e5c40`.
+The continuation recipe exited under `set -e` before appending its monotonic
+timing fields, so this ledger does not infer a readiness duration from the
+evidence timestamps.
+
+The independently verified diagnostic root
+`artifacts/device-gates/core-dev-20260818-10-rfct50egfcn-diag-02` has a
+616-byte manifest with SHA-256
+`b517786c7e5beb6c5eb95827cab339818761c61d13a699cedca1ae3b31c619a7`.
+The exact command `adb -s RFCT50EGFCN exec-out
+/system_ext/bin/sos-core-dev-credential probe </dev/null` exited 0 in
+0.041885260 seconds but produced zero stdout bytes and zero stderr bytes; both
+empty files have SHA-256
+`e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`.
+The strict parser correctly rejected that empty response. In contrast, the
+prior safe direct `adb shell` zero-payload probe returned the exact
+LF-terminated `core_dev_credential=READY`, exit 0, in 0.042109757 seconds.
+Together these measurements isolate the failure to `exec-out` output delivery,
+not the installed r10 client, endpoint, protocol, policy, or parser.
+
+**Change / safety decision:** Probe, set, and clear now share one invocation:
+`adb -s SERIAL shell -T -- /system_ext/bin/sos-core-dev-credential OP`.
+The explicit `-T` prevents remote PTY allocation and echo, `--` ends ADB option
+parsing, and only fixed path and operation arguments reach the remote shell.
+Probe and clear close stdin. Set disables local tracing and terminal echo,
+reads at most 513 bytes once from `/dev/tty` under the C locale, rejects more
+than the protocol's 512-byte maximum, and feeds the accepted line to ADB only
+through a pipe; its short-lived subshell restores terminal state and overwrites/unsets
+the Bash value on every exit. ADB cannot read the prompt/control terminal.
+Default shell-v2 stdout, stderr and remote exit capture stay separate; a
+legacy merged stream still cannot pass the exact raw LF/CRLF one-line parser.
+Missing `-T` support has a distinct safe error. A zero-exit mutation with an
+empty, malformed, extra, binary, wrong, stderr-bearing, or otherwise
+unobservable acknowledgement fails with credential state declared unknown and
+the clear command remaining mandatory. A loose empty-output acceptance or PTY
+fallback was rejected because either would erase acknowledgement or secret-echo
+boundaries.
+
+**Host evidence / decision / next gate:** `tests/a33xctl-host-test.sh` passed a
+mock matrix that reproduces empty successful `exec-out`, proves working
+`shell -T`, exact argv without `exec-out`, `-t`, key argv or key environment,
+closed probe/clear stdin, stdin-only synthetic set data, hidden paste even
+under caller-enabled Bash tracing, LF/CRLF framing, remote nonzero exit,
+ambiguous acknowledgements, and unsupported `-T`. `check-product-graph`,
+`check-core-agent-hardening`, `check-core-dev-credential`, the nine-test
+cross-language protocol suite, Bash syntax, Cargo format, and diff hygiene all
+passed; ShellCheck is unavailable on this host. Only host CLI, mock, test and
+this ledger changed. No C++, Rust, product, policy, packaged file, content
+revision, image payload, or OTA input changed, so the installed exact r10 may
+be reused without rebuild or sideload. The runner should first repeat
+`./tools/a33xctl inspect-core1-readiness --serial RFCT50EGFCN
+--expected-revision sos.core1dev.e05f91bb6f0b.45b6c9467985`; after complete
+no-Zygote readiness, proceed once through
+`./tools/a33xctl core1-dev-set-openrouter-key --serial RFCT50EGFCN`, the
+authorized provider request, and mandatory
+`./tools/a33xctl core1-dev-clear-openrouter-key --serial RFCT50EGFCN`, then
+perform crash/AVC scrutiny, deterministic manifest verification, and soak.
+This host-only change does not claim a hardware pass.
+
+## 2026-08-18 — Add secret-free Core-dev credential status and raw acknowledgement I/O
+
+**Goal / continuation evidence:** Close the observability gap exposed by the
+exact r10 credential gate without widening the development client's authority.
+The independently verified continuation root
+`artifacts/device-gates/core-dev-20260818-10-rfct50egfcn-cont-02` recorded full
+no-Zygote readiness on serial `RFCT50EGFCN`, revision
+`sos.core1dev.e05f91bb6f0b.45b6c9467985`, exit 0 in 1.322605722 seconds. Its
+434-byte manifest has SHA-256
+`7354888d45fef3204fcccd640ff4f5cde6f21934134131acfbc9422e059f5c80`.
+The user then ran the hidden set command and reported `done`, but the v1
+protocol exposed only mutation acknowledgements, so the runner could not
+independently establish whether the in-process key was configured and did not
+issue a provider request.
+
+The runner performed the mandatory clear and independently verified
+`artifacts/device-gates/core-dev-20260818-10-rfct50egfcn-cont-03`. The exact
+secret-free result was `core1_dev_openrouter_key=CLEARED`, serial
+`RFCT50EGFCN`, exit 0 in 0.473658774 seconds; the experience logged
+`core_dev_credential state=cleared`. Follow-up inspection exited 0 in
+0.520751099 seconds with no scoped credential residue or leaked agent child,
+and no provider request had occurred. The 556-byte manifest has SHA-256
+`ee41e4d0c49c0cb379e07c4b593a2743fbd6cb0784abd80732e6fafbcdcd2a35`.
+Clear emitted two enforcing denials for `{ getattr }` from
+`u:r:sos_core_dev_credential:s0` to the inherited
+`u:r:adbd:s0` `unix_stream_socket`. The evidence collection also dumped the
+device's full shell environment; future verification recipes must capture
+only named safe markers, processes and scoped logs.
+
+**Change / protocol decision:** Canonical protocol v1 now adds zero-payload
+`STATUS` opcode `0x03` and secret-free `CONFIGURED`/`EMPTY` acknowledgements
+`0x05`/`0x06`. This is a compatible v1 extension: old probe/set/clear frames
+are unchanged, an old endpoint rejects the unknown STATUS opcode with
+`PROTOCOL_MISMATCH`, and the new client rejects either state acknowledgement
+for any non-STATUS operation. STATUS locks and reads the existing in-memory
+credential state but never returns credential bytes, length, hash, provider
+material or any other derived value and never mutates the state. The C++ and
+generated Rust constants, golden vectors, decoder, endpoint dispatch and
+cross-language integration share this one header contract.
+
+The client no longer uses `fputs`, `fprintf` or any buffered stdio API on its
+inherited descriptors. Every bounded static success or secret-free error
+fragment uses checked, EINTR-safe `write` completion; a failed stdout
+acknowledgement is nonzero and leaves host state unknown. This removes the
+libc stdio metadata probe that is the current best explanation for the exact
+inherited-adbd-socket `getattr` denials. No `getattr`, broader socket class,
+property, file, log, Binder, capability, network or executable-memory allow
+was added; the existing adbd socket permission remains exactly `{ read write
+}`. The next hardware run must confirm the causal hypothesis by observing no
+scoped client AVC.
+
+`core1-dev-status-openrouter-key --serial SERIAL` uses the same exact `adb
+shell -T -- /system_ext/bin/sos-core-dev-credential status` transport with
+closed stdin and prints only `core1_dev_openrouter_key=CONFIGURED|EMPTY` plus
+the validated serial. Set still accepts one hidden terminal line through
+stdin only, but after exact `SET` it requires a separate STATUS result of
+`CONFIGURED`; clear similarly requires `EMPTY` after exact `CLEARED`. The
+shared byte parser permits only one exact LF or CRLF line and rejects missing
+newlines, extra output, whitespace, prefixes, suffixes, NULs, stderr or a
+nonzero exit. Probe, status and clear never inherit stdin, and no verification
+recipe captures the device environment.
+
+**Bounded host evidence / remaining gate:** `./tools/a33xctl
+check-core-dev-credential` passed the expanded focused CIL policy compile,
+Android/Bionic AArch64 C++ compile, product exclusion checks and 12-test real
+production C++-client/Rust-endpoint suite. That suite covers configured/empty
+transitions, rejected set followed by clear, exact golden frames, old/new
+mismatch rejection, fragmentation, concurrent non-mutating status reads,
+secret zeroization ownership, full stdout/stderr writes and failed stdout
+acknowledgement. `tests/a33xctl-host-test.sh` passed state transitions,
+post-mutation verification, closed stdin, exact no-PTY argv and the LF/CRLF
+plus ambiguity matrix. ARM64 Android `cargo check --locked -p sos-experience
+--lib --no-default-features --features core-dev-credential --target
+aarch64-linux-android` passed with the pinned NDK 29 API-31 toolchain; Bash
+syntax, Cargo format and diff hygiene passed. No full build, device command,
+credential use or provider request was performed for this change.
+
+Both ordinary Core 1 and Core-dev must be rebuilt because the shared protocol,
+client and endpoint inputs changed. The next paired host/device gate should
+run `check-core-dev-credential`, `build-core1`/`inspect-core1`, then
+`build-core1-dev`/`inspect-core1-dev`, preserving distinct artifact revision,
+size and SHA-256. After explicit authorization for that exact Core-dev OTA and
+serial, require complete no-Zygote readiness and an initial `EMPTY` status;
+run one hidden set and require automatic plus independent `CONFIGURED`, make
+the authorized provider request, perform mandatory clear and require automatic
+plus independent `EMPTY`, then capture scoped crash/AVC/process evidence,
+soak, finalize and independently verify the deterministic manifest. This
+host-only evidence does not claim either image build or hardware gate passed.
+
+## 2026-08-18 — Make Core agent requests secret-safe and transport-classifiable
+
+**Goal / r11 failure evidence:** Make every serialized Core agent request leave
+bounded start and terminal evidence without exposing request or provider content,
+after the exact Core-dev r11 live gate reached revision
+`sos.core1dev.e05f91bb6f0b.21d92e761f9f`, passed complete no-Zygote readiness,
+passed hidden SET plus an independent `CONFIGURED` STATUS, and then showed a DNS
+error in the UI for exactly one simple prompt on the pinned
+`deepseek/deepseek-v4-flash-0731` model. The 5,831-byte
+`artifacts/device-gates/core-dev-20260818-11-rfct50egfcn-cont-02/safe-request-window.txt`
+has SHA-256
+`f4fd3b4b035ee518f41913c3b76701f6ffa8e0f4b5e222ccd76c3ec88bbe9a5d`.
+It contained no safe request/model, timing, child-exit, lifecycle, or DNS-category
+marker, so the visible error could not classify the failing layer and no retry was
+allowed. Mandatory remote clear then passed in 1.699027181 seconds; the 137-byte
+`clear.txt` has SHA-256
+`0ddca1b7b81905c1d7feb706569919515e886fe7b283f8ffc77059f43fb90b3c`,
+and the independent 135-byte `status-empty.txt` has SHA-256
+`6cd7a9a159e97868876f331b55a4ad75ddcab373419c06e16dead41863abb53a`.
+The deterministic manifest was independently verified and the final state was
+stable Core with no credential or child residue. This is cleanup evidence, not a
+provider-request PASS.
+
+**Root cause / lifecycle change:** The UI-to-provider path was
+`agent_submit` → trusted Rust `run_live`/`run_core_pi` → fixed Node stdio runner →
+Pi/OpenRouter. Rust logged only after a successful spawn and after parsing the last
+stdout line; Node could collapse a transport exception into Pi's arbitrary
+`errorMessage`; and neither a completed stdin write nor the final UI state had a
+mandatory marker. A serialized request now logs acceptance with the exact pinned
+model, child PID plus expected `sos_core_agent` domain and fixed OpenRouter
+identity, successful bounded stdin completion, child code/signal including forced
+cleanup, validated protocol-v2 response header, and one safe request terminal.
+The UI logs its own completed/failed terminal. Existing exact action ordinals,
+candidate validation, authority staging, authority commit, and presentation
+markers remain the authoritative success chain. Serialization, rather than a
+prompt-derived correlation value, joins the pre-candidate phase; later activation
+keeps its existing non-secret host request ID.
+
+**Taxonomy / protocol and security decision:** Node now observes the actual fetch
+exception code and numeric HTTP status before Pi turns failures into strings.
+Resolver `EAI_*`/`ENOTFOUND`, DNS timeout, DNS-proxy unavailability, connect
+timeout, refused, reset, unreachable network, TLS/certificate/handshake failure,
+credential rejection, rate limit, other numeric HTTP rejection/unavailability,
+protocol/child failure, and `unknown` are distinct. HTTP evidence is only an
+integer from 100 through 599. Transport classification uses structured `code` or
+`errno` fields and never exception/provider message text; if Pi reports an error
+without a trusted observation it becomes `unknown` before tool-sequence checking.
+The final bounded stdout object carries protocol version, terminal state, an
+allowlisted stage/category, optional numeric status, and fixed safe text. Rust
+rejects a missing/mismatched version or terminal, re-allowlists every field, and
+maps unknown input to `unknown`. Prompt, response, credential, headers, URL query,
+provider body, child stdout/stderr, and tool arguments/results are never logged;
+child stderr remains connected to `/dev/null`. Tests include malicious strings
+containing DNS codes and fake log lines and prove they cannot select a category or
+enter a marker.
+
+A separate zero-credential diagnostic command was deliberately not added. The
+existing production OpenRouter preflight already resolves the fixed
+`openrouter.ai` name in the same `sos-node`, `--jitless`, `sos_core_agent` child
+immediately before Pi transport, now returns a structured terminal, and is the
+specific layer r11 needed to expose. Adding a second dev-only host/client protocol
+and TLS implementation would duplicate rather than isolate that path; if the next
+gate passes DNS but fails connect/TLS, the instrumented production fetch supplies
+that next safe category without sending a diagnostic request.
+
+**Android policy verification / host evidence:** The checked Android platform
+sources show Bionic `getaddrinfo` opening `/dev/socket/dnsproxyd`, netd's connect
+hook using `/dev/socket/fwmarkd`, platform file contexts labeling those sockets
+`dnsproxyd_socket` and `fwmarkd_socket`, and `unix_socket_connect` expanding to
+the labeled `sock_file write` plus `netd:unix_stream_socket connectto` pair. The
+source and target-files inspectors now require both labeled paths, the dedicated
+domain transition, narrow `proc_meminfo` read, and TCP-443 `name_connect`; they
+continue to reject `netdomain`, host IP sockets, UDP/raw/ICMP, `net_dns_prop`,
+broad port connect, permissive/dontaudit, and `execmem`. No policy allow was added.
+
+`npm test` rebuilt the shared bundle and passed 17 tests covering all transport
+codes, HTTP classes, malicious messages, protocol terminals, and the formerly
+invisible r11 DNS case. A standalone Rust contract run passed seven tests,
+including allowlist injection rejection and child/activation ordering. The pinned
+NDK 29 API-31 AArch64/Bionic `cargo check --locked -p sos-experience --lib
+--no-default-features --features core-dev-credential --target
+aarch64-linux-android` passed. Cargo format, Bash syntax, and diff hygiene passed.
+The ordinary no-feature host test remains blocked by the pre-existing generated
+Core-dev test cfg (`STATUS_REJECTED`), unrelated to this change.
+
+**Decision / remaining risk / next paired gate:** Both ordinary Core 1 and
+Core-dev images must be rebuilt because the shared Rust runtime and Node bundle
+changed. After host build and inspection record each OTA's exact revision, byte
+size, and SHA-256. With fresh authorization for the exact Core-dev artifact and
+serial, the runner should perform one sideload transaction, require complete
+Core/no-Zygote readiness, initial STATUS `EMPTY`, hidden SET plus independent
+STATUS `CONFIGURED`, then submit exactly one bounded prompt on the pinned model.
+The safe window must contain one accepted marker, child domain/PID, request-written
+marker, child exit, protocol-v2 response header, exactly one terminal stage,
+category and optional numeric status, plus the UI terminal; success additionally
+requires all three action ordinals, candidate validation, authority stage/commit,
+and visible UI. Require mandatory clear plus independent STATUS `EMPTY`, scoped
+crash/AVC and child-residue scrutiny, soak, finalized evidence, and independent
+deterministic-manifest verification. The open hardware risk is whether Android's
+DNS proxy and confined TCP-443/TLS path work in `sos_core_agent`; no desktop check
+or this entry claims that gate passed.
+
+## 2026-08-18 — Keep Core DNS on netd and close inherited agent descriptors
+
+**Goal / terminal r12 evidence:** Diagnose the now-classified DNS failure from
+the exact Core-dev revision `sos.core1dev.e05f91bb6f0b.cdede92491c0` without
+granting the Node child generic networking or graphics authority. Complete
+Core/no-Zygote readiness and the hidden SET plus independent `CONFIGURED`
+STATUS were clean. One pinned-model request ran from `17:27:23.210` through
+`17:27:23.713`, a measured 0.503 seconds. The child was correctly
+`sos_core_agent`, exited 1, returned a protocol-v2 failed envelope, and ended
+at `stage=transport category=dns_resolution status=none`; no action,
+validation, stage, authority commit, or successful UI marker followed and no
+retry was attempted.
+
+The 23,197-byte evidence file
+`artifacts/device-gates/core-dev-20260818-12-rfct50egfcn-cont-02/safe-lifecycle.txt`
+has SHA-256
+`e3b3115df0eb4af95817152b619b6c7f701cd6cda30d310df2b3d6a31ec9a5d9`.
+It records enforcing `sos_core_agent` denials for inherited dma-buf descriptor
+`{ use }` against `u:r:hal_graphics_allocator_default:s0`, pipe `fifo_file
+{ ioctl }` with command `0x5401`, `net_dns_prop:file { read }`, and
+`self:udp_socket { create }`. Mandatory clear passed; `clear.txt` is 137 bytes
+with SHA-256
+`ae896b6147425a060023b0640ee2439af478a8e8bf0e99f767ee920bce7646a1`.
+Independent EMPTY status, child-residue and stability checks passed and the
+deterministic manifest was independently verified. This is a clean failure
+and cleanup result, not a live-provider PASS.
+
+**Resolver and ioctl diagnosis / policy decision:** The shipped Node
+`dns/promises.lookup` reaches `uv_getaddrinfo` on a `libuv-worker`, which calls
+Bionic `getaddrinfo`. Android's `dns_open_proxy` first creates and closes an
+IPv6 datagram socket as a network-eligibility probe, then opens the labeled
+`/dev/socket/dnsproxyd`; when that creation fails, Bionic returns `EAI_SYSTEM`
+and its obsolete local fallback tries `net.dns*` plus direct UDP. Core now
+allows exactly `sos_core_agent self:udp_socket create` so the supported proxy
+path can proceed. It grants no UDP read, write, bind, connect, ioctl, port, or
+node permission; neverallows prohibit every other self UDP permission, every
+UDP port permission, every UDP node permission, raw/ICMP, and the obsolete
+property. Direct UDP cannot be destination-port confined by this SELinux
+socket class, so direct DNS/53 was rejected instead of granting `net_domain`
+or a broad UDP client. The existing labeled dnsproxyd/fwmarkd Unix sockets
+remain the resolver/routing path, and the only IP destination permission is
+TCP `name_connect` to the port type bound to 443. The trusted host remains
+networkless and `execmem` remains prohibited.
+
+Command `0x5401` is `TCGETS`: Node/libuv calls `uv_guess_handle`/`isatty` to
+classify its pipe-backed standard streams during fixed startup, independent of
+color configuration. Policy adds the base fifo ioctl permission together with
+an explicit `allowxperm` for `TCGETS`; Android's global domain xperm also
+restricts fifo probing to that same harmless command. Generic fifo ioctl and
+all other commands remain rejected. Child stderr is still `/dev/null`.
+
+**FD boundary / implementation:** The Rust launcher now installs an
+async-signal-safe pre-exec callback after configuring its three standard
+streams. One atomic `close_range(3, UINT_MAX, CLOSE_RANGE_CLOEXEC)` marks every
+non-stdio descriptor for kernel closure at exec, including GPUI dma-bufs,
+surfaces, input/device handles and service sockets, while preserving Rust's
+private launch-error pipe until that boundary. A syscall failure aborts spawn,
+so unsupported kernels fail closed rather than leaking a descriptor. The
+stdin/stdout pipes are already duplicated onto 0/1 and survive; stderr remains
+the configured null descriptor at 2. The sanitized child-start marker states
+`fd_boundary=stdio_only`. A focused host contract deliberately removes
+`CLOEXEC` from an extra file descriptor, spawns through the production helper,
+proves the descriptor absent, and proves pipe-backed stdin/stdout still work.
+No dma-buf or broad ioctl allow was added.
+
+**Bounded host evidence:** The focused Core-agent CIL compiled with the tree's
+`secilc`; source and target-files inspectors now require creation-only UDP,
+dnsproxyd/fwmarkd, exact pipe `TCGETS`, stdio-only inheritance and TCP 443, and
+reject netdomain, property expansion, UDP bind/connect/read/write/ioctl,
+generic UDP ports/nodes, raw/ICMP, broad TCP destinations, permissive,
+dontaudit and execmem. `./tools/a33xctl check-core-agent-hardening` and the
+standalone `core-agent-contract-test` passed. `npm test` rebuilt the shared
+runner and passed all 18 tests, including both the classified DNS failure and
+the exact fixed-hostname success continuation. The pinned NDK 29 API-31 ARM64
+Bionic `cargo check --locked -p sos-experience --lib --no-default-features
+--features core-dev-credential --target aarch64-linux-android` passed. Cargo
+format and Bash syntax passed. The full desktop experience test remains
+blocked by the previously recorded generated Core-dev cfg and missing
+`xkbcommon` link libraries; the standalone test exercises the exact production
+FD source without GPUI. No full product build, device command, credential use,
+or provider call occurred in this implementation.
+
+**Remaining risk / next paired gate:** Both ordinary Core 1 and Core-dev must
+be rebuilt and inspected because they share the changed SELinux policy and
+Rust runtime. Preserve each OTA's exact revision, byte size and SHA-256 in
+finalized independently verified host evidence. After explicit authorization
+for the new Core-dev artifact and serial, use one runner for the complete
+transaction: sideload once with its inherent reboot, require exact Core
+no-Zygote readiness and initial `EMPTY`, perform hidden SET plus independent
+`CONFIGURED`, then issue exactly one pinned-model request. Require the child
+domain and `fd_boundary=stdio_only`, successful DNS/TLS/provider response,
+all three exact action ordinals, validation, authority stage/commit and visible
+UI, with no dma-buf/property/UDP/fifo/execmem AVC, crash, secret exposure or
+child residue. Mandatory clear plus independent `EMPTY`, scoped scrutiny,
+authorized soak, finalized manifest and independent verification remain
+required even if the request fails. This implementation does not claim either
+image build or hardware PASS.
+
+## 2026-08-18 — Start Core request evidence at UI submit and add a fixed dev smoke entry
+
+**Goal / r13 evidence:** Close the remaining pre-dispatch observability gap after
+Core-dev revision `sos.core1dev.e05f91bb6f0b.efba796de09e` passed complete
+no-Zygote readiness, hidden SET and independent `CONFIGURED` STATUS, but one
+owner-entered prompt produced another visible UI error with no request-accepted,
+request-start, child, terminal, model, action or DNS marker. The independently
+verified continuation root
+`artifacts/device-gates/core-dev-20260818-13-rfct50egfcn-cont-02` has a 620-byte
+manifest with SHA-256
+`ffc4588f2aab3ddc20ca8c7bd9c87a488163cd3406474d99361489958e68cc77`.
+Its 204-byte `safe-lifecycle.txt` has SHA-256
+`7326dea769d00894b8873a4b118dba26814d313d0d59f43f008917dcedb7088f`
+and contains only safe product/process headings, confirming that the attempt
+never reached the earlier Node-side lifecycle boundary. Final scrutiny completed
+in a measured 7.543186 seconds with no retry or soak. Clear had already started
+before the retention policy changed; it completed and independent STATUS returned
+`EMPTY`. The 137-byte `clear.txt` and 135-byte `status-empty.txt` have SHA-256
+`a4c8a3f07c94951c3f3176357d13a7c9679cb15a59420cfb66f87adb52559c71`
+and `e5a500017fb421870b9f7f77572244d13f03f078f014106f0adec4f210333425`.
+
+A separately captured 182,394-byte framebuffer at
+`artifacts/device-gates/core-dev-20260818-13-rfct50egfcn-cont-03/framebuffer.png`
+has SHA-256
+`1775df9cb9e363e7e4ff195cc2516d12e3d0accfcc8276e79a7b8aadf07c6de5`.
+It shows the live Core surface was offline: `0 network`, `Weather unavailable`,
+and the NETWORK card said `Choose network`. That makes an offline preflight the
+best current explanation for r13's lack of Node markers; r13 is not evidence of
+a new DNS-policy failure. The exact safe on-screen error text remains unknown.
+
+**UI lifecycle and error decision:** Every Android/Core `agent_submit`, whether
+delivered by native/IME submit, accessibility submit, or a tap action, now creates
+a monotonic process-local attempt before validation. `core_ui_attempt` records
+`attempt_received`, then either a preflight terminal or `dispatch_started`, and
+exactly one terminal. Fields are limited to the numeric attempt, allowlisted
+provider identity, pinned model, configured/busy/input-present booleans,
+allowlisted stage/category, status and `correlation=serialized`; prompt length,
+content or hash, credential material, response/UI text, and tool arguments/results
+never enter these markers. The protected submit queue cannot evict its one pending
+agent event. Worker-send, state-update/effect, missing or duplicate prompt effect,
+agent-thread spawn and update-channel failures are classified before display.
+
+One mapping now owns both safe terminal categories and fixed displayed text.
+Preflight distinguishes `empty_input`, `credential_missing`, `busy`,
+`model_policy`, and the new `network_unavailable`; dispatch/runtime failures use
+`dispatch_channel` and `runtime_start`; the existing transport, provider,
+protocol, child and candidate categories remain downstream. Unknown or injected
+provider/protocol values collapse to fixed `protocol/unknown` text. Routine
+`experience_model_refreshed` evidence moved from info to debug so it cannot bury
+request markers. Existing child, response-header, action-order, validation,
+authority-stage/commit and presentation evidence remains mandatory after
+dispatch.
+
+**Development-only fixed submit:** Canonical Core-dev protocol v1 adds the
+zero-payload `AGENT_SMOKE` opcode `0x04`, golden frame
+`53 4f 53 4b 01 04 00 00`. The dedicated authenticated client and endpoint accept
+it only on the exact Core-dev product and only while the in-process OpenRouter
+credential is `CONFIGURED`. It queues one bounded source-embedded non-secret
+request—create a visible item titled `Blue smoke check` with a fixed benign
+body—through the same `agent_submit` UI entry and therefore the same preflight,
+Lua action, Pi/tool sequence, candidate validation, authority activation and
+presentation path. It accepts no payload, argv prompt or environment prompt and
+returns only `core_dev_agent_smoke=SUBMITTED`. Ordinary Core still excludes the
+client, endpoint and operation. Host command `./tools/a33xctl
+core1-dev-submit-agent-smoke --serial SERIAL` independently requires STATUS
+`CONFIGURED` first and never clears on failure.
+
+**Credential retention / bounded host evidence:** Request failure does not call
+credential clear. A focused state test proves an invalid refreshed credential
+leaves the existing memory-only key configured until explicit clear; process exit
+still zeroizes it. The Core UI lifecycle suite passed 15 tests covering every
+preflight exit, offline classification, full ordered dispatch, dispatch/runtime
+and downstream terminals, one-terminal enforcement, injected content, all
+packaged composer strings, the fixed smoke string and the existing
+child/activation contract. The Core-dev suite passed
+19 production C++/Rust tests covering peer/product gates, exact frames, payload
+rejection, configured-only smoke submission, secret-free output, fragmented I/O,
+credential retention and explicit clear. `./tools/a33xctl
+check-core-agent-hardening`, `./tools/a33xctl check-core-dev-credential`,
+`tests/a33xctl-host-test.sh`, host `cargo check --locked -p sos-experience --lib`,
+Bash syntax and Cargo formatting passed. The pinned NDK 29 API-31 ARM64
+`cargo ndk -t arm64-v8a -P 31 check --locked -p sos-experience --lib
+--no-default-features --features core-dev-credential` passed. No full product
+build, device mutation, credential use or provider request was performed by this
+implementation.
+
+**Remaining risk / next paired gate:** Both ordinary Core and Core-dev images
+must be rebuilt and inspected because they share the UI runtime; record exact
+revision, byte size and SHA-256 for each. For the next authorized Core-dev device
+gate, require exact no-Zygote readiness, a validated network and initial STATUS
+`EMPTY`; perform hidden SET plus independent `CONFIGURED`, then invoke the fixed
+smoke command once. Capture the returned safe acknowledgement, one complete
+attempt lifecycle with exactly one terminal, all downstream request/action and
+authority evidence when dispatch starts, and a framebuffer proving either the
+fixed visible item or the fixed category-aligned error. After any failed request,
+STATUS must remain `CONFIGURED` and no automatic clear may occur. Clear remains an
+explicit final session boundary, followed by independent `EMPTY`, scoped
+crash/AVC/child scrutiny, finalized deterministic evidence and independent
+manifest verification. The open hardware risks are validated network setup and
+the previously unexercised live TLS/provider path; this host work claims no image
+build or hardware PASS.
+
+## 2026-08-18 — Bridge one Core-dev smoke request through ADB reverse CONNECT
+
+**Goal / retained r13 evidence:** Exercise the shared Core UI → Pi/OpenRouter →
+action validation → authority path even while native Wi-Fi provisioning remains
+absent. The finalized r13 framebuffer at
+`artifacts/device-gates/core-dev-20260818-13-rfct50egfcn-cont-03/framebuffer.png`
+is 182,394 bytes with SHA-256
+`1775df9cb9e363e7e4ff195cc2516d12e3d0accfcc8276e79a7b8aadf07c6de5`;
+it shows `0 network`, `Weather unavailable`, and `Choose network`, with no saved
+or validated Supplicant network and no Android Wi-Fi service on this no-Zygote
+product. A later read-only continuation proved that the user-retained memory-only
+credential is still present: the independently verified 158-byte manifest at
+`artifacts/device-gates/core-dev-20260818-13-rfct50egfcn-cont-05/device-continuation-manifest.tsv`
+has SHA-256
+`58266e08796843313cd01c2017235f8de59ae92b4c528275a99e6542bc41752f`.
+Its 55-byte `status.txt` has SHA-256
+`6a45c3ce2d5d5a0dee85a9764feb97c6507ab9d907a8d57fffcb128700370c56`
+and reports only `CONFIGURED`; the 85-byte `timing.txt` has SHA-256
+`646c202d697d3dfa6e39878a82b37685c09a8b56e5cb8d5376879658949d929c`
+and records a measured 0.460608322 seconds. No provider request, clear, or
+network mutation occurred in that continuation.
+
+**Architecture / production exclusion:** The authenticated zero-payload
+Core-dev `AGENT_SMOKE` operation now arms exactly one process-memory tunnel bit
+alongside its fixed benign prompt. The next received UI attempt consumes that
+bit into the attempt object, bypasses only the validated-network preflight, and
+retains all credential, busy, pinned-model, Pi tool-order, candidate-validation,
+authority and presentation checks. Dropping that attempt or completing its child
+drops the mode; no property, file, argv, environment variable, prompt parameter,
+key, hostname, model or response-print switch exists. Rust serializes only the
+fixed `coreDevProxy` value `http://127.0.0.1:37173` for that attempt. The
+Core-dev Node decoder accepts that exact value only with OpenRouter and the sole enabled model
+remains `deepseek/deepseek-v4-flash-0731`. It skips device DNS only in this mode
+and uses Undici `ProxyAgent` 7.29.0; target requests must still be HTTPS to exact
+`openrouter.ai` on port 443. Normal SNI, hostname and certificate validation are
+unchanged, so the host sees only the CONNECT authority and opaque TLS bytes.
+
+Core-dev packages a second filename for the immutable Node ELF and transitions it
+to `sos_core_dev_agent`. A product-exclusive policy directory alone labels that
+entrypoint and TCP 37173, and grants only this domain the fixed proxy-port
+`name_connect` permission. Ordinary Core packages neither the executable nor the
+credential client, compiles without the feature and product policy directory,
+and its existing `sos_core_agent` remains limited to the resolver plus TCP 443.
+The build produces a separate Core-dev runner at the ordinary immutable install
+path; the ordinary runner contains neither the proxy literal nor Undici
+`ProxyAgent`. Ordinary Core also cannot arm the mode and its SELinux domain cannot
+connect to the development port.
+
+The host relay `tools/core-dev-connect-bridge.py` binds an ephemeral IPv4 port on
+`127.0.0.1` only, accepts only syntactically bounded HTTP/1.1 `CONNECT
+openrouter.ai:443` with the matching single Host header, resolves/connects that
+one upstream on the host and copies bytes bidirectionally without logging headers,
+bodies, keys, TLS plaintext or response text. All other methods, authorities,
+ports, malformed framing, request bodies and CLI arguments are rejected. Command
+`./tools/a33xctl core1-dev-run-agent-smoke --serial RFCT50EGFCN` validates the
+exact Core-dev product and `CONFIGURED` state, starts that relay, installs only
+`adb reverse tcp:37173 tcp:<ephemeral-host-port>`, invokes the existing fixed
+smoke opcode, waits up to the existing 240-second provider budget plus cleanup
+margin for one sanitized UI terminal, captures only allowlisted lifecycle lines
+and a framebuffer, rechecks `CONFIGURED`, removes the reverse, stops the relay,
+and deterministically creates and verifies its evidence manifest. EXIT and signal
+traps remove the reverse and process; neither success, failure nor signal clears
+the credential.
+
+**Bounded host evidence / rejected approaches:** `npm test` rebuilt the 1.8 MiB
+ordinary and 2.8 MiB Core-dev single-file runners and passed 20 tests in 725 ms,
+including exact product exclusion, proxy/model decoding, target-host rejection
+and content-free observations. The initial
+Undici 7.16 pin was rejected after `npm audit` identified current advisories; the
+exact 7.29.0 pin reports zero production vulnerabilities. The Python relay suite
+passed three tests in 1.512 seconds for loopback bind scope, method/authority/
+framing rejection, opaque bidirectional relay and empty stdout/stderr.
+`tests/a33xctl-host-test.sh` passed in 3.2 seconds, including reverse setup/removal,
+safe terminal/framebuffer evidence, deterministic manifest verification,
+credential retention and cleanup on success, rejected submit and signal. The
+production C++/Rust protocol suite passed 19 tests in 0.03 seconds; the inherited
+FD/policy suite passed 16 in 0.01 seconds; both source gates passed. Pinned NDK 29
+API-31 ARM64 checks passed for both `core-native` in 0.80 seconds and
+`core-dev-credential` in 0.59 seconds. Bash syntax, Cargo formatting and diff
+hygiene passed. A generic HTTP proxy, arbitrary CONNECT target, key-bearing host
+proxy, TLS termination, persistent property/environment switch, ordinary-agent
+port grant and automatic credential clear were rejected because each would widen
+the development envelope or expose provider material.
+
+**Decision / remaining risk / next gate:** This bridge is a development-only way
+to validate the already shared runtime; it does not implement or validate native
+Wi-Fi provisioning and it does not claim a build, provider call, device gate or
+hardware PASS. The untested risks are Soong packaging of the product-exclusive
+policy, ADB reverse reachability from `sos_core_dev_agent`, Android Node/Undici
+CONNECT behavior, end-to-end provider TLS, and the live action/authority result.
+Next build and inspect ordinary Core with `build-core1`/`inspect-core1`, then
+Core-dev with `build-core1-dev`/`inspect-core1-dev`, preserving each exact revision,
+size and SHA-256 and proving ordinary absence plus development inclusion. After
+explicit authorization for that exact Core-dev OTA and serial, require complete
+no-Zygote readiness and `CONFIGURED`, then run exactly
+`./tools/a33xctl core1-dev-run-agent-smoke --serial RFCT50EGFCN`. Require one safe
+terminal, all downstream action/validation/authority markers on success, a
+framebuffer, no relevant crash or enforcing AVC, no residual reverse/bridge/child,
+an independently verified manifest, and a final independent `CONFIGURED` status;
+do not clear the credential automatically on either result.
+
+## 2026-08-18 — Give ordinary and Core-dev runners unique Soong install identities
+
+**Goal / r14 failure evidence:** Unblock the first paired build after the
+Core-dev CONNECT milestone without weakening the development boundary or
+changing Compat/Linux behavior. The ordinary `./tools/a33xctl build-core1`
+transaction stopped in ckati after a measured 137.424486486 seconds, before an
+OTA existed. Its finalized stderr at
+`artifacts/host-gates/core-dev-20260818-14/raw/build-core1.stderr` is 527,070
+bytes with SHA-256
+`8339f4ffd4537e7f54334d6deab2da601874b77895866cf45b5c6129fa3d4ed7`.
+The 8,601-byte source preflight at
+`artifacts/host-gates/core-dev-20260818-14/raw/preflight-source.txt` has SHA-256
+`beda70c7de00c3ae0dc7799605c9b80fc69baa4f56e760a2e64ddf37a6d394bf`;
+the independently verified manifest has SHA-256
+`8a8b97940e0a1cb49daa7d5d989336845e73abbe2aaded0df5b6063eb457f08e`.
+The retained device remains on r13 with its retained key; no device command or
+mutation was performed for this failure or fix.
+
+**Root cause / rejected approach:** `sos-agent-runner` and
+`sos-agent-runner-core-dev` were separate `prebuilt_etc` modules but both set
+`filename: "agent-runner.cjs"`. Soong emitted both install recipes into the
+ordinary product's generated installs makefile before product override
+filtering; lines 279249 and 279253 therefore produced the same
+`system_ext/etc/sos-agent/agent-runner.cjs` target and ckati rejected the second
+recipe. A module `overrides` relationship cannot make globally emitted Make
+targets unique, so same-destination conditional replacement was rejected.
+
+**Fix / invariants:** The Core-dev module now has distinct source, module and
+installed-file identities ending in `agent-runner-core-dev.cjs`; the
+feature-gated Core runtime selects that exact immutable path while ordinary
+Core keeps `agent-runner.cjs`. Runner selection moved out of the shared product
+composition: every ordinary SOS A33x product explicitly selects only
+`sos-agent-runner`, while the Core-dev product selects only its development
+runner plus the existing credential client and distinct Node executable. The
+credential executable type, file context and client domain policy also moved
+into the existing product-exclusive Core-dev policy directory, leaving the
+ordinary shared policy free of credential, smoke-proxy and development Node
+symbols. Deterministic source/product/Soong audits now require one filename per
+runner module, forbid the obsolete override, verify every ordinary product's
+explicit selection and development exclusion, verify the Core-dev selection,
+and exercise the runtime contract under both feature sets. The only model
+remains `deepseek/deepseek-v4-flash-0731`; proxy authority, TLS certificate and
+hostname validation, credential protocol and SELinux network permissions are
+unchanged.
+
+**Bounded host evidence:** Ordinary and Core-dev contract builds each passed 16
+tests in 0.14 seconds (`cargo test --locked -q -p core-agent-contract-test
+--lib`, with and without `--features core-dev-credential`).
+`./tools/a33xctl check-core-dev-credential` passed the unique-install/product
+audit, Android client compile, policy expansion and 19-test cross-language
+protocol suite in 0.45 seconds. `bash tests/a33xctl-host-test.sh` passed in 2.78
+seconds. Bash syntax and `cargo fmt --all -- --check` passed together in 0.48
+seconds. No full Soong build, OTA inspection or hardware gate is claimed.
+
+**Decision / remaining risk / next paired gate:** The source-level collision is
+removed, but only fresh full builds can prove the generated install graph and
+target-files contents. The host runner must execute, in order,
+`./tools/a33xctl build-core1`, `./tools/a33xctl inspect-core1`,
+`./tools/a33xctl build-core1-dev`, and `./tools/a33xctl inspect-core1-dev`.
+Record each finalized OTA revision, byte size and SHA-256 and require exactly
+the ordinary runner in ordinary Core, exactly the distinct development runner
+and intended credential/proxy controls in Core-dev, and no development
+executable, module property or policy in ordinary Core. Do not touch the device
+until a new exact Core-dev artifact, serial and transaction envelope receive
+explicit authorization.
+
+## 2026-08-18 — Restore the sanitized accepted-request inspection marker
+
+**Goal / r15 failure evidence:** Resume the paired ordinary/Core-dev host gate
+without weakening the shared UI attempt lifecycle. The ordinary
+`./tools/a33xctl build-core1` command succeeded in a measured 376.847042027
+seconds, but `./tools/a33xctl inspect-core1` failed after 16.981760195 seconds
+because the GPUI runtime did not contain the required literal prefix
+`android_agent_request_accepted provider=`. The finalized 320-byte stderr at
+`artifacts/host-gates/core-dev-20260818-15/raw/inspect-core1.stderr` has SHA-256
+`af03d9cfcb55d26db6f53fcf63137c201557dab900ed0114740db078a5fec4a3`;
+the independently verified 754-byte evidence manifest at
+`artifacts/host-gates/core-dev-20260818-15/host-evidence-manifest.tsv` has
+SHA-256
+`02377fa09ff44b914d8aede1ef66d6ceac03611936a3996ecb39e9f9abaa9167`.
+The ordinary OTA in shared build output was not accepted or preserved after
+inspection failed. Core-dev build/inspection did not run and no device was
+touched.
+
+**Root cause / fix / invariants:** The accepted-request log had been placed on
+the correct successful agent-thread path, after the shared UI/Luau dispatch,
+but inserted the numeric attempt before `provider`; the binary therefore
+omitted the inspection contract's stable prefix. Acceptance also was not a
+one-way state in the attempt contract, leaving exactly-once behavior implicit.
+The attempt now advances from `DispatchStarted` to `Accepted` while constructing
+the marker. Construction is rejected before dispatch, after an early terminal,
+and on a second call. The production path logs that returned marker once only
+after thread creation has accepted the request. Its fields are limited to the
+allowlisted provider/model, pinned-policy label, numeric attempt and fixed
+correlation label; prompt, key, response and arbitrary provider text cannot
+enter it. This remains distinct from the earlier `core_ui_attempt
+event=dispatch_started` event. Terminal taxonomy, fixed smoke prompt, retained
+credential, development proxy tunnel, ordinary-product exclusion,
+Compat/Linux paths and exact model `deepseek/deepseek-v4-flash-0731` are
+unchanged.
+
+**Bounded host evidence / next gate:** `cargo test --locked -q -p
+core-agent-contract-test --lib` passed 18 tests in 0.01 seconds both without and
+with `--features core-dev-credential`. New cases prove received → dispatch →
+accepted ordering, exactly one accepted marker, no accepted marker for an early
+credential rejection, and sanitization of injected provider/prompt/key/response
+content. Targeted Cargo formatting and the complete
+`./tools/a33xctl check-core-agent-hardening` source/policy/contract gate passed;
+`./tools/a33xctl check-core-dev-credential` also passed its exact-model,
+cross-language protocol, Android compile, peer-policy and production-exclusion
+checks with 19 tests in 0.02 seconds. The broader `cargo test -p sos-experience
+android_agent_contract::tests --lib` could not start these tests because
+unrelated in-progress `core_dev_credential.rs` code lacks `STATUS_REJECTED` in
+five places; no change to that work was made. Fresh artifacts are still
+required: rerun the complete paired sequence `./tools/a33xctl build-core1`,
+`./tools/a33xctl inspect-core1`, `./tools/a33xctl build-core1-dev`, and
+`./tools/a33xctl inspect-core1-dev`, preserving exact accepted artifact
+revision, byte size and SHA-256 plus finalized independently verified evidence.
+No hardware PASS is claimed.
+
+## 2026-08-18 — Restore exactly-once sanitized request-terminal evidence
+
+**Goal / r16 failure evidence:** Continue the paired ordinary/Core-dev host
+gate without weakening the shared attempt state machine. The ordinary
+`./tools/a33xctl build-core1` command passed in a measured 219.495510590
+seconds, then `./tools/a33xctl inspect-core1` failed after 17.146491019 seconds
+because the AArch64 GPUI runtime omitted the required stable prefix
+`android_agent_request_terminal stage=`. The finalized 317-byte stderr at
+`artifacts/host-gates/core-dev-20260818-16/raw/inspect-core1.stderr` has SHA-256
+`250f7f1a9ee8e269cb0085597a0060f4f6a605087d2f2b35488df12b27b3b20d`.
+The independently verified 754-byte manifest at
+`artifacts/host-gates/core-dev-20260818-16/host-evidence-manifest.tsv` has
+SHA-256
+`be11d59ae9cf49b92310aa4b132e0a7e398d654a586b86bc4261cb30218c7728`.
+The unaccepted ordinary OTA remained only in shared build output at
+`/home/carlid/dev/lineage-a33x/out/target/product/a33x/lineage-23.0-20260818-UNOFFICIAL-sos_core1_a33x.zip`:
+revision `sos.core1.e05f91bb6f0b.b6271158153b`, 1,022,158,073 bytes, SHA-256
+`afad4cb139d62dd9a4b2dc14965c207b07ffe1f4e2e3e637071df44f5bc78c22`.
+Core-dev build/inspection did not run, no OTA was accepted, and no device was
+touched.
+
+**Root cause / fix / lifecycle audit:** The attempt state machine still made a
+single one-way `Terminal` transition for preflight rejection, dispatch/runtime
+failure and provider success/failure, but the centralized emitter rendered
+only `core_ui_attempt event=terminal`; the request-terminal prefix required by
+both `inspect-core1` and `inspect-core1-dev` had been dropped. The same audit
+found the next required stable prefix, `android_agent_ui_terminal status=`, was
+also absent. Both are now derived from the one terminal event, so neither can
+be constructed for received/dispatch events and a second terminal transition
+remains rejected. Request evidence begins with `stage` and UI evidence with
+`status` exactly as the inspectors require. Metadata is limited to allowlisted
+stage/category/provider/model, fixed pinned-model policy and correlation
+labels, and the numeric attempt ID; no key, prompt, response, arbitrary error
+or provider content is accepted. The source hardening audit now checks the
+exact field-order prefixes for every native lifecycle marker consumed by the
+two inspectors. The remaining inspected lifecycle/evidence prefixes already
+matched their emitters. Predispatch attempt receipt, accepted-before-terminal
+ordering and exactly-once acceptance, early-exit taxonomy, credential
+retention, Core-dev fixed smoke/proxy path, ordinary exclusions, Compat/Linux
+behavior and exact-only `deepseek/deepseek-v4-flash-0731` policy are unchanged.
+
+**Bounded host evidence / failure / next paired gate:** `cargo test --locked -q
+-p core-agent-contract-test --lib` passed 19 tests in 0.01 seconds both without
+and with `--features core-dev-credential`. The added semantic coverage proves
+exactly one request terminal for success, post-dispatch failure and early
+rejection; accepted/terminal order; both stable prefixes; rejection of terminal
+marker construction from nonterminal events; and sanitization of injected
+provider, prompt, key, response and error text. `./tools/a33xctl
+check-core-agent-hardening` passed its exact-prefix source audit, policy
+expansion and contract suite in 0.25 seconds; Bash syntax, Cargo formatting and
+diff checks passed. The broader `cargo test --locked -q -p sos-experience
+android_agent_contract::tests --lib` still cannot compile because unrelated
+in-progress `core_dev_credential.rs` code lacks `STATUS_REJECTED` in five
+places; that work was not changed. No new product build or hardware PASS is
+claimed. The runner must execute the paired gate in order:
+`./tools/a33xctl build-core1`, `./tools/a33xctl inspect-core1`,
+`./tools/a33xctl build-core1-dev`, then `./tools/a33xctl inspect-core1-dev`.
+Preserve each distinct accepted OTA revision, byte size and SHA-256 plus a
+finalized independently verified evidence manifest; do not touch hardware
+without a new exact artifact/serial authorization envelope.
+
+## 2026-08-18 — Carry the authenticated Core-dev tunnel through the complete preflight
+
+**Goal / terminal r17 evidence:** Run the exact fixed Core-dev smoke once on
+`RFCT50EGFCN` through the already established loopback CONNECT bridge and ADB
+reverse. It stopped before child or provider dispatch at
+`stage=preflight category=network_unavailable` in 1.149496247 seconds. Bridge
+cleanup passed, post-failure Core no-Zygote readiness passed, the memory-only
+credential remained `CONFIGURED`, and no retry occurred. The finalized evidence
+root is
+`/home/carlid/dev/sos/artifacts/device-gates/core-dev-20260818-17-rfct50egfcn-cont-01`;
+its independently verified manifest has SHA-256
+`e240f753804191fca1c01ff8bac3f557922414266accef182756b37d6eccdad4`.
+The framebuffer at
+`/home/carlid/dev/sos/artifacts/device-gates/core-dev-smoke-20260818T184949Z-rfct50egfcn/framebuffer.png`
+is 205,090 bytes with SHA-256
+`29b89df9c191f7189920f0d1c3453d141f6c250a90aadddcffd12e5c90bff374`.
+This is a terminal failed smoke, not a provider, latency, or hardware PASS.
+
+**Root cause / fix / invariants:** Receipt-time preflight consumed the armed
+tunnel bit and allowed the offline fixed request, but `start_agent_prompt`
+performed a second preflight using only the physical connectivity snapshot. It
+therefore discarded the attempt-local tunnel decision after the shared Luau
+dispatch and emitted the observed false `network_unavailable` terminal. The two
+independent atomics also allowed an ordinary UI submission arriving between arm
+and fixed-event delivery to steal the tunnel bit.
+
+The Core-dev-only authenticated callback now arms one mutex-protected,
+process-memory authorization. The render thread consumes it once while creating
+only the exact fixed prompt and moves an explicit `CoreDevFixedTunnel` transport
+mode into the attempt snapshot; ordinary submissions always use
+`ValidatedNetwork` and cannot consume the authorization. Consumption clears the
+pending state before every preflight, queue, dispatch, or terminal path, and a
+process abort discards the memory-only state. The fixed constructor rejects a missing/consumed authorization, wrong
+transport, non-OpenRouter provider, or changed prompt, and the later preflight
+revalidates both the prompt and the attempt transport. Credential, busy and
+provider identity are still rechecked. The sole model remains
+`deepseek/deepseek-v4-flash-0731`; the serialized endpoint remains exactly
+`http://127.0.0.1:37173`, the Node decoder and host bridge retain exact
+`openrouter.ai:443`, and end-to-end TLS hostname/certificate validation is
+unchanged. The authorization, prompt, proxy, development Node path and tunnel
+log label are all compiled out of ordinary Core; Compat, Linux and ordinary UI
+requests retain validated-network preflight.
+
+A separate readiness handshake was rejected for this fix: only the confined
+Core-dev child domain has authority to connect to TCP 37173, so probing it from
+the UI host would widen SELinux authority, while launching an extra child would
+expand the single fixed request protocol. Actual loopback, reverse, CONNECT and
+upstream failures continue through the existing secret-free transport taxonomy
+(`connect_refused`, `connect_reset`, `connect_timeout`, `network_unreachable`,
+or TLS failure) rather than being mislabeled as physical-network preflight.
+
+**Bounded host evidence:** The contract suite passed 21 tests both without and
+with `core-dev-credential`, covering offline fixed-tunnel dispatch, ordinary
+offline rejection, missing/forged/consumed state, one-use consumption before
+early and terminal exits, exact received → dispatch → accepted → terminal
+ordering, and sanitized markers. The cross-language credential protocol suite
+passed 20 tests, including failed-smoke credential retention. Node rebuilt both
+runners and passed 20 tests, including exact proxy/model/host/TLS policy and
+content-free transport classification. The loopback CONNECT bridge passed three
+tests. Pinned NDK 29 API-31 ARM64 checks and debug builds passed for ordinary
+`core-native` and `core-dev-credential`; byte inspection found none of the fixed
+tunnel prompt, proxy, Node path, or transport label in ordinary Core and found
+all four in Core-dev. Cargo formatting, Bash syntax and diff hygiene passed. No
+full product build, provider request, device operation, or hardware PASS occurred
+in this implementation phase.
+
+**Remaining risk / next paired host and device gate:** Rebuild and inspect fresh
+ordinary Core and Core-dev artifacts in order, preserve each accepted OTA with
+exact revision, byte size and SHA-256, and finalize and independently verify the
+host manifest. Ordinary inspection must prove the development prompt, proxy,
+Node path, credential endpoint and policy are absent; Core-dev inspection must
+prove the fixed counterparts are present. Only after a new exact artifact,
+serial and authorization envelope, require Core no-Zygote readiness and initial
+`CONFIGURED`, then run one fixed smoke through the bridge. Require received →
+dispatch → accepted → child → response/action/validation/activation → exactly
+one terminal ordering on success, or a category-aligned transport terminal on
+actual tunnel failure; also require credential retention, framebuffer, bridge/
+reverse/child cleanup, scoped crash and enforcing-AVC scrutiny, deterministic
+manifest verification, post-run readiness and the authorized soak. Do not retry
+or clear the credential automatically.
+
+## 2026-08-18 — Bind Core child launch identity and expose allowlisted spawn causes
+
+**Goal / terminal r18 evidence:** Diagnose the first authenticated Core-dev
+fixed-tunnel attempt that passed offline preflight but stopped before a child or
+provider existed. On `RFCT50EGFCN`, exact revision
+`sos.core1dev.e05f91bb6f0b.134e0611333f` (1,050,603,811 bytes, SHA-256
+`597623eac15b177c835f2c9f612702a0356c96f2185ee0dc4413da00c527f376`)
+emitted one queued → received → dispatch → accepted → start → terminal sequence
+and failed after 1.178944128 seconds at `stage=child
+category=launch_failure`. No provider or authority commit followed, reverse and
+bridge cleanup passed, Core no-Zygote readiness stayed healthy, and the
+memory-only credential remained `CONFIGURED`. The finalized continuation root
+is
+`/home/carlid/dev/sos/artifacts/device-gates/core-dev-20260818-18-rfct50egfcn-cont-01`;
+its 613-byte independently verified manifest has SHA-256
+`cf5aba5186ef8c16448fe6591fc226878cef50fd4cc6d246d1e2e3a6d14dabf8`.
+The 190,540-byte framebuffer at
+`artifacts/device-gates/core-dev-smoke-20260818T192516Z-rfct50egfcn/framebuffer.png`
+has SHA-256
+`7765fc280b63f866e88f16d3f3d92effe33a6ecc45eb1e8608e529ea85f87d5d`.
+This is a clean device failure, not a provider or hardware PASS.
+
+**Diagnosis / rejected hypothesis:** `launch_failure` is selected only when
+Rust `Command::spawn` fails, before Node can open its script argument. The r18
+runtime bytes contain both exact launch paths
+`/system_ext/bin/sos-node-core-dev` and
+`/system_ext/etc/sos-agent/agent-runner-core-dev.cjs`; inspected target-files
+contain the 0755 development Node and the 0644 development runner at those
+paths, with the exact `sos_node_core_dev_exec` file context and compiled
+`sos_core_host` → `sos_core_dev_agent` transition. Therefore the r14 runner
+rename did not leave the Rust launcher pointing at the ordinary filename and
+cannot explain this pre-Node terminal. The actual kernel spawn cause is not
+recoverable from finalized r18 evidence because the launcher collapsed every
+`io::ErrorKind` into one safe error and logged no path identity. Guessing a
+fallback path, scanning the image, widening SELinux, or reverting to the
+ordinary executable/domain was rejected because each would weaken the
+product-exclusive tunnel boundary without evidence.
+
+**Implementation / invariants:** Ordinary and development executable path,
+runner path, safe identity and expected domain now live in one feature-selected
+Rust `CoreChildLaunchContract`, used by both `Command` and its fixed argument
+array. This also corrects the successful Core-dev marker from the ordinary
+`sos_core_agent` label to `sos_core_dev_agent`. A failed spawn now emits one
+content-free marker with only the contract identities and an allowlisted cause:
+`path_missing`, `permission_denied`, `resource_exhausted`, `unsupported`, or
+`other`; no raw errno string, path supplied at runtime, key, prompt, response or
+provider body can enter it. The device smoke collector retains that marker.
+The lifecycle terminal remains `child/launch_failure`, so credential retention
+and exactly-once attempt semantics are unchanged.
+
+A cross-product contract test now ties each Soong module source and unique
+installed filename to its product package selection, compiled Rust executable
+and runner constants, SELinux executable context and domain transition, and the
+ordinary or proxy-enabled Node entrypoint. It also proves the C++ native host
+does not own a second child-launch path. Ordinary Core continues to select only
+the ordinary runner and contains no development package, proxy symbol or
+payload; Core-dev continues to select only its distinct proxy runner plus its
+dedicated executable/domain. The OpenRouter-only authority, end-to-end TLS,
+exact `deepseek/deepseek-v4-flash-0731` model, single-use peer-checked tunnel,
+credential retention, Compat and Linux paths are unchanged.
+
+**Bounded host evidence / remaining risk / next gate:**
+`core-agent-contract-test` passed 23 tests both without and with
+`core-dev-credential`; `check-core-agent-hardening`,
+`check-core-dev-credential`, the 20-test cross-language protocol suite, the
+host CLI mock and Bash syntax passed. `npm test` rebuilt both bundles and passed
+20 tests. Pinned NDK 29 API-31 ARM64 checks passed for `core-native` and
+`core-native,core-dev-credential` in 1.02 and 0.86 seconds. Cargo formatting
+passed. No full product build, device access, or provider request occurred.
+
+The source graph is internally consistent, but this telemetry milestone does
+not claim the underlying device spawn now succeeds. The runner must build and
+inspect fresh ordinary and Core-dev artifacts, preserving revision, byte size,
+SHA-256 and an independently verified manifest. Ordinary inspection must prove
+every development path, identity, proxy byte and policy symbol absent; Core-dev
+must prove the exact dedicated executable, runner, domain transition, proxy and
+new launch-failure marker present. After explicit authorization for that exact
+Core-dev artifact and `RFCT50EGFCN`, run exactly one fixed smoke with the same
+cleanup, readiness, credential-retention, screenshot, crash/AVC, soak and
+manifest gates. On another launch failure, the new allowlisted cause and fixed
+identities are the terminal evidence for a fresh implementation; do not add a
+fallback, retry, or clear the credential automatically.
+
+## 2026-08-18 — Support the Core device's Linux 5.10 FD boundary and install r20
+
+**Goal / terminal r19 evidence:** Resolve the remaining pre-provider child
+launch failure without removing the fail-closed inherited-descriptor boundary.
+The one authorized fixed smoke on `RFCT50EGFCN`, revision
+`sos.core1dev.e05f91bb6f0b.b08da7ae929f`, reached request acceptance and then
+terminated after 1.179517887 seconds at `stage=child
+category=launch_failure cause=other expected_domain=sos_core_dev_agent`.
+Bridge/reverse cleanup, post-failure readiness and credential retention passed;
+no child, provider or authority commit existed and no retry ran. The finalized
+evidence root is
+`/home/carlid/dev/sos/artifacts/device-gates/core-dev-20260818-19-rfct50egfcn-cont-01`;
+its independently verified manifest has SHA-256
+`a0cc7875b49caee683a1a6abfac2b384541938716084ed82c6df139ae9c3f4ca`.
+
+**Root cause / rejected approaches:** `Command::spawn` runs the Core FD boundary
+in a `pre_exec` callback before `execve`. That boundary called
+`close_range(3, UINT_MAX, CLOSE_RANGE_CLOEXEC)`. The live device reports Linux
+`5.10.239-android12-9`, an open-file soft limit of 32,768, and no launch-time
+SOS AVC. The pinned Samsung kernel source confirms the cause directly:
+`kernel/samsung/s5e8825/include/uapi/linux/close_range.h` defines only
+`CLOSE_RANGE_UNSHARE`, while `fs/file.c::__close_range` rejects every other flag
+with `-EINVAL`. Rust maps this callback error to `ErrorKind::Other`, exactly
+matching r19. The packaged development Node is a valid AArch64 Android-31 ELF
+and matches the staged source byte-for-byte at SHA-256
+`e1e6cf7de807baea6fa1d2a81bd6da29d777ab08149645431ebbe283bda33607`;
+the runner path, executable label and domain transition also match. This
+disproves missing-path, invalid-ELF and SELinux-transition hypotheses.
+
+Removing the FD boundary or falling back to `close_range(..., 0)` was rejected.
+The latter would close Rust's private exec-error pipe before `execve`, allowing
+an exec failure to look like a successful spawn. A launcher/path fallback was
+also rejected because it would duplicate the already consistent product and
+SELinux contract.
+
+**Implementation / invariants:** `core_child_fds.rs` now keeps the atomic Linux
+5.11+ CLOEXEC path. Only `EINVAL` or `ENOSYS` selects an Android-5.10-safe
+fallback: `getrlimit(RLIMIT_NOFILE)` followed by async-signal-safe
+`fcntl(F_GETFD/F_SETFD, FD_CLOEXEC)` across descriptors 3 through the soft
+limit. Closed descriptors are skipped only on `EBADF`; every other failure
+aborts spawn. This marks Rust's launch-error pipe close-on-exec without closing
+it early, and every inherited GPUI, dma-buf, surface, input, service and device
+descriptor is still removed by successful exec. There is no network, SELinux,
+TLS, endpoint, model, credential, prompt or lifecycle relaxation. Ordinary
+Core and Core-dev use the same hardened helper; development proxy code remains
+absent from ordinary Core. The sole provider model remains
+`deepseek/deepseek-v4-flash-0731`.
+
+**Bounded tests and r20 host acceptance:** Both ordinary and
+`core-dev-credential` contract variants passed 25 tests. New coverage proves
+the exact `EINVAL`/`ENOSYS` fallback decision, rejects `EPERM`, marks a real open
+descriptor CLOEXEC, ignores adjacent closed descriptors, preserves the
+pipe-backed standard streams and preserves exec-failure reporting. The Core
+hardening gate passed 25 tests and the development credential/product gate
+passed 20 protocol tests, including production exclusion.
+
+Full ordinary build/inspection passed in 230.37/18.73 seconds; the final
+preservation rebuild/inspection passed in 236.27/18.63 seconds. The preserved
+ordinary OTA is
+`artifacts/host-gates/core-dev-20260818-20/artifact-set/sos.core1.e05f91bb6f0b.abf3316c338b-ordinary-ota.zip`,
+revision `sos.core1.e05f91bb6f0b.abf3316c338b`, 1,022,193,395 bytes, SHA-256
+`6018e63e60a12e387e34fb8cf5ebf8db297899b69243d325099e6600bfd1e79d`.
+Core-dev build/inspection passed in 239.96/20.64 seconds. Its preserved OTA is
+`artifacts/host-gates/core-dev-20260818-20/artifact-set/sos.core1dev.e05f91bb6f0b.ed5b8200ec30-dev-ota.zip`,
+revision `sos.core1dev.e05f91bb6f0b.ed5b8200ec30`, 1,050,592,959 bytes,
+SHA-256
+`6dc93cb0d09e5163796fe77c16bb9ccd7086a40103620bdebd6460597483db85`.
+The independently verified artifact manifest has SHA-256
+`b8a1c805c7f9c12acb73111ea988c59a3704cfe9280fb9d185265819cf941c00`;
+the independently verified complete host manifest has SHA-256
+`00c4e981e5cbb983b1ff10ad624c77030019dbc99799ffc85bb0155d82292054`.
+
+**r20 install evidence / next gate:** The exact Core-dev OTA was installed on
+`RFCT50EGFCN` with `sideload-auto-reboot`, `wait-for-sideload` and exactly one
+`adb sideload`; the steps completed in 2.44, 19.59 and 83.44 seconds and the
+transfer reported `Total xfer: 1.00x`. Its inherent reboot returned ADB in
+71.63 seconds. Exact no-Zygote readiness passed in 1.03 seconds, followed by
+eleven successful readiness samples over a measured 312.02-second soak. The
+memory-only credential is correctly `EMPTY`. The 182,351-byte framebuffer has
+SHA-256
+`b56ca69550dde22f99ab7403b70430936250557851adac8b91cac3eddb490f64`.
+The finalized device-install evidence root is
+`artifacts/device-gates/core-dev-20260818-20-rfct50egfcn`; its independently
+verified manifest has SHA-256
+`ca598ff38b1733081c01ff9b88919926e41417dd45fcd9c233a150c83fd25796`.
+Boot retains the previously known no-Zygote `odrefresh` abort and early
+`sos_core_host` denial while probing Android data; neither affected the exact
+native surface/process/adapter readiness predicates during the soak.
+
+The remaining gate is one hidden in-memory credential SET followed by one
+fixed autonomous tunnel smoke. Require child start in `sos_core_dev_agent`,
+CONNECT/TLS/provider completion, exact action validation and authority commit,
+one sanitized lifecycle terminal, bridge/reverse/child cleanup, framebuffer,
+credential retention, scoped crash/AVC review and a finalized independently
+verified continuation manifest. Do not retry or clear on failure.
+
+## 2026-08-18 — Restore Android's fwmark FD handoff before the Core network gate
+
+**Goal / decisive r20 evidence:** Determine whether the r20 Core-dev terminal at
+`stage=provider category=unknown` was an OpenRouter/provider failure or a broken
+device network path before making another provider-level change. The first r20
+fixed smoke proved the Linux-5.10 child-launch repair: Node started as
+`sos_core_dev_agent`, accepted the exact
+`deepseek/deepseek-v4-flash-0731` request, received its stdin frame and returned
+one protocol-v2 failure while the in-memory credential remained `CONFIGURED`.
+It did not prove CONNECT or TLS. A content-free bridge event log was therefore
+added for connection acceptance, fixed-authority validation, upstream connect,
+first encrypted transfer in each direction and terminal byte counts. It never
+records CONNECT headers, TLS bytes, credentials, prompts or provider bodies.
+Three bridge tests prove malformed/non-allowlisted rejection, bidirectional
+relay and absence of synthetic payload bytes from output; the host CLI mock
+also passes.
+
+The single instrumented retry on exact r20 revision
+`sos.core1dev.e05f91bb6f0b.ed5b8200ec30` failed after child request write with
+the same safe `provider/unknown` terminal, but its bridge event file is exactly
+zero bytes: the device never opened TCP 37173. The finalized smoke root is
+`artifacts/device-gates/core-dev-smoke-20260818T213450Z-rfct50egfcn`; its
+independently verified 10-file manifest has SHA-256
+`da6f3ec13168d8ce05bc08d8ca0b82b30596ecfbadcf70a21597e92c6c721fcb`.
+The framebuffer is 180,944 bytes with SHA-256
+`ffa5a7dcee44a6c71b44be04d50fefc63e0dfcd39f97247cfbb3f27cefddb991`,
+reverse/bridge cleanup passed, and the key remained `CONFIGURED`. Separately,
+host lookup and TCP connect to `openrouter.ai` succeeded, `curl
+https://openrouter.ai/api/v1/models` returned HTTP 200 with certificate
+verification enabled, and `openssl s_client -verify_return_error` completed a
+TLS 1.3 handshake with `Verification: OK`. The bundled Pi catalog also reports
+the exact campaign model available. OpenRouter, host internet, model lookup and
+post-CONNECT TLS are therefore rejected as causes of this zero-connection
+failure.
+
+**Root cause / fix / boundary:** The live enforcing audit at the same child
+attempt records `netd` denied `{ use }` on an fd owned by
+`sos_core_dev_agent`. Bionic connects to Android's `fwmarkd`; that service
+passes the caller's already-created TCP fd to netd for socket marking before
+the kernel connect. The custom agent domains deliberately do not carry the
+broad `netdomain` attribute, so they did not inherit platform policy's
+reciprocal `allow netd netdomain:fd use`. The denial occurs before a SYN or ADB
+reverse connection and exactly explains the empty bridge trace. The separate
+`net_dns_prop` read denial is the structurally rejected obsolete fallback and
+is not required by the fixed numeric loopback proxy.
+
+Both ordinary and development Core agent policies now grant only `allow netd
+sos_core_agent:fd use` or `allow netd sos_core_dev_agent:fd use`. This lets
+netd act on a socket the confined child already owns; it does not let the child
+use netd fds, add `netdomain`, read DNS properties, create useful UDP traffic,
+connect to another port, or expand the ordinary/dev destination allowlists.
+Ordinary Core remains limited to labeled TCP 443, while Core-dev adds only the
+fixed labeled loopback TCP 37173. The focused CIL fixture and cross-product
+source contract require both reciprocal rules. The hardening gate passed 25
+tests, the Core-dev credential/product gate passed its 20 protocol tests, the
+host CLI mock passed, and the bridge suite passed three tests.
+
+**r21 host acceptance:** Fresh paired ordinary and Core-dev builds and full
+inspectors passed. Ordinary build/inspection took 238.58/18.61 seconds; its
+preserved OTA is
+`artifacts/host-gates/core-dev-20260818-21/artifact-set/sos.core1.e05f91bb6f0b.02bb8ff9a883-ordinary-ota.zip`,
+revision `sos.core1.e05f91bb6f0b.02bb8ff9a883`, 1,022,188,681 bytes, SHA-256
+`d2c595bc62eafc44ce873d66611e329608b81785846d5b868573d408db5fe51c`.
+Core-dev build/inspection took 246.49/19.68 seconds; its preserved OTA is
+`artifacts/host-gates/core-dev-20260818-21/artifact-set/sos.core1dev.e05f91bb6f0b.b36b60685b37-dev-ota.zip`,
+revision `sos.core1dev.e05f91bb6f0b.b36b60685b37`, 1,050,593,972 bytes,
+SHA-256
+`01627cc3165bd949836065e41e1465a9964b86846298a4794e048d414fe12a40`.
+Both inspectors passed packaging, AVB, recovery, runtime/model and product
+separation gates; the development target CIL contains the exact new netd fd
+rule. The independently verified artifact manifest has SHA-256
+`f58e0f62284342ebb2c0e0c081c07b8a8de7ad9af41a8267912e51985e956315`;
+the independently verified 15-file host evidence manifest has SHA-256
+`52a7b253571a3e61cdae9eeab6d6f5c75af2746d0dab4ffe3ff587ccfabbfdb3`.
+
+**r21 install / next gate:** The exact development OTA was installed once on
+`RFCT50EGFCN` using `sideload-auto-reboot`; recovery became ready in 29.43
+seconds after the 2.39-second reboot command, sideload completed in 82.47
+seconds with `Total xfer: 1.00x`, and the inherent reboot returned ADB in 78.55
+seconds. Exact r21 no-Zygote readiness passed in 1.04 seconds with the `SOS Core
+Experience` surface, supervisor/experience, authority and platform adapter,
+current native lifecycle, and no relevant crash or enforcing AVC. The
+memory-only credential is correctly `EMPTY`. Install evidence is accumulating
+under `artifacts/device-gates/core-dev-20260818-21-rfct50egfcn` and remains open
+until its final framebuffer and manifest are captured.
+
+The next and only provider gate is to inject the hidden memory-only key once,
+then run one instrumented fixed smoke. Require a bridge connection, exact
+CONNECT acceptance, upstream connection and encrypted bytes in both
+directions before interpreting any provider terminal. On success also require
+the complete Pi action/validation/activation sequence and authority commit;
+on failure preserve the safe terminal plus bridge phase. In both cases retain
+the credential, clean bridge/reverse/child state, recheck exact readiness and
+scoped AVCs, capture the framebuffer, then finalize and independently verify
+all evidence. Do not clear or retry automatically.
+
+## 2026-08-19 — Complete the Core OpenRouter E2E with a shared JITless transport
+
+**Goal / r21-r22 network evidence:** Finish the fixed Core development smoke on
+`RFCT50EGFCN` without weakening the no-Zygote child, TLS, credential, model or
+destination boundaries. The first r21 image with reciprocal `netd` fd-use
+permission progressed past the original fwmark handoff, but the live audit then
+showed `netd` denied `{ read write }` on the TCP socket owned by
+`sos_core_dev_agent`. r22 therefore adopted the complete narrow passed-socket
+permission set used by Android's platform network domains: `netd` may use the
+agent fd and read, write, get/set attributes, and get/set socket options on that
+agent-owned TCP socket. It does not add `netdomain`, DNS-property access, UDP,
+another destination, another port, or any agent access to netd-owned fds. The
+same reciprocal rule is present for the ordinary Core agent domain.
+
+Fresh r22 Core-dev build and inspection passed in 243.51 and 19.16 seconds.
+The preserved artifact is
+`artifacts/host-gates/core-dev-20260818-22/artifact-set/sos.core1dev.e05f91bb6f0b.c8d621d5d06e-dev-ota.zip`,
+revision `sos.core1dev.e05f91bb6f0b.c8d621d5d06e`, 1,050,607,629 bytes,
+SHA-256
+`83a25e8a1a95d07756d05eac0370b09c27dedb680782af7e5d05d8ec52d7aa44`.
+Its independently verified artifact and host manifests have SHA-256
+`15802840bd95217c3b8d87d8dc46cc0b73be1c2182e4afcd2a6a51b9a2df29fa`
+and
+`d819b5b7ed8c20153e99fbd480bc8f9bf2200cf3cbe447e56b1cf906106a71ed`.
+The exact OTA installed once with autonomous sideload and reached exact native
+readiness; its finalized 25-file install manifest at
+`artifacts/device-gates/core-dev-20260818-22-rfct50egfcn/manifest.tsv` is 2,320
+bytes with SHA-256
+`6c45e6fb23f5bc21b807ceedef6124d287a2c9846d31ab5fbe7100620979d952`.
+
+The r22 instrumented smoke disproved another network-policy failure. The bridge
+accepted the ADB-reverse connection but then recorded
+`phase=read_connect category=connection`: the child closed the socket before
+sending any CONNECT bytes. There was no new relevant socket AVC, the sanitized
+runner terminal remained `provider/unknown`, reverse cleanup passed and the
+memory-only key remained `CONFIGURED`. The finalized evidence root is
+`artifacts/device-gates/core-dev-smoke-20260818T221428Z-rfct50egfcn`; its
+manifest has SHA-256
+`2373af93bb1936196766a7a42185e76e401c2fa7f8420b8ba23e4adeee931bd5`
+and its 181,308-byte framebuffer has SHA-256
+`0f4798e9722f23321042f7ec6d8543fac584ab17564d346980fbf4991f5050ea`.
+
+**Root cause / rejected approaches:** A real host reproduction using the exact
+bundled transport showed that `undici.ProxyAgent` under `node --jitless` opens
+and closes the proxy connection without writing CONNECT. Direct Undici fetch
+under `--jitless` progresses through TLS and then fails because Undici 7's
+`lazyllhttp` parser requires WebAssembly, while JITless disables WebAssembly.
+The same test without `--jitless` sends CONNECT and TLS. This exactly explains
+the r22 bridge trace and rejects OpenRouter availability, the key, DNS, the
+fixed port, ADB reverse and SELinux as causes. Disabling JITless, enabling
+WebAssembly/JIT, allowing plaintext provider traffic, broadening the child
+network domain, or weakening the fixed authority validator were rejected. A
+separate real-client test found that a standards-compliant CONNECT request may
+send `Host: openrouter.ai` when port 443 is implicit; the bridge now accepts
+only that form or `Host: openrouter.ai:443`, while still requiring the exact
+CONNECT target `openrouter.ai:443`.
+
+**Shared implementation:** The provider transport used by Linux, Compat and
+Core now defaults to `node-fetch` 3.3.2, which uses Node's native HTTP parser
+and works under JITless. A small shared adapter preserves Request method,
+headers, signal and body and converts the Node response stream to a Web
+`Response`/`ReadableStream`, matching Pi/OpenAI SDK streaming expectations.
+Core-dev alone supplies `HttpsProxyAgent` 7.0.6 and fail-closed redirect policy
+for the exact `http://127.0.0.1:37173` development proxy; its adapter still
+rejects every URL except HTTPS `openrouter.ai` on implicit or explicit port
+443. Ordinary Core contains neither the fixed proxy value nor proxy agent. The
+runner remains `--jitless`, only
+`deepseek/deepseek-v4-flash-0731` is accepted, TLS remains end to end from the
+confined child to OpenRouter, and no request, response, prompt or credential
+content is exposed to the host bridge or evidence.
+
+Host acceptance rebuilt both runner bundles and passed 21 Node tests, including
+Request/body preservation, Web-stream conversion, Core-dev-only proxy bytes,
+and absence of a WebAssembly marker. A real `node --jitless` integration test
+proved native HTTP sends the exact CONNECT request and starts TLS through the
+content-free bridge. The four-test bridge suite, 25-test Core hardening gate,
+20-test credential/protocol gate, Bash syntax and CLI mock all passed. npm's
+locked 102-package graph reported zero vulnerabilities.
+
+**r23 artifact / install:** Fresh Core-dev build and full inspection passed in
+242.04 and 19.44 seconds. The frozen OTA is
+`artifacts/host-gates/core-dev-20260819-23/artifact-set/sos.core1dev.e05f91bb6f0b.0be956df8e63-dev-ota.zip`,
+revision `sos.core1dev.e05f91bb6f0b.0be956df8e63`, 1,050,419,185 bytes,
+SHA-256
+`52eef9501d455587839f15f647c22408c19a8767e6f66716952b4d1f44379c56`.
+The independently verified artifact manifest is 127 bytes with SHA-256
+`33a744e9ce4a9196c6f0d31b6b8826fa6401de0f82660fb3f08394a3144500e5`;
+the complete eight-file host manifest has SHA-256
+`5ee93a6ad948f25c3b5f5e83a9d9b34275823c76d8d38e30340752d66f5aca01`.
+
+The exact r23 OTA was installed once on `RFCT50EGFCN` with
+`sideload-auto-reboot`. The reboot command, recovery readiness, sole sideload,
+inherent-reboot ADB return and exact readiness took 2.27, 29.43, 80.33, 87.80
+and 3.33 seconds; sideload reported `Total xfer: 1.00x`. Readiness proved the
+exact revision, `SOS Core Experience`, supervisor/experience child, authority,
+platform adapter and current native lifecycle with no relevant crash or
+enforcing AVC. The expected post-reboot credential state was `EMPTY`. The
+181,916-byte framebuffer has SHA-256
+`6928c416a53dbebad274c4f268d636f943eba829433988b2c5e83bf06f0403cc`.
+The independently verified 26-file install manifest at
+`artifacts/device-gates/core-dev-20260819-23-rfct50egfcn/manifest.tsv` is 2,417
+bytes with SHA-256
+`ef50d29aed3c96e79e0b0dd3ad47a165088c2e36b8c8ac52e6345b8d23c765fc`.
+
+**Live E2E PASS:** After one hidden in-memory key set, exactly one fixed smoke
+completed. The confined `sos_core_dev_agent` child used the pinned model and
+exited 0 with protocol-v2 `prompt_complete`. Pi produced and the native host
+verified exactly `get_experience_context`, `validate_experience`, and
+`submit_experience`. Four fixed-authority bridge connections each recorded
+CONNECT acceptance, upstream connection, encrypted relay in both directions
+and content-free terminal counts: device/upstream byte pairs were
+52,442/8,264, 69,432/39,776, 87,185/39,100 and 104,851/13,825. Candidate
+validation, authority staging and the final
+`android_agent_activation_commit ... phase=committed authority=system` all
+exist; the resulting `Blue smoke check` card is visible on the device. The key
+remains `CONFIGURED`, no reverse mapping remains, and exact readiness again
+passes without a relevant crash or enforcing AVC.
+
+The primary finalized smoke root is
+`artifacts/device-gates/core-dev-smoke-20260818T223442Z-rfct50egfcn`; its
+10-file, 858-byte manifest has SHA-256
+`7ed5677e72d99141f147eab039b02db0ecdc9536028cc91dc228384c29feb426`
+and its 183,391-byte framebuffer has SHA-256
+`7f4d5694ac63147a758f4157a6733f1d315f42afbf23bb922ba1ffe57a7df78b`.
+The collector initially stopped at the successful UI terminal just before the
+asynchronous authority commit log. The read-only continuation at
+`artifacts/device-gates/core-dev-smoke-20260818T223442Z-rfct50egfcn-cont-01`
+captures that exact commit, retained key, empty reverse list, post-commit
+readiness and framebuffer. Its independently verified six-file, 528-byte
+manifest has SHA-256
+`892190da0257bb9e5d551702f14834bd7ac21a9a76e3605642ad299cb37a2b63`.
+The smoke collector now reports `COMPLETED` only after both the exact successful
+UI terminal and system authority commit; its host mock asserts the commit and
+all focused gates pass after the correction.
+
+**Decision / remaining gate:** The Core development OpenRouter E2E gate passes,
+and the shared JITless transport is selected for all three runtime hosts. The
+credential remains deliberately memory-only and retained across failures or
+successful attempts, but still clears on reboot. The latest adapter has direct
+host coverage and Core hardware evidence; the prior Compat hardware E2E passed
+the same pinned Pi/action/authority contract before this transport replacement.
+Before declaring the transport replacement hardware-accepted across every
+product, rebuild/inspect Compat and repeat its fixed device E2E on this exact
+shared adapter. Also rebuild/inspect ordinary Core to close its packaging
+exclusion gate; neither step should change the proven Core-dev image. The
+keyboard product milestone can then replace LatinIME as Compat's default with
+the protected SOS IME while retaining explicit third-party Android IME opt-in.

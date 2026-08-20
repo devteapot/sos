@@ -1,0 +1,2 @@
+/system_ext/bin/sos-node-core-dev           u:object_r:sos_node_core_dev_exec:s0
+/system_ext/bin/sos-core-dev-credential     u:object_r:sos_core_dev_credential_exec:s0

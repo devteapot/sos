@@ -2,30 +2,230 @@
 
 set -euo pipefail
 
-[[ "$#" -ge 3 && "$1" == -s && "$2" == MOCKSERIAL ]] || exit 64
+[[ "$#" -ge 3 && "$1" == -s ]] || exit 64
+serial="$2"
+case "$serial" in
+  MOCKSERIAL|MOCKORDINARY|MOCKWRONGREV|MOCKWRONGTYPE|MOCKWRONGMARKER|MOCKMISSINGCLIENT|MOCKDENIEDCLIENT|MOCKENDPOINTDOWN|MOCKWRONGPEER|MOCKPROTOCOL|MOCKBADMAGIC|MOCKBADVERSION|MOCKBADSTATUS|MOCKSHORTIO) ;;
+  *) exit 64 ;;
+esac
 shift 2
+if [[ -n "${A33XCTL_MOCK_INVOCATION_LOG:-}" ]]; then
+  printf '%s\n' "$*" >>"$A33XCTL_MOCK_INVOCATION_LOG"
+fi
 
 case "$*" in
-  'shell getprop ro.build.version.incremental') printf '%s\r\n' 'sos.core1.test.revision' ;;
+  'shell getprop ro.build.version.incremental')
+    case "$serial" in
+      MOCKORDINARY) printf '%s\r\n' 'sos.core1.0123456789ab.cdef01234567' ;;
+      MOCKWRONGREV) printf '%s\r\n' 'sos.core1dev.not-a-digest.cdef01234567' ;;
+      *) printf '%s\r\n' 'sos.core1dev.0123456789ab.cdef01234567' ;;
+    esac
+    ;;
   'shell getprop ro.sos.core.stage') printf '1\r\n' ;;
   'shell getprop ro.sos.lifecycle') printf 'active\r\n' ;;
   'shell getprop ro.sos.profile') printf 'core\r\n' ;;
   'shell getprop ro.sos.providers') printf 'core-native\r\n' ;;
   'shell getprop ro.sos.ui_owner') printf 'native-sos-no-zygote\r\n' ;;
+  'shell getprop ro.sos.build_variant')
+    if [[ "$serial" == MOCKORDINARY ]]; then
+      printf 'core1-ordinary\r\n'
+    elif [[ "$serial" == MOCKWRONGMARKER ]]; then
+      printf 'core1-wrong\r\n'
+    else
+      printf 'core1-dev-credential\r\n'
+    fi
+    ;;
+  'shell getprop ro.sos.dev_credential')
+    if [[ "$serial" != MOCKORDINARY ]]; then
+      printf '1\r\n'
+    fi
+    ;;
+  'shell getprop ro.build.type')
+    if [[ "$serial" == MOCKWRONGTYPE ]]; then
+      printf 'user\r\n'
+    else
+      printf 'userdebug\r\n'
+    fi
+    ;;
+  'shell getprop ro.debuggable') printf '0\r\n' ;;
   'shell getprop ro.zygote') printf 'no_zygote\r\n' ;;
   'shell getprop init.svc.sos_core_host') printf 'running\r\n' ;;
   'shell getprop init.svc.sos_authority') printf 'running\r\n' ;;
   'shell getprop init.svc.sos_core_platform') printf 'running\r\n' ;;
   'shell getenforce') printf 'Enforcing\r\n' ;;
+  'shell date +%s') printf '1787040000\r\n' ;;
   'shell dumpsys SurfaceFlinger --list') printf 'Background\r\nSOS Core Experience\r\n' ;;
   'shell pidof sos-core-host') printf '921 932\r\n' ;;
   'shell pidof sos-authority') printf '941\r\n' ;;
   'shell pidof sos-core-platform') printf '942\r\n' ;;
+  'exec-out /system_ext/bin/sos-core-dev-credential probe')
+    [[ "${A33XCTL_MOCK_ALLOW_EMPTY_EXEC_OUT:-}" == 1 ]] || exit 65
+    # Reproduce the observed r10 exec-out transport: remote exit 0 with no
+    # bytes on either host stream.
+    [[ -z "$(dd bs=1 count=1 status=none 2>/dev/null)" ]] || exit 70
+    ;;
+  'shell -T -- /system_ext/bin/sos-core-dev-credential probe')
+    if [[ "${A33XCTL_MOCK_SHELL_T_UNSUPPORTED:-}" == 1 ]]; then
+      printf "adb shell: invalid option -- 'T'\n" >&2
+      exit 1
+    fi
+    if IFS= read -r -n 1 mock_unexpected; then
+      printf 'probe received unexpected stdin\n' >&2
+      exit 70
+    fi
+    if [[ "$serial" == MOCKSERIAL ]]; then
+      case "${A33XCTL_MOCK_PROBE_RESPONSE:-lf}" in
+        lf) printf 'core_dev_credential=READY\n' ;;
+        crlf) printf 'core_dev_credential=READY\r\n' ;;
+        missing-newline) printf 'core_dev_credential=READY' ;;
+        double-newline) printf 'core_dev_credential=READY\n\n' ;;
+        prefix) printf 'xcore_dev_credential=READY\n' ;;
+        suffix) printf 'core_dev_credential=READYx\n' ;;
+        whitespace) printf 'core_dev_credential=READY \n' ;;
+        extra-output) printf 'core_dev_credential=READY\nextra\n' ;;
+        stderr-output)
+          printf 'core_dev_credential=READY\n'
+          printf 'extra\n' >&2
+          ;;
+        nul) printf 'core_dev_credential=READY\0\n' ;;
+        wrong-status) printf 'core_dev_credential=SET\n' ;;
+        nonzero)
+          printf 'core_dev_credential=READY\n'
+          exit 68
+          ;;
+        *) exit 69 ;;
+      esac
+      exit 0
+    fi
+    case "$serial" in
+      MOCKORDINARY|MOCKMISSINGCLIENT)
+        printf '/system/bin/sh: /system_ext/bin/sos-core-dev-credential: not found\n' >&2
+        exit 127
+        ;;
+      MOCKDENIEDCLIENT)
+        printf '/system/bin/sh: /system_ext/bin/sos-core-dev-credential: Permission denied\n' >&2
+        exit 126
+        ;;
+      MOCKENDPOINTDOWN)
+        printf 'error: Core development credential request failed (endpoint_unavailable)\n' >&2
+        exit 1
+        ;;
+      MOCKWRONGPEER)
+        printf 'error: Core development credential request failed (wrong_peer)\n' >&2
+        exit 1
+        ;;
+      MOCKPROTOCOL)
+        printf 'error: Core development credential request failed (protocol_mismatch)\n' >&2
+        exit 1
+        ;;
+      MOCKBADMAGIC) category=bad_magic ;;
+      MOCKBADVERSION) category=bad_version ;;
+      MOCKBADSTATUS) category=bad_status ;;
+      MOCKSHORTIO) category=short_io ;;
+      *) printf 'core_dev_credential=READY\n' ;;
+    esac
+    if [[ -n "${category:-}" ]]; then
+      printf 'error: Core development credential request failed (%s)\n' "$category" >&2
+      exit 1
+    fi
+    ;;
   'logcat -d -b all -v threadtime')
     printf '%s\n' \
       '08-17 14:45:30.000 I sos-core-host: core1_experience_start ce_available=false native_synthetic_password=false de_storage=true' \
       '08-17 14:45:30.100 I sos-core-host: native_gpui_start width=1080 height=2400 density=450 ui_owner=native-sos-no-zygote' \
       '08-17 14:45:31.000 I sos-experience: SOS experience window is live frame_padding=none'
+    ;;
+  logcat\ -d\ -v\ brief\ -T\ 1787040000.000)
+    if [[ "${A33XCTL_MOCK_SMOKE_NO_TERMINAL:-}" != 1 ]]; then
+      printf '%s\n' \
+        'I/sos-experience: core_dev_agent_smoke state=queued prompt=fixed_non_secret transport=adb_reverse_connect' \
+        'I/sos-experience: core_ui_attempt event=attempt_received attempt=1 provider=openrouter model=deepseek/deepseek-v4-flash-0731 configured=true busy=false input_present=true stage=ui category=none status=pending correlation=serialized' \
+        'I/sos-experience: android_agent_child_start pid=77 expected_domain=sos_core_dev_agent provider_identity=openrouter model=deepseek/deepseek-v4-flash-0731 platform=core hardening=jitless fd_boundary=stdio_only stderr=discarded transport=adb_reverse_connect' \
+        'I/sos-experience: core_ui_attempt event=terminal attempt=1 provider=openrouter model=deepseek/deepseek-v4-flash-0731 configured=true busy=false input_present=true stage=ui category=completed status=completed correlation=serialized' \
+        'I/sos-experience: android_agent_activation_stage_ack request_id=77 revision=synthetic state_stage_id=2 phase=staged authority_committed=false' \
+        'I/sos-experience: android_agent_activation_commit request_id=77 revision=synthetic state_revision=3 source_sha256=synthetic phase=committed authority=system'
+    fi
+    ;;
+  reverse\ tcp:37173\ tcp:*) ;;
+  'reverse --remove tcp:37173') ;;
+  'exec-out screencap -p') printf '\211PNG\r\n\032\nmock-framebuffer' ;;
+  'shell -T -- /system_ext/bin/sos-core-dev-credential clear')
+    [[ "$serial" == MOCKSERIAL ]] || exit 66
+    if IFS= read -r -n 1 mock_unexpected; then
+      printf 'clear received unexpected stdin\n' >&2
+      exit 70
+    fi
+    printf 'EMPTY\n' >"${A33XCTL_MOCK_CREDENTIAL_STATE:?}"
+    case "${A33XCTL_MOCK_CLEAR_RESPONSE:-lf}" in
+      lf) printf 'core_dev_credential=CLEARED\n' ;;
+      crlf) printf 'core_dev_credential=CLEARED\r\n' ;;
+      extra-output) printf 'core_dev_credential=CLEARED\nextra\n' ;;
+      *) exit 69 ;;
+    esac
+    ;;
+  'shell -T -- /system_ext/bin/sos-core-dev-credential set')
+    [[ "$serial" == MOCKSERIAL ]] || exit 66
+    [[ "$*" != *mock-non-secret* ]] || exit 71
+    ! env | grep -F 'mock-non-secret' >/dev/null || exit 72
+    IFS= read -r mock_value
+    [[ "$mock_value" == mock-non-secret ]] || exit 67
+    if IFS= read -r -n 1 mock_unexpected; then
+      printf 'set received more than one input line\n' >&2
+      exit 70
+    fi
+    printf 'CONFIGURED\n' >"${A33XCTL_MOCK_CREDENTIAL_STATE:?}"
+    case "${A33XCTL_MOCK_SET_RESPONSE:-lf}" in
+      lf) printf 'core_dev_credential=SET\n' ;;
+      crlf) printf 'core_dev_credential=SET\r\n' ;;
+      extra-output) printf 'core_dev_credential=SET\nextra\n' ;;
+      *) exit 69 ;;
+    esac
+    ;;
+  'shell -T -- /system_ext/bin/sos-core-dev-credential status')
+    [[ "$serial" == MOCKSERIAL ]] || exit 66
+    if IFS= read -r -n 1 mock_unexpected; then
+      printf 'status received unexpected stdin\n' >&2
+      exit 70
+    fi
+    mock_state="$(<"${A33XCTL_MOCK_CREDENTIAL_STATE:?}")"
+    [[ "$mock_state" == CONFIGURED || "$mock_state" == EMPTY ]] || exit 73
+    case "${A33XCTL_MOCK_STATUS_RESPONSE:-lf}" in
+      lf) printf 'core_dev_credential=%s\n' "$mock_state" ;;
+      crlf) printf 'core_dev_credential=%s\r\n' "$mock_state" ;;
+      configured) printf 'core_dev_credential=CONFIGURED\n' ;;
+      empty) printf 'core_dev_credential=EMPTY\n' ;;
+      missing-newline) printf 'core_dev_credential=%s' "$mock_state" ;;
+      double-newline) printf 'core_dev_credential=%s\n\n' "$mock_state" ;;
+      prefix) printf 'xcore_dev_credential=%s\n' "$mock_state" ;;
+      suffix) printf 'core_dev_credential=%sx\n' "$mock_state" ;;
+      whitespace) printf 'core_dev_credential=%s \n' "$mock_state" ;;
+      extra-output) printf 'core_dev_credential=%s\nextra\n' "$mock_state" ;;
+      stderr-output)
+        printf 'core_dev_credential=%s\n' "$mock_state"
+        printf 'extra\n' >&2
+        ;;
+      nul) printf 'core_dev_credential=%s\0\n' "$mock_state" ;;
+      wrong-status) printf 'core_dev_credential=READY\n' ;;
+      nonzero)
+        printf 'core_dev_credential=%s\n' "$mock_state"
+        exit 68
+        ;;
+      *) exit 69 ;;
+    esac
+    ;;
+  'shell -T -- /system_ext/bin/sos-core-dev-credential agent-smoke')
+    [[ "$serial" == MOCKSERIAL ]] || exit 66
+    if IFS= read -r -n 1 mock_unexpected; then
+      printf 'agent-smoke received unexpected stdin\n' >&2
+      exit 70
+    fi
+    [[ "$(<"${A33XCTL_MOCK_CREDENTIAL_STATE:?}")" == CONFIGURED ]] || exit 74
+    case "${A33XCTL_MOCK_SMOKE_RESPONSE:-lf}" in
+      lf) printf 'core_dev_agent_smoke=SUBMITTED\n' ;;
+      crlf) printf 'core_dev_agent_smoke=SUBMITTED\r\n' ;;
+      extra-output) printf 'core_dev_agent_smoke=SUBMITTED\nextra\n' ;;
+      *) exit 69 ;;
+    esac
     ;;
   *)
     printf 'unexpected mock adb arguments: %s\n' "$*" >&2

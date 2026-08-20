@@ -1,0 +1,31 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: SOS bring-up <sos@localhost>
+Date: Tue, 18 Aug 2026 12:05:00 +0200
+Subject: [PATCH] s5e8825-common: Include Core 1 dev in no-Zygote products
+
+Core 1 development credentials now use a distinct product so Kati and Soong
+observe immutable package selection. Keep that non-shipping product on the
+same no-Zygote base as ordinary Core 1.
+
+This is an ordered continuation of patch 0005, not an independently reversible
+edit. Bootstrap validates and classifies the complete per-project series from
+the pinned baseline so a finished tree is idempotent after this line changes
+the result of 0005.
+---
+ common.mk | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/common.mk b/common.mk
+index 010fad1..44d90c4 100644
+--- a/common.mk
++++ b/common.mk
+@@ -18,6 +18,6 @@
+ # retains the shared Samsung hardware product while selecting AOSP's empty
+ # Zygote init configuration; every other a33x product remains 64-bit-only.
+-ifeq ($(TARGET_PRODUCT),lineage_sos_core1_a33x)
++ifneq ($(filter lineage_sos_core1_a33x lineage_sos_core1_dev_a33x,$(TARGET_PRODUCT)),)
+ $(call inherit-product, $(SRC_TARGET_DIR)/product/core_no_zygote.mk)
+ else
+ $(call inherit-product, $(SRC_TARGET_DIR)/product/core_64_bit_only.mk)
+-- 
+2.51.0

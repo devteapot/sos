@@ -1,4 +1,5 @@
 import process from "node:process";
+import { lookup } from "node:dns/promises";
 import {
   InMemoryCredentialStore,
   contentText,
@@ -22,13 +23,20 @@ import {
   MAX_SOURCE_BYTES,
   MAX_STDIO_REQUEST_BYTES,
 } from "./contract.js";
+import { nodeProviderFetch } from "./provider-fetch.js";
 
 const MAX_SUMMARY_BYTES = 2048;
+const STDIO_PROTOCOL_VERSION = 2;
 export const PINNED_OPENROUTER_MODEL = "deepseek/deepseek-v4-flash-0731";
+
+export interface CoreDevProxyHooks {
+  accepts(value: unknown): value is string;
+  fetch(proxy: string): typeof globalThis.fetch;
+}
 
 export interface SanitizedRunnerFailure {
   type: "error";
-  stage: "request" | "credential" | "provider" | "protocol" | "validation";
+  stage: "request" | "credential" | "transport" | "provider" | "protocol" | "validation";
   category:
     | "invalid_request"
     | "credential_rejected"
@@ -36,9 +44,18 @@ export interface SanitizedRunnerFailure {
     | "rate_limited"
     | "provider_unavailable"
     | "provider_error"
+    | "dns_resolution"
+    | "dns_timeout"
+    | "dns_proxy_unavailable"
+    | "connect_timeout"
+    | "connect_refused"
+    | "connect_reset"
+    | "network_unreachable"
+    | "tls_failure"
     | "tool_sequence"
     | "invalid_candidate"
-    | "protocol_error";
+    | "protocol_error"
+    | "unknown";
   error: string;
   model?: string | undefined;
   status?: number;
@@ -68,9 +85,26 @@ function numericHttpStatus(error: unknown): number | undefined {
   return undefined;
 }
 
+function safeErrorCodes(error: unknown): string[] {
+  const codes: string[] = [];
+  let current: unknown = error;
+  for (let depth = 0; depth < 4 && current !== undefined; depth += 1) {
+    if (!current || typeof current !== "object") break;
+    const candidate = current as Record<string, unknown>;
+    for (const value of [candidate.code, candidate.errno]) {
+      if (typeof value === "string" && /^[A-Z0-9_]{2,48}$/.test(value)) {
+        codes.push(value.toUpperCase());
+      }
+    }
+    current = candidate.cause;
+  }
+  return codes;
+}
+
 export function sanitizeRunnerFailure(
   error: unknown,
   model?: string,
+  context: "provider" | "dns" = "provider",
 ): SanitizedRunnerFailure {
   if (error instanceof RunnerFailure) return error.failure;
   const knownMessage = error instanceof Error ? error.message : "";
@@ -128,17 +162,154 @@ export function sanitizeRunnerFailure(
       status,
     };
   }
+  const codes = safeErrorCodes(error);
+  if (context === "dns" && codes.some((code) => code === "ETIMEDOUT")) {
+    return {
+      type: "error",
+      stage: "transport",
+      category: "dns_timeout",
+      error: "Provider DNS resolution timed out.",
+      model,
+    };
+  }
+  if (
+    context === "dns" &&
+    codes.some(
+      (code) =>
+        code === "EACCES" ||
+        code === "EPERM" ||
+        code === "ECONNREFUSED" ||
+        code === "ENOENT",
+    )
+  ) {
+    return {
+      type: "error",
+      stage: "transport",
+      category: "dns_proxy_unavailable",
+      error: "The Android DNS proxy was unavailable.",
+      model,
+    };
+  }
+  if (
+    codes.some(
+      (code) =>
+        code === "ENOTFOUND" ||
+        code.startsWith("EAI_"),
+    )
+  ) {
+    return {
+      type: "error",
+      stage: "transport",
+      category: "dns_resolution",
+      error: "The provider hostname could not be resolved.",
+      model,
+    };
+  }
+  if (
+    codes.some(
+      (code) =>
+        code.startsWith("ERR_TLS_") ||
+        code.startsWith("CERT_") ||
+        code === "UNABLE_TO_VERIFY_LEAF_SIGNATURE" ||
+        code === "DEPTH_ZERO_SELF_SIGNED_CERT" ||
+        code === "SELF_SIGNED_CERT_IN_CHAIN" ||
+        code === "ERR_SSL_WRONG_VERSION_NUMBER",
+    )
+  ) {
+    return {
+      type: "error",
+      stage: "transport",
+      category: "tls_failure",
+      error: "The provider TLS handshake or certificate validation failed.",
+      model,
+    };
+  }
+  if (codes.some((code) => code === "ETIMEDOUT" || code === "UND_ERR_CONNECT_TIMEOUT")) {
+    return {
+      type: "error",
+      stage: "transport",
+      category: "connect_timeout",
+      error: "The provider connection timed out.",
+      model,
+    };
+  }
+  if (codes.some((code) => code === "ECONNREFUSED")) {
+    return {
+      type: "error",
+      stage: "transport",
+      category: "connect_refused",
+      error: "The provider connection was refused.",
+      model,
+    };
+  }
+  if (codes.some((code) => code === "ECONNRESET")) {
+    return {
+      type: "error",
+      stage: "transport",
+      category: "connect_reset",
+      error: "The provider connection was reset.",
+      model,
+    };
+  }
+  if (codes.some((code) => code === "ENETUNREACH" || code === "EHOSTUNREACH")) {
+    return {
+      type: "error",
+      stage: "transport",
+      category: "network_unreachable",
+      error: "The provider network was unreachable.",
+      model,
+    };
+  }
   return {
     type: "error",
     stage: "provider",
-    category: "provider_error",
-    error: "The provider request failed.",
+    category: "unknown",
+    error: "The provider failure category was unknown.",
     model,
+  };
+}
+
+interface SafeTransportObservation {
+  failure?: SanitizedRunnerFailure;
+}
+
+export function observeProviderFetch(
+  model: string,
+  observation: SafeTransportObservation,
+  fetchImplementation: typeof globalThis.fetch = nodeProviderFetch,
+): typeof globalThis.fetch {
+  return async (input, init) => {
+    try {
+      const response = await fetchImplementation(input, init);
+      if (!response.ok) {
+        observation.failure = sanitizeRunnerFailure({ status: response.status }, model);
+      }
+      return response;
+    } catch (error) {
+      observation.failure = sanitizeRunnerFailure(error, model);
+      throw error;
+    }
   };
 }
 
 function fail(failure: Omit<SanitizedRunnerFailure, "type">): never {
   throw new RunnerFailure({ type: "error", ...failure });
+}
+
+export async function preflightProviderDns(
+  provider: SupportedProvider,
+  model: string,
+  resolver: (hostname: string) => Promise<unknown> = lookup,
+): Promise<SanitizedRunnerFailure | undefined> {
+  if (provider !== "openrouter") return undefined;
+  try {
+    await resolver("openrouter.ai");
+    return undefined;
+  } catch (error) {
+    // The resolver call is the only source of this failure. Preserve only its
+    // structured code; never classify from exception/provider text.
+    return sanitizeRunnerFailure(error, model, "dns");
+  }
 }
 
 export function promptResponseModel(
@@ -167,6 +338,7 @@ interface LivePromptRequest {
   credential: Credential;
   prompt: string;
   currentSource: string;
+  coreDevProxy?: string;
 }
 
 interface FauxPromptRequest {
@@ -205,7 +377,7 @@ function isSupportedProvider(value: unknown): value is SupportedProvider {
   );
 }
 
-export function decodeRequest(raw: string): RunnerRequest {
+export function decodeRequest(raw: string, coreDevProxy?: CoreDevProxyHooks): RunnerRequest {
   if (Buffer.byteLength(raw) > MAX_STDIO_REQUEST_BYTES) throw new Error("request is too large");
   const decoded = JSON.parse(raw) as Record<string, unknown>;
   if (decoded.action === "catalog") return { action: "catalog" };
@@ -240,6 +412,14 @@ export function decodeRequest(raw: string): RunnerRequest {
   ) {
     throw new Error("invalid Pi runner request");
   }
+  if (
+    decoded.coreDevProxy !== undefined &&
+    (!coreDevProxy ||
+      decoded.provider !== "openrouter" ||
+      !coreDevProxy.accepts(decoded.coreDevProxy))
+  ) {
+    throw new Error("invalid Pi runner request");
+  }
   return {
     action: "prompt",
     provider: decoded.provider,
@@ -247,17 +427,20 @@ export function decodeRequest(raw: string): RunnerRequest {
     credential: decoded.credential,
     prompt: decoded.prompt,
     currentSource: decoded.currentSource,
+    ...(coreDevProxy?.accepts(decoded.coreDevProxy)
+      ? { coreDevProxy: decoded.coreDevProxy }
+      : {}),
   };
 }
 
-async function readRequest(): Promise<RunnerRequest> {
+async function readRequest(coreDevProxy?: CoreDevProxyHooks): Promise<RunnerRequest> {
   process.stdin.setEncoding("utf8");
   let raw = "";
   for await (const chunk of process.stdin) {
     raw += chunk;
     if (Buffer.byteLength(raw) > MAX_STDIO_REQUEST_BYTES) throw new Error("request is too large");
   }
-  return decodeRequest(raw);
+  return decodeRequest(raw, coreDevProxy);
 }
 
 async function catalog(): Promise<void> {
@@ -345,9 +528,14 @@ function lastAssistantSummary(messages: AgentMessage[]): string {
   return "Pi proposed a complete replacement experience for trusted validation.";
 }
 
-async function prompt(request: PromptRequest, systemPrompt: string): Promise<void> {
+async function prompt(
+  request: PromptRequest,
+  systemPrompt: string,
+  coreDevProxy?: CoreDevProxyHooks,
+): Promise<void> {
   const credentials = new InMemoryCredentialStore();
   const live = request.provider !== "faux";
+  const transport: SafeTransportObservation = {};
   if (live) {
     try {
       await credentials.modify(request.provider, async () => request.credential);
@@ -434,6 +622,14 @@ async function prompt(request: PromptRequest, systemPrompt: string): Promise<voi
         provider: request.provider,
         model: request.model,
         credentials,
+        fetch:
+          coreDevProxy && request.coreDevProxy
+            ? observeProviderFetch(
+                request.model,
+                transport,
+                coreDevProxy.fetch(request.coreDevProxy),
+              )
+            : observeProviderFetch(request.model, transport),
       })
     : createFauxAgentRuntime(
         backend,
@@ -441,11 +637,26 @@ async function prompt(request: PromptRequest, systemPrompt: string): Promise<voi
         request.candidateSource,
         "The candidate experience is staged for trusted host validation.",
       );
+  if (live) {
+    const dnsFailure = coreDevProxy && request.coreDevProxy
+      ? undefined
+      : await preflightProviderDns(request.provider, request.model);
+    if (dnsFailure) throw new RunnerFailure(dnsFailure);
+  }
   try {
     await agent.prompt(request.prompt);
   } catch (error) {
     if (error instanceof RunnerFailure) throw error;
     throw new RunnerFailure(sanitizeRunnerFailure(error, live ? request.model : "faux"));
+  }
+  // Pi records provider transport failures as a terminal assistant error and
+  // resolves prompt(). Classify that safe terminal signal before checking the
+  // structural tool sequence, otherwise resolver startup looks like a missing
+  // authoring tool call.
+  if (agent.state.errorMessage) {
+    throw new RunnerFailure(
+      transport.failure ?? sanitizeRunnerFailure(undefined, live ? request.model : "faux"),
+    );
   }
   if (!submitted) {
     fail({
@@ -475,6 +686,8 @@ async function prompt(request: PromptRequest, systemPrompt: string): Promise<voi
   }
   send({
     type: "prompt_complete",
+    protocol_version: STDIO_PROTOCOL_VERSION,
+    terminal: "completed",
     provider: request.provider,
     model: promptResponseModel(request),
     source: submitted,
@@ -484,11 +697,14 @@ async function prompt(request: PromptRequest, systemPrompt: string): Promise<voi
   });
 }
 
-export async function runStdio(documents: PromptDocuments): Promise<void> {
+export async function runStdio(
+  documents: PromptDocuments,
+  coreDevProxy?: CoreDevProxyHooks,
+): Promise<void> {
   // The registration name is historical; it statically includes Pi's OAuth
   // implementations so a single-file Node bundle can perform Codex login.
   registerBunOAuthFlows();
-  const request = await readRequest();
+  const request = await readRequest(coreDevProxy);
   switch (request.action) {
     case "catalog":
       await catalog();
@@ -500,12 +716,23 @@ export async function runStdio(documents: PromptDocuments): Promise<void> {
       await login(request);
       break;
     case "prompt":
-      await prompt(request, await readSystemPrompt(documents));
+      await prompt(request, await readSystemPrompt(documents), coreDevProxy);
       break;
   }
 }
 
 export function reportStdioFailure(error: unknown): void {
-  send(sanitizeRunnerFailure(error));
+  send(stdioFailureEnvelope(error));
   process.exitCode = 1;
+}
+
+export function stdioFailureEnvelope(error: unknown): SanitizedRunnerFailure & {
+  protocol_version: number;
+  terminal: "failed";
+} {
+  return {
+    ...sanitizeRunnerFailure(error),
+    protocol_version: STDIO_PROTOCOL_VERSION,
+    terminal: "failed",
+  };
 }

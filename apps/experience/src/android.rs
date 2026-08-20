@@ -50,7 +50,12 @@ use sha2::{Digest, Sha256};
 #[cfg(feature = "core-native")]
 use zeroize::Zeroize;
 
-use crate::android_agent_contract::{AgentActivationEvidence, AgentActivationPhase};
+use crate::android_agent_contract::{
+    ui_failure, AgentActivationEvidence, AgentActivationPhase, AgentUiAttempt, AgentUiAttemptEvent,
+    AgentUiAttemptEventKind, AgentUiFailure, AgentUiTransport,
+};
+#[cfg(feature = "core-dev-credential")]
+use crate::android_agent_contract::{CoreDevSmokeAuthorization, CORE_DEV_AGENT_SMOKE_PROMPT};
 #[cfg(not(feature = "core-native"))]
 use crate::android_interaction_contract::{text_tap_outcome, TextTapOutcome};
 use crate::assets::{self, SosAssets, ALBUM_ASSET};
@@ -64,6 +69,9 @@ use native_input::NativeTextInput;
 static FILES_DIR: OnceLock<PathBuf> = OnceLock::new();
 static RELOAD_REQUESTED: AtomicBool = AtomicBool::new(false);
 static WORKER_RESTART_REQUESTED: AtomicBool = AtomicBool::new(false);
+#[cfg(feature = "core-dev-credential")]
+static CORE_DEV_AGENT_SMOKE_AUTHORIZATION: Mutex<CoreDevSmokeAuthorization> =
+    Mutex::new(CoreDevSmokeAuthorization::new());
 static STRESS_REQUEST: OnceLock<Mutex<Option<StressRequest>>> = OnceLock::new();
 #[cfg(feature = "core-native")]
 static CORE_PLATFORM: OnceLock<Mutex<Option<Arc<AndroidPlatform>>>> = OnceLock::new();
@@ -71,6 +79,82 @@ static CORE_PLATFORM: OnceLock<Mutex<Option<Arc<AndroidPlatform>>>> = OnceLock::
 static CORE_STOP_REQUESTED: AtomicBool = AtomicBool::new(false);
 #[cfg(feature = "core-native")]
 static CORE_EXIT_REASON: AtomicI32 = AtomicI32::new(0);
+
+fn log_agent_attempt_event(event: AgentUiAttemptEvent) {
+    let event_name = match event.kind {
+        AgentUiAttemptEventKind::Received => "attempt_received",
+        AgentUiAttemptEventKind::DispatchStarted => "dispatch_started",
+        AgentUiAttemptEventKind::Terminal => "terminal",
+    };
+    let status = if event.kind == AgentUiAttemptEventKind::Terminal {
+        if event.category == "completed" {
+            "completed"
+        } else {
+            "failed"
+        }
+    } else {
+        "pending"
+    };
+    if event.kind == AgentUiAttemptEventKind::Terminal {
+        log::info!(
+            "{}",
+            event
+                .request_terminal_marker()
+                .expect("request terminal evidence requires a terminal attempt")
+        );
+        log::info!(
+            "{}",
+            event
+                .ui_terminal_marker()
+                .expect("UI terminal evidence requires a terminal attempt")
+        );
+    }
+    log::info!(
+        "core_ui_attempt event={event_name} attempt={} provider={} model={} configured={} busy={} input_present={} stage={} category={} status={status} correlation=serialized",
+        event.attempt_id,
+        event.provider,
+        event.model,
+        event.configured,
+        event.busy,
+        event.input_present,
+        event.stage,
+        event.category,
+    );
+}
+
+#[cfg(feature = "core-dev-credential")]
+pub(crate) fn install_dev_openrouter_credential(key: &[u8]) -> bool {
+    agent::install_dev_openrouter_credential(key)
+}
+
+#[cfg(feature = "core-dev-credential")]
+pub(crate) fn clear_dev_openrouter_credential() {
+    agent::clear_dev_openrouter_credential();
+}
+
+#[cfg(feature = "core-dev-credential")]
+pub(crate) fn dev_openrouter_credential_configured() -> bool {
+    agent::dev_openrouter_credential_configured()
+}
+
+#[cfg(feature = "core-dev-credential")]
+pub(crate) fn request_dev_agent_smoke() -> bool {
+    if !dev_openrouter_credential_configured() {
+        return false;
+    }
+    let mut authorization = CORE_DEV_AGENT_SMOKE_AUTHORIZATION
+        .lock()
+        .expect("Core-dev smoke authorization lock");
+    if !authorization.arm_authenticated() {
+        return false;
+    }
+    drop(authorization);
+    log::info!(
+        "core_dev_agent_smoke state=queued prompt=fixed_non_secret transport=adb_reverse_connect"
+    );
+    request_host_frame();
+    true
+}
 
 fn request_host_frame() {
     #[cfg(not(feature = "core-native"))]
@@ -341,6 +425,11 @@ pub unsafe extern "C" fn sos_core_main(
     }
     log::info!("sos_experience_host role=core-native density_dpi={density_dpi}");
 
+    #[cfg(feature = "core-dev-credential")]
+    if let Err(category) = crate::core_dev_credential::start() {
+        log::warn!("core_dev_credential state=unavailable category={category}");
+    }
+
     let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         run_experience(SharedPlatform::new(platform));
     }));
@@ -413,9 +502,12 @@ struct ExperienceHost {
     system_revision_id: String,
     status: Option<(String, bool)>,
     next_request_id: u64,
+    next_agent_attempt_id: u64,
     candidates: HashMap<u64, CandidatePurpose>,
     pending_authority_activations: HashMap<u64, PendingAuthorityActivation>,
     pending_agent_activations: HashMap<u64, AgentActivationEvidence>,
+    pending_agent_attempt: Option<AgentUiAttempt>,
+    agent_action_attempts: HashMap<u64, AgentUiAttempt>,
     action_in_flight: bool,
     pending_input_events: VecDeque<SceneEvent>,
     input_state_shadow: HashMap<String, String>,
@@ -619,9 +711,12 @@ impl ExperienceHost {
             system_revision_id,
             status: Some(("Starting Luau worker…".into(), true)),
             next_request_id: 1,
+            next_agent_attempt_id: 1,
             candidates: HashMap::new(),
             pending_authority_activations: HashMap::new(),
             pending_agent_activations: HashMap::new(),
+            pending_agent_attempt: None,
+            agent_action_attempts: HashMap::new(),
             action_in_flight: false,
             pending_input_events: VecDeque::new(),
             input_state_shadow: HashMap::new(),
@@ -874,6 +969,107 @@ impl ExperienceHost {
         request_id
     }
 
+    fn allocate_agent_attempt_id(&mut self) -> u64 {
+        let attempt_id = self.next_agent_attempt_id;
+        self.next_agent_attempt_id = self.next_agent_attempt_id.wrapping_add(1).max(1);
+        attempt_id
+    }
+
+    fn agent_submit_input_present(&self, event: &SceneEvent) -> bool {
+        event
+            .value
+            .as_deref()
+            .or_else(|| {
+                event
+                    .target
+                    .as_deref()
+                    .and_then(|target| find_text_session(&self.scene.root, target))
+                    .or_else(|| find_submit_session(&self.scene.root, "agent_submit"))
+                    .and_then(|session| self.state.get(&session.state_key))
+                    .and_then(JsonValue::as_str)
+            })
+            .is_some_and(|value| !value.trim().is_empty())
+    }
+
+    fn begin_agent_attempt(
+        &mut self,
+        event: &SceneEvent,
+        transport: Option<AgentUiTransport>,
+    ) -> bool {
+        #[cfg(not(feature = "core-dev-credential"))]
+        debug_assert!(transport.is_none());
+        let status = agent::status();
+        let (provider, configured) = status
+            .as_ref()
+            .map(|status| (status.provider.as_str(), status.configured))
+            .unwrap_or(("unsupported", false));
+        let busy = self.model.agent.busy
+            || self.pending_agent_attempt.is_some()
+            || !self.agent_action_attempts.is_empty();
+        let input_present = self.agent_submit_input_present(event);
+        #[cfg(feature = "aosp-system")]
+        let network_available = self.model.providers.connectivity.connected
+            && self.model.providers.connectivity.validated;
+        #[cfg(not(feature = "aosp-system"))]
+        let network_available = self.model.network.connected && self.model.network.validated;
+        #[cfg(feature = "core-dev-credential")]
+        let (attempt, received) = if let Some(transport) = transport {
+            AgentUiAttempt::receive_core_dev_fixed_smoke(
+                self.allocate_agent_attempt_id(),
+                provider,
+                configured,
+                busy,
+                event.value.as_deref().unwrap_or_default(),
+                transport,
+            )
+            .expect("authenticated Core-dev smoke must retain its fixed dispatch contract")
+        } else {
+            AgentUiAttempt::receive(
+                self.allocate_agent_attempt_id(),
+                provider,
+                configured,
+                busy,
+                input_present,
+                network_available,
+            )
+        };
+        #[cfg(not(feature = "core-dev-credential"))]
+        let (attempt, received) = AgentUiAttempt::receive(
+            self.allocate_agent_attempt_id(),
+            provider,
+            configured,
+            busy,
+            input_present,
+            network_available,
+        );
+        log_agent_attempt_event(received);
+        let failure = if status.is_err() {
+            Some(ui_failure("runtime", "runtime_start"))
+        } else {
+            attempt.preflight().err()
+        };
+        if let Some(failure) = failure {
+            self.fail_agent_attempt(attempt, failure);
+            false
+        } else {
+            self.pending_agent_attempt = Some(attempt);
+            true
+        }
+    }
+
+    fn fail_agent_attempt(&mut self, mut attempt: AgentUiAttempt, failure: AgentUiFailure) {
+        let terminal = attempt
+            .terminal(Some(failure))
+            .expect("active agent UI attempt must not already be terminal");
+        log_agent_attempt_event(terminal);
+        if failure.category != "busy" {
+            self.model.agent.busy = false;
+        }
+        self.model.agent.activity = "Agent request failed".into();
+        self.model.agent.error = Some(failure.display.into());
+        self.status = Some((format!("Agent request failed: {}", failure.display), false));
+    }
+
     fn restart_worker(&mut self, cx: &mut Context<Self>) {
         if self.stress.is_some() || !self.candidates.is_empty() || self.action_in_flight {
             log::warn!("runtime_worker_restart_rejected reason=runtime_busy");
@@ -913,7 +1109,7 @@ impl ExperienceHost {
     }
 
     fn dispatch(&mut self, action: String, cx: &mut Context<Self>) {
-        self.dispatch_event(
+        self.queue_input_event(
             SceneEvent {
                 action,
                 ..Default::default()
@@ -946,13 +1142,31 @@ impl ExperienceHost {
             event.target.as_deref().unwrap_or("none")
         );
         self.action_in_flight = true;
-        if let Err(error) =
-            self.worker
-                .action(request_id, self.model.clone(), self.state.clone(), event)
+        let agent_attempt = (event.action == "agent_submit")
+            .then(|| self.pending_agent_attempt.take())
+            .flatten();
+        match self
+            .worker
+            .action(request_id, self.model.clone(), self.state.clone(), event)
         {
-            self.action_in_flight = false;
-            self.status = Some((format!("Action could not start: {error}"), false));
-            cx.notify();
+            Ok(()) => {
+                if let Some(mut attempt) = agent_attempt {
+                    let started = attempt
+                        .dispatch_started()
+                        .expect("agent UI attempt dispatch must follow receipt");
+                    log_agent_attempt_event(started);
+                    self.agent_action_attempts.insert(request_id, attempt);
+                }
+            }
+            Err(error) => {
+                self.action_in_flight = false;
+                if let Some(attempt) = agent_attempt {
+                    self.fail_agent_attempt(attempt, ui_failure("dispatch", "dispatch_channel"));
+                } else {
+                    self.status = Some((format!("Action could not start: {error}"), false));
+                }
+                cx.notify();
+            }
         }
     }
 
@@ -963,6 +1177,8 @@ impl ExperienceHost {
         value: String,
         cx: &mut Context<Self>,
     ) {
+        let agent_composer = find_text_session(&self.scene.root, &node_id)
+            .is_some_and(|session| session.submit_action.as_deref() == Some("agent_submit"));
         if !self.state.is_object() {
             self.state = json!({});
         }
@@ -971,11 +1187,15 @@ impl ExperienceHost {
         }
         self.input_state_shadow.insert(state_key, value.clone());
         persist_state(&self.state);
-        log::info!(
-            "native_text_changed node_id={} bytes={} marked_safe=true",
-            node_id,
-            value.len()
-        );
+        if agent_composer {
+            log::debug!("native_text_changed node_id={node_id} content=redacted");
+        } else {
+            log::info!(
+                "native_text_changed node_id={} bytes={} marked_safe=true",
+                node_id,
+                value.len()
+            );
+        }
         self.queue_input_event(
             SceneEvent {
                 action: "text_changed".into(),
@@ -1268,6 +1488,19 @@ impl ExperienceHost {
     }
 
     fn queue_input_event(&mut self, event: SceneEvent, cx: &mut Context<Self>) {
+        self.queue_input_event_with_transport(event, None, cx);
+    }
+
+    fn queue_input_event_with_transport(
+        &mut self,
+        event: SceneEvent,
+        transport: Option<AgentUiTransport>,
+        cx: &mut Context<Self>,
+    ) {
+        if event.action == "agent_submit" && !self.begin_agent_attempt(&event, transport) {
+            cx.notify();
+            return;
+        }
         if self.action_in_flight || self.stress.is_some() {
             self.enqueue_pending_event(event);
         } else {
@@ -1289,14 +1522,27 @@ impl ExperienceHost {
             }
         }
         if self.pending_input_events.len() >= 64 {
-            if let Some(position) = self
+            if let Some(position) = self.pending_input_events.iter().position(|queued| {
+                queued.action != "agent_submit"
+                    && matches!(queued.phase.as_deref(), Some("move" | "update"))
+            }) {
+                self.pending_input_events.remove(position);
+            } else if let Some(position) = self
                 .pending_input_events
                 .iter()
-                .position(|queued| matches!(queued.phase.as_deref(), Some("move" | "update")))
+                .position(|queued| queued.action != "agent_submit")
             {
                 self.pending_input_events.remove(position);
             } else {
-                self.pending_input_events.pop_front();
+                if event.action == "agent_submit" {
+                    if let Some(attempt) = self.pending_agent_attempt.take() {
+                        self.fail_agent_attempt(
+                            attempt,
+                            ui_failure("dispatch", "dispatch_channel"),
+                        );
+                    }
+                }
+                return;
             }
         }
         self.pending_input_events.push_back(event);
@@ -1770,6 +2016,7 @@ impl ExperienceHost {
                 worker_us,
             } => {
                 self.action_in_flight = false;
+                let agent_attempt = self.agent_action_attempts.remove(&request_id);
                 self.merge_native_input_state(&mut state);
                 let effect_count = effects.len();
                 #[cfg(feature = "aosp-system")]
@@ -1780,6 +2027,19 @@ impl ExperienceHost {
                 let (host_effects, provider_effects): (Vec<_>, Vec<_>) = effects
                     .into_iter()
                     .partition(|effect| matches!(effect.provider.as_str(), "network" | "agent"));
+                if agent_attempt.is_some()
+                    && (effect_count != 1
+                        || host_effects.len() != 1
+                        || host_effects[0].provider != "agent"
+                        || host_effects[0].action != "prompt")
+                {
+                    self.fail_agent_attempt(
+                        agent_attempt.expect("tracked agent UI attempt"),
+                        ui_failure("runtime", "model_policy"),
+                    );
+                    self.dispatch_pending_input_event(cx);
+                    return;
+                }
                 if let Some(expected_revision) = self.remote_state_revision {
                     let source_sha256 = source_sha256(&self.source);
                     let mut committed = provider_client::commit_state(
@@ -1816,7 +2076,15 @@ impl ExperienceHost {
                             );
                         }
                         Err(error) => {
-                            self.status = Some((format!("State commit failed: {error}"), false));
+                            if let Some(attempt) = agent_attempt {
+                                self.fail_agent_attempt(
+                                    attempt,
+                                    ui_failure("dispatch", "dispatch_channel"),
+                                );
+                            } else {
+                                self.status =
+                                    Some((format!("State commit failed: {error}"), false));
+                            }
                             log::warn!("experience_state_rejected error={error}");
                             self.dispatch_pending_input_event(cx);
                             return;
@@ -1829,14 +2097,14 @@ impl ExperienceHost {
                 persist_state(&self.state);
                 self.status = None;
                 #[cfg(feature = "aosp-system")]
-                self.execute_agent_effects(host_effects);
+                self.execute_agent_effects(host_effects, agent_attempt);
                 #[cfg(not(feature = "aosp-system"))]
                 {
                     let (network_effects, agent_effects): (Vec<_>, Vec<_>) = host_effects
                         .into_iter()
                         .partition(|effect| effect.provider == "network");
                     self.execute_network_effects(network_effects);
-                    self.execute_agent_effects(agent_effects);
+                    self.execute_agent_effects(agent_effects, agent_attempt);
                 }
                 log::info!(
                     "experience_action_completed request_id={request_id} worker_us={worker_us}"
@@ -1849,7 +2117,11 @@ impl ExperienceHost {
                 worker_us,
             } => {
                 self.action_in_flight = false;
-                self.status = Some((format!("Action rejected: {error}"), false));
+                if let Some(attempt) = self.agent_action_attempts.remove(&request_id) {
+                    self.fail_agent_attempt(attempt, ui_failure("runtime", "runtime_start"));
+                } else {
+                    self.status = Some((format!("Action rejected: {error}"), false));
+                }
                 log::warn!(
                     "experience_action_rejected request_id={request_id} worker_us={worker_us} error={error}"
                 );
@@ -1862,7 +2134,7 @@ impl ExperienceHost {
             } => {
                 self.scene = scene;
                 self.accessibility_dirty = true;
-                log::info!(
+                log::debug!(
                     "experience_model_refreshed request_id={request_id} worker_us={worker_us}"
                 );
             }
@@ -1925,7 +2197,27 @@ impl ExperienceHost {
         }
     }
 
-    fn execute_agent_effects(&mut self, effects: Vec<ProviderEffect>) {
+    fn execute_agent_effects(
+        &mut self,
+        effects: Vec<ProviderEffect>,
+        agent_attempt: Option<AgentUiAttempt>,
+    ) {
+        let mut agent_attempt = agent_attempt;
+        let prompt_effects = effects
+            .iter()
+            .filter(|effect| effect.provider == "agent" && effect.action == "prompt")
+            .count();
+        if agent_attempt.is_some() && (prompt_effects != 1 || effects.len() != 1) {
+            self.fail_agent_attempt(
+                agent_attempt.take().expect("tracked agent attempt"),
+                ui_failure("runtime", "model_policy"),
+            );
+            if let Ok(status) = agent::status() {
+                agent::apply_status(&mut self.model.agent, &status);
+                self.refresh_model_from_authority();
+            }
+            return;
+        }
         for effect in effects {
             log::info!("android_agent_effect_dispatch action={}", effect.action);
             if matches!(
@@ -1945,23 +2237,44 @@ impl ExperienceHost {
                 "configure_codex" => agent::configure_codex(),
                 "use_fake" => agent::use_fake(),
                 "clear_credential" => agent::clear_credential(),
-                "prompt" => effect
-                    .payload
-                    .get("prompt")
-                    .and_then(JsonValue::as_str)
-                    .map(str::trim)
-                    .filter(|prompt| !prompt.is_empty() && prompt.len() <= MAX_AGENT_MESSAGE_BYTES)
-                    .map(|prompt| self.start_agent_prompt(prompt.to_owned()))
-                    .unwrap_or_else(|| {
-                        Err("agent.prompt omitted a bounded non-empty prompt".into())
-                    }),
+                "prompt" => match agent_attempt.take() {
+                    Some(attempt) => match effect
+                        .payload
+                        .get("prompt")
+                        .and_then(JsonValue::as_str)
+                        .map(str::trim)
+                        .filter(|prompt| {
+                            !prompt.is_empty() && prompt.len() <= MAX_AGENT_MESSAGE_BYTES
+                        }) {
+                        Some(prompt) => self.start_agent_prompt(prompt.to_owned(), attempt),
+                        None => {
+                            self.fail_agent_attempt(
+                                attempt,
+                                ui_failure("dispatch", "dispatch_channel"),
+                            );
+                            Ok(())
+                        }
+                    },
+                    None => Err("agent.prompt had no received UI attempt".into()),
+                },
                 _ => Err(format!(
                     "unsupported trusted agent action: {}",
                     effect.action
                 )),
             };
             if let Err(error) = &result {
-                self.status = Some((format!("Agent action failed: {error}"), false));
+                if effect.action == "prompt" {
+                    if let Some(attempt) = agent_attempt.take() {
+                        self.fail_agent_attempt(
+                            attempt,
+                            ui_failure("dispatch", "dispatch_channel"),
+                        );
+                    } else {
+                        self.status = Some((format!("Agent action failed: {error}"), false));
+                    }
+                } else {
+                    self.status = Some((format!("Agent action failed: {error}"), false));
+                }
                 log::warn!("android_agent_action_failed action={}", effect.action);
             }
             #[cfg(feature = "core-native")]
@@ -1975,63 +2288,142 @@ impl ExperienceHost {
                 }
             }
         }
+        if let Some(attempt) = agent_attempt {
+            self.fail_agent_attempt(attempt, ui_failure("runtime", "model_policy"));
+        }
         if let Ok(status) = agent::status() {
             agent::apply_status(&mut self.model.agent, &status);
             self.refresh_model_from_authority();
         }
     }
 
-    fn start_agent_prompt(&mut self, prompt: String) -> Result<(), String> {
+    fn start_agent_prompt(
+        &mut self,
+        prompt: String,
+        attempt: AgentUiAttempt,
+    ) -> Result<(), String> {
         if self.model.agent.busy {
-            return Err("the resident agent is already handling a prompt".into());
+            self.fail_agent_attempt(attempt, ui_failure("preflight", "busy"));
+            return Ok(());
         }
-        let status = agent::status()?;
+        let status = match agent::status() {
+            Ok(status) => status,
+            Err(_) => {
+                self.fail_agent_attempt(attempt, ui_failure("runtime", "runtime_start"));
+                return Ok(());
+            }
+        };
+        if attempt.provider()
+            != crate::android_agent_contract::safe_provider_identity(&status.provider)
+        {
+            let category = if attempt.provider() != "fake" && !status.configured {
+                "credential_missing"
+            } else {
+                "model_policy"
+            };
+            self.fail_agent_attempt(attempt, ui_failure("preflight", category));
+            return Ok(());
+        }
         if status.provider != "fake" && !status.configured {
-            return Err("The selected Pi provider has no configured credential".into());
+            self.fail_agent_attempt(attempt, ui_failure("preflight", "credential_missing"));
+            return Ok(());
         }
-        agent::spawn_prompt(
+        #[cfg(feature = "aosp-system")]
+        let network_available = self.model.providers.connectivity.connected
+            && self.model.providers.connectivity.validated;
+        #[cfg(not(feature = "aosp-system"))]
+        let network_available = self.model.network.connected && self.model.network.validated;
+        if !attempt.prompt_matches_transport(&prompt) {
+            self.fail_agent_attempt(attempt, ui_failure("preflight", "model_policy"));
+            return Ok(());
+        }
+        if status.provider != "fake" && !attempt.transport_ready(network_available) {
+            self.fail_agent_attempt(attempt, ui_failure("preflight", "network_unavailable"));
+            return Ok(());
+        }
+        // Retain only the local fallback copy needed to emit a terminal if the
+        // OS refuses to create the bounded agent thread.
+        if agent::spawn_prompt(
+            attempt.clone(),
             status,
             prompt,
             self.source.clone(),
             self.model.clone(),
             self.agent_updates.clone(),
-        );
+        )
+        .is_err()
+        {
+            self.fail_agent_attempt(attempt, ui_failure("runtime", "runtime_start"));
+            return Ok(());
+        }
+        self.model.agent.busy = true;
         Ok(())
     }
 
     fn handle_agent_update(&mut self, update: agent::AgentUpdate) {
         match update {
-            agent::AgentUpdate::Started { prompt } => {
+            agent::AgentUpdate::Started { attempt_id, prompt } => {
                 self.model.agent.busy = true;
                 self.model.agent.error = None;
                 self.model.agent.activity = "Understanding the request".into();
                 push_agent_message(&mut self.model, AgentMessageRole::User, prompt);
+                log::info!(
+                    "android_agent_ui_transition attempt={attempt_id} state=started correlation=serialized"
+                );
             }
-            agent::AgentUpdate::ToolStarted(name) => {
+            agent::AgentUpdate::ToolStarted { attempt_id, name } => {
                 self.model.agent.activity = format!("Using {}", display_agent_tool(&name));
+                log::debug!(
+                    "android_agent_ui_transition attempt={attempt_id} state=tool_started correlation=serialized"
+                );
             }
-            agent::AgentUpdate::ToolFinished { name, ok } => {
+            agent::AgentUpdate::ToolFinished {
+                attempt_id,
+                name,
+                ok,
+            } => {
                 self.model.agent.activity = if ok {
                     format!("{} complete", display_agent_tool(&name))
                 } else {
                     format!("{} failed", display_agent_tool(&name))
                 };
+                log::debug!(
+                    "android_agent_ui_transition attempt={attempt_id} state=tool_finished ok={ok} correlation=serialized"
+                );
             }
-            agent::AgentUpdate::Candidate { source, summary } => {
+            agent::AgentUpdate::Candidate {
+                attempt_id,
+                source,
+                summary,
+            } => {
                 push_agent_message(&mut self.model, AgentMessageRole::Assistant, summary);
                 self.model.agent.activity = "Validating the proposed experience".into();
                 self.submit_agent_candidate_source(source);
+                log::info!(
+                    "android_agent_ui_transition attempt={attempt_id} state=candidate_received correlation=serialized"
+                );
             }
-            agent::AgentUpdate::Completed => {
+            agent::AgentUpdate::Completed { attempt_id } => {
                 self.model.agent.busy = false;
                 self.model.agent.activity = agent::status()
                     .map(|status| status.activity)
                     .unwrap_or_else(|_| "Agent ready".into());
+                log::info!(
+                    "android_agent_ui_transition attempt={attempt_id} state=response_complete correlation=serialized"
+                );
             }
-            agent::AgentUpdate::Failed(error) => {
+            agent::AgentUpdate::Failed {
+                attempt_id,
+                failure,
+            } => {
                 self.model.agent.busy = false;
                 self.model.agent.activity = "Agent request failed".into();
-                self.model.agent.error = Some(error);
+                self.model.agent.error = Some(failure.display.into());
+                log::info!(
+                    "android_agent_ui_transition attempt={attempt_id} state=response_failed stage={} category={} correlation=serialized",
+                    failure.stage,
+                    failure.category,
+                );
             }
         }
         self.refresh_model_from_authority();
@@ -2784,6 +3176,10 @@ fn core_credential_overlay() -> impl IntoElement {
             .child(div().text_size(px(13.0)).child(
                 "Memory-only until this Core process exits · deepseek/deepseek-v4-flash-0731",
             ))
+            .child(div().text_size(px(13.0)).child(format!(
+                "OpenRouter prefix is prefilled · {} characters entered after the prefix",
+                snapshot.suffix_count
+            )))
             .child(
                 div()
                     .h(px(44.0))
@@ -2958,6 +3354,25 @@ impl Render for ExperienceHost {
         if WORKER_RESTART_REQUESTED.swap(false, Ordering::AcqRel) {
             self.restart_worker(cx);
         }
+        #[cfg(feature = "core-dev-credential")]
+        let core_dev_smoke_transport = CORE_DEV_AGENT_SMOKE_AUTHORIZATION
+            .lock()
+            .expect("Core-dev smoke authorization lock")
+            .consume_fixed_prompt(CORE_DEV_AGENT_SMOKE_PROMPT);
+        #[cfg(feature = "core-dev-credential")]
+        if let Some(transport) = core_dev_smoke_transport {
+            self.queue_input_event_with_transport(
+                SceneEvent {
+                    action: "agent_submit".into(),
+                    target: Some("agent-prompt".into()),
+                    value: Some(CORE_DEV_AGENT_SMOKE_PROMPT.into()),
+                    focused: Some(true),
+                    ..Default::default()
+                },
+                Some(transport),
+                cx,
+            );
+        }
         let stress_request = stress_request_slot()
             .lock()
             .expect("stress request lock")
@@ -3045,6 +3460,20 @@ fn find_text_session<'a>(node: &'a SceneNode, id: &str) -> Option<&'a experience
     node.children
         .iter()
         .find_map(|child| find_text_session(child, id))
+}
+
+fn find_submit_session<'a>(
+    node: &'a SceneNode,
+    action: &str,
+) -> Option<&'a experience_ir::TextSession> {
+    if let Some(Content::TextSession(input)) = &node.content {
+        if input.submit_action.as_deref() == Some(action) {
+            return Some(input);
+        }
+    }
+    node.children
+        .iter()
+        .find_map(|child| find_submit_session(child, action))
 }
 
 fn stress_request_slot() -> &'static Mutex<Option<StressRequest>> {

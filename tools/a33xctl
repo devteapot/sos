@@ -9,17 +9,63 @@ LINEAGE_MANIFEST="https://github.com/LineageOS/android.git"
 LINEAGE_MANIFEST_REV="2a46cce5dff3a9a3ab98b3c25a7564084b34cd1f"
 LINEAGE_LOCAL_MANIFEST="$SOS_ROOT/aosp/manifests/a33x-lineage-23.0.xml"
 LINEAGE_PATCH_DIR="$SOS_ROOT/aosp/patches/a33x-lineage-23.0"
+readonly -a LINEAGE_PATCH_PROJECTS=(
+  device/samsung/s5e8825-common
+  vendor/samsung/s5e8825-common
+  device/samsung/s5e8825-common
+  frameworks/base
+  device/samsung/s5e8825-common
+  device/samsung/s5e8825-common
+  device/samsung/s5e8825-common
+  device/samsung/s5e8825-common
+)
+readonly -a LINEAGE_PATCH_FILES=(
+  0001-s5e8825-fix-epicoperator-symbol.patch
+  0002-s5e8825-match-libsec-ril-protobuf-soname.patch
+  0003-s5e8825-package-recovery-init.patch
+  0004-frameworks-base-enforce-sos-core-install-policy.patch
+  0005-s5e8825-select-no-zygote-for-sos-core1.patch
+  0006-s5e8825-allow-sos-core-tsp-enable.patch
+  0007-s5e8825-chown-tsp-enabled.patch
+  0008-s5e8825-select-no-zygote-for-sos-core1-dev.patch
+)
+readonly -a LINEAGE_PATCH_SHA256S=(
+  a8dea6c8c01f3c8572f952b8455560c690e700626df0332bd391abc04b175c61
+  18517d33328c5ffdf101bf8e8b1f25d5383d96ee50cfde5463a6d036da543795
+  51557dbd9e58d1788b505cf87d267ea260c362f9311eef2d9c62d743e906b2d4
+  6a691c8cddca2f817cb90473f18444347450d2f030832a2f5c4b95c4dee685ce
+  b833ad51a7c61a1c85ad1dc93d70de416f574264c23502d2f97637edbbde152c
+  94b33caf99600dbd28290b10408069834d0e203ae16150fa8f361114471d62ab
+  61909d66dc7a16d57411fd5da9d7c6dd3cc53c039aba2d02df9fea74584da725
+  842d80ad1d2e18c2199f253f9d645cb1b92685f6633d1c2cc299278369b03c0a
+)
+readonly -a LINEAGE_PATCH_BASELINE_PROJECTS=(
+  device/samsung/s5e8825-common
+  vendor/samsung/s5e8825-common
+  frameworks/base
+)
+readonly -a LINEAGE_PATCH_BASELINE_REVISIONS=(
+  33dd9c99978647a44aa22089db4830f95bb91fb8
+  4a2275bfabd9fcce764bcf773a7d1e236ff67346
+  155701ba6a05d0061dbab1b9f1bfec2040cf4158
+)
 LINEAGE_SOS_COMPAT0_DEVICE="sos_compat0_a33x"
 LINEAGE_SOS_COMPAT1_DEVICE="sos_compat_a33x"
 LINEAGE_SOS_CORE_SHADOW_DEVICE="sos_core_a33x"
 LINEAGE_SOS_CORE0B_DEVICE="sos_core0b_a33x"
 LINEAGE_SOS_CORE1_DEVICE="sos_core1_a33x"
+LINEAGE_SOS_CORE1_DEV_DEVICE="sos_core1_dev_a33x"
 LINEAGE_SOS_OVERLAY_SOURCE="$SOS_ROOT/aosp/device/sos/a33x"
 LINEAGE_SOS_OVERLAY_DESTINATION="$LINEAGE_ROOT/device/sos/a33x"
 LINEAGE_JOBS="${SOS_LINEAGE_JOBS:-8}"
 LINEAGE_SYNC_JOBS="${SOS_LINEAGE_SYNC_JOBS:-8}"
 LINEAGE_CCACHE="${SOS_LINEAGE_CCACHE:-$HOME/dev/.cache/lineage-a33x-ccache}"
 LINEAGE_CCACHE_SIZE="${SOS_LINEAGE_CCACHE_SIZE:-50G}"
+CORE_DEV_PROXY_DEVICE_PORT=37173
+CORE_DEV_PROXY_AUTHORITY=openrouter.ai:443
+
+# shellcheck source=tools/a33x/core-system-properties.sh
+source "$SOS_ROOT/tools/a33x/core-system-properties.sh"
 
 info() {
   printf '==> %s\n' "$*"
@@ -53,6 +99,9 @@ check_agent_runner_contract() {
     'decoded.provider === "openrouter" && decoded.model !== PINNED_OPENROUTER_MODEL' \
     "$runner" >/dev/null || \
     fail "shared Pi runner omitted exact OpenRouter request enforcement"
+  grep -F 'protocol_version: STDIO_PROTOCOL_VERSION' "$runner" >/dev/null && \
+    grep -F 'terminal: "failed"' "$runner" >/dev/null || \
+    fail "shared Pi runner omitted its bounded terminal protocol"
   info "shared Pi runner exact OpenRouter assignment and request guard passed"
 }
 
@@ -66,6 +115,576 @@ check_core_runtime_model_contract() {
   grep -aF 'Pi returned a response for the wrong model.' "$runtime" >/dev/null || \
     fail "Core runtime omitted its response-model rejection boundary"
   info "Core runtime pinned model bytes and mismatch rejection passed"
+}
+
+check_core_agent_hardening_source() {
+  [[ "$#" -eq 0 ]] || fail "usage: ./tools/a33xctl check-core-agent-hardening"
+  local contract="$SOS_ROOT/apps/experience/src/android_agent_contract.rs"
+  local agent="$SOS_ROOT/apps/experience/src/android/agent.rs"
+  local credential="$SOS_ROOT/apps/experience/src/core_credential.rs"
+  local child_fds="$SOS_ROOT/apps/experience/src/core_child_fds.rs"
+  local provider_fetch="$SOS_ROOT/services/sos-agent/src/provider-fetch.ts"
+  local host_policy="$SOS_ROOT/aosp/device/sos/a33x/sepolicy/system_ext/private/sos_core_host.te"
+  local agent_policy="$SOS_ROOT/aosp/device/sos/a33x/sepolicy/system_ext/private/sos_core_agent.te"
+  local policy_dir="$SOS_ROOT/aosp/device/sos/a33x/sepolicy/system_ext"
+  local jitless_line runner_line
+
+  jitless_line="$(grep -n -m1 '^    "--jitless",$' "$contract" | cut -d: -f1)"
+  runner_line="$(grep -n -m1 '^    CORE_CHILD_LAUNCH.runner_path,$' \
+    "$contract" | cut -d: -f1)"
+  [[ -n "$jitless_line" && -n "$runner_line" && "$jitless_line" -lt "$runner_line" ]] || \
+    fail "Core Node --jitless hardening must precede the fixed runner script"
+  grep -F '.args(CORE_NODE_ARGS)' "$agent" >/dev/null || \
+    fail "Core child launch bypasses the inspected fixed argument contract"
+  grep -F '.stderr(Stdio::null())' "$agent" >/dev/null || \
+    fail "Core child stderr is no longer discarded"
+  grep -F 'restrict_to_standard_fds(&mut command);' "$agent" >/dev/null && \
+    grep -F 'libc::SYS_close_range' "$child_fds" >/dev/null && \
+    grep -F 'const CLOSE_RANGE_CLOEXEC: u32 = 1 << 2;' "$child_fds" >/dev/null && \
+    grep -F '3_u32' "$child_fds" >/dev/null && \
+    grep -F 'u32::MAX' "$child_fds" >/dev/null && \
+    grep -F 'fd_boundary=stdio_only' "$agent" >/dev/null || \
+    fail "Core child does not fail closed after restricting inheritance to descriptors 0/1/2"
+  grep -Fx 'type sos_core_agent, domain, coredomain;' "$agent_policy" >/dev/null || \
+    fail "Core Node child lacks its dedicated system_ext coredomain"
+  grep -Fx 'domain_auto_trans(sos_core_host, sos_node_exec, sos_core_agent)' \
+    "$agent_policy" >/dev/null || \
+    fail "Core Node execution does not transition out of the trusted UI host"
+  grep -Fx 'allow sos_core_host sos_core_agent:process sigkill;' \
+    "$agent_policy" >/dev/null || \
+    fail "Core host cannot enforce bounded child cleanup"
+  grep -Fx 'allow sos_core_agent sos_core_host:fd use;' "$agent_policy" >/dev/null && \
+    grep -Fx 'allow sos_core_agent sos_core_host:fifo_file { getattr ioctl read write };' \
+      "$agent_policy" >/dev/null && \
+    grep -Fx 'allowxperm sos_core_agent sos_core_host:fifo_file ioctl { TCGETS };' \
+      "$agent_policy" >/dev/null || \
+    fail "Core Node child lacks its bounded inherited pipe contract"
+  grep -Fx 'allow sos_core_agent proc_meminfo:file { open read };' "$agent_policy" >/dev/null || \
+    fail "Core Node startup lacks the narrow read-only meminfo policy"
+  grep -Fx 'unix_socket_connect(sos_core_agent, dnsproxyd, netd)' "$agent_policy" >/dev/null && \
+    grep -Fx 'unix_socket_connect(sos_core_agent, fwmarkd, netd)' "$agent_policy" >/dev/null && \
+    grep -Fx 'allow netd sos_core_agent:fd use;' "$agent_policy" >/dev/null && \
+    grep -Fx 'allow netd sos_core_agent:tcp_socket { read write getattr setattr getopt setopt };' \
+      "$agent_policy" >/dev/null && \
+    grep -Fx 'allow sos_core_agent self:udp_socket create;' "$agent_policy" >/dev/null && \
+    grep -Fx 'allow sos_core_agent self:tcp_socket create_stream_socket_perms;' \
+      "$agent_policy" >/dev/null && \
+    grep -Fx 'allow sos_core_agent sos_agent_https_port:tcp_socket name_connect;' \
+      "$agent_policy" >/dev/null || \
+    fail "Core agent lacks its constrained Android resolver/TLS path"
+  grep -Fx 'type sos_agent_https_port, port_type;' \
+    "$policy_dir/private/port.te" >/dev/null && \
+    grep -Fx 'portcon tcp 443 u:object_r:sos_agent_https_port:s0' \
+      "$policy_dir/private/port_contexts" >/dev/null || \
+    fail "Core agent TLS permission is not bound to TCP port 443"
+  ! grep -R -E '(^|[[:space:]])(get_prop|set_prop)\([^,]+,[[:space:]]*net_dns_prop\)|allow[[:space:]]+[^[:space:]]+[[:space:]]+net_dns_prop:' \
+    "$policy_dir" >/dev/null || \
+    fail "SOS policy must not bypass Android's obsolete net.dns property neverallow"
+  ! grep -E '^net_domain\(sos_core_host\)|^allow[[:space:]]+sos_core_host[[:space:]].*:(tcp_socket|udp_socket|rawip_socket|icmp_socket)' \
+    "$host_policy" >/dev/null || \
+    fail "trusted Core UI host must not inherit agent network authority"
+  ! grep -R -E '^net_domain\(sos_core_agent\)|^allow[[:space:]]+sos_core_agent[[:space:]].*:(rawip_socket|icmp_socket)' \
+    "$policy_dir" >/dev/null || \
+    fail "Core agent policy must not inherit broad net_domain socket authority"
+  ! grep -R -E '^allow[[:space:]]+sos_core_agent[[:space:]].*:udp_socket' \
+    "$policy_dir" | grep -Fv 'allow sos_core_agent self:udp_socket create;' >/dev/null || \
+    fail "Core agent UDP authority exceeds Bionic's socket-creation-only DNS proxy probe"
+  grep -Fx 'neverallow sos_core_agent self:udp_socket ~{ create };' "$agent_policy" >/dev/null && \
+    grep -Fx 'neverallow sos_core_agent port_type:udp_socket *;' "$agent_policy" >/dev/null && \
+    grep -Fx 'neverallow sos_core_agent node_type:{ icmp_socket rawip_socket udp_socket } *;' \
+      "$agent_policy" >/dev/null && \
+    grep -Fx 'neverallow sos_core_agent { port_type -sos_agent_https_port }:tcp_socket name_connect;' \
+      "$agent_policy" >/dev/null || \
+    fail "Core agent lacks structural rejection of direct UDP DNS and generic nodes/ports"
+  ! grep -R -E '^allow[[:space:]]+sos_core_agent[[:space:]]+.*:tcp_socket[[:space:]]+name_connect;' \
+    "$policy_dir" | grep -Fv \
+      'allow sos_core_agent sos_agent_https_port:tcp_socket name_connect;' >/dev/null || \
+    fail "Core agent may connect only to its TCP-443 label"
+  ! grep -R -E '(^|[[:space:]])(permissive|dontaudit)[[:space:]\(]' "$policy_dir" >/dev/null || \
+    fail "SOS system_ext policy must not suppress or disable enforcement"
+  ! grep -R -E '^allow[[:space:]]+(sos_core_host|sos_core_agent).*execmem' \
+    "$policy_dir" >/dev/null || \
+    fail "Core host and agent policy must never grant execmem"
+  ! grep -F 'allow sos_core_host sos_node_exec:file execute_no_trans;' \
+    "$host_policy" >/dev/null || \
+    fail "Core Node may not inherit the trusted UI host domain"
+  for category in exit_failure signal empty_response invalid_response; do
+    grep -F "\"$category\"" "$contract" >/dev/null || \
+      fail "Core child failure contract omitted category: $category"
+  done
+  grep -F 'pub const OPENROUTER_KEY_PREFIX: &str = "sk-or-v1-";' \
+    "$credential" >/dev/null || \
+    fail "Core credential ceremony omitted its fixed OpenRouter prefix helper"
+  grep -F 'suffix_count:' "$credential" >/dev/null || \
+    fail "Core credential ceremony omitted visible suffix counting"
+  grep -F 'agent.state.errorMessage' \
+    "$SOS_ROOT/services/sos-agent/src/stdio-runner.ts" >/dev/null || \
+    fail "Pi terminal transport failure is not checked before tool sequence validation"
+  grep -F 'transport.failure ?? sanitizeRunnerFailure(undefined' \
+    "$SOS_ROOT/services/sos-agent/src/stdio-runner.ts" >/dev/null || \
+    fail "Pi terminal failure can still be classified from untrusted provider text"
+  grep -F 'await resolver("openrouter.ai")' \
+    "$SOS_ROOT/services/sos-agent/src/stdio-runner.ts" >/dev/null || \
+    fail "Core production DNS preflight is no longer fixed to OpenRouter"
+  grep -F 'fetch: options.fetch ?? nodeProviderFetch' \
+    "$SOS_ROOT/services/sos-agent/src/runtime.ts" >/dev/null && \
+    grep -F 'Readable.toWeb(response.body as Readable)' "$provider_fetch" >/dev/null && \
+    grep -F 'fetchImplementation: typeof globalThis.fetch = nodeProviderFetch' \
+      "$SOS_ROOT/services/sos-agent/src/stdio-runner.ts" >/dev/null || \
+    fail "shared Pi transport is no longer compatible with Core's JITless Node boundary"
+  grep -F 'function safeErrorCodes(error: unknown)' \
+    "$SOS_ROOT/services/sos-agent/src/stdio-runner.ts" >/dev/null && \
+    ! grep -F 'candidate.message' \
+      "$SOS_ROOT/services/sos-agent/src/stdio-runner.ts" >/dev/null || \
+    fail "Core failure classification may consume untrusted error text"
+  for marker in \
+    core_ui_attempt \
+    attempt_received \
+    dispatch_started \
+    'android_agent_effect_dispatch action=' \
+    'android_agent_request_accepted provider=' \
+    'android_agent_request_start provider=' \
+    'android_agent_child_launch_failure cause=' \
+    'android_agent_child_start pid=' \
+    'android_agent_child_request state=written' \
+    'android_agent_child_response_header protocol=2' \
+    'android_agent_child_exit code=' \
+    'android_agent_pi_response provider=' \
+    'android_agent_request_terminal stage=' \
+    'android_agent_ui_terminal status='; do
+    grep -R -F "$marker" \
+      "$contract" "$agent" "$SOS_ROOT/apps/experience/src/android.rs" >/dev/null || \
+      fail "Core request lifecycle omitted sanitized marker: $marker"
+  done
+  for category in \
+    empty_input credential_missing busy model_policy dispatch_channel runtime_start \
+    network_unavailable \
+    dns_resolution dns_timeout dns_proxy_unavailable connect_timeout \
+    connect_refused connect_reset network_unreachable tls_failure unknown; do
+    grep -F "\"$category\"" "$contract" >/dev/null || \
+      fail "Core safe failure taxonomy omitted category: $category"
+  done
+  check_core_agent_policy
+  info "Core agent source hardening, safe failures, policy, and credential helper passed"
+}
+
+check_core_agent_policy() {
+  local secilc="$LINEAGE_ROOT/out/host/linux-x86/bin/secilc"
+  local focused_cil="$SOS_ROOT/tests/fixtures/core-agent-policy.cil"
+  [[ -x "$secilc" && -f "$focused_cil" ]] || \
+    fail "focused Core-agent policy test inputs are absent"
+  "$secilc" -m -M true -G -N -c 30 "$focused_cil" -o /dev/null -f /dev/null || \
+    fail "focused Core-agent DNS/ioctl policy failed secilc"
+  (
+    cd "$SOS_ROOT"
+    cargo test --locked -q -p core-agent-contract-test --lib
+  ) || fail "Core-agent inherited-FD boundary test failed"
+}
+
+check_core_dev_credential_source() {
+  [[ "$#" -eq 0 ]] || fail "usage: ./tools/a33xctl check-core-dev-credential"
+  local cargo="$SOS_ROOT/apps/experience/Cargo.toml"
+  local endpoint="$SOS_ROOT/apps/experience/src/core_dev_credential.rs"
+  local android_host="$SOS_ROOT/apps/experience/src/android.rs"
+  local attempt_contract="$SOS_ROOT/apps/experience/src/android_agent_contract.rs"
+  local protocol="$SOS_ROOT/aosp/device/sos/a33x/core/dev_credential_protocol_v1.h"
+  local product_contract="$SOS_ROOT/apps/experience/src/core_dev_product.rs"
+  local client="$SOS_ROOT/aosp/device/sos/a33x/core/dev_credential_client.cpp"
+  local ordinary_product="$SOS_ROOT/aosp/device/sos/a33x/lineage_sos_core1_a33x.mk"
+  local dev_product="$SOS_ROOT/aosp/device/sos/a33x/lineage_sos_core1_dev_a33x.mk"
+  local android_bp="$SOS_ROOT/aosp/device/sos/a33x/Android.bp"
+  local product_common="$SOS_ROOT/aosp/device/sos/a33x/sos_a33x_common.mk"
+  local products="$SOS_ROOT/aosp/device/sos/a33x/AndroidProducts.mk"
+  local policy="$SOS_ROOT/aosp/device/sos/a33x/sepolicy/system_ext/private/sos_core_host.te"
+  local client_policy="$SOS_ROOT/aosp/device/sos/a33x/sepolicy/core_dev_private/sos_core_dev_credential.te"
+  local dev_policy_dir="$SOS_ROOT/aosp/device/sos/a33x/sepolicy/core_dev_private"
+  local dev_agent_policy="$dev_policy_dir/sos_core_dev_agent.te"
+  local bridge="$SOS_ROOT/tools/core-dev-connect-bridge.py"
+  local file_types="$SOS_ROOT/aosp/device/sos/a33x/sepolicy/core_dev_private/file.te"
+  local file_contexts="$SOS_ROOT/aosp/device/sos/a33x/sepolicy/core_dev_private/file_contexts"
+  local lineage_common="$LINEAGE_ROOT/vendor/lineage/config/common.mk"
+  local build_prop_generator="$LINEAGE_ROOT/build/soong/scripts/gen_build_prop.py"
+  local ctl="$SOS_ROOT/tools/a33xctl"
+  local core_dev_transport='"$adb_binary" -s "$serial" shell -T '
+  core_dev_transport+='-- \'
+  local obsolete_core_dev_transport='exec''-out /system_ext/bin/sos-core-dev-credential'
+  local ordinary_runner_module dev_runner_module
+
+  ordinary_runner_module="$(soong_module_block prebuilt_etc sos-agent-runner)"
+  dev_runner_module="$(soong_module_block prebuilt_etc sos-agent-runner-core-dev)"
+
+  grep -Fx 'core-dev-credential = ["core-native"]' "$cargo" >/dev/null || \
+    fail "Core development credential endpoint lacks its dedicated feature"
+  ! grep -E '^core-native = \[[^]]*core-dev-credential' "$cargo" >/dev/null || \
+    fail "production Core feature unexpectedly includes development credentials"
+  grep -F 'ro.build.version.incremental' "$product_contract" >/dev/null && \
+    grep -F '"ro.sos.build_variant"' "$product_contract" >/dev/null && \
+    grep -F '"core1-dev-credential"' "$product_contract" >/dev/null && \
+    grep -F '"ro.sos.dev_credential"' "$product_contract" >/dev/null && \
+    grep -F '"ro.build.type"' "$product_contract" >/dev/null && \
+    grep -F '"ro.debuggable"' "$product_contract" >/dev/null && \
+    grep -F 'expected: "0"' "$product_contract" >/dev/null || \
+    fail "Core development endpoint lacks its exact runtime product gates"
+  ! grep -F 'property_is("ro.debuggable", "1")' \
+    "$endpoint" "$product_contract" >/dev/null || \
+    fail "Core development endpoint still treats broad Android debugging as enablement"
+  ! grep -E 'android-base/properties|GetProperty|__system_property' "$client" >/dev/null || \
+    fail "least-privilege Core development client unexpectedly reads properties"
+  grep -F 'strcmp(argv[1], "probe")' "$client" >/dev/null && \
+    grep -F 'strcmp(argv[1], "status")' "$client" >/dev/null && \
+    grep -F 'strcmp(argv[1], "agent-smoke")' "$client" >/dev/null && \
+    grep -F 'core_dev_credential=READY' "$client" >/dev/null && \
+    grep -F 'core_dev_credential=CONFIGURED' "$client" >/dev/null && \
+    grep -F 'core_dev_credential=EMPTY' "$client" >/dev/null || \
+    fail "Core development client lacks its secret-free handshake or state query"
+  grep -F '#include "dev_credential_protocol_v1.h"' "$client" >/dev/null && \
+    grep -F '/core_dev_credential_protocol_v1.rs' "$endpoint" >/dev/null && \
+    grep -F '#define SOS_CORE_DEV_V1_REQUEST_HEADER_BYTES 8' "$protocol" >/dev/null && \
+    grep -F '// probe: 53 4f 53 4b 01 00 00 00' "$protocol" >/dev/null && \
+    grep -F '// status: 53 4f 53 4b 01 03 00 00' "$protocol" >/dev/null || \
+    fail "Core development client and endpoint lack the canonical v1 golden contract"
+  grep -F '// agent-smoke: 53 4f 53 4b 01 04 00 00' "$protocol" >/dev/null && \
+    grep -F 'CORE_DEV_AGENT_SMOKE_PROMPT' \
+      "$android_host" >/dev/null && \
+    grep -F 'run_core_dev_client_status "$serial" agent-smoke SUBMITTED none' \
+      "$ctl" >/dev/null || \
+    fail "Core development smoke path lacks its fixed source prompt or canonical operation"
+  grep -F 'CoreDevSmokeAuthorization' "$android_host" >/dev/null && \
+    grep -F 'CoreDevSmokeAuthorization' "$attempt_contract" >/dev/null && \
+    grep -F 'consume_fixed_prompt(CORE_DEV_AGENT_SMOKE_PROMPT)' \
+      "$android_host" >/dev/null && \
+    grep -F 'AgentUiTransport::CoreDevFixedTunnel' "$attempt_contract" >/dev/null && \
+    grep -F 'attempt.transport_ready(network_available)' "$android_host" >/dev/null && \
+    ! grep -F 'CORE_DEV_AGENT_TUNNEL_ARMED' "$android_host" >/dev/null || \
+    fail "Core-dev smoke lacks an authenticated single-use attempt transport snapshot"
+  grep -F 'CORE_DEV_OPENROUTER_PROXY = "http://127.0.0.1:37173"' \
+    "$SOS_ROOT/services/sos-agent/src/core-dev-proxy.ts" >/dev/null && \
+    grep -F 'url.hostname !== "openrouter.ai"' \
+      "$SOS_ROOT/services/sos-agent/src/core-dev-proxy.ts" >/dev/null && \
+    grep -F 'new HttpsProxyAgent(CORE_DEV_OPENROUTER_PROXY)' \
+      "$SOS_ROOT/services/sos-agent/src/core-dev-proxy.ts" >/dev/null && \
+    grep -F '{ agent, redirect: "error" }' \
+      "$SOS_ROOT/services/sos-agent/src/core-dev-proxy.ts" >/dev/null && \
+    grep -F 'node_path: "/system_ext/bin/sos-node-core-dev",' \
+      "$attempt_contract" >/dev/null && \
+    grep -F 'node_path: "/system_ext/bin/sos-node",' \
+      "$attempt_contract" >/dev/null && \
+    grep -F 'Command::new(CORE_CHILD_LAUNCH.node_path)' \
+      "$SOS_ROOT/apps/experience/src/android/agent.rs" >/dev/null || \
+    fail "Core-dev tunnel lacks its fixed proxy or distinct executable boundary"
+  grep -Fx 'LISTEN_HOST = "127.0.0.1"' "$bridge" >/dev/null && \
+    grep -Fx 'ALLOWED_AUTHORITY = "openrouter.ai:443"' "$bridge" >/dev/null && \
+    grep -Fx 'ALLOWED_HOST_HEADERS = frozenset((UPSTREAM_HOST, ALLOWED_AUTHORITY))' \
+      "$bridge" >/dev/null && \
+    grep -F 'if len(argv) != 2 or argv[0] != "--events" or not argv[1]:' \
+      "$bridge" >/dev/null && \
+    grep -F 'self.server.events.record("relay_started", direction=direction)' \
+      "$bridge" >/dev/null || \
+    fail "host CONNECT bridge lacks its loopback-only authority or content-free evidence contract"
+  grep -F 'SO_PEERCRED' "$endpoint" >/dev/null && grep -F 'SO_PEERSEC' "$endpoint" >/dev/null || \
+    fail "Core development endpoint lacks uid and SELinux peer authentication"
+  grep -F 'const MAX_FRAME_BYTES:' "$endpoint" >/dev/null || \
+    fail "Core development endpoint lacks a bounded wire frame"
+  grep -F 'memset_explicit(bytes.data(), 0, bytes.size())' "$client" >/dev/null || \
+    fail "Core development client does not zeroize its bounded secret buffer"
+  ! grep -E '(^|[^[:alnum:]_])(fputs|fprintf|puts|printf)[[:space:]]*\(' \
+    "$client" >/dev/null || \
+    fail "Core development client uses buffered stdio on inherited ADB descriptors"
+  ! grep -E '(setprop|clipboard|/data/|/sdcard/|Authorization:|Bearer )' \
+    "$endpoint" "$client" >/dev/null || \
+    fail "Core development credential path references a forbidden secret transport"
+  grep -Fx 'PRODUCT_NAME := lineage_sos_core1_a33x' "$ordinary_product" >/dev/null && \
+    grep -Fx '    sos-agent-runner' "$ordinary_product" >/dev/null && \
+    grep -Fx '    ro.sos.build_variant=core1-ordinary' "$ordinary_product" >/dev/null || \
+    fail "ordinary Core lacks its exact runner or immutable product identity"
+  ! grep -E 'sos-core-dev-credential|sos-node-core-dev|sos-agent-runner-core-dev|ro\.sos\.dev_credential' \
+    "$ordinary_product" >/dev/null || \
+    fail "ordinary Core product references development credential or tunnel packages"
+  grep -Fx 'PRODUCT_NAME := lineage_sos_core1_dev_a33x' "$dev_product" >/dev/null && \
+    grep -Fx '    sos-core-dev-credential \' "$dev_product" >/dev/null && \
+    grep -Fx '    sos-node-core-dev \' "$dev_product" >/dev/null && \
+    grep -Fx '    sos-agent-runner-core-dev' "$dev_product" >/dev/null && \
+    grep -Fx '    ro.sos.build_variant=core1-dev-credential \' "$dev_product" >/dev/null && \
+    grep -Fx '    ro.sos.dev_credential=1' "$dev_product" >/dev/null && \
+  grep -F 'ifneq ($(TARGET_BUILD_VARIANT),userdebug)' "$dev_product" >/dev/null || \
+    fail "Core development product lacks exact package, identity, or build-type gates"
+  grep -F 'device/sos/a33x/sepolicy/core_dev_private' "$dev_product" >/dev/null || \
+    fail "Core-dev product omitted its product-exclusive tunnel policy directory"
+  [[ "$(grep -Fc '    filename: "agent-runner.cjs",' "$android_bp")" -eq 1 && \
+      "$(grep -Fc '    filename: "agent-runner-core-dev.cjs",' "$android_bp")" -eq 1 ]] && \
+    grep -F '    src: "prebuilts/sos-agent/agent-runner.cjs",' \
+      <<<"$ordinary_runner_module" >/dev/null && \
+    grep -F '    filename: "agent-runner.cjs",' \
+      <<<"$ordinary_runner_module" >/dev/null && \
+    grep -F '    src: "prebuilts/sos-agent/agent-runner-core-dev.cjs",' \
+      <<<"$dev_runner_module" >/dev/null && \
+    grep -F '    filename: "agent-runner-core-dev.cjs",' \
+      <<<"$dev_runner_module" >/dev/null && \
+    ! grep -F 'overrides:' <<<"$ordinary_runner_module$dev_runner_module" >/dev/null || \
+    fail "ordinary and Core-dev runner modules do not have unique Soong install identities"
+  ! grep -E '^[[:space:]]+sos-agent-runner(-core-dev)?' \
+    "$product_common" >/dev/null || \
+    fail "shared product composition must not select an ambiguous runner"
+  ! grep -R -E 'sos_core_dev_(agent|credential|proxy_port)|sos_node_core_dev_exec' \
+    "$SOS_ROOT/aosp/device/sos/a33x/sepolicy/system_ext" >/dev/null || \
+    fail "ordinary shared policy contains Core-dev credential or proxy authority"
+  local ordinary_runner_product
+  for ordinary_runner_product in \
+    lineage_sos_compat0_a33x.mk lineage_sos_compat_a33x.mk \
+    lineage_sos_core0b_a33x.mk lineage_sos_core1_a33x.mk \
+    lineage_sos_core_a33x.mk; do
+    { grep -Fx '    sos-agent-runner \' \
+        "$SOS_ROOT/aosp/device/sos/a33x/$ordinary_runner_product" >/dev/null || \
+      grep -Fx '    sos-agent-runner' \
+        "$SOS_ROOT/aosp/device/sos/a33x/$ordinary_runner_product" >/dev/null; } || \
+      fail "ordinary product omitted its explicit runner: $ordinary_runner_product"
+    ! grep -E '^[[:space:]]+sos-agent-runner-core-dev' \
+      "$SOS_ROOT/aosp/device/sos/a33x/$ordinary_runner_product" || \
+      fail "ordinary product selects the Core-dev runner: $ordinary_runner_product"
+  done
+  grep -F 'runner_path: "/system_ext/etc/sos-agent/agent-runner.cjs",' \
+    "$attempt_contract" >/dev/null && \
+    grep -F 'runner_path: "/system_ext/etc/sos-agent/agent-runner-core-dev.cjs",' \
+      "$attempt_contract" >/dev/null && \
+    grep -F 'expected_domain: "sos_core_dev_agent",' \
+      "$attempt_contract" >/dev/null || \
+    fail "Core runtime lacks distinct ordinary and development runner paths"
+  grep -F '$(LOCAL_DIR)/lineage_sos_core1_dev_a33x.mk' "$products" >/dev/null && \
+    grep -Fx '    lineage_sos_core1_dev_a33x-userdebug' "$products" >/dev/null || \
+    fail "Core development product is not registered as a userdebug lunch target"
+  grep -F 'lineage_sos_core1_a33x lineage_sos_core1_dev_a33x' \
+    "$SOS_ROOT/aosp/patches/a33x-lineage-23.0/0008-s5e8825-select-no-zygote-for-sos-core1-dev.patch" \
+    >/dev/null || fail "Core-dev is absent from the no-Zygote product selection"
+  ! grep -R -F 'SOS_ENABLE_CORE_DEV_CREDENTIAL_BUILD' \
+    "$SOS_ROOT/aosp/device/sos/a33x" >/dev/null || \
+    fail "Core development packaging still depends on an ad hoc shell variable"
+  grep -Fx 'domain_auto_trans(shell, sos_core_dev_credential_exec, sos_core_dev_credential)' \
+    "$client_policy" >/dev/null && \
+    grep -Fx 'allow sos_core_dev_credential sos_core_host:unix_stream_socket connectto;' \
+      "$client_policy" >/dev/null && \
+    grep -Fx 'neverallow shell sos_core_host:unix_stream_socket connectto;' \
+      "$policy" >/dev/null || \
+    fail "Core development client lacks its exact domain transition and socket boundary"
+  grep -Fx 'domain_auto_trans(sos_core_host, sos_node_core_dev_exec, sos_core_dev_agent)' \
+    "$dev_agent_policy" >/dev/null && \
+    grep -Fx 'allow netd sos_core_dev_agent:fd use;' "$dev_agent_policy" >/dev/null && \
+    grep -Fx 'allow netd sos_core_dev_agent:tcp_socket { read write getattr setattr getopt setopt };' \
+      "$dev_agent_policy" >/dev/null && \
+    grep -Fx 'allow sos_core_dev_agent sos_core_dev_proxy_port:tcp_socket name_connect;' \
+      "$dev_agent_policy" >/dev/null && \
+    grep -F 'neverallow sos_core_dev_agent' "$dev_agent_policy" >/dev/null && \
+    grep -F '{ port_type -sos_agent_https_port -sos_core_dev_proxy_port }:tcp_socket name_connect;' \
+      "$dev_agent_policy" >/dev/null || \
+    fail "Core-dev Node domain lacks its fixed proxy-port confinement"
+  ! grep -F 'sos_core_dev_proxy_port' \
+    "$SOS_ROOT/aosp/device/sos/a33x/sepolicy/system_ext/private/sos_core_agent.te" \
+    >/dev/null || fail "ordinary Core agent gained the development proxy port"
+  local ordinary_runner="$SOS_ROOT/services/sos-agent/dist/agent-runner.cjs"
+  local dev_runner="$SOS_ROOT/services/sos-agent/dist/agent-runner-core-dev.cjs"
+  [[ -f "$ordinary_runner" && -f "$dev_runner" ]] || \
+    fail "ordinary and Core-dev runner bundles must both be built"
+  ! grep -aF 'http://127.0.0.1:37173' "$ordinary_runner" >/dev/null && \
+    ! grep -aF 'HttpsProxyAgent' "$ordinary_runner" >/dev/null || \
+    fail "ordinary runner contains development CONNECT proxy code"
+  grep -aF 'http://127.0.0.1:37173' "$dev_runner" >/dev/null && \
+    grep -aF 'HttpsProxyAgent' "$dev_runner" >/dev/null || \
+    fail "Core-dev runner omitted its fixed CONNECT proxy implementation"
+  grep -aF 'nodeProviderFetch' "$ordinary_runner" >/dev/null && \
+    grep -aF 'nodeProviderFetch' "$dev_runner" >/dev/null && \
+    ! grep -aF 'WebAssembly' "$ordinary_runner" >/dev/null && \
+    ! grep -aF 'WebAssembly' "$dev_runner" >/dev/null || \
+    fail "shared Pi runner is not JITless-compatible without a Wasm HTTP parser"
+  check_agent_runner_contract "$dev_runner"
+  grep -Fx 'type sos_node_core_dev_exec, system_file_type, exec_type, file_type;' \
+    "$dev_policy_dir/file.te" >/dev/null && \
+    grep -Fx '/system_ext/bin/sos-node-core-dev           u:object_r:sos_node_core_dev_exec:s0' \
+      "$dev_policy_dir/file_contexts" >/dev/null && \
+    grep -Fx 'type sos_core_dev_proxy_port, port_type;' \
+      "$dev_policy_dir/port.te" >/dev/null && \
+    grep -Fx 'portcon tcp 37173 u:object_r:sos_core_dev_proxy_port:s0' \
+      "$dev_policy_dir/port_contexts" >/dev/null || \
+    fail "Core-dev product policy lacks its fixed executable or proxy-port labels"
+  ! grep -E '^allow shell sos_core_host:|^allow sos_core_dev_credential .*(tcp_socket|udp_socket|property_service|logd|logdr|logdw|service_manager|binder|capability)' \
+    "$policy" "$client_policy" >/dev/null || \
+    fail "Core development policy grants shell or client authority outside the dedicated boundary"
+  ! grep -E '^allow sos_core_dev_credential adbd:unix_stream_socket .*getattr' \
+    "$client_policy" >/dev/null || \
+    fail "Core development client must not gain getattr on the inherited ADB socket"
+  local unexpected_client_allow
+  unexpected_client_allow="$(
+    grep -E '^allow sos_core_dev_credential ' "$client_policy" | grep -Ev \
+      '^allow sos_core_dev_credential (shell:fd use;|adbd:fd use;|adbd:unix_stream_socket \{ read write \};|shell:fifo_file \{ getattr read write \};|self:unix_stream_socket create_socket_perms;|sos_core_host:unix_stream_socket connectto;)$' || true
+  )"
+  [[ -z "$unexpected_client_allow" ]] || \
+    fail "Core development client policy contains an unreviewed allow"
+  ! grep -E '(^|[^[:alnum:]_])(net_domain|get_prop|set_prop|read_logd|write_logd|r_file_perms|rw_file_perms|r_dir_perms)([^[:alnum:]_]|$)' \
+    "$client_policy" >/dev/null || \
+    fail "Core development client gained network, property, log, or filesystem authority"
+  grep -Fx 'type sos_core_dev_credential_exec, system_file_type, exec_type, file_type;' \
+    "$file_types" >/dev/null && \
+    grep -Fx '/system_ext/bin/sos-core-dev-credential     u:object_r:sos_core_dev_credential_exec:s0' \
+      "$file_contexts" >/dev/null || \
+    fail "Core development client lacks its dedicated immutable image label"
+  [[ -f "$lineage_common" && -f "$build_prop_generator" ]] || \
+    fail "Lineage property-generation sources are absent"
+  grep -Fx 'PRODUCT_NOT_DEBUGGABLE_IN_USERDEBUG := true' "$lineage_common" >/dev/null && \
+    grep -F 'if config["ProductNotDebuggableInUserdebug"]:' \
+      "$build_prop_generator" >/dev/null && \
+    grep -F 'props.append("ro.debuggable=0")' "$build_prop_generator" >/dev/null || \
+    fail "Lineage no longer intentionally hardens userdebug with ro.debuggable=0"
+  [[ "$(grep -Fc "$core_dev_transport" "$ctl")" -eq 2 ]] || \
+    fail "Core-dev host commands do not share the exact no-PTY ADB shell transport"
+  ! grep -F "$obsolete_core_dev_transport" "$ctl" >/dev/null || \
+    fail "Core-dev credential commands still use the output-dropping ADB transport"
+  grep -F 'read -r -s -n 513 secret' "$ctl" >/dev/null && \
+    grep -F 'run_core_dev_client_status "$serial" set SET inherit' "$ctl" >/dev/null && \
+    grep -F 'require_core_dev_state "$serial" CONFIGURED' "$ctl" >/dev/null && \
+    grep -F 'require_core_dev_state "$serial" EMPTY' "$ctl" >/dev/null || \
+    fail "host mutations do not bound hidden input and verify the resulting state"
+
+  check_core_dev_product_make_expansion "$ordinary_product" "$dev_product"
+  check_core_dev_credential_policy "$client_policy"
+  check_core_dev_credential_android_compile "$client"
+  (
+    cd "$SOS_ROOT"
+    cargo test --locked -q -p core-dev-credential-protocol-test --lib -- --test-threads=1
+  ) || fail "production C++ and Rust Core-dev protocol integration failed"
+  info "Core development credential handshake, cross-language v1 protocol, dedicated domain, Android compile, peer checks, and production exclusion passed"
+}
+
+check_core_dev_credential_policy() {
+  [[ "$#" -eq 1 ]] || fail "internal usage: check_core_dev_credential_policy POLICY"
+  local policy="$1" macros="$LINEAGE_ROOT/system/sepolicy/public/te_macros"
+  local m4_binary="$LINEAGE_ROOT/prebuilts/build-tools/linux-x86/bin/m4"
+  local secilc="$LINEAGE_ROOT/out/host/linux-x86/bin/secilc"
+  local temporary user_expanded dev_expanded focused_cil
+  [[ -f "$macros" && -x "$m4_binary" && -x "$secilc" ]] || \
+    fail "expanded policy test inputs are absent"
+  temporary="$(mktemp -d /tmp/sos-core-dev-policy.XXXXXX)"
+  trap 'rm -rf -- "$temporary"' EXIT
+  user_expanded="$temporary/user.te"
+  dev_expanded="$temporary/userdebug.te"
+  "$m4_binary" -D target_build_variant=user "$macros" "$policy" >"$user_expanded"
+  "$m4_binary" -D target_build_variant=userdebug "$macros" "$policy" >"$dev_expanded"
+  ! grep -F 'type_transition shell sos_core_dev_credential_exec:process sos_core_dev_credential;' \
+    "$user_expanded" >/dev/null || fail "production policy contains the dev-client transition"
+  grep -F 'type_transition shell sos_core_dev_credential_exec:process sos_core_dev_credential;' \
+    "$dev_expanded" >/dev/null || fail "userdebug policy omitted the dev-client transition"
+  grep -F 'allow sos_core_dev_credential sos_core_dev_credential_exec:file { entrypoint open read execute getattr map };' \
+    "$dev_expanded" >/dev/null || fail "dev-client transition omitted the exact entrypoint"
+
+  focused_cil="$temporary/policy.cil"
+  sed -n '/^;; BEGIN FOCUSED CIL$/,/^;; END FOCUSED CIL$/p' \
+    "$SOS_ROOT/tests/fixtures/core-dev-credential-policy.cil" >"$focused_cil"
+  "$secilc" -m -M true -G -N -c 30 "$focused_cil" -o /dev/null -f /dev/null || \
+    fail "focused expanded Core-dev CIL failed secilc"
+  rm -rf -- "$temporary"
+  trap - EXIT
+}
+
+check_core_dev_product_make_expansion() {
+  [[ "$#" -eq 2 ]] || \
+    fail "internal usage: check_core_dev_product_make_expansion ORDINARY DEV"
+  local ordinary_product="$1" dev_product="$2" ordinary_expansion dev_expansion
+  require_command make
+
+  ordinary_expansion="$(
+    make -s -f "$ordinary_product" 'inherit-product=' TARGET_BUILD_VARIANT=userdebug \
+      --eval 'sos-print:;@printf "%s|%s|%s\n" "$(PRODUCT_NAME)" "$(PRODUCT_PACKAGES)" "$(PRODUCT_SYSTEM_EXT_PROPERTIES)"' \
+      sos-print
+  )" || fail "ordinary Core product make expansion failed"
+  dev_expansion="$(
+    make -s -f "$dev_product" 'inherit-product=' TARGET_BUILD_VARIANT=userdebug \
+      --eval 'sos-print:;@printf "%s|%s|%s\n" "$(PRODUCT_NAME)" "$(PRODUCT_PACKAGES)" "$(PRODUCT_SYSTEM_EXT_PROPERTIES)"' \
+      sos-print
+  )" || fail "Core-dev product make expansion failed"
+
+  [[ "$ordinary_expansion" == \
+    'lineage_sos_core1_a33x|sos-agent-runner|ro.sos.build_variant=core1-ordinary' ]] || \
+    fail "ordinary Core direct product expansion is not development-free"
+  [[ "$dev_expansion" == \
+    'lineage_sos_core1_dev_a33x|sos-core-dev-credential sos-node-core-dev sos-agent-runner-core-dev|ro.sos.build_variant=core1-dev-credential ro.sos.dev_credential=1' ]] || \
+    fail "Core-dev direct product expansion omitted its exact package or properties"
+  if make -s -f "$dev_product" 'inherit-product=' TARGET_BUILD_VARIANT=user \
+      --eval 'sos-print:;@:' sos-print >/dev/null 2>&1; then
+    fail "Core-dev product unexpectedly permits a production user build"
+  fi
+  if make -s -f "$dev_product" 'inherit-product=' TARGET_BUILD_VARIANT=eng \
+      --eval 'sos-print:;@:' sos-print >/dev/null 2>&1; then
+    fail "Core-dev product unexpectedly permits an unregistered eng build"
+  fi
+}
+
+check_core_dev_credential_android_compile() {
+  [[ "$#" -eq 1 ]] || fail "internal usage: check_core_dev_credential_android_compile CLIENT"
+  local client="$1"
+  local clang_config="$LINEAGE_ROOT/build/soong/cc/config/global.go"
+  local bionic_symbols="$LINEAGE_ROOT/bionic/libc/libc.map.txt"
+  local clang_version clang_root
+  local -a required_paths
+
+  [[ -f "$clang_config" ]] || fail "LineageOS source is not synced: $clang_config"
+  clang_version="${LLVM_PREBUILTS_VERSION:-$(
+    awk -F'"' '/ClangDefaultVersion[[:space:]]+=/ { print $2; exit }' "$clang_config"
+  )}"
+  [[ "$clang_version" == clang-* && "$clang_version" != */* ]] || \
+    fail "could not resolve the pinned Android clang version"
+  clang_root="$LINEAGE_ROOT/prebuilts/clang/host/linux-x86/$clang_version"
+  required_paths=(
+    "$clang_root/bin/clang++"
+    "$clang_root/android_libc++/platform/aarch64/include/c++/v1"
+    "$clang_root/include/c++/v1"
+    "$LINEAGE_ROOT/bionic/libc/include"
+    "$bionic_symbols"
+    "$LINEAGE_ROOT/bionic/libc/kernel/uapi/asm-arm64"
+    "$LINEAGE_ROOT/bionic/libc/kernel/uapi"
+    "$LINEAGE_ROOT/bionic/libc/kernel/android/uapi"
+    "$LINEAGE_ROOT/bionic/libc/system_properties/include"
+    "$LINEAGE_ROOT/system/libbase/include"
+    "$LINEAGE_ROOT/external/fmtlib/include"
+  )
+  local path
+  for path in "${required_paths[@]}"; do
+    [[ -e "$path" ]] || fail "Android client compile input is missing: $path"
+  done
+  grep -Fx '    memset_explicit;' "$bionic_symbols" >/dev/null || \
+    fail "Bionic does not export the required explicit-erasure API"
+
+  "$clang_root/bin/clang++" \
+    -c \
+    -nostdlibinc \
+    -O2 \
+    -target aarch64-linux-android10000 \
+    -march=armv8.2-a+dotprod \
+    -mcpu=cortex-a55 \
+    -DANDROID \
+    -DNDEBUG \
+    -D_FORTIFY_SOURCE=2 \
+    -D__ANDROID_UNAVAILABLE_SYMBOLS_ARE_WEAK__ \
+    -D__LIBC_API__=10000 \
+    -D__LIBM_API__=10000 \
+    -D__LIBDL_API__=10000 \
+    -std=gnu++20 \
+    -fno-exceptions \
+    -fno-rtti \
+    -fno-strict-aliasing \
+    -fstack-protector-strong \
+    -fPIE \
+    -Wall \
+    -Werror \
+    -Wextra \
+    -Wunguarded-availability \
+    -I"$LINEAGE_ROOT/system/libbase/include" \
+    -I"$LINEAGE_ROOT/external/fmtlib/include" \
+    -I"$clang_root/android_libc++/platform/aarch64/include/c++/v1" \
+    -I"$clang_root/include/c++/v1" \
+    -I"$LINEAGE_ROOT/bionic/libc/system_properties/include" \
+    -isystem "$LINEAGE_ROOT/bionic/libc/include" \
+    -isystem "$LINEAGE_ROOT/bionic/libc/kernel/uapi/asm-arm64" \
+    -isystem "$LINEAGE_ROOT/bionic/libc/kernel/uapi" \
+    -isystem "$LINEAGE_ROOT/bionic/libc/kernel/android/uapi" \
+    -o /dev/null \
+    "$client" || fail "Core development client failed its Android/Bionic target compile"
 }
 
 soong_module_block() {
@@ -126,7 +745,7 @@ check_product_graph() {
     fail "Compat 1 must not select the Core UI-removal marker"
   for profile_file in \
     "$device_dir/lineage_sos_core0b_a33x.mk" \
-    "$device_dir/lineage_sos_core1_a33x.mk"; do
+    "$device_dir/sos_core1_common.mk"; do
     grep -F '    sos-ui-removal-marker' "$profile_file" >/dev/null || \
       fail "$(basename "$profile_file") does not select the Core UI-removal marker"
     ! grep -F '    sos-compat-ui-removal-marker' "$profile_file" >/dev/null || \
@@ -248,43 +867,143 @@ hydrate_source_lfs() {
   info "ARM64 WebView Git-LFS gate passed"
 }
 
-apply_source_patches() {
-  [[ "$#" -eq 0 ]] || fail "usage: ./tools/a33xctl apply-patches"
-  local -a projects=(
-    device/samsung/s5e8825-common
-    vendor/samsung/s5e8825-common
-    device/samsung/s5e8825-common
-    frameworks/base
-    device/samsung/s5e8825-common
-    device/samsung/s5e8825-common
-    device/samsung/s5e8825-common
-  )
-  local -a patches=(
-    0001-s5e8825-fix-epicoperator-symbol.patch
-    0002-s5e8825-match-libsec-ril-protobuf-soname.patch
-    0003-s5e8825-package-recovery-init.patch
-    0004-frameworks-base-enforce-sos-core-install-policy.patch
-    0005-s5e8825-select-no-zygote-for-sos-core1.patch
-    0006-s5e8825-allow-sos-core-tsp-enable.patch
-    0007-s5e8825-chown-tsp-enabled.patch
-  )
-  local index project patch
-  for index in "${!patches[@]}"; do
-    project="$LINEAGE_ROOT/${projects[$index]}"
-    patch="$LINEAGE_PATCH_DIR/${patches[$index]}"
-    [[ -d "$project/.git" || -f "$project/.git" ]] || \
-      fail "source checkout missing: ${projects[$index]}"
-    [[ -f "$patch" ]] || fail "required source patch missing: $patch"
+declare -A SOURCE_PATCH_STATES=()
+SOURCE_PATCH_STATE=
 
-    if git -C "$project" apply --reverse --check "$patch" 2>/dev/null; then
-      info "source patch already applied: $(basename "$patch")"
-    elif git -C "$project" apply --check "$patch"; then
-      git -C "$project" apply "$patch"
-      info "applied source patch: $(basename "$patch")"
-    else
-      fail "source patch cannot be applied cleanly: $patch"
+source_patches_for_project() {
+  [[ "$#" -eq 1 ]] || fail "internal usage: source_patches_for_project PROJECT"
+  local relative_project="$1" index
+  for index in "${!LINEAGE_PATCH_FILES[@]}"; do
+    if [[ "${LINEAGE_PATCH_PROJECTS[$index]}" == "$relative_project" ]]; then
+      printf '%s\n' "$LINEAGE_PATCH_DIR/${LINEAGE_PATCH_FILES[$index]}"
     fi
   done
+}
+
+inspect_source_patch_project() {
+  [[ "$#" -eq 2 ]] || \
+    fail "internal usage: inspect_source_patch_project TEMP_ROOT PROJECT"
+  local temp_root="$1" relative_project="$2"
+  local project="$LINEAGE_ROOT/$relative_project"
+  local index_file="$temp_root/${relative_project//\//_}.index"
+  local baseline_file="$temp_root/baseline" expected_file="$temp_root/expected"
+  local patch path
+  local baseline_matches=1 expected_matches=1
+  local -a patches=() touched_paths=()
+
+  [[ -d "$project/.git" || -f "$project/.git" ]] || \
+    fail "source checkout missing: $relative_project"
+  mapfile -t patches < <(source_patches_for_project "$relative_project")
+  [[ "${#patches[@]}" -gt 0 ]] || \
+    fail "source patch project has no registered patches: $relative_project"
+
+  GIT_INDEX_FILE="$index_file" git -C "$project" read-tree HEAD
+  for patch in "${patches[@]}"; do
+    if ! GIT_INDEX_FILE="$index_file" git -C "$project" \
+        apply --cached --check "$patch"; then
+      fail "ordered source patch series does not apply to the pinned baseline: $patch"
+    fi
+    GIT_INDEX_FILE="$index_file" git -C "$project" apply --cached "$patch"
+  done
+
+  mapfile -t touched_paths < <(
+    for patch in "${patches[@]}"; do
+      git -C "$project" apply --numstat "$patch"
+    done | cut -f3 | LC_ALL=C sort -u
+  )
+  [[ "${#touched_paths[@]}" -gt 0 ]] || \
+    fail "source patch series touches no files: $relative_project"
+  for path in "${touched_paths[@]}"; do
+    git -C "$project" show "HEAD:$path" >"$baseline_file" || \
+      fail "source patch baseline path is not a regular tracked file: $relative_project/$path"
+    GIT_INDEX_FILE="$index_file" git -C "$project" show ":$path" >"$expected_file" || \
+      fail "source patch result path is not a regular tracked file: $relative_project/$path"
+    cmp -s "$project/$path" "$baseline_file" || baseline_matches=0
+    cmp -s "$project/$path" "$expected_file" || expected_matches=0
+  done
+
+  if [[ "$expected_matches" == 1 ]]; then
+    SOURCE_PATCH_STATE=applied
+  elif [[ "$baseline_matches" == 1 ]]; then
+    SOURCE_PATCH_STATE=baseline
+  else
+    fail "source patch project is neither pinned baseline nor complete ordered result: $relative_project"
+  fi
+}
+
+preflight_source_patch_series() {
+  [[ "$#" -eq 0 ]] || fail "internal usage: preflight_source_patch_series"
+  local temp_root index patch actual_sha relative_project actual_revision
+  temp_root="$(mktemp -d /tmp/sos-a33x-patch-series.XXXXXX)"
+
+  [[ "${#LINEAGE_PATCH_PROJECTS[@]}" == "${#LINEAGE_PATCH_FILES[@]}" &&
+     "${#LINEAGE_PATCH_FILES[@]}" == "${#LINEAGE_PATCH_SHA256S[@]}" ]] || \
+    fail "source patch series metadata lengths differ"
+  [[ "${#LINEAGE_PATCH_BASELINE_PROJECTS[@]}" == \
+     "${#LINEAGE_PATCH_BASELINE_REVISIONS[@]}" ]] || \
+    fail "source patch baseline metadata lengths differ"
+
+  for index in "${!LINEAGE_PATCH_FILES[@]}"; do
+    patch="$LINEAGE_PATCH_DIR/${LINEAGE_PATCH_FILES[$index]}"
+    [[ -f "$patch" ]] || fail "required source patch missing: $patch"
+    actual_sha="$(sha256sum "$patch" | cut -d' ' -f1)"
+    [[ "$actual_sha" == "${LINEAGE_PATCH_SHA256S[$index]}" ]] || \
+      fail "source patch provenance hash changed: $patch"
+  done
+  for index in "${!LINEAGE_PATCH_BASELINE_PROJECTS[@]}"; do
+    relative_project="${LINEAGE_PATCH_BASELINE_PROJECTS[$index]}"
+    [[ -d "$LINEAGE_ROOT/$relative_project/.git" || \
+       -f "$LINEAGE_ROOT/$relative_project/.git" ]] || \
+      fail "source checkout missing: $relative_project"
+    actual_revision="$(git -C "$LINEAGE_ROOT/$relative_project" rev-parse HEAD)"
+    [[ "$actual_revision" == "${LINEAGE_PATCH_BASELINE_REVISIONS[$index]}" ]] || \
+      fail "source patch baseline revision changed for $relative_project: $actual_revision"
+    inspect_source_patch_project "$temp_root" "$relative_project"
+    SOURCE_PATCH_STATES["$relative_project"]="$SOURCE_PATCH_STATE"
+    info "source patch project preflight: $relative_project ($SOURCE_PATCH_STATE)"
+  done
+
+  rm -rf -- "$temp_root"
+}
+
+check_source_patch_series() {
+  [[ "$#" -eq 0 ]] || fail "usage: ./tools/a33xctl check-patch-series"
+  local index
+  preflight_source_patch_series
+  for index in "${!LINEAGE_PATCH_FILES[@]}"; do
+    printf 'patch=%02d\tproject=%s\tsha256=%s\tfile=%s\n' \
+      "$((index + 1))" "${LINEAGE_PATCH_PROJECTS[$index]}" \
+      "${LINEAGE_PATCH_SHA256S[$index]}" "${LINEAGE_PATCH_FILES[$index]}"
+  done
+  info "complete ordered source patch series and bootstrap state passed"
+}
+
+apply_source_patches() {
+  [[ "$#" -eq 0 ]] || fail "usage: ./tools/a33xctl apply-patches"
+  local index relative_project patch
+  preflight_source_patch_series
+
+  for relative_project in "${LINEAGE_PATCH_BASELINE_PROJECTS[@]}"; do
+    if [[ "${SOURCE_PATCH_STATES[$relative_project]}" == applied ]]; then
+      info "source patch project already complete: $relative_project"
+    fi
+  done
+  for index in "${!LINEAGE_PATCH_FILES[@]}"; do
+    relative_project="${LINEAGE_PATCH_PROJECTS[$index]}"
+    if [[ "${SOURCE_PATCH_STATES[$relative_project]}" == baseline ]]; then
+      patch="$LINEAGE_PATCH_DIR/${LINEAGE_PATCH_FILES[$index]}"
+      git -C "$LINEAGE_ROOT/$relative_project" apply --check "$patch"
+      git -C "$LINEAGE_ROOT/$relative_project" apply "$patch"
+      info "applied source patch: $(basename "$patch")"
+    fi
+  done
+
+  preflight_source_patch_series
+  for relative_project in "${LINEAGE_PATCH_BASELINE_PROJECTS[@]}"; do
+    [[ "${SOURCE_PATCH_STATES[$relative_project]}" == applied ]] || \
+      fail "source patch project did not reach the complete ordered result: $relative_project"
+  done
+  info "complete ordered source patch series applied"
 }
 
 stage_sos() {
@@ -295,6 +1014,7 @@ stage_sos() {
   local node="$SOS_ROOT/artifacts/sos-node-android-arm64"
   local node_cxx="$SOS_ROOT/artifacts/sos-node-libc++_shared.so"
   local agent_runner="$SOS_ROOT/services/sos-agent/dist/agent-runner.cjs"
+  local core_dev_agent_runner="$SOS_ROOT/services/sos-agent/dist/agent-runner-core-dev.cjs"
   local agent_api="$SOS_ROOT/docs/experience-api.md"
   local agent_example_primary="$SOS_ROOT/experiences/default.luau"
   local agent_example_secondary="$SOS_ROOT/experiences/timeflow.luau"
@@ -308,6 +1028,8 @@ stage_sos() {
   [[ -x "$node" ]] || fail "Android ARM64 Node missing; run ./tools/build-android-node"
   [[ -f "$node_cxx" ]] || fail "Android Node libc++ runtime missing; run ./tools/build-android-node"
   [[ -f "$agent_runner" ]] || fail "shared Pi runner missing; run npm run build in services/sos-agent"
+  [[ -f "$core_dev_agent_runner" ]] || \
+    fail "Core-dev Pi runner missing; run npm run build in services/sos-agent"
   [[ -f "$agent_api" && -f "$agent_example_primary" && -f "$agent_example_secondary" ]] || \
     fail "Android Pi prompt documents are missing"
   [[ -f "$bootstrap" ]] || fail "SOS bootstrap experience missing"
@@ -346,6 +1068,8 @@ stage_sos() {
   rm -f -- "$LINEAGE_SOS_OVERLAY_DESTINATION/prebuilts/sos-agent/android-runner.cjs"
   install -m 0644 "$agent_runner" \
     "$LINEAGE_SOS_OVERLAY_DESTINATION/prebuilts/sos-agent/agent-runner.cjs"
+  install -m 0644 "$core_dev_agent_runner" \
+    "$LINEAGE_SOS_OVERLAY_DESTINATION/prebuilts/sos-agent/agent-runner-core-dev.cjs"
   install -m 0644 "$agent_api" \
     "$LINEAGE_SOS_OVERLAY_DESTINATION/prebuilts/sos-agent/experience-api.md"
   install -m 0644 "$agent_example_primary" \
@@ -361,6 +1085,7 @@ stage_sos() {
     "$LINEAGE_SOS_OVERLAY_DESTINATION/prebuilts/arm64/sos-node" \
     "$LINEAGE_SOS_OVERLAY_DESTINATION/prebuilts/arm64/libc++_shared.so" \
     "$LINEAGE_SOS_OVERLAY_DESTINATION/prebuilts/sos-agent/agent-runner.cjs" \
+    "$LINEAGE_SOS_OVERLAY_DESTINATION/prebuilts/sos-agent/agent-runner-core-dev.cjs" \
     "$LINEAGE_SOS_OVERLAY_DESTINATION/prebuilts/sos-agent/experience-api.md" \
     "$LINEAGE_SOS_OVERLAY_DESTINATION/prebuilts/sos-agent/example-primary.luau" \
     "$LINEAGE_SOS_OVERLAY_DESTINATION/prebuilts/sos-agent/example-secondary.luau" \
@@ -391,9 +1116,9 @@ build_rom() {
 
 build_sos_profile() {
   [[ "$#" -ge 1 && "$#" -le 2 ]] || \
-    fail "internal usage: build_sos_profile <compat0|compat1|shadow|core0b|core1> [provider-probe]"
+    fail "internal usage: build_sos_profile <compat0|compat1|shadow|core0b|core1> [provider-probe|dev-credential]"
   local profile="$1" runtime_variant="${2:-release}"
-  local target_device staged_input_sha apk_flags
+  local target_device staged_input_sha apk_flags build_identity
   local core_runtime_features=core-native
   case "$profile" in
     compat0)
@@ -415,6 +1140,7 @@ build_sos_profile() {
     core1)
       target_device="$LINEAGE_SOS_CORE1_DEVICE"
       apk_flags="--home"
+      build_identity=core1
       ;;
     *) fail "unsupported SOS profile: $profile" ;;
   esac
@@ -423,6 +1149,13 @@ build_sos_profile() {
       fail "the non-shipping provider probe is restricted to Core 1"
     core_runtime_features=core-native,core-provider-acceptance
     info "enabling the non-shipping Core 1 provider acceptance probe"
+  elif [[ "$runtime_variant" == dev-credential ]]; then
+    [[ "$profile" == core1 ]] || \
+      fail "development credential injection is restricted to Core 1"
+    core_runtime_features=core-native,core-dev-credential
+    target_device="$LINEAGE_SOS_CORE1_DEV_DEVICE"
+    build_identity=core1dev
+    info "enabling the explicit non-production Core 1 credential endpoint"
   elif [[ "$runtime_variant" != release ]]; then
     fail "unsupported SOS runtime variant: $runtime_variant"
   fi
@@ -473,7 +1206,7 @@ build_sos_profile() {
     find "$LINEAGE_PATCH_DIR" -maxdepth 1 -type f -name '*.patch' -print0 | \
       sort -z | xargs -0 sha256sum
   } | sha256sum | cut -d' ' -f1)"
-  build_number="sos.${profile}.${sos_revision}.${staged_input_sha:0:12}"
+  build_number="sos.${build_identity:-$profile}.${sos_revision}.${staged_input_sha:0:12}"
   mkdir -p "$LINEAGE_CCACHE"
   # These images embed BUILD_NUMBER in AVB descriptors but Ninja does not track
   # that environment value as an input. Invalidate only the generated
@@ -527,6 +1260,11 @@ build_core0b() {
 build_core1() {
   [[ "$#" -eq 0 ]] || fail "usage: ./tools/a33xctl build-core1"
   build_sos_profile core1
+}
+
+build_core1_dev() {
+  [[ "$#" -eq 0 ]] || fail "usage: ./tools/a33xctl build-core1-dev"
+  build_sos_profile core1 dev-credential
 }
 
 build_core1_provider_probe() {
@@ -597,6 +1335,10 @@ inspect_rom() {
     lineage_sos_core1_a33x)
       package_suffix=sos_core1_a33x
       build_command=build-core1
+      ;;
+    lineage_sos_core1_dev_a33x)
+      package_suffix=sos_core1_dev_a33x
+      build_command=build-core1-dev
       ;;
     *) fail "unsupported a33x target product: $target_product" ;;
   esac
@@ -716,6 +1458,7 @@ inspect_compat_profile() {
   local bootstrap="$target_files/SYSTEM_EXT/etc/sos/default.luau"
   local init_rc="$target_files/SYSTEM_EXT/etc/init/sos-authority.rc"
   local properties="$target_files/SYSTEM_EXT/etc/build.prop"
+  local system_properties="$target_files/SYSTEM/build.prop"
   local seapp_contexts="$target_files/SYSTEM_EXT/etc/selinux/system_ext_seapp_contexts"
   local file_contexts="$target_files/SYSTEM_EXT/etc/selinux/system_ext_file_contexts"
   local privapp_permissions="$target_files/SYSTEM_EXT/etc/permissions/privapp-permissions-sos.xml"
@@ -1008,10 +1751,11 @@ inspect_compat_profile() {
     done
     for agent_marker in \
       'android_agent_effect_dispatch action=' \
-      'android_agent_thread_start provider=' \
+      'android_agent_request_accepted provider=' \
       'android_agent_request_start provider=' \
       'android_agent_pi_response provider=' \
-      'android_agent_failure stage='; do
+      'android_agent_request_terminal stage=' \
+      'android_agent_ui_terminal status='; do
       strings "$host_runtime" | grep -F "$agent_marker" >/dev/null || \
         fail "native Compat runtime omitted agent lifecycle marker: $agent_marker"
     done
@@ -1223,8 +1967,13 @@ inspect_core() {
 }
 
 inspect_core_stage() {
-  [[ "$#" -eq 1 ]] || fail "internal usage: inspect_core_stage <core0b|core1>"
-  local stage="$1" target_product expected_stage expected_owner expected_lifecycle bridge no_zygote
+  [[ "$#" -ge 1 && "$#" -le 2 ]] || \
+    fail "internal usage: inspect_core_stage <core0b|core1> [ordinary|dev-credential]"
+  local stage="$1" product_variant="${2:-ordinary}"
+  local target_product expected_stage expected_owner expected_lifecycle bridge no_zygote
+  local expected_revision_identity expected_build_variant
+  check_core_agent_hardening_source
+  check_core_dev_credential_source
   case "$stage" in
     core0b)
       target_product=lineage_sos_core0b_a33x
@@ -1233,52 +1982,86 @@ inspect_core_stage() {
       expected_lifecycle=legacy
       bridge=present
       no_zygote=false
+      expected_revision_identity=core0b
       ;;
     core1)
-      target_product=lineage_sos_core1_a33x
       expected_stage=1
       expected_owner=native-sos-no-zygote
       expected_lifecycle=active
       bridge=absent
       no_zygote=true
+      case "$product_variant" in
+        ordinary)
+          target_product=lineage_sos_core1_a33x
+          expected_revision_identity=core1
+          expected_build_variant=core1-ordinary
+          ;;
+        dev-credential)
+          target_product=lineage_sos_core1_dev_a33x
+          expected_revision_identity=core1dev
+          expected_build_variant=core1-dev-credential
+          ;;
+        *) fail "unsupported Core 1 product variant: $product_variant" ;;
+      esac
       ;;
     *) fail "unsupported SOS Core stage: $stage" ;;
   esac
 
   inspect_rom "$target_product"
   local target_files="$LINEAGE_ROOT/out/target/product/a33x/obj/PACKAGING/target_files_intermediates/${target_product}-target_files"
+  if [[ "$stage" == core1 ]]; then
+    inspect_core_system_properties "$target_files" "$stage" "$product_variant"
+  fi
   local host="$target_files/SYSTEM_EXT/bin/sos-core-host"
   local host_runtime="$target_files/SYSTEM_EXT/lib64/libsos_core_experience.so"
   local host_init_rc="$target_files/SYSTEM_EXT/etc/init/sos-core-host.rc"
   local properties="$target_files/SYSTEM_EXT/etc/build.prop"
   local authority="$target_files/SYSTEM_EXT/bin/sos-authority"
   local node="$target_files/SYSTEM_EXT/bin/sos-node"
-  local agent_runner="$target_files/SYSTEM_EXT/etc/sos-agent/agent-runner.cjs"
   local agent_api="$target_files/SYSTEM_EXT/etc/sos-agent/experience-api.md"
   local agent_example_primary="$target_files/SYSTEM_EXT/etc/sos-agent/example-primary.luau"
   local agent_example_secondary="$target_files/SYSTEM_EXT/etc/sos-agent/example-secondary.luau"
   local system_ext_policy="$target_files/SYSTEM_EXT/etc/selinux/system_ext_sepolicy.cil"
+  local misc_info="$target_files/META/misc_info.txt"
   local bridge_apk="$target_files/SYSTEM_EXT/priv-app/SosFrameworkBridge/SosFrameworkBridge.apk"
   local core_platform="$target_files/SYSTEM_EXT/bin/sos-core-platform"
   local core_platform_rc="$target_files/SYSTEM_EXT/etc/init/sos-core-platform.rc"
   local core_app_manifest="$target_files/SYSTEM_EXT/etc/sos/core-apps.json"
   local marker="$target_files/SYSTEM_EXT/bin/sos-ui-removal-marker"
   local compat_marker="$target_files/SYSTEM_EXT/bin/sos-compat-ui-removal-marker"
-  local artifact
+  local runner_filename=agent-runner.cjs
+  local artifact expected_agent_runner="$SOS_ROOT/services/sos-agent/dist/agent-runner.cjs"
+  if [[ "$product_variant" == dev-credential ]]; then
+    runner_filename=agent-runner-core-dev.cjs
+    expected_agent_runner="$SOS_ROOT/services/sos-agent/dist/agent-runner-core-dev.cjs"
+  fi
+  local agent_runner="$target_files/SYSTEM_EXT/etc/sos-agent/$runner_filename"
+  local runner_device_path="/system_ext/etc/sos-agent/$runner_filename"
+  local unexpected_runner="$target_files/SYSTEM_EXT/etc/sos-agent/agent-runner-core-dev.cjs"
+  if [[ "$product_variant" == dev-credential ]]; then
+    unexpected_runner="$target_files/SYSTEM_EXT/etc/sos-agent/agent-runner.cjs"
+  fi
   for artifact in \
     "$host" "$host_runtime" "$host_init_rc" "$properties" "$authority" \
     "$node" "$agent_runner" "$agent_api" "$agent_example_primary" \
-    "$agent_example_secondary" "$system_ext_policy"; do
+    "$agent_example_secondary" "$system_ext_policy" "$misc_info"; do
     [[ -f "$artifact" ]] || fail "SOS $stage artifact missing: $artifact"
     stat --printf='%n %s bytes\n' "$artifact"
     sha256sum "$artifact"
   done
   [[ ! -e "$target_files/SYSTEM_EXT/priv-app/SosShell/SosShell.apk" ]] || \
     fail "SOS Core must not package the Android Activity shell"
+  [[ ! -e "$unexpected_runner" ]] || \
+    fail "SOS $stage packaged both ordinary and development Pi runners"
   file "$host" | grep -F 'ARM aarch64' >/dev/null || \
     fail "SOS $stage native host is not AArch64"
   file "$host_runtime" | grep -F 'ARM aarch64' >/dev/null || \
     fail "SOS $stage GPUI runtime is not AArch64"
+  strings "$node" | grep -Fx -- '--jitless' >/dev/null || \
+    fail "SOS $stage shared Node runtime does not support --jitless"
+  strings "$host_runtime" | grep -F \
+    'platform=core hardening=jitless' >/dev/null || \
+    fail "SOS $stage GPUI runtime omitted the hardened Core child launch marker"
   strings "$host_runtime" | grep -F \
     'SOS experience window is live frame_padding=none' >/dev/null || \
     fail "SOS $stage GPUI runtime still reserves Android-style frame bands"
@@ -1307,18 +2090,20 @@ inspect_core_stage() {
     fail "SOS $stage GPUI provider still depends on Android loopback networking"
   strings "$host_runtime" | grep -F '/data/misc/sos/revision.sock' >/dev/null || \
     fail "SOS $stage GPUI runtime still depends on Android loopback networking"
-  strings "$host_runtime" | grep -F \
-    '/system_ext/etc/sos-agent/agent-runner.cjs' >/dev/null || \
-    fail "SOS $stage GPUI runtime omitted the shared Pi runner boundary"
+  strings "$host_runtime" | grep -F "$runner_device_path" >/dev/null || \
+    fail "SOS $stage GPUI runtime omitted its selected Pi runner boundary"
   check_core_runtime_model_contract "$host_runtime"
   for agent_marker in \
     'android_agent_effect_dispatch action=' \
-    'android_agent_thread_start provider=' \
+    'android_agent_request_accepted provider=' \
     'android_agent_request_start provider=' \
+    'android_agent_child_launch_failure cause=' \
     'android_agent_child_start pid=' \
+    'android_agent_child_request state=written' \
     'android_agent_child_exit code=' \
-    'android_agent_child_response type=' \
-    'android_agent_failure stage='; do
+    'android_agent_child_response_header protocol=2' \
+    'android_agent_request_terminal stage=' \
+    'android_agent_ui_terminal status='; do
     strings "$host_runtime" | grep -F "$agent_marker" >/dev/null || \
       fail "SOS $stage GPUI runtime omitted sanitized agent lifecycle marker: $agent_marker"
   done
@@ -1337,8 +2122,20 @@ inspect_core_stage() {
   strings "$host_runtime" | grep -F \
     'android_agent_pi_response provider=' >/dev/null || \
     fail "SOS $stage GPUI runtime omitted response model evidence"
-  cmp -s "$agent_runner" "$SOS_ROOT/services/sos-agent/dist/agent-runner.cjs" || \
-    fail "SOS $stage packaged Pi runner differs from the shared built bundle"
+  cmp -s "$agent_runner" "$expected_agent_runner" || \
+    fail "SOS $stage packaged Pi runner differs from its product-specific built bundle"
+  if [[ "$product_variant" == dev-credential ]]; then
+    grep -aF 'http://127.0.0.1:37173' "$agent_runner" >/dev/null && \
+      grep -aF 'HttpsProxyAgent' "$agent_runner" >/dev/null || \
+      fail "Core-dev packaged runner omitted the fixed CONNECT proxy"
+  else
+    ! grep -aF 'http://127.0.0.1:37173' "$agent_runner" >/dev/null && \
+      ! grep -aF 'HttpsProxyAgent' "$agent_runner" >/dev/null || \
+      fail "ordinary product packaged development CONNECT proxy code"
+  fi
+  grep -aF 'nodeProviderFetch' "$agent_runner" >/dev/null && \
+    ! grep -aF 'WebAssembly' "$agent_runner" >/dev/null || \
+    fail "packaged shared Pi runner cannot parse provider HTTP while JITless"
   cmp -s "$agent_api" "$SOS_ROOT/docs/experience-api.md" || \
     fail "SOS $stage packaged Pi API document differs from repository source"
   cmp -s "$agent_example_primary" "$SOS_ROOT/experiences/default.luau" || \
@@ -1347,9 +2144,59 @@ inspect_core_stage() {
     fail "SOS $stage packaged Pi secondary example differs from repository source"
   [[ ! -e "$target_files/SYSTEM_EXT/etc/sos-agent/android-runner.cjs" ]] || \
     fail "SOS $stage retained the superseded Android-only Pi runner"
-  grep -F '(allow sos_core_host sos_node_exec (file (' "$system_ext_policy" | \
-    grep -F 'execute_no_trans' >/dev/null || \
-    fail "SOS $stage Core host cannot execute the shared Pi runner"
+  grep -F '(typetransition sos_core_host sos_node_exec process sos_core_agent)' \
+    "$system_ext_policy" >/dev/null || \
+    fail "SOS $stage Core Node execution does not enter its agent domain"
+  grep -F '(allow sos_core_agent sos_node_exec (file (' "$system_ext_policy" | \
+    grep -F 'entrypoint' >/dev/null || \
+    fail "SOS $stage Core agent cannot enter through the immutable Node binary"
+  grep -F '(allow sos_core_agent proc_meminfo (file (' "$system_ext_policy" | \
+    grep -E '\(file \((open read|read open)\)\)\)$' >/dev/null || \
+    fail "SOS $stage policy omitted the narrow Node meminfo read"
+  grep -F '(allow sos_core_agent self (udp_socket (create)))' \
+    "$system_ext_policy" >/dev/null || \
+    fail "SOS $stage policy omitted Bionic's creation-only DNS proxy eligibility probe"
+  grep -F '(allow sos_core_agent sos_core_host (fifo_file (' \
+    "$system_ext_policy" | grep -F 'ioctl' >/dev/null && \
+    grep -F '(allowx sos_core_agent sos_core_host (ioctl fifo_file (0x5401)))' \
+      "$system_ext_policy" >/dev/null || \
+    fail "SOS $stage policy omitted Node's exact pipe TCGETS contract"
+  grep -F '(allow sos_core_agent dnsproxyd_socket (sock_file (' \
+    "$system_ext_policy" | grep -F 'write' >/dev/null && \
+    grep -F '(allow sos_core_agent fwmarkd_socket (sock_file (' \
+      "$system_ext_policy" | grep -F 'write' >/dev/null && \
+    grep -F '(allow sos_core_agent netd (unix_stream_socket (connectto)))' \
+      "$system_ext_policy" >/dev/null || \
+    fail "SOS $stage policy omitted the supported Android DNS/fwmark proxy path"
+  grep -F '(portcon tcp 443 (u object_r sos_agent_https_port ' \
+    "$system_ext_policy" >/dev/null && \
+    grep -F '(allow sos_core_agent sos_agent_https_port (tcp_socket (name_connect)))' \
+      "$system_ext_policy" >/dev/null || \
+    fail "SOS $stage policy omitted the confined TCP-443 client path"
+  if grep -E '^\(allow sos_core_agent [^ ]+ \(tcp_socket \([^)]*name_connect' \
+      "$system_ext_policy" | \
+      grep -Fv '(allow sos_core_agent sos_agent_https_port (tcp_socket (name_connect)))' \
+      >/dev/null; then
+    fail "SOS $stage Core agent can connect to a TCP destination other than port 443"
+  fi
+  if grep -F '(allow sos_core_host net_dns_prop ' "$system_ext_policy" >/dev/null || \
+      grep -F '(allow sos_core_agent net_dns_prop ' "$system_ext_policy" >/dev/null; then
+    fail "SOS $stage policy bypasses Android's obsolete net.dns property boundary"
+  fi
+  if grep -E '\(allow (sos_core_host|sos_core_agent) [^ ]+ \(process \([^)]*execmem' \
+    "$system_ext_policy" >/dev/null; then
+    fail "SOS $stage policy grants forbidden executable-memory authority to Core"
+  fi
+  if grep -E '\(allow sos_core_host [^ ]+ \((tcp_socket|udp_socket|rawip_socket|icmp_socket) ' \
+    "$system_ext_policy" >/dev/null; then
+    fail "SOS $stage trusted UI host inherited agent network authority"
+  fi
+  if grep -E '^\(typeattributeset netdomain .*sos_core_agent|\(allow sos_core_agent [^ ]+ \((rawip_socket|icmp_socket) ' \
+    "$system_ext_policy" >/dev/null || \
+      grep -E '\(allow sos_core_agent [^ ]+ \(udp_socket \([^)]*(bind|connect|read|write|ioctl|name_bind|node_bind)' \
+        "$system_ext_policy" >/dev/null; then
+    fail "SOS $stage Core agent inherited broad network socket authority"
+  fi
   grep -F '(allow sos_core_host sos_authority (unix_stream_socket (connectto)))' \
     "$system_ext_policy" >/dev/null || \
     fail "SOS $stage policy cannot connect Core to the revision authority"
@@ -1365,10 +2212,16 @@ inspect_core_stage() {
   grep -Fx 'ro.sos.profile=core' "$properties"
   grep -Fx 'ro.sos.disable_user_apk_install=true' "$properties"
   grep -Fx 'ro.sos.revision_format=3' "$properties"
+  if [[ "$stage" == core1 ]]; then
+    grep -Fx "ro.sos.build_variant=$expected_build_variant" "$properties" || \
+      fail "SOS Core 1 image reports the wrong immutable build variant"
+  fi
+  grep -F "/${target_product}/a33x:" "$misc_info" >/dev/null || \
+    fail "SOS $stage target-files fingerprint reports the wrong product"
   unzip -p "$target_files/SYSTEM/framework/services.jar" 'classes*.dex' | strings | \
     grep -F 'SOS Core product policy prevents user APK installation' >/dev/null || \
     fail "SOS $stage framework does not enforce the Core APK-install policy"
-  grep -E "^ro\\.system_ext\\.build\\.version\\.incremental=sos\\.${stage}\\.[0-9a-f]{12}\\.[0-9a-f]{12}$" \
+  grep -E "^ro\\.system_ext\\.build\\.version\\.incremental=sos\\.${expected_revision_identity}\\.[0-9a-f]{12}\\.[0-9a-f]{12}$" \
     "$properties" || fail "SOS $stage build lacks a content-derived fingerprint"
 
   grep -Fx 'ro.sos.core.autostart=preunlock' "$properties"
@@ -1539,6 +2392,93 @@ inspect_core1() {
   ! readelf -Ws "$host_runtime" | grep -F \
     ' sos_core_provider_acceptance_probe' >/dev/null || \
     fail "Core 1 release inspection rejects the non-shipping provider probe"
+  local target_files="$LINEAGE_ROOT/out/target/product/a33x/obj/PACKAGING/target_files_intermediates/lineage_${LINEAGE_SOS_CORE1_DEVICE}-target_files"
+  ! strings "$host_runtime" | grep -F 'core_dev_credential state=ready' >/dev/null || \
+    fail "ordinary Core 1 must exclude the development credential endpoint"
+  [[ ! -e "$target_files/SYSTEM_EXT/bin/sos-core-dev-credential" ]] || \
+    fail "ordinary Core 1 must exclude the development credential client"
+  [[ ! -e "$target_files/SYSTEM_EXT/bin/sos-node-core-dev" ]] || \
+    fail "ordinary Core 1 must exclude the development tunnel Node executable"
+  [[ ! -e "$target_files/SYSTEM_EXT/etc/sos-agent/agent-runner-core-dev.cjs" ]] || \
+    fail "ordinary Core 1 must exclude the development runner"
+  ! grep -F 'system_ext/bin/sos-core-dev-credential ' \
+    "$target_files/META/system_ext_filesystem_config.txt" >/dev/null || \
+    fail "ordinary Core 1 filesystem metadata includes the development client"
+  ! grep -Fx 'ro.sos.dev_credential=1' "$target_files/SYSTEM_EXT/etc/build.prop" >/dev/null || \
+    fail "ordinary Core 1 must exclude the development credential property"
+  ! grep -E 'sos_core_dev_(agent|credential|proxy_port)|sos_node_core_dev_exec' \
+    "$target_files/SYSTEM_EXT/etc/selinux/system_ext_sepolicy.cil" >/dev/null || \
+    fail "ordinary Core 1 policy includes development credential or tunnel authority"
+}
+
+inspect_core1_dev() {
+  [[ "$#" -eq 0 ]] || fail "usage: ./tools/a33xctl inspect-core1-dev"
+  inspect_core_stage core1 dev-credential
+  local target_files="$LINEAGE_ROOT/out/target/product/a33x/obj/PACKAGING/target_files_intermediates/lineage_${LINEAGE_SOS_CORE1_DEV_DEVICE}-target_files"
+  local host_runtime="$target_files/SYSTEM_EXT/lib64/libsos_core_experience.so"
+  local client="$target_files/SYSTEM_EXT/bin/sos-core-dev-credential"
+  local dev_node="$target_files/SYSTEM_EXT/bin/sos-node-core-dev"
+  local file_contexts="$target_files/SYSTEM_EXT/etc/selinux/system_ext_file_contexts"
+  local system_ext_policy="$target_files/SYSTEM_EXT/etc/selinux/system_ext_sepolicy.cil"
+  [[ -f "$client" ]] || fail "Core 1 development credential client is absent"
+  [[ -f "$dev_node" ]] || fail "Core 1 development tunnel Node executable is absent"
+  grep -Fx 'system_ext/bin/sos-core-dev-credential 0 2000 755 capabilities=0x0' \
+    "$target_files/META/system_ext_filesystem_config.txt" >/dev/null || \
+    fail "Core 1 development credential client lacks executable image metadata"
+  file "$client" | grep -F 'ARM aarch64' >/dev/null || \
+    fail "Core 1 development credential client is not AArch64"
+  file "$dev_node" | grep -F 'ARM aarch64' >/dev/null || \
+    fail "Core 1 development tunnel Node executable is not AArch64"
+  grep -Fx 'ro.sos.dev_credential=1' "$target_files/SYSTEM_EXT/etc/build.prop" >/dev/null || \
+    fail "Core 1 development credential property is absent"
+  grep -Fx 'ro.sos.build_variant=core1-dev-credential' \
+    "$target_files/SYSTEM_EXT/etc/build.prop" >/dev/null || \
+    fail "Core 1 development immutable product marker is absent"
+  grep -Fx \
+    '/system_ext/bin/sos-core-dev-credential     u:object_r:sos_core_dev_credential_exec:s0' \
+    "$file_contexts" >/dev/null || \
+    fail "Core 1 development client lacks its dedicated image label"
+  grep -Fx \
+    '/system_ext/bin/sos-node-core-dev           u:object_r:sos_node_core_dev_exec:s0' \
+    "$file_contexts" >/dev/null || \
+    fail "Core 1 development Node lacks its dedicated image label"
+  grep -Fx '(typetransition sos_core_host sos_node_core_dev_exec process sos_core_dev_agent)' \
+    "$system_ext_policy" >/dev/null && \
+    grep -Fx '(allow sos_core_dev_agent sos_core_dev_proxy_port (tcp_socket (name_connect)))' \
+      "$system_ext_policy" >/dev/null && \
+    grep -F '(portcon tcp 37173 (u object_r sos_core_dev_proxy_port ' \
+      "$system_ext_policy" >/dev/null || \
+    fail "Core 1 development Node lacks the fixed proxy-port domain boundary"
+  grep -Fx '(typetransition shell sos_core_dev_credential_exec process sos_core_dev_credential)' \
+    "$system_ext_policy" >/dev/null || \
+    fail "Core 1 development client lacks its shell domain transition"
+  grep -Fx '(allow sos_core_dev_credential sos_core_dev_credential_exec (file (read getattr map execute open entrypoint)))' \
+    "$system_ext_policy" >/dev/null || \
+    fail "Core 1 development client lacks its exact entrypoint policy"
+  grep -Fx '(allow sos_core_dev_credential sos_core_host (unix_stream_socket (connectto)))' \
+    "$system_ext_policy" >/dev/null || \
+    fail "Core 1 development client cannot reach its dedicated endpoint"
+  ! grep -Fx '(allow shell sos_core_host (unix_stream_socket (connectto)))' \
+    "$system_ext_policy" >/dev/null || \
+    fail "Core 1 development policy lets shell bypass the client domain"
+  for marker in \
+    'core_dev_credential state=ready transport=local peer=sos_core_dev_credential' \
+    'core_dev_credential state=set' \
+    'core_dev_credential state=cleared'; do
+    strings "$host_runtime" | grep -F "$marker" >/dev/null || \
+      fail "Core 1 development endpoint omitted marker: $marker"
+  done
+  strings "$client" | grep -Fx 'core_dev_credential=READY' >/dev/null && \
+    strings "$client" | grep -Fx 'core_dev_credential=SET' >/dev/null && \
+    strings "$client" | grep -Fx 'core_dev_credential=CLEARED' >/dev/null || \
+    fail "Core 1 development client omitted secret-free acknowledgements"
+  for product_marker in \
+    ro.build.version.incremental ro.sos.build_variant ro.sos.dev_credential \
+    ro.build.type ro.debuggable; do
+    strings "$host_runtime" | grep -F "$product_marker" >/dev/null || \
+      fail "Core 1 development endpoint omitted product marker: $product_marker"
+  done
+  info "SOS Core 1 development credential artifact gate passed"
 }
 
 inspect_core1_provider_probe() {
@@ -1585,6 +2525,499 @@ adb_readonly() {
   "$adb_binary" -s "$serial" "$@"
 }
 
+resolve_core_dev_serial() {
+  [[ "$#" -eq 0 || ("$#" -eq 2 && "$1" == --serial) ]] || \
+    fail "Core-dev commands accept only [--serial SERIAL]"
+  if [[ "$#" -eq 2 ]]; then
+    [[ "$2" =~ ^[A-Za-z0-9._:-]+$ ]] || fail "invalid device serial: $2"
+    printf '%s\n' "$2"
+    return
+  fi
+  local adb_binary="${A33XCTL_ADB:-adb}" line state
+  local -a serials=()
+  require_command "$adb_binary"
+  while IFS=$'\t' read -r line state; do
+    [[ "$state" == device ]] && serials+=("$line")
+  done < <("$adb_binary" devices | tail -n +2)
+  [[ "${#serials[@]}" -eq 1 ]] || \
+    fail "exactly one ready ADB device is required; pass --serial SERIAL"
+  printf '%s\n' "${serials[0]}"
+}
+
+safe_product_marker_actual() {
+  [[ "$#" -eq 1 ]] || fail "internal usage: safe_product_marker_actual VALUE"
+  if [[ -z "$1" ]]; then
+    printf '<empty>'
+  elif [[ "$1" =~ ^[A-Za-z0-9._:+/-]+$ ]]; then
+    printf '%s' "$1"
+  else
+    printf '<invalid-safe-marker>'
+  fi
+}
+
+safe_product_marker_equals() {
+  [[ "$#" -eq 3 ]] || \
+    fail "internal usage: safe_product_marker_equals NAME EXPECTED ACTUAL"
+  local name="$1" expected="$2" actual="$3"
+  [[ "$actual" == "$expected" ]] || \
+    fail "Core product marker mismatch: $name expected=$expected actual=$(safe_product_marker_actual "$actual")"
+}
+
+safe_product_marker_matches() {
+  [[ "$#" -eq 4 ]] || \
+    fail "internal usage: safe_product_marker_matches NAME EXPECTED ACTUAL REGEX"
+  local name="$1" expected="$2" actual="$3" pattern="$4"
+  [[ "$actual" =~ ^($pattern)$ ]] || \
+    fail "Core product marker mismatch: $name expected=$expected actual=$(safe_product_marker_actual "$actual")"
+}
+
+core_dev_status_file_matches() {
+  [[ "$#" -eq 2 ]] || \
+    fail "internal usage: core_dev_status_file_matches FILE <READY|SET|CLEARED|CONFIGURED|EMPTY>"
+  local response_file="$1" status="$2" expected byte_count
+  case "$status" in
+    READY|SET|CLEARED|CONFIGURED|EMPTY|SUBMITTED) ;;
+    *) fail "internal usage: invalid Core-dev status" ;;
+  esac
+  if [[ "$status" == SUBMITTED ]]; then
+    expected="core_dev_agent_smoke=SUBMITTED"
+  else
+    expected="core_dev_credential=$status"
+  fi
+  read -r byte_count < <(wc -c <"$response_file") || return 1
+  if [[ "$byte_count" -eq $((${#expected} + 1)) ]]; then
+    cmp -s "$response_file" <(printf '%s\n' "$expected")
+  elif [[ "$byte_count" -eq $((${#expected} + 2)) ]]; then
+    cmp -s "$response_file" <(printf '%s\r\n' "$expected")
+  else
+    return 1
+  fi
+}
+
+core_dev_probe_failure_code() {
+  [[ "$#" -eq 3 ]] || \
+    fail "internal usage: core_dev_probe_failure_code STATUS STDOUT STDERR"
+  local status="$1" stdout_file="$2" stderr_file="$3"
+  if grep -aiEq 'Permission denied|SELinux.*denied' \
+      "$stdout_file" "$stderr_file"; then
+    printf '20\n'
+  elif grep -aEq 'not found|No such file or directory' \
+      "$stdout_file" "$stderr_file"; then
+    printf '21\n'
+  elif grep -aFq '(endpoint_unavailable)' "$stdout_file" "$stderr_file"; then
+    printf '22\n'
+  elif grep -aEq '\((wrong_peer|request_rejected)\)' \
+      "$stdout_file" "$stderr_file"; then
+    printf '23\n'
+  elif grep -aFq '(bad_magic)' "$stdout_file" "$stderr_file"; then
+    printf '24\n'
+  elif grep -aFq '(bad_version)' "$stdout_file" "$stderr_file"; then
+    printf '25\n'
+  elif grep -aEq '\((bad_status|protocol_mismatch_status|protocol_mismatch)\)' \
+      "$stdout_file" "$stderr_file"; then
+    printf '26\n'
+  elif grep -aFq '(short_io)' "$stdout_file" "$stderr_file"; then
+    printf '27\n'
+  elif [[ "$status" -eq 126 ]]; then
+    printf '20\n'
+  elif [[ "$status" -eq 127 ]]; then
+    printf '21\n'
+  else
+    printf '2\n'
+  fi
+}
+
+core_dev_shell_transport_unsupported() {
+  [[ "$#" -eq 1 ]] || \
+    fail "internal usage: core_dev_shell_transport_unsupported STDERR"
+  LC_ALL=C grep -aEiq \
+    "(invalid|unknown|unrecognized|unsupported) (option|argument).*['\"]?-?T|does not support.*-T" \
+    "$1"
+}
+
+run_core_dev_client_status() {
+  [[ "$#" -eq 4 ]] || \
+    fail "internal usage: run_core_dev_client_status SERIAL OPERATION STATUS STDIN"
+  local serial="$1" operation="$2" expected_status="$3" stdin_mode="$4"
+  local adb_binary temp_root stdout_file stderr_file command_status result
+  case "$operation:$expected_status:$stdin_mode" in
+    probe:READY:none|clear:CLEARED:none|set:SET:inherit|status:STATE:none|agent-smoke:SUBMITTED:none) ;;
+    *) fail "internal usage: invalid Core-dev client invocation" ;;
+  esac
+  adb_binary="${A33XCTL_ADB:-adb}"
+  require_command "$adb_binary"
+  temp_root="$(mktemp -d "${TMPDIR:-/tmp}/sos-core-dev-status.XXXXXX")"
+  stdout_file="$temp_root/stdout"
+  stderr_file="$temp_root/stderr"
+  if [[ "$stdin_mode" == inherit ]]; then
+    "$adb_binary" -s "$serial" shell -T -- \
+      /system_ext/bin/sos-core-dev-credential "$operation" \
+      >"$stdout_file" 2>"$stderr_file" || command_status=$?
+  else
+    "$adb_binary" -s "$serial" shell -T -- \
+      /system_ext/bin/sos-core-dev-credential "$operation" </dev/null \
+      >"$stdout_file" 2>"$stderr_file" || command_status=$?
+  fi
+  command_status="${command_status:-0}"
+  CORE_DEV_CLIENT_STATE=''
+  if [[ "$command_status" -eq 0 && ! -s "$stderr_file" ]]; then
+    if [[ "$expected_status" == STATE ]] && \
+        core_dev_status_file_matches "$stdout_file" CONFIGURED; then
+      CORE_DEV_CLIENT_STATE=CONFIGURED
+      result=0
+    elif [[ "$expected_status" == STATE ]] && \
+        core_dev_status_file_matches "$stdout_file" EMPTY; then
+      CORE_DEV_CLIENT_STATE=EMPTY
+      result=0
+    elif [[ "$expected_status" != STATE ]] && \
+        core_dev_status_file_matches "$stdout_file" "$expected_status"; then
+      result=0
+    else
+      result=2
+    fi
+  elif core_dev_shell_transport_unsupported "$stderr_file"; then
+    result=28
+  elif [[ "$operation" == probe && "$command_status" -ne 0 ]]; then
+    result="$(core_dev_probe_failure_code \
+      "$command_status" "$stdout_file" "$stderr_file")"
+  else
+    result=2
+  fi
+  rm -rf -- "$temp_root"
+  return "$result"
+}
+
+query_core_dev_state() {
+  [[ "$#" -eq 1 ]] || fail "internal usage: query_core_dev_state SERIAL"
+  run_core_dev_client_status "$1" status STATE none
+}
+
+require_core_dev_state() {
+  [[ "$#" -eq 2 ]] || \
+    fail "internal usage: require_core_dev_state SERIAL <CONFIGURED|EMPTY>"
+  local serial="$1" expected="$2"
+  [[ "$expected" == CONFIGURED || "$expected" == EMPTY ]] || \
+    fail "internal usage: invalid expected Core-dev credential state"
+  query_core_dev_state "$serial" || return
+  [[ "$CORE_DEV_CLIENT_STATE" == "$expected" ]] || return 3
+}
+
+probe_core_dev_client() {
+  [[ "$#" -eq 1 ]] || fail "internal usage: probe_core_dev_client <serial>"
+  local serial="$1" result
+  if run_core_dev_client_status "$serial" probe READY none; then
+    return
+  else
+    result=$?
+  fi
+  case "$result" in
+    20)
+      fail "Core-dev probe failed: client.execution expected=allowed actual=selinux-denied" ;;
+    21)
+      fail "Core-dev probe failed: client.executable expected=present actual=missing" ;;
+    22)
+      fail "Core-dev probe failed: endpoint.availability expected=ready actual=unavailable" ;;
+    23)
+      fail "Core-dev probe failed: endpoint.peer_product expected=accepted actual=rejected" ;;
+    24)
+      fail "Core-dev probe failed: endpoint.magic expected=SOSK actual=mismatch" ;;
+    25)
+      fail "Core-dev probe failed: endpoint.version expected=v1 actual=mismatch" ;;
+    26)
+      fail "Core-dev probe failed: endpoint.status expected=v1-known actual=mismatch" ;;
+    27)
+      fail "Core-dev probe failed: endpoint.io expected=complete actual=short" ;;
+    28)
+      fail "Core-dev probe failed: ADB transport requires shell -T support" ;;
+    *)
+      fail "Core-dev probe failed: endpoint.protocol expected=v1 actual=mismatch" ;;
+  esac
+}
+
+validate_core_dev_target() {
+  [[ "$#" -eq 1 ]] || fail "internal usage: validate_core_dev_target <serial>"
+  local serial="$1" revision stage profile providers owner build_variant dev_gate build_type debuggable
+  revision="$(device_property "$serial" ro.build.version.incremental)"
+  stage="$(device_property "$serial" ro.sos.core.stage)"
+  profile="$(device_property "$serial" ro.sos.profile)"
+  providers="$(device_property "$serial" ro.sos.providers)"
+  owner="$(device_property "$serial" ro.sos.ui_owner)"
+  build_variant="$(device_property "$serial" ro.sos.build_variant)"
+  dev_gate="$(device_property "$serial" ro.sos.dev_credential)"
+  build_type="$(device_property "$serial" ro.build.type)"
+  debuggable="$(device_property "$serial" ro.debuggable)"
+  safe_product_marker_matches ro.build.version.incremental \
+    'sos.core1dev.<12-lower-hex>.<12-lower-hex>' "$revision" \
+    'sos\.core1dev\.[0-9a-f]{12}\.[0-9a-f]{12}'
+  safe_product_marker_equals ro.sos.core.stage 1 "$stage"
+  safe_product_marker_equals ro.sos.profile core "$profile"
+  safe_product_marker_equals ro.sos.providers core-native "$providers"
+  safe_product_marker_equals ro.sos.ui_owner native-sos-no-zygote "$owner"
+  safe_product_marker_equals ro.sos.build_variant core1-dev-credential "$build_variant"
+  safe_product_marker_equals ro.sos.dev_credential 1 "$dev_gate"
+  safe_product_marker_equals ro.build.type userdebug "$build_type"
+  safe_product_marker_equals ro.debuggable 0 "$debuggable"
+  probe_core_dev_client "$serial"
+}
+
+core1_dev_set_openrouter_key() {
+  local serial status state_status
+  serial="$(resolve_core_dev_serial "$@")"
+  validate_core_dev_target "$serial"
+  [[ -t 0 && -r /dev/tty ]] || fail "credential input requires an interactive terminal"
+  require_command stty
+  if (
+    # Never allow caller-enabled tracing to disclose the prompt value.
+    set +x
+    local secret='' saved_stty tty_fd secret_length
+    export LC_ALL=C
+    exec {tty_fd}<>/dev/tty
+    saved_stty="$(stty -g <&"$tty_fd")"
+    core_dev_prompt_cleanup() {
+      stty "$saved_stty" <&"$tty_fd" 2>/dev/null || true
+      printf '\n' >&"$tty_fd" 2>/dev/null || true
+      secret_length="${#secret}"
+      if [[ "$secret_length" -gt 0 ]]; then
+        printf -v secret '%*s' "$secret_length" ''
+      fi
+      secret=''
+      unset secret
+      exec {tty_fd}>&-
+    }
+    trap core_dev_prompt_cleanup EXIT
+    trap 'exit 129' HUP
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+    stty -echo <&"$tty_fd"
+    printf 'Paste the disposable OpenRouter key, then press Enter: ' >&"$tty_fd"
+    if ! IFS= read -r -s -n 513 secret <&"$tty_fd"; then
+      printf 'error: credential input ended before a complete line\n' >&2
+      exit 2
+    fi
+    if [[ "${#secret}" -gt 512 ]]; then
+      printf 'error: credential input exceeds 512 bytes\n' >&2
+      exit 2
+    fi
+    printf '%s\n' "$secret" | \
+      run_core_dev_client_status "$serial" set SET inherit
+  ); then
+    status=0
+  else
+    status=$?
+  fi
+  if [[ "$status" -eq 28 ]]; then
+    fail "Core-dev set failed: ADB transport requires shell -T support; credential state is unknown, so run core1-dev-clear-openrouter-key after repairing ADB"
+  elif [[ "$status" -ne 0 ]]; then
+    fail "Core-dev set acknowledgement is unavailable; credential state is unknown, so run core1-dev-clear-openrouter-key"
+  fi
+  if require_core_dev_state "$serial" CONFIGURED; then
+    state_status=0
+  else
+    state_status=$?
+  fi
+  if [[ "$state_status" -eq 28 ]]; then
+    fail "Core-dev set status failed: ADB transport requires shell -T support; credential state is unknown, so run core1-dev-clear-openrouter-key after repairing ADB"
+  elif [[ "$state_status" -eq 3 ]]; then
+    fail "Core-dev set status mismatch: expected=CONFIGURED actual=$CORE_DEV_CLIENT_STATE; run core1-dev-clear-openrouter-key"
+  elif [[ "$state_status" -ne 0 ]]; then
+    fail "Core-dev set status is invalid; credential state is unknown, so run core1-dev-clear-openrouter-key"
+  fi
+  printf 'core1_dev_openrouter_key=SET\nserial=%s\n' "$serial"
+}
+
+core1_dev_clear_openrouter_key() {
+  local serial status state_status
+  serial="$(resolve_core_dev_serial "$@")"
+  validate_core_dev_target "$serial"
+  if run_core_dev_client_status "$serial" clear CLEARED none; then
+    status=0
+  else
+    status=$?
+  fi
+  if [[ "$status" -eq 28 ]]; then
+    fail "Core-dev clear failed: ADB transport requires shell -T support; credential state remains unknown"
+  elif [[ "$status" -ne 0 ]]; then
+    fail "Core returned an invalid development credential acknowledgement"
+  fi
+  if require_core_dev_state "$serial" EMPTY; then
+    state_status=0
+  else
+    state_status=$?
+  fi
+  if [[ "$state_status" -eq 28 ]]; then
+    fail "Core-dev clear status failed: ADB transport requires shell -T support; credential state remains unknown"
+  elif [[ "$state_status" -eq 3 ]]; then
+    fail "Core-dev clear status mismatch: expected=EMPTY actual=$CORE_DEV_CLIENT_STATE"
+  elif [[ "$state_status" -ne 0 ]]; then
+    fail "Core returned an invalid development credential status; credential state remains unknown"
+  fi
+  printf 'core1_dev_openrouter_key=CLEARED\nserial=%s\n' "$serial"
+}
+
+core1_dev_status_openrouter_key() {
+  local serial status
+  serial="$(resolve_core_dev_serial "$@")"
+  validate_core_dev_target "$serial"
+  if query_core_dev_state "$serial"; then
+    status=0
+  else
+    status=$?
+  fi
+  [[ "$status" -ne 28 ]] || \
+    fail "Core-dev status failed: ADB transport requires shell -T support"
+  [[ "$status" -eq 0 ]] || \
+    fail "Core returned an invalid development credential status"
+  printf 'core1_dev_openrouter_key=%s\nserial=%s\n' \
+    "$CORE_DEV_CLIENT_STATE" "$serial"
+}
+
+core1_dev_submit_agent_smoke() {
+  local serial status
+  serial="$(resolve_core_dev_serial "$@")"
+  validate_core_dev_target "$serial"
+  if require_core_dev_state "$serial" CONFIGURED; then
+    status=0
+  else
+    status=$?
+    [[ "$status" -ne 28 ]] || \
+      fail "Core-dev smoke status failed: ADB transport requires shell -T support"
+    [[ "$status" -ne 3 ]] || \
+      fail "Core-dev smoke requires credential state CONFIGURED; actual=$CORE_DEV_CLIENT_STATE"
+    fail "Core returned an invalid development credential status"
+  fi
+  if run_core_dev_client_status "$serial" agent-smoke SUBMITTED none; then
+    status=0
+  else
+    status=$?
+    [[ "$status" -ne 28 ]] || \
+      fail "Core-dev smoke submit failed: ADB transport requires shell -T support"
+    fail "Core rejected the fixed development agent smoke submit"
+  fi
+  printf 'core1_dev_agent_smoke=SUBMITTED\nserial=%s\n' "$serial"
+}
+
+core1_dev_run_agent_smoke() (
+  set -euo pipefail
+  local serial adb_binary evidence_root timestamp bridge_pid='' bridge_fd=''
+  local bridge_ready bridge_host_port reverse_installed=false terminal_seen=false
+  local terminal_completed=false authority_committed=false
+  local transaction_status=0 start_epoch deadline safe_partial
+  serial="$(resolve_core_dev_serial "$@")"
+  validate_core_dev_target "$serial"
+  adb_binary="${A33XCTL_ADB:-adb}"
+  require_command "$adb_binary"
+  require_command python3
+  if ! require_core_dev_state "$serial" CONFIGURED; then
+    [[ "${CORE_DEV_CLIENT_STATE:-}" != EMPTY ]] || \
+      fail "Core-dev smoke requires credential state CONFIGURED; actual=EMPTY"
+    fail "Core returned an invalid development credential status"
+  fi
+
+  timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
+  evidence_root="$SOS_ROOT/artifacts/device-gates/core-dev-smoke-${timestamp}-${serial,,}"
+  [[ ! -e "$evidence_root" ]] || fail "Core-dev smoke evidence path already exists"
+  mkdir -p "$evidence_root"
+
+  cleanup_core_dev_smoke() {
+    local cleanup_status=0
+    if [[ "$reverse_installed" == true ]]; then
+      "$adb_binary" -s "$serial" reverse --remove \
+        "tcp:$CORE_DEV_PROXY_DEVICE_PORT" </dev/null \
+        >"$evidence_root/reverse-remove.txt" 2>&1 || cleanup_status=$?
+      reverse_installed=false
+    fi
+    if [[ -n "$bridge_pid" ]]; then
+      kill "$bridge_pid" 2>/dev/null || true
+      wait "$bridge_pid" 2>/dev/null || true
+      bridge_pid=''
+    fi
+    return "$cleanup_status"
+  }
+  trap 'cleanup_core_dev_smoke || true' EXIT
+  trap 'exit 130' HUP INT TERM
+
+  coproc CORE_DEV_CONNECT_BRIDGE {
+    exec python3 "$SOS_ROOT/tools/core-dev-connect-bridge.py" \
+      --events "$evidence_root/bridge-events.txt" \
+      2>"$evidence_root/bridge-stderr.txt"
+  }
+  bridge_pid="$CORE_DEV_CONNECT_BRIDGE_PID"
+  bridge_fd="${CORE_DEV_CONNECT_BRIDGE[0]}"
+  IFS= read -r -t 5 bridge_ready <&"$bridge_fd" || \
+    fail "Core-dev CONNECT bridge did not become ready"
+  [[ "$bridge_ready" =~ ^CORE_DEV_CONNECT_BRIDGE_READY\ host=127\.0\.0\.1\ port=([0-9]{1,5})\ authority=openrouter\.ai:443$ ]] || \
+    fail "Core-dev CONNECT bridge returned an invalid readiness record"
+  bridge_host_port="${BASH_REMATCH[1]}"
+  ((bridge_host_port >= 1024 && bridge_host_port <= 65535)) || \
+    fail "Core-dev CONNECT bridge selected an invalid host port"
+  printf '%s\n' "$bridge_ready" >"$evidence_root/bridge-ready.txt"
+
+  "$adb_binary" -s "$serial" reverse "tcp:$CORE_DEV_PROXY_DEVICE_PORT" \
+    "tcp:$bridge_host_port" </dev/null >"$evidence_root/reverse-setup.txt" 2>&1
+  reverse_installed=true
+  start_epoch="$(adb_readonly "$serial" shell date +%s | tr -d '\r\n')"
+  [[ "$start_epoch" =~ ^[0-9]{10}$ ]] || fail "device clock returned an invalid epoch"
+
+  if ! run_core_dev_client_status "$serial" agent-smoke SUBMITTED none; then
+    transaction_status=1
+  else
+    printf 'core_dev_agent_smoke=SUBMITTED\nserial=%s\n' "$serial" \
+      >"$evidence_root/submit.txt"
+    deadline=$((SECONDS + 260))
+    safe_partial="$evidence_root/safe-lifecycle.txt.partial"
+    while ((SECONDS < deadline)); do
+      adb_readonly "$serial" logcat -d -v brief -T "${start_epoch}.000" | \
+        awk '
+          /core_dev_agent_smoke state=queued/ { smoke = 1 }
+          smoke && /core_dev_agent_smoke state=queued|core_ui_attempt event=|android_agent_request_accepted|android_agent_request_start|android_agent_child_launch_failure|android_agent_child_start|android_agent_child_request state=written|android_agent_child_response_header|android_agent_child_exit|android_agent_request_result|android_agent_action_sequence_verified|android_agent_action_verified ordinal=|android_agent_candidate_validation_ack|android_agent_activation_stage_ack|android_agent_activation_commit/ { print }
+        ' \
+        >"$safe_partial"
+      if grep -F 'core_ui_attempt event=terminal' "$safe_partial" >/dev/null; then
+        terminal_seen=true
+        if grep -E 'core_ui_attempt event=terminal .*category=completed status=completed' \
+            "$safe_partial" >/dev/null; then
+          terminal_completed=true
+        else
+          transaction_status=1
+          break
+        fi
+      fi
+      if grep -E 'android_agent_activation_commit .*phase=committed authority=system' \
+          "$safe_partial" >/dev/null; then
+        authority_committed=true
+      fi
+      [[ "$terminal_completed" == true && "$authority_committed" == true ]] && break
+      sleep 1
+    done
+    mv "$safe_partial" "$evidence_root/safe-lifecycle.txt"
+    [[ "$terminal_seen" == true ]] || transaction_status=1
+    [[ "$terminal_completed" == true && "$authority_committed" == true ]] || \
+      transaction_status=1
+  fi
+
+  "$adb_binary" -s "$serial" exec-out screencap -p </dev/null \
+    >"$evidence_root/framebuffer.png" 2>"$evidence_root/screencap-stderr.txt" || \
+    transaction_status=1
+  if ! require_core_dev_state "$serial" CONFIGURED; then
+    transaction_status=1
+  fi
+  printf 'core1_dev_openrouter_key=%s\nserial=%s\n' \
+    "${CORE_DEV_CLIENT_STATE:-UNKNOWN}" "$serial" >"$evidence_root/status-after.txt"
+
+  cleanup_core_dev_smoke || transaction_status=1
+  trap - EXIT HUP INT TERM
+  [[ ! -s "$evidence_root/bridge-stderr.txt" ]] || transaction_status=1
+  evidence_manifest_generate --root "$evidence_root" \
+    --output "$evidence_root/manifest.tsv" >/dev/null
+  evidence_manifest_verify --root "$evidence_root" \
+    --manifest "$evidence_root/manifest.tsv" >/dev/null || transaction_status=1
+  printf 'core1_dev_agent_smoke=%s\nserial=%s\nevidence_root=%s\n' \
+    "$([[ "$terminal_completed" == true && "$authority_committed" == true ]] && \
+      printf COMPLETED || printf FAILED)" \
+    "$serial" "$evidence_root"
+  exit "$transaction_status"
+)
+
 device_property() {
   [[ "$#" -eq 2 ]] || fail "internal usage: device_property <serial> <property>"
   adb_readonly "$1" shell getprop "$2" | tr -d '\r\n'
@@ -1596,24 +3029,47 @@ inspect_core1_readiness() {
   local serial="$2" expected_revision="$4"
   validate_device_identity "$serial" "$expected_revision"
 
-  local revision stage lifecycle profile providers ui_owner zygote enforcing
+  local revision stage lifecycle profile providers ui_owner build_variant dev_gate build_type debuggable
+  local zygote enforcing
   revision="$(device_property "$serial" ro.build.version.incremental)"
   stage="$(device_property "$serial" ro.sos.core.stage)"
   lifecycle="$(device_property "$serial" ro.sos.lifecycle)"
   profile="$(device_property "$serial" ro.sos.profile)"
   providers="$(device_property "$serial" ro.sos.providers)"
   ui_owner="$(device_property "$serial" ro.sos.ui_owner)"
+  build_variant="$(device_property "$serial" ro.sos.build_variant)"
+  dev_gate="$(device_property "$serial" ro.sos.dev_credential)"
+  build_type="$(device_property "$serial" ro.build.type)"
+  debuggable="$(device_property "$serial" ro.debuggable)"
   zygote="$(device_property "$serial" ro.zygote)"
   enforcing="$(adb_readonly "$serial" shell getenforce | tr -d '\r\n')"
 
-  [[ "$revision" == "$expected_revision" ]] || \
-    fail "Core 1 revision mismatch: expected $expected_revision, found $revision"
-  [[ "$stage" == 1 && "$lifecycle" == active && "$profile" == core ]] || \
-    fail "device does not report the active Core 1 product"
-  [[ "$providers" == core-native && "$ui_owner" == native-sos-no-zygote ]] || \
-    fail "device does not report Core 1 native ownership"
-  [[ "$zygote" == no_zygote ]] || fail "Core 1 unexpectedly enables Zygote"
-  [[ "$enforcing" == Enforcing ]] || fail "Core 1 SELinux is not Enforcing"
+  safe_product_marker_equals ro.build.version.incremental "$expected_revision" "$revision"
+  safe_product_marker_equals ro.sos.core.stage 1 "$stage"
+  safe_product_marker_equals ro.sos.lifecycle active "$lifecycle"
+  safe_product_marker_equals ro.sos.profile core "$profile"
+  safe_product_marker_equals ro.sos.providers core-native "$providers"
+  safe_product_marker_equals ro.sos.ui_owner native-sos-no-zygote "$ui_owner"
+  safe_product_marker_equals ro.debuggable 0 "$debuggable"
+  case "$revision" in
+    sos.core1.*)
+      safe_product_marker_equals ro.sos.build_variant core1-ordinary "$build_variant"
+      safe_product_marker_equals ro.sos.dev_credential '<empty>' \
+        "${dev_gate:-<empty>}"
+      ;;
+    sos.core1dev.*)
+      safe_product_marker_matches ro.build.version.incremental \
+        'sos.core1dev.<12-lower-hex>.<12-lower-hex>' "$revision" \
+        'sos\.core1dev\.[0-9a-f]{12}\.[0-9a-f]{12}'
+      safe_product_marker_equals ro.sos.build_variant core1-dev-credential "$build_variant"
+      safe_product_marker_equals ro.sos.dev_credential 1 "$dev_gate"
+      safe_product_marker_equals ro.build.type userdebug "$build_type"
+      probe_core_dev_client "$serial"
+      ;;
+    *) fail "Core product marker mismatch: ro.build.version.incremental expected=sos.core1.<hashes>|sos.core1dev.<hashes> actual=$(safe_product_marker_actual "$revision")" ;;
+  esac
+  safe_product_marker_equals ro.zygote no_zygote "$zygote"
+  safe_product_marker_equals selinux.mode Enforcing "$enforcing"
 
   local surfaces host_pids authority_pid platform_pid host_service authority_service platform_service
   surfaces="$(adb_readonly "$serial" shell dumpsys SurfaceFlinger --list)"
@@ -1794,6 +3250,8 @@ commands:
   sync              sync sources and record an immutable resolved manifest
   hydrate-lfs       fetch and verify the pinned ARM64 WebView LFS object
   apply-patches      apply the audited local a33x source backports
+  check-patch-series
+                    verify exact patch provenance, baseline, order, and bootstrap state
   stage-sos          stage ARM64 SOS product sources and prebuilts
   check-product-graph
                     verify profile marker selection and distinct install paths
@@ -1801,6 +3259,10 @@ commands:
                     verify the exact bundled OpenRouter assignment and request guard
   check-core-runtime-model-contract RUNTIME
                     verify Core's pinned model bytes and mismatch rejection boundary
+  check-core-agent-hardening
+                    verify Core Node argv, safe failures, policy, and credential helper
+  check-core-dev-credential
+                    verify the development-only stdin credential boundary
   build-recovery    build only the a33x recovery image
   inspect-recovery  report size, SHA-256, file type, and AVB metadata
   build-rom         build the complete a33x LineageOS install package
@@ -1810,6 +3272,7 @@ commands:
   build-compat      compatibility alias for build-compat1
   build-core-shadow build the manual native display/GPUI probe target
   build-core1       build the no-Zygote native locked/recovery target
+  build-core1-dev   build Core 1 with the explicit development credential endpoint
   build-core1-provider-probe
                     build a non-shipping Core 1 provider-acceptance test OTA
   build-core        compatibility alias for build-core-shadow
@@ -1819,10 +3282,21 @@ commands:
   inspect-sos       compatibility alias for inspect-compat1
   inspect-core      verify Core Shadow and retained recovery UI
   inspect-core1     verify no-Zygote native-only packaging
+  inspect-core1-dev verify development endpoint inclusion and production exclusion
   inspect-core1-provider-probe
                     verify the non-shipping trusted provider probe is present
   inspect-core1-readiness --serial SERIAL --expected-revision REVISION
                     read-only exact-product Core 1 readiness snapshot
+  core1-dev-set-openrouter-key [--serial SERIAL]
+                    hidden one-paste install into the running Core process
+  core1-dev-clear-openrouter-key [--serial SERIAL]
+                    clear the running Core process credential
+  core1-dev-status-openrouter-key [--serial SERIAL]
+                    report only whether the running credential is configured
+  core1-dev-submit-agent-smoke [--serial SERIAL]
+                    submit the fixed non-secret prompt through the production UI path
+  core1-dev-run-agent-smoke [--serial SERIAL]
+                    run the fixed smoke through a loopback-only CONNECT bridge
   evidence-manifest-generate --root DIR --output MANIFEST
                     atomically record finalized evidence path/size/SHA-256
   evidence-manifest-verify --root DIR --manifest MANIFEST
@@ -1844,10 +3318,13 @@ case "$command" in
   sync) sync_source "$@" ;;
   hydrate-lfs) hydrate_source_lfs "$@" ;;
   apply-patches) apply_source_patches "$@" ;;
+  check-patch-series) check_source_patch_series "$@" ;;
   stage-sos) stage_sos "$@" ;;
   check-product-graph) check_product_graph "$@" ;;
   check-agent-runner-contract) check_agent_runner_contract "$@" ;;
   check-core-runtime-model-contract) check_core_runtime_model_contract "$@" ;;
+  check-core-agent-hardening) check_core_agent_hardening_source "$@" ;;
+  check-core-dev-credential) check_core_dev_credential_source "$@" ;;
   build-recovery) build_recovery "$@" ;;
   inspect-recovery) inspect_recovery "$@" ;;
   build-rom) build_rom "$@" ;;
@@ -1857,6 +3334,7 @@ case "$command" in
   build-core-shadow) build_core_shadow "$@" ;;
   build-core0b) build_core0b "$@" ;;
   build-core1) build_core1 "$@" ;;
+  build-core1-dev) build_core1_dev "$@" ;;
   build-core1-provider-probe) build_core1_provider_probe "$@" ;;
   build-core) build_core "$@" ;;
   inspect-rom) inspect_rom "$@" ;;
@@ -1867,8 +3345,14 @@ case "$command" in
   inspect-core) inspect_core "$@" ;;
   inspect-core0b) inspect_core0b "$@" ;;
   inspect-core1) inspect_core1 "$@" ;;
+  inspect-core1-dev) inspect_core1_dev "$@" ;;
   inspect-core1-provider-probe) inspect_core1_provider_probe "$@" ;;
   inspect-core1-readiness) inspect_core1_readiness "$@" ;;
+  core1-dev-set-openrouter-key) core1_dev_set_openrouter_key "$@" ;;
+  core1-dev-clear-openrouter-key) core1_dev_clear_openrouter_key "$@" ;;
+  core1-dev-status-openrouter-key) core1_dev_status_openrouter_key "$@" ;;
+  core1-dev-submit-agent-smoke) core1_dev_submit_agent_smoke "$@" ;;
+  core1-dev-run-agent-smoke) core1_dev_run_agent_smoke "$@" ;;
   evidence-manifest-generate) evidence_manifest_generate "$@" ;;
   evidence-manifest-verify) evidence_manifest_verify "$@" ;;
   -h|--help|help|'') usage ;;

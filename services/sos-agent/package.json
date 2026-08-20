@@ -8,13 +8,15 @@
   },
   "scripts": {
     "clean": "node scripts/clean-dist.mjs",
-    "build": "npm run clean && tsc -p tsconfig.json && esbuild dist/src/runner.js --bundle --platform=node --format=cjs --target=node22 --outfile=dist/agent-runner.cjs",
+    "build": "npm run clean && tsc -p tsconfig.json && esbuild dist/src/runner.js --bundle --platform=node --format=cjs --target=node22 --outfile=dist/agent-runner.cjs && esbuild dist/src/runner-core-dev.js --bundle --platform=node --format=cjs --target=node22 --outfile=dist/agent-runner-core-dev.cjs",
     "check": "tsc -p tsconfig.json --noEmit",
     "test": "npm run build && node --test dist/test/*.test.js"
   },
   "dependencies": {
     "@earendil-works/pi-agent-core": "0.84.1",
-    "@earendil-works/pi-ai": "0.84.1"
+    "@earendil-works/pi-ai": "0.84.1",
+    "https-proxy-agent": "7.0.6",
+    "node-fetch": "3.3.2"
   },
   "devDependencies": {
     "@types/node": "24.12.4",

@@ -1,0 +1,49 @@
+# The immutable Node/Pi child is the only Core UI process allowed to reach the
+# Android resolver or the public network. system_ext entrypoints must remain a
+# coredomain, but this transition prevents network authority from accumulating
+# in the trusted render/compile/activation host.
+type sos_core_agent, domain, coredomain;
+domain_auto_trans(sos_core_host, sos_node_exec, sos_core_agent)
+allow sos_core_host sos_core_agent:process sigkill;
+
+# The host creates the bounded stdin/stdout pipes before exec. The child may
+# only consume/produce those inherited streams; it receives no host sockets.
+allow sos_core_agent sos_core_host:fd use;
+allow sos_core_agent sos_core_host:fifo_file { getattr ioctl read write };
+# Node/libuv unconditionally uses TCGETS to classify its pipe-backed standard
+# streams. Android's domain policy already constrains fifo_file ioctl to this
+# harmless query; repeat the exact xperm here so the child contract is explicit.
+allowxperm sos_core_agent sos_core_host:fifo_file ioctl { TCGETS };
+
+# Node reads the system memory total during fixed startup. Keep this to the
+# two read-only permissions observed and required by that immutable runtime.
+allow sos_core_agent proc_meminfo:file { open read };
+
+# Bionic's supported dnsproxyd client creates and immediately closes an IPv6
+# UDP socket as a network-eligibility probe before opening the labeled Unix
+# socket. Permit only that creation: there is deliberately no UDP bind,
+# connect, read/write, port, or node authority. If the probe fails, Bionic
+# falls back to obsolete local resolution that reads net.dns* and sends UDP;
+# the neverallows below keep that fallback unusable rather than broadening it.
+allow sos_core_agent self:udp_socket create;
+unix_socket_connect(sos_core_agent, dnsproxyd, netd)
+unix_socket_connect(sos_core_agent, fwmarkd, netd)
+# fwmarkd receives the caller's TCP fd and asks netd to mark it before
+# connect(2). Keep the child out of the broad netdomain attribute while
+# granting only the reciprocal fd handoff and socket operations used by netd
+# on that passed descriptor, matching the platform netdomain handoff contract.
+allow netd sos_core_agent:fd use;
+allow netd sos_core_agent:tcp_socket { read write getattr setattr getopt setopt };
+allow sos_core_agent self:tcp_socket create_stream_socket_perms;
+allow sos_core_agent sos_agent_https_port:tcp_socket name_connect;
+
+# Keep both halves of the boundary structural: the UI host never becomes a
+# network client, and neither process may regain the rejected property or JIT.
+neverallow sos_core_host self:{ icmp_socket rawip_socket tcp_socket udp_socket } *;
+neverallow sos_core_agent self:udp_socket ~{ create };
+neverallow sos_core_agent self:{ icmp_socket rawip_socket } *;
+neverallow sos_core_agent port_type:udp_socket *;
+neverallow sos_core_agent node_type:{ icmp_socket rawip_socket udp_socket } *;
+neverallow sos_core_agent { port_type -sos_agent_https_port }:tcp_socket name_connect;
+neverallow { sos_core_agent sos_core_host } net_dns_prop:file *;
+neverallow { sos_core_agent sos_core_host } self:process execmem;

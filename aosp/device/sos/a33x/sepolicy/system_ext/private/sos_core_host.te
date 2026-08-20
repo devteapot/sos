@@ -1,12 +1,7 @@
 init_daemon_domain(sos_core_host)
-net_domain(sos_core_host)
 
 # The fixed supervisor re-execs this one signed binary for a clean GPUI child.
 allow sos_core_host sos_core_host_exec:file execute_no_trans;
-# Core's deterministic agent path executes the same immutable Pi bundle as
-# Compat, while the host remains the compile/render/activation authority.
-allow sos_core_host sos_node_exec:file rx_file_perms;
-allow sos_core_host sos_node_exec:file execute_no_trans;
 
 binder_use(sos_core_host)
 binder_call(sos_core_host, surfaceflinger)
@@ -33,7 +28,6 @@ allow sos_core_host sos_authority_data_file:dir create_dir_perms;
 allow sos_core_host sos_authority_data_file:file create_file_perms;
 allow sos_core_host sos_authority_data_file:sock_file rw_file_perms;
 allow sos_core_host sos_authority:unix_stream_socket connectto;
-allow sos_core_host { sos_provider_port sos_revision_port }:tcp_socket name_connect;
 
 # Core 0B's only Java dependency is a direct-boot, system-UID process with no
 # Activities. Peer credentials and this domain transition bound the abstract
@@ -43,6 +37,10 @@ allow sos_core_host system_app:unix_stream_socket connectto;
 # into the fixed Compat supervisor. Peer UID checks still gate the abstract
 # control socket in native code.
 allow system_app sos_core_host:unix_stream_socket connectto;
+
+# ADB shell never reaches the host's authenticated local control socket. The
+# Core-dev product grants only its dedicated client domain this transition.
+neverallow shell sos_core_host:unix_stream_socket connectto;
 
 # The fixed Volume Up+Down chord is the recovery path even when system_server
 # and Android's power UI are absent.

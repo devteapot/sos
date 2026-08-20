@@ -1,0 +1,32 @@
+# Core-dev uses a distinct Node executable and domain. This is the only domain
+# allowed to reach the fixed adb-reverse loopback port; ordinary Core's
+# sos_core_agent retains its production-only TCP-443 boundary.
+type sos_core_dev_agent, domain, coredomain;
+domain_auto_trans(sos_core_host, sos_node_core_dev_exec, sos_core_dev_agent)
+allow sos_core_host sos_core_dev_agent:process sigkill;
+
+allow sos_core_dev_agent sos_core_host:fd use;
+allow sos_core_dev_agent sos_core_host:fifo_file { getattr ioctl read write };
+allowxperm sos_core_dev_agent sos_core_host:fifo_file ioctl { TCGETS };
+allow sos_core_dev_agent proc_meminfo:file { open read };
+
+allow sos_core_dev_agent self:udp_socket create;
+unix_socket_connect(sos_core_dev_agent, dnsproxyd, netd)
+unix_socket_connect(sos_core_dev_agent, fwmarkd, netd)
+# Android passes the caller's socket to netd for fwmark processing. This
+# reciprocal permissions match netd's platform passed-socket contract and are
+# narrower than assigning the broad netdomain attribute.
+allow netd sos_core_dev_agent:fd use;
+allow netd sos_core_dev_agent:tcp_socket { read write getattr setattr getopt setopt };
+allow sos_core_dev_agent self:tcp_socket create_stream_socket_perms;
+allow sos_core_dev_agent sos_agent_https_port:tcp_socket name_connect;
+allow sos_core_dev_agent sos_core_dev_proxy_port:tcp_socket name_connect;
+
+neverallow sos_core_dev_agent self:udp_socket ~{ create };
+neverallow sos_core_dev_agent self:{ icmp_socket rawip_socket } *;
+neverallow sos_core_dev_agent port_type:udp_socket *;
+neverallow sos_core_dev_agent node_type:{ icmp_socket rawip_socket udp_socket } *;
+neverallow sos_core_dev_agent
+    { port_type -sos_agent_https_port -sos_core_dev_proxy_port }:tcp_socket name_connect;
+neverallow sos_core_dev_agent net_dns_prop:file *;
+neverallow sos_core_dev_agent self:process execmem;

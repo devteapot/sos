@@ -1091,6 +1091,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "core-agent-contract-test"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "tempfile",
+]
+
+[[package]]
+name = "core-dev-credential-protocol-test"
+version = "0.1.0"
+dependencies = [
+ "zeroize",
+]
+
+[[package]]
 name = "core-foundation"
 version = "0.9.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
