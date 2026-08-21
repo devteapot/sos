@@ -143,8 +143,8 @@ hardware_gate_capture_drm() {
 
 hardware_gate_prepare() {
   hardware_gate_parse_dir_options "$@"
-  for command in cut git journalctl jq libinput lscpu lspci loginctl pkg-config python3 readlink realpath \
-    sed sha256sum stat sudo systemctl systemd-detect-virt uname; do
+  for command in cargo cut git journalctl jq libinput lscpu lspci loginctl node npm pkg-config python3 readlink realpath \
+    rustc sed sha256sum stat sudo systemctl systemd-detect-virt uname; do
     hardware_gate_require_command "$command"
   done
   [[ "$(id -u)" -ne 0 ]] || hardware_gate_fail "run the physical gate as the desktop user, not root"
@@ -457,8 +457,9 @@ hardware_gate_collect() {
     >"$evidence_dir/current-revision.txt"
   [[ -r "$state_home/sos/provider/authority.json" ]] || \
     hardware_gate_fail "durable provider authority is missing"
-  jq -er '.. | .revision_id? // empty' "$state_home/sos/provider/authority.json" \
-    | sed -n '1p' >"$evidence_dir/authority-revision.txt"
+  # Pin to AuthorityData.current.revision_id; drafts and events also contain revision_id.
+  jq -er '.current.revision_id // empty | select(length > 0)' \
+    "$state_home/sos/provider/authority.json" >"$evidence_dir/authority-revision.txt"
   cp -- "$state_home/sos/provider/authority.json" "$evidence_dir/authority.json"
 
   started_ns="$(hardware_gate_metadata_value "$evidence_dir/campaign.env" started_monotonic_ns)"
