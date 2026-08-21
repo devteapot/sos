@@ -8997,3 +8997,74 @@ SHA-256
 run its separate one-sideload Core 1 no-Zygote readiness, exact Pi authority,
 credential-clear, leak/crash/AVC, manifest, and soak gate. No Core hardware
 claim is made here.
+
+## 2026-08-21 — Prepare a reversible Framework Laptop 12 Linux hardware gate
+
+**Goal / environment:** Turn the completed virtual Linux envelope into a safe,
+repeatable first physical campaign for a Framework Laptop 12 without installing
+the boot-owned appliance target or making a hardware claim from this host. The
+implementation host was the Framework Desktop (AMD Ryzen AI Max 300 Series),
+Fedora 44 Server, kernel `6.19.10-300.fc44.x86_64`, at clean base revision
+`d88b4d441282` plus this feature change. No Framework Laptop 12 was attached and
+no GDM, seat, DRM, input, suspend, reboot, or other physical transition ran.
+
+**Changed:** `tools/install-linux-login-session` now has a non-mutating doctor
+with Fedora and Debian/Ubuntu direct-session package guidance, an explicit
+offline install mode, exact source/toolchain/install artifact metadata, and a
+bounded uninstall that preserves user state, GDM, packages, and the default boot
+target. The selectable login can run the checked-in `daily-flow.luau` through
+the real resident Pi/faux path without credentials or network access, while
+retaining the same broker, validation, submission, activation, and monitored
+lifecycle. Live mode still requires the existing credential ceremony. The
+session also carries a private persistent `output.json` into the compositor so
+the target can select a bounded mode, scale, and rotation without changing the
+desktop entry.
+
+Added `tools/linux-hardware-gate` with `prepare`, `collect`, `audit`,
+`finalize-manifest`, and `verify-manifest`. Preparation refuses virtualization,
+dirty or revision-mismatched installed artifacts, invalid output configuration,
+the wrong requested DMI product, inactive display-manager state, and missing
+offline/live agent prerequisites. It captures the exact installed artifact
+identities, OS/kernel/BIOS/CPU/GPU/DRM/EDID/libinput/toolchain environment, and
+a journal cursor. Collection preserves the bounded user and kernel journal
+interval, monotonic duration, durable current/authority revisions, and fallback
+display-manager state. PASS requires a recovery-view DRM page flip, direct
+session readiness, the configured agent, physical keyboard/touchpad/touchscreen
+classes, two distinct page-flipped revisions in one unchanged host lifecycle,
+durable authority agreement, clean logout, restored GDM, and no matching SOS or
+kernel GPU fault. Finalized evidence receives a deterministic path/byte/SHA-256
+manifest and independent verification. The complete operator and evidence
+contract is in `docs/linux-hardware-gate.md`.
+
+**Evidence / measurements:** One clean ordered host campaign ran `bash -n` on
+all six changed/new shell programs, both new host suites,
+`desktop-file-validate`, ShellCheck 0.11.0, the agent TypeScript check, the full
+12-test agent suite, `tools/linux-agent-e2e`, and
+`git diff --check`. It passed in 9.53 seconds wall time (14.86 seconds user,
+2.16 seconds system). The real faux agent used only
+`get_experience_context`, `validate_experience`, and
+`submit_experience`, then activated revision `2303ba94d140…` from
+`31f8e1d31b6e…`. No live model ran, so live-model cost was zero. ShellCheck
+used container image ID
+`02e9c7c59449ae12d76eb53d4d32f2c428c22b28154833b579ad9ddef362cee2`,
+and passed all six scripts with no diagnostics. The Fedora doctor intentionally
+exited 1 on this non-GDM build host and named the exact missing `gbm`, `libinput`,
+`libseat`, `libudev`, `wayland-client`, `xkbcommon`, and `xkbcommon-x11`
+modules plus their Fedora packages. The ignored rebuilt agent bundle is
+`services/sos-agent/dist/agent-runner.cjs`, 1,878,811 bytes, SHA-256
+`3eee6e7922fb82e344277793a435bb8edd36a2c183050b638a3c6ca13d3bc99a`.
+
+**Failures / fixes / decision / next gate:** The first audit test exposed a
+Bash local-initializer dependency under `set -u`; separating dependent local
+assignments fixed it. Expected tamper rejection initially left verifier scratch
+files in `/tmp`; process-substitution comparison removed that failure path and
+the six test-created scratch files were deleted. A mocked selectable-session
+test now proves offline startup passes `--fake-source` without a credential path
+and that live startup still rejects missing credentials. A synthetic evidence
+test proves the full PASS contract, rejects missing touchscreen evidence, and
+rejects a post-finalization byte change. Accept this as hardware-gate readiness
+code only. Commit the branch, install its clean exact revision on Fedora
+Workstation on the Framework Laptop 12, keep SSH/text-console recovery, and run
+the documented clamshell `prepare -> physical interactions -> collect` campaign.
+Physical Intel KMS/panel/input behavior, stylus, rotation, suspend, latency,
+thermals, and soak all remain open until captured on that target.

@@ -179,8 +179,27 @@ To install SOS as a selectable GDM session without removing the existing
 desktop or changing the default boot target:
 
 ```sh
+./tools/install-linux-login-session doctor
 ./tools/install-linux-login-session install
 ```
+
+For the first physical Linux gate, use the deterministic offline agent so
+display, input, and revision activation do not depend on credentials or a live
+model:
+
+```sh
+./tools/install-linux-login-session install --offline
+./tools/linux-hardware-gate prepare \
+  --expect-product 'Laptop 12' \
+  --evidence-dir artifacts/framework12-first-gate
+# Select SOS in GDM, complete the printed physical interactions, and return.
+./tools/linux-hardware-gate collect \
+  --evidence-dir artifacts/framework12-first-gate
+```
+
+`./tools/install-linux-login-session uninstall` removes the installed SOS
+session while preserving user state and the existing display-manager/default
+boot configuration.
 
 The direct-DRM acceptance command targets the disposable reference Debian VM:
 
@@ -190,7 +209,8 @@ The direct-DRM acceptance command targets the disposable reference Debian VM:
 
 See [`docs/linux-stable-host.md`](docs/linux-stable-host.md),
 [`docs/linux-compositor.md`](docs/linux-compositor.md),
-[`docs/linux-vm.md`](docs/linux-vm.md), and
+[`docs/linux-vm.md`](docs/linux-vm.md),
+[`docs/linux-hardware-gate.md`](docs/linux-hardware-gate.md), and
 [`docs/sos-agent.md`](docs/sos-agent.md) for prerequisites and evidence limits.
 
 ### AOSP Cuttlefish
@@ -298,8 +318,10 @@ documented external evidence directories and are intentionally not tracked.
   [`docs/stateful-experience-gate.md`](docs/stateful-experience-gate.md) contain
   the physical stable-host and stateful-swap evidence.
 - [`docs/linux-stable-host.md`](docs/linux-stable-host.md),
-  [`docs/linux-compositor.md`](docs/linux-compositor.md), and
-  [`docs/linux-vm.md`](docs/linux-vm.md) cover the Linux path.
+  [`docs/linux-compositor.md`](docs/linux-compositor.md),
+  [`docs/linux-vm.md`](docs/linux-vm.md), and
+  [`docs/linux-hardware-gate.md`](docs/linux-hardware-gate.md) cover the Linux
+  path from virtual acceptance through the first physical campaign.
 - [`docs/aosp-cuttlefish.md`](docs/aosp-cuttlefish.md) covers the reproducible
   Android 17 system spike.
 - [`docs/progress.md`](docs/progress.md) is the chronological index of material

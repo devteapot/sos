@@ -1,0 +1,514 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+umask 077
+
+hardware_gate_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+hardware_gate_install_metadata=/usr/share/doc/sos/install-metadata.env
+hardware_gate_install_manifest=/usr/share/doc/sos/install-manifest.tsv
+hardware_gate_session_entry=/usr/share/wayland-sessions/sos.desktop
+hardware_gate_state_home="${XDG_STATE_HOME:-$HOME/.local/state}"
+
+hardware_gate_fail() {
+  printf 'error: %s\n' "$*" >&2
+  exit 1
+}
+
+hardware_gate_usage() {
+  printf '%s\n' \
+    'usage:' \
+    '  tools/linux-hardware-gate prepare --evidence-dir DIR [--expect-product TEXT]' \
+    '  tools/linux-hardware-gate collect --evidence-dir DIR' \
+    '  tools/linux-hardware-gate audit --evidence-dir DIR' \
+    '  tools/linux-hardware-gate finalize-manifest --evidence-dir DIR' \
+    '  tools/linux-hardware-gate verify-manifest --evidence-dir DIR'
+}
+
+hardware_gate_require_command() {
+  command -v "$1" >/dev/null 2>&1 || hardware_gate_fail "required command not found: $1"
+}
+
+hardware_gate_metadata_value() {
+  local file="$1" key="$2"
+  sed -n "s/^${key}=//p" "$file" | tail -n 1
+}
+
+hardware_gate_monotonic_ns() {
+  python3 -c 'import time; print(time.monotonic_ns())'
+}
+
+hardware_gate_resolve_new_dir() {
+  local requested="$1" resolved
+  resolved="$(realpath -m -- "$requested")"
+  [[ "$resolved" != / && "$resolved" != "$hardware_gate_root" ]] || \
+    hardware_gate_fail "unsafe evidence directory: $resolved"
+  case "$resolved" in
+    "$hardware_gate_root"/.cache/*|"$hardware_gate_root"/artifacts/*) ;;
+    "$hardware_gate_root"/*) \
+      hardware_gate_fail "evidence inside the worktree must be below ignored .cache/ or artifacts/" ;;
+    *) ;;
+  esac
+  [[ ! -e "$resolved" ]] || hardware_gate_fail "evidence directory already exists: $resolved"
+  mkdir -p -- "$resolved"
+  chmod 0700 "$resolved"
+  printf '%s\n' "$resolved"
+}
+
+hardware_gate_resolve_existing_dir() {
+  local requested="$1" resolved
+  resolved="$(realpath -e -- "$requested")"
+  [[ -d "$resolved" && -O "$resolved" ]] || \
+    hardware_gate_fail "evidence directory must exist and belong to the current user: $resolved"
+  [[ "$resolved" != / && "$resolved" != "$hardware_gate_root" ]] || \
+    hardware_gate_fail "unsafe evidence directory: $resolved"
+  printf '%s\n' "$resolved"
+}
+
+hardware_gate_parse_dir_options() {
+  hardware_gate_requested_dir=""
+  hardware_gate_expected_product=""
+  while [[ "$#" -gt 0 ]]; do
+    case "$1" in
+      --evidence-dir)
+        [[ "$#" -ge 2 ]] || hardware_gate_fail "--evidence-dir requires a path"
+        hardware_gate_requested_dir="$2"
+        shift 2
+        ;;
+      --expect-product)
+        [[ "$#" -ge 2 ]] || hardware_gate_fail "--expect-product requires text"
+        hardware_gate_expected_product="$2"
+        shift 2
+        ;;
+      *) hardware_gate_fail "unexpected option: $1" ;;
+    esac
+  done
+  [[ -n "$hardware_gate_requested_dir" ]] || hardware_gate_fail "--evidence-dir is required"
+  [[ "$hardware_gate_requested_dir" != *$'\n'* && "$hardware_gate_requested_dir" != *$'\t'* ]] || \
+    hardware_gate_fail "evidence directory contains a tab or newline"
+  [[ "$hardware_gate_expected_product" != *$'\n'* && "$hardware_gate_expected_product" != *$'\t'* ]] || \
+    hardware_gate_fail "expected product contains a tab or newline"
+}
+
+hardware_gate_capture_optional() {
+  local output="$1"
+  shift
+  set +e
+  "$@" >"$output" 2>&1
+  local status=$?
+  set -e
+  printf '%s\n' "$status" >"$output.status"
+}
+
+hardware_gate_verify_installed_files() {
+  local output="$1" path expected_bytes expected_sha actual_bytes actual_sha count=0
+  : >"$output"
+  while IFS=$'\t' read -r path expected_bytes expected_sha; do
+    [[ -n "$path" && -n "$expected_bytes" && -n "$expected_sha" ]] || \
+      hardware_gate_fail "malformed installed artifact manifest"
+    case "$path" in
+      /usr/local/libexec/sos/*|/usr/local/libexec/sos-agent/*|/usr/share/wayland-sessions/sos.desktop|/usr/share/sos/*) ;;
+      *) hardware_gate_fail "unsafe installed artifact path: $path" ;;
+    esac
+    [[ -f "$path" ]] || hardware_gate_fail "installed artifact is missing: $path"
+    actual_bytes="$(stat -c %s "$path")"
+    actual_sha="$(sha256sum "$path" | cut -d ' ' -f 1)"
+    [[ "$actual_bytes" == "$expected_bytes" && "$actual_sha" == "$expected_sha" ]] || \
+      hardware_gate_fail "installed artifact identity mismatch: $path"
+    printf '%s\t%s\t%s\n' "$path" "$actual_bytes" "$actual_sha" >>"$output"
+    count=$((count + 1))
+  done <"$hardware_gate_install_manifest"
+  [[ "$count" -gt 0 ]] || hardware_gate_fail "installed artifact manifest is empty"
+  printf 'installed_artifacts_verified=PASS files=%s\n' "$count" >>"$output"
+}
+
+hardware_gate_capture_drm() {
+  local output="$1" status connector edid
+  : >"$output"
+  for status in /sys/class/drm/card*-*/status; do
+    [[ -f "$status" ]] || continue
+    connector="${status%/status}"
+    printf 'connector=%s status=%s\n' \
+      "$(basename "$connector")" "$(tr -d '\n' <"$status")" >>"$output"
+    if [[ -r "$connector/modes" ]]; then
+      sed 's/^/mode=/' "$connector/modes" >>"$output"
+    fi
+    edid="$connector/edid"
+    if [[ -s "$edid" ]]; then
+      printf 'edid_bytes=%s edid_sha256=%s\n' \
+        "$(stat -c %s "$edid")" "$(sha256sum "$edid" | cut -d ' ' -f 1)" >>"$output"
+    fi
+  done
+  [[ -s "$output" ]] || hardware_gate_fail "no DRM connector state is available"
+}
+
+hardware_gate_prepare() {
+  hardware_gate_parse_dir_options "$@"
+  for command in cut git journalctl jq libinput lscpu lspci loginctl pkg-config python3 readlink realpath \
+    sed sha256sum stat sudo systemctl systemd-detect-virt uname; do
+    hardware_gate_require_command "$command"
+  done
+  [[ "$(id -u)" -ne 0 ]] || hardware_gate_fail "run the physical gate as the desktop user, not root"
+  if systemd-detect-virt --quiet; then
+    hardware_gate_fail "the physical Linux gate refuses virtual machines"
+  fi
+  [[ "${XDG_CURRENT_DESKTOP:-}" != SOS ]] || \
+    hardware_gate_fail "prepare the gate from the fallback desktop or a text login"
+  systemctl is-active --quiet display-manager || \
+    hardware_gate_fail "the display manager is not active"
+  local display_manager_unit
+  display_manager_unit="$(readlink -f /etc/systemd/system/display-manager.service)"
+  case "$(basename "$display_manager_unit")" in
+    gdm.service|gdm3.service) ;;
+    *) hardware_gate_fail "the first physical gate requires GDM, found $display_manager_unit" ;;
+  esac
+  [[ -f "$hardware_gate_session_entry" ]] || hardware_gate_fail "SOS GDM session is not installed"
+  [[ -r "$hardware_gate_install_metadata" && -r "$hardware_gate_install_manifest" ]] || \
+    hardware_gate_fail "SOS install metadata is missing; reinstall with the current installer"
+
+  cd "$hardware_gate_root"
+  [[ -z "$(git status --porcelain --untracked-files=normal)" ]] || \
+    hardware_gate_fail "physical acceptance requires a clean source worktree"
+  local source_revision installed_revision installed_dirty installed_mode product evidence_dir
+  source_revision="$(git rev-parse HEAD)"
+  installed_revision="$(hardware_gate_metadata_value "$hardware_gate_install_metadata" source_revision)"
+  installed_dirty="$(hardware_gate_metadata_value "$hardware_gate_install_metadata" source_dirty)"
+  installed_mode="$(hardware_gate_metadata_value "$hardware_gate_install_metadata" agent_mode)"
+  [[ "$installed_revision" == "$source_revision" ]] || \
+    hardware_gate_fail "installed revision $installed_revision does not match source $source_revision"
+  [[ "$installed_dirty" == false ]] || \
+    hardware_gate_fail "installed binaries came from a dirty source tree"
+  [[ "$installed_mode" == offline || "$installed_mode" == live ]] || \
+    hardware_gate_fail "installed agent mode is invalid: $installed_mode"
+  local agent_config="$hardware_gate_state_home/sos/agent/config.env"
+  [[ -s "$agent_config" ]] || hardware_gate_fail "selectable-session agent config is missing"
+  if [[ "$installed_mode" == offline ]]; then
+    local fake_source
+    fake_source="$(sed -n 's/^SOS_AGENT_FAKE_SOURCE=//p' "$agent_config" | tail -n 1)"
+    [[ "$fake_source" == /usr/share/sos/experiences/daily-flow.luau && -r "$fake_source" ]] || \
+      hardware_gate_fail "physical gate requires the installed deterministic offline source"
+  else
+    [[ -s "$hardware_gate_state_home/sos/agent/auth.json" ]] || \
+      hardware_gate_fail "live selectable-session credentials are missing"
+  fi
+
+  product="$(tr -d '\n' </sys/class/dmi/id/product_name 2>/dev/null || true)"
+  if [[ -n "$hardware_gate_expected_product" ]]; then
+    [[ "${product,,}" == *"${hardware_gate_expected_product,,}"* ]] || \
+      hardware_gate_fail "target product '$product' does not contain '$hardware_gate_expected_product'"
+  fi
+
+  evidence_dir="$(hardware_gate_resolve_new_dir "$hardware_gate_requested_dir")"
+  mkdir -m 0700 "$evidence_dir/environment" "$evidence_dir/installed"
+  cp -- "$hardware_gate_install_metadata" "$evidence_dir/installed/install-metadata.env"
+  cp -- "$hardware_gate_install_manifest" "$evidence_dir/installed/install-manifest.tsv"
+  hardware_gate_verify_installed_files "$evidence_dir/installed/verified-artifacts.tsv"
+  [[ -f "$hardware_gate_state_home/sos/output.json" \
+    && ! -L "$hardware_gate_state_home/sos/output.json" \
+    && -O "$hardware_gate_state_home/sos/output.json" \
+    && -r "$hardware_gate_state_home/sos/output.json" ]] || \
+    hardware_gate_fail "selectable-session output configuration is missing"
+  jq -e '
+    type == "object"
+    and ((keys - ["mode", "rotation", "scale"]) | length == 0)
+    and (.mode == null or (.mode | type == "string" and test("^[1-9][0-9]*x[1-9][0-9]*$")))
+    and (.rotation == null or (.rotation == 0 or .rotation == 90 or .rotation == 180 or .rotation == 270))
+    and (.scale == null or (.scale | type == "number" and . >= 1 and . <= 4))
+  ' "$hardware_gate_state_home/sos/output.json" >/dev/null || \
+    hardware_gate_fail "selectable-session output configuration is invalid"
+  cp -- "$hardware_gate_state_home/sos/output.json" "$evidence_dir/environment/output.json"
+
+  cp -- /etc/os-release "$evidence_dir/environment/os-release.txt"
+  uname -a >"$evidence_dir/environment/uname.txt"
+  lscpu >"$evidence_dir/environment/lscpu.txt"
+  lspci -nnk >"$evidence_dir/environment/lspci-nnk.txt" 2>&1
+  {
+    for dmi_name in sys_vendor product_name product_version board_name bios_version bios_date; do
+      if [[ -r "/sys/class/dmi/id/$dmi_name" ]]; then
+        printf '%s=%s\n' "$dmi_name" "$(tr -d '\n' <"/sys/class/dmi/id/$dmi_name")"
+      fi
+    done
+  } >"$evidence_dir/environment/dmi.txt"
+  hardware_gate_capture_drm "$evidence_dir/environment/drm-connectors.txt"
+  # The redirect intentionally runs as the evidence owner; only device access needs sudo.
+  # shellcheck disable=SC2024
+  sudo libinput list-devices >"$evidence_dir/environment/libinput.txt"
+  hardware_gate_capture_optional "$evidence_dir/environment/loginctl-before.txt" loginctl list-sessions
+  hardware_gate_capture_optional "$evidence_dir/environment/display-manager-before.txt" \
+    systemctl status display-manager --no-pager
+  printf '%s\n' "$display_manager_unit" >"$evidence_dir/environment/display-manager-unit.txt"
+  {
+    printf 'rustc=%s\n' "$(rustc --version)"
+    printf 'cargo=%s\n' "$(cargo --version)"
+    printf 'node=%s\n' "$(node --version)"
+    printf 'npm=%s\n' "$(npm --version)"
+    for module in gbm libinput libseat libudev wayland-client xkbcommon xkbcommon-x11; do
+      printf '%s=%s\n' "$module" "$(pkg-config --modversion "$module")"
+    done
+  } >"$evidence_dir/environment/tool-versions.txt"
+
+  local cursor started_ns
+  cursor="$(sudo journalctl --show-cursor -n 0 --no-pager | sed -n 's/^-- cursor: //p' | tail -n 1)"
+  [[ -n "$cursor" ]] || hardware_gate_fail "could not capture the journal cursor"
+  started_ns="$(hardware_gate_monotonic_ns)"
+  printf '%s\n' \
+    "source_revision=$source_revision" \
+    "source_dirty=false" \
+    "agent_mode=$installed_mode" \
+    "user_uid=$(id -u)" \
+    "state_home=$hardware_gate_state_home" \
+    "product_name=$product" \
+    "expected_product=$hardware_gate_expected_product" \
+    "started_at_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    "started_monotonic_ns=$started_ns" >"$evidence_dir/campaign.env"
+  printf '%s\n' "$cursor" >"$evidence_dir/journal.cursor"
+  printf '%s\n' \
+    '1. Log out and select SOS from the GDM session menu.' \
+    '2. Confirm the recovery view and generated experience appear.' \
+    '3. Exercise keyboard, touchpad motion/button, and the touchscreen.' \
+    '4. Enter one composer prompt and wait for the offline/live revision to activate.' \
+    '5. Press Ctrl+Alt+Backspace, return to GDM, and log into the fallback desktop.' \
+    "6. Run: ./tools/linux-hardware-gate collect --evidence-dir $evidence_dir" \
+    >"$evidence_dir/instructions.txt"
+  touch "$evidence_dir/prepared"
+  printf 'linux_hardware_gate_prepared evidence_dir=%s revision=%s product=%s agent_mode=%s\n' \
+    "$evidence_dir" "$source_revision" "$product" "$installed_mode"
+  sed -n '1,6p' "$evidence_dir/instructions.txt"
+}
+
+hardware_gate_criterion_pattern() {
+  local name="$1" pattern="$2" file="$3"
+  if grep -Eq "$pattern" "$file"; then
+    printf 'criterion=%s result=PASS\n' "$name"
+  else
+    printf 'criterion=%s result=FAIL\n' "$name"
+    hardware_gate_audit_failed=true
+  fi
+}
+
+hardware_gate_criterion_absent() {
+  local name="$1" pattern="$2" file="$3"
+  if grep -Eiq "$pattern" "$file"; then
+    printf 'criterion=%s result=FAIL\n' "$name"
+    hardware_gate_audit_failed=true
+  else
+    printf 'criterion=%s result=PASS\n' "$name"
+  fi
+}
+
+hardware_gate_audit_dir() {
+  local evidence_dir="$1"
+  local journal="$evidence_dir/journal-user.txt"
+  [[ -f "$evidence_dir/campaign.env" && -f "$journal" ]] || \
+    hardware_gate_fail "campaign or collected session journal is missing"
+  hardware_gate_audit_failed=false
+  local agent_mode current_revision authority_revision presentation_count presentation_revisions
+  agent_mode="$(hardware_gate_metadata_value "$evidence_dir/campaign.env" agent_mode)"
+  hardware_gate_criterion_pattern recovery_page_flip \
+    'completed significant DRM page flip.*recovery_view=true' "$journal"
+  hardware_gate_criterion_pattern direct_compositor \
+    'sos_compositor_ready .*backend=drm.*evidence=drm_page_flip' "$journal"
+  hardware_gate_criterion_pattern session_ready \
+    'linux_system_session_ready .*evidence=drm_page_flip' "$journal"
+  hardware_gate_criterion_pattern agent_mode \
+    "sos_login_agent_mode mode=${agent_mode}" "$journal"
+  hardware_gate_criterion_pattern agent_started \
+    'sos_login_agent_started pid=[0-9]+ socket=' "$journal"
+  hardware_gate_criterion_pattern keyboard_input \
+    'observed native compositor input input_class="keyboard"' "$journal"
+  hardware_gate_criterion_pattern touchpad_motion \
+    'observed native compositor input input_class="relative_pointer"' "$journal"
+  hardware_gate_criterion_pattern touchpad_button \
+    'observed native compositor input input_class="pointer_button"' "$journal"
+  hardware_gate_criterion_pattern touchscreen_input \
+    'observed native compositor input input_class="touch"' "$journal"
+  hardware_gate_criterion_pattern clean_logout \
+    'linux_login_session_stopped reason=user_logout' "$journal"
+
+  presentation_count="$(grep -c 'presented armed shell revision.*evidence="drm_page_flip"' "$journal" || true)"
+  presentation_revisions="$(
+    sed -n 's/.*presented armed shell revision.*revision_id="\([0-9a-f]*\)".*/\1/p' "$journal" \
+      | sort -u | sed '/^$/d' | wc -l
+  )"
+  if [[ "$presentation_count" -ge 2 && "$presentation_revisions" -ge 2 ]]; then
+    printf 'criterion=transactional_activation result=PASS presentations=%s revisions=%s\n' \
+      "$presentation_count" "$presentation_revisions"
+  else
+    printf 'criterion=transactional_activation result=FAIL presentations=%s revisions=%s\n' \
+      "$presentation_count" "$presentation_revisions"
+    hardware_gate_audit_failed=true
+  fi
+
+  local host_launches
+  host_launches="$(grep -c 'linux_system_session_component component=host pid=' "$journal" || true)"
+  if [[ "$host_launches" -eq 1 ]] && ! grep -q 'HostRestarted' "$journal"; then
+    printf 'criterion=stable_host_lifecycle result=PASS host_launches=1\n'
+  else
+    printf 'criterion=stable_host_lifecycle result=FAIL host_launches=%s\n' "$host_launches"
+    hardware_gate_audit_failed=true
+  fi
+
+  current_revision="$(tr -d '\n' <"$evidence_dir/current-revision.txt")"
+  authority_revision="$(tr -d '\n' <"$evidence_dir/authority-revision.txt")"
+  if [[ -n "$current_revision" && "$current_revision" == "$authority_revision" ]]; then
+    printf 'criterion=durable_authority result=PASS revision_id=%s\n' "$current_revision"
+  else
+    printf 'criterion=durable_authority result=FAIL current=%s authority=%s\n' \
+      "$current_revision" "$authority_revision"
+    hardware_gate_audit_failed=true
+  fi
+  if [[ "$(tr -d '\n' <"$evidence_dir/display-manager-active.txt")" == active ]]; then
+    printf 'criterion=fallback_display_manager result=PASS\n'
+  else
+    printf 'criterion=fallback_display_manager result=FAIL\n'
+    hardware_gate_audit_failed=true
+  fi
+  hardware_gate_criterion_absent sos_process_failures \
+    'sos_login_session_failed|linux_session_failed|panicked at|fatal runtime error' "$journal"
+  hardware_gate_criterion_absent kernel_gpu_faults \
+    'GPU HANG|drm.*(ERROR|FAULT)|i915.*(reset|hang)|xe.*(reset|hang)' \
+    "$evidence_dir/journal-kernel.txt"
+  if [[ "$hardware_gate_audit_failed" == true ]]; then
+    printf 'linux_hardware_gate_result=FAIL\n'
+    return 1
+  fi
+  printf 'linux_hardware_gate_result=PASS evidence=drm_page_flip physical_input=keyboard,touchpad,touchscreen\n'
+}
+
+hardware_gate_generate_manifest() {
+  local evidence_dir="$1"
+  local manifest="$evidence_dir/evidence-manifest.tsv"
+  local temporary="$evidence_dir/.evidence-manifest.tsv.$$" path relative before after bytes digest
+  : >"$temporary"
+  while IFS= read -r -d '' path; do
+    [[ "$path" != "$manifest" && "$path" != "$temporary" ]] || continue
+    relative="${path#"$evidence_dir"/}"
+    [[ "$relative" != *$'\t'* && "$relative" != *$'\n'* ]] || \
+      hardware_gate_fail "evidence path contains a tab or newline"
+    before="$(stat -c '%s:%Y' "$path")"
+    bytes="$(stat -c %s "$path")"
+    digest="$(sha256sum "$path" | cut -d ' ' -f 1)"
+    after="$(stat -c '%s:%Y' "$path")"
+    [[ "$before" == "$after" ]] || hardware_gate_fail "evidence changed while hashing: $relative"
+    printf '%s\t%s\t%s\n' "$relative" "$bytes" "$digest" >>"$temporary"
+  done < <(find "$evidence_dir" -type f ! -name '.evidence-manifest.tsv.*' -print0 | sort -z)
+  [[ -s "$temporary" ]] || hardware_gate_fail "evidence directory contains no finalized files"
+  mv -- "$temporary" "$manifest"
+}
+
+hardware_gate_verify_manifest_dir() {
+  local evidence_dir="$1"
+  local manifest="$evidence_dir/evidence-manifest.tsv"
+  [[ -f "$manifest" ]] || hardware_gate_fail "evidence manifest is missing"
+  local path bytes digest absolute count=0
+  diff -u \
+    <(cut -f 1 "$manifest") \
+    <(find "$evidence_dir" -type f ! -name evidence-manifest.tsv \
+      ! -name '.evidence-manifest.tsv.*' -printf '%P\n' | sort) >/dev/null || \
+    hardware_gate_fail "evidence manifest paths are missing, extra, or unsorted"
+  while IFS=$'\t' read -r path bytes digest; do
+    [[ -n "$path" && "$path" != /* && "$path" != *'..'* ]] || \
+      hardware_gate_fail "unsafe manifested evidence path: $path"
+    absolute="$evidence_dir/$path"
+    [[ -f "$absolute" ]] || hardware_gate_fail "manifested evidence is missing: $path"
+    [[ "$(stat -c %s "$absolute")" == "$bytes" ]] || \
+      hardware_gate_fail "manifested evidence size changed: $path"
+    [[ "$(sha256sum "$absolute" | cut -d ' ' -f 1)" == "$digest" ]] || \
+      hardware_gate_fail "manifested evidence digest changed: $path"
+    count=$((count + 1))
+  done <"$manifest"
+  [[ "$count" -gt 0 ]] || hardware_gate_fail "evidence manifest is empty"
+  printf 'evidence_manifest_verified=PASS files=%s manifest=%s bytes=%s sha256=%s\n' \
+    "$count" "$manifest" "$(stat -c %s "$manifest")" \
+    "$(sha256sum "$manifest" | cut -d ' ' -f 1)"
+}
+
+hardware_gate_collect() {
+  hardware_gate_parse_dir_options "$@"
+  [[ -z "$hardware_gate_expected_product" ]] || \
+    hardware_gate_fail "--expect-product is accepted only by prepare"
+  for command in cut diff find journalctl jq loginctl python3 realpath sed sha256sum sort stat sudo systemctl; do
+    hardware_gate_require_command "$command"
+  done
+  [[ "${XDG_CURRENT_DESKTOP:-}" != SOS ]] || \
+    hardware_gate_fail "return to the fallback desktop before collecting evidence"
+  local evidence_dir cursor user_uid state_home started_ns finished_ns duration_ns
+  evidence_dir="$(hardware_gate_resolve_existing_dir "$hardware_gate_requested_dir")"
+  [[ -f "$evidence_dir/prepared" ]] || hardware_gate_fail "campaign was not prepared"
+  [[ ! -f "$evidence_dir/collected" ]] || hardware_gate_fail "campaign was already collected"
+  cursor="$(tr -d '\n' <"$evidence_dir/journal.cursor")"
+  user_uid="$(hardware_gate_metadata_value "$evidence_dir/campaign.env" user_uid)"
+  state_home="$(hardware_gate_metadata_value "$evidence_dir/campaign.env" state_home)"
+  [[ "$user_uid" == "$(id -u)" ]] || hardware_gate_fail "collect must run as the user who prepared the gate"
+  [[ "$state_home" == /* ]] || hardware_gate_fail "recorded state home is invalid"
+
+  # The redirects intentionally run as the evidence owner; only journal access needs sudo.
+  # shellcheck disable=SC2024
+  sudo journalctl --after-cursor="$cursor" _UID="$user_uid" -o short-monotonic --no-pager \
+    >"$evidence_dir/journal-user.txt"
+  # shellcheck disable=SC2024
+  sudo journalctl --after-cursor="$cursor" -k -o short-monotonic --no-pager \
+    >"$evidence_dir/journal-kernel.txt"
+  loginctl list-sessions >"$evidence_dir/loginctl-after.txt"
+  systemctl is-active display-manager >"$evidence_dir/display-manager-active.txt" || true
+  systemctl status display-manager --no-pager >"$evidence_dir/display-manager-after.txt" 2>&1 || true
+
+  local revision_root="$state_home/sos/revisions"
+  /usr/local/libexec/sos/sos-revision-supervisor status --root "$revision_root" \
+    >"$evidence_dir/current-revision.txt"
+  [[ -r "$state_home/sos/provider/authority.json" ]] || \
+    hardware_gate_fail "durable provider authority is missing"
+  jq -er '.. | .revision_id? // empty' "$state_home/sos/provider/authority.json" \
+    | sed -n '1p' >"$evidence_dir/authority-revision.txt"
+  cp -- "$state_home/sos/provider/authority.json" "$evidence_dir/authority.json"
+
+  started_ns="$(hardware_gate_metadata_value "$evidence_dir/campaign.env" started_monotonic_ns)"
+  finished_ns="$(hardware_gate_monotonic_ns)"
+  duration_ns=$((finished_ns - started_ns))
+  [[ "$duration_ns" -gt 0 ]] || hardware_gate_fail "measured campaign duration is not positive"
+  printf '%s\n' \
+    "finished_at_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    "finished_monotonic_ns=$finished_ns" \
+    "duration_ns=$duration_ns" >"$evidence_dir/collection.env"
+
+  local audit_status=0
+  set +e
+  hardware_gate_audit_dir "$evidence_dir" >"$evidence_dir/verdict.txt" 2>&1
+  audit_status=$?
+  set -e
+  touch "$evidence_dir/collected"
+  hardware_gate_generate_manifest "$evidence_dir"
+  hardware_gate_verify_manifest_dir "$evidence_dir"
+  cat "$evidence_dir/verdict.txt"
+  printf 'measured_wall_time_ns=%s evidence_dir=%s\n' "$duration_ns" "$evidence_dir"
+  return "$audit_status"
+}
+
+[[ "$#" -ge 1 ]] || {
+  hardware_gate_usage >&2
+  exit 1
+}
+hardware_gate_command="$1"
+shift
+case "$hardware_gate_command" in
+  prepare) hardware_gate_prepare "$@" ;;
+  collect) hardware_gate_collect "$@" ;;
+  audit)
+    hardware_gate_parse_dir_options "$@"
+    [[ -z "$hardware_gate_expected_product" ]] || hardware_gate_fail "--expect-product is accepted only by prepare"
+    hardware_gate_audit_dir "$(hardware_gate_resolve_existing_dir "$hardware_gate_requested_dir")"
+    ;;
+  finalize-manifest)
+    hardware_gate_parse_dir_options "$@"
+    [[ -z "$hardware_gate_expected_product" ]] || hardware_gate_fail "--expect-product is accepted only by prepare"
+    hardware_gate_generate_manifest "$(hardware_gate_resolve_existing_dir "$hardware_gate_requested_dir")"
+    ;;
+  verify-manifest)
+    hardware_gate_parse_dir_options "$@"
+    [[ -z "$hardware_gate_expected_product" ]] || hardware_gate_fail "--expect-product is accepted only by prepare"
+    hardware_gate_verify_manifest_dir "$(hardware_gate_resolve_existing_dir "$hardware_gate_requested_dir")"
+    ;;
+  *)
+    hardware_gate_usage >&2
+    exit 1
+    ;;
+esac
