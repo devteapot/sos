@@ -7,8 +7,8 @@ sos_agent_login_fail() {
   exit 1
 }
 
-if [[ "$#" -gt 1 || ( "$#" -eq 1 && "$1" != --if-needed ) ]]; then
-  sos_agent_login_fail "usage: sos-agent-login [--if-needed]"
+if [[ "$#" -gt 1 || ( "$#" -eq 1 && "$1" != --if-needed && "$1" != --offline ) ]]; then
+  sos_agent_login_fail "usage: sos-agent-login [--if-needed|--offline]"
 fi
 [[ "$(id -u)" -ne 0 ]] || sos_agent_login_fail "run agent login as the desktop user, not root"
 [[ -n "${HOME:-}" && "$HOME" == /* ]] || sos_agent_login_fail "HOME must be an absolute path"
@@ -20,23 +20,52 @@ sos_agent_login_config="$sos_agent_login_state_dir/config.env"
 sos_agent_login_main="${SOS_AGENT_MAIN:-/usr/local/libexec/sos-agent/dist/agent-runner.cjs}"
 sos_agent_login_provider="${SOS_AGENT_PROVIDER:-openai-codex}"
 sos_agent_login_model="${SOS_AGENT_MODEL:-gpt-5.6-sol}"
+sos_agent_login_fake_source="${SOS_AGENT_FAKE_SOURCE:-/usr/share/sos/experiences/daily-flow.luau}"
 
 [[ "$sos_agent_login_state_home" == /* && "$sos_agent_login_main" == /* ]] || \
   sos_agent_login_fail "agent state and program paths must be absolute"
-[[ -r "$sos_agent_login_main" ]] || sos_agent_login_fail "missing resident agent: $sos_agent_login_main"
-command -v node >/dev/null 2>&1 || sos_agent_login_fail "Node.js is not installed"
-[[ "$sos_agent_login_provider" == openai-codex ]] || \
-  sos_agent_login_fail "selectable-session device login currently requires openai-codex"
-[[ "$sos_agent_login_model" =~ ^[A-Za-z0-9._:/-]+$ ]] || \
-  sos_agent_login_fail "model ID contains unsupported characters"
 
 umask 077
 install -d -m 0700 "$sos_agent_login_state_home" \
   "$sos_agent_login_state_home/sos" "$sos_agent_login_state_dir"
-if [[ "${1:-}" == --if-needed && -s "$sos_agent_login_credentials" && -s "$sos_agent_login_config" ]]; then
-  printf 'sos_agent_login_ready credentials=%s\n' "$sos_agent_login_credentials"
+
+if [[ "${1:-}" == --offline ]]; then
+  [[ "$sos_agent_login_fake_source" == /* && -r "$sos_agent_login_fake_source" ]] || \
+    sos_agent_login_fail "offline source must be an absolute readable file: $sos_agent_login_fake_source"
+  sos_agent_login_config_tmp="$sos_agent_login_state_dir/.config.env.$$"
+  printf 'SOS_AGENT_PROVIDER=openai-codex\nSOS_AGENT_MODEL=faux\nSOS_AGENT_FAKE_SOURCE=%s\n' \
+    "$sos_agent_login_fake_source" >"$sos_agent_login_config_tmp"
+  chmod 0600 "$sos_agent_login_config_tmp"
+  mv -- "$sos_agent_login_config_tmp" "$sos_agent_login_config"
+  printf 'sos_agent_login_configured provider=faux source=%s\n' \
+    "$sos_agent_login_fake_source"
   exit 0
 fi
+
+if [[ "${1:-}" == --if-needed && -s "$sos_agent_login_config" ]]; then
+  sos_agent_login_configured_fake_source="$(
+    sed -n 's/^SOS_AGENT_FAKE_SOURCE=//p' "$sos_agent_login_config" | tail -n 1
+  )"
+  if [[ -n "$sos_agent_login_configured_fake_source" ]]; then
+    [[ "$sos_agent_login_configured_fake_source" == /* \
+      && -r "$sos_agent_login_configured_fake_source" ]] || \
+      sos_agent_login_fail "configured offline source is unavailable: $sos_agent_login_configured_fake_source"
+    printf 'sos_agent_login_ready provider=faux source=%s\n' \
+      "$sos_agent_login_configured_fake_source"
+    exit 0
+  fi
+  if [[ -s "$sos_agent_login_credentials" ]]; then
+    printf 'sos_agent_login_ready credentials=%s\n' "$sos_agent_login_credentials"
+    exit 0
+  fi
+fi
+
+[[ "$sos_agent_login_provider" == openai-codex ]] || \
+  sos_agent_login_fail "selectable-session device login currently requires openai-codex"
+[[ "$sos_agent_login_model" =~ ^[A-Za-z0-9._:/-]+$ ]] || \
+  sos_agent_login_fail "model ID contains unsupported characters"
+[[ -r "$sos_agent_login_main" ]] || sos_agent_login_fail "missing resident agent: $sos_agent_login_main"
+command -v node >/dev/null 2>&1 || sos_agent_login_fail "Node.js is not installed"
 
 node "$sos_agent_login_main" login \
   --provider "$sos_agent_login_provider" \

@@ -30,7 +30,7 @@ sos_login_provider_bin="$sos_login_bin_dir/sos-provider-state-service"
 sos_login_supervisor_bin="$sos_login_bin_dir/sos-revision-supervisor"
 sos_login_host_bin="$sos_login_bin_dir/sos-experience-host"
 sos_login_authoring_bin="$sos_login_bin_dir/sos-agent-authoring"
-sos_login_agent_main="/usr/local/libexec/sos-agent/dist/agent-runner.cjs"
+sos_login_agent_main="${SOS_AGENT_MAIN:-/usr/local/libexec/sos-agent/dist/agent-runner.cjs}"
 for sos_login_executable in \
   "$sos_login_session_bin" \
   "$sos_login_compositor_bin" \
@@ -47,6 +47,7 @@ sos_login_state_dir="$sos_login_state_home/sos"
 sos_login_revision_root="$sos_login_state_dir/revisions"
 sos_login_authority_file="$sos_login_state_dir/provider/authority.json"
 sos_login_token_file="$sos_login_state_dir/shell-token"
+sos_login_output_config="$sos_login_state_dir/output.json"
 sos_login_agent_state_dir="$sos_login_state_dir/agent"
 sos_login_agent_credentials="$sos_login_agent_state_dir/auth.json"
 sos_login_agent_config="$sos_login_agent_state_dir/config.env"
@@ -60,6 +61,13 @@ if [[ ! -f "$sos_login_token_file" ]]; then
   rm -f -- "$sos_login_token_tmp"
 fi
 chmod 0600 "$sos_login_token_file"
+if [[ ! -e "$sos_login_output_config" ]]; then
+  printf '{}\n' >"$sos_login_output_config"
+fi
+[[ ! -L "$sos_login_output_config" && -f "$sos_login_output_config" \
+  && -O "$sos_login_output_config" ]] || \
+  sos_login_fail "output configuration must be a regular file"
+chmod 0600 "$sos_login_output_config"
 
 sos_login_current="$($sos_login_supervisor_bin status --root "$sos_login_revision_root")"
 if [[ "$sos_login_current" == none ]]; then
@@ -87,7 +95,7 @@ sos_login_session_pid=""
 sos_login_authoring_pid=""
 sos_login_agent_pid=""
 # ShellCheck cannot infer that EXIT invokes this callback.
-# shellcheck disable=SC2317
+# shellcheck disable=SC2317,SC2329
 sos_login_cleanup() {
   for sos_login_cleanup_pid in \
     "$sos_login_agent_pid" \
@@ -108,7 +116,7 @@ sos_login_cleanup() {
   fi
 }
 # ShellCheck cannot infer that the signal traps invoke this callback.
-# shellcheck disable=SC2317
+# shellcheck disable=SC2317,SC2329
 sos_login_forward_stop() {
   for sos_login_stop_pid in \
     "$sos_login_agent_pid" \
@@ -126,6 +134,7 @@ export XDG_CURRENT_DESKTOP=SOS
 export DESKTOP_SESSION=sos
 export LIBSEAT_BACKEND=logind
 export SOS_ALLOW_SESSION_EXIT=1
+export SOS_OUTPUT_CONFIG_FILE="$sos_login_output_config"
 unset DISPLAY WAYLAND_DISPLAY
 
 "$sos_login_session_bin" run-user \
@@ -159,13 +168,14 @@ sos_login_wait_for_socket "$sos_login_provider_socket" \
 sos_login_wait_for_socket "$sos_login_supervisor_socket" \
   "$sos_login_session_pid" "SOS supervisor"
 
-[[ -s "$sos_login_agent_credentials" && -s "$sos_login_agent_config" ]] || \
-  sos_login_fail "resident agent is not authenticated; run /usr/local/libexec/sos/sos-agent-login"
+[[ -s "$sos_login_agent_config" ]] || \
+  sos_login_fail "resident agent is not configured; run /usr/local/libexec/sos/sos-agent-login or sos-agent-login --offline"
 [[ -x "$sos_login_authoring_bin" ]] || \
   sos_login_fail "missing agent authoring broker: $sos_login_authoring_bin"
 [[ -r "$sos_login_agent_main" ]] || \
   sos_login_fail "missing resident agent: $sos_login_agent_main"
 command -v node >/dev/null 2>&1 || sos_login_fail "Node.js is not installed"
+unset SOS_AGENT_FAKE_SOURCE
 set -a
 # This file is written by sos-agent-login in the current user's private state directory.
 # shellcheck source=/dev/null
@@ -175,6 +185,19 @@ set +a
   sos_login_fail "selectable-session agent config must use openai-codex"
 [[ "${SOS_AGENT_MODEL:-}" =~ ^[A-Za-z0-9._:/-]+$ ]] || \
   sos_login_fail "agent config contains an invalid model ID"
+sos_login_agent_arguments=()
+if [[ -n "${SOS_AGENT_FAKE_SOURCE:-}" ]]; then
+  [[ "$SOS_AGENT_FAKE_SOURCE" == /* && -r "$SOS_AGENT_FAKE_SOURCE" ]] || \
+    sos_login_fail "configured offline source must be an absolute readable file"
+  sos_login_agent_mode=offline
+  sos_login_agent_arguments+=(--fake-source "$SOS_AGENT_FAKE_SOURCE")
+else
+  [[ -s "$sos_login_agent_credentials" ]] || \
+    sos_login_fail "resident agent is not authenticated; run /usr/local/libexec/sos/sos-agent-login"
+  sos_login_agent_mode=live
+  sos_login_agent_arguments+=(--credentials "$sos_login_agent_credentials")
+fi
+printf 'sos_login_agent_mode mode=%s\n' "$sos_login_agent_mode"
 
 "$sos_login_authoring_bin" \
   --root "$sos_login_revision_root" \
@@ -191,10 +214,10 @@ node "$sos_login_agent_main" serve \
   --socket "$sos_login_agent_socket" \
   --authoring-socket "$sos_login_agent_authoring_socket" \
   --state "$sos_login_agent_state_dir/messages.json" \
-  --credentials "$sos_login_agent_credentials" \
   --api-doc /usr/share/doc/sos/experience-api.md \
   --example /usr/share/sos/experiences/default.luau \
-  --example-secondary /usr/share/sos/experiences/daily-flow.luau &
+  --example-secondary /usr/share/sos/experiences/daily-flow.luau \
+  "${sos_login_agent_arguments[@]}" &
 sos_login_agent_pid=$!
 sos_login_wait_for_socket "$sos_login_agent_socket" \
   "$sos_login_agent_pid" "SOS resident agent"
