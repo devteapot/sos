@@ -197,6 +197,12 @@ model:
   --evidence-dir artifacts/framework12-first-gate
 ```
 
+The same offline install can be baked into a Fedora Workstation live remix so
+the first Framework 12 loop is rebuild ISO, boot live, prepare, select SOS in
+GDM, collect on that boot, and copy evidence off. That campaign is live-boot
+evidence, not an installed product. See
+[`docs/linux-live-image.md`](docs/linux-live-image.md).
+
 `./tools/install-linux-login-session uninstall` removes the installed SOS
 session while preserving user state and the existing display-manager/default
 boot configuration.
@@ -210,7 +216,8 @@ The direct-DRM acceptance command targets the disposable reference Debian VM:
 See [`docs/linux-stable-host.md`](docs/linux-stable-host.md),
 [`docs/linux-compositor.md`](docs/linux-compositor.md),
 [`docs/linux-vm.md`](docs/linux-vm.md),
-[`docs/linux-hardware-gate.md`](docs/linux-hardware-gate.md), and
+[`docs/linux-hardware-gate.md`](docs/linux-hardware-gate.md),
+[`docs/linux-live-image.md`](docs/linux-live-image.md), and
 [`docs/sos-agent.md`](docs/sos-agent.md) for prerequisites and evidence limits.
 
 ### AOSP Cuttlefish
@@ -319,8 +326,9 @@ documented external evidence directories and are intentionally not tracked.
   the physical stable-host and stateful-swap evidence.
 - [`docs/linux-stable-host.md`](docs/linux-stable-host.md),
   [`docs/linux-compositor.md`](docs/linux-compositor.md),
-  [`docs/linux-vm.md`](docs/linux-vm.md), and
-  [`docs/linux-hardware-gate.md`](docs/linux-hardware-gate.md) cover the Linux
+  [`docs/linux-vm.md`](docs/linux-vm.md),
+  [`docs/linux-hardware-gate.md`](docs/linux-hardware-gate.md), and
+  [`docs/linux-live-image.md`](docs/linux-live-image.md) cover the Linux
   path from virtual acceptance through the first physical campaign.
 - [`docs/aosp-cuttlefish.md`](docs/aosp-cuttlefish.md) covers the reproducible
   Android 17 system spike.

@@ -9110,3 +9110,43 @@ as merge-ready evidence tooling only. Physical Intel KMS/panel/input, GDM
 lifecycle, and exact-target evidence remain open until the clean merged
 revision is installed and the documented same-boot campaign runs on the
 Framework Laptop 12.
+## 2026-08-23 — Add a Fedora live remix path for first Framework 12 evidence
+
+**Goal / environment:** Make the first Framework 12 Linux loop rebuild ISO,
+boot live, prepare, select SOS in GDM, collect on that boot, and copy evidence
+off, without loosening the hardware-gate PASS contract or calling a live boot
+an installed product. The implementation host was Ubuntu 24.04.4 x86_64, not
+Fedora, and no Framework Laptop 12, GDM, seat, DRM, or live ISO bake ran.
+
+**Changed:** `tools/linux-live-image` remixes an official Fedora Workstation
+live ISO by staging the existing `install --offline --destdir` output, runtime
+packages (not `-devel`), GDM, the SOS session, the offline agent, and the
+hardware-gate harness. It does not compose Fedora from lorax/kiwi/kickstart
+and does not enable the boot-owned appliance target. Image identity records
+live-boot labels, source revision, base ISO identity, and squashfs/erofs
+payload hashes. `tools/linux-hardware-gate` now classifies live-boot versus
+installed-workstation, pins live-boot from baked identity, refuses stock live
+media and install-to-disk of a live remix, and records live-versus-installed
+fields without changing audit criteria. Operator docs and README state that
+live-boot evidence is not an installed product.
+
+**Evidence / measurements:** One clean host campaign ran `bash -n` on the five
+changed/new shell programs, both hardware-gate and live-image host suites,
+ShellCheck 0.9.0, `git diff --check`, `tools/linux-live-image doctor`, and
+`classify-boot --sysroot` of an empty tree. It passed in 1.346 seconds wall
+time. Doctor reported `host=ubuntu`, named the missing ISO/EROFS tools, and
+still exited 0 for layout checks. Classify-boot labeled the empty sysroot
+`boot_kind=installed`. Synthetic audit still emits the exact PASS line for
+both boot kinds and still FAILs missing touchscreen input. No ISO was built
+and no hardware claim is made.
+
+**Failures / fixes / decision / next gate:** Payload hashes stay on the ISO
+filesystem (`/sos-image-identity.env`) rather than inside the squashfs they
+describe, so the pin is not self-referential. `readlink -f` against a destroot
+resolved host paths and was replaced with raw symlink basenames. Accept this
+as live-image tooling and harness labeling only. Bake the remixed ISO on a
+Fedora x86_64 host from a clean revision, boot it on the Framework Laptop 12,
+and run the documented same-boot `prepare -> physical interactions -> collect`
+loop. A live-boot PASS remains live-boot, not installed product. Physical
+Intel KMS/panel/input behavior, persistence, disk install, stylus, rotation,
+suspend, latency, thermals, and soak remain open.

@@ -1,6 +1,7 @@
 # First physical Linux hardware gate
 
 Date: 2026-08-21
+Updated: 2026-08-23
 
 The first physical Linux gate uses the selectable GDM session. It does not
 install the boot-owned appliance target, stop or reconfigure GDM, or change the
@@ -14,7 +15,22 @@ bounded interactions below, and the controller collects finalized evidence
 after SOS returns cleanly to GDM. It never injects input or infers physical
 behavior from VM results.
 
+Two boot media are allowed for first Framework 12 evidence. They share the
+PASS contract below. They are not the same product claim:
+
+- **installed-workstation:** Fedora Workstation installed to disk, SOS
+  installed from this checkout with `install --offline`.
+- **live-boot:** a SOS-baked Fedora Workstation live remix, prepared and
+  collected on the same live overlay boot. That campaign is not an installed product.
+  See [`linux-live-image.md`](linux-live-image.md).
+
+Hardware (DRM, input, DMI) is the same silicon on both. Persistence, disk,
+and bootloader differ. Stock Fedora live media without SOS baked in is not a
+gate image.
+
 ## Prepare the target
+
+### Installed Fedora Workstation
 
 Use a current Fedora Workstation installation with GDM on the Framework Laptop
 12. Framework lists Fedora as an officially supported Linux distribution and
@@ -66,6 +82,30 @@ the preferred panel mode, scale 1.0, and rotation 0. A bounded override may set
 Automatic tablet rotation is not part of the first gate. Finalize this file
 before preparing evidence; the harness records its exact contents.
 
+### Live-boot remix, same-boot collect
+
+The first Framework 12 iteration may boot a remixed Fedora Workstation live
+ISO that already contains that offline install output. Do not run
+`install-linux-login-session` on the live system. Rebuild the image on a
+Fedora x86_64 host, boot it, prepare, select SOS in GDM, collect on the same
+boot, and copy the evidence directory off the overlay before reboot.
+
+```sh
+./tools/linux-live-image bake \
+  --source-iso /path/to/Fedora-Workstation-Live-x86_64-*.iso \
+  --output-dir artifacts/linux-live-image
+# Boot the remixed ISO, then from the GNOME live session:
+/usr/local/libexec/sos/linux-hardware-gate prepare \
+  --expect-product 'Laptop 12' \
+  --evidence-dir /home/liveuser/framework12-first-gate
+```
+
+Prepare records `boot_kind=live-boot`, `not_installed_product=true`, the baked
+`image-identity.env`, and the live-media squashfs/erofs hash. Persistence is
+optional only because prepare and collect stay on one boot. A live overlay
+without SOS image-identity is refused. An install-to-disk of this remix is
+also refused: it is neither live-boot nor the installed-workstation campaign.
+
 ## Run the clamshell smoke gate
 
 Commit the feature branch, reinstall from that clean revision, and prepare a
@@ -78,9 +118,12 @@ new ignored or external evidence directory:
 ```
 
 The command proves that it is running on bare metal, checks the exact installed
-manifest and source revision, records the OS, kernel, BIOS, CPU, GPU/driver,
-DRM connectors and EDID hashes, libinput inventory, package/tool versions, and
-the current journal cursor. It then prints the operator steps:
+manifest and revision pin, records the OS, kernel, BIOS, CPU, GPU/driver,
+DRM connectors and EDID hashes, libinput inventory, package/tool versions,
+live-versus-installed image identity, and the current journal cursor. The
+installed-workstation pin is a clean matching source worktree. The live-boot
+pin is the baked image identity plus matching install metadata; a present
+worktree must still be clean and match. It then prints the operator steps:
 
 1. Log out and choose **SOS** from GDM.
 2. Confirm the compositor recovery view and generated experience appear.
@@ -132,7 +175,8 @@ activation, and reversible GDM lifecycle for the exact evidence revision. It
 does not establish stylus pressure/calibration, tablet rotation, suspend/resume,
 external-display hotplug, host crash recovery, latency, memory pressure,
 thermals, or soak. Run those as later focused gates without weakening this
-baseline.
+baseline. A live-boot PASS is still this hardware contract; it does not become
+an installed-product claim.
 
 ## Audit, recovery, and uninstall
 

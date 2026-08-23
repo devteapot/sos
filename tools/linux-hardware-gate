@@ -6,6 +6,8 @@ umask 077
 hardware_gate_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 hardware_gate_install_metadata=/usr/share/doc/sos/install-metadata.env
 hardware_gate_install_manifest=/usr/share/doc/sos/install-manifest.tsv
+hardware_gate_image_identity=/usr/share/doc/sos/image-identity.env
+hardware_gate_live_media_identity=/sos-image-identity.env
 hardware_gate_session_entry=/usr/share/wayland-sessions/sos.desktop
 hardware_gate_state_home="${XDG_STATE_HOME:-$HOME/.local/state}"
 
@@ -21,7 +23,8 @@ hardware_gate_usage() {
     '  tools/linux-hardware-gate collect --evidence-dir DIR' \
     '  tools/linux-hardware-gate audit --evidence-dir DIR' \
     '  tools/linux-hardware-gate finalize-manifest --evidence-dir DIR' \
-    '  tools/linux-hardware-gate verify-manifest --evidence-dir DIR'
+    '  tools/linux-hardware-gate verify-manifest --evidence-dir DIR' \
+    '  tools/linux-hardware-gate classify-boot [--sysroot DIR]'
 }
 
 hardware_gate_require_command() {
@@ -108,6 +111,66 @@ hardware_gate_capture_optional() {
   printf '%s\n' "$status" >"$output.status"
 }
 
+hardware_gate_sysroot_path() {
+  local sysroot="$1" path="$2"
+  printf '%s%s\n' "$sysroot" "$path"
+}
+
+hardware_gate_has_live_overlay() {
+  local sysroot="${1:-}" cmdline
+  if [[ -n "$sysroot" ]]; then
+    [[ -d "$(hardware_gate_sysroot_path "$sysroot" /run/initramfs/live)" ]] && return 0
+    cmdline="$(hardware_gate_sysroot_path "$sysroot" /proc/cmdline)"
+    [[ -r "$cmdline" ]] && grep -Eq 'rd\.live(\.|=|[[:space:]]|$)' "$cmdline" && return 0
+    return 1
+  fi
+  [[ -d /run/initramfs/live ]] && return 0
+  [[ -r /proc/cmdline ]] && grep -Eq 'rd\.live(\.|=|[[:space:]]|$)' /proc/cmdline && return 0
+  return 1
+}
+
+hardware_gate_classify_boot() {
+  local sysroot="${1:-}"
+  local identity_file media_identity overlay=absent image_kind=""
+  identity_file="$(hardware_gate_sysroot_path "$sysroot" "$hardware_gate_image_identity")"
+  if [[ -z "$sysroot" && -d /run/initramfs/live ]]; then
+    media_identity="/run/initramfs/live$hardware_gate_live_media_identity"
+  else
+    media_identity="$(hardware_gate_sysroot_path "$sysroot" "/run/initramfs/live$hardware_gate_live_media_identity")"
+  fi
+  if hardware_gate_has_live_overlay "$sysroot"; then
+    overlay=present
+  fi
+  if [[ -r "$identity_file" ]]; then
+    image_kind="$(hardware_gate_metadata_value "$identity_file" image_kind)"
+  fi
+  if [[ "$overlay" == present && "$image_kind" == live-boot ]]; then
+    printf '%s\n' \
+      'boot_kind=live-boot' \
+      'campaign_class=live-boot' \
+      'not_installed_product=true' \
+      "live_overlay=$overlay" \
+      "image_kind=$image_kind" \
+      "image_identity=$identity_file"
+    if [[ -r "$media_identity" ]]; then
+      printf 'live_media_identity=%s\n' "$media_identity"
+    fi
+    return 0
+  fi
+  if [[ "$overlay" == present ]]; then
+    hardware_gate_fail "live overlay without SOS image-identity (stock live media is not a hardware-gate image)"
+  fi
+  if [[ "$image_kind" == live-boot ]]; then
+    hardware_gate_fail "image-identity is live-boot but this boot is not a live overlay; do not collect it as live-boot or installed product"
+  fi
+  printf '%s\n' \
+    'boot_kind=installed' \
+    'campaign_class=installed-workstation' \
+    'not_installed_product=false' \
+    "live_overlay=$overlay" \
+    'image_kind='
+}
+
 hardware_gate_verify_installed_files() {
   local output="$1" path expected_bytes expected_sha actual_bytes actual_sha count=0
   : >"$output"
@@ -152,13 +215,24 @@ hardware_gate_capture_drm() {
 
 hardware_gate_prepare() {
   hardware_gate_parse_dir_options "$@"
-  for command in cargo cut git journalctl jq libinput lscpu lspci loginctl node npm pkg-config python3 readlink realpath \
-    rustc sed sha256sum stat sudo systemctl systemd-detect-virt tr uname; do
+  for command in cut journalctl jq libinput lscpu lspci loginctl python3 readlink realpath \
+    sed sha256sum stat sudo systemctl systemd-detect-virt tr uname; do
     hardware_gate_require_command "$command"
   done
   [[ "$(id -u)" -ne 0 ]] || hardware_gate_fail "run the physical gate as the desktop user, not root"
   if systemd-detect-virt --quiet; then
     hardware_gate_fail "the physical Linux gate refuses virtual machines"
+  fi
+  local boot_class
+  boot_class="$(hardware_gate_classify_boot)"
+  local boot_kind campaign_class not_installed_product
+  boot_kind="$(printf '%s\n' "$boot_class" | sed -n 's/^boot_kind=//p' | tail -n 1)"
+  campaign_class="$(printf '%s\n' "$boot_class" | sed -n 's/^campaign_class=//p' | tail -n 1)"
+  not_installed_product="$(printf '%s\n' "$boot_class" | sed -n 's/^not_installed_product=//p' | tail -n 1)"
+  if [[ "$boot_kind" == installed ]]; then
+    for command in cargo git node npm pkg-config rustc; do
+      hardware_gate_require_command "$command"
+    done
   fi
   [[ "${XDG_CURRENT_DESKTOP:-}" != SOS ]] || \
     hardware_gate_fail "prepare the gate from the fallback desktop or a text login"
@@ -174,20 +248,40 @@ hardware_gate_prepare() {
   [[ -r "$hardware_gate_install_metadata" && -r "$hardware_gate_install_manifest" ]] || \
     hardware_gate_fail "SOS install metadata is missing; reinstall with the current installer"
 
-  cd "$hardware_gate_root"
-  [[ -z "$(git status --porcelain --untracked-files=normal)" ]] || \
-    hardware_gate_fail "physical acceptance requires a clean source worktree"
   local source_revision installed_revision installed_dirty installed_mode product evidence_dir
-  source_revision="$(git rev-parse HEAD)"
   installed_revision="$(hardware_gate_metadata_value "$hardware_gate_install_metadata" source_revision)"
   installed_dirty="$(hardware_gate_metadata_value "$hardware_gate_install_metadata" source_dirty)"
   installed_mode="$(hardware_gate_metadata_value "$hardware_gate_install_metadata" agent_mode)"
-  [[ "$installed_revision" == "$source_revision" ]] || \
-    hardware_gate_fail "installed revision $installed_revision does not match source $source_revision"
   [[ "$installed_dirty" == false ]] || \
     hardware_gate_fail "installed binaries came from a dirty source tree"
   [[ "$installed_mode" == offline || "$installed_mode" == live ]] || \
     hardware_gate_fail "installed agent mode is invalid: $installed_mode"
+  if [[ "$boot_kind" == live-boot ]]; then
+    [[ "$installed_mode" == offline ]] || \
+      hardware_gate_fail "the first live-boot campaign requires the baked offline agent"
+    local image_revision
+    image_revision="$(hardware_gate_metadata_value "$hardware_gate_image_identity" source_revision)"
+    [[ -n "$image_revision" && "$image_revision" == "$installed_revision" ]] || \
+      hardware_gate_fail "live-boot image revision $image_revision does not match installed $installed_revision"
+    source_revision="$image_revision"
+    if command -v git >/dev/null 2>&1 \
+      && git -C "$hardware_gate_root" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+      cd "$hardware_gate_root"
+      [[ -z "$(git status --porcelain --untracked-files=normal)" ]] || \
+        hardware_gate_fail "physical acceptance requires a clean source worktree"
+      local worktree_revision
+      worktree_revision="$(git rev-parse HEAD)"
+      [[ "$worktree_revision" == "$source_revision" ]] || \
+        hardware_gate_fail "installed revision $installed_revision does not match source $worktree_revision"
+    fi
+  else
+    cd "$hardware_gate_root"
+    [[ -z "$(git status --porcelain --untracked-files=normal)" ]] || \
+      hardware_gate_fail "physical acceptance requires a clean source worktree"
+    source_revision="$(git rev-parse HEAD)"
+    [[ "$installed_revision" == "$source_revision" ]] || \
+      hardware_gate_fail "installed revision $installed_revision does not match source $source_revision"
+  fi
   local agent_config="$hardware_gate_state_home/sos/agent/config.env"
   [[ -s "$agent_config" ]] || hardware_gate_fail "selectable-session agent config is missing"
   if [[ "$installed_mode" == offline ]]; then
@@ -210,6 +304,35 @@ hardware_gate_prepare() {
   mkdir -m 0700 "$evidence_dir/environment" "$evidence_dir/installed"
   cp -- "$hardware_gate_install_metadata" "$evidence_dir/installed/install-metadata.env"
   cp -- "$hardware_gate_install_manifest" "$evidence_dir/installed/install-manifest.tsv"
+  printf '%s\n' "$boot_class" >"$evidence_dir/environment/boot-kind.txt"
+  if [[ -r "$hardware_gate_image_identity" ]]; then
+    cp -- "$hardware_gate_image_identity" "$evidence_dir/installed/image-identity.env"
+  fi
+  if [[ "$boot_kind" == live-boot ]]; then
+    local live_media="" payload_relpath="" payload_path=""
+    if [[ -d /run/initramfs/live ]]; then
+      live_media=/run/initramfs/live
+    fi
+    if [[ -n "$live_media" && -r "$live_media$hardware_gate_live_media_identity" ]]; then
+      cp -- "$live_media$hardware_gate_live_media_identity" \
+        "$evidence_dir/installed/live-media-identity.env"
+      payload_relpath="$(hardware_gate_metadata_value "$live_media$hardware_gate_live_media_identity" payload_relpath)"
+      payload_path="$live_media/$payload_relpath"
+      if [[ -n "$payload_relpath" && -f "$payload_path" ]]; then
+        local actual_payload_bytes actual_payload_sha expected_payload_sha
+        actual_payload_bytes="$(stat -c %s "$payload_path")"
+        actual_payload_sha="$(sha256sum "$payload_path" | cut -d ' ' -f 1)"
+        expected_payload_sha="$(hardware_gate_metadata_value "$live_media$hardware_gate_live_media_identity" payload_sha256)"
+        [[ "$actual_payload_sha" == "$expected_payload_sha" ]] || \
+          hardware_gate_fail "booted live payload hash does not match baked image identity"
+        printf '%s\n' \
+          "payload_relpath=$payload_relpath" \
+          "payload_bytes=$actual_payload_bytes" \
+          "payload_sha256=$actual_payload_sha" \
+          "payload_identity_match=PASS" >"$evidence_dir/installed/live-payload.txt"
+      fi
+    fi
+  fi
   hardware_gate_verify_installed_files "$evidence_dir/installed/verified-artifacts.tsv"
   [[ -f "$hardware_gate_state_home/sos/output.json" \
     && ! -L "$hardware_gate_state_home/sos/output.json" \
@@ -245,15 +368,26 @@ hardware_gate_prepare() {
   hardware_gate_capture_optional "$evidence_dir/environment/display-manager-before.txt" \
     systemctl status display-manager --no-pager
   printf '%s\n' "$display_manager_unit" >"$evidence_dir/environment/display-manager-unit.txt"
-  {
-    printf 'rustc=%s\n' "$(rustc --version)"
-    printf 'cargo=%s\n' "$(cargo --version)"
-    printf 'node=%s\n' "$(node --version)"
-    printf 'npm=%s\n' "$(npm --version)"
-    for module in gbm libinput libseat libudev wayland-client xkbcommon xkbcommon-x11; do
-      printf '%s=%s\n' "$module" "$(pkg-config --modversion "$module")"
-    done
-  } >"$evidence_dir/environment/tool-versions.txt"
+  if [[ "$boot_kind" == live-boot ]]; then
+    {
+      printf 'boot_kind=live-boot\n'
+      printf 'not_installed_product=true\n'
+      printf 'rustc_version=%s\n' \
+        "$(hardware_gate_metadata_value "$hardware_gate_install_metadata" rustc_version)"
+      printf 'node_version=%s\n' \
+        "$(hardware_gate_metadata_value "$hardware_gate_install_metadata" node_version)"
+    } >"$evidence_dir/environment/tool-versions.txt"
+  else
+    {
+      printf 'rustc=%s\n' "$(rustc --version)"
+      printf 'cargo=%s\n' "$(cargo --version)"
+      printf 'node=%s\n' "$(node --version)"
+      printf 'npm=%s\n' "$(npm --version)"
+      for module in gbm libinput libseat libudev wayland-client xkbcommon xkbcommon-x11; do
+        printf '%s=%s\n' "$module" "$(pkg-config --modversion "$module")"
+      done
+    } >"$evidence_dir/environment/tool-versions.txt"
+  fi
 
   local boot_id cursor started_ns
   cursor="$(sudo journalctl --show-cursor -n 0 --no-pager | sed -n 's/^-- cursor: //p' | tail -n 1)"
@@ -265,6 +399,9 @@ hardware_gate_prepare() {
     "source_dirty=false" \
     "agent_mode=$installed_mode" \
     "boot_id=$boot_id" \
+    "boot_kind=$boot_kind" \
+    "campaign_class=$campaign_class" \
+    "not_installed_product=$not_installed_product" \
     "user_uid=$(id -u)" \
     "state_home=$hardware_gate_state_home" \
     "product_name=$product" \
@@ -280,9 +417,15 @@ hardware_gate_prepare() {
     '5. Press Ctrl+Alt+Backspace, return to GDM, and log into the fallback desktop.' \
     "6. Run: ./tools/linux-hardware-gate collect --evidence-dir $evidence_dir" \
     >"$evidence_dir/instructions.txt"
+  if [[ "$boot_kind" == live-boot ]]; then
+    printf '%s\n' \
+      'This campaign is live-boot evidence, not an installed product.' \
+      'Collect on this same boot and copy the evidence directory off before reboot.' \
+      >>"$evidence_dir/instructions.txt"
+  fi
   touch "$evidence_dir/prepared"
-  printf 'linux_hardware_gate_prepared evidence_dir=%s revision=%s product=%s agent_mode=%s\n' \
-    "$evidence_dir" "$source_revision" "$product" "$installed_mode"
+  printf 'linux_hardware_gate_prepared evidence_dir=%s revision=%s product=%s agent_mode=%s boot_kind=%s\n' \
+    "$evidence_dir" "$source_revision" "$product" "$installed_mode" "$boot_kind"
   sed -n '1,6p' "$evidence_dir/instructions.txt"
 }
 
@@ -314,8 +457,10 @@ hardware_gate_audit_dir() {
     hardware_gate_fail "campaign, collection, or collected session journal is missing"
   hardware_gate_audit_failed=false
   local agent_mode current_revision authority_revision presentation_count presentation_revisions
-  local prepared_boot_id collected_boot_id
+  local boot_kind campaign_class prepared_boot_id collected_boot_id
   agent_mode="$(hardware_gate_metadata_value "$evidence_dir/campaign.env" agent_mode)"
+  boot_kind="$(hardware_gate_metadata_value "$evidence_dir/campaign.env" boot_kind)"
+  campaign_class="$(hardware_gate_metadata_value "$evidence_dir/campaign.env" campaign_class)"
   prepared_boot_id="$(hardware_gate_metadata_value "$evidence_dir/campaign.env" boot_id)"
   collected_boot_id="$(hardware_gate_metadata_value "$evidence_dir/collection.env" boot_id)"
   if [[ "$prepared_boot_id" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ \
@@ -325,6 +470,12 @@ hardware_gate_audit_dir() {
     printf 'criterion=same_boot result=FAIL prepared=%s collected=%s\n' \
       "$prepared_boot_id" "$collected_boot_id"
     hardware_gate_audit_failed=true
+  fi
+  if [[ -n "$boot_kind" ]]; then
+    printf 'boot_kind=%s campaign_class=%s\n' "$boot_kind" "${campaign_class:-$boot_kind}"
+    if [[ "$boot_kind" == live-boot ]]; then
+      printf 'not_installed_product=true\n'
+    fi
   fi
   hardware_gate_criterion_pattern recovery_page_flip \
     'completed significant DRM page flip.*recovery_view=true' "$journal"
@@ -468,6 +619,13 @@ hardware_gate_collect() {
   current_boot_id="$(hardware_gate_read_boot_id)"
   [[ -n "$prepared_boot_id" && "$current_boot_id" == "$prepared_boot_id" ]] || \
     hardware_gate_fail "evidence must be collected on the exact kernel boot that prepared it"
+  local prepared_boot_kind current_boot_kind
+  prepared_boot_kind="$(hardware_gate_metadata_value "$evidence_dir/campaign.env" boot_kind)"
+  if [[ "$prepared_boot_kind" == live-boot ]]; then
+    current_boot_kind="$(hardware_gate_classify_boot | sed -n 's/^boot_kind=//p' | tail -n 1)"
+    [[ "$current_boot_kind" == live-boot ]] || \
+      hardware_gate_fail "live-boot evidence must be collected on the same live overlay boot"
+  fi
 
   # The redirects intentionally run as the evidence owner; only journal access needs sudo.
   # shellcheck disable=SC2024
@@ -536,6 +694,20 @@ case "$hardware_gate_command" in
     hardware_gate_parse_dir_options "$@"
     [[ -z "$hardware_gate_expected_product" ]] || hardware_gate_fail "--expect-product is accepted only by prepare"
     hardware_gate_verify_manifest_dir "$(hardware_gate_resolve_existing_dir "$hardware_gate_requested_dir")"
+    ;;
+  classify-boot)
+    hardware_gate_sysroot=""
+    while [[ "$#" -gt 0 ]]; do
+      case "$1" in
+        --sysroot)
+          [[ "$#" -ge 2 ]] || hardware_gate_fail "--sysroot requires a directory"
+          hardware_gate_sysroot="$(realpath -e -- "$2")"
+          shift 2
+          ;;
+        *) hardware_gate_fail "classify-boot accepts only --sysroot DIR" ;;
+      esac
+    done
+    hardware_gate_classify_boot "$hardware_gate_sysroot"
     ;;
   *)
     hardware_gate_usage >&2
