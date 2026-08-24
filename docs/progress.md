@@ -9859,3 +9859,62 @@ the overlay but is not exact final-binary or baked-artifact evidence. Commit,
 bake a clean revision-pinned ISO, and repeat the complete Framework campaign;
 do not promote the hardware gate until artifact-matched focus transfer and
 single-host activation both pass.
+
+## 2026-08-25 — Bake and audit the touch-focus Fedora live ISO
+
+**Goal / clean source / host:** Build the first artifact containing the Linux
+native touchscreen-to-text-field routing fix, without treating a host bake as
+physical acceptance. The Fedora 44 x86-64 host passed strict
+`tools/linux-live-image doctor`; the source worktree was clean at
+`d9d783cd65b7e6faabacc5dc4c26e63d4bf0eca6`. All 27 Linux-host tests,
+warning-denying Clippy, Bash parsing of the live-image and nested-compositor
+workflows, and `git diff --check` passed before the privileged bake. The pinned
+official Fedora Workstation 44 source remained 2,851,612,672 bytes with
+SHA-256
+`1620295f6a00c27c3208f0c00b8ece4eab1ec69b9002152d97488bf26a426ddf`.
+
+**Bake result / measurements:** The complete privileged remix passed rootfs
+extraction and metadata preservation, Fedora runtime-package mutation, the
+release host and offline-agent builds, offline-user staging, rootfs identity
+validation, SELinux policy assignment, EROFS repack, ISO replay, and the
+embedded media check. It completed in 2,703.62 seconds wall time with
+2,041,868 KiB maximum RSS. The finalized 8,924-byte bake log at
+`/home/carlid/dev/sos/artifacts/linux-live-bake-d9d783c.log` has SHA-256
+`ed22f055cbe8008aa0019185dcd69ad01bb1d4d62400d5c2176742562c110bd4`;
+the 985-byte GNU-time record has SHA-256
+`144c05d8f95dac71d0f29f78ecc6d7c040b1097e6dcf470626b4e9ab74517809`.
+No model provider ran, so live-model and model-weighted cost were zero.
+
+The resulting live-boot artifact is:
+
+| Artifact | Revision | Bytes | SHA-256 |
+| --- | --- | ---: | --- |
+| `/home/carlid/dev/sos/artifacts/linux-live-image-d9d783c/sos-fedora-workstation-live-d9d783cd65b7.iso` | `d9d783cd65b7e6faabacc5dc4c26e63d4bf0eca6` | 3,056,074,752 | `21332392b6564e4f286c527f79645d564270f287d5313a1243c3b040f37738f9` |
+
+Its 821-byte sidecar has SHA-256
+`b8d30725b4c10e5e4ca4860b9aaf9cd0bc96a2780eb230153a1626786515ee46`
+and records `source_dirty=false`, Fedora/build-host release 44, offline agent
+mode, `live-boot`, and `not_installed_product=true`. The payload is the expected
+flat EROFS rootfs, 2,691,596,288 bytes with SHA-256
+`dc3c28416007457a72548b1959653cd869585b378900cefde8bb2d1275810235`.
+
+**Independent audit / decision / next gate:** A fresh SHA-256 computation
+matched the sidecar; `checkisomd5` independently passed in 3.31 seconds; direct
+extraction of the ISO-level identity matched the revision, source, payload,
+release, agent, and live-boot claims; direct extraction and hashing of
+`LiveOS/squashfs.img` matched its declared size and digest; both
+`check-payload` and `fsck.erofs` passed. Xorriso confirmed volume ID
+`Fedora-WS-Live-44`, bootable BIOS and UEFI El Torito entries, protective MBR,
+and GPT. The finalized 5,336-byte audit bundle at
+`/home/carlid/dev/sos/artifacts/linux-live-image-d9d783c-audit` verifies all ten
+evidence files through its 834-byte manifest, whose SHA-256 is
+`5eb95ac37cac70a7a83f14b7fb506a4db52364d9e10149cda85ecb2e747c3a64`.
+The temporary 2.69-GB extracted payload used for this audit was removed after
+hashing and remains reproducible from the preserved ISO.
+
+Accept this exact ISO as flashable live-test media only. It is not an installed
+product and the host bake does not prove physical DRM, focus transfer, stable
+single-host activation, input, or logout. Write this exact hybrid ISO to the
+removable USB, boot it on the Framework Laptop 12, and run one fresh same-boot
+prepare, mouse/touch field-transfer, offline-agent activation, clean logout,
+collect, copy-off, and manifest-audit campaign before promoting the gate.
