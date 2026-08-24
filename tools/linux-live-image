@@ -421,8 +421,8 @@ live_image_extract_payload() {
     erofs-rootfs)
       # The official image can carry build-filesystem SELinux labels such as
       # fusefs_t that the destination filesystem rejects. Mount the source
-      # read-only and copy every other metadata class; setfiles later applies
-      # the image's own policy to the complete staged rootfs.
+      # read-only and copy every other metadata class; mkfs.erofs later applies
+      # the image's own policy directly to the rebuilt filesystem.
       (
         # Invoked indirectly by the EXIT trap below.
         # shellcheck disable=SC2329
@@ -457,12 +457,28 @@ live_image_extract_payload() {
   esac
 }
 
-live_image_relabel_rootfs() {
+live_image_selinux_policy_file() {
+  local root="$1"
+  local policy_dir="$root/etc/selinux/targeted/policy" policy="" candidate
+  while IFS= read -r -d '' candidate; do
+    policy="$candidate"
+  done < <(find "$policy_dir" -maxdepth 1 -type f -name 'policy.*' -print0 2>/dev/null \
+    | sort -zV)
+  [[ -n "$policy" && -r "$policy" ]] || \
+    live_image_fail "Fedora SELinux binary policy is missing from the extracted rootfs"
+  printf '%s\n' "$policy"
+}
+
+live_image_validate_rootfs_policy() {
   local root="$1"
   local file_contexts="$root/etc/selinux/targeted/contexts/files/file_contexts"
   [[ -r "$file_contexts" ]] || \
     live_image_fail "Fedora SELinux file-context policy is missing from the extracted rootfs"
-  sudo setfiles -F -r "$root" "$file_contexts" "$root"
+  local policy
+  policy="$(live_image_selinux_policy_file "$root")"
+  # Validate every context against the image policy, not the host's loaded
+  # policy. -n deliberately leaves host-filesystem labels untouched.
+  sudo setfiles -n -m -c "$policy" -r "$root" "$file_contexts" "$root" >/dev/null
 }
 
 live_image_repack_payload() {
@@ -470,10 +486,15 @@ live_image_repack_payload() {
   case "$format" in
     erofs-rootfs)
       # Root execution preserves distinct system/liveuser ownership, ACLs,
-      # capabilities, xattrs, and the SELinux labels applied above.
+      # capabilities, and portable xattrs. Apply SELinux labels while creating
+      # EROFS so the host kernel never has to accept image-policy-only types.
+      local file_contexts="$rootfs/etc/selinux/targeted/contexts/files/file_contexts"
+      [[ -r "$file_contexts" ]] || \
+        live_image_fail "Fedora SELinux file-context policy is missing from the staged rootfs"
       sudo mkfs.erofs -zlzma -E dedupe,all-fragments -C65536 \
+        --file-contexts="$file_contexts" \
         "$output" "$rootfs" >/dev/null
-      sudo fsck.erofs "$output" >/dev/null
+      sudo fsck.erofs --xattrs "$output" >/dev/null
       sudo chown "$(id -u):$(id -g)" "$output"
       ;;
     *) live_image_fail "cannot repack container format: $format" ;;
@@ -662,7 +683,7 @@ live_image_bake() {
     --payload-relpath "$payload_relpath" \
     --container-format "$container_format" \
     --baked-at-utc "$baked_at"
-  live_image_relabel_rootfs "$live_image_rootfs"
+  live_image_validate_rootfs_policy "$live_image_rootfs"
   live_image_check_rootfs --root "$live_image_rootfs"
 
   local new_payload payload_bytes payload_sha

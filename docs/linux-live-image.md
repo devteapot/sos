@@ -57,14 +57,16 @@ file is a flat EROFS root filesystem. The bake verifies EROFS and
 `/etc/os-release`, mounts it read-only, and copies it as root while preserving
 numeric ownership, permissions, hardlinks, ACLs, capabilities, and non-SELinux
 xattrs. Source SELinux labels are deliberately omitted because official media
-can retain compose-filesystem labels; after mutation the bake applies the
-image's own SELinux file-context policy to the complete tree and repacks as
-root. It checks the rebuilt EROFS before inserting it into the ISO. It never
-maps the rootfs to the desktop user.
+can retain compose-filesystem labels; after mutation the bake validates the
+image's file contexts against its own compiled SELinux policy and gives those
+contexts directly to `mkfs.erofs`. This assigns labels in the rebuilt image
+without asking the host kernel to accept image-policy-only types. It checks the
+rebuilt EROFS and its xattrs before inserting it into the ISO. It never maps
+the rootfs to the desktop user.
 
 Bake requires sudo for the read-only EROFS mount, metadata-preserving rootfs
-copy/repack, relabeling, and `dnf --installroot`. It preserves the source ISO
-volume ID and El Torito/EFI boot; changing the label breaks Fedora's
+copy/repack, policy validation, and `dnf --installroot`. It preserves the
+source ISO volume ID and El Torito/EFI boot; changing the label breaks Fedora's
 `root=live:CDLABEL=...` cmdline. The output sidecar
 `artifacts/linux-live-image/image-identity.env` records the source revision,
 Fedora/build-host release, base ISO identity, EROFS payload hash, and

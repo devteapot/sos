@@ -131,6 +131,28 @@ if command -v fsck.erofs >/dev/null 2>&1 \
   fsck.erofs --path=/ --extract="$test_packed_dest" --xattrs --preserve \
     "$test_packed_image" >/dev/null
   cmp "$test_packed_source/file" "$test_packed_dest/file"
+
+  if command -v strings >/dev/null 2>&1 \
+    && mkfs.erofs --help 2>&1 | grep -F -- '--file-contexts' >/dev/null; then
+    test_label_source="$test_root/label-source"
+    test_label_dest="$test_root/label-dest"
+    test_label_image="$test_root/label.erofs"
+    test_file_contexts="$test_root/file_contexts"
+    mkdir "$test_label_source" "$test_label_dest"
+    printf 'SELinux label regression\n' >"$test_label_source/probe"
+    printf '/probe -- system_u:object_r:bin_t:s0\n' >"$test_file_contexts"
+    mkfs.erofs --file-contexts="$test_file_contexts" \
+      "$test_label_image" "$test_label_source" >/dev/null
+    fsck.erofs --xattrs "$test_label_image" >/dev/null
+    strings "$test_label_image" | \
+      grep -Fx 'system_u:object_r:bin_t:s0' >/dev/null
+    if command -v selinuxenabled >/dev/null 2>&1 && selinuxenabled; then
+      fsck.erofs --extract="$test_label_dest" --xattrs \
+        --no-preserve-owner --no-preserve-perms "$test_label_image" >/dev/null
+      [[ "$(getfattr -h -n security.selinux --only-values \
+        "$test_label_dest/probe")" == system_u:object_r:bin_t:s0 ]]
+    fi
+  fi
 fi
 
 if command -v getfattr >/dev/null 2>&1 \
@@ -401,8 +423,9 @@ grep -F '!/^trusted\.SGI_ACL_/' "$test_image" >/dev/null
 grep -F -- "--filter='-x security.selinux'" "$test_image" >/dev/null
 grep -F -- "--filter='-x system.*'" "$test_image" >/dev/null
 grep -F "sudo umount -- \"\$mountpoint\"" "$test_image" >/dev/null
-grep -F 'sudo setfiles -F -r' "$test_image" >/dev/null
-grep -F "sudo fsck.erofs \"\$output\"" "$test_image" >/dev/null
+grep -F 'sudo setfiles -n -m -c "$policy"' "$test_image" >/dev/null
+grep -F -- '--file-contexts="$file_contexts"' "$test_image" >/dev/null
+grep -F 'sudo fsck.erofs --xattrs "$output"' "$test_image" >/dev/null
 grep -F 'implantisomd5 --force' "$test_image" >/dev/null
 grep -F "checkisomd5 \"\$output_iso\"" "$test_image" >/dev/null
 

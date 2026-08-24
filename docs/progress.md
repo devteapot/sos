@@ -9531,3 +9531,54 @@ cost were zero. The remaining risk is the downstream privileged integration:
 remove only the bounded partial attempt-five output, then run one clean bake
 through staging, relabel, EROFS repack, ISO replay, media checksum, and final
 identity generation before writing removable media.
+
+## 2026-08-24 — Assign image-policy SELinux labels during EROFS creation
+
+**Goal / environment / failure:** Run the next privileged Fedora 44 bake at
+clean revision `b618608a93e707efd2764911aeaa6f9a81dd99fe`. Extraction,
+metadata verification, package mutation, cached release builds, readable
+destroot installation, and both offline-home staging paths passed. The first
+whole-root relabel then stopped while loading the image's file-context rules:
+the build host's currently loaded targeted policy rejected
+`nbdkit_exec_t` and `nbdkit_unit_file_t`. The finalized log at
+`/home/carlid/dev/sos/artifacts/linux-live-bake-attempt6.log` is 8,563 bytes
+with SHA-256
+`4e1a7e830a7e4a448e228b4ec0c7899f4865627acd5c6f7bdb4965cd4262a496`.
+The bounded output again contains only `work/`; no ISO or image identity was
+produced, and no removable media or Framework disk was involved.
+
+**Diagnosis / evidence:** This was not an invalid Fedora image policy. Running
+`setfiles -n -m -c ROOT/etc/selinux/targeted/policy/policy.35 -r ROOT
+ROOT/etc/selinux/targeted/contexts/files/file_contexts ROOT/usr/bin/nbdkit`
+passed, proving the rootfs's own binary policy accepts the expected
+`nbdkit_exec_t` rule. The installed `setfiles(8)` documents `-c` specifically
+for checking contexts against another binary policy. A focused EROFS probe
+used the rootfs file contexts with `mkfs.erofs --file-contexts`, produced a
+180,224-byte image whose `/usr/bin/nbdkit` inode carried a 60-byte xattr area,
+and embedded `system_u:object_r:nbdkit_exec_t:s0`. Attempting to restore that
+label onto the host filesystem reproduced `EINVAL`, confirming why staging
+tree relabeling cannot be the cross-policy boundary. A separate valid-context
+probe extracted `system_u:object_r:bin_t:s0` exactly from the rebuilt EROFS.
+
+**Changed / rejected approaches / decision / next gate:** Validate all file
+contexts read-only against the rootfs's highest compiled `policy.*`, then pass
+the same context file directly to `mkfs.erofs`; verify the rebuilt filesystem
+with explicit xattr inspection. This keeps the staging tree's incidental host
+labels out of the artifact while preserving ownership, modes, ACLs,
+capabilities, and other portable xattrs. Loading the image policy into the
+enforcing build host would be a global and unsafe mutation. Continuing to use
+the host policy would reject valid image-only types, while retaining compose
+or staging labels would make the live image incorrect. The focused host suite
+now constructs an EROFS with a supplied file-context rule, requires the label
+string in the image, and, when SELinux is active, extracts and checks the exact
+`security.selinux` value; it passed in 0.55 seconds with 30,444 KiB maximum
+RSS. The next gate is one fresh privileged bake through policy validation,
+EROFS creation, ISO replay, embedded checksum verification, and final identity
+generation before removable-media testing.
+
+The strict doctor, live-image and hardware-gate host suites, Bash parsing of
+all five relevant scripts, ShellCheck 0.11.0 from container digest
+`b9389b73c8f26f710a7171cb7d8848a34a9c1e07a7865e727c9ec4ce99f9a83f`,
+and `git diff --check` passed in one ordered 2.11-second campaign with 47,492
+KiB maximum RSS. No model provider ran, so live-model and model-weighted gate
+cost were zero. The pending privileged bake remains the next gate.
