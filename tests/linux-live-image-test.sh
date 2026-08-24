@@ -166,7 +166,9 @@ if command -v getfattr >/dev/null 2>&1 \
       getfattr -hRPd -m- .
     ) | awk '
       /^# file: / { path = substr($0, 9); next }
-      /^(user|trusted|security)\./ && !/^security\.selinux=/ {
+      /^(user|trusted|security)\./ && \
+        !/^security\.selinux=/ && \
+        !/^trusted\.SGI_ACL_/ {
         print path "\t" $0
       }
     ' | LC_ALL=C sort >"$test_root/metadata-$test_metadata_side-xattrs.txt"
@@ -381,6 +383,7 @@ grep -F 'sudo rsync -aHASni --numeric-ids' "$test_image" >/dev/null
 grep -F 'rootfs metadata audit differs after copy' "$test_image" >/dev/null
 grep -F 'rootfs xattr audit differs after copy' "$test_image" >/dev/null
 grep -F 'sudo getfattr -hRPd -m- .' "$test_image" >/dev/null
+grep -F '!/^trusted\.SGI_ACL_/' "$test_image" >/dev/null
 grep -F -- "--filter='-x security.selinux'" "$test_image" >/dev/null
 grep -F -- "--filter='-x system.*'" "$test_image" >/dev/null
 grep -F "sudo umount -- \"\$mountpoint\"" "$test_image" >/dev/null

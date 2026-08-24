@@ -9429,3 +9429,55 @@ all five relevant scripts, ShellCheck 0.11.0 from container digest
 and `git diff --check` passed in one ordered 2.16-second campaign with 46,900
 KiB maximum RSS. No model provider ran, so live-model and model-weighted gate
 cost were zero. The pending privileged bake remains the next gate.
+
+## 2026-08-24 — Ignore XFS's internal ACL xattrs in the portable manifest
+
+**Goal / environment / failure:** Run the next privileged bake at clean
+revision `dd97da735effa4392891049fbcc4e9df0b85601a` with separate logical
+metadata and raw-xattr audits. The strict doctor, ISO-tree extraction,
+read-only EROFS mount, complete privileged copy, and metadata-only rsync audit
+all passed; the latter produced a zero-byte audit. The exact xattr-manifest
+comparison then failed with 10 source entries and 12 destination entries. The
+finalized bake log at
+`/home/carlid/dev/sos/artifacts/linux-live-bake-attempt4.log` is 1,798 bytes
+with SHA-256
+`b839aa84bf97e6cedd0f88c88d7101368f6846abe683d3139860dd8f4b587717`.
+No remixed ISO or removable media was produced, and no Framework or internal
+laptop disk was involved.
+
+**Diagnosis / evidence:** All ten source `security.capability` entries were
+present byte-for-byte in the destination manifest. The only destination-only
+entries were `trusted.SGI_ACL_FILE` and `trusted.SGI_ACL_DEFAULT` on
+`var/log/journal`; XFS synthesizes these trusted xattrs from the POSIX ACLs that
+the independent logical audit had already proved identical. The preserved
+source manifest at
+`/home/carlid/dev/sos/artifacts/linux-live-xattr-source-attempt4.txt` is 736
+bytes with SHA-256
+`6d8e758528fc1f6ef7947bff6c1fc9fa92ad0e3a8280abf15e93135b9faccf79`.
+The destination manifest at
+`/home/carlid/dev/sos/artifacts/linux-live-xattr-dest-attempt4.txt` is 1,027
+bytes with SHA-256
+`d33751772586b3eaa47bb7582e107744f3fa14ea57022062a660fb08cc7e032c`.
+The zero-byte metadata audit is retained at
+`/home/carlid/dev/sos/artifacts/linux-live-metadata-audit-attempt4.txt` with
+the empty-file SHA-256
+`e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`.
+
+**Changed / decision / next gate:** Exclude only the target-filesystem-internal
+`trusted.SGI_ACL_*` encodings from the portable raw-xattr manifest. Continue to
+compare every source `user.*`, other `trusted.*`, and non-SELinux `security.*`
+value exactly, and continue to require the separate owner/mode/hardlink/ACL
+audit to be empty. Filtering the two SGI entries from the retained destination
+manifest made it identical to the retained source manifest: ten capabilities
+matched and no portable xattr was missing or changed. Do not exclude all
+`trusted.*`, weaken capability comparison, or whitelist a filesystem path.
+After nearby host checks pass, commit and push the correction; the next
+operator command must remove only the bounded partial attempt-four output and
+run one fresh privileged bake through package mutation, relabel, and repack.
+
+The strict doctor, live-image and hardware-gate host suites, Bash parsing of
+all five relevant scripts, ShellCheck 0.11.0 from container digest
+`b9389b73c8f26f710a7171cb7d8848a34a9c1e07a7865e727c9ec4ce99f9a83f`,
+and `git diff --check` passed in one ordered 2.20-second campaign with 46,152
+KiB maximum RSS. No model provider ran, so live-model and model-weighted gate
+cost were zero. The pending privileged bake remains the next gate.

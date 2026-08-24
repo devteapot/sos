@@ -395,7 +395,9 @@ live_image_write_xattr_manifest() {
       path = substr($0, 9)
       next
     }
-    /^(user|trusted|security)\./ && !/^security\.selinux=/ {
+    /^(user|trusted|security)\./ && \
+      !/^security\.selinux=/ && \
+      !/^trusted\.SGI_ACL_/ {
       print path "\t" $0
     }
   ' | LC_ALL=C sort >"$output"
