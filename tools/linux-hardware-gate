@@ -40,15 +40,6 @@ hardware_gate_monotonic_ns() {
   python3 -c 'import time; print(time.monotonic_ns())'
 }
 
-hardware_gate_read_boot_id() {
-  local path=/proc/sys/kernel/random/boot_id boot_id
-  [[ -r "$path" ]] || hardware_gate_fail "kernel boot ID is unavailable: $path"
-  boot_id="$(tr -d '\n' <"$path")"
-  [[ "$boot_id" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]] || \
-    hardware_gate_fail "kernel boot ID is malformed: $boot_id"
-  printf '%s\n' "${boot_id,,}"
-}
-
 hardware_gate_resolve_new_dir() {
   local requested="$1" resolved
   resolved="$(realpath -m -- "$requested")"
@@ -116,6 +107,16 @@ hardware_gate_sysroot_path() {
   printf '%s%s\n' "$sysroot" "$path"
 }
 
+hardware_gate_read_boot_id() {
+  local sysroot="${1:-}" path boot_id
+  path="$(hardware_gate_sysroot_path "$sysroot" /proc/sys/kernel/random/boot_id)"
+  [[ -r "$path" ]] || hardware_gate_fail "kernel boot ID is unavailable: $path"
+  boot_id="$(tr -d '\n' <"$path")"
+  [[ "$boot_id" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]] || \
+    hardware_gate_fail "kernel boot ID is malformed: $boot_id"
+  printf '%s\n' "${boot_id,,}"
+}
+
 hardware_gate_has_live_overlay() {
   local sysroot="${1:-}" cmdline
   if [[ -n "$sysroot" ]]; then
@@ -131,8 +132,9 @@ hardware_gate_has_live_overlay() {
 
 hardware_gate_classify_boot() {
   local sysroot="${1:-}"
-  local identity_file media_identity overlay=absent image_kind=""
+  local identity_file media_identity overlay=absent image_kind="" boot_id
   identity_file="$(hardware_gate_sysroot_path "$sysroot" "$hardware_gate_image_identity")"
+  boot_id="$(hardware_gate_read_boot_id "$sysroot")"
   if [[ -z "$sysroot" && -d /run/initramfs/live ]]; then
     media_identity="/run/initramfs/live$hardware_gate_live_media_identity"
   else
@@ -145,16 +147,49 @@ hardware_gate_classify_boot() {
     image_kind="$(hardware_gate_metadata_value "$identity_file" image_kind)"
   fi
   if [[ "$overlay" == present && "$image_kind" == live-boot ]]; then
+    [[ -r "$media_identity" ]] || \
+      hardware_gate_fail "SOS live overlay is missing the ISO-level image identity: $media_identity"
+    local inner_revision media_revision media_kind media_product_flag
+    local payload_relpath payload_bytes payload_sha container_format
+    inner_revision="$(hardware_gate_metadata_value "$identity_file" source_revision)"
+    media_revision="$(hardware_gate_metadata_value "$media_identity" source_revision)"
+    media_kind="$(hardware_gate_metadata_value "$media_identity" image_kind)"
+    media_product_flag="$(hardware_gate_metadata_value "$media_identity" not_installed_product)"
+    payload_relpath="$(hardware_gate_metadata_value "$media_identity" payload_relpath)"
+    payload_bytes="$(hardware_gate_metadata_value "$media_identity" payload_bytes)"
+    payload_sha="$(hardware_gate_metadata_value "$media_identity" payload_sha256)"
+    container_format="$(hardware_gate_metadata_value "$media_identity" container_format)"
+    [[ -n "$inner_revision" && "$inner_revision" == "$media_revision" ]] || \
+      hardware_gate_fail "rootfs and ISO-level image identities disagree"
+    local identity_key inner_value media_value
+    for identity_key in \
+      image_kind campaign_class not_installed_product container_format \
+      fedora_release build_host_release source_revision source_dirty agent_mode \
+      base_iso_filename base_iso_bytes base_iso_sha256 payload_relpath baked_at_utc; do
+      inner_value="$(hardware_gate_metadata_value "$identity_file" "$identity_key")"
+      media_value="$(hardware_gate_metadata_value "$media_identity" "$identity_key")"
+      [[ -n "$inner_value" && "$inner_value" == "$media_value" ]] || \
+        hardware_gate_fail "rootfs and ISO-level image identities disagree on $identity_key"
+    done
+    [[ "$media_kind" == live-boot && "$media_product_flag" == true ]] || \
+      hardware_gate_fail "ISO-level identity is not a live-boot non-product image"
+    [[ "$payload_relpath" == LiveOS/squashfs.img ]] || \
+      hardware_gate_fail "unsupported or unsafe live payload path: $payload_relpath"
+    [[ "$container_format" == erofs-rootfs ]] || \
+      hardware_gate_fail "unsupported live payload format: $container_format"
+    [[ "$payload_bytes" =~ ^[1-9][0-9]*$ ]] || \
+      hardware_gate_fail "ISO-level identity has an invalid payload size"
+    [[ "$payload_sha" =~ ^[0-9a-f]{64}$ ]] || \
+      hardware_gate_fail "ISO-level identity has an invalid payload SHA-256"
     printf '%s\n' \
       'boot_kind=live-boot' \
       'campaign_class=live-boot' \
       'not_installed_product=true' \
+      "boot_id=$boot_id" \
       "live_overlay=$overlay" \
       "image_kind=$image_kind" \
-      "image_identity=$identity_file"
-    if [[ -r "$media_identity" ]]; then
-      printf 'live_media_identity=%s\n' "$media_identity"
-    fi
+      "image_identity=$identity_file" \
+      "live_media_identity=$media_identity"
     return 0
   fi
   if [[ "$overlay" == present ]]; then
@@ -167,6 +202,7 @@ hardware_gate_classify_boot() {
     'boot_kind=installed' \
     'campaign_class=installed-workstation' \
     'not_installed_product=false' \
+    "boot_id=$boot_id" \
     "live_overlay=$overlay" \
     'image_kind='
 }
@@ -225,10 +261,11 @@ hardware_gate_prepare() {
   fi
   local boot_class
   boot_class="$(hardware_gate_classify_boot)"
-  local boot_kind campaign_class not_installed_product
+  local boot_kind campaign_class not_installed_product boot_id
   boot_kind="$(printf '%s\n' "$boot_class" | sed -n 's/^boot_kind=//p' | tail -n 1)"
   campaign_class="$(printf '%s\n' "$boot_class" | sed -n 's/^campaign_class=//p' | tail -n 1)"
   not_installed_product="$(printf '%s\n' "$boot_class" | sed -n 's/^not_installed_product=//p' | tail -n 1)"
+  boot_id="$(printf '%s\n' "$boot_class" | sed -n 's/^boot_id=//p' | tail -n 1)"
   if [[ "$boot_kind" == installed ]]; then
     for command in cargo git node npm pkg-config rustc; do
       hardware_gate_require_command "$command"
@@ -309,29 +346,29 @@ hardware_gate_prepare() {
     cp -- "$hardware_gate_image_identity" "$evidence_dir/installed/image-identity.env"
   fi
   if [[ "$boot_kind" == live-boot ]]; then
-    local live_media="" payload_relpath="" payload_path=""
-    if [[ -d /run/initramfs/live ]]; then
-      live_media=/run/initramfs/live
-    fi
-    if [[ -n "$live_media" && -r "$live_media$hardware_gate_live_media_identity" ]]; then
-      cp -- "$live_media$hardware_gate_live_media_identity" \
-        "$evidence_dir/installed/live-media-identity.env"
-      payload_relpath="$(hardware_gate_metadata_value "$live_media$hardware_gate_live_media_identity" payload_relpath)"
-      payload_path="$live_media/$payload_relpath"
-      if [[ -n "$payload_relpath" && -f "$payload_path" ]]; then
-        local actual_payload_bytes actual_payload_sha expected_payload_sha
-        actual_payload_bytes="$(stat -c %s "$payload_path")"
-        actual_payload_sha="$(sha256sum "$payload_path" | cut -d ' ' -f 1)"
-        expected_payload_sha="$(hardware_gate_metadata_value "$live_media$hardware_gate_live_media_identity" payload_sha256)"
-        [[ "$actual_payload_sha" == "$expected_payload_sha" ]] || \
-          hardware_gate_fail "booted live payload hash does not match baked image identity"
-        printf '%s\n' \
-          "payload_relpath=$payload_relpath" \
-          "payload_bytes=$actual_payload_bytes" \
-          "payload_sha256=$actual_payload_sha" \
-          "payload_identity_match=PASS" >"$evidence_dir/installed/live-payload.txt"
-      fi
-    fi
+    local live_media=/run/initramfs/live payload_relpath payload_path
+    local actual_payload_bytes actual_payload_sha expected_payload_bytes expected_payload_sha
+    [[ -d "$live_media" && -r "$live_media$hardware_gate_live_media_identity" ]] || \
+      hardware_gate_fail "mounted live media identity is unavailable"
+    cp -- "$live_media$hardware_gate_live_media_identity" \
+      "$evidence_dir/installed/live-media-identity.env"
+    payload_relpath="$(hardware_gate_metadata_value "$live_media$hardware_gate_live_media_identity" payload_relpath)"
+    [[ "$payload_relpath" == LiveOS/squashfs.img ]] || \
+      hardware_gate_fail "unsupported or unsafe live payload path: $payload_relpath"
+    payload_path="$live_media/$payload_relpath"
+    [[ -f "$payload_path" ]] || hardware_gate_fail "booted live payload is unavailable: $payload_path"
+    actual_payload_bytes="$(stat -c %s "$payload_path")"
+    actual_payload_sha="$(sha256sum "$payload_path" | cut -d ' ' -f 1)"
+    expected_payload_bytes="$(hardware_gate_metadata_value "$live_media$hardware_gate_live_media_identity" payload_bytes)"
+    expected_payload_sha="$(hardware_gate_metadata_value "$live_media$hardware_gate_live_media_identity" payload_sha256)"
+    [[ "$actual_payload_bytes" == "$expected_payload_bytes" \
+      && "$actual_payload_sha" == "$expected_payload_sha" ]] || \
+      hardware_gate_fail "booted live payload identity does not match the baked image"
+    printf '%s\n' \
+      "payload_relpath=$payload_relpath" \
+      "payload_bytes=$actual_payload_bytes" \
+      "payload_sha256=$actual_payload_sha" \
+      "payload_identity_match=PASS" >"$evidence_dir/installed/live-payload.txt"
   fi
   hardware_gate_verify_installed_files "$evidence_dir/installed/verified-artifacts.tsv"
   [[ -f "$hardware_gate_state_home/sos/output.json" \
@@ -402,6 +439,7 @@ hardware_gate_prepare() {
     "boot_kind=$boot_kind" \
     "campaign_class=$campaign_class" \
     "not_installed_product=$not_installed_product" \
+    "boot_id=$boot_id" \
     "user_uid=$(id -u)" \
     "state_home=$hardware_gate_state_home" \
     "product_name=$product" \
@@ -409,13 +447,17 @@ hardware_gate_prepare() {
     "started_at_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
     "started_monotonic_ns=$started_ns" >"$evidence_dir/campaign.env"
   printf '%s\n' "$cursor" >"$evidence_dir/journal.cursor"
+  local collect_command='./tools/linux-hardware-gate collect'
+  if [[ "$boot_kind" == live-boot ]]; then
+    collect_command='/usr/local/libexec/sos/linux-hardware-gate collect'
+  fi
   printf '%s\n' \
     '1. Log out and select SOS from the GDM session menu.' \
     '2. Confirm the recovery view and generated experience appear.' \
     '3. Exercise keyboard, touchpad motion/button, and the touchscreen.' \
     '4. Enter one composer prompt and wait for the offline/live revision to activate.' \
     '5. Press Ctrl+Alt+Backspace, return to GDM, and log into the fallback desktop.' \
-    "6. Run: ./tools/linux-hardware-gate collect --evidence-dir $evidence_dir" \
+    "6. Run: $collect_command --evidence-dir $evidence_dir" \
     >"$evidence_dir/instructions.txt"
   if [[ "$boot_kind" == live-boot ]]; then
     printf '%s\n' \
@@ -606,7 +648,7 @@ hardware_gate_collect() {
   [[ "${XDG_CURRENT_DESKTOP:-}" != SOS ]] || \
     hardware_gate_fail "return to the fallback desktop before collecting evidence"
   local evidence_dir cursor user_uid state_home started_ns finished_ns duration_ns
-  local prepared_boot_id current_boot_id
+  local prepared_boot_kind current_boot_kind prepared_boot_id current_boot_id
   evidence_dir="$(hardware_gate_resolve_existing_dir "$hardware_gate_requested_dir")"
   [[ -f "$evidence_dir/prepared" ]] || hardware_gate_fail "campaign was not prepared"
   [[ ! -f "$evidence_dir/collected" ]] || hardware_gate_fail "campaign was already collected"
@@ -615,12 +657,11 @@ hardware_gate_collect() {
   state_home="$(hardware_gate_metadata_value "$evidence_dir/campaign.env" state_home)"
   [[ "$user_uid" == "$(id -u)" ]] || hardware_gate_fail "collect must run as the user who prepared the gate"
   [[ "$state_home" == /* ]] || hardware_gate_fail "recorded state home is invalid"
+  prepared_boot_kind="$(hardware_gate_metadata_value "$evidence_dir/campaign.env" boot_kind)"
   prepared_boot_id="$(hardware_gate_metadata_value "$evidence_dir/campaign.env" boot_id)"
   current_boot_id="$(hardware_gate_read_boot_id)"
   [[ -n "$prepared_boot_id" && "$current_boot_id" == "$prepared_boot_id" ]] || \
     hardware_gate_fail "evidence must be collected on the exact kernel boot that prepared it"
-  local prepared_boot_kind current_boot_kind
-  prepared_boot_kind="$(hardware_gate_metadata_value "$evidence_dir/campaign.env" boot_kind)"
   if [[ "$prepared_boot_kind" == live-boot ]]; then
     current_boot_kind="$(hardware_gate_classify_boot | sed -n 's/^boot_kind=//p' | tail -n 1)"
     [[ "$current_boot_kind" == live-boot ]] || \

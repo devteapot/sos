@@ -6,6 +6,7 @@ test_repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 test_image="$test_repo_root/tools/linux-live-image"
 test_install="$test_repo_root/tools/install-linux-login-session"
 test_root="$(mktemp -d -t sos-linux-live-image-test.XXXXXX)"
+test_revision=abcdef1234567890abcdef1234567890abcdef12
 
 test_cleanup() {
   rm -r -- "$test_root"
@@ -14,8 +15,14 @@ trap test_cleanup EXIT
 
 bash -n "$test_image"
 bash -n "$test_install"
-"$test_image" doctor >"$test_root/doctor.txt"
-grep -Fx 'linux_live_image_doctor=PASS' "$test_root/doctor.txt" >/dev/null
+"$test_image" doctor --layout-only >"$test_root/doctor.txt"
+grep -Fx 'linux_live_image_doctor=PASS mode=layout-only bake_ready=false' \
+  "$test_root/doctor.txt" >/dev/null
+if "$test_image" doctor >"$test_root/bake-doctor.txt"; then
+  grep -Fx 'linux_live_image_doctor=PASS bake_ready=true' "$test_root/bake-doctor.txt" >/dev/null
+else
+  grep -Fx 'linux_live_image_doctor=FAIL bake_ready=false' "$test_root/bake-doctor.txt" >/dev/null
+fi
 grep -F 'nodejs' "$test_root/doctor.txt" >/dev/null
 if grep -E 'libinput-devel|mesa-libgbm-devel|libseat-devel' "$test_root/doctor.txt" >/dev/null; then
   printf 'error: live image doctor advertised development packages as runtime deps\n' >&2
@@ -23,16 +30,18 @@ if grep -E 'libinput-devel|mesa-libgbm-devel|libseat-devel' "$test_root/doctor.t
 fi
 
 "$test_image" format-identity \
-  --source-revision abcdef123456 \
+  --source-revision "$test_revision" \
   --source-dirty false \
   --agent-mode offline \
+  --fedora-release 44 \
+  --build-host-release 44 \
   --base-iso-filename Fedora-Workstation-Live-x86_64-44-1.1.iso \
   --base-iso-bytes 2048 \
   --base-iso-sha256 0000000000000000000000000000000000000000000000000000000000000001 \
   --payload-relpath LiveOS/squashfs.img \
   --payload-bytes 1024 \
   --payload-sha256 0000000000000000000000000000000000000000000000000000000000000002 \
-  --container-format squashfs-rootfs-img \
+  --container-format erofs-rootfs \
   --baked-at-utc 2026-08-23T00:00:00Z \
   --output-iso-filename sos-fedora-workstation-live-abcdef123456.iso \
   --output-iso-bytes 4096 \
@@ -42,7 +51,9 @@ for test_key in \
   image_kind=live-boot \
   campaign_class=live-boot \
   not_installed_product=true \
-  source_revision=abcdef123456 \
+  fedora_release=44 \
+  build_host_release=44 \
+  source_revision="$test_revision" \
   source_dirty=false \
   agent_mode=offline \
   payload_relpath=LiveOS/squashfs.img \
@@ -51,31 +62,78 @@ for test_key in \
   grep -Fx "$test_key" "$test_root/identity.env" >/dev/null
 done
 if "$test_image" format-identity \
-  --source-revision abcdef123456 \
+  --source-revision "$test_revision" \
   --source-dirty true \
   --agent-mode offline \
+  --fedora-release 44 \
+  --build-host-release 44 \
   --base-iso-filename Fedora-Workstation-Live-x86_64-44-1.1.iso \
   --base-iso-bytes 2048 \
   --base-iso-sha256 0000000000000000000000000000000000000000000000000000000000000001 \
   --payload-relpath LiveOS/squashfs.img \
-  --container-format flat-squashfs \
+  --container-format erofs-rootfs \
   >"$test_root/dirty-identity.txt" 2>&1; then
   printf 'error: format-identity accepted a dirty source revision\n' >&2
   exit 1
 fi
 if "$test_image" format-identity \
-  --source-revision abcdef123456 \
+  --source-revision "$test_revision" \
   --source-dirty false \
   --agent-mode live \
+  --fedora-release 44 \
+  --build-host-release 44 \
   --base-iso-filename Fedora-Workstation-Live-x86_64-44-1.1.iso \
   --base-iso-bytes 2048 \
   --base-iso-sha256 0000000000000000000000000000000000000000000000000000000000000001 \
   --payload-relpath LiveOS/squashfs.img \
-  --container-format erofs \
+  --container-format erofs-rootfs \
   >"$test_root/live-agent-identity.txt" 2>&1; then
   printf 'error: format-identity accepted a live agent bake\n' >&2
   exit 1
 fi
+
+if "$test_image" format-identity \
+  --source-revision "$test_revision" \
+  --source-dirty false \
+  --agent-mode offline \
+  --fedora-release 44 \
+  --build-host-release 44 \
+  --base-iso-filename Fedora-Workstation-Live-x86_64-44-1.1.iso \
+  --base-iso-bytes 2048 \
+  --base-iso-sha256 0000000000000000000000000000000000000000000000000000000000000001 \
+  --payload-relpath LiveOS/squashfs.img \
+  --container-format squashfs-rootfs-img \
+  >"$test_root/flat-identity.txt" 2>&1; then
+  printf 'error: format-identity accepted a non-EROFS payload\n' >&2
+  exit 1
+fi
+grep -F 'only metadata-preserving erofs-rootfs is supported' \
+  "$test_root/flat-identity.txt" >/dev/null
+
+mkdir "$test_root/bin"
+# The single-quoted expansions belong to the generated mock, not this test process.
+# shellcheck disable=SC2016
+printf '%s\n' \
+  '#!/usr/bin/env bash' \
+  'set -euo pipefail' \
+  'if [[ "${1:-}" == --ls && "${TEST_PAYLOAD_LAYOUT:-}" != erofs-root ]]; then' \
+  '  exit 1' \
+  'fi' \
+  'exit 0' >"$test_root/bin/dump.erofs"
+chmod 0755 "$test_root/bin/dump.erofs"
+: >"$test_root/payload.img"
+PATH="$test_root/bin:$PATH" TEST_PAYLOAD_LAYOUT=erofs-root \
+  "$test_image" check-payload --payload "$test_root/payload.img" \
+  >"$test_root/erofs-payload.txt"
+grep -F 'container_format=erofs-rootfs' "$test_root/erofs-payload.txt" >/dev/null
+if PATH="$test_root/bin:$PATH" TEST_PAYLOAD_LAYOUT=not-rootfs \
+  "$test_image" check-payload --payload "$test_root/payload.img" \
+  >"$test_root/not-rootfs-payload.txt" 2>&1; then
+  printf 'error: check-payload accepted EROFS without a Fedora rootfs\n' >&2
+  exit 1
+fi
+grep -F 'EROFS payload is not a flat Fedora root filesystem' \
+  "$test_root/not-rootfs-payload.txt" >/dev/null
 
 "$test_image" write-offline-user-state --home-root "$test_root/skel" \
   >"$test_root/skel.txt"
@@ -103,7 +161,11 @@ mkdir -p \
 : >"$test_rootfs/usr/share/sos/experiences/daily-flow.luau"
 : >"$test_rootfs/usr/lib/systemd/system/gdm.service"
 printf '%s\n' \
-  'source_revision=abcdef123456' \
+  'ID=fedora' \
+  'VERSION_ID=44' \
+  'VARIANT_ID=workstation' >"$test_rootfs/etc/os-release"
+printf '%s\n' \
+  "source_revision=$test_revision" \
   'source_dirty=false' \
   'agent_mode=offline' >"$test_rootfs/usr/share/doc/sos/install-metadata.env"
 : >"$test_rootfs/usr/share/doc/sos/install-manifest.tsv"
@@ -135,6 +197,13 @@ fi
 grep -F -- '--destdir ROOT' "$test_root/install-usage.txt" >/dev/null
 grep -F -- '--offline' "$test_install" >/dev/null
 grep -F 'image destroot staging accepts only the offline agent' "$test_install" >/dev/null
+"$test_image" 2>"$test_root/image-usage.txt" || true
+grep -F -- '--source-sha256 SHA256' "$test_root/image-usage.txt" >/dev/null
+grep -F -- '--xattrs --preserve' "$test_image" >/dev/null
+grep -F 'sudo setfiles -F -r' "$test_image" >/dev/null
+grep -F "sudo fsck.erofs \"\$output\"" "$test_image" >/dev/null
+grep -F 'implantisomd5 --force' "$test_image" >/dev/null
+grep -F "checkisomd5 \"\$output_iso\"" "$test_image" >/dev/null
 
 for test_doc in \
   "$test_repo_root/docs/linux-live-image.md" \
@@ -146,6 +215,8 @@ done
 grep -F 'lorax' "$test_repo_root/docs/linux-live-image.md" >/dev/null
 grep -F 'install-linux-login-session' "$test_repo_root/docs/linux-live-image.md" >/dev/null
 grep -F 'same-boot' "$test_repo_root/docs/linux-hardware-gate.md" >/dev/null
+grep -F -- '--source-sha256' "$test_repo_root/docs/linux-live-image.md" >/dev/null
+grep -F 'embedded media' "$test_repo_root/docs/linux-live-image.md" >/dev/null
 grep -F 'recovery_page_flip' "$test_repo_root/tools/linux-hardware-gate" >/dev/null
 grep -F 'completed significant DRM page flip.*recovery_view=true' \
   "$test_repo_root/tools/linux-hardware-gate" >/dev/null

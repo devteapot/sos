@@ -129,16 +129,57 @@ grep -Fx 'criterion=touchscreen_input result=FAIL' "$test_root/live-fail-audit.t
 grep -Fx 'boot_kind=live-boot campaign_class=live-boot' "$test_root/live-fail-audit.txt" >/dev/null
 
 test_sysroot="$test_root/sysroot"
-mkdir -p "$test_sysroot/usr/share/doc/sos" "$test_sysroot/run/initramfs/live"
+mkdir -p \
+  "$test_sysroot/usr/share/doc/sos" \
+  "$test_sysroot/run/initramfs/live" \
+  "$test_sysroot/proc/sys/kernel/random"
+printf '12345678-1234-1234-1234-123456789abc\n' \
+  >"$test_sysroot/proc/sys/kernel/random/boot_id"
 printf '%s\n' \
   'image_kind=live-boot' \
+  'campaign_class=live-boot' \
   'not_installed_product=true' \
+  'container_format=erofs-rootfs' \
+  'fedora_release=44' \
+  'build_host_release=44' \
   'source_revision=abc123' \
-  'agent_mode=offline' >"$test_sysroot/usr/share/doc/sos/image-identity.env"
+  'source_dirty=false' \
+  'agent_mode=offline' \
+  'base_iso_filename=Fedora-Workstation-Live-x86_64-44-1.1.iso' \
+  'base_iso_bytes=2048' \
+  'base_iso_sha256=0000000000000000000000000000000000000000000000000000000000000001' \
+  'payload_relpath=LiveOS/squashfs.img' \
+  'baked_at_utc=2026-08-24T00:00:00Z' \
+  >"$test_sysroot/usr/share/doc/sos/image-identity.env"
+if "$test_gate" classify-boot --sysroot "$test_sysroot" \
+  >"$test_root/classify-missing-media-identity.txt" 2>&1; then
+  printf 'error: classify-boot accepted live media without its ISO-level identity\n' >&2
+  exit 1
+fi
+grep -F 'missing the ISO-level image identity' \
+  "$test_root/classify-missing-media-identity.txt" >/dev/null
+cp -- "$test_sysroot/usr/share/doc/sos/image-identity.env" \
+  "$test_sysroot/run/initramfs/live/sos-image-identity.env"
+printf '%s\n' \
+  'payload_bytes=1024' \
+  'payload_sha256=0000000000000000000000000000000000000000000000000000000000000002' \
+  >>"$test_sysroot/run/initramfs/live/sos-image-identity.env"
 "$test_gate" classify-boot --sysroot "$test_sysroot" >"$test_root/classify-live.txt"
 grep -Fx 'boot_kind=live-boot' "$test_root/classify-live.txt" >/dev/null
 grep -Fx 'not_installed_product=true' "$test_root/classify-live.txt" >/dev/null
+grep -Fx 'boot_id=12345678-1234-1234-1234-123456789abc' \
+  "$test_root/classify-live.txt" >/dev/null
 grep -Fx 'live_overlay=present' "$test_root/classify-live.txt" >/dev/null
+
+sed -i 's/source_revision=abc123/source_revision=wrong/' \
+  "$test_sysroot/run/initramfs/live/sos-image-identity.env"
+if "$test_gate" classify-boot --sysroot "$test_sysroot" \
+  >"$test_root/classify-identity-mismatch.txt" 2>&1; then
+  printf 'error: classify-boot accepted mismatched rootfs and media identities\n' >&2
+  exit 1
+fi
+grep -F 'rootfs and ISO-level image identities disagree' \
+  "$test_root/classify-identity-mismatch.txt" >/dev/null
 
 rm -r -- "$test_sysroot/run/initramfs/live"
 if "$test_gate" classify-boot --sysroot "$test_sysroot" >"$test_root/classify-stale.txt" 2>&1; then
@@ -168,5 +209,7 @@ grep -F 'boot_kind=live-boot' "$test_gate" >/dev/null
 grep -F 'not_installed_product=true' "$test_gate" >/dev/null
 grep -F 'image-identity.env' "$test_gate" >/dev/null
 grep -F 'payload_sha256' "$test_gate" >/dev/null
+grep -F 'boot_id=' "$test_gate" >/dev/null
+grep -F '/usr/local/libexec/sos/linux-hardware-gate collect' "$test_gate" >/dev/null
 
 printf 'linux_hardware_gate_host_tests=PASS\n'

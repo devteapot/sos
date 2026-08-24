@@ -16,15 +16,34 @@ live_image_fail() {
 live_image_usage() {
   printf '%s\n' \
     'usage:' \
-    '  tools/linux-live-image doctor' \
+    '  tools/linux-live-image doctor [--layout-only]' \
     '  tools/linux-live-image format-identity [identity fields...]' \
     '  tools/linux-live-image write-offline-user-state --home-root DIR' \
+    '  tools/linux-live-image check-payload --payload FILE' \
     '  tools/linux-live-image check-rootfs --root DIR' \
-    '  tools/linux-live-image bake --source-iso ISO --output-dir DIR'
+    '  tools/linux-live-image bake --source-iso ISO --source-sha256 SHA256 --output-dir DIR'
 }
 
 live_image_require_command() {
   command -v "$1" >/dev/null 2>&1 || live_image_fail "required command not found: $1"
+}
+
+live_image_validate_sha256() {
+  local name="$1" value="$2"
+  [[ "$value" =~ ^[0-9a-f]{64}$ ]] || live_image_fail "$name must be a lowercase SHA-256"
+}
+
+live_image_validate_bytes() {
+  local name="$1" value="$2"
+  [[ "$value" =~ ^[1-9][0-9]*$ ]] || live_image_fail "$name must be a positive byte count"
+}
+
+live_image_os_release_value() {
+  local file="$1" key="$2" value
+  value="$(sed -n "s/^${key}=//p" "$file" | tail -n 1)"
+  value="${value#\"}"
+  value="${value%\"}"
+  printf '%s\n' "$value"
 }
 
 live_image_metadata_value() {
@@ -77,39 +96,61 @@ live_image_parse_root_option() {
 }
 
 live_image_doctor() {
-  [[ "$#" -eq 0 ]] || live_image_fail "doctor accepts no options"
+  local layout_only=false
+  if [[ "${1:-}" == --layout-only ]]; then
+    layout_only=true
+    shift
+  fi
+  [[ "$#" -eq 0 ]] || live_image_fail "doctor accepts only --layout-only"
   local command
   for command in cargo git install node npm pkg-config python3 realpath rustc sha256sum stat sudo; do
     live_image_require_command "$command"
   done
   local missing=()
-  for command in xorriso unsquashfs mksquashfs file findmnt; do
+  for command in checkisomd5 dnf dump.erofs fsck.erofs implantisomd5 mkfs.erofs setfiles xorriso; do
     command -v "$command" >/dev/null 2>&1 || missing+=("$command")
   done
-  for command in dump.erofs fsck.erofs mkfs.erofs; do
-    command -v "$command" >/dev/null 2>&1 || missing+=("$command")
+  local missing_modules=()
+  for command in gbm libinput libseat libudev wayland-client xkbcommon xkbcommon-x11; do
+    pkg-config --exists "$command" || missing_modules+=("$command")
   done
-  local host_id="unknown"
+  local host_id="unknown" host_release="unknown" host_arch
   if [[ -r /etc/os-release ]]; then
-    # shellcheck source=/dev/null
-    source /etc/os-release
-    host_id="${ID:-unknown}"
+    host_id="$(live_image_os_release_value /etc/os-release ID)"
+    host_release="$(live_image_os_release_value /etc/os-release VERSION_ID)"
   fi
-  printf 'linux_live_image_doctor host=%s arch=%s rust=%s node=%s\n' \
-    "$host_id" "$(uname -m)" "$(rustc --version | tr ' ' '_')" "$(node --version)"
+  host_arch="$(uname -m)"
+  printf 'linux_live_image_doctor host=%s release=%s arch=%s rust=%s node=%s\n' \
+    "$host_id" "$host_release" "$host_arch" "$(rustc --version | tr ' ' '_')" "$(node --version)"
   if [[ "$host_id" != fedora ]]; then
-    printf 'linux_live_image_doctor_note bake requires a Fedora x86_64 host; this host can only check identity and rootfs layout\n'
+    printf 'linux_live_image_doctor_problem bake requires a Fedora x86_64 host\n'
+  fi
+  if [[ "$host_arch" != x86_64 ]]; then
+    printf 'linux_live_image_doctor_problem bake requires x86_64; found %s\n' "$host_arch"
   fi
   if [[ "${#missing[@]}" -ne 0 ]]; then
     printf 'linux_live_image_doctor_missing %s\n' "${missing[*]}"
   fi
+  if [[ "${#missing_modules[@]}" -ne 0 ]]; then
+    printf 'linux_live_image_doctor_missing_modules %s\n' "${missing_modules[*]}"
+  fi
   printf 'linux_live_image_runtime_packages %s\n' "$(live_image_runtime_packages | tr '\n' ' ')"
-  printf 'linux_live_image_doctor=PASS\n'
+  if [[ "$layout_only" == true ]]; then
+    printf 'linux_live_image_doctor=PASS mode=layout-only bake_ready=false\n'
+    return 0
+  fi
+  if [[ "$host_id" != fedora || "$host_arch" != x86_64 \
+    || "${#missing[@]}" -ne 0 || "${#missing_modules[@]}" -ne 0 ]]; then
+    printf 'linux_live_image_doctor=FAIL bake_ready=false\n'
+    return 1
+  fi
+  printf 'linux_live_image_doctor=PASS bake_ready=true\n'
 }
 
 live_image_format_identity() {
   local source_revision="" source_dirty=false agent_mode=offline
   local image_format=fedora-workstation-live-remix
+  local fedora_release="" build_host_release=""
   local base_iso_filename="" base_iso_bytes="" base_iso_sha256=""
   local payload_relpath="" payload_bytes="" payload_sha256=""
   local container_format="" baked_at_utc=""
@@ -120,6 +161,8 @@ live_image_format_identity() {
       --source-dirty) source_dirty="$2"; shift 2 ;;
       --agent-mode) agent_mode="$2"; shift 2 ;;
       --image-format) image_format="$2"; shift 2 ;;
+      --fedora-release) fedora_release="$2"; shift 2 ;;
+      --build-host-release) build_host_release="$2"; shift 2 ;;
       --base-iso-filename) base_iso_filename="$2"; shift 2 ;;
       --base-iso-bytes) base_iso_bytes="$2"; shift 2 ;;
       --base-iso-sha256) base_iso_sha256="$2"; shift 2 ;;
@@ -136,15 +179,24 @@ live_image_format_identity() {
   done
   [[ -n "$source_revision" && -n "$base_iso_filename" && -n "$base_iso_bytes" && -n "$base_iso_sha256" ]] || \
     live_image_fail "format-identity requires source revision and base ISO identity"
-  [[ -n "$payload_relpath" && -n "$container_format" ]] || \
-    live_image_fail "format-identity requires payload path and container format"
+  [[ "$source_revision" =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ]] || \
+    live_image_fail "source revision must be a full lowercase Git object ID"
+  [[ "$base_iso_filename" != */* && "$base_iso_filename" != *$'\n'* \
+    && "$base_iso_filename" != *$'\t'* && "$base_iso_filename" != *=* ]] || \
+    live_image_fail "base ISO filename is unsafe for identity metadata"
+  live_image_validate_bytes "base ISO bytes" "$base_iso_bytes"
+  live_image_validate_sha256 "base ISO SHA-256" "$base_iso_sha256"
+  [[ "$fedora_release" =~ ^[1-9][0-9]*$ && "$build_host_release" == "$fedora_release" ]] || \
+    live_image_fail "Fedora image and build host must use the same numeric release"
+  [[ "$payload_relpath" == LiveOS/squashfs.img ]] || \
+    live_image_fail "only LiveOS/squashfs.img is supported"
+  [[ "$container_format" == erofs-rootfs ]] || \
+    live_image_fail "only metadata-preserving erofs-rootfs is supported"
   [[ "$agent_mode" == offline ]] || live_image_fail "live images bake the offline agent only"
   [[ "$source_dirty" == false ]] || live_image_fail "live images require a clean source revision"
-  case "$container_format" in
-    squashfs-rootfs-img|flat-squashfs|erofs) ;;
-    *) live_image_fail "unsupported container format: $container_format" ;;
-  esac
   [[ -n "$baked_at_utc" ]] || baked_at_utc="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  [[ "$baked_at_utc" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] || \
+    live_image_fail "baked timestamp must be UTC in YYYY-MM-DDTHH:MM:SSZ form"
   printf '%s\n' \
     'image_kind=live-boot' \
     'image_label=live-boot' \
@@ -152,6 +204,8 @@ live_image_format_identity() {
     'not_installed_product=true' \
     "image_format=$image_format" \
     "container_format=$container_format" \
+    "fedora_release=$fedora_release" \
+    "build_host_release=$build_host_release" \
     "source_revision=$source_revision" \
     "source_dirty=$source_dirty" \
     "agent_mode=$agent_mode" \
@@ -162,6 +216,8 @@ live_image_format_identity() {
   if [[ -n "$payload_bytes" || -n "$payload_sha256" ]]; then
     [[ -n "$payload_bytes" && -n "$payload_sha256" ]] || \
       live_image_fail "payload identity requires both bytes and sha256"
+    live_image_validate_bytes "payload bytes" "$payload_bytes"
+    live_image_validate_sha256 "payload SHA-256" "$payload_sha256"
     printf '%s\n' \
       "payload_bytes=$payload_bytes" \
       "payload_sha256=$payload_sha256"
@@ -169,6 +225,11 @@ live_image_format_identity() {
   if [[ -n "$output_iso_filename" ]]; then
     [[ -n "$output_iso_bytes" && -n "$output_iso_sha256" ]] || \
       live_image_fail "output ISO identity requires filename, bytes, and sha256"
+    [[ "$output_iso_filename" != */* && "$output_iso_filename" != *$'\n'* \
+      && "$output_iso_filename" != *$'\t'* && "$output_iso_filename" != *=* ]] || \
+      live_image_fail "output ISO filename is unsafe for identity metadata"
+    live_image_validate_bytes "output ISO bytes" "$output_iso_bytes"
+    live_image_validate_sha256 "output ISO SHA-256" "$output_iso_sha256"
     printf '%s\n' \
       "output_iso_filename=$output_iso_filename" \
       "output_iso_bytes=$output_iso_bytes" \
@@ -200,6 +261,15 @@ live_image_symlink_basename() {
     target="$(readlink -- "$link")"
   fi
   printf '%s\n' "$(basename "${target:-}")"
+}
+
+live_image_require_exact_line() {
+  local file="$1" expected="$2" description="$3"
+  if [[ -r "$file" ]]; then
+    grep -Fx "$expected" "$file" >/dev/null || live_image_fail "$description"
+  else
+    sudo grep -Fx "$expected" "$file" >/dev/null || live_image_fail "$description"
+  fi
 }
 
 live_image_check_rootfs() {
@@ -244,6 +314,16 @@ live_image_check_rootfs() {
     live_image_fail "image identity must pin the offline agent"
   [[ "$(live_image_metadata_value "$identity" source_dirty)" == false ]] || \
     live_image_fail "image identity came from a dirty source tree"
+  [[ "$(live_image_metadata_value "$identity" container_format)" == erofs-rootfs ]] || \
+    live_image_fail "image identity is not the metadata-preserving EROFS rootfs format"
+  [[ "$(live_image_metadata_value "$identity" payload_relpath)" == LiveOS/squashfs.img ]] || \
+    live_image_fail "image identity has an unsupported payload path"
+  local identity_release rootfs_release
+  identity_release="$(live_image_metadata_value "$identity" fedora_release)"
+  rootfs_release="$(live_image_os_release_value "$(live_image_target /etc/os-release)" VERSION_ID)"
+  [[ -n "$identity_release" && "$identity_release" == "$rootfs_release" \
+    && "$(live_image_metadata_value "$identity" build_host_release)" == "$identity_release" ]] || \
+    live_image_fail "Fedora rootfs, identity, and build-host releases do not match"
   local image_revision installed_revision
   image_revision="$(live_image_metadata_value "$identity" source_revision)"
   installed_revision="$(live_image_metadata_value "$metadata" source_revision)"
@@ -254,11 +334,15 @@ live_image_check_rootfs() {
   local skel_config liveuser_config=""
   skel_config="$(live_image_target /etc/skel/.local/state/sos/agent/config.env)"
   [[ -f "$skel_config" ]] || live_image_fail "offline live skel agent config is missing"
-  grep -Fx "SOS_AGENT_FAKE_SOURCE=$live_image_offline_source" "$skel_config" >/dev/null || \
-    live_image_fail "offline live skel does not pin the baked daily-flow source"
+  live_image_require_exact_line "$skel_config" \
+    "SOS_AGENT_FAKE_SOURCE=$live_image_offline_source" \
+    "offline live skel does not pin the baked daily-flow source"
   if [[ -d "$(live_image_target /home/liveuser)" ]]; then
     liveuser_config="$(live_image_target /home/liveuser/.local/state/sos/agent/config.env)"
     [[ -f "$liveuser_config" ]] || live_image_fail "existing liveuser is missing offline agent config"
+    live_image_require_exact_line "$liveuser_config" \
+      "SOS_AGENT_FAKE_SOURCE=$live_image_offline_source" \
+      "existing liveuser does not pin the baked daily-flow source"
   fi
   printf 'linux_live_image_rootfs_checked=PASS root=%s revision=%s boot_kind=live-boot not_installed_product=true\n' \
     "$live_image_rootfs" "$image_revision"
@@ -266,94 +350,69 @@ live_image_check_rootfs() {
 
 live_image_probe_payload() {
   local payload="$1"
-  if unsquashfs -l "$payload" >/dev/null 2>&1; then
-    if unsquashfs -l "$payload" | grep -q 'LiveOS/rootfs.img'; then
-      printf 'squashfs-rootfs-img\n'
-      return 0
-    fi
-    printf 'flat-squashfs\n'
-    return 0
-  fi
-  if command -v dump.erofs >/dev/null 2>&1 && dump.erofs "$payload" >/dev/null 2>&1; then
-    printf 'erofs\n'
-    return 0
-  fi
-  live_image_fail "unrecognized live payload format: $payload"
+  dump.erofs "$payload" >/dev/null 2>&1 || \
+    live_image_fail "LiveOS/squashfs.img is not an EROFS root filesystem"
+  dump.erofs --ls --path=/etc/os-release "$payload" >/dev/null 2>&1 || \
+    live_image_fail "EROFS payload is not a flat Fedora root filesystem"
+  printf 'erofs-rootfs\n'
 }
 
 live_image_find_payload() {
   local iso_tree="$1"
-  local candidate
-  for candidate in LiveOS/squashfs.img LiveOS/erofs.img LiveOS/overlay.img; do
-    if [[ -f "$iso_tree/$candidate" ]]; then
-      printf '%s\n' "$candidate"
-      return 0
-    fi
+  [[ -f "$iso_tree/LiveOS/squashfs.img" ]] || \
+    live_image_fail "source ISO has no LiveOS/squashfs.img; the Fedora Workstation live payload is missing"
+  printf 'LiveOS/squashfs.img\n'
+}
+
+live_image_check_payload() {
+  local payload="" container_format
+  while [[ "$#" -gt 0 ]]; do
+    case "$1" in
+      --payload)
+        [[ "$#" -ge 2 ]] || live_image_fail "--payload requires a file"
+        payload="$(realpath -e -- "$2")"
+        shift 2
+        ;;
+      *) live_image_fail "check-payload accepts only --payload FILE" ;;
+    esac
   done
-  live_image_fail "source ISO has no LiveOS squashfs/erofs payload; this is not a Fedora live image"
+  [[ -n "$payload" ]] || live_image_fail "check-payload requires --payload FILE"
+  container_format="$(live_image_probe_payload "$payload")"
+  printf 'linux_live_image_payload_checked=PASS path=%s container_format=%s\n' \
+    "$payload" "$container_format"
 }
 
 live_image_extract_payload() {
   local payload="$1" format="$2" dest="$3" work="$4"
   mkdir -p -- "$dest" "$work"
   case "$format" in
-    flat-squashfs)
-      unsquashfs -f -d "$dest" "$payload" >/dev/null
-      ;;
-    squashfs-rootfs-img)
-      unsquashfs -f -d "$work/squash" "$payload" >/dev/null
-      [[ -f "$work/squash/LiveOS/rootfs.img" ]] || \
-        live_image_fail "nested live squashfs is missing LiveOS/rootfs.img"
-      live_image_mount_rootfs_img "$work/squash/LiveOS/rootfs.img" "$dest"
-      ;;
-    erofs)
-      command -v fsck.erofs >/dev/null 2>&1 || \
-        live_image_fail "fsck.erofs is required to extract this Fedora live payload"
-      fsck.erofs --extract="$dest" "$payload" >/dev/null
+    erofs-rootfs)
+      # Extraction must run as root. erofs-utils otherwise deliberately maps
+      # ownership to the caller, applies umask, and omits xattrs by default.
+      sudo fsck.erofs --extract="$dest" --xattrs --preserve "$payload" >/dev/null
       ;;
     *) live_image_fail "cannot extract container format: $format" ;;
   esac
 }
 
-live_image_mount_rootfs_img() {
-  local image="$1" dest="$2"
-  live_image_require_command e2fsck
-  live_image_require_command resize2fs
-  local current added
-  current="$(stat -c %s "$image")"
-  added=$((2 * 1024 * 1024 * 1024))
-  truncate -s $((current + added)) "$image"
-  e2fsck -f -y "$image" >/dev/null
-  resize2fs "$image" >/dev/null
-  sudo mount -o loop -- "$image" "$dest"
-  live_image_rootfs_img="$image"
-  live_image_rootfs_mounted=true
-}
-
-live_image_unmount_rootfs() {
-  if [[ "${live_image_rootfs_mounted:-false}" == true ]]; then
-    sudo umount -- "$live_image_rootfs"
-    live_image_rootfs_mounted=false
-    if [[ -n "${live_image_rootfs_img:-}" ]]; then
-      e2fsck -f -y "$live_image_rootfs_img" >/dev/null
-      resize2fs -M "$live_image_rootfs_img" >/dev/null
-    fi
-  fi
+live_image_relabel_rootfs() {
+  local root="$1"
+  local file_contexts="$root/etc/selinux/targeted/contexts/files/file_contexts"
+  [[ -r "$file_contexts" ]] || \
+    live_image_fail "Fedora SELinux file-context policy is missing from the extracted rootfs"
+  sudo setfiles -F -r "$root" "$file_contexts" "$root"
 }
 
 live_image_repack_payload() {
-  local format="$1" rootfs="$2" work="$3" output="$4"
+  local format="$1" rootfs="$2" output="$3"
   case "$format" in
-    flat-squashfs)
-      mksquashfs "$rootfs" "$output" -noappend -comp zstd >/dev/null
-      ;;
-    squashfs-rootfs-img)
-      mksquashfs "$work/squash" "$output" -noappend -comp zstd >/dev/null
-      ;;
-    erofs)
-      command -v mkfs.erofs >/dev/null 2>&1 || \
-        live_image_fail "mkfs.erofs is required to rebuild this Fedora live payload"
-      mkfs.erofs -zlz4 "$output" "$rootfs" >/dev/null
+    erofs-rootfs)
+      # Root execution preserves distinct system/liveuser ownership, ACLs,
+      # capabilities, xattrs, and the SELinux labels applied above.
+      sudo mkfs.erofs -zlzma -E dedupe,all-fragments -C65536 \
+        "$output" "$rootfs" >/dev/null
+      sudo fsck.erofs "$output" >/dev/null
+      sudo chown "$(id -u):$(id -g)" "$output"
       ;;
     *) live_image_fail "cannot repack container format: $format" ;;
   esac
@@ -362,27 +421,32 @@ live_image_repack_payload() {
 live_image_verify_fedora_workstation() {
   local root="$1" os_release="$1/etc/os-release"
   [[ -r "$os_release" ]] || live_image_fail "extracted live rootfs has no /etc/os-release"
-  # shellcheck source=/dev/null
-  source "$os_release"
-  [[ "${ID:-}" == fedora ]] || \
-    live_image_fail "source live image is not Fedora (ID=${ID:-unknown})"
-  [[ "${VARIANT_ID:-}" == workstation || "${VARIANT:-}" == *Workstation* ]] || \
-    live_image_fail "source live image is not Fedora Workstation (VARIANT=${VARIANT:-unknown})"
+  local image_id variant_id variant
+  image_id="$(live_image_os_release_value "$os_release" ID)"
+  variant_id="$(live_image_os_release_value "$os_release" VARIANT_ID)"
+  variant="$(live_image_os_release_value "$os_release" VARIANT)"
+  live_image_base_release="$(live_image_os_release_value "$os_release" VERSION_ID)"
+  [[ "$image_id" == fedora ]] || \
+    live_image_fail "source live image is not Fedora (ID=${image_id:-unknown})"
+  [[ "$variant_id" == workstation || "$variant" == *Workstation* ]] || \
+    live_image_fail "source live image is not Fedora Workstation (VARIANT=${variant:-unknown})"
+  [[ "$live_image_base_release" =~ ^[1-9][0-9]*$ ]] || \
+    live_image_fail "source live image has an invalid Fedora release"
 }
 
 live_image_install_runtime_packages() {
-  local root="$1"
+  local root="$1" releasever="$2"
   [[ -r /etc/os-release ]] || live_image_fail "bake host has no /etc/os-release"
-  # shellcheck source=/dev/null
-  source /etc/os-release
-  [[ "${ID:-}" == fedora ]] || \
-    live_image_fail "baking a Fedora live remix requires a Fedora host; found ${ID:-unknown}"
+  local host_id host_release
+  host_id="$(live_image_os_release_value /etc/os-release ID)"
+  host_release="$(live_image_os_release_value /etc/os-release VERSION_ID)"
+  [[ "$host_id" == fedora ]] || \
+    live_image_fail "baking a Fedora live remix requires a Fedora host; found ${host_id:-unknown}"
   [[ "$(uname -m)" == x86_64 ]] || \
     live_image_fail "Framework 12 live images must be baked on x86_64"
+  [[ "$host_release" == "$releasever" ]] || \
+    live_image_fail "build host Fedora $host_release does not match source image Fedora $releasever"
   live_image_require_command dnf
-  local releasever=""
-  releasever="$(sed -n 's/^VERSION_ID=//p' "$root/etc/os-release" | tail -n 1 | tr -d '"')"
-  [[ -n "$releasever" ]] || live_image_fail "extracted live rootfs has no VERSION_ID"
   # Runtime packages only; do not install -devel toolchains or appliance units.
   # shellcheck disable=SC2046
   sudo dnf -y --installroot="$root" --releasever="$releasever" \
@@ -448,12 +512,17 @@ live_image_write_identity_file() {
 }
 
 live_image_bake() {
-  local source_iso="" output_dir=""
+  local source_iso="" source_sha256="" output_dir=""
   while [[ "$#" -gt 0 ]]; do
     case "$1" in
       --source-iso)
         [[ "$#" -ge 2 ]] || live_image_fail "--source-iso requires a path"
         source_iso="$(realpath -e -- "$2")"
+        shift 2
+        ;;
+      --source-sha256)
+        [[ "$#" -ge 2 ]] || live_image_fail "--source-sha256 requires a digest"
+        source_sha256="${2,,}"
         shift 2
         ;;
       --output-dir)
@@ -464,18 +533,16 @@ live_image_bake() {
       *) live_image_fail "unexpected option: $1" ;;
     esac
   done
-  [[ -n "$source_iso" && -n "$output_dir" ]] || \
-    live_image_fail "bake requires --source-iso ISO and --output-dir DIR"
+  [[ -n "$source_iso" && -n "$source_sha256" && -n "$output_dir" ]] || \
+    live_image_fail "bake requires --source-iso ISO, --source-sha256 SHA256, and --output-dir DIR"
+  live_image_validate_sha256 "source ISO SHA-256" "$source_sha256"
   [[ "$(id -u)" -ne 0 ]] || live_image_fail "run bake as a normal user; it invokes sudo only for rootfs mutation"
-  live_image_doctor >/dev/null
-  for command in dnf e2fsck file resize2fs xorriso unsquashfs mksquashfs; do
-    live_image_require_command "$command"
-  done
-  [[ "$(uname -m)" == x86_64 ]] || live_image_fail "Framework 12 live images must be baked on x86_64"
-  # shellcheck source=/dev/null
-  source /etc/os-release
-  [[ "${ID:-}" == fedora ]] || \
-    live_image_fail "baking a Fedora live remix requires a Fedora host; found ${ID:-unknown}"
+  live_image_doctor || live_image_fail "live-image bake prerequisites are incomplete"
+  local actual_source_sha host_release
+  actual_source_sha="$(sha256sum "$source_iso" | cut -d ' ' -f 1)"
+  [[ "$actual_source_sha" == "$source_sha256" ]] || \
+    live_image_fail "source ISO SHA-256 does not match the expected Fedora checksum"
+  host_release="$(live_image_os_release_value /etc/os-release VERSION_ID)"
 
   cd "$live_image_root"
   [[ -z "$(git status --porcelain --untracked-files=normal)" ]] || \
@@ -485,14 +552,19 @@ live_image_bake() {
 
   mkdir -p -- "$output_dir"
   chmod 0700 "$output_dir"
-  local work iso_tree payload_relpath payload_path container_format
+  local output_iso
+  output_iso="$output_dir/sos-fedora-workstation-live-${source_revision:0:12}.iso"
+  [[ ! -e "$output_iso" ]] || live_image_fail "output ISO already exists: $output_iso"
+  [[ ! -e "$output_dir/image-identity.env" ]] || \
+    live_image_fail "output identity already exists: $output_dir/image-identity.env"
+  local work payload_relpath payload_path container_format
   work="$output_dir/work"
-  rm -rf -- "$work"
+  [[ "$work" == "$output_dir/work" && "$work" != /work ]] || \
+    live_image_fail "unsafe live-image work path: $work"
+  [[ ! -e "$work" ]] || \
+    live_image_fail "live-image work path already exists; inspect it and use a new output directory: $work"
   mkdir -p -- "$work/iso" "$work/rootfs"
   live_image_rootfs="$work/rootfs"
-  live_image_rootfs_mounted=false
-  live_image_rootfs_img=""
-  trap 'live_image_unmount_rootfs' EXIT
 
   xorriso -osirrox on -indev "$source_iso" -extract / "$work/iso" >/dev/null
   chmod -R u+w "$work/iso"
@@ -501,36 +573,39 @@ live_image_bake() {
   container_format="$(live_image_probe_payload "$payload_path")"
   live_image_extract_payload "$payload_path" "$container_format" "$live_image_rootfs" "$work"
   live_image_verify_fedora_workstation "$live_image_rootfs"
+  [[ "$live_image_base_release" == "$host_release" ]] || \
+    live_image_fail "build host Fedora $host_release does not match source image Fedora $live_image_base_release"
   [[ -e "$live_image_rootfs/usr/lib/systemd/system/gdm.service" \
     || -e "$live_image_rootfs/usr/sbin/gdm" \
     || -e "$live_image_rootfs/usr/bin/gdm" ]] || \
     live_image_fail "source live image does not contain GDM"
-  live_image_install_runtime_packages "$live_image_rootfs"
+  live_image_install_runtime_packages "$live_image_rootfs" "$live_image_base_release"
   live_image_stage_sos "$live_image_rootfs"
 
   local base_name base_bytes base_sha baked_at
   base_name="$(basename -- "$source_iso")"
   base_bytes="$(stat -c %s "$source_iso")"
-  base_sha="$(sha256sum "$source_iso" | cut -d ' ' -f 1)"
+  base_sha="$actual_source_sha"
   baked_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   live_image_write_identity_file \
     "$(live_image_target "$live_image_identity_path")" \
     --source-revision "$source_revision" \
     --source-dirty false \
     --agent-mode offline \
+    --fedora-release "$live_image_base_release" \
+    --build-host-release "$host_release" \
     --base-iso-filename "$base_name" \
     --base-iso-bytes "$base_bytes" \
     --base-iso-sha256 "$base_sha" \
     --payload-relpath "$payload_relpath" \
     --container-format "$container_format" \
     --baked-at-utc "$baked_at"
+  live_image_relabel_rootfs "$live_image_rootfs"
   live_image_check_rootfs --root "$live_image_rootfs"
 
-  live_image_unmount_rootfs
-  trap - EXIT
   local new_payload payload_bytes payload_sha
   new_payload="$work/payload.img"
-  live_image_repack_payload "$container_format" "$live_image_rootfs" "$work" "$new_payload"
+  live_image_repack_payload "$container_format" "$live_image_rootfs" "$new_payload"
   payload_bytes="$(stat -c %s "$new_payload")"
   payload_sha="$(sha256sum "$new_payload" | cut -d ' ' -f 1)"
   live_image_write_identity_file \
@@ -538,6 +613,8 @@ live_image_bake() {
     --source-revision "$source_revision" \
     --source-dirty false \
     --agent-mode offline \
+    --fedora-release "$live_image_base_release" \
+    --build-host-release "$host_release" \
     --base-iso-filename "$base_name" \
     --base-iso-bytes "$base_bytes" \
     --base-iso-sha256 "$base_sha" \
@@ -549,8 +626,6 @@ live_image_bake() {
 
   install -m 0644 "$work/image-identity.env" "$work/iso/sos-image-identity.env"
   cp -- "$new_payload" "$work/iso/$payload_relpath"
-  local output_iso
-  output_iso="$output_dir/sos-fedora-workstation-live-${source_revision:0:12}.iso"
   # Preserve the source volume ID and El Torito/EFI boot. Changing the label
   # breaks Fedora's root=live:CDLABEL=... cmdline.
   xorriso -report_about WARNING \
@@ -558,6 +633,8 @@ live_image_bake() {
     -boot_image any replay \
     -map "$work/iso/$payload_relpath" "/$payload_relpath" \
     -map "$work/iso/sos-image-identity.env" /sos-image-identity.env
+  implantisomd5 --force "$output_iso" >/dev/null
+  checkisomd5 "$output_iso" >/dev/null
   local output_bytes output_sha
   output_bytes="$(stat -c %s "$output_iso")"
   output_sha="$(sha256sum "$output_iso" | cut -d ' ' -f 1)"
@@ -566,6 +643,8 @@ live_image_bake() {
     --source-revision "$source_revision" \
     --source-dirty false \
     --agent-mode offline \
+    --fedora-release "$live_image_base_release" \
+    --build-host-release "$host_release" \
     --base-iso-filename "$base_name" \
     --base-iso-bytes "$base_bytes" \
     --base-iso-sha256 "$base_sha" \
@@ -577,6 +656,7 @@ live_image_bake() {
     --output-iso-filename "$(basename -- "$output_iso")" \
     --output-iso-bytes "$output_bytes" \
     --output-iso-sha256 "$output_sha"
+  sudo rm -r -- "$work"
   printf 'linux_live_image_baked=PASS iso=%s bytes=%s sha256=%s boot_kind=live-boot not_installed_product=true\n' \
     "$output_iso" "$output_bytes" "$output_sha"
 }
@@ -591,6 +671,7 @@ case "$live_image_command" in
   doctor) live_image_doctor "$@" ;;
   format-identity) live_image_format_identity "$@" ;;
   write-offline-user-state) live_image_write_offline_user_state "$@" ;;
+  check-payload) live_image_check_payload "$@" ;;
   check-rootfs) live_image_check_rootfs "$@" ;;
   bake) live_image_bake "$@" ;;
   *)

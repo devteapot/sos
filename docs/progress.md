@@ -9150,3 +9150,81 @@ and run the documented same-boot `prepare -> physical interactions -> collect`
 loop. A live-boot PASS remains live-boot, not installed product. Physical
 Intel KMS/panel/input behavior, persistence, disk install, stylus, rotation,
 suspend, latency, thermals, and soak remain open.
+
+## 2026-08-24 — Pin the diskless Framework gate to real Fedora live media
+
+**Goal / environment:** Keep the first Framework Laptop 12 Linux campaign off
+its internal disk while correcting the unverified multi-format live-remix path.
+The review host was Fedora 44 Server x86-64, kernel
+`6.19.10-300.fc44.x86_64`, at PR revision `e5da24f1f60c` plus this rework. No
+Framework Laptop 12, physical GDM session, DRM/input transition, or internal
+target disk was used. The host had no non-interactive sudo authorization and
+lacked the native SOS development modules, so no privileged rootfs mutation or
+complete SOS ISO bake is claimed.
+
+**Changed:** `tools/linux-live-image` now requires the SHA-256 obtained from
+Fedora's signed CHECKSUM, a Fedora x86-64 build host at the ISO's exact Fedora
+release, every image/build command, and every native compile module. Inspection
+is pinned to a flat EROFS rootfs at `LiveOS/squashfs.img`, matching the official
+Fedora 44 Workstation media despite that historical filename. The mutation path
+uses privileged `fsck.erofs --xattrs --preserve`, runs the existing offline
+destroot install, reapplies the image's SELinux file-context policy, repacks as
+root, verifies the rebuilt EROFS, and re-implants and verifies the ISO media
+checksum. It refuses another container/rootfs layout instead of silently losing
+UID/GID, permissions, capabilities, xattrs, or labels. Build work must be new
+and is removed only from the exact bounded output path after success.
+
+The hardware gate now requires the rootfs and ISO-level identities to agree on
+release, revision, source ISO, agent mode, payload, and bake time. Live prepare
+requires and hashes the mounted payload rather than treating that identity as
+optional. Prepare records `/proc/sys/kernel/random/boot_id`; collect rejects a
+different kernel boot for both live and installed campaigns. Live instructions
+now invoke the baked `/usr/local/libexec/sos/linux-hardware-gate` path. Docs keep
+the result explicitly `live-boot` / `not_installed_product=true` and describe
+the removable-media-only operator path.
+
+**Evidence / measurements:** Fedora's signed
+`Fedora-Workstation-44-1.7-x86_64-CHECKSUM` verified with key
+`36F612DCF27F7D1A48A835E4DBFCF71C6D9F90A6`. The transient source artifact
+`/tmp/sos-pr11-fedora44.T3r9Wc/Fedora-Workstation-Live-44-1.7.x86_64.iso`
+was 2,851,612,672 bytes with SHA-256
+`1620295f6a00c27c3208f0c00b8ece4eab1ec69b9002152d97488bf26a426ddf`;
+its embedded media check passed in 3.22 seconds. Its
+`LiveOS/squashfs.img` was 2,487,484,416 bytes and the new exact payload check
+reported `container_format=erofs-rootfs`. Targeted official-image extraction
+preserved `root:root`, mode `0755`, and SELinux type `netutils_exec_t`; a
+user-namespace EROFS round trip separately preserved a `1000:1000` file, mode
+`0750`, and a user xattr. This does not substitute for the pending fully
+privileged whole-rootfs metadata audit. `fsck.erofs` also accepted the complete
+official payload used to validate the rebuilt-payload integrity boundary. The
+same ISO's `dmsquash-live-root` mounts its backing device at
+`/run/initramfs/live` and resolves `LiveOS/squashfs.img` there, confirming that
+the ISO-level identity and payload paths used by the boot classifier are on the
+live medium retained by Fedora's initramfs.
+
+An ISO replay probe preserved volume ID `Fedora-WS-Live-44`, BIOS and UEFI El
+Torito images, protective MBR, and GPT in 1.31 seconds. After a new embedded
+checksum was implanted, `checkisomd5` passed in 3.04 seconds. The transient
+`/tmp/sos-pr11-fedora44.T3r9Wc/replay.iso` was 2,851,930,112 bytes with SHA-256
+`045745cb6547e216cdfee1747ab62afe635aa0bc33cbb5a8a2bd873304db9221`.
+Both focused host suites passed; Bash parsing, ShellCheck 0.11.0 from container
+digest `b9389b73c8f26f710a7171cb7d8848a34a9c1e07a7865e727c9ec4ce99f9a83f`,
+the official-payload `fsck.erofs`, and `git diff --check` also passed. The final
+ordered host campaign took 2.04 seconds wall time. No model provider ran, so
+live-model and model-weighted gate cost were zero.
+
+**Failures / fixes / decision / next gate:** The first review found that normal
+user extraction of flat SquashFS/EROFS maps root-owned files to the builder UID
+and cannot restore SELinux xattrs. An initial correction narrowed support to a
+nested SquashFS/ext4 layout; inspection of the real signed Fedora 44 ISO rejected
+that assumption because its nominal `squashfs.img` is a flat EROFS rootfs. The
+final path therefore uses privileged EROFS extraction/repack plus explicit
+relabeling. Focused tests then caught a command-substitution failure that had
+masked a rejected payload and were extended to require the outer identity,
+identity agreement, boot ID, installed collect path, media checksum, and EROFS
+rootfs classification. Keep the PR draft until a Fedora 44 host with sudo and
+the documented build modules completes one whole ISO bake, verifies the final
+rootfs metadata and ISO sidecar, and boots it on the Framework Laptop 12 for the
+same-boot physical `prepare -> SOS -> collect -> copy off` gate. That run may
+write removable media but must not install to or mutate the laptop's internal
+disk.

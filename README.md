@@ -197,10 +197,13 @@ model:
   --evidence-dir artifacts/framework12-first-gate
 ```
 
-The same offline install can be baked into a Fedora Workstation live remix so
-the first Framework 12 loop is rebuild ISO, boot live, prepare, select SOS in
-GDM, collect on that boot, and copy evidence off. That campaign is live-boot
-evidence, not an installed product. See
+The same offline install can be baked into a checksum-pinned Fedora Workstation
+live remix so the first Framework 12 loop does not touch its internal disk:
+rebuild ISO, boot removable media, prepare, select SOS in GDM, collect on that
+exact kernel boot, and copy evidence off. The bake accepts only Fedora's flat
+EROFS rootfs format and performs privileged extraction, relabeling, and
+repacking so Linux ownership and security metadata are preserved.
+That campaign is live-boot evidence, not an installed product. See
 [`docs/linux-live-image.md`](docs/linux-live-image.md).
 
 `./tools/install-linux-login-session uninstall` removes the installed SOS

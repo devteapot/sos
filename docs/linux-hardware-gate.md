@@ -87,12 +87,15 @@ before preparing evidence; the harness records its exact contents.
 The first Framework 12 iteration may boot a remixed Fedora Workstation live
 ISO that already contains that offline install output. Do not run
 `install-linux-login-session` on the live system. Rebuild the image on a
-Fedora x86_64 host, boot it, prepare, select SOS in GDM, collect on the same
-boot, and copy the evidence directory off the overlay before reboot.
+Fedora x86_64 host at the same Fedora release as the ISO, boot it, prepare,
+select SOS in GDM, collect on the same kernel boot, and copy the evidence
+directory off the overlay before reboot. Verify Fedora's signed CHECKSUM first;
+the bake requires that expected SHA-256.
 
 ```sh
 ./tools/linux-live-image bake \
   --source-iso /path/to/Fedora-Workstation-Live-x86_64-*.iso \
+  --source-sha256 "$FEDORA_ISO_SHA256" \
   --output-dir artifacts/linux-live-image
 # Boot the remixed ISO, then from the GNOME live session:
 /usr/local/libexec/sos/linux-hardware-gate prepare \
@@ -100,11 +103,16 @@ boot, and copy the evidence directory off the overlay before reboot.
   --evidence-dir /home/liveuser/framework12-first-gate
 ```
 
-Prepare records `boot_kind=live-boot`, `not_installed_product=true`, the baked
-`image-identity.env`, and the live-media squashfs/erofs hash. Persistence is
-optional only because prepare and collect stay on one boot. A live overlay
-without SOS image-identity is refused. An install-to-disk of this remix is
-also refused: it is neither live-boot nor the installed-workstation campaign.
+The bake verifies that Fedora's `LiveOS/squashfs.img` is a flat EROFS rootfs,
+extracts it as root while preserving owners, permissions, and xattrs, applies
+the image's SELinux file-context policy after staging SOS, and repacks as root.
+Prepare records
+`boot_kind=live-boot`, `not_installed_product=true`, the exact kernel `boot_id`,
+both matching `image-identity.env` records, and the mandatory live-media payload
+byte size and SHA-256. Persistence is optional only because prepare and collect prove the
+same boot ID. A live overlay without both SOS image identities is refused. An
+install-to-disk of this remix is also refused: it is neither live-boot nor the
+installed-workstation campaign.
 
 ## Run the clamshell smoke gate
 
@@ -146,6 +154,13 @@ state, and records the matching boot ID again. It finalizes `verdict.txt`,
 measures campaign wall time from same-boot monotonic timestamps, generates
 `evidence-manifest.tsv`, and independently verifies every path, byte size, and
 SHA-256.
+
+On the live remix, use the baked harness for collection:
+
+```sh
+/usr/local/libexec/sos/linux-hardware-gate collect \
+  --evidence-dir /home/liveuser/framework12-first-gate
+```
 
 ## PASS contract
 
