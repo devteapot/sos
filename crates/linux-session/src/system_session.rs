@@ -94,6 +94,7 @@ struct SessionProcesses {
     compositor: Option<Child>,
     provider: Option<Child>,
     supervisor: Option<Child>,
+    host_launcher: Option<HostLauncher>,
 }
 
 pub fn run_system_session(options: SystemSessionOptions) -> Result<()> {
@@ -394,7 +395,7 @@ fn start_and_monitor(
     )?;
     println!("linux_system_session_authority outcome={bootstrap:?}");
 
-    let _host_launcher = HostLauncher::start(
+    processes.host_launcher = Some(HostLauncher::start(
         &host_launcher_socket,
         HostLaunchSpec {
             executable: options.host_executable.clone(),
@@ -415,7 +416,7 @@ fn start_and_monitor(
             supervisor_uid: options.supervisor_identity.uid,
             registry: registry.clone(),
         },
-    )?;
+    )?);
     let mut supervisor_command =
         role_command(&options.supervisor_executable, &options.supervisor_identity);
     let supervisor = supervisor_command
@@ -1243,6 +1244,9 @@ fn shutdown_processes(options: &SystemSessionOptions, processes: &mut SessionPro
         let _ = shutdown_authority(&provider_socket, SHUTDOWN_TIMEOUT);
     }
     terminate_child("supervisor", &mut processes.supervisor);
+    // The supervisor may reconnect its host proxy while shutting down. Keep
+    // the launcher socket available until the supervisor has actually exited.
+    drop(processes.host_launcher.take());
     terminate_child("provider", &mut processes.provider);
     terminate_child("compositor", &mut processes.compositor);
 }

@@ -18,6 +18,13 @@ use smithay::{
 
 use crate::{handlers::xdg_shell, state::ClientState, state::SosCompositor};
 
+#[cfg(feature = "direct-backend")]
+use smithay::{
+    backend::{allocator::dmabuf::Dmabuf, renderer::ImportDma},
+    delegate_dmabuf,
+    wayland::dmabuf::{DmabufGlobal, DmabufHandler, DmabufState, ImportNotifier},
+};
+
 impl CompositorHandler for SosCompositor {
     fn compositor_state(&mut self) -> &mut CompositorState {
         &mut self.compositor_state
@@ -69,3 +76,51 @@ impl ShmHandler for SosCompositor {
 
 delegate_compositor!(SosCompositor);
 delegate_shm!(SosCompositor);
+
+#[cfg(feature = "direct-backend")]
+impl DmabufHandler for SosCompositor {
+    fn dmabuf_state(&mut self) -> &mut DmabufState {
+        &mut self
+            .dmabuf_state
+            .as_mut()
+            .expect("direct backend initializes dmabuf state before accepting clients")
+            .0
+    }
+
+    fn dmabuf_imported(
+        &mut self,
+        _global: &DmabufGlobal,
+        dmabuf: Dmabuf,
+        notifier: ImportNotifier,
+    ) {
+        let Some(primary) = self.dmabuf_primary else {
+            tracing::warn!("rejected dmabuf because the direct renderer is unavailable");
+            notifier.failed();
+            return;
+        };
+
+        for (node, renderer) in &self.dmabuf_renderers {
+            if !self.dmabuf_active_devices.contains(node) {
+                continue;
+            }
+            let Ok(mut renderer) = renderer.try_borrow_mut() else {
+                tracing::warn!(?node, "rejected dmabuf while its direct renderer was busy");
+                notifier.failed();
+                return;
+            };
+            if let Err(error) = renderer.import_dmabuf(&dmabuf, None) {
+                tracing::warn!(?node, %error, "direct renderer rejected client dmabuf");
+                notifier.failed();
+                return;
+            }
+        }
+
+        dmabuf.set_node(primary);
+        if notifier.successful::<Self>().is_err() {
+            tracing::warn!("dmabuf client disappeared before buffer creation completed");
+        }
+    }
+}
+
+#[cfg(feature = "direct-backend")]
+delegate_dmabuf!(SosCompositor);

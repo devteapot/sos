@@ -7,6 +7,9 @@ use std::{
     sync::Arc,
 };
 
+#[cfg(feature = "direct-backend")]
+use std::{cell::RefCell, rc::Rc};
+
 use compositor_control_protocol::{CompositorEvent, PresentationEvidence};
 use nix::sys::socket::{getsockopt, sockopt::PeerCredentials};
 use smithay::{
@@ -35,6 +38,12 @@ use smithay::{
         text_input::TextInputManagerState,
         xwayland_shell::XWaylandShellState,
     },
+};
+
+#[cfg(feature = "direct-backend")]
+use smithay::{
+    backend::{drm::DrmNode, renderer::gles::GlesRenderer},
+    wayland::dmabuf::{DmabufGlobal, DmabufState},
 };
 
 use crate::{
@@ -89,6 +98,17 @@ pub struct SosCompositor {
     pub text_input_manager_state: TextInputManagerState,
     pub popups: PopupManager,
     pub seat: Seat<Self>,
+
+    #[cfg(feature = "direct-backend")]
+    pub dmabuf_state: Option<(DmabufState, DmabufGlobal)>,
+    #[cfg(feature = "direct-backend")]
+    pub dmabuf_renderers: HashMap<DrmNode, Rc<RefCell<GlesRenderer>>>,
+    #[cfg(feature = "direct-backend")]
+    pub dmabuf_render_nodes: HashMap<DrmNode, DrmNode>,
+    #[cfg(feature = "direct-backend")]
+    pub dmabuf_active_devices: HashSet<DrmNode>,
+    #[cfg(feature = "direct-backend")]
+    pub dmabuf_primary: Option<DrmNode>,
 }
 
 impl SosCompositor {
@@ -164,6 +184,16 @@ impl SosCompositor {
             text_input_manager_state,
             popups,
             seat,
+            #[cfg(feature = "direct-backend")]
+            dmabuf_state: None,
+            #[cfg(feature = "direct-backend")]
+            dmabuf_renderers: HashMap::new(),
+            #[cfg(feature = "direct-backend")]
+            dmabuf_render_nodes: HashMap::new(),
+            #[cfg(feature = "direct-backend")]
+            dmabuf_active_devices: HashSet::new(),
+            #[cfg(feature = "direct-backend")]
+            dmabuf_primary: None,
         })
     }
 

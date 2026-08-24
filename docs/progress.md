@@ -9582,3 +9582,81 @@ all five relevant scripts, ShellCheck 0.11.0 from container digest
 and `git diff --check` passed in one ordered 2.11-second campaign with 47,492
 KiB maximum RSS. No model provider ran, so live-model and model-weighted gate
 cost were zero. The pending privileged bake remains the next gate.
+
+## 2026-08-24 — Add the missing direct-session Linux dmabuf path
+
+**Goal / environment / failed gate:** Boot the Fedora 44 live remix at clean
+revision `24dc85c2e29891d4072cd9674e656fcc05c97686` on the Framework Laptop 12
+(13th-generation Intel Core, Raptor Lake-P UHD `8086:a721`, `i915`) and run the
+first physical selectable-session gate. The exact ISO at
+`/home/carlid/dev/sos/artifacts/linux-live-image/sos-fedora-workstation-live-24dc85c2e298.iso`
+is 3,056,205,824 bytes with SHA-256
+`cbbf9cca1bb70858713a9ae2ab5c3a9203f295ceeb46e82ce0710a983c2d9570`.
+The same-boot campaign used boot ID
+`77187e2c-d323-4a52-b88d-24d22a87bc33` and ran for
+1,303,847,671,263 ns. Recovery and direct DRM page flips passed, but the shell
+never became ready; the remaining agent, input, activation, lifecycle, and
+logout criteria consequently failed. The finalized 937-byte verdict at
+`/home/carlid/dev/sos/artifacts/linux-live-image/evidence/framework12-20260824/framework12-first-gate/verdict.txt`
+has SHA-256
+`882faf47c47cb1c3518cf2418c9e6d7c182a4cd935f57d80a0e9526a2a67024a`.
+The associated 614,603-byte user journal has SHA-256
+`4e08e4e406022a6db00226960026a4049ec202f33bd68a176355e4642ac092c2`.
+
+**Earliest failure / rejected approaches:** The compositor logged that
+`EGL_WL_bind_wayland_display` was unavailable and exposed only `wl_shm` to the
+client. GPUI therefore reached Mesa's software path despite an available Intel
+render node; Mesa 26.0.3 and LLVM 22.1.1 aborted in `fs_variant_partial` while
+`libvulkan_lvp.so`/llvmpipe compiled the shell fragment shader. The revision
+supervisor timeout and return to GDM were downstream. Temporarily forcing
+`VK_DRIVER_FILES` to Intel changed Vulkan enumeration but retained the
+software-OpenGL presentation boundary and reproduced the LLVM failure. Do not
+ship that environment override or treat a Mesa/LLVM upgrade as the fix: either
+would mask the missing Wayland buffer-sharing protocol rather than provide the
+hardware client/compositor path.
+
+**Changed compositor / focused physical evidence:** The direct backend now
+publishes Linux dmabuf feedback independently of the optional EGL Wayland
+binding. It advertises only the intersection of formats importable by all
+renderers with connected outputs, selects the corresponding render node,
+validates every client buffer against each active renderer, and refreshes the
+feedback across connector/device changes; `wl_shm` remains available as the
+fallback. A unit fixture requires three renderer format sets to collapse to
+their sole common format. A 5,699,056-byte focused release build with SHA-256
+`4de0c2131339b3f8b9ec04a12aacdfede2ed73227e99132eccf31cf481974f70`
+was copied only into the live overlay. With both the login script and running
+shell free of `VK_DRIVER_FILES`, the compositor advertised 240 formats on
+`renderD128`, the experience host held Intel DRM file descriptors, revision
+`31f8e1d31b6e2c91a8a0b0829e5f29934440c64ed8f535bb86d81a5a836c49e5`
+produced its first compositor-owned page flip 415,636 microseconds after host
+start, the system session became ready, and the offline agent started. The
+25,750-byte diagnostic directory is retained at
+`/home/carlid/dev/sos/artifacts/linux-live-image/evidence/framework12-20260824/framework12-dmabuf-diagnostic`;
+its verified 242-byte manifest has SHA-256
+`245c161354c9ddaf03f0b47de19c0d6307dfb76f590552f6ff06d6c86535f0c7`.
+
+**Logout diagnosis / changed lifecycle:** The focused clean logout recorded
+`linux_login_session_stopped reason=user_logout`, then six milliseconds later
+a supervisor host proxy observed an already-removed `host-launcher.sock` and
+emitted `linux_session_failed`. The launcher was a local in
+`start_and_monitor`, so Rust dropped its socket before `run_system_session`
+could stop the still-running supervisor. Session ownership now retains the
+launcher alongside the child processes and drops it only after the supervisor
+has stopped. This removes the shutdown race instead of weakening the hardware
+gate's process-failure criterion.
+
+**Host checks / decision / remaining risk / next gate:** One ordered campaign
+ran formatting and diff checks, the compositor's 12 direct-backend tests, the
+Linux session's seven unit/integration tests, warning-denying Clippy for both
+packages, and the hardware-gate host suite. It passed in 5.84 seconds with
+609,852 KiB maximum RSS. The finalized 5,949-byte log at
+`/home/carlid/dev/sos/artifacts/linux-live-image/evidence/framework12-20260824/host-checks.log`
+has SHA-256
+`75a605c8e4091487b76607d7f982edb09c5a99050d6f5e9e6ce73525fcd0a282`.
+No model provider ran, so live-model and model-weighted gate cost were zero.
+The in-place binary experiment is diagnostic evidence, not a PASS for the
+baked revision; the shutdown-order change, multi-GPU selection, physical input,
+transactional activation, and final clean logout still lack artifact-matched
+physical proof. Commit the fix, rebuild a clean revision-pinned ISO, boot it
+fresh, and repeat prepare, all observed interactions, collect, manifest audit,
+and same-boot verdict before promoting the Framework gate.

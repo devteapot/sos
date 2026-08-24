@@ -3,7 +3,7 @@
 // SOS policy independent from KMS and releases an activation fence only from the
 // VBlank event corresponding to the queued shell buffer.
 
-use std::{collections::HashMap, fs, path::Path, time::Duration};
+use std::{cell::RefCell, collections::HashMap, fs, path::Path, rc::Rc, time::Duration};
 
 use anyhow::{bail, Context as _, Result};
 use compositor_control_protocol::{PresentationClock, PresentationEvidence};
@@ -19,7 +19,7 @@ use smithay::{
             compositor::FrameFlags,
             exporter::gbm::GbmFramebufferExporter,
             output::{DrmOutput, DrmOutputManager, DrmOutputRenderElements},
-            DrmDevice, DrmDeviceFd, DrmEvent, DrmEventMetadata, DrmEventTime, DrmNode,
+            DrmDevice, DrmDeviceFd, DrmEvent, DrmEventMetadata, DrmEventTime, DrmNode, NodeType,
         },
         egl::{EGLContext, EGLDevice, EGLDisplay},
         input::{Device as _, InputEvent},
@@ -31,7 +31,7 @@ use smithay::{
                 Kind, RenderElementStates,
             },
             gles::GlesRenderer,
-            ImportEgl, ImportMemWl,
+            ImportDma, ImportEgl, ImportMemWl,
         },
         session::{libseat::LibSeatSession, Event as SessionEvent, Session},
         udev::{UdevBackend, UdevEvent},
@@ -53,8 +53,11 @@ use smithay::{
         wayland_server::{protocol::wl_surface::WlSurface, Resource as _},
     },
     utils::{DeviceFd, Monotonic, Time, Transform},
-    wayland::compositor,
-    wayland::presentation::Refresh,
+    wayland::{
+        compositor,
+        dmabuf::{DmabufFeedbackBuilder, DmabufState},
+        presentation::Refresh,
+    },
 };
 use smithay_drm_extras::drm_scanner::{DrmScanEvent, DrmScanner};
 
@@ -94,7 +97,7 @@ struct OutputData {
 
 struct DeviceData {
     event_token: RegistrationToken,
-    renderer: GlesRenderer,
+    renderer: Rc<RefCell<GlesRenderer>>,
     manager: DrmOutputManager<
         GbmAllocator<DrmDeviceFd>,
         GbmFramebufferExporter<DrmDeviceFd>,
@@ -220,6 +223,7 @@ pub fn init_direct(
         let node = DrmNode::from_dev_id(device_id).context("identify DRM node")?;
         add_device(&loop_handle, data, node, &path)?;
     }
+    refresh_dmabuf_global(data)?;
     if data.state.space.outputs().next().is_none() {
         bail!("no connected desktop DRM output was found");
     }
@@ -241,6 +245,8 @@ pub fn init_direct(
                 }
                 if let Err(error) = add_device(&udev_loop_handle, data, node, &path) {
                     tracing::error!(%error, ?node, path = %path.display(), "could not hot-add DRM device");
+                } else if let Err(error) = refresh_dmabuf_global(data) {
+                    tracing::error!(%error, ?node, "could not update dmabuf feedback after hot-add");
                 } else {
                     tracing::info!(?node, path = %path.display(), "hot-added DRM device");
                 }
@@ -251,6 +257,7 @@ pub fn init_direct(
                 };
                 let result = refresh_output_config(data)
                     .and_then(|changed| (!changed).then(|| scan_connectors(data, node)).transpose())
+                    .and_then(|_| refresh_dmabuf_global(data))
                     .map(|_| ());
                 if let Err(error) = result {
                     tracing::error!(%error, ?node, "could not apply DRM connector hotplug");
@@ -310,11 +317,13 @@ fn add_device(
         unsafe { EGLDisplay::new(gbm.clone()) }.context("initialize GBM EGL display")?;
     let render_node = EGLDevice::device_for_display(&egl_display)
         .ok()
-        .and_then(|device| device.try_get_render_node().ok().flatten());
+        .and_then(|device| device.try_get_render_node().ok().flatten())
+        .or_else(|| node.node_with_type(NodeType::Render).and_then(Result::ok));
+    let feedback_node = render_node.unwrap_or(node);
     let context = EGLContext::new(&egl_display).context("create EGL context")?;
     let mut renderer = unsafe { GlesRenderer::new(context) }.context("create GLES renderer")?;
     if let Err(error) = renderer.bind_wl_display(&data.display_handle) {
-        tracing::warn!(%error, "EGL Wayland display binding is unavailable; wl_shm remains enabled");
+        tracing::warn!(%error, "EGL Wayland display binding is unavailable; continuing with explicit Linux dmabuf and wl_shm paths");
     }
     data.state.shm_state.update_formats(renderer.shm_formats());
     let render_formats = renderer
@@ -323,6 +332,7 @@ fn add_device(
         .iter()
         .copied()
         .collect::<FormatSet>();
+    let renderer = Rc::new(RefCell::new(renderer));
     let allocator = GbmAllocator::new(
         gbm.clone(),
         GbmBufferFlags::RENDERING | GbmBufferFlags::SCANOUT,
@@ -340,13 +350,88 @@ fn add_device(
         node,
         DeviceData {
             event_token,
-            renderer,
+            renderer: Rc::clone(&renderer),
             manager,
             scanner: DrmScanner::new(),
             outputs: HashMap::new(),
         },
     );
+    data.state.dmabuf_renderers.insert(node, renderer);
+    data.state.dmabuf_render_nodes.insert(node, feedback_node);
     scan_connectors(data, node)?;
+    Ok(())
+}
+
+fn common_dmabuf_formats(mut sets: impl Iterator<Item = FormatSet>) -> FormatSet {
+    let Some(mut common) = sets.next() else {
+        return FormatSet::default();
+    };
+    for formats in sets {
+        common = common.intersection(&formats).copied().collect();
+    }
+    common
+}
+
+fn refresh_dmabuf_global(data: &mut CompositorData) -> Result<()> {
+    let active_devices = data
+        .direct
+        .as_ref()
+        .context("direct backend is missing")?
+        .devices
+        .iter()
+        .filter_map(|(node, device)| (!device.outputs.is_empty()).then_some(*node))
+        .collect();
+    data.state.dmabuf_active_devices = active_devices;
+    let state = &mut data.state;
+    let mut devices = state
+        .dmabuf_active_devices
+        .iter()
+        .copied()
+        .collect::<Vec<_>>();
+    devices.sort_by_key(|node| (node.major(), node.minor()));
+    let Some(primary_device) = devices.first().copied() else {
+        state.dmabuf_primary = None;
+        tracing::warn!("no connected direct renderer is available for Linux dmabuf");
+        return Ok(());
+    };
+    let primary_render_node = *state
+        .dmabuf_render_nodes
+        .get(&primary_device)
+        .context("direct renderer has no dmabuf render node")?;
+    let format_sets = devices
+        .iter()
+        .map(|node| {
+            state
+                .dmabuf_renderers
+                .get(node)
+                .expect("listed dmabuf renderer exists")
+                .borrow()
+                .dmabuf_formats()
+        })
+        .collect::<Vec<_>>();
+    let formats = common_dmabuf_formats(format_sets.into_iter());
+    if formats.iter().next().is_none() {
+        bail!("direct renderers share no importable dmabuf format");
+    }
+    let format_count = formats.iter().count();
+    let feedback = DmabufFeedbackBuilder::new(primary_render_node.dev_id(), formats)
+        .build()
+        .context("build direct renderer dmabuf feedback")?;
+    if let Some((dmabuf_state, global)) = &state.dmabuf_state {
+        dmabuf_state.set_default_feedback(global, &feedback);
+    } else {
+        let mut dmabuf_state = DmabufState::new();
+        let global = dmabuf_state
+            .create_global_with_default_feedback::<SosCompositor>(&state.display_handle, &feedback);
+        state.dmabuf_state = Some((dmabuf_state, global));
+    }
+    state.dmabuf_primary = Some(primary_render_node);
+    tracing::info!(
+        ?primary_render_node,
+        format_count,
+        renderers = devices.len(),
+        "advertised Linux dmabuf feedback"
+    );
     Ok(())
 }
 
@@ -364,6 +449,12 @@ fn remove_device(
     };
     for output in device.outputs.drain().map(|(_, output)| output.output) {
         data.state.space.unmap_output(&output);
+    }
+    data.state.dmabuf_renderers.remove(&node);
+    data.state.dmabuf_render_nodes.remove(&node);
+    data.state.dmabuf_active_devices.remove(&node);
+    if let Err(error) = refresh_dmabuf_global(data) {
+        tracing::error!(%error, ?node, "could not update dmabuf feedback after device removal");
     }
     loop_handle.remove(device.event_token);
     update_output_layout(&mut data.state);
@@ -517,6 +608,7 @@ fn connect_output(
         .get_mut(&node)
         .context("DRM device is missing")?;
     let planes = device.manager.device().planes(&crtc)?;
+    let mut renderer = device.renderer.borrow_mut();
     let drm_output = device
         .manager
         .initialize_output::<_, DirectRenderElement>(
@@ -525,7 +617,7 @@ fn connect_output(
             &[connector.handle()],
             &output,
             Some(planes),
-            &mut device.renderer,
+            &mut *renderer,
             &DrmOutputRenderElements::default(),
         )
         .context("initialize direct KMS output")?;
@@ -673,9 +765,11 @@ fn render_output(data: &mut CompositorData, node: DrmNode, crtc: crtc::Handle) -
     if output_data.frame_pending {
         return Ok(());
     }
+    let renderer = Rc::clone(&device.renderer);
+    let mut renderer = renderer.borrow_mut();
     let mut elements = if output_data.needs_initial_damage {
         let marker = MemoryRenderBufferRenderElement::from_buffer(
-            &mut device.renderer,
+            &mut *renderer,
             (0.0, 0.0),
             &direct.initial_damage_buffer,
             None,
@@ -689,40 +783,29 @@ fn render_output(data: &mut CompositorData, node: DrmNode, crtc: crtc::Handle) -
         Vec::new()
     };
     elements.extend(cursor_render_elements(
-        &mut device.renderer,
+        &mut renderer,
         state,
         &output_data.output,
         &direct.cursor_buffer,
     ));
     if state.policy.shell_mapped() {
         elements.extend(input_method_render_elements(
-            &mut device.renderer,
+            &mut renderer,
             state,
             &output_data.output,
         ));
         elements.extend(
-            space_render_elements(
-                &mut device.renderer,
-                [&state.space],
-                &output_data.output,
-                1.0,
-            )?
-            .into_iter()
-            .map(DirectRenderElement::Space),
+            space_render_elements(&mut *renderer, [&state.space], &output_data.output, 1.0)?
+                .into_iter()
+                .map(DirectRenderElement::Space),
         );
-    } else if let Some(element) =
-        recovery_render_element(&mut device.renderer, state, &output_data.output)
+    } else if let Some(element) = recovery_render_element(&mut renderer, state, &output_data.output)
     {
         elements.push(DirectRenderElement::Cursor(element));
     }
     let result = output_data
         .drm_output
-        .render_frame(
-            &mut device.renderer,
-            &elements,
-            CLEAR_COLOR,
-            FrameFlags::DEFAULT,
-        )
+        .render_frame(&mut *renderer, &elements, CLEAR_COLOR, FrameFlags::DEFAULT)
         .map_err(|error| anyhow::anyhow!("prepare direct frame: {error}"))?;
     if output_data.needs_initial_damage {
         tracing::info!(
@@ -1041,7 +1124,9 @@ fn take_presentation_feedback(
 
 #[cfg(test)]
 mod tests {
-    use super::{default_cursor_pixels, CURSOR_HEIGHT, CURSOR_WIDTH};
+    use smithay::backend::allocator::{format::FormatSet, Format, Fourcc, Modifier};
+
+    use super::{common_dmabuf_formats, default_cursor_pixels, CURSOR_HEIGHT, CURSOR_WIDTH};
 
     #[test]
     fn fallback_cursor_has_a_stable_nonempty_extent() {
@@ -1050,5 +1135,32 @@ mod tests {
         let opaque = pixels.chunks_exact(4).filter(|pixel| pixel[3] != 0).count();
         assert!(opaque > 40);
         assert!(opaque < (CURSOR_WIDTH * CURSOR_HEIGHT) as usize);
+    }
+
+    #[test]
+    fn dmabuf_feedback_advertises_only_formats_shared_by_every_renderer() {
+        let linear_argb = Format {
+            code: Fourcc::Argb8888,
+            modifier: Modifier::Linear,
+        };
+        let implicit_argb = Format {
+            code: Fourcc::Argb8888,
+            modifier: Modifier::Invalid,
+        };
+        let linear_abgr = Format {
+            code: Fourcc::Abgr8888,
+            modifier: Modifier::Linear,
+        };
+        let first = [linear_argb, implicit_argb, linear_abgr]
+            .into_iter()
+            .collect::<FormatSet>();
+        let second = [linear_argb, linear_abgr]
+            .into_iter()
+            .collect::<FormatSet>();
+        let third = [linear_argb].into_iter().collect::<FormatSet>();
+
+        let common = common_dmabuf_formats([first, second, third].into_iter());
+
+        assert_eq!(common.iter().copied().collect::<Vec<_>>(), [linear_argb]);
     }
 }
