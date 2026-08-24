@@ -9717,3 +9717,45 @@ No model provider ran, so live-model and model-weighted gate cost were zero.
 Build the next ISO only from the resulting clean committed revision, then repeat
 the complete Framework prepare, SOS input and deterministic prompt activation,
 clean logout, collect, audit, and copy-off sequence.
+
+## 2026-08-24 — Complete a focused Framework prompt activation
+
+**Goal / environment / physical result:** Continue the same focused Framework
+12 live-overlay session on boot ID
+`77187e2c-d323-4a52-b88d-24d22a87bc33` and test the transactional path after
+the user independently confirmed that pointer and keyboard interaction behaved
+normally. The 16-byte deterministic prompt `make this calmer` was submitted to
+the offline fake agent. The agent fetched context, validated its generated
+experience, and submitted revision
+`c6d87d5809bbdc3a859ea4fc634f49d0588c3a9248fcc821eca67dcf26293e7f`.
+Preparation measured 83 microseconds queued, 3,609 microseconds compiling,
+1,629 microseconds rendering, and 5,246 microseconds total worker time.
+
+**Transactional evidence / lifecycle:** The compositor quiesced input with
+zero held keys, buttons, or touches and dropped no events, armed after commit
+sequence 159,723, then presented the revision at commit sequence 159,724 and
+submit sequence 431 with direct DRM page-flip evidence. The host reported that
+frame 383,880 microseconds after text submission; the complete offline-agent
+turn finished 400,536 microseconds after submission. A later same-boot sample
+showed the experience host still at PID 45,075, with its original 16:19:06
+start time, and the revision supervisor still reported the presented revision
+as current. No experience-host restart occurred during activation.
+
+**Evidence / decision / remaining risk / next gate:** The finalized
+15,995-byte activation journal at
+`/home/carlid/dev/sos/artifacts/linux-live-image/evidence/framework12-20260824/framework12-dmabuf-diagnostic/journal-activation.txt`
+has SHA-256
+`d32c7d03d247089c0fbedfa0a58fb12769009bb808e5f6fdfb7abf938153cb93`.
+The 495-byte lifecycle sample has SHA-256
+`726817c87482f38fd5f81feb5a02f2ba0f28750ade773c506d841bca262ab8d9`.
+All six bounded files in the 63,948-byte diagnostic directory verify through
+its 510-byte manifest, whose SHA-256 is
+`caf98c4374738e48a82a092ba8152174318ce07ea482fb031ab8bfa55bba1a72`.
+This closes focused physical pointer, keyboard, agent, revision-commit, direct
+page-flip, and stable-host-lifecycle diagnosis. It does not promote the baked
+ISO or complete the hardware gate: the compositor was replaced only in the
+live overlay, the provider-control and logout fixes are not present in that
+artifact, and touchscreen, corrected clean logout, image identity, collection,
+and final manifest audit remain unproved. No live model provider ran, so model
+cost was zero. Build one clean revision-pinned ISO containing all fixes, boot
+it fresh, and run the full same-boot prepare/interact/collect/audit gate.
