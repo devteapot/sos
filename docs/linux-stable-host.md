@@ -115,8 +115,15 @@ or changing the machine's default systemd target:
 sudo apt-get install \
   libgbm-dev libinput-dev libseat-dev libudev-dev libwayland-dev \
   libxkbcommon-dev libxkbcommon-x11-dev
+./tools/install-linux-login-session doctor
 ./tools/install-linux-login-session install
 ```
+
+On Fedora, the direct-session module names map to
+`mesa-libgbm-devel`, `libinput-devel`, `libseat-devel`, `systemd-devel`,
+`wayland-devel`, `libxkbcommon-devel`, and
+`libxkbcommon-x11-devel`. The complete first-hardware dependency recipe is in
+[`linux-hardware-gate.md`](linux-hardware-gate.md).
 
 Log out after installation. On GDM, select the session menu on the login screen,
 choose **SOS**, and authenticate normally. GDM's PAM/logind session remains the
@@ -141,6 +148,21 @@ the appliance units. The first SOS login creates the authenticated user's
 private revision, authority, recovery, and shell-token state below
 `${XDG_STATE_HOME:-$HOME/.local/state}/sos`; each login receives a fresh private
 runtime directory below `XDG_RUNTIME_DIR`.
+
+For a credential- and network-independent first hardware gate, install with
+`./tools/install-linux-login-session install --offline`. This configures the
+same resident runner with the checked-in deterministic `daily-flow.luau`
+candidate and preserves the same broker, validation, activation, and monitored
+lifecycle boundaries. It is a hardware isolation mode, not live-model evidence.
+Running `sos-agent-login` later replaces that configuration with the normal
+subscription-backed mode.
+
+Each install writes `/usr/share/doc/sos/install-metadata.env` and
+`install-manifest.tsv` with the source revision, dirty state, toolchain, mode,
+and installed artifact sizes and SHA-256 values. The session reads bounded
+mode/scale/rotation overrides from the user's private
+`${XDG_STATE_HOME:-$HOME/.local/state}/sos/output.json`; `{}` retains preferred
+mode, scale 1.0, and rotation 0.
 
 ```text
 GDM authentication (login user owns the active logind seat)
@@ -183,9 +205,18 @@ another. Use the system session below when the separate service identities are
 required.
 
 The selectable-session packaging and identity policy have desktop build and
-static packaging evidence only. They have not yet completed an interactive GDM
-login, DRM page flip, input, logout, suspend/resume, or physical-hardware gate.
-Keep another login session and a text console available during the first test.
+static packaging evidence plus host-tested offline/configuration and evidence
+audit paths only. They have not yet completed an instrumented physical GDM
+login, DRM page flip, input, logout, suspend/resume, or hardware gate. Keep SSH
+and a text console available, then use
+`tools/linux-hardware-gate` and the exact PASS contract in
+[`linux-hardware-gate.md`](linux-hardware-gate.md). The gate refuses VMs, dirty
+or revision-mismatched installs, missing observations, and tampered evidence.
+
+After returning to the conventional desktop,
+`./tools/install-linux-login-session uninstall` removes the exact installed SOS
+session/product paths while preserving per-user state, packages, GDM, and the
+default boot target.
 
 ## Boot-owned direct session
 
