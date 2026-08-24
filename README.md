@@ -201,8 +201,9 @@ The same offline install can be baked into a checksum-pinned Fedora Workstation
 live remix so the first Framework 12 loop does not touch its internal disk:
 rebuild ISO, boot removable media, prepare, select SOS in GDM, collect on that
 exact kernel boot, and copy evidence off. The bake accepts only Fedora's flat
-EROFS rootfs format and performs privileged extraction, relabeling, and
-repacking so Linux ownership and security metadata are preserved.
+EROFS rootfs format and performs a privileged metadata-preserving copy,
+policy-based SELinux relabel, and repack so Linux ownership, ACLs,
+capabilities, and security metadata are preserved.
 That campaign is live-boot evidence, not an installed product. See
 [`docs/linux-live-image.md`](docs/linux-live-image.md).
 

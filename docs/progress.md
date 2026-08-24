@@ -9317,3 +9317,64 @@ one clean privileged bake. A successful host bake still does not close the
 physical gate; the next gate is removable-media boot and the documented
 same-boot `prepare -> physical interactions -> collect` campaign on the
 Framework Laptop 12, without installing to or modifying its internal disk.
+
+## 2026-08-24 — Relabel Fedora EROFS from policy instead of compose xattrs
+
+**Goal / environment / failure:** Retry the complete privileged Fedora 44 live
+bake at clean revision `478a8ed97a1fe1b0e6e142498752267f1be0e159` after
+fixing fragment-packed traversal. The strict doctor and ISO-tree extraction
+again passed, then EROFS extraction failed while setting `security.selinux` on
+inode 12114131 with `EINVAL`. The finalized second-attempt log at
+`/home/carlid/dev/sos/artifacts/linux-live-bake-attempt2.log` is 1,734 bytes
+with SHA-256
+`4c761c3479111a0ab742aa8eaa012e909162da3d5c2261bf4b8f2254a465a899`.
+No remixed ISO or removable media was produced, and no Framework or internal
+laptop disk was involved.
+
+**Causal chain / changed:** `dump.erofs` resolves the failing inode to
+`/usr/bin/nbdkit`. A read-only FUSE view of the signed official payload reports
+its source label as `system_u:object_r:fusefs_t:s0`, while the Fedora 44 policy
+for `/usr/bin/nbdkit` requires `system_u:object_r:bin_t:s0`. Restoring the
+compose-filesystem label is therefore neither portable to the staging
+filesystem nor the desired final state. The bake now mounts the EROFS payload
+read-only and uses privileged `rsync -aHAXS --numeric-ids` to retain content,
+numeric ownership, modes, timestamps, hardlinks, sparse layout, ACLs,
+capabilities, and all applicable non-SELinux xattrs. It excludes
+`security.selinux` and, consistently with rsync's superuser default, the
+`system.*` namespace; `rsync -A` separately retains POSIX ACLs. After all
+package and SOS mutations, the existing `setfiles` phase applies the rootfs's
+own Fedora policy to the complete tree. The mount is bounded under the bake
+work directory and has an EXIT cleanup before the work directory can be
+removed. Before unmounting, a second metadata-only rsync dry run must report no
+content, owner, mode, hardlink, ACL, capability, or included-xattr difference.
+
+**Focused evidence / measurements:** Copying the official failing file through
+the filtered rsync path preserved its bytes and omitted the stale `fusefs_t`
+label in 0.08 seconds with 5,840 KiB maximum RSS. A subordinate-user-namespace
+round trip then preserved mode `0750`, a hardlink, a user xattr, and
+`cap_net_bind_service=ep` in 0.05 seconds with 5,708 KiB maximum RSS. The
+finalized combined probe log at
+`/home/carlid/dev/sos/artifacts/linux-live-xattr-rsync-probe.log` is 571 bytes
+with SHA-256
+`09db4e06f22bad30144ee67cd115129aea43f89ed49aaa638618bb6950f96ce7`.
+The focused live-image test constructs a hardlinked mode-`0750` fixture with a
+user xattr, conditionally gives it the same stale SELinux type, and requires
+the copy to preserve every requested attribute except that source label; its
+post-copy metadata audit must also be empty. The strict doctor, live-image and
+hardware-gate host suites, Bash parsing of all five relevant scripts,
+ShellCheck 0.11.0 from container digest
+`b9389b73c8f26f710a7171cb7d8848a34a9c1e07a7865e727c9ec4ce99f9a83f`,
+and `git diff --check` passed in one ordered 2.18-second campaign with 46,420
+KiB maximum RSS. No model provider ran, so live-model and model-weighted gate
+cost were zero.
+
+**Rejected approaches / decision / next gate:** Continuing
+`fsck.erofs --xattrs` would repeatedly fail on a compose label. Disabling all
+xattrs would silently destroy capabilities and was rejected. Copying source
+SELinux contexts and relabeling only after that is also unnecessary and blocks
+the build before the authoritative policy phase. Stop full bake retries until
+the new mount/copy layer and nearby host regressions are green. Then delete
+only the bounded partial attempt-two output, commit and push the correction,
+and run one fresh privileged bake. That downstream run must still prove the
+whole-rootfs mount/copy, package mutation, policy relabel, EROFS repack, ISO
+checksum, and identities before removable-media hardware testing begins.

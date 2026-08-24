@@ -103,7 +103,8 @@ live_image_doctor() {
   fi
   [[ "$#" -eq 0 ]] || live_image_fail "doctor accepts only --layout-only"
   local command
-  for command in cargo find git install node npm pkg-config python3 realpath rustc sha256sum stat sudo; do
+  for command in cargo find git install mount mountpoint node npm pkg-config python3 \
+    realpath rsync rustc sha256sum stat sudo umount; do
     live_image_require_command "$command"
   done
   local missing=()
@@ -386,17 +387,44 @@ live_image_check_payload() {
 
 live_image_extract_payload() {
   local payload="$1" format="$2" dest="$3" work="$4"
-  mkdir -p -- "$dest" "$work"
+  local mountpoint="$work/erofs-source"
+  local audit="$work/erofs-rsync-audit.txt"
+  mkdir -p -- "$dest" "$mountpoint"
   [[ -z "$(find "$dest" -mindepth 1 -print -quit)" ]] || \
     live_image_fail "rootfs extraction destination is not empty: $dest"
   case "$format" in
     erofs-rootfs)
-      # Extraction must run as root. erofs-utils otherwise deliberately maps
-      # ownership to the caller, applies umask, and omits xattrs by default.
-      # Fedora's fragment-packed EROFS also needs an explicit root path;
-      # otherwise erofs-utils 1.9.2 treats the hidden packed inode as the
-      # extraction target and collides with this destination directory.
-      sudo fsck.erofs --path=/ --extract="$dest" --xattrs --preserve "$payload" >/dev/null
+      # The official image can carry build-filesystem SELinux labels such as
+      # fusefs_t that the destination filesystem rejects. Mount the source
+      # read-only and copy every other metadata class; setfiles later applies
+      # the image's own policy to the complete staged rootfs.
+      (
+        # Invoked indirectly by the EXIT trap below.
+        # shellcheck disable=SC2329
+        live_image_cleanup_erofs_mount() {
+          if mountpoint -q "$mountpoint"; then
+            sudo umount -- "$mountpoint"
+          fi
+        }
+        trap live_image_cleanup_erofs_mount EXIT
+        sudo mount -t erofs -o loop,ro "$payload" "$mountpoint"
+        sudo rsync -aHAXS --numeric-ids \
+          --filter='-x security.selinux' \
+          --filter='-x system.*' \
+          "$mountpoint/" "$dest/"
+        # The builder intentionally owns this audit file for inspection.
+        # shellcheck disable=SC2024
+        sudo rsync -aHAXSni --numeric-ids \
+          --filter='-x security.selinux' \
+          --filter='-x system.*' \
+          "$mountpoint/" "$dest/" >"$audit"
+        [[ ! -s "$audit" ]] || \
+          live_image_fail "rootfs metadata audit differs after copy; inspect $audit"
+        rm -- "$audit"
+        sudo umount -- "$mountpoint"
+        trap - EXIT
+      )
+      rmdir -- "$mountpoint"
       ;;
     *) live_image_fail "cannot extract container format: $format" ;;
   esac

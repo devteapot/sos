@@ -133,6 +133,45 @@ if command -v fsck.erofs >/dev/null 2>&1 \
   cmp "$test_packed_source/file" "$test_packed_dest/file"
 fi
 
+if command -v getfattr >/dev/null 2>&1 \
+  && command -v rsync >/dev/null 2>&1 \
+  && command -v setfattr >/dev/null 2>&1; then
+  test_metadata_source="$test_root/metadata-source"
+  test_metadata_dest="$test_root/metadata-dest"
+  mkdir "$test_metadata_source" "$test_metadata_dest"
+  printf 'metadata extraction regression\n' >"$test_metadata_source/file"
+  chmod 0750 "$test_metadata_source/file"
+  ln "$test_metadata_source/file" "$test_metadata_source/hardlink"
+  setfattr -n user.sos_probe -v preserved "$test_metadata_source/file"
+  test_metadata_source_label=""
+  if command -v chcon >/dev/null 2>&1 \
+    && command -v selinuxenabled >/dev/null 2>&1 \
+    && selinuxenabled \
+    && chcon system_u:object_r:fusefs_t:s0 "$test_metadata_source/file"; then
+    test_metadata_source_label="$(stat -c %C "$test_metadata_source/file")"
+  fi
+  rsync -aHAXS --numeric-ids \
+    --filter='-x security.selinux' \
+    --filter='-x system.*' \
+    "$test_metadata_source/" "$test_metadata_dest/"
+  rsync -aHAXSni --numeric-ids \
+    --filter='-x security.selinux' \
+    --filter='-x system.*' \
+    "$test_metadata_source/" "$test_metadata_dest/" \
+    >"$test_root/metadata-audit.txt"
+  [[ ! -s "$test_root/metadata-audit.txt" ]]
+  cmp "$test_metadata_source/file" "$test_metadata_dest/file"
+  [[ "$(stat -c %a "$test_metadata_dest/file")" == 750 ]]
+  [[ "$(stat -c %i "$test_metadata_dest/file")" \
+    == "$(stat -c %i "$test_metadata_dest/hardlink")" ]]
+  [[ "$(getfattr -n user.sos_probe --only-values "$test_metadata_dest/file")" \
+    == preserved ]]
+  if [[ -n "$test_metadata_source_label" ]]; then
+    [[ "$(stat -c %C "$test_metadata_dest/file")" \
+      != "$test_metadata_source_label" ]]
+  fi
+fi
+
 mkdir "$test_root/bin"
 # The single-quoted expansions belong to the generated mock, not this test process.
 # shellcheck disable=SC2016
@@ -323,8 +362,14 @@ grep -F 'image destroot staging accepts only the offline agent' "$test_install" 
 "$test_image" 2>"$test_root/image-usage.txt" || true
 grep -F -- '--source-sha256 SHA256' "$test_root/image-usage.txt" >/dev/null
 grep -F 'rootfs extraction destination is not empty' "$test_image" >/dev/null
-grep -F "sudo fsck.erofs --path=/ --extract=\"\$dest\" --xattrs --preserve" \
+grep -F "sudo mount -t erofs -o loop,ro \"\$payload\" \"\$mountpoint\"" \
   "$test_image" >/dev/null
+grep -F 'sudo rsync -aHAXS --numeric-ids' "$test_image" >/dev/null
+grep -F 'sudo rsync -aHAXSni --numeric-ids' "$test_image" >/dev/null
+grep -F 'rootfs metadata audit differs after copy' "$test_image" >/dev/null
+grep -F -- "--filter='-x security.selinux'" "$test_image" >/dev/null
+grep -F -- "--filter='-x system.*'" "$test_image" >/dev/null
+grep -F "sudo umount -- \"\$mountpoint\"" "$test_image" >/dev/null
 grep -F 'sudo setfiles -F -r' "$test_image" >/dev/null
 grep -F "sudo fsck.erofs \"\$output\"" "$test_image" >/dev/null
 grep -F 'implantisomd5 --force' "$test_image" >/dev/null

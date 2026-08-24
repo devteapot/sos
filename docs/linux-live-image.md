@@ -39,8 +39,8 @@ must be Fedora x86_64 at the same Fedora release as the ISO; this prevents
 host-built SOS binaries from being paired with a different userspace release.
 Install the Fedora build dependencies listed in
 [`linux-hardware-gate.md`](linux-hardware-gate.md), plus `erofs-utils`,
-`isomd5sum`, `policycoreutils`, and `xorriso`; `doctor` fails when any command
-or native module required by the bake is missing.
+`isomd5sum`, `policycoreutils`, `rsync`, and `xorriso`; `doctor` fails when any
+command or native module required by the bake is missing.
 From a clean checkout of the revision you intend to collect:
 
 ```sh
@@ -54,14 +54,18 @@ From a clean checkout of the revision you intend to collect:
 Bake fails before extraction when the supplied SHA-256 does not match. Fedora
 44's official Workstation ISO calls its payload `LiveOS/squashfs.img`, but that
 file is a flat EROFS root filesystem. The bake verifies EROFS and
-`/etc/os-release`, extracts as root with owner/permission/xattr preservation,
-mutates that tree, applies the image's SELinux file-context policy, and repacks
-as root. It checks the rebuilt EROFS before inserting it into the ISO. It never
+`/etc/os-release`, mounts it read-only, and copies it as root while preserving
+numeric ownership, permissions, hardlinks, ACLs, capabilities, and non-SELinux
+xattrs. Source SELinux labels are deliberately omitted because official media
+can retain compose-filesystem labels; after mutation the bake applies the
+image's own SELinux file-context policy to the complete tree and repacks as
+root. It checks the rebuilt EROFS before inserting it into the ISO. It never
 maps the rootfs to the desktop user.
 
-Bake requires sudo for metadata-preserving rootfs extraction/repack, relabeling,
-and `dnf --installroot`. It preserves the source ISO volume ID and El Torito/EFI boot;
-changing the label breaks Fedora's `root=live:CDLABEL=...` cmdline. The output sidecar
+Bake requires sudo for the read-only EROFS mount, metadata-preserving rootfs
+copy/repack, relabeling, and `dnf --installroot`. It preserves the source ISO
+volume ID and El Torito/EFI boot; changing the label breaks Fedora's
+`root=live:CDLABEL=...` cmdline. The output sidecar
 `artifacts/linux-live-image/image-identity.env` records the source revision,
 Fedora/build-host release, base ISO identity, EROFS payload hash, and
 output ISO hash. The bake re-implants and verifies Fedora's embedded media
