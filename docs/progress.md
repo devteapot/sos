@@ -9759,3 +9759,103 @@ artifact, and touchscreen, corrected clean logout, image identity, collection,
 and final manifest audit remain unproved. No live model provider ran, so model
 cost was zero. Build one clean revision-pinned ISO containing all fixes, boot
 it fresh, and run the full same-boot prepare/interact/collect/audit gate.
+
+## 2026-08-24 — Run the revision-pinned Framework gate and isolate touch focus
+
+**Goal / artifact / complete gate:** Boot the clean revision
+`fb704784d5b35860c49d44c028ceb3a7fe7daf63` from the baked Fedora 44 live ISO
+`/home/carlid/dev/sos/artifacts/linux-live-image-fb70478/sos-fedora-workstation-live-fb704784d5b3.iso`
+(3,056,205,824 bytes, SHA-256
+`c043f5657c68ea39e91006cb83fcf4cdb1013fcdf19cc1ef464f502632d48a91`)
+on the Framework Laptop 12 and execute one same-boot prepare, physical input,
+offline-agent activation, clean logout, collect, copy-off, and manifest audit
+campaign. The 350,565,261,856-nanosecond campaign passed live-boot identity,
+recovery and direct-compositor page flips, session/agent readiness, keyboard,
+touchpad motion/button, touchscreen observation, clean logout, transactional
+activation, fallback display manager, and kernel GPU checks. It correctly
+failed overall: the host launched twice, the durable pointer remained at
+`32f4b2a9c26f632bc20a3139d06a1b59aa9073e6513fabb7698566b669847a5c`
+while authority reached
+`0560f50dc390dc20c97db99d4a16ee45b11f2956315f927408a7a7b3b5dafcf6`,
+and process-failure evidence was present.
+
+The copied 107,405-byte directory at
+`/home/carlid/dev/sos/artifacts/linux-live-image/evidence/framework12-20260824/framework12-fb70478-gate`
+independently verifies 36 files when checked with the campaign's
+`en_US.utf8` collation. Its 3,370-byte manifest has SHA-256
+`a0605f305798af3cd11ad59a8d6c56454e450f3bcaeddba5edad6498c7cfa35f`;
+the 1,008-byte verdict and 53,574-byte user journal have SHA-256
+`01533d6a6a2263a01904d305710e3f3e533768efd273921b879fa0eff17d565b`
+and `bc93e8583ec9879b37f6784326f5c88d463db18eae0edb3e08099a55703b973b`.
+Manifest ordering is locale-sensitive today: verification passes under the
+collection locale but not the development host's `C.UTF-8`, which remains a
+portability defect rather than evidence corruption.
+
+**Failure and recovery diagnosis:** The compositor presented candidate
+`0560f50d…` after a 4,867-microsecond prepare, but the first experience host
+did not consume the compositor-fence notification on its GPUI thread. The
+supervisor timed out and launched a replacement while the original host was
+still resident; the replacement failed with `Resource temporarily unavailable`.
+The original host later panicked during logout after the compositor surface
+had disappeared. A focused second SOS login on the same boot used one host PID,
+recognized the incomplete transaction, prepared the identical candidate in
+5,674 microseconds, directly page-flipped it, aligned current and authority,
+and removed the activation journal. This proves durable recovery and candidate
+validity, but does not clear the intermittent first-session host stall or
+overlapping-restart risk. The user also observed scroll lag during the degraded
+first host lifecycle. No live model ran, so model and model-weighted cost were
+zero.
+
+**Physical focus reproduction / changed code:** In the recovered session, a
+touchpad click focused `note-draft` and hardware keys edited it. Four subsequent
+physical touchscreen contacts over the other editor produced no
+`agent-prompt` focus event; later keys still edited `note-draft`. The bounded
+13,258-byte journal and 1,738-byte runtime snapshot are stored with a verified
+162-byte manifest at
+`/home/carlid/dev/sos/artifacts/linux-live-image/evidence/framework12-20260824/framework12-fb70478-focus-diagnostic`;
+the manifest SHA-256 is
+`1344f8d5752a1f4f1f25d9d7fc98652440b57c3367bae27d8f39944aa6ae824d`.
+The Linux GPUI backend exposed raw Wayland touch only to the scene-pointer
+router, while native text inputs registered mouse handlers but no touch hit
+bounds. Native fields now register their painted bounds; a raw touch-down picks
+the topmost field, focuses its persistent entity, and positions the cursor.
+The existing active-field restoration remains in place because the first gate
+shows it restoring the prompt after compositor input quiescing. The nested
+compositor workflow now explicitly transfers focus from the autofocused note
+editor to the agent prompt and back, guarding that behavior against becoming
+sticky during ordinary interaction.
+
+**Checks / focused overlay result:** An initial release host build completed in
+99.70 seconds with 2,010,256 KiB maximum RSS; the 17,071,928-byte diagnostic
+binary has SHA-256
+`4f797a3ebd7721fd7af460b338a17be1a766763c8e784aeaf30deb1c2508d12c`.
+The nested gate was not claimed because this development host lacks Weston.
+The release host was then installed as the only changed binary in the
+disposable live overlay, with its hash verified before login. On the next SOS
+login, mouse input transferred focus from `note-draft` to `agent-prompt` and
+edited the prompt. Physical touchscreen taps then transferred focus from the
+agent prompt to the note and back to the prompt; the host emitted bounded
+`sos_linux_touch_focus` records with the painted node IDs, followed by the
+matching blur/focus pairs. The experience remained on its original PID 17,545,
+current and authority both remained at `0560f50d…`, and no activation journal
+or process failure appeared. The verified 8,775-byte focused-result bundle is
+at
+`/home/carlid/dev/sos/artifacts/linux-live-image/evidence/framework12-20260824/framework12-fb70478-focus-fix`;
+its 166-byte manifest has SHA-256
+`0c7089c3d753ccf9dc1ff5a3a719f7599ebbbd96b73038e93d42b50791697fe5`.
+
+**Rejected inference / final source / next gate:** The first implementation
+also made active-field restoration one-shot. Review against the original
+activation journal showed this was unproved and unsafe: repeated restoration
+had correctly returned keyboard focus after compositor quiescing. That change
+was removed; the final diff contains only native touch hit routing and its
+coverage. All 27 Linux-host tests passed in 0.12 seconds and warning-denying
+Clippy passed. The final 17,071,928-byte host built in 79.24 seconds with
+2,011,288 KiB maximum RSS and has SHA-256
+`ce3c8a486c03f47b1a08d7c2dcfea51dd1ff00c77bc938520327f2e76f394418`.
+GDM powered the live system off before that narrowed binary could replace the
+diagnostic build, so the physical result closes the touch-routing mechanism on
+the overlay but is not exact final-binary or baked-artifact evidence. Commit,
+bake a clean revision-pinned ISO, and repeat the complete Framework campaign;
+do not promote the hardware gate until artifact-matched focus transfer and
+single-host activation both pass.

@@ -16,9 +16,9 @@ use experience_ir::{
     MAX_AGENT_MESSAGES, MAX_AGENT_MESSAGE_BYTES,
 };
 use gpui::{
-    div, img, prelude::*, px, relative, rgb, size, Animation as GpuiAnimation, AnimationExt as _,
-    AnyElement, App, Bounds, Context, Entity, MouseButton, Render, SharedString, Window,
-    WindowBounds, WindowOptions,
+    div, img, point, prelude::*, px, relative, rgb, size, Animation as GpuiAnimation,
+    AnimationExt as _, AnyElement, App, Bounds, Context, Entity, MouseButton, Render, SharedString,
+    Window, WindowBounds, WindowOptions,
 };
 use provider_state_service::ServiceClient;
 use providers_linux::{load_grants, ProviderContext, ProviderFrame, ProviderHub, ProviderSnapshot};
@@ -2023,6 +2023,22 @@ impl Render for LinuxExperienceHost {
             );
         }
         for sample in pointer_input::take_samples() {
+            if sample.phase == pointer_input::Phase::Down {
+                if let Some(node_id) = pointer_input::native_input_at(sample.x, sample.y) {
+                    if let Some(input) = self.inputs.get(&node_id).cloned() {
+                        let position = point(px(sample.x), px(sample.y));
+                        eprintln!(
+                            "sos_linux_touch_focus node_id={node_id} x={:.1} y={:.1}",
+                            sample.x, sample.y
+                        );
+                        window.defer(cx, move |window, cx| {
+                            input.update(cx, |input, input_cx| {
+                                input.focus_at(position, window, input_cx)
+                            });
+                        });
+                    }
+                }
+            }
             for event in pointer_input::route(sample) {
                 self.queue_input_event(event, cx);
             }
