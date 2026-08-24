@@ -37,6 +37,15 @@ hardware_gate_monotonic_ns() {
   python3 -c 'import time; print(time.monotonic_ns())'
 }
 
+hardware_gate_read_boot_id() {
+  local path=/proc/sys/kernel/random/boot_id boot_id
+  [[ -r "$path" ]] || hardware_gate_fail "kernel boot ID is unavailable: $path"
+  boot_id="$(tr -d '\n' <"$path")"
+  [[ "$boot_id" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]] || \
+    hardware_gate_fail "kernel boot ID is malformed: $boot_id"
+  printf '%s\n' "${boot_id,,}"
+}
+
 hardware_gate_resolve_new_dir() {
   local requested="$1" resolved
   resolved="$(realpath -m -- "$requested")"
@@ -144,7 +153,7 @@ hardware_gate_capture_drm() {
 hardware_gate_prepare() {
   hardware_gate_parse_dir_options "$@"
   for command in cargo cut git journalctl jq libinput lscpu lspci loginctl node npm pkg-config python3 readlink realpath \
-    rustc sed sha256sum stat sudo systemctl systemd-detect-virt uname; do
+    rustc sed sha256sum stat sudo systemctl systemd-detect-virt tr uname; do
     hardware_gate_require_command "$command"
   done
   [[ "$(id -u)" -ne 0 ]] || hardware_gate_fail "run the physical gate as the desktop user, not root"
@@ -246,14 +255,16 @@ hardware_gate_prepare() {
     done
   } >"$evidence_dir/environment/tool-versions.txt"
 
-  local cursor started_ns
+  local boot_id cursor started_ns
   cursor="$(sudo journalctl --show-cursor -n 0 --no-pager | sed -n 's/^-- cursor: //p' | tail -n 1)"
   [[ -n "$cursor" ]] || hardware_gate_fail "could not capture the journal cursor"
+  boot_id="$(hardware_gate_read_boot_id)"
   started_ns="$(hardware_gate_monotonic_ns)"
   printf '%s\n' \
     "source_revision=$source_revision" \
     "source_dirty=false" \
     "agent_mode=$installed_mode" \
+    "boot_id=$boot_id" \
     "user_uid=$(id -u)" \
     "state_home=$hardware_gate_state_home" \
     "product_name=$product" \
@@ -298,11 +309,23 @@ hardware_gate_criterion_absent() {
 hardware_gate_audit_dir() {
   local evidence_dir="$1"
   local journal="$evidence_dir/journal-user.txt"
-  [[ -f "$evidence_dir/campaign.env" && -f "$journal" ]] || \
-    hardware_gate_fail "campaign or collected session journal is missing"
+  [[ -f "$evidence_dir/campaign.env" && -f "$evidence_dir/collection.env" \
+    && -f "$journal" ]] || \
+    hardware_gate_fail "campaign, collection, or collected session journal is missing"
   hardware_gate_audit_failed=false
   local agent_mode current_revision authority_revision presentation_count presentation_revisions
+  local prepared_boot_id collected_boot_id
   agent_mode="$(hardware_gate_metadata_value "$evidence_dir/campaign.env" agent_mode)"
+  prepared_boot_id="$(hardware_gate_metadata_value "$evidence_dir/campaign.env" boot_id)"
+  collected_boot_id="$(hardware_gate_metadata_value "$evidence_dir/collection.env" boot_id)"
+  if [[ "$prepared_boot_id" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ \
+    && "$prepared_boot_id" == "$collected_boot_id" ]]; then
+    printf 'criterion=same_boot result=PASS boot_id=%s\n' "$prepared_boot_id"
+  else
+    printf 'criterion=same_boot result=FAIL prepared=%s collected=%s\n' \
+      "$prepared_boot_id" "$collected_boot_id"
+    hardware_gate_audit_failed=true
+  fi
   hardware_gate_criterion_pattern recovery_page_flip \
     'completed significant DRM page flip.*recovery_view=true' "$journal"
   hardware_gate_criterion_pattern direct_compositor \
@@ -426,12 +449,13 @@ hardware_gate_collect() {
   hardware_gate_parse_dir_options "$@"
   [[ -z "$hardware_gate_expected_product" ]] || \
     hardware_gate_fail "--expect-product is accepted only by prepare"
-  for command in cut diff find journalctl jq loginctl python3 realpath sed sha256sum sort stat sudo systemctl; do
+  for command in cut diff find journalctl jq loginctl python3 realpath sed sha256sum sort stat sudo systemctl tr; do
     hardware_gate_require_command "$command"
   done
   [[ "${XDG_CURRENT_DESKTOP:-}" != SOS ]] || \
     hardware_gate_fail "return to the fallback desktop before collecting evidence"
   local evidence_dir cursor user_uid state_home started_ns finished_ns duration_ns
+  local prepared_boot_id current_boot_id
   evidence_dir="$(hardware_gate_resolve_existing_dir "$hardware_gate_requested_dir")"
   [[ -f "$evidence_dir/prepared" ]] || hardware_gate_fail "campaign was not prepared"
   [[ ! -f "$evidence_dir/collected" ]] || hardware_gate_fail "campaign was already collected"
@@ -440,6 +464,10 @@ hardware_gate_collect() {
   state_home="$(hardware_gate_metadata_value "$evidence_dir/campaign.env" state_home)"
   [[ "$user_uid" == "$(id -u)" ]] || hardware_gate_fail "collect must run as the user who prepared the gate"
   [[ "$state_home" == /* ]] || hardware_gate_fail "recorded state home is invalid"
+  prepared_boot_id="$(hardware_gate_metadata_value "$evidence_dir/campaign.env" boot_id)"
+  current_boot_id="$(hardware_gate_read_boot_id)"
+  [[ -n "$prepared_boot_id" && "$current_boot_id" == "$prepared_boot_id" ]] || \
+    hardware_gate_fail "evidence must be collected on the exact kernel boot that prepared it"
 
   # The redirects intentionally run as the evidence owner; only journal access needs sudo.
   # shellcheck disable=SC2024
@@ -468,6 +496,7 @@ hardware_gate_collect() {
   [[ "$duration_ns" -gt 0 ]] || hardware_gate_fail "measured campaign duration is not positive"
   printf '%s\n' \
     "finished_at_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    "boot_id=$current_boot_id" \
     "finished_monotonic_ns=$finished_ns" \
     "duration_ns=$duration_ns" >"$evidence_dir/collection.env"
 

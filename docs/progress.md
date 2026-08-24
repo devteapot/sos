@@ -9068,3 +9068,45 @@ Workstation on the Framework Laptop 12, keep SSH/text-console recovery, and run
 the documented clamshell `prepare -> physical interactions -> collect` campaign.
 Physical Intel KMS/panel/input behavior, stylus, rotation, suspend, latency,
 thermals, and soak all remain open until captured on that target.
+
+## 2026-08-24 — Pin Linux hardware-gate evidence to one kernel boot
+
+**Goal / environment:** Close the merge-readiness gap in the Framework Laptop
+12 gate where `prepare` and `collect` used monotonic timestamps without proving
+they came from the same kernel boot. Validation ran on the Framework Desktop
+Fedora host at base revision `4e1323e72b08` plus the same-boot working change;
+the exact diff SHA-256 was
+`1f05ebaec08e5d4963c10ad6457527f816db1c8bfba7a32854228486989f4665`.
+No GDM, seat, DRM, input, reboot, or other physical transition ran.
+
+**Changed:** `tools/linux-hardware-gate prepare` now records the validated
+lowercase kernel boot ID with its journal cursor and starting monotonic time.
+`collect` rejects a missing or different boot ID before reading journals or
+subtracting clocks, records the current ID again, and `audit` independently
+requires the two IDs to match. The focused host test proves both the matching
+PASS and cross-boot rejection. The operator contract now lists same-boot
+preparation and collection as mandatory.
+
+**Evidence / measurements:** One ordered host campaign ran Bash syntax checks
+for all six gate-related shell programs, both host suites,
+`desktop-file-validate`, ShellCheck 0.11.0, the agent TypeScript check, all 12
+agent tests, `tools/linux-agent-e2e`, and `git diff --check`. Every criterion
+passed in 23,027,708,497 ns measured monotonic wall time. The faux Pi path
+activated revision `2303ba94d140…` from `31f8e1d31b6e…`; no live model ran, so
+model-weighted cost was zero. The finalized log is
+`/home/carlid/pr10-same-boot-acceptance-20260824/host-campaign.log`, 6,906
+bytes, SHA-256
+`b2133502b1aa21993558ce4b5e5aa274773ffa779f4cbafb32ee2907a35700a2`.
+Its 136-byte evidence manifest is
+`/home/carlid/pr10-same-boot-acceptance-20260824/evidence-manifest.tsv`,
+SHA-256
+`eace01fefc751365d46f798427ddd6932c7ebf0d94537a478503540244fe2357`.
+
+**Failure / decision / next gate:** Review rejected a merely positive duration
+as proof of one campaign because the monotonic clock resets at reboot and can
+again exceed the earlier boot's timestamp. No implementation or validation
+command failed after adding the boot-ID boundary. Accept the updated host code
+as merge-ready evidence tooling only. Physical Intel KMS/panel/input, GDM
+lifecycle, and exact-target evidence remain open until the clean merged
+revision is installed and the documented same-boot campaign runs on the
+Framework Laptop 12.

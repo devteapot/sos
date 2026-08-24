@@ -95,11 +95,14 @@ the current journal cursor. It then prints the operator steps:
   --evidence-dir artifacts/framework12-first-gate
 ```
 
-Collection reads only the prepared journal interval for the login UID plus the
-kernel journal. It also captures durable revision/authority agreement and the
-restored display-manager state. It finalizes `verdict.txt`, measures campaign
-wall time from monotonic timestamps, generates `evidence-manifest.tsv`, and
-independently verifies every path, byte size, and SHA-256.
+Collection first requires the exact kernel boot ID recorded by preparation so
+journal cursors and monotonic timestamps can never span a reboot. It then reads
+only the prepared journal interval for the login UID plus the kernel journal,
+captures durable revision/authority agreement and the restored display-manager
+state, and records the matching boot ID again. It finalizes `verdict.txt`,
+measures campaign wall time from same-boot monotonic timestamps, generates
+`evidence-manifest.tsv`, and independently verifies every path, byte size, and
+SHA-256.
 
 ## PASS contract
 
@@ -111,6 +114,7 @@ SKIP:
 - the direct compositor and logind-owned session become ready with
   `evidence=drm_page_flip`;
 - the configured offline or live resident agent starts;
+- preparation and collection come from the same kernel boot;
 - real libinput events are observed for keyboard, relative pointer, pointer
   button, and touchscreen;
 - at least two distinct revisions reach compositor-owned DRM page flips,

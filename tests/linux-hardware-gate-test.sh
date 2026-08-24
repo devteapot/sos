@@ -34,7 +34,12 @@ grep -F 'sos_agent_login_ready provider=faux' "$test_root/offline-ready.txt" >/d
 
 test_evidence="$test_root/evidence"
 mkdir "$test_evidence"
-printf 'agent_mode=offline\n' >"$test_evidence/campaign.env"
+test_boot_id=12345678-1234-1234-1234-123456789abc
+test_other_boot_id=87654321-4321-4321-4321-cba987654321
+printf '%s\n' \
+  'agent_mode=offline' \
+  "boot_id=$test_boot_id" >"$test_evidence/campaign.env"
+printf 'boot_id=%s\n' "$test_boot_id" >"$test_evidence/collection.env"
 printf '%s\n' \
   'completed significant DRM page flip output=eDP-1 recovery_view=true' \
   'sos_compositor_ready wayland_display=wayland-sos backend=drm evidence=drm_page_flip' \
@@ -54,6 +59,8 @@ printf '2222\n' >"$test_evidence/current-revision.txt"
 printf '2222\n' >"$test_evidence/authority-revision.txt"
 printf 'active\n' >"$test_evidence/display-manager-active.txt"
 "$test_gate" audit --evidence-dir "$test_evidence" >"$test_root/pass-audit.txt"
+grep -Fx "criterion=same_boot result=PASS boot_id=$test_boot_id" \
+  "$test_root/pass-audit.txt" >/dev/null
 grep -Fx \
   'linux_hardware_gate_result=PASS evidence=drm_page_flip physical_input=keyboard,touchpad,touchscreen' \
   "$test_root/pass-audit.txt" >/dev/null
@@ -66,6 +73,16 @@ fi
 grep -Fx 'criterion=touchscreen_input result=FAIL' "$test_root/fail-audit.txt" >/dev/null
 printf '%s\n' \
   'observed native compositor input input_class="touch"' >>"$test_evidence/journal-user.txt"
+
+printf 'boot_id=%s\n' "$test_other_boot_id" >"$test_evidence/collection.env"
+if "$test_gate" audit --evidence-dir "$test_evidence" >"$test_root/cross-boot-audit.txt"; then
+  printf 'error: audit accepted evidence collected after a different kernel boot\n' >&2
+  exit 1
+fi
+grep -Fx \
+  "criterion=same_boot result=FAIL prepared=$test_boot_id collected=$test_other_boot_id" \
+  "$test_root/cross-boot-audit.txt" >/dev/null
+printf 'boot_id=%s\n' "$test_boot_id" >"$test_evidence/collection.env"
 
 "$test_gate" finalize-manifest --evidence-dir "$test_evidence"
 "$test_gate" verify-manifest --evidence-dir "$test_evidence" \
