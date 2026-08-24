@@ -9481,3 +9481,53 @@ all five relevant scripts, ShellCheck 0.11.0 from container digest
 and `git diff --check` passed in one ordered 2.20-second campaign with 46,152
 KiB maximum RSS. No model provider ran, so live-model and model-weighted gate
 cost were zero. The pending privileged bake remains the next gate.
+
+## 2026-08-24 — Preserve the active rootfs across offline-home staging
+
+**Goal / environment / failure:** Run the next privileged Fedora 44 bake at
+clean revision `1a658a866d0f8b9300175d113f13ee82a7c6c91e`. Rootfs extraction,
+metadata verification, runtime-package installation, all Rust release builds,
+and the agent TypeScript bundle completed. Destroot installation then tried to
+measure
+`/usr/local/libexec/sos-agent/dist/agent-runner.cjs` as the normal builder but
+could not traverse its root-owned mode-`0700` `dist` directory. Staging the
+offline skeleton subsequently failed while removing
+`/tmp/sos-live-skel.9LdFDl/etc`, which had unexpectedly become root-owned. The
+finalized log at
+`/home/carlid/dev/sos/artifacts/linux-live-bake-attempt5.log` is 27,375 bytes
+with SHA-256
+`49e3de11b0e3b271ff73be60a9baf61077988a17402a3b9c06f41972a1d74ce7`.
+The bounded output contains only `work/`; there is no ISO or image identity,
+and no removable media or Framework disk was involved.
+
+**Diagnosis / changed code:** `write-offline-user-state` reused the global
+`live_image_rootfs` variable. Bash's function scoping therefore replaced the
+surrounding bake root with its temporary home path; every subsequent
+`live_image_target` call addressed that temporary directory, and privileged
+copy setup created its root-owned `etc`. Root-option parsing now returns a path
+instead of mutating shared state, offline-home writing uses a local
+`home_root`, and rootfs validation uses a function-local root. The regression
+sources the real tool, sets an active-root sentinel, calls the nested helper,
+and requires the sentinel to remain unchanged. Separately, destroot publishing
+now normalizes the agent code tree to `u=rwX,go=rX` after root ownership and
+fails explicitly unless every manifest artifact is a readable regular file
+with a valid nonzero size and SHA-256. A focused copy of the actual build tree
+proved all directories traversable and files readable; the 1,878,811-byte
+runner became mode `0755` with SHA-256
+`3eee6e7922fb82e344277793a435bb8edd36a2c183050b638a3c6ca13d3bc99a`.
+
+**Rejected approaches / decision / remaining risk / next gate:** Running the
+whole bake as root would violate the builder boundary. Hashing the private
+bundle only through `sudo` would make the manifest succeed while leaving the
+desktop user unable to load the agent, and cleaning the corrupted temporary
+tree through `sudo` would conceal the wrong destination. Keep the bake
+unprivileged, publish runtime code readably, and reserve privilege for rootfs
+mutation. The strict doctor, live-image and hardware-gate host suites, Bash
+parsing of all five relevant scripts, ShellCheck 0.11.0 from container digest
+`b9389b73c8f26f710a7171cb7d8848a34a9c1e07a7865e727c9ec4ce99f9a83f`,
+and `git diff --check` passed in one ordered 2.13-second campaign with 47,380
+KiB maximum RSS. No model provider ran, so live-model and model-weighted gate
+cost were zero. The remaining risk is the downstream privileged integration:
+remove only the bounded partial attempt-five output, then run one clean bake
+through staging, relabel, EROFS repack, ISO replay, media checksum, and final
+identity generation before writing removable media.

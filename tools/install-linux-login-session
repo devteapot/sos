@@ -186,6 +186,10 @@ sudo cp -a \
   services/sos-agent/package.json \
   "$(sos_install_target /usr/local/libexec/sos-agent)/"
 sudo chown -R root:root "$(sos_install_target /usr/local/libexec/sos-agent)"
+# npm's clean build can leave dist private to the builder. The live session
+# executes the bundle as an unprivileged desktop user, so publish code and
+# dependencies readably while retaining executable bits on tools that need it.
+sudo chmod -R u=rwX,go=rX "$(sos_install_target /usr/local/libexec/sos-agent)"
 sudo install -o root -g root -m 0644 \
   packaging/wayland-sessions/sos.desktop \
   "$(sos_install_target /usr/share/wayland-sessions/sos.desktop)"
@@ -229,10 +233,18 @@ sos_install_artifacts=(
   /usr/share/sos/experiences/daily-flow.luau
 )
 for sos_install_artifact in "${sos_install_artifacts[@]}"; do
+  sos_install_artifact_target="$(sos_install_target "$sos_install_artifact")"
+  [[ -f "$sos_install_artifact_target" && -r "$sos_install_artifact_target" ]] || \
+    sos_install_fail "installed artifact is not readable: $sos_install_artifact"
+  sos_install_artifact_bytes="$(stat -c %s "$sos_install_artifact_target")"
+  sos_install_artifact_sha="$(sha256sum "$sos_install_artifact_target" | cut -d ' ' -f 1)"
+  [[ "$sos_install_artifact_bytes" =~ ^[1-9][0-9]*$ \
+    && "$sos_install_artifact_sha" =~ ^[0-9a-f]{64}$ ]] || \
+    sos_install_fail "installed artifact identity is invalid: $sos_install_artifact"
   printf '%s\t%s\t%s\n' \
     "$sos_install_artifact" \
-    "$(stat -c %s "$(sos_install_target "$sos_install_artifact")")" \
-    "$(sha256sum "$(sos_install_target "$sos_install_artifact")" | cut -d ' ' -f 1)" \
+    "$sos_install_artifact_bytes" \
+    "$sos_install_artifact_sha" \
     >>"$sos_install_manifest"
 done
 sudo install -o root -g root -m 0644 \

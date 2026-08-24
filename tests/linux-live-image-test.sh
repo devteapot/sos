@@ -236,6 +236,18 @@ grep -Fx 'SOS_AGENT_FAKE_SOURCE=/usr/share/sos/experiences/daily-flow.luau' \
 grep -Fx '{}' "$test_root/skel/.local/state/sos/output.json" >/dev/null
 [[ "$(stat -c %a "$test_root/skel/.local/state/sos/agent/config.env")" == 600 ]]
 
+# Calling the user-state helper from a bake must not replace the active rootfs
+# used by the surrounding staging function.
+(
+  set -- write-offline-user-state --home-root "$test_root/source-skel"
+  # shellcheck source=/dev/null
+  source "$test_image" >/dev/null
+  live_image_rootfs="$test_root/rootfs-sentinel"
+  live_image_write_offline_user_state \
+    --home-root "$test_root/nested-skel" >/dev/null
+  [[ "$live_image_rootfs" == "$test_root/rootfs-sentinel" ]]
+)
+
 test_rootfs="$test_root/rootfs"
 mkdir -p \
   "$test_rootfs/usr/local/libexec/sos" \
@@ -373,6 +385,8 @@ fi
 grep -F -- '--destdir ROOT' "$test_root/install-usage.txt" >/dev/null
 grep -F -- '--offline' "$test_install" >/dev/null
 grep -F 'image destroot staging accepts only the offline agent' "$test_install" >/dev/null
+grep -F 'sudo chmod -R u=rwX,go=rX' "$test_install" >/dev/null
+grep -F 'installed artifact is not readable:' "$test_install" >/dev/null
 "$test_image" 2>"$test_root/image-usage.txt" || true
 grep -F -- '--source-sha256 SHA256' "$test_root/image-usage.txt" >/dev/null
 grep -F 'rootfs extraction destination is not empty' "$test_image" >/dev/null
