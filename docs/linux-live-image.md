@@ -9,8 +9,9 @@ Fedora Workstation live ISO by baking the same offline selectable-session
 install the hardware gate already uses.
 
 The remix is live-boot evidence media. It is not an installed product, not a
-It runs without installing Fedora or SOS to the Framework Laptop's internal
-disk. The removable media write happens on the build/operator machine.
+stock Fedora live USB, and not the boot-owned appliance target. It runs without
+installing Fedora or SOS to the Framework Laptop's internal disk. The removable
+media write happens on the build/operator machine.
 
 ## What the image contains
 
