@@ -83,6 +83,13 @@ local function network_panel(model)
     return group("column", { gap = 8, padding = 14 }, rows, 0x18251F, 16, "network-panel")
 end
 
+local function has_agent_configuration_action(agent, action)
+    for _, supported in ipairs(agent.configuration_actions or {}) do
+        if supported == action then return true end
+    end
+    return false
+end
+
 local function agent_panel(model, state)
     local agent = model.agent or {}
     local children = {
@@ -93,21 +100,43 @@ local function agent_panel(model, state)
                 value = agent.activity or (agent.available and "Ready" or "Agent unavailable"),
             }, "agent-status"),
         }),
-        group("row", { gap = 6 }, {
-            group("row", { padding = 8 }, { text("OPENAI", 10, sage) },
-                0x213129, 10, "agent-configure", "agent_configure_openai"),
-            group("row", { padding = 8 }, { text("OPENROUTER", 10, sage) },
-                0x213129, 10, "agent-configure-openrouter", "agent_configure_openrouter"),
-            group("row", { padding = 8 }, { text("CODEX SUB", 10, sage) },
-                0x213129, 10, "agent-configure-codex", "agent_configure_codex"),
-        }),
-        group("row", { gap = 6 }, {
-            group("row", { padding = 8 }, { text("FAKE", 10, sage) },
-                0x213129, 10, "agent-use-fake", "agent_use_fake"),
-            group("row", { padding = 8 }, { text("REMOVE KEY", 10, 0xE07A6A) },
-                0x213129, 10, "agent-clear-key", "agent_clear_credential"),
-        }),
     }
+    local primary_controls = {}
+    if has_agent_configuration_action(agent, "configure_openai") then
+        table.insert(primary_controls,
+            group("row", { padding = 8 }, { text("OPENAI", 10, sage) },
+                0x213129, 10, "agent-configure", "agent_configure_openai"))
+    end
+    if has_agent_configuration_action(agent, "configure_openrouter") then
+        table.insert(primary_controls,
+            group("row", { padding = 8 }, { text("OPENROUTER", 10, sage) },
+                0x213129, 10, "agent-configure-openrouter", "agent_configure_openrouter"))
+    end
+    if has_agent_configuration_action(agent, "configure_codex") then
+        table.insert(primary_controls,
+            group("row", { padding = 8 }, { text("CODEX SUB", 10, sage) },
+                0x213129, 10, "agent-configure-codex", "agent_configure_codex"))
+    end
+    local secondary_controls = {}
+    if has_agent_configuration_action(agent, "use_fake") then
+        table.insert(secondary_controls,
+            group("row", { padding = 8 }, { text("FAKE", 10, sage) },
+                0x213129, 10, "agent-use-fake", "agent_use_fake"))
+    end
+    if has_agent_configuration_action(agent, "clear_credential") then
+        table.insert(secondary_controls,
+            group("row", { padding = 8 }, { text("REMOVE KEY", 10, 0xE07A6A) },
+                0x213129, 10, "agent-clear-key", "agent_clear_credential"))
+    end
+    if #primary_controls > 0 then
+        table.insert(children, group("row", { gap = 6 }, primary_controls))
+    end
+    if #secondary_controls > 0 then
+        table.insert(children, group("row", { gap = 6 }, secondary_controls))
+    end
+    if #primary_controls == 0 and #secondary_controls == 0 then
+        table.insert(children, text("Provider changes are managed before login.", 10, dim))
+    end
     for index, message in ipairs(agent.messages or {}) do
         table.insert(children, group("column", { gap = 3, padding = 11 }, {
             text(message.role == "user" and "YOU" or "SOS", 10, amber),

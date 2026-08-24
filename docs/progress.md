@@ -9660,3 +9660,60 @@ transactional activation, and final clean logout still lack artifact-matched
 physical proof. Commit the fix, rebuild a clean revision-pinned ISO, boot it
 fresh, and repeat prepare, all observed interactions, collect, manifest audit,
 and same-boot verdict before promoting the Framework gate.
+
+## 2026-08-24 — Gate agent configuration controls by platform capability
+
+**Goal / physical observation / evidence:** Continue the focused Framework 12
+live-overlay diagnostic after dmabuf startup succeeded and exercise ordinary
+interaction. The compositor independently recorded native
+`relative_pointer`, `pointer_button`, and `keyboard` input; the Linux host then
+recorded 33 bounded text edits in the agent prompt. Selecting `CODEX SUB`,
+`FAKE`, and `CODEX SUB` again produced action requests 34–36, each of which
+reached the worker but failed commit as unsupported `agent.configure_codex` or
+`agent.use_fake` effects. The bounded 21,440-byte journal at
+`/home/carlid/dev/sos/artifacts/linux-live-image/evidence/framework12-20260824/framework12-dmabuf-diagnostic/journal-interaction.txt`
+has SHA-256
+`3f414fb9e87251bf60e9d917c7c05095486dbb9d058d1397ed763ca2109c29ca`.
+The expanded 47,280-byte diagnostic directory verifies through its 332-byte
+manifest, whose SHA-256 is
+`ca4f67a1d4a952be8883e36d88f45564b06a6e188f5fcc392b45ef1be5bd87e7`.
+These are focused physical observations on a modified overlay, not a complete
+artifact-matched input gate; touch, activation, and the final verdict remain
+open.
+
+**Diagnosis / changed contract:** Linux provider selection is intentionally a
+pre-session operation: `sos-agent-login` writes the private provider/model
+configuration, and a new GDM SOS session starts and monitors exactly that
+resident agent. Restarting or replacing it from a generated experience would
+currently terminate the graphical session. The shared reference experiences
+nevertheless rendered Android/Core credential buttons unconditionally, while
+the Linux host correctly rejected their effects. `model.agent` now carries a
+typed `configuration_actions` allowlist. Linux leaves it empty; Android Compat
+publishes its five trusted credential actions; Core publishes only its pinned
+OpenRouter, fake, and clear actions. Default, Daily Flow, and Timeflow render
+only listed controls and otherwise explain that provider changes are managed
+before login. Generated Luau still cannot bypass the trusted host's effect
+validation.
+
+The same check exposed an older decoder mismatch: the stock experience could
+render capability-granted System Providers v1 controls, but Luau's bounded
+effect decoder omitted audio volume/mute, media transport, app launch, and
+attention acknowledgement. The decoder now accepts exactly those documented
+typed actions; platform capability and adapter checks still decide whether an
+individual request is authorized and executable.
+
+**Rejected approaches / checks / next gate:** Do not turn `use_fake` into a
+silent Linux no-op, launch a credential helper behind the direct session, or
+weaken the host's unknown-effect rejection. Each would make rendered state or
+process ownership disagree with the actual resident provider. A measured host
+campaign passed five experience-IR tests, 22 Luau runtime tests, 26 Linux-host
+experience tests, warning-denying Clippy, and NDK 29/API-31 Compat and Core
+cross-checks in 10.24 seconds with 2,482,232 KiB maximum RSS. The finalized
+10,087-byte log at
+`/home/carlid/dev/sos/artifacts/linux-live-image/evidence/framework12-20260824/provider-controls-host-checks.log`
+has SHA-256
+`6c4d43c4eace55f09f4b99f97709fbe2a818f3caaad7fca30b3e7234755790c3`.
+No model provider ran, so live-model and model-weighted gate cost were zero.
+Build the next ISO only from the resulting clean committed revision, then repeat
+the complete Framework prepare, SOS input and deterministic prompt activation,
+clean logout, collect, audit, and copy-off sequence.

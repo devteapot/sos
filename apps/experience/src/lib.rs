@@ -97,6 +97,37 @@ mod tests {
             .unwrap();
         assert!(contains_action(&stock_scene.root, "audio_volume_up"));
         assert!(contains_agent_composer(&stock_scene.root));
+        for source in [
+            super::DEFAULT_EXPERIENCE,
+            super::TIMEFLOW_EXPERIENCE,
+            super::DAILY_FLOW_EXPERIENCE,
+        ] {
+            let runtime = runtime_luau::LuauRuntime::compile(source).unwrap();
+            let model = providers_fake::snapshot();
+            let scene = runtime.render(&model, &runtime.initial_state()).unwrap();
+            for action in [
+                "agent_configure_openai",
+                "agent_configure_openrouter",
+                "agent_configure_codex",
+                "agent_use_fake",
+                "agent_clear_credential",
+            ] {
+                assert!(!contains_action(&scene.root, action));
+            }
+
+            let mut configurable = model;
+            configurable.agent.configuration_actions = vec![
+                experience_ir::AgentConfigurationAction::ConfigureCodex,
+                experience_ir::AgentConfigurationAction::UseFake,
+            ];
+            let scene = runtime
+                .render(&configurable, &runtime.initial_state())
+                .unwrap();
+            assert!(contains_action(&scene.root, "agent_configure_codex"));
+            assert!(contains_action(&scene.root, "agent_use_fake"));
+            assert!(!contains_action(&scene.root, "agent_configure_openai"));
+            assert!(!contains_action(&scene.root, "agent_configure_openrouter"));
+        }
         let outcome = runtime
             .update_with_effects(
                 &stock_model,
