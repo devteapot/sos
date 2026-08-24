@@ -110,7 +110,8 @@ printf '%s\n' \
   'agent_mode=offline' \
   'boot_kind=live-boot' \
   'campaign_class=live-boot' \
-  'not_installed_product=true' >"$test_evidence/campaign.env"
+  'not_installed_product=true' \
+  "boot_id=$test_boot_id" >"$test_evidence/campaign.env"
 printf '%s\n' \
   'observed native compositor input input_class="touch"' >>"$test_evidence/journal-user.txt"
 "$test_gate" audit --evidence-dir "$test_evidence" >"$test_root/live-audit.txt"

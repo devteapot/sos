@@ -264,11 +264,13 @@ live_image_symlink_basename() {
 }
 
 live_image_require_exact_line() {
-  local file="$1" expected="$2" description="$3"
+  local file="$1" expected="$2" missing_description="$3" mismatch_description="$4"
   if [[ -r "$file" ]]; then
-    grep -Fx "$expected" "$file" >/dev/null || live_image_fail "$description"
+    [[ -f "$file" ]] || live_image_fail "$missing_description"
+    grep -Fx "$expected" "$file" >/dev/null || live_image_fail "$mismatch_description"
   else
-    sudo grep -Fx "$expected" "$file" >/dev/null || live_image_fail "$description"
+    sudo test -f "$file" || live_image_fail "$missing_description"
+    sudo grep -Fx "$expected" "$file" >/dev/null || live_image_fail "$mismatch_description"
   fi
 }
 
@@ -333,15 +335,15 @@ live_image_check_rootfs() {
     live_image_fail "staged install metadata must pin the offline agent"
   local skel_config liveuser_config=""
   skel_config="$(live_image_target /etc/skel/.local/state/sos/agent/config.env)"
-  [[ -f "$skel_config" ]] || live_image_fail "offline live skel agent config is missing"
   live_image_require_exact_line "$skel_config" \
     "SOS_AGENT_FAKE_SOURCE=$live_image_offline_source" \
+    "offline live skel agent config is missing" \
     "offline live skel does not pin the baked daily-flow source"
   if [[ -d "$(live_image_target /home/liveuser)" ]]; then
     liveuser_config="$(live_image_target /home/liveuser/.local/state/sos/agent/config.env)"
-    [[ -f "$liveuser_config" ]] || live_image_fail "existing liveuser is missing offline agent config"
     live_image_require_exact_line "$liveuser_config" \
       "SOS_AGENT_FAKE_SOURCE=$live_image_offline_source" \
+      "existing liveuser is missing offline agent config" \
       "existing liveuser does not pin the baked daily-flow source"
   fi
   printf 'linux_live_image_rootfs_checked=PASS root=%s revision=%s boot_kind=live-boot not_installed_product=true\n' \

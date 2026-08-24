@@ -9228,3 +9228,33 @@ rootfs metadata and ISO sidecar, and boots it on the Framework Laptop 12 for the
 same-boot physical `prepare -> SOS -> collect -> copy off` gate. That run may
 write removable media but must not install to or mutate the laptop's internal
 disk.
+
+## 2026-08-24 — Validate staged private live-user state through sudo
+
+**Goal / failure:** Close the remaining real-bake blocker in live-rootfs
+validation without relaxing the mode of offline agent configuration. Although
+the first hardening pass added a sudo fallback for reading a private config, an
+ordinary unprivileged `[[ -f ... ]]` still ran before that fallback. The staged
+`/etc/skel/.local` tree is root-owned and mode `0700`, so the builder cannot
+traverse it and a real bake would report the config as missing.
+
+**Changed / evidence / decision:** `live_image_require_exact_line` now performs
+both existence and content validation directly when readable, or performs both
+through sudo when the builder cannot traverse the path. The skel and optional
+liveuser callers no longer preflight private files unprivileged. The focused
+test locks the staged `.local` tree against ordinary traversal, retains a mode
+`0600` config, proves that validation invokes privileged `test -f` and `grep`,
+and requires `check-rootfs` to pass. Where the host supplies subordinate IDs
+and a setuid-capable workspace, the suite repeats that check as namespace UID
+1000 against an actual namespace-root-owned mode-`0600` fixture. Keep private
+state private; do not weaken directory or file modes to make the image builder
+able to read them. The next gate remains the complete privileged Fedora 44 bake
+and removable-media-only Framework Laptop 12 campaign described above.
+
+**Verification / measurement:** On the Fedora 44 review host, the subordinate-ID
+namespace fixture ran rather than skipping. `tests/linux-live-image-test.sh` and
+`tests/linux-hardware-gate-test.sh` passed, as did Bash parsing of the five
+relevant scripts, ShellCheck 0.11.0 from container digest
+`b9389b73c8f26f710a7171cb7d8848a34a9c1e07a7865e727c9ec4ce99f9a83f`, and
+`git diff --check`. The ordered campaign took 2.15 seconds wall time. No model
+provider ran, so live-model and model-weighted gate cost were zero.

@@ -7,8 +7,16 @@ test_image="$test_repo_root/tools/linux-live-image"
 test_install="$test_repo_root/tools/install-linux-login-session"
 test_root="$(mktemp -d -t sos-linux-live-image-test.XXXXXX)"
 test_revision=abcdef1234567890abcdef1234567890abcdef12
+test_namespace_dir=""
+test_locked_dir=""
 
 test_cleanup() {
+  if [[ -n "$test_locked_dir" && -d "$test_locked_dir" ]]; then
+    chmod 0700 "$test_locked_dir" 2>/dev/null || true
+  fi
+  if [[ -n "$test_namespace_dir" && -d "$test_namespace_dir" ]]; then
+    rm -r -- "$test_namespace_dir"
+  fi
   rm -r -- "$test_root"
 }
 trap test_cleanup EXIT
@@ -121,6 +129,23 @@ printf '%s\n' \
   'fi' \
   'exit 0' >"$test_root/bin/dump.erofs"
 chmod 0755 "$test_root/bin/dump.erofs"
+# Simulate sudo crossing a root-owned, non-traversable directory boundary. The
+# wrapper temporarily grants its owning test process access, runs the real
+# command, and restores the boundary. An ordinary [[ -f path ]] cannot pass.
+# shellcheck disable=SC2016
+printf '%s\n' \
+  '#!/usr/bin/env bash' \
+  'set -euo pipefail' \
+  '[[ -n "${TEST_SUDO_UNLOCK_DIR:-}" && -n "${TEST_SUDO_LOG:-}" ]] || exec "$@"' \
+  'printf "%s\\n" "$*" >>"$TEST_SUDO_LOG"' \
+  'chmod 0700 "$TEST_SUDO_UNLOCK_DIR"' \
+  'set +e' \
+  '"$@"' \
+  'status=$?' \
+  'set -e' \
+  'chmod 000 "$TEST_SUDO_UNLOCK_DIR"' \
+  'exit "$status"' >"$test_root/bin/sudo"
+chmod 0755 "$test_root/bin/sudo"
 : >"$test_root/payload.img"
 PATH="$test_root/bin:$PATH" TEST_PAYLOAD_LAYOUT=erofs-root \
   "$test_image" check-payload --payload "$test_root/payload.img" \
@@ -178,6 +203,89 @@ ln -s graphical.target "$test_rootfs/usr/lib/systemd/system/default.target"
 grep -F 'linux_live_image_rootfs_checked=PASS' "$test_root/check-pass.txt" >/dev/null
 grep -F 'boot_kind=live-boot' "$test_root/check-pass.txt" >/dev/null
 grep -F 'not_installed_product=true' "$test_root/check-pass.txt" >/dev/null
+
+test_locked_dir="$test_rootfs/etc/skel/.local"
+test_locked_config="$test_locked_dir/state/sos/agent/config.env"
+test_sudo_log="$test_root/sudo.log"
+chmod 0600 "$test_locked_config"
+chmod 000 "$test_locked_dir"
+if [[ -f "$test_locked_config" ]]; then
+  printf 'error: locked private config remained visible to an ordinary file test\n' >&2
+  exit 1
+fi
+PATH="$test_root/bin:$PATH" \
+  TEST_SUDO_UNLOCK_DIR="$test_locked_dir" \
+  TEST_SUDO_LOG="$test_sudo_log" \
+  "$test_image" check-rootfs --root "$test_rootfs" \
+  >"$test_root/check-privileged-config.txt"
+chmod 0700 "$test_locked_dir"
+grep -F 'linux_live_image_rootfs_checked=PASS' \
+  "$test_root/check-privileged-config.txt" >/dev/null
+grep -Fx "test -f $test_locked_config" "$test_sudo_log" >/dev/null
+grep -Fx \
+  "grep -Fx SOS_AGENT_FAKE_SOURCE=/usr/share/sos/experiences/daily-flow.luau $test_locked_config" \
+  "$test_sudo_log" >/dev/null
+
+# When subordinate-ID user namespaces and a setuid-capable workspace are
+# available, repeat the check with an actual namespace-root-owned 0600 fixture
+# and a namespace-root setuid command trampoline standing in for sudo.
+test_user="$(id -un)"
+test_uid="$(id -u)"
+test_gid="$(id -g)"
+test_subuid_start="$(awk -F: -v user="$test_user" '$1 == user && $3 >= 1001 { print $2; exit }' /etc/subuid 2>/dev/null || true)"
+test_subgid_start="$(awk -F: -v user="$test_user" '$1 == user && $3 >= 1001 { print $2; exit }' /etc/subgid 2>/dev/null || true)"
+if [[ "$test_uid" -ne 0 && -n "$test_subuid_start" && -n "$test_subgid_start" ]] \
+  && command -v unshare >/dev/null 2>&1 \
+  && command -v setpriv >/dev/null 2>&1 \
+  && command -v findmnt >/dev/null 2>&1 \
+  && ! findmnt -T "$test_repo_root" -no OPTIONS | tr ',' '\n' | grep -Fx nosuid >/dev/null; then
+  mkdir -p "$test_repo_root/.cache"
+  test_namespace_dir="$(mktemp -d -p "$test_repo_root/.cache" sos-root-owned-config.XXXXXX)"
+  chmod 0755 "$test_namespace_dir"
+  # The variables in this script belong to the namespace process.
+  # shellcheck disable=SC2016
+  unshare \
+    --map-users="0:$test_uid:1" \
+    --map-users="1:$test_subuid_start:65536" \
+    --map-groups="0:$test_gid:1" \
+    --map-groups="1:$test_subgid_start:65536" \
+    bash -c '
+      set -euo pipefail
+      rootfs="$1"
+      image_root="$2"
+      helper_dir="$3"
+      result="$4"
+      env_binary="$5"
+      cleanup_namespace_fixture() {
+        chown -R 0:0 "$rootfs/home/liveuser/.local" 2>/dev/null || true
+        rm -f -- "$helper_dir/sudo"
+      }
+      trap cleanup_namespace_fixture EXIT
+      chmod 0755 "$(dirname "$rootfs")"
+      find "$rootfs" -type d -exec chmod 0755 {} +
+      find "$rootfs/etc/skel/.local" -type d -exec chmod 0700 {} +
+      chmod 0600 "$rootfs/etc/skel/.local/state/sos/agent/config.env"
+      chown -R 1000:1000 "$rootfs/home/liveuser/.local"
+      cp -- "$env_binary" "$helper_dir/sudo"
+      chown 0:1000 "$helper_dir" "$helper_dir/sudo"
+      chmod 0710 "$helper_dir"
+      chmod 4750 "$helper_dir/sudo"
+      exec 8<"$helper_dir"
+      exec 9<"$image_root"
+      setpriv --reuid=1000 --regid=1000 --clear-groups \
+        env PATH="/proc/self/fd/8:/usr/bin:/bin" \
+        /proc/self/fd/9/tools/linux-live-image check-rootfs --root "$rootfs" \
+        >"$result"
+      grep -F "linux_live_image_rootfs_checked=PASS" "$result" >/dev/null
+    ' bash \
+    "$test_rootfs" \
+    "$test_repo_root" \
+    "$test_namespace_dir" \
+    "$test_root/check-root-owned-config.txt" \
+    "$(command -v env)"
+  rm -r -- "$test_namespace_dir"
+  test_namespace_dir=""
+fi
 
 ln -sf sos-session.target "$test_rootfs/etc/systemd/system/default.target"
 if "$test_image" check-rootfs --root "$test_rootfs" >"$test_root/check-appliance.txt" 2>&1; then
