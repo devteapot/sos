@@ -9346,7 +9346,8 @@ package and SOS mutations, the existing `setfiles` phase applies the rootfs's
 own Fedora policy to the complete tree. The mount is bounded under the bake
 work directory and has an EXIT cleanup before the work directory can be
 removed. Before unmounting, a second metadata-only rsync dry run must report no
-content, owner, mode, hardlink, ACL, capability, or included-xattr difference.
+size, timestamp, owner, mode, hardlink, or ACL difference; normalized manifests
+must report no capability or other included-xattr difference.
 
 **Focused evidence / measurements:** Copying the official failing file through
 the filtered rsync path preserved its bytes and omitted the stale `fusefs_t`
@@ -9378,3 +9379,53 @@ only the bounded partial attempt-two output, commit and push the correction,
 and run one fresh privileged bake. That downstream run must still prove the
 whole-rootfs mount/copy, package mutation, policy relabel, EROFS repack, ISO
 checksum, and identities before removable-media hardware testing begins.
+
+## 2026-08-24 — Separate logical metadata and raw-xattr audits
+
+**Goal / environment / failure:** Run the fresh downstream bake at clean
+revision `f6ad4e9f69d967ddeca517f2760cac5f0969934d` after replacing direct
+EROFS xattr extraction. The strict doctor, ISO-tree extraction, read-only EROFS
+mount, and complete privileged rsync copy passed. The new dry-run audit then
+failed on exactly `.d........x var/log/journal/`. The finalized bake log at
+`/home/carlid/dev/sos/artifacts/linux-live-bake-attempt3.log` is 1,720 bytes
+with SHA-256
+`1e02477374a3ca0d264b3f475d91bce695829fa7153549cd0fbdc575b15ab46c`;
+the 29-byte raw audit at
+`/home/carlid/dev/sos/artifacts/linux-live-rsync-audit-attempt3.log` has
+SHA-256 `f8ab10a71d8144e2f0004a0c587e48fc2e4b46950f6b54bce660af97609951e3`.
+No remixed ISO or removable media was produced, and no Framework or internal
+laptop disk was involved.
+
+**Diagnosis / evidence:** Rsync's itemized `x` flag combined its raw-xattr view
+with an ACL-bearing directory even though the copy intentionally filtered the
+source SELinux label and handled ACLs separately. The source and destination
+`/var/log/journal` both had numeric owner `0:190`, mode `2755`, identical access
+ACLs, and identical default ACLs; only the expected staging SELinux context
+differed. More importantly, the completed privileged copy retained the real
+`security.capability` on
+`/usr/libexec/gstreamer-1.0/gst-ptp-helper` as
+`cap_net_bind_service,cap_net_admin,cap_sys_nice=ep`. Its source and destination
+bytes both had SHA-256
+`f3849ca6c51675c7365eb7b0bb048bc11f256aa09d069818ae83ef44744066a5`.
+Thus the copy boundary passed and the combined audit, not metadata
+preservation, was the earliest broken layer.
+
+**Changed / decision / next gate:** Keep the fail-closed audit but split its
+semantics. A metadata-only rsync dry run without `-X` now checks content size
+and time, numeric ownership, modes, hardlinks, and logical ACLs.
+Separate sorted `getfattr` manifests compare exact `user.*`, `trusted.*`, and
+non-SELinux `security.*` names and values, including capabilities, while
+deliberately excluding `security.selinux` and ACLs already checked logically.
+The focused fixture requires both the metadata audit and normalized xattr
+manifest comparison to be empty. Do not whitelist `/var/log/journal`, discard
+the audit, or accept arbitrary rsync `x` differences. After nearby checks pass,
+commit and push the correction. The next operator command must remove only the
+bounded partial attempt-three output, then run one fresh privileged bake
+through relabel and repack.
+
+The strict doctor, live-image and hardware-gate host suites, Bash parsing of
+all five relevant scripts, ShellCheck 0.11.0 from container digest
+`b9389b73c8f26f710a7171cb7d8848a34a9c1e07a7865e727c9ec4ce99f9a83f`,
+and `git diff --check` passed in one ordered 2.16-second campaign with 46,900
+KiB maximum RSS. No model provider ran, so live-model and model-weighted gate
+cost were zero. The pending privileged bake remains the next gate.

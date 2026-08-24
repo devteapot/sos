@@ -103,8 +103,8 @@ live_image_doctor() {
   fi
   [[ "$#" -eq 0 ]] || live_image_fail "doctor accepts only --layout-only"
   local command
-  for command in cargo find git install mount mountpoint node npm pkg-config python3 \
-    realpath rsync rustc sha256sum stat sudo umount; do
+  for command in awk cargo cmp find getfattr git install mount mountpoint node npm \
+    pkg-config python3 realpath rsync rustc sha256sum sort stat sudo umount; do
     live_image_require_command "$command"
   done
   local missing=()
@@ -385,10 +385,28 @@ live_image_check_payload() {
     "$payload" "$container_format"
 }
 
+live_image_write_xattr_manifest() {
+  local root="$1" output="$2"
+  (
+    cd "$root"
+    sudo getfattr -hRPd -m- .
+  ) | awk '
+    /^# file: / {
+      path = substr($0, 9)
+      next
+    }
+    /^(user|trusted|security)\./ && !/^security\.selinux=/ {
+      print path "\t" $0
+    }
+  ' | LC_ALL=C sort >"$output"
+}
+
 live_image_extract_payload() {
   local payload="$1" format="$2" dest="$3" work="$4"
   local mountpoint="$work/erofs-source"
   local audit="$work/erofs-rsync-audit.txt"
+  local source_xattrs="$work/erofs-source-xattrs.txt"
+  local dest_xattrs="$work/erofs-dest-xattrs.txt"
   mkdir -p -- "$dest" "$mountpoint"
   [[ -z "$(find "$dest" -mindepth 1 -print -quit)" ]] || \
     live_image_fail "rootfs extraction destination is not empty: $dest"
@@ -414,13 +432,15 @@ live_image_extract_payload() {
           "$mountpoint/" "$dest/"
         # The builder intentionally owns this audit file for inspection.
         # shellcheck disable=SC2024
-        sudo rsync -aHAXSni --numeric-ids \
-          --filter='-x security.selinux' \
-          --filter='-x system.*' \
+        sudo rsync -aHASni --numeric-ids \
           "$mountpoint/" "$dest/" >"$audit"
         [[ ! -s "$audit" ]] || \
           live_image_fail "rootfs metadata audit differs after copy; inspect $audit"
-        rm -- "$audit"
+        live_image_write_xattr_manifest "$mountpoint" "$source_xattrs"
+        live_image_write_xattr_manifest "$dest" "$dest_xattrs"
+        cmp -s -- "$source_xattrs" "$dest_xattrs" || \
+          live_image_fail "rootfs xattr audit differs after copy; inspect $source_xattrs and $dest_xattrs"
+        rm -- "$audit" "$source_xattrs" "$dest_xattrs"
         sudo umount -- "$mountpoint"
         trap - EXIT
       )

@@ -154,12 +154,24 @@ if command -v getfattr >/dev/null 2>&1 \
     --filter='-x security.selinux' \
     --filter='-x system.*' \
     "$test_metadata_source/" "$test_metadata_dest/"
-  rsync -aHAXSni --numeric-ids \
-    --filter='-x security.selinux' \
-    --filter='-x system.*' \
+  rsync -aHASni --numeric-ids \
     "$test_metadata_source/" "$test_metadata_dest/" \
     >"$test_root/metadata-audit.txt"
   [[ ! -s "$test_root/metadata-audit.txt" ]]
+  for test_metadata_side in source dest; do
+    test_metadata_dir="$test_metadata_source"
+    [[ "$test_metadata_side" == source ]] || test_metadata_dir="$test_metadata_dest"
+    (
+      cd "$test_metadata_dir"
+      getfattr -hRPd -m- .
+    ) | awk '
+      /^# file: / { path = substr($0, 9); next }
+      /^(user|trusted|security)\./ && !/^security\.selinux=/ {
+        print path "\t" $0
+      }
+    ' | LC_ALL=C sort >"$test_root/metadata-$test_metadata_side-xattrs.txt"
+  done
+  cmp "$test_root/metadata-source-xattrs.txt" "$test_root/metadata-dest-xattrs.txt"
   cmp "$test_metadata_source/file" "$test_metadata_dest/file"
   [[ "$(stat -c %a "$test_metadata_dest/file")" == 750 ]]
   [[ "$(stat -c %i "$test_metadata_dest/file")" \
@@ -365,8 +377,10 @@ grep -F 'rootfs extraction destination is not empty' "$test_image" >/dev/null
 grep -F "sudo mount -t erofs -o loop,ro \"\$payload\" \"\$mountpoint\"" \
   "$test_image" >/dev/null
 grep -F 'sudo rsync -aHAXS --numeric-ids' "$test_image" >/dev/null
-grep -F 'sudo rsync -aHAXSni --numeric-ids' "$test_image" >/dev/null
+grep -F 'sudo rsync -aHASni --numeric-ids' "$test_image" >/dev/null
 grep -F 'rootfs metadata audit differs after copy' "$test_image" >/dev/null
+grep -F 'rootfs xattr audit differs after copy' "$test_image" >/dev/null
+grep -F 'sudo getfattr -hRPd -m- .' "$test_image" >/dev/null
 grep -F -- "--filter='-x security.selinux'" "$test_image" >/dev/null
 grep -F -- "--filter='-x system.*'" "$test_image" >/dev/null
 grep -F "sudo umount -- \"\$mountpoint\"" "$test_image" >/dev/null
