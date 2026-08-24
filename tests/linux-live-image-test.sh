@@ -118,6 +118,21 @@ fi
 grep -F 'only metadata-preserving erofs-rootfs is supported' \
   "$test_root/flat-identity.txt" >/dev/null
 
+if command -v fsck.erofs >/dev/null 2>&1 \
+  && command -v mkfs.erofs >/dev/null 2>&1 \
+  && mkfs.erofs --help 2>&1 | grep -F 'all-fragments' >/dev/null; then
+  test_packed_source="$test_root/packed-source"
+  test_packed_dest="$test_root/packed-rootfs"
+  test_packed_image="$test_root/packed.erofs"
+  mkdir "$test_packed_source" "$test_packed_dest"
+  printf 'packed extraction regression\n' >"$test_packed_source/file"
+  mkfs.erofs -zlzma -Eall-fragments \
+    "$test_packed_image" "$test_packed_source" >/dev/null
+  fsck.erofs --path=/ --extract="$test_packed_dest" --xattrs --preserve \
+    "$test_packed_image" >/dev/null
+  cmp "$test_packed_source/file" "$test_packed_dest/file"
+fi
+
 mkdir "$test_root/bin"
 # The single-quoted expansions belong to the generated mock, not this test process.
 # shellcheck disable=SC2016
@@ -307,7 +322,9 @@ grep -F -- '--offline' "$test_install" >/dev/null
 grep -F 'image destroot staging accepts only the offline agent' "$test_install" >/dev/null
 "$test_image" 2>"$test_root/image-usage.txt" || true
 grep -F -- '--source-sha256 SHA256' "$test_root/image-usage.txt" >/dev/null
-grep -F -- '--xattrs --preserve' "$test_image" >/dev/null
+grep -F 'rootfs extraction destination is not empty' "$test_image" >/dev/null
+grep -F "sudo fsck.erofs --path=/ --extract=\"\$dest\" --xattrs --preserve" \
+  "$test_image" >/dev/null
 grep -F 'sudo setfiles -F -r' "$test_image" >/dev/null
 grep -F "sudo fsck.erofs \"\$output\"" "$test_image" >/dev/null
 grep -F 'implantisomd5 --force' "$test_image" >/dev/null

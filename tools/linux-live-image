@@ -103,7 +103,7 @@ live_image_doctor() {
   fi
   [[ "$#" -eq 0 ]] || live_image_fail "doctor accepts only --layout-only"
   local command
-  for command in cargo git install node npm pkg-config python3 realpath rustc sha256sum stat sudo; do
+  for command in cargo find git install node npm pkg-config python3 realpath rustc sha256sum stat sudo; do
     live_image_require_command "$command"
   done
   local missing=()
@@ -387,11 +387,16 @@ live_image_check_payload() {
 live_image_extract_payload() {
   local payload="$1" format="$2" dest="$3" work="$4"
   mkdir -p -- "$dest" "$work"
+  [[ -z "$(find "$dest" -mindepth 1 -print -quit)" ]] || \
+    live_image_fail "rootfs extraction destination is not empty: $dest"
   case "$format" in
     erofs-rootfs)
       # Extraction must run as root. erofs-utils otherwise deliberately maps
       # ownership to the caller, applies umask, and omits xattrs by default.
-      sudo fsck.erofs --extract="$dest" --xattrs --preserve "$payload" >/dev/null
+      # Fedora's fragment-packed EROFS also needs an explicit root path;
+      # otherwise erofs-utils 1.9.2 treats the hidden packed inode as the
+      # extraction target and collides with this destination directory.
+      sudo fsck.erofs --path=/ --extract="$dest" --xattrs --preserve "$payload" >/dev/null
       ;;
     *) live_image_fail "cannot extract container format: $format" ;;
   esac

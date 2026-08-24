@@ -9258,3 +9258,62 @@ relevant scripts, ShellCheck 0.11.0 from container digest
 `b9389b73c8f26f710a7171cb7d8848a34a9c1e07a7865e727c9ec4ce99f9a83f`, and
 `git diff --check`. The ordered campaign took 2.15 seconds wall time. No model
 provider ran, so live-model and model-weighted gate cost were zero.
+
+## 2026-08-24 — Fix fragment-packed Fedora EROFS extraction after the first bake
+
+**Goal / environment / failure:** Run the first complete privileged live-image
+bake before writing removable media for the Framework Laptop 12. The Fedora 44
+Server x86-64 build host was at clean revision
+`f25b44935d91cc203f6565acb4f5cec28df0de34`, with `erofs-utils-1.9.2-2.fc44`
+and a strict `tools/linux-live-image doctor` PASS. The signed Fedora source at
+`/home/carlid/dev/sos/artifacts/linux-live-source/Fedora-Workstation-Live-44-1.7.x86_64.iso`
+was 2,851,612,672 bytes with SHA-256
+`1620295f6a00c27c3208f0c00b8ece4eab1ec69b9002152d97488bf26a426ddf`.
+`xorriso` restored all 355 ISO-tree files in one second, then privileged
+`fsck.erofs --extract` stopped before rootfs mutation because it tried to open
+the pre-created extraction directory as the image's hidden packed-fragment
+inode. The finalized failure log is
+`/home/carlid/dev/sos/artifacts/linux-live-bake-attempt1.log`, 1,729 bytes,
+SHA-256 `9471415cca20e0273beb4e058baddf34c82d7cee0344028dee83de6bbf31431f`.
+No remixed ISO was produced, no removable media was written, and no Framework
+or internal laptop disk was involved.
+
+**Changed / evidence:** EROFS extraction now selects the filesystem root
+explicitly with `fsck.erofs --path=/` while retaining privileged xattr, owner,
+and permission preservation. It also rejects a nonempty extraction destination
+instead of adding `--overwrite` and concealing stale files. A full probe against
+the official Fedora payload is recorded below; the probe deliberately ran as
+the ordinary builder with owner, permission, and xattr restoration disabled, so
+it proves traversal and decompression compatibility only. The next privileged
+bake remains responsible for the metadata-preservation gate.
+
+With `--path=/`, the complete official root tree extracted successfully in
+998.82 seconds with 33,412 KiB maximum RSS. It contained 155,630 paths and
+`du --bytes --summarize` reported 6,709,518,634 bytes. The finalized probe log
+at `/home/carlid/dev/sos/artifacts/linux-live-erofs-root-path-probe.log` is 51
+bytes with SHA-256
+`d1e1ee4fbb95c6145a00ac75bdb4216b1761ff7c60d1f11600fbaa9ca4d1015a`.
+The rejected absent-destination attempt log at
+`/home/carlid/dev/sos/artifacts/linux-live-erofs-absent-destination-attempt.log`
+is 222 bytes with SHA-256
+`30d9fadb6c6d6e6733db264d240df5e8c785afb3cf688b5cc3e509990ac1e50b`.
+The live-image suite also builds a small `all-fragments` EROFS and requires the
+explicit-root extraction to reproduce its file exactly. The live-image and
+hardware-gate host suites, Bash parsing of all five relevant scripts, ShellCheck
+0.11.0 from container digest
+`b9389b73c8f26f710a7171cb7d8848a34a9c1e07a7865e727c9ec4ce99f9a83f`,
+and `git diff --check` passed in one ordered 1.92-second campaign with 46,556
+KiB maximum RSS. No model provider ran, so live-model and model-weighted gate
+cost were zero.
+
+**Rejected approach / decision / next gate:** Merely leaving the destination
+absent was insufficient: `fsck.erofs` wrote the packed inode as a
+3,662,513,055-byte regular file and then rejected it as the root directory after
+18.06 seconds. Keep the explicit root selector and fail-closed empty-directory
+check. After retaining the three finalized logs above, the bounded partial
+output at `/home/carlid/dev/sos/artifacts/linux-live-image` was removed; it was
+generated failed work and is not recoverable. Commit and push the fix, then run
+one clean privileged bake. A successful host bake still does not close the
+physical gate; the next gate is removable-media boot and the documented
+same-boot `prepare -> physical interactions -> collect` campaign on the
+Framework Laptop 12, without installing to or modifying its internal disk.
