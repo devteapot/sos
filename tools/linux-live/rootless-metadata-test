@@ -1,0 +1,83 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+umask 077
+
+metadata_test_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+metadata_test_work="$(mktemp -d -t sos-rootless-live-metadata.XXXXXX)"
+
+metadata_test_cleanup() {
+  sudo rm -r -- "$metadata_test_work"
+}
+trap metadata_test_cleanup EXIT
+
+mkdir -p \
+  "$metadata_test_work/source/usr/bin" \
+  "$metadata_test_work/extracted" \
+  "$metadata_test_work/repacked-extracted"
+printf 'capability probe\n' >"$metadata_test_work/source/usr/bin/cap-probe"
+sudo chown 123:456 "$metadata_test_work/source/usr/bin/cap-probe"
+sudo chmod 0755 "$metadata_test_work/source/usr/bin/cap-probe"
+sudo setcap cap_net_bind_service=ep \
+  "$metadata_test_work/source/usr/bin/cap-probe"
+sudo ln "$metadata_test_work/source/usr/bin/cap-probe" \
+  "$metadata_test_work/source/usr/bin/cap-probe-link"
+
+printf 'ACL and xattr probe\n' >"$metadata_test_work/source/usr/bin/acl-probe"
+sudo chown 234:567 "$metadata_test_work/source/usr/bin/acl-probe"
+sudo setfacl -m u:42:r "$metadata_test_work/source/usr/bin/acl-probe"
+sudo setfattr -n user.sos -v portable \
+  "$metadata_test_work/source/usr/bin/acl-probe"
+
+printf '%s\n' \
+  '/usr/bin/cap-probe -- system_u:object_r:bin_t:s0' \
+  '/usr/bin/cap-probe-link -- system_u:object_r:bin_t:s0' \
+  '/usr/bin/acl-probe -- system_u:object_r:bin_t:s0' \
+  >"$metadata_test_work/file_contexts"
+sudo env LD_PRELOAD=/usr/local/libexec/sos-live-image/libskip-selinux-xattr.so \
+  mkfs.erofs --quiet \
+  --file-contexts="$metadata_test_work/file_contexts" \
+  "$metadata_test_work/source.erofs" "$metadata_test_work/source"
+
+SOS_LIVE_IMAGE_IN_CONTAINER=true \
+  "$metadata_test_root/tools/linux-live-image" extract-rootless \
+    --payload "$metadata_test_work/source.erofs" \
+    --root "$metadata_test_work/extracted"
+
+metadata_test_check_tree() {
+  local root="$1"
+  [[ "$(sudo stat -c %u:%g "$root/usr/bin/cap-probe")" == 123:456 ]]
+  [[ "$(sudo stat -c %u:%g "$root/usr/bin/acl-probe")" == 234:567 ]]
+  [[ "$(sudo stat -c %i "$root/usr/bin/cap-probe")" \
+    == "$(sudo stat -c %i "$root/usr/bin/cap-probe-link")" ]]
+  sudo getcap "$root/usr/bin/cap-probe" | grep -F 'cap_net_bind_service=ep' >/dev/null
+  sudo getfacl -cpn "$root/usr/bin/acl-probe" | grep -F 'user:42:r--' >/dev/null
+  [[ "$(sudo getfattr -n user.sos --only-values "$root/usr/bin/acl-probe")" \
+    == portable ]]
+  local extracted_context=""
+  extracted_context="$(sudo getfattr -n security.selinux --only-values \
+    "$root/usr/bin/cap-probe" 2>/dev/null | tr -d '\000' || true)"
+  [[ "$extracted_context" != system_u:object_r:bin_t:s0 ]] || {
+    printf 'error: rootless extraction retained the source-image SELinux label\n' >&2
+    return 1
+  }
+}
+
+metadata_test_check_tree "$metadata_test_work/extracted"
+sudo env LD_PRELOAD=/usr/local/libexec/sos-live-image/libskip-selinux-xattr.so \
+  mkfs.erofs --quiet \
+  --file-contexts="$metadata_test_work/file_contexts" \
+  "$metadata_test_work/repacked.erofs" "$metadata_test_work/extracted"
+sudo fsck.erofs --xattrs "$metadata_test_work/repacked.erofs" >/dev/null
+sudo strings "$metadata_test_work/repacked.erofs" | \
+  grep -F 'system_u:object_r:bin_t:s0' >/dev/null
+
+SOS_LIVE_IMAGE_IN_CONTAINER=true \
+  "$metadata_test_root/tools/linux-live-image" extract-rootless \
+    --payload "$metadata_test_work/repacked.erofs" \
+    --root "$metadata_test_work/repacked-extracted"
+metadata_test_check_tree "$metadata_test_work/repacked-extracted"
+
+printf '%s\n' \
+  'linux_live_image_rootless_metadata_test=PASS' \
+  'owners=PASS hardlinks=PASS acl=PASS capability=PASS portable_xattrs=PASS selinux_regeneration=PASS'

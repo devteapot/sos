@@ -10417,3 +10417,168 @@ boot for incremental `tools/linux-live-deploy` iterations, verify each deployed
 digest and same-boot identity, and keep the internal NVMe unmounted. Later,
 define a separate credential-free immutable release bake and physical release
 gate.
+
+## 2026-08-25 — Evaluate a rootless development-live bake boundary
+
+**Goal / environment:** Determine whether the Fedora development-live remix
+can move out of host `sudo` and into an unattended rootless Podman build while
+retaining the ownership and extended metadata required by the existing image
+gate. No product code changed. The Fedora host had Podman 5.8.4 in rootless
+overlay mode, a 65,536-entry subordinate UID and GID range, and a world-usable
+`/dev/fuse`. The probe used a Fedora 44 container and granted `SYS_ADMIN` only
+inside its user namespace together with `/dev/fuse`; it did not invoke host
+`sudo` or receive host root.
+
+**Evidence / rejected approaches:** A focused rootless bind-mount probe showed
+that container UID/GID `0:0` mapped back to the invoking host user, an arbitrary
+`123:456` owner survived as subordinate IDs and was visible with the same IDs
+through `podman unshare`, and `security.capability` survived. A subsequent
+EROFS/FUSE round trip completed in 5.4 seconds and preserved numeric ownership,
+hardlinks, a file capability, a portable user xattr, and a repack readable by
+`fsck.erofs --xattrs` without host privilege.
+
+Two naive extraction routes were rejected. `fsck.erofs --extract --preserve
+--xattrs` retained the metadata model but aborted when rootless container root
+could not set `security.selinux`. `erofsfuse` plus the builder's filtered
+`rsync` avoided that SELinux write and preserved ownership, hardlinks,
+capabilities, and portable xattrs, but Fedora 44's erofsfuse 1.9.2 did not
+expose `system.posix_acl_access`, so it silently lost a test ACL. The stricter
+finalized probe intentionally remained failed rather than accepting incomplete
+metadata parity. Its log is
+`artifacts/rootless-live-image-feasibility/probe.log` (2,647 bytes, SHA-256
+`c3590ce2bf6a05916a6a52a0c4b28e9b66378530ced964515ca5b5961554c5b5`)
+and its timing is
+`artifacts/rootless-live-image-feasibility/probe.time` (5,342 bytes, SHA-256
+`14c63b63de5352223717df8de55111526732f9c6b7a314d9bfdb0011a1f9990b`).
+It ran for 4.67 seconds with 47,500 KiB maximum RSS and exit status 1. No model
+provider ran, so model and model-weighted cost were zero.
+
+**Decision:** A rootless container is a viable privilege boundary, but the
+current bake is not a drop-in Podman wrapper. Prefer an explicitly pinned
+EROFS extraction implementation that preserves every xattr except
+`security.selinux` (which the existing builder deliberately regenerates from
+the image's own policy at `mkfs.erofs` time). Keep the existing source/dest
+ownership, hardlink, ACL, capability, portable-xattr, SELinux-policy, and
+repacked-image audits. Do not accept the erofsfuse-only copy path unless its ACL
+parity is independently proved.
+
+**Remaining risk / next gate:** Implement the pinned Fedora build container and
+the SELinux-filtered, ACL-preserving extraction path, then run the complete bake
+from the checksum-pinned Fedora ISO with zero host privilege. Compare its
+rootfs metadata audit to the accepted root-owned path, verify the finalized ISO
+and identity sidecar, and boot that exact artifact in the disposable VM before
+any physical diagnostic. Rootless baking does not make raw removable-media
+writing rootless; that remains a separate udisks/device-authorization boundary.
+
+## 2026-08-25 — Implement and complete a rootless Podman ISO bake
+
+**Goal / environment:** Remove host privilege and human `sudo` involvement from
+the development-live bake while preserving the existing EROFS metadata and
+identity gates. The implementation is an uncommitted change over
+`6d89f60350ed2ec53479d83676795417cd2cdea8`; the clean disposable test clone
+used test-only revision `80cc320a865e8f3ae18bc1f58daaeafc8cbd9060`, which
+must not be treated as a promotable source revision. The Fedora 44 x86_64 host
+ran Podman 5.8.4 in rootless overlay mode with 65,536 subordinate UIDs and
+GIDs. The source ISO remained
+`/home/carlid/dev/sos/artifacts/linux-live-source/Fedora-Workstation-Live-44-1.7.x86_64.iso`
+(2,851,612,672 bytes, SHA-256
+`1620295f6a00c27c3208f0c00b8ece4eab1ec69b9002152d97488bf26a426ddf`).
+
+**Changed code / boundary:** `tools/linux-live-image bake` now validates a
+normal-user rootless Podman configuration, builds a Fedora image pinned by base
+digest, and runs the existing builder with `--userns=keep-id` and no
+`--privileged`, host `sudo`, host loop mount, or host root. Container-internal
+`sudo` is confined to the rootless user namespace. The source ISO and password
+are read-only mounts, and the external output directory is the artifact mount.
+The exact build image ID,
+`sha256:25fea39fe5a512315d228d3c42a30f593873607a9b69ef09f58d891430cdb900`,
+is recorded in image identity. The new SELinux compatibility library suppresses
+only `security.selinux` during userspace EROFS extraction, preserves a file
+capability across the extractor's later `lchown`, hides ambient container
+SELinux labels during repack, and lets `mkfs.erofs --file-contexts` regenerate
+image-policy labels. Other ownership, hardlinks, ACLs, capabilities, and xattrs
+remain fail-closed. The CLI adds `rootless-doctor`, `image`, and
+`rootless-test`; documentation and the host suite cover the new default.
+
+**Rejected approaches / failures:** The earlier erofsfuse copy route remained
+rejected because it lost POSIX ACLs. During implementation, the first synthetic
+round trip showed that `lchown` cleared `security.capability`; preserving and
+restoring that xattr fixed it. A later round trip found that the rootless
+container's ambient SELinux label could override file-context policy during
+repack; filtering SELinux reads as well as writes fixed it. A shared-object
+test clone was rejected because its Git alternates target was unavailable in
+the container, so the full test used a self-contained clone. Three independent
+audit-wrapper attempts were also rejected before the final audit: one had an
+incorrectly quoted digest parser, one incorrectly required byte-identical
+embedded and sidecar identities despite the unavoidable three final
+`output_iso_*` self-reference fields, and one expected normal-verbosity
+`fsck.erofs --xattrs` to print label names. None changed or invalidated the ISO.
+
+**Focused evidence:** `tools/linux-live-image rootless-test` rebuilt the cached
+image and passed owners, hardlinks, ACLs, file capability, portable xattr, and
+SELinux-policy regeneration in 1.25 seconds with 48,272 KiB maximum wrapper
+RSS. Its log is
+`artifacts/rootless-live-image-implementation/rootless-test.log` (3,925 bytes,
+SHA-256
+`a4bcd648d15204ba51440a515dc6ea847ab0cb4be8cf4ccbe7af7a2a79650a51`)
+and timing is
+`artifacts/rootless-live-image-implementation/rootless-test.time` (763 bytes,
+SHA-256
+`d5546d9a4679553d96503c7844cce0b24e82ae437cb643154d620f6c252c30d1`).
+Bash parsing, the compatibility library compiled with `-Werror`,
+`./tests/linux-live-image-test.sh`, and `git diff --check` passed in 1.32
+seconds with 30,316 KiB maximum RSS. The log is
+`artifacts/rootless-live-image-implementation/host-tests.log` (196 bytes,
+SHA-256
+`02d88fe1ccc964a5e5dbedf690a3fbc3b15c9d98c8a89224e2180e1d27c7fecf`)
+and timing is
+`artifacts/rootless-live-image-implementation/host-tests.time` (1,232 bytes,
+SHA-256
+`3992ade2c41e702c9757986c72788b09e9d4a6fbff60ac03832f59d3cfc62273`).
+
+**Full bake evidence / decision:** The rootless command completed without
+interaction in 1:02:35 with exit status zero and 49,224 KiB maximum host-wrapper
+RSS; the container's memory is outside that wrapper measurement. Rootless
+userspace extraction took about 16.75 minutes, while the existing
+deduplicating LZMA EROFS repack was the dominant approximately 42-minute,
+single-core phase. The result is
+`artifacts/rootless-bake-test-80cc320a865e/sos-development-live-80cc320a865e.iso`
+(3,056,205,824 bytes, SHA-256
+`8afa63410612af343e911ddd78b36b7ebf4a077faaaeaef59762d9ba9acc166a`).
+It records `build_mode=rootless-podman`, the exact build image ID, the clean
+test revision, `development-live`, `promotion_eligible=false`,
+`wifi_autoconnect=false`, and `network_credentials_embedded=false`. The one-use
+password and disposable clones were destroyed after the bake.
+
+The finalized bake log is
+`artifacts/rootless-bake-test-80cc320a865e/bake.log` (52,045 bytes, SHA-256
+`be7097aefc9e09d31e656747ec252b265a9047d97a707646a231a520e94de85c`)
+and timing is `artifacts/rootless-bake-test-80cc320a865e/bake.time` (1,241
+bytes, SHA-256
+`bcab6eca0315c7e95b277b6f744c45ad691dff84ba01fd3ac694e1fb9bda89e9`).
+The sidecar identity is
+`artifacts/rootless-bake-test-80cc320a865e/image-identity.env` (1,070 bytes,
+SHA-256
+`29f5c25a7e25bb2e7919cd0031683f0909c118178a871fadf0d2758cff232bf8`).
+An independent 6.66-second audit with 7,588 KiB maximum RSS passed the embedded
+media check, ISO and EROFS payload byte/digest agreement, EROFS xattr integrity,
+normalized embedded/sidecar identity agreement, and secret-field absence. Its
+log is `artifacts/rootless-bake-test-80cc320a865e/audit.log` (454 bytes,
+SHA-256
+`feb5ddc4538e927a51a294e516e8f7a4064b8a602a674ed893a44a7c7771d7e0`)
+and timing is `artifacts/rootless-bake-test-80cc320a865e/audit.time` (2,423
+bytes, SHA-256
+`15d819832362d8429d701379ec2a676650439ec7bdde24bd00876f19b8e04f88`).
+No model provider ran, so model and model-weighted cost were zero. The decision
+is to accept rootless Podman as the default bake boundary; it removes the user
+from the privileged loop, with slower userspace EROFS handling as the measured
+cost.
+
+**Remaining risk / next gate:** This proves build and artifact integrity, not
+boot, graphics, networking, or physical hardware acceptance. The artifact is
+from a test-only revision and is not promotable. Commit the implementation,
+repeat the clean bake from that real revision if a distributable artifact is
+needed, and boot its exact hash in the disposable Fedora VM. Only after that VM
+gate should a physical Framework diagnostic run. A later performance change
+may benchmark dropping EROFS `dedupe` to unlock parallel compression, but must
+compare image size, boot compatibility, and metadata before adoption.
