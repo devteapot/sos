@@ -7,6 +7,10 @@ use util::ResultExt;
 
 use std::{
     mem::MaybeUninit,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
     thread,
     time::{Duration, Instant},
 };
@@ -15,6 +19,8 @@ use gpui::{
     GLOBAL_THREAD_TIMINGS, PlatformDispatcher, Priority, PriorityQueueReceiver,
     PriorityQueueSender, RunnableVariant, TaskTiming, ThreadTaskTimings, profiler,
 };
+
+const MAX_MAIN_TASKS_PER_DISPATCH: usize = 64;
 
 struct TimerAfter {
     duration: Duration,
@@ -196,17 +202,17 @@ impl PlatformDispatcher for LinuxDispatcher {
 pub struct PriorityQueueCalloopSender<T> {
     sender: PriorityQueueSender<T>,
     ping: calloop::ping::Ping,
+    pending: Arc<AtomicUsize>,
 }
 
 impl<T> PriorityQueueCalloopSender<T> {
-    fn new(tx: PriorityQueueSender<T>, ping: calloop::ping::Ping) -> Self {
-        Self { sender: tx, ping }
-    }
-
     fn send(&self, priority: Priority, item: T) -> Result<(), gpui::queue::SendError<T>> {
+        self.pending.fetch_add(1, Ordering::Release);
         let res = self.sender.send(priority, item);
         if res.is_ok() {
             self.ping.ping();
+        } else {
+            self.pending.fetch_sub(1, Ordering::AcqRel);
         }
         res
     }
@@ -222,6 +228,7 @@ pub struct PriorityQueueCalloopReceiver<T> {
     receiver: PriorityQueueReceiver<T>,
     source: calloop::ping::PingSource,
     ping: calloop::ping::Ping,
+    pending: Arc<AtomicUsize>,
 }
 
 impl<T> PriorityQueueCalloopReceiver<T> {
@@ -229,13 +236,19 @@ impl<T> PriorityQueueCalloopReceiver<T> {
         let (ping, source) = calloop::ping::make_ping().expect("Failed to create a Ping.");
 
         let (tx, rx) = PriorityQueueReceiver::new();
+        let pending = Arc::new(AtomicUsize::new(0));
 
         (
-            PriorityQueueCalloopSender::new(tx, ping.clone()),
+            PriorityQueueCalloopSender {
+                sender: tx,
+                ping: ping.clone(),
+                pending: Arc::clone(&pending),
+            },
             Self {
                 receiver: rx,
                 source,
                 ping,
+                pending,
             },
         )
     }
@@ -284,9 +297,15 @@ impl<T> calloop::EventSource for PriorityQueueCalloopReceiver<T> {
                 let mut is_empty = true;
 
                 let receiver = self.receiver.clone();
-                for runnable in receiver.try_iter() {
+                // Foreground tasks may schedule more foreground work (for
+                // example, a continuously animating view). Bound each turn so
+                // the calloop dispatcher can return to Wayland protocol and
+                // input sources instead of draining a queue that never becomes
+                // empty.
+                for runnable in receiver.try_iter().take(MAX_MAIN_TASKS_PER_DISPATCH) {
                     match runnable {
                         Ok(r) => {
+                            self.pending.fetch_sub(1, Ordering::AcqRel);
                             callback(Event::Msg(r), &mut ());
                             is_empty = false;
                         }
@@ -308,10 +327,12 @@ impl<T> calloop::EventSource for PriorityQueueCalloopReceiver<T> {
 
         if disconnected {
             Ok(PostAction::Remove)
-        } else if clear_readiness {
+        } else if self.pending.load(Ordering::Acquire) == 0 {
             Ok(action)
         } else {
-            // Re-notify the ping source so we can try again.
+            // PriorityQueueReceiver::try_iter may stop before the opaque
+            // priority queue is empty. Keep the calloop source readable while
+            // a successful send remains unmatched by a received runnable.
             self.ping.ping();
             Ok(PostAction::Continue)
         }
@@ -396,6 +417,77 @@ mod tests {
 
         assert!(data.got_msg);
         assert!(data.got_closed);
+    }
+
+    #[test]
+    fn calloop_rewakes_until_all_priority_work_is_drained() {
+        let mut event_loop = calloop::EventLoop::try_new().unwrap();
+        let handle = event_loop.handle();
+        let (tx, rx) = PriorityQueueCalloopReceiver::new();
+        let pending = Arc::clone(&tx.pending);
+
+        handle
+            .insert_source(rx, |event, &mut (), received: &mut usize| {
+                if let Event::Msg(_) = event {
+                    *received += 1;
+                }
+            })
+            .unwrap();
+
+        for index in 0..1_000 {
+            let priority = match index % 3 {
+                0 => Priority::High,
+                1 => Priority::Medium,
+                _ => Priority::Low,
+            };
+            tx.send(priority, index).unwrap();
+        }
+        let mut received = 0;
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while received < 1_000 && Instant::now() < deadline {
+            event_loop
+                .dispatch(Some(Duration::from_millis(10)), &mut received)
+                .unwrap();
+        }
+
+        assert_eq!(received, 1_000);
+        assert_eq!(pending.load(Ordering::Acquire), 0);
+    }
+
+    #[test]
+    fn calloop_yields_between_sustained_foreground_batches() {
+        let mut event_loop = calloop::EventLoop::try_new().unwrap();
+        let handle = event_loop.handle();
+        let (tx, rx) = PriorityQueueCalloopReceiver::new();
+        let tx = Arc::new(tx);
+        let callback_tx = Arc::clone(&tx);
+        let total = MAX_MAIN_TASKS_PER_DISPATCH * 3;
+
+        handle
+            .insert_source(rx, move |event, &mut (), received: &mut usize| {
+                if let Event::Msg(_) = event {
+                    *received += 1;
+                    if *received < total {
+                        callback_tx.send(Priority::High, *received).unwrap();
+                    }
+                }
+            })
+            .unwrap();
+
+        tx.send(Priority::High, 0).unwrap();
+        let mut received = 0;
+        event_loop
+            .dispatch(Some(Duration::ZERO), &mut received)
+            .unwrap();
+
+        assert_eq!(received, MAX_MAIN_TASKS_PER_DISPATCH);
+
+        while received < total {
+            event_loop
+                .dispatch(Some(Duration::from_millis(10)), &mut received)
+                .unwrap();
+        }
+        assert_eq!(tx.pending.load(Ordering::Acquire), 0);
     }
 }
 

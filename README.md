@@ -197,6 +197,21 @@ model:
   --evidence-dir artifacts/framework12-first-gate
 ```
 
+The same offline install can be baked into a checksum-pinned Fedora Workstation
+`development-live` environment so the Framework 12 loop does not touch its
+internal disk. Its password-protected SSH service, optional development-only
+Wi-Fi autoconnect profile, and mutable overlay allow changed SOS binaries to be
+deployed with `tools/linux-live-deploy` without rebuilding the ISO. Embedded
+Wi-Fi credentials make that private development ISO unsuitable for sharing or
+release. The bake accepts only Fedora's flat
+EROFS rootfs format and performs a privileged metadata-preserving copy,
+policy-based SELinux relabel, and repack so Linux ownership, ACLs,
+capabilities, and security metadata are preserved.
+Development-live diagnostics always record `promotion_eligible=false`; only a
+future immutable release image can own release promotion.
+It is not an installed product. See
+[`docs/linux-live-image.md`](docs/linux-live-image.md).
+
 `./tools/install-linux-login-session uninstall` removes the installed SOS
 session while preserving user state and the existing display-manager/default
 boot configuration.
@@ -210,7 +225,8 @@ The direct-DRM acceptance command targets the disposable reference Debian VM:
 See [`docs/linux-stable-host.md`](docs/linux-stable-host.md),
 [`docs/linux-compositor.md`](docs/linux-compositor.md),
 [`docs/linux-vm.md`](docs/linux-vm.md),
-[`docs/linux-hardware-gate.md`](docs/linux-hardware-gate.md), and
+[`docs/linux-hardware-gate.md`](docs/linux-hardware-gate.md),
+[`docs/linux-live-image.md`](docs/linux-live-image.md), and
 [`docs/sos-agent.md`](docs/sos-agent.md) for prerequisites and evidence limits.
 
 ### AOSP Cuttlefish
@@ -319,8 +335,9 @@ documented external evidence directories and are intentionally not tracked.
   the physical stable-host and stateful-swap evidence.
 - [`docs/linux-stable-host.md`](docs/linux-stable-host.md),
   [`docs/linux-compositor.md`](docs/linux-compositor.md),
-  [`docs/linux-vm.md`](docs/linux-vm.md), and
-  [`docs/linux-hardware-gate.md`](docs/linux-hardware-gate.md) cover the Linux
+  [`docs/linux-vm.md`](docs/linux-vm.md),
+  [`docs/linux-hardware-gate.md`](docs/linux-hardware-gate.md), and
+  [`docs/linux-live-image.md`](docs/linux-live-image.md) cover the Linux
   path from virtual acceptance through the first physical campaign.
 - [`docs/aosp-cuttlefish.md`](docs/aosp-cuttlefish.md) covers the reproducible
   Android 17 system spike.

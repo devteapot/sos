@@ -100,6 +100,8 @@ model.agent = {
     busy = false,
     activity = "Ready",
     error = nil,
+    -- Empty on Linux, whose provider is selected before the SOS session.
+    configuration_actions = {},
     messages = {
         { role = "user", text = "Make this calmer" },
         { role = "assistant", text = "I changed the daily flow." },
@@ -111,6 +113,12 @@ An experience decides how and where to render this state. It normally pairs it
 with a `text_session` whose submit action returns an `agent.prompt` effect. The
 conversation is not a GPUI widget and is preserved across provider refresh and
 revision activation by the host.
+`configuration_actions` is the trusted platform's typed allowlist for provider
+configuration controls: `configure_openai`, `configure_openrouter`,
+`configure_codex`, `use_fake`, and `clear_credential`. Experiences must not
+render a control that is absent. Linux deliberately supplies an empty list;
+run `sos-agent-login` from GNOME or a text login and start a new SOS session to
+change its resident provider.
 The resident-agent validation path requires each submitted revision to retain
 at least one Luau `text_session` with `submit_action = "agent_submit"`.
 

@@ -252,6 +252,22 @@ pub struct AgentConversation {
     pub messages: Vec<AgentMessage>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    #[serde(default)]
+    pub configuration_actions: Vec<AgentConfigurationAction>,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub enum AgentConfigurationAction {
+    #[serde(rename = "configure_openai")]
+    ConfigureOpenAi,
+    #[serde(rename = "configure_openrouter")]
+    ConfigureOpenRouter,
+    #[serde(rename = "configure_codex")]
+    ConfigureCodex,
+    #[serde(rename = "use_fake")]
+    UseFake,
+    #[serde(rename = "clear_credential")]
+    ClearCredential,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -1085,6 +1101,27 @@ fn valid_scene_number(value: f32) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn agent_configuration_actions_have_stable_wire_names() {
+        assert_eq!(
+            serde_json::to_value([
+                AgentConfigurationAction::ConfigureOpenAi,
+                AgentConfigurationAction::ConfigureOpenRouter,
+                AgentConfigurationAction::ConfigureCodex,
+                AgentConfigurationAction::UseFake,
+                AgentConfigurationAction::ClearCredential,
+            ])
+            .unwrap(),
+            serde_json::json!([
+                "configure_openai",
+                "configure_openrouter",
+                "configure_codex",
+                "use_fake",
+                "clear_credential"
+            ])
+        );
+    }
 
     #[test]
     fn rejects_duplicate_ids() {

@@ -30,6 +30,8 @@ use crate::{bootstrap_authority, shutdown_authority, stage_revision};
 
 const POLL_INTERVAL: Duration = Duration::from_millis(20);
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
+const HOST_PROXY_DISCONNECT_GRACE: Duration = Duration::from_millis(250);
+const SESSION_EXIT_REQUEST: &[u8] = b"logout\n";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ServiceIdentity {
@@ -94,6 +96,7 @@ struct SessionProcesses {
     compositor: Option<Child>,
     provider: Option<Child>,
     supervisor: Option<Child>,
+    host_launcher: Option<HostLauncher>,
 }
 
 pub fn run_system_session(options: SystemSessionOptions) -> Result<()> {
@@ -267,6 +270,16 @@ fn start_and_monitor(
         .with_context(|| format!("bind {}", recovery_command_socket.display()))?;
     fs::set_permissions(&recovery_command_socket, fs::Permissions::from_mode(0o660))?;
     recovery_socket.set_nonblocking(true)?;
+    let session_exit_socket_path = options.runtime_directory.join("session-exit.sock");
+    let session_exit_socket = if options.identity_mode == SessionIdentityMode::SharedLoginUser {
+        let socket = UnixDatagram::bind(&session_exit_socket_path)
+            .with_context(|| format!("bind {}", session_exit_socket_path.display()))?;
+        fs::set_permissions(&session_exit_socket_path, fs::Permissions::from_mode(0o600))?;
+        socket.set_nonblocking(true)?;
+        Some(socket)
+    } else {
+        None
+    };
     write_recovery_status(
         &recovery_state_file,
         &store,
@@ -300,6 +313,9 @@ fn start_and_monitor(
 
     let mut compositor_command =
         role_command(&options.compositor_executable, &options.compositor_identity);
+    if session_exit_socket.is_some() {
+        compositor_command.env("SOS_SESSION_EXIT_SOCKET", &session_exit_socket_path);
+    }
     let compositor = compositor_command
         .arg("--backend")
         .arg("drm")
@@ -394,7 +410,7 @@ fn start_and_monitor(
     )?;
     println!("linux_system_session_authority outcome={bootstrap:?}");
 
-    let _host_launcher = HostLauncher::start(
+    processes.host_launcher = Some(HostLauncher::start(
         &host_launcher_socket,
         HostLaunchSpec {
             executable: options.host_executable.clone(),
@@ -415,7 +431,7 @@ fn start_and_monitor(
             supervisor_uid: options.supervisor_identity.uid,
             registry: registry.clone(),
         },
-    )?;
+    )?);
     let mut supervisor_command =
         role_command(&options.supervisor_executable, &options.supervisor_identity);
     let supervisor = supervisor_command
@@ -479,6 +495,12 @@ fn start_and_monitor(
         if stopping.load(Ordering::Relaxed) {
             return Ok(());
         }
+        if let Some(socket) = &session_exit_socket {
+            if take_session_exit_request(socket)? {
+                println!("linux_login_session_stopped reason=user_logout");
+                return Ok(());
+            }
+        }
         for (name, child) in [
             ("compositor", processes.compositor.as_mut().unwrap()),
             ("provider", processes.provider.as_mut().unwrap()),
@@ -527,6 +549,19 @@ fn start_and_monitor(
             observed_recovery_status = next_recovery_status_key;
         }
         thread::sleep(POLL_INTERVAL);
+    }
+}
+
+fn take_session_exit_request(socket: &UnixDatagram) -> Result<bool> {
+    let mut buffer = [0_u8; 32];
+    match socket.recv(&mut buffer) {
+        Ok(size) if &buffer[..size] == SESSION_EXIT_REQUEST => Ok(true),
+        Ok(size) => bail!(
+            "invalid selectable login-session exit request: {:?}",
+            String::from_utf8_lossy(&buffer[..size])
+        ),
+        Err(error) if error.kind() == io::ErrorKind::WouldBlock => Ok(false),
+        Err(error) => Err(error).context("receive selectable login-session exit request"),
     }
 }
 
@@ -932,6 +967,7 @@ fn launch_host(mut stream: UnixStream, spec: &HostLaunchSpec) -> Result<()> {
         .spawn()
         .with_context(|| format!("launch isolated experience host as {}", spec.identity.name))?;
     let pid = child.id();
+    let host_pid = Pid::from_raw(i32::try_from(pid).context("host PID exceeds i32")?);
     spec.registry.record("host", &spec.executable, pid)?;
     println!(
         "linux_system_session_component component=host pid={pid} uid={}",
@@ -940,7 +976,21 @@ fn launch_host(mut stream: UnixStream, spec: &HostLaunchSpec) -> Result<()> {
     let mut child_input = child.stdin.take().context("host stdin was not piped")?;
     let mut child_output = child.stdout.take().context("host stdout was not piped")?;
     let input_stream = stream.try_clone()?;
-    let input = thread::spawn(move || pump_lines(BufReader::new(input_stream), &mut child_input));
+    let input = thread::spawn(move || {
+        let result = pump_lines(BufReader::new(input_stream), &mut child_input);
+        // EOF means the supervisor-side proxy disappeared. The proxy is only
+        // transport; allow an already-delivered Shutdown request a short grace
+        // period, then reap a host that would otherwise overlap the replacement
+        // the supervisor is about to launch.
+        let deadline = Instant::now() + HOST_PROXY_DISCONNECT_GRACE;
+        while process_is_running(pid) && Instant::now() < deadline {
+            thread::sleep(POLL_INTERVAL);
+        }
+        if process_is_running(pid) {
+            let _ = kill(host_pid, Signal::SIGKILL);
+        }
+        result
+    });
     let output_result = pump_lines(BufReader::new(&mut child_output), &mut stream);
     let _ = stream.shutdown(std::net::Shutdown::Write);
     let _ = input.join();
@@ -1243,6 +1293,9 @@ fn shutdown_processes(options: &SystemSessionOptions, processes: &mut SessionPro
         let _ = shutdown_authority(&provider_socket, SHUTDOWN_TIMEOUT);
     }
     terminate_child("supervisor", &mut processes.supervisor);
+    // The supervisor may reconnect its host proxy while shutting down. Keep
+    // the launcher socket available until the supervisor has actually exited.
+    drop(processes.host_launcher.take());
     terminate_child("provider", &mut processes.provider);
     terminate_child("compositor", &mut processes.compositor);
 }
@@ -1281,6 +1334,7 @@ fn terminate_child(name: &str, slot: &mut Option<Child>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::mpsc;
 
     fn identity(name: &str, uid: u32) -> ServiceIdentity {
         ServiceIdentity {
@@ -1323,5 +1377,104 @@ mod tests {
         )
         .unwrap_err();
         assert!(error.to_string().contains("must all use the current UID"));
+    }
+
+    #[test]
+    fn lifecycle_owner_consumes_one_logout_request() {
+        let temporary = tempfile::tempdir().unwrap();
+        let path = temporary.path().join("session-exit.sock");
+        let receiver = UnixDatagram::bind(&path).unwrap();
+        receiver.set_nonblocking(true).unwrap();
+        let sender = UnixDatagram::unbound().unwrap();
+        sender.send_to(SESSION_EXIT_REQUEST, &path).unwrap();
+
+        assert!(take_session_exit_request(&receiver).unwrap());
+        assert!(!take_session_exit_request(&receiver).unwrap());
+    }
+
+    #[test]
+    fn graceful_host_shutdown_wins_the_proxy_disconnect_grace() {
+        let temporary = tempfile::tempdir().unwrap();
+        let spec = HostLaunchSpec {
+            executable: PathBuf::from("/usr/bin/bash"),
+            args: vec![
+                "-c".into(),
+                "read -r _; exit 0".into(),
+                "graceful-host-fixture".into(),
+            ],
+            identity: ServiceIdentity::current().unwrap(),
+            runtime_directory: temporary.path().to_path_buf(),
+            cache_directory: temporary.path().to_path_buf(),
+            wayland_display: "wayland-test".into(),
+            control_socket: temporary.path().join("control.sock"),
+            token_file: temporary.path().join("token"),
+            safe_mode_file: temporary.path().join("safe-mode"),
+            provider_disable_file: temporary.path().join("providers-disabled"),
+            supervisor_uid: Uid::effective(),
+            registry: ProcessRegistry::new(temporary.path().join("registry.json")),
+        };
+        let (launcher_stream, mut proxy_stream) = UnixStream::pair().unwrap();
+        let (done_tx, done_rx) = mpsc::channel();
+        thread::spawn(move || {
+            let _ = done_tx.send(launch_host(launcher_stream, &spec));
+        });
+
+        proxy_stream.write_all(b"shutdown\n").unwrap();
+        drop(proxy_stream);
+
+        done_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("graceful host launcher remained blocked")
+            .expect("graceful host exit was classified as a failure");
+    }
+
+    #[test]
+    fn proxy_disconnect_reaps_the_actual_isolated_host() {
+        let temporary = tempfile::tempdir().unwrap();
+        let pid_file = temporary.path().join("host.pid");
+        let executable = PathBuf::from("/usr/bin/bash");
+        let current = ServiceIdentity::current().unwrap();
+        let spec = HostLaunchSpec {
+            executable,
+            args: vec![
+                "-c".into(),
+                "echo $$ > \"$1\"; trap '' TERM; while :; do :; done".into(),
+                "isolated-host-fixture".into(),
+                pid_file.clone().into_os_string(),
+            ],
+            identity: current,
+            runtime_directory: temporary.path().to_path_buf(),
+            cache_directory: temporary.path().to_path_buf(),
+            wayland_display: "wayland-test".into(),
+            control_socket: temporary.path().join("control.sock"),
+            token_file: temporary.path().join("token"),
+            safe_mode_file: temporary.path().join("safe-mode"),
+            provider_disable_file: temporary.path().join("providers-disabled"),
+            supervisor_uid: Uid::effective(),
+            registry: ProcessRegistry::new(temporary.path().join("registry.json")),
+        };
+        let (launcher_stream, proxy_stream) = UnixStream::pair().unwrap();
+        let (done_tx, done_rx) = mpsc::channel();
+        thread::spawn(move || {
+            let _ = done_tx.send(launch_host(launcher_stream, &spec));
+        });
+
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !pid_file.exists() && Instant::now() < deadline {
+            thread::sleep(POLL_INTERVAL);
+        }
+        let pid: u32 = fs::read_to_string(&pid_file)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        assert!(process_is_running(pid));
+
+        drop(proxy_stream);
+        let result = done_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("host launcher remained blocked after proxy disconnect");
+        assert!(result.is_err());
+        assert!(!process_is_running(pid));
     }
 }

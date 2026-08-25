@@ -9110,3 +9110,1310 @@ as merge-ready evidence tooling only. Physical Intel KMS/panel/input, GDM
 lifecycle, and exact-target evidence remain open until the clean merged
 revision is installed and the documented same-boot campaign runs on the
 Framework Laptop 12.
+## 2026-08-23 — Add a Fedora live remix path for first Framework 12 evidence
+
+**Goal / environment:** Make the first Framework 12 Linux loop rebuild ISO,
+boot live, prepare, select SOS in GDM, collect on that boot, and copy evidence
+off, without loosening the hardware-gate PASS contract or calling a live boot
+an installed product. The implementation host was Ubuntu 24.04.4 x86_64, not
+Fedora, and no Framework Laptop 12, GDM, seat, DRM, or live ISO bake ran.
+
+**Changed:** `tools/linux-live-image` remixes an official Fedora Workstation
+live ISO by staging the existing `install --offline --destdir` output, runtime
+packages (not `-devel`), GDM, the SOS session, the offline agent, and the
+hardware-gate harness. It does not compose Fedora from lorax/kiwi/kickstart
+and does not enable the boot-owned appliance target. Image identity records
+live-boot labels, source revision, base ISO identity, and squashfs/erofs
+payload hashes. `tools/linux-hardware-gate` now classifies live-boot versus
+installed-workstation, pins live-boot from baked identity, refuses stock live
+media and install-to-disk of a live remix, and records live-versus-installed
+fields without changing audit criteria. Operator docs and README state that
+live-boot evidence is not an installed product.
+
+**Evidence / measurements:** One clean host campaign ran `bash -n` on the five
+changed/new shell programs, both hardware-gate and live-image host suites,
+ShellCheck 0.9.0, `git diff --check`, `tools/linux-live-image doctor`, and
+`classify-boot --sysroot` of an empty tree. It passed in 1.346 seconds wall
+time. Doctor reported `host=ubuntu`, named the missing ISO/EROFS tools, and
+still exited 0 for layout checks. Classify-boot labeled the empty sysroot
+`boot_kind=installed`. Synthetic audit still emits the exact PASS line for
+both boot kinds and still FAILs missing touchscreen input. No ISO was built
+and no hardware claim is made.
+
+**Failures / fixes / decision / next gate:** Payload hashes stay on the ISO
+filesystem (`/sos-image-identity.env`) rather than inside the squashfs they
+describe, so the pin is not self-referential. `readlink -f` against a destroot
+resolved host paths and was replaced with raw symlink basenames. Accept this
+as live-image tooling and harness labeling only. Bake the remixed ISO on a
+Fedora x86_64 host from a clean revision, boot it on the Framework Laptop 12,
+and run the documented same-boot `prepare -> physical interactions -> collect`
+loop. A live-boot PASS remains live-boot, not installed product. Physical
+Intel KMS/panel/input behavior, persistence, disk install, stylus, rotation,
+suspend, latency, thermals, and soak remain open.
+
+## 2026-08-24 — Pin the diskless Framework gate to real Fedora live media
+
+**Goal / environment:** Keep the first Framework Laptop 12 Linux campaign off
+its internal disk while correcting the unverified multi-format live-remix path.
+The review host was Fedora 44 Server x86-64, kernel
+`6.19.10-300.fc44.x86_64`, at PR revision `e5da24f1f60c` plus this rework. No
+Framework Laptop 12, physical GDM session, DRM/input transition, or internal
+target disk was used. The host had no non-interactive sudo authorization and
+lacked the native SOS development modules, so no privileged rootfs mutation or
+complete SOS ISO bake is claimed.
+
+**Changed:** `tools/linux-live-image` now requires the SHA-256 obtained from
+Fedora's signed CHECKSUM, a Fedora x86-64 build host at the ISO's exact Fedora
+release, every image/build command, and every native compile module. Inspection
+is pinned to a flat EROFS rootfs at `LiveOS/squashfs.img`, matching the official
+Fedora 44 Workstation media despite that historical filename. The mutation path
+uses privileged `fsck.erofs --xattrs --preserve`, runs the existing offline
+destroot install, reapplies the image's SELinux file-context policy, repacks as
+root, verifies the rebuilt EROFS, and re-implants and verifies the ISO media
+checksum. It refuses another container/rootfs layout instead of silently losing
+UID/GID, permissions, capabilities, xattrs, or labels. Build work must be new
+and is removed only from the exact bounded output path after success.
+
+The hardware gate now requires the rootfs and ISO-level identities to agree on
+release, revision, source ISO, agent mode, payload, and bake time. Live prepare
+requires and hashes the mounted payload rather than treating that identity as
+optional. Prepare records `/proc/sys/kernel/random/boot_id`; collect rejects a
+different kernel boot for both live and installed campaigns. Live instructions
+now invoke the baked `/usr/local/libexec/sos/linux-hardware-gate` path. Docs keep
+the result explicitly `live-boot` / `not_installed_product=true` and describe
+the removable-media-only operator path.
+
+**Evidence / measurements:** Fedora's signed
+`Fedora-Workstation-44-1.7-x86_64-CHECKSUM` verified with key
+`36F612DCF27F7D1A48A835E4DBFCF71C6D9F90A6`. The transient source artifact
+`/tmp/sos-pr11-fedora44.T3r9Wc/Fedora-Workstation-Live-44-1.7.x86_64.iso`
+was 2,851,612,672 bytes with SHA-256
+`1620295f6a00c27c3208f0c00b8ece4eab1ec69b9002152d97488bf26a426ddf`;
+its embedded media check passed in 3.22 seconds. Its
+`LiveOS/squashfs.img` was 2,487,484,416 bytes and the new exact payload check
+reported `container_format=erofs-rootfs`. Targeted official-image extraction
+preserved `root:root`, mode `0755`, and SELinux type `netutils_exec_t`; a
+user-namespace EROFS round trip separately preserved a `1000:1000` file, mode
+`0750`, and a user xattr. This does not substitute for the pending fully
+privileged whole-rootfs metadata audit. `fsck.erofs` also accepted the complete
+official payload used to validate the rebuilt-payload integrity boundary. The
+same ISO's `dmsquash-live-root` mounts its backing device at
+`/run/initramfs/live` and resolves `LiveOS/squashfs.img` there, confirming that
+the ISO-level identity and payload paths used by the boot classifier are on the
+live medium retained by Fedora's initramfs.
+
+An ISO replay probe preserved volume ID `Fedora-WS-Live-44`, BIOS and UEFI El
+Torito images, protective MBR, and GPT in 1.31 seconds. After a new embedded
+checksum was implanted, `checkisomd5` passed in 3.04 seconds. The transient
+`/tmp/sos-pr11-fedora44.T3r9Wc/replay.iso` was 2,851,930,112 bytes with SHA-256
+`045745cb6547e216cdfee1747ab62afe635aa0bc33cbb5a8a2bd873304db9221`.
+Both focused host suites passed; Bash parsing, ShellCheck 0.11.0 from container
+digest `b9389b73c8f26f710a7171cb7d8848a34a9c1e07a7865e727c9ec4ce99f9a83f`,
+the official-payload `fsck.erofs`, and `git diff --check` also passed. The final
+ordered host campaign took 2.04 seconds wall time. No model provider ran, so
+live-model and model-weighted gate cost were zero.
+
+**Failures / fixes / decision / next gate:** The first review found that normal
+user extraction of flat SquashFS/EROFS maps root-owned files to the builder UID
+and cannot restore SELinux xattrs. An initial correction narrowed support to a
+nested SquashFS/ext4 layout; inspection of the real signed Fedora 44 ISO rejected
+that assumption because its nominal `squashfs.img` is a flat EROFS rootfs. The
+final path therefore uses privileged EROFS extraction/repack plus explicit
+relabeling. Focused tests then caught a command-substitution failure that had
+masked a rejected payload and were extended to require the outer identity,
+identity agreement, boot ID, installed collect path, media checksum, and EROFS
+rootfs classification. Keep the PR draft until a Fedora 44 host with sudo and
+the documented build modules completes one whole ISO bake, verifies the final
+rootfs metadata and ISO sidecar, and boots it on the Framework Laptop 12 for the
+same-boot physical `prepare -> SOS -> collect -> copy off` gate. That run may
+write removable media but must not install to or mutate the laptop's internal
+disk.
+
+## 2026-08-24 — Validate staged private live-user state through sudo
+
+**Goal / failure:** Close the remaining real-bake blocker in live-rootfs
+validation without relaxing the mode of offline agent configuration. Although
+the first hardening pass added a sudo fallback for reading a private config, an
+ordinary unprivileged `[[ -f ... ]]` still ran before that fallback. The staged
+`/etc/skel/.local` tree is root-owned and mode `0700`, so the builder cannot
+traverse it and a real bake would report the config as missing.
+
+**Changed / evidence / decision:** `live_image_require_exact_line` now performs
+both existence and content validation directly when readable, or performs both
+through sudo when the builder cannot traverse the path. The skel and optional
+liveuser callers no longer preflight private files unprivileged. The focused
+test locks the staged `.local` tree against ordinary traversal, retains a mode
+`0600` config, proves that validation invokes privileged `test -f` and `grep`,
+and requires `check-rootfs` to pass. Where the host supplies subordinate IDs
+and a setuid-capable workspace, the suite repeats that check as namespace UID
+1000 against an actual namespace-root-owned mode-`0600` fixture. Keep private
+state private; do not weaken directory or file modes to make the image builder
+able to read them. The next gate remains the complete privileged Fedora 44 bake
+and removable-media-only Framework Laptop 12 campaign described above.
+
+**Verification / measurement:** On the Fedora 44 review host, the subordinate-ID
+namespace fixture ran rather than skipping. `tests/linux-live-image-test.sh` and
+`tests/linux-hardware-gate-test.sh` passed, as did Bash parsing of the five
+relevant scripts, ShellCheck 0.11.0 from container digest
+`b9389b73c8f26f710a7171cb7d8848a34a9c1e07a7865e727c9ec4ce99f9a83f`, and
+`git diff --check`. The ordered campaign took 2.15 seconds wall time. No model
+provider ran, so live-model and model-weighted gate cost were zero.
+
+## 2026-08-24 — Fix fragment-packed Fedora EROFS extraction after the first bake
+
+**Goal / environment / failure:** Run the first complete privileged live-image
+bake before writing removable media for the Framework Laptop 12. The Fedora 44
+Server x86-64 build host was at clean revision
+`f25b44935d91cc203f6565acb4f5cec28df0de34`, with `erofs-utils-1.9.2-2.fc44`
+and a strict `tools/linux-live-image doctor` PASS. The signed Fedora source at
+`/home/carlid/dev/sos/artifacts/linux-live-source/Fedora-Workstation-Live-44-1.7.x86_64.iso`
+was 2,851,612,672 bytes with SHA-256
+`1620295f6a00c27c3208f0c00b8ece4eab1ec69b9002152d97488bf26a426ddf`.
+`xorriso` restored all 355 ISO-tree files in one second, then privileged
+`fsck.erofs --extract` stopped before rootfs mutation because it tried to open
+the pre-created extraction directory as the image's hidden packed-fragment
+inode. The finalized failure log is
+`/home/carlid/dev/sos/artifacts/linux-live-bake-attempt1.log`, 1,729 bytes,
+SHA-256 `9471415cca20e0273beb4e058baddf34c82d7cee0344028dee83de6bbf31431f`.
+No remixed ISO was produced, no removable media was written, and no Framework
+or internal laptop disk was involved.
+
+**Changed / evidence:** EROFS extraction now selects the filesystem root
+explicitly with `fsck.erofs --path=/` while retaining privileged xattr, owner,
+and permission preservation. It also rejects a nonempty extraction destination
+instead of adding `--overwrite` and concealing stale files. A full probe against
+the official Fedora payload is recorded below; the probe deliberately ran as
+the ordinary builder with owner, permission, and xattr restoration disabled, so
+it proves traversal and decompression compatibility only. The next privileged
+bake remains responsible for the metadata-preservation gate.
+
+With `--path=/`, the complete official root tree extracted successfully in
+998.82 seconds with 33,412 KiB maximum RSS. It contained 155,630 paths and
+`du --bytes --summarize` reported 6,709,518,634 bytes. The finalized probe log
+at `/home/carlid/dev/sos/artifacts/linux-live-erofs-root-path-probe.log` is 51
+bytes with SHA-256
+`d1e1ee4fbb95c6145a00ac75bdb4216b1761ff7c60d1f11600fbaa9ca4d1015a`.
+The rejected absent-destination attempt log at
+`/home/carlid/dev/sos/artifacts/linux-live-erofs-absent-destination-attempt.log`
+is 222 bytes with SHA-256
+`30d9fadb6c6d6e6733db264d240df5e8c785afb3cf688b5cc3e509990ac1e50b`.
+The live-image suite also builds a small `all-fragments` EROFS and requires the
+explicit-root extraction to reproduce its file exactly. The live-image and
+hardware-gate host suites, Bash parsing of all five relevant scripts, ShellCheck
+0.11.0 from container digest
+`b9389b73c8f26f710a7171cb7d8848a34a9c1e07a7865e727c9ec4ce99f9a83f`,
+and `git diff --check` passed in one ordered 1.92-second campaign with 46,556
+KiB maximum RSS. No model provider ran, so live-model and model-weighted gate
+cost were zero.
+
+**Rejected approach / decision / next gate:** Merely leaving the destination
+absent was insufficient: `fsck.erofs` wrote the packed inode as a
+3,662,513,055-byte regular file and then rejected it as the root directory after
+18.06 seconds. Keep the explicit root selector and fail-closed empty-directory
+check. After retaining the three finalized logs above, the bounded partial
+output at `/home/carlid/dev/sos/artifacts/linux-live-image` was removed; it was
+generated failed work and is not recoverable. Commit and push the fix, then run
+one clean privileged bake. A successful host bake still does not close the
+physical gate; the next gate is removable-media boot and the documented
+same-boot `prepare -> physical interactions -> collect` campaign on the
+Framework Laptop 12, without installing to or modifying its internal disk.
+
+## 2026-08-24 — Relabel Fedora EROFS from policy instead of compose xattrs
+
+**Goal / environment / failure:** Retry the complete privileged Fedora 44 live
+bake at clean revision `478a8ed97a1fe1b0e6e142498752267f1be0e159` after
+fixing fragment-packed traversal. The strict doctor and ISO-tree extraction
+again passed, then EROFS extraction failed while setting `security.selinux` on
+inode 12114131 with `EINVAL`. The finalized second-attempt log at
+`/home/carlid/dev/sos/artifacts/linux-live-bake-attempt2.log` is 1,734 bytes
+with SHA-256
+`4c761c3479111a0ab742aa8eaa012e909162da3d5c2261bf4b8f2254a465a899`.
+No remixed ISO or removable media was produced, and no Framework or internal
+laptop disk was involved.
+
+**Causal chain / changed:** `dump.erofs` resolves the failing inode to
+`/usr/bin/nbdkit`. A read-only FUSE view of the signed official payload reports
+its source label as `system_u:object_r:fusefs_t:s0`, while the Fedora 44 policy
+for `/usr/bin/nbdkit` requires `system_u:object_r:bin_t:s0`. Restoring the
+compose-filesystem label is therefore neither portable to the staging
+filesystem nor the desired final state. The bake now mounts the EROFS payload
+read-only and uses privileged `rsync -aHAXS --numeric-ids` to retain content,
+numeric ownership, modes, timestamps, hardlinks, sparse layout, ACLs,
+capabilities, and all applicable non-SELinux xattrs. It excludes
+`security.selinux` and, consistently with rsync's superuser default, the
+`system.*` namespace; `rsync -A` separately retains POSIX ACLs. After all
+package and SOS mutations, the existing `setfiles` phase applies the rootfs's
+own Fedora policy to the complete tree. The mount is bounded under the bake
+work directory and has an EXIT cleanup before the work directory can be
+removed. Before unmounting, a second metadata-only rsync dry run must report no
+size, timestamp, owner, mode, hardlink, or ACL difference; normalized manifests
+must report no capability or other included-xattr difference.
+
+**Focused evidence / measurements:** Copying the official failing file through
+the filtered rsync path preserved its bytes and omitted the stale `fusefs_t`
+label in 0.08 seconds with 5,840 KiB maximum RSS. A subordinate-user-namespace
+round trip then preserved mode `0750`, a hardlink, a user xattr, and
+`cap_net_bind_service=ep` in 0.05 seconds with 5,708 KiB maximum RSS. The
+finalized combined probe log at
+`/home/carlid/dev/sos/artifacts/linux-live-xattr-rsync-probe.log` is 571 bytes
+with SHA-256
+`09db4e06f22bad30144ee67cd115129aea43f89ed49aaa638618bb6950f96ce7`.
+The focused live-image test constructs a hardlinked mode-`0750` fixture with a
+user xattr, conditionally gives it the same stale SELinux type, and requires
+the copy to preserve every requested attribute except that source label; its
+post-copy metadata audit must also be empty. The strict doctor, live-image and
+hardware-gate host suites, Bash parsing of all five relevant scripts,
+ShellCheck 0.11.0 from container digest
+`b9389b73c8f26f710a7171cb7d8848a34a9c1e07a7865e727c9ec4ce99f9a83f`,
+and `git diff --check` passed in one ordered 2.18-second campaign with 46,420
+KiB maximum RSS. No model provider ran, so live-model and model-weighted gate
+cost were zero.
+
+**Rejected approaches / decision / next gate:** Continuing
+`fsck.erofs --xattrs` would repeatedly fail on a compose label. Disabling all
+xattrs would silently destroy capabilities and was rejected. Copying source
+SELinux contexts and relabeling only after that is also unnecessary and blocks
+the build before the authoritative policy phase. Stop full bake retries until
+the new mount/copy layer and nearby host regressions are green. Then delete
+only the bounded partial attempt-two output, commit and push the correction,
+and run one fresh privileged bake. That downstream run must still prove the
+whole-rootfs mount/copy, package mutation, policy relabel, EROFS repack, ISO
+checksum, and identities before removable-media hardware testing begins.
+
+## 2026-08-24 — Separate logical metadata and raw-xattr audits
+
+**Goal / environment / failure:** Run the fresh downstream bake at clean
+revision `f6ad4e9f69d967ddeca517f2760cac5f0969934d` after replacing direct
+EROFS xattr extraction. The strict doctor, ISO-tree extraction, read-only EROFS
+mount, and complete privileged rsync copy passed. The new dry-run audit then
+failed on exactly `.d........x var/log/journal/`. The finalized bake log at
+`/home/carlid/dev/sos/artifacts/linux-live-bake-attempt3.log` is 1,720 bytes
+with SHA-256
+`1e02477374a3ca0d264b3f475d91bce695829fa7153549cd0fbdc575b15ab46c`;
+the 29-byte raw audit at
+`/home/carlid/dev/sos/artifacts/linux-live-rsync-audit-attempt3.log` has
+SHA-256 `f8ab10a71d8144e2f0004a0c587e48fc2e4b46950f6b54bce660af97609951e3`.
+No remixed ISO or removable media was produced, and no Framework or internal
+laptop disk was involved.
+
+**Diagnosis / evidence:** Rsync's itemized `x` flag combined its raw-xattr view
+with an ACL-bearing directory even though the copy intentionally filtered the
+source SELinux label and handled ACLs separately. The source and destination
+`/var/log/journal` both had numeric owner `0:190`, mode `2755`, identical access
+ACLs, and identical default ACLs; only the expected staging SELinux context
+differed. More importantly, the completed privileged copy retained the real
+`security.capability` on
+`/usr/libexec/gstreamer-1.0/gst-ptp-helper` as
+`cap_net_bind_service,cap_net_admin,cap_sys_nice=ep`. Its source and destination
+bytes both had SHA-256
+`f3849ca6c51675c7365eb7b0bb048bc11f256aa09d069818ae83ef44744066a5`.
+Thus the copy boundary passed and the combined audit, not metadata
+preservation, was the earliest broken layer.
+
+**Changed / decision / next gate:** Keep the fail-closed audit but split its
+semantics. A metadata-only rsync dry run without `-X` now checks content size
+and time, numeric ownership, modes, hardlinks, and logical ACLs.
+Separate sorted `getfattr` manifests compare exact `user.*`, `trusted.*`, and
+non-SELinux `security.*` names and values, including capabilities, while
+deliberately excluding `security.selinux` and ACLs already checked logically.
+The focused fixture requires both the metadata audit and normalized xattr
+manifest comparison to be empty. Do not whitelist `/var/log/journal`, discard
+the audit, or accept arbitrary rsync `x` differences. After nearby checks pass,
+commit and push the correction. The next operator command must remove only the
+bounded partial attempt-three output, then run one fresh privileged bake
+through relabel and repack.
+
+The strict doctor, live-image and hardware-gate host suites, Bash parsing of
+all five relevant scripts, ShellCheck 0.11.0 from container digest
+`b9389b73c8f26f710a7171cb7d8848a34a9c1e07a7865e727c9ec4ce99f9a83f`,
+and `git diff --check` passed in one ordered 2.16-second campaign with 46,900
+KiB maximum RSS. No model provider ran, so live-model and model-weighted gate
+cost were zero. The pending privileged bake remains the next gate.
+
+## 2026-08-24 — Ignore XFS's internal ACL xattrs in the portable manifest
+
+**Goal / environment / failure:** Run the next privileged bake at clean
+revision `dd97da735effa4392891049fbcc4e9df0b85601a` with separate logical
+metadata and raw-xattr audits. The strict doctor, ISO-tree extraction,
+read-only EROFS mount, complete privileged copy, and metadata-only rsync audit
+all passed; the latter produced a zero-byte audit. The exact xattr-manifest
+comparison then failed with 10 source entries and 12 destination entries. The
+finalized bake log at
+`/home/carlid/dev/sos/artifacts/linux-live-bake-attempt4.log` is 1,798 bytes
+with SHA-256
+`b839aa84bf97e6cedd0f88c88d7101368f6846abe683d3139860dd8f4b587717`.
+No remixed ISO or removable media was produced, and no Framework or internal
+laptop disk was involved.
+
+**Diagnosis / evidence:** All ten source `security.capability` entries were
+present byte-for-byte in the destination manifest. The only destination-only
+entries were `trusted.SGI_ACL_FILE` and `trusted.SGI_ACL_DEFAULT` on
+`var/log/journal`; XFS synthesizes these trusted xattrs from the POSIX ACLs that
+the independent logical audit had already proved identical. The preserved
+source manifest at
+`/home/carlid/dev/sos/artifacts/linux-live-xattr-source-attempt4.txt` is 736
+bytes with SHA-256
+`6d8e758528fc1f6ef7947bff6c1fc9fa92ad0e3a8280abf15e93135b9faccf79`.
+The destination manifest at
+`/home/carlid/dev/sos/artifacts/linux-live-xattr-dest-attempt4.txt` is 1,027
+bytes with SHA-256
+`d33751772586b3eaa47bb7582e107744f3fa14ea57022062a660fb08cc7e032c`.
+The zero-byte metadata audit is retained at
+`/home/carlid/dev/sos/artifacts/linux-live-metadata-audit-attempt4.txt` with
+the empty-file SHA-256
+`e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`.
+
+**Changed / decision / next gate:** Exclude only the target-filesystem-internal
+`trusted.SGI_ACL_*` encodings from the portable raw-xattr manifest. Continue to
+compare every source `user.*`, other `trusted.*`, and non-SELinux `security.*`
+value exactly, and continue to require the separate owner/mode/hardlink/ACL
+audit to be empty. Filtering the two SGI entries from the retained destination
+manifest made it identical to the retained source manifest: ten capabilities
+matched and no portable xattr was missing or changed. Do not exclude all
+`trusted.*`, weaken capability comparison, or whitelist a filesystem path.
+After nearby host checks pass, commit and push the correction; the next
+operator command must remove only the bounded partial attempt-four output and
+run one fresh privileged bake through package mutation, relabel, and repack.
+
+The strict doctor, live-image and hardware-gate host suites, Bash parsing of
+all five relevant scripts, ShellCheck 0.11.0 from container digest
+`b9389b73c8f26f710a7171cb7d8848a34a9c1e07a7865e727c9ec4ce99f9a83f`,
+and `git diff --check` passed in one ordered 2.20-second campaign with 46,152
+KiB maximum RSS. No model provider ran, so live-model and model-weighted gate
+cost were zero. The pending privileged bake remains the next gate.
+
+## 2026-08-24 — Preserve the active rootfs across offline-home staging
+
+**Goal / environment / failure:** Run the next privileged Fedora 44 bake at
+clean revision `1a658a866d0f8b9300175d113f13ee82a7c6c91e`. Rootfs extraction,
+metadata verification, runtime-package installation, all Rust release builds,
+and the agent TypeScript bundle completed. Destroot installation then tried to
+measure
+`/usr/local/libexec/sos-agent/dist/agent-runner.cjs` as the normal builder but
+could not traverse its root-owned mode-`0700` `dist` directory. Staging the
+offline skeleton subsequently failed while removing
+`/tmp/sos-live-skel.9LdFDl/etc`, which had unexpectedly become root-owned. The
+finalized log at
+`/home/carlid/dev/sos/artifacts/linux-live-bake-attempt5.log` is 27,375 bytes
+with SHA-256
+`49e3de11b0e3b271ff73be60a9baf61077988a17402a3b9c06f41972a1d74ce7`.
+The bounded output contains only `work/`; there is no ISO or image identity,
+and no removable media or Framework disk was involved.
+
+**Diagnosis / changed code:** `write-offline-user-state` reused the global
+`live_image_rootfs` variable. Bash's function scoping therefore replaced the
+surrounding bake root with its temporary home path; every subsequent
+`live_image_target` call addressed that temporary directory, and privileged
+copy setup created its root-owned `etc`. Root-option parsing now returns a path
+instead of mutating shared state, offline-home writing uses a local
+`home_root`, and rootfs validation uses a function-local root. The regression
+sources the real tool, sets an active-root sentinel, calls the nested helper,
+and requires the sentinel to remain unchanged. Separately, destroot publishing
+now normalizes the agent code tree to `u=rwX,go=rX` after root ownership and
+fails explicitly unless every manifest artifact is a readable regular file
+with a valid nonzero size and SHA-256. A focused copy of the actual build tree
+proved all directories traversable and files readable; the 1,878,811-byte
+runner became mode `0755` with SHA-256
+`3eee6e7922fb82e344277793a435bb8edd36a2c183050b638a3c6ca13d3bc99a`.
+
+**Rejected approaches / decision / remaining risk / next gate:** Running the
+whole bake as root would violate the builder boundary. Hashing the private
+bundle only through `sudo` would make the manifest succeed while leaving the
+desktop user unable to load the agent, and cleaning the corrupted temporary
+tree through `sudo` would conceal the wrong destination. Keep the bake
+unprivileged, publish runtime code readably, and reserve privilege for rootfs
+mutation. The strict doctor, live-image and hardware-gate host suites, Bash
+parsing of all five relevant scripts, ShellCheck 0.11.0 from container digest
+`b9389b73c8f26f710a7171cb7d8848a34a9c1e07a7865e727c9ec4ce99f9a83f`,
+and `git diff --check` passed in one ordered 2.13-second campaign with 47,380
+KiB maximum RSS. No model provider ran, so live-model and model-weighted gate
+cost were zero. The remaining risk is the downstream privileged integration:
+remove only the bounded partial attempt-five output, then run one clean bake
+through staging, relabel, EROFS repack, ISO replay, media checksum, and final
+identity generation before writing removable media.
+
+## 2026-08-24 — Assign image-policy SELinux labels during EROFS creation
+
+**Goal / environment / failure:** Run the next privileged Fedora 44 bake at
+clean revision `b618608a93e707efd2764911aeaa6f9a81dd99fe`. Extraction,
+metadata verification, package mutation, cached release builds, readable
+destroot installation, and both offline-home staging paths passed. The first
+whole-root relabel then stopped while loading the image's file-context rules:
+the build host's currently loaded targeted policy rejected
+`nbdkit_exec_t` and `nbdkit_unit_file_t`. The finalized log at
+`/home/carlid/dev/sos/artifacts/linux-live-bake-attempt6.log` is 8,563 bytes
+with SHA-256
+`4e1a7e830a7e4a448e228b4ec0c7899f4865627acd5c6f7bdb4965cd4262a496`.
+The bounded output again contains only `work/`; no ISO or image identity was
+produced, and no removable media or Framework disk was involved.
+
+**Diagnosis / evidence:** This was not an invalid Fedora image policy. Running
+`setfiles -n -m -c ROOT/etc/selinux/targeted/policy/policy.35 -r ROOT
+ROOT/etc/selinux/targeted/contexts/files/file_contexts ROOT/usr/bin/nbdkit`
+passed, proving the rootfs's own binary policy accepts the expected
+`nbdkit_exec_t` rule. The installed `setfiles(8)` documents `-c` specifically
+for checking contexts against another binary policy. A focused EROFS probe
+used the rootfs file contexts with `mkfs.erofs --file-contexts`, produced a
+180,224-byte image whose `/usr/bin/nbdkit` inode carried a 60-byte xattr area,
+and embedded `system_u:object_r:nbdkit_exec_t:s0`. Attempting to restore that
+label onto the host filesystem reproduced `EINVAL`, confirming why staging
+tree relabeling cannot be the cross-policy boundary. A separate valid-context
+probe extracted `system_u:object_r:bin_t:s0` exactly from the rebuilt EROFS.
+
+**Changed / rejected approaches / decision / next gate:** Validate all file
+contexts read-only against the rootfs's highest compiled `policy.*`, then pass
+the same context file directly to `mkfs.erofs`; verify the rebuilt filesystem
+with explicit xattr inspection. This keeps the staging tree's incidental host
+labels out of the artifact while preserving ownership, modes, ACLs,
+capabilities, and other portable xattrs. Loading the image policy into the
+enforcing build host would be a global and unsafe mutation. Continuing to use
+the host policy would reject valid image-only types, while retaining compose
+or staging labels would make the live image incorrect. The focused host suite
+now constructs an EROFS with a supplied file-context rule, requires the label
+string in the image, and, when SELinux is active, extracts and checks the exact
+`security.selinux` value; it passed in 0.55 seconds with 30,444 KiB maximum
+RSS. The next gate is one fresh privileged bake through policy validation,
+EROFS creation, ISO replay, embedded checksum verification, and final identity
+generation before removable-media testing.
+
+The strict doctor, live-image and hardware-gate host suites, Bash parsing of
+all five relevant scripts, ShellCheck 0.11.0 from container digest
+`b9389b73c8f26f710a7171cb7d8848a34a9c1e07a7865e727c9ec4ce99f9a83f`,
+and `git diff --check` passed in one ordered 2.11-second campaign with 47,492
+KiB maximum RSS. No model provider ran, so live-model and model-weighted gate
+cost were zero. The pending privileged bake remains the next gate.
+
+## 2026-08-24 — Add the missing direct-session Linux dmabuf path
+
+**Goal / environment / failed gate:** Boot the Fedora 44 live remix at clean
+revision `24dc85c2e29891d4072cd9674e656fcc05c97686` on the Framework Laptop 12
+(13th-generation Intel Core, Raptor Lake-P UHD `8086:a721`, `i915`) and run the
+first physical selectable-session gate. The exact ISO at
+`/home/carlid/dev/sos/artifacts/linux-live-image/sos-fedora-workstation-live-24dc85c2e298.iso`
+is 3,056,205,824 bytes with SHA-256
+`cbbf9cca1bb70858713a9ae2ab5c3a9203f295ceeb46e82ce0710a983c2d9570`.
+The same-boot campaign used boot ID
+`77187e2c-d323-4a52-b88d-24d22a87bc33` and ran for
+1,303,847,671,263 ns. Recovery and direct DRM page flips passed, but the shell
+never became ready; the remaining agent, input, activation, lifecycle, and
+logout criteria consequently failed. The finalized 937-byte verdict at
+`/home/carlid/dev/sos/artifacts/linux-live-image/evidence/framework12-20260824/framework12-first-gate/verdict.txt`
+has SHA-256
+`882faf47c47cb1c3518cf2418c9e6d7c182a4cd935f57d80a0e9526a2a67024a`.
+The associated 614,603-byte user journal has SHA-256
+`4e08e4e406022a6db00226960026a4049ec202f33bd68a176355e4642ac092c2`.
+
+**Earliest failure / rejected approaches:** The compositor logged that
+`EGL_WL_bind_wayland_display` was unavailable and exposed only `wl_shm` to the
+client. GPUI therefore reached Mesa's software path despite an available Intel
+render node; Mesa 26.0.3 and LLVM 22.1.1 aborted in `fs_variant_partial` while
+`libvulkan_lvp.so`/llvmpipe compiled the shell fragment shader. The revision
+supervisor timeout and return to GDM were downstream. Temporarily forcing
+`VK_DRIVER_FILES` to Intel changed Vulkan enumeration but retained the
+software-OpenGL presentation boundary and reproduced the LLVM failure. Do not
+ship that environment override or treat a Mesa/LLVM upgrade as the fix: either
+would mask the missing Wayland buffer-sharing protocol rather than provide the
+hardware client/compositor path.
+
+**Changed compositor / focused physical evidence:** The direct backend now
+publishes Linux dmabuf feedback independently of the optional EGL Wayland
+binding. It advertises only the intersection of formats importable by all
+renderers with connected outputs, selects the corresponding render node,
+validates every client buffer against each active renderer, and refreshes the
+feedback across connector/device changes; `wl_shm` remains available as the
+fallback. A unit fixture requires three renderer format sets to collapse to
+their sole common format. A 5,699,056-byte focused release build with SHA-256
+`4de0c2131339b3f8b9ec04a12aacdfede2ed73227e99132eccf31cf481974f70`
+was copied only into the live overlay. With both the login script and running
+shell free of `VK_DRIVER_FILES`, the compositor advertised 240 formats on
+`renderD128`, the experience host held Intel DRM file descriptors, revision
+`31f8e1d31b6e2c91a8a0b0829e5f29934440c64ed8f535bb86d81a5a836c49e5`
+produced its first compositor-owned page flip 415,636 microseconds after host
+start, the system session became ready, and the offline agent started. The
+25,750-byte diagnostic directory is retained at
+`/home/carlid/dev/sos/artifacts/linux-live-image/evidence/framework12-20260824/framework12-dmabuf-diagnostic`;
+its verified 242-byte manifest has SHA-256
+`245c161354c9ddaf03f0b47de19c0d6307dfb76f590552f6ff06d6c86535f0c7`.
+
+**Logout diagnosis / changed lifecycle:** The focused clean logout recorded
+`linux_login_session_stopped reason=user_logout`, then six milliseconds later
+a supervisor host proxy observed an already-removed `host-launcher.sock` and
+emitted `linux_session_failed`. The launcher was a local in
+`start_and_monitor`, so Rust dropped its socket before `run_system_session`
+could stop the still-running supervisor. Session ownership now retains the
+launcher alongside the child processes and drops it only after the supervisor
+has stopped. This removes the shutdown race instead of weakening the hardware
+gate's process-failure criterion.
+
+**Host checks / decision / remaining risk / next gate:** One ordered campaign
+ran formatting and diff checks, the compositor's 12 direct-backend tests, the
+Linux session's seven unit/integration tests, warning-denying Clippy for both
+packages, and the hardware-gate host suite. It passed in 5.84 seconds with
+609,852 KiB maximum RSS. The finalized 5,949-byte log at
+`/home/carlid/dev/sos/artifacts/linux-live-image/evidence/framework12-20260824/host-checks.log`
+has SHA-256
+`75a605c8e4091487b76607d7f982edb09c5a99050d6f5e9e6ce73525fcd0a282`.
+No model provider ran, so live-model and model-weighted gate cost were zero.
+The in-place binary experiment is diagnostic evidence, not a PASS for the
+baked revision; the shutdown-order change, multi-GPU selection, physical input,
+transactional activation, and final clean logout still lack artifact-matched
+physical proof. Commit the fix, rebuild a clean revision-pinned ISO, boot it
+fresh, and repeat prepare, all observed interactions, collect, manifest audit,
+and same-boot verdict before promoting the Framework gate.
+
+## 2026-08-24 — Gate agent configuration controls by platform capability
+
+**Goal / physical observation / evidence:** Continue the focused Framework 12
+live-overlay diagnostic after dmabuf startup succeeded and exercise ordinary
+interaction. The compositor independently recorded native
+`relative_pointer`, `pointer_button`, and `keyboard` input; the Linux host then
+recorded 33 bounded text edits in the agent prompt. Selecting `CODEX SUB`,
+`FAKE`, and `CODEX SUB` again produced action requests 34–36, each of which
+reached the worker but failed commit as unsupported `agent.configure_codex` or
+`agent.use_fake` effects. The bounded 21,440-byte journal at
+`/home/carlid/dev/sos/artifacts/linux-live-image/evidence/framework12-20260824/framework12-dmabuf-diagnostic/journal-interaction.txt`
+has SHA-256
+`3f414fb9e87251bf60e9d917c7c05095486dbb9d058d1397ed763ca2109c29ca`.
+The expanded 47,280-byte diagnostic directory verifies through its 332-byte
+manifest, whose SHA-256 is
+`ca4f67a1d4a952be8883e36d88f45564b06a6e188f5fcc392b45ef1be5bd87e7`.
+These are focused physical observations on a modified overlay, not a complete
+artifact-matched input gate; touch, activation, and the final verdict remain
+open.
+
+**Diagnosis / changed contract:** Linux provider selection is intentionally a
+pre-session operation: `sos-agent-login` writes the private provider/model
+configuration, and a new GDM SOS session starts and monitors exactly that
+resident agent. Restarting or replacing it from a generated experience would
+currently terminate the graphical session. The shared reference experiences
+nevertheless rendered Android/Core credential buttons unconditionally, while
+the Linux host correctly rejected their effects. `model.agent` now carries a
+typed `configuration_actions` allowlist. Linux leaves it empty; Android Compat
+publishes its five trusted credential actions; Core publishes only its pinned
+OpenRouter, fake, and clear actions. Default, Daily Flow, and Timeflow render
+only listed controls and otherwise explain that provider changes are managed
+before login. Generated Luau still cannot bypass the trusted host's effect
+validation.
+
+The same check exposed an older decoder mismatch: the stock experience could
+render capability-granted System Providers v1 controls, but Luau's bounded
+effect decoder omitted audio volume/mute, media transport, app launch, and
+attention acknowledgement. The decoder now accepts exactly those documented
+typed actions; platform capability and adapter checks still decide whether an
+individual request is authorized and executable.
+
+**Rejected approaches / checks / next gate:** Do not turn `use_fake` into a
+silent Linux no-op, launch a credential helper behind the direct session, or
+weaken the host's unknown-effect rejection. Each would make rendered state or
+process ownership disagree with the actual resident provider. A measured host
+campaign passed five experience-IR tests, 22 Luau runtime tests, 26 Linux-host
+experience tests, warning-denying Clippy, and NDK 29/API-31 Compat and Core
+cross-checks in 10.24 seconds with 2,482,232 KiB maximum RSS. The finalized
+10,087-byte log at
+`/home/carlid/dev/sos/artifacts/linux-live-image/evidence/framework12-20260824/provider-controls-host-checks.log`
+has SHA-256
+`6c4d43c4eace55f09f4b99f97709fbe2a818f3caaad7fca30b3e7234755790c3`.
+No model provider ran, so live-model and model-weighted gate cost were zero.
+Build the next ISO only from the resulting clean committed revision, then repeat
+the complete Framework prepare, SOS input and deterministic prompt activation,
+clean logout, collect, audit, and copy-off sequence.
+
+## 2026-08-24 — Complete a focused Framework prompt activation
+
+**Goal / environment / physical result:** Continue the same focused Framework
+12 live-overlay session on boot ID
+`77187e2c-d323-4a52-b88d-24d22a87bc33` and test the transactional path after
+the user independently confirmed that pointer and keyboard interaction behaved
+normally. The 16-byte deterministic prompt `make this calmer` was submitted to
+the offline fake agent. The agent fetched context, validated its generated
+experience, and submitted revision
+`c6d87d5809bbdc3a859ea4fc634f49d0588c3a9248fcc821eca67dcf26293e7f`.
+Preparation measured 83 microseconds queued, 3,609 microseconds compiling,
+1,629 microseconds rendering, and 5,246 microseconds total worker time.
+
+**Transactional evidence / lifecycle:** The compositor quiesced input with
+zero held keys, buttons, or touches and dropped no events, armed after commit
+sequence 159,723, then presented the revision at commit sequence 159,724 and
+submit sequence 431 with direct DRM page-flip evidence. The host reported that
+frame 383,880 microseconds after text submission; the complete offline-agent
+turn finished 400,536 microseconds after submission. A later same-boot sample
+showed the experience host still at PID 45,075, with its original 16:19:06
+start time, and the revision supervisor still reported the presented revision
+as current. No experience-host restart occurred during activation.
+
+**Evidence / decision / remaining risk / next gate:** The finalized
+15,995-byte activation journal at
+`/home/carlid/dev/sos/artifacts/linux-live-image/evidence/framework12-20260824/framework12-dmabuf-diagnostic/journal-activation.txt`
+has SHA-256
+`d32c7d03d247089c0fbedfa0a58fb12769009bb808e5f6fdfb7abf938153cb93`.
+The 495-byte lifecycle sample has SHA-256
+`726817c87482f38fd5f81feb5a02f2ba0f28750ade773c506d841bca262ab8d9`.
+All six bounded files in the 63,948-byte diagnostic directory verify through
+its 510-byte manifest, whose SHA-256 is
+`caf98c4374738e48a82a092ba8152174318ce07ea482fb031ab8bfa55bba1a72`.
+This closes focused physical pointer, keyboard, agent, revision-commit, direct
+page-flip, and stable-host-lifecycle diagnosis. It does not promote the baked
+ISO or complete the hardware gate: the compositor was replaced only in the
+live overlay, the provider-control and logout fixes are not present in that
+artifact, and touchscreen, corrected clean logout, image identity, collection,
+and final manifest audit remain unproved. No live model provider ran, so model
+cost was zero. Build one clean revision-pinned ISO containing all fixes, boot
+it fresh, and run the full same-boot prepare/interact/collect/audit gate.
+
+## 2026-08-24 — Run the revision-pinned Framework gate and isolate touch focus
+
+**Goal / artifact / complete gate:** Boot the clean revision
+`fb704784d5b35860c49d44c028ceb3a7fe7daf63` from the baked Fedora 44 live ISO
+`/home/carlid/dev/sos/artifacts/linux-live-image-fb70478/sos-fedora-workstation-live-fb704784d5b3.iso`
+(3,056,205,824 bytes, SHA-256
+`c043f5657c68ea39e91006cb83fcf4cdb1013fcdf19cc1ef464f502632d48a91`)
+on the Framework Laptop 12 and execute one same-boot prepare, physical input,
+offline-agent activation, clean logout, collect, copy-off, and manifest audit
+campaign. The 350,565,261,856-nanosecond campaign passed live-boot identity,
+recovery and direct-compositor page flips, session/agent readiness, keyboard,
+touchpad motion/button, touchscreen observation, clean logout, transactional
+activation, fallback display manager, and kernel GPU checks. It correctly
+failed overall: the host launched twice, the durable pointer remained at
+`32f4b2a9c26f632bc20a3139d06a1b59aa9073e6513fabb7698566b669847a5c`
+while authority reached
+`0560f50dc390dc20c97db99d4a16ee45b11f2956315f927408a7a7b3b5dafcf6`,
+and process-failure evidence was present.
+
+The copied 107,405-byte directory at
+`/home/carlid/dev/sos/artifacts/linux-live-image/evidence/framework12-20260824/framework12-fb70478-gate`
+independently verifies 36 files when checked with the campaign's
+`en_US.utf8` collation. Its 3,370-byte manifest has SHA-256
+`a0605f305798af3cd11ad59a8d6c56454e450f3bcaeddba5edad6498c7cfa35f`;
+the 1,008-byte verdict and 53,574-byte user journal have SHA-256
+`01533d6a6a2263a01904d305710e3f3e533768efd273921b879fa0eff17d565b`
+and `bc93e8583ec9879b37f6784326f5c88d463db18eae0edb3e08099a55703b973b`.
+Manifest ordering is locale-sensitive today: verification passes under the
+collection locale but not the development host's `C.UTF-8`, which remains a
+portability defect rather than evidence corruption.
+
+**Failure and recovery diagnosis:** The compositor presented candidate
+`0560f50d…` after a 4,867-microsecond prepare, but the first experience host
+did not consume the compositor-fence notification on its GPUI thread. The
+supervisor timed out and launched a replacement while the original host was
+still resident; the replacement failed with `Resource temporarily unavailable`.
+The original host later panicked during logout after the compositor surface
+had disappeared. A focused second SOS login on the same boot used one host PID,
+recognized the incomplete transaction, prepared the identical candidate in
+5,674 microseconds, directly page-flipped it, aligned current and authority,
+and removed the activation journal. This proves durable recovery and candidate
+validity, but does not clear the intermittent first-session host stall or
+overlapping-restart risk. The user also observed scroll lag during the degraded
+first host lifecycle. No live model ran, so model and model-weighted cost were
+zero.
+
+**Physical focus reproduction / changed code:** In the recovered session, a
+touchpad click focused `note-draft` and hardware keys edited it. Four subsequent
+physical touchscreen contacts over the other editor produced no
+`agent-prompt` focus event; later keys still edited `note-draft`. The bounded
+13,258-byte journal and 1,738-byte runtime snapshot are stored with a verified
+162-byte manifest at
+`/home/carlid/dev/sos/artifacts/linux-live-image/evidence/framework12-20260824/framework12-fb70478-focus-diagnostic`;
+the manifest SHA-256 is
+`1344f8d5752a1f4f1f25d9d7fc98652440b57c3367bae27d8f39944aa6ae824d`.
+The Linux GPUI backend exposed raw Wayland touch only to the scene-pointer
+router, while native text inputs registered mouse handlers but no touch hit
+bounds. Native fields now register their painted bounds; a raw touch-down picks
+the topmost field, focuses its persistent entity, and positions the cursor.
+The existing active-field restoration remains in place because the first gate
+shows it restoring the prompt after compositor input quiescing. The nested
+compositor workflow now explicitly transfers focus from the autofocused note
+editor to the agent prompt and back, guarding that behavior against becoming
+sticky during ordinary interaction.
+
+**Checks / focused overlay result:** An initial release host build completed in
+99.70 seconds with 2,010,256 KiB maximum RSS; the 17,071,928-byte diagnostic
+binary has SHA-256
+`4f797a3ebd7721fd7af460b338a17be1a766763c8e784aeaf30deb1c2508d12c`.
+The nested gate was not claimed because this development host lacks Weston.
+The release host was then installed as the only changed binary in the
+disposable live overlay, with its hash verified before login. On the next SOS
+login, mouse input transferred focus from `note-draft` to `agent-prompt` and
+edited the prompt. Physical touchscreen taps then transferred focus from the
+agent prompt to the note and back to the prompt; the host emitted bounded
+`sos_linux_touch_focus` records with the painted node IDs, followed by the
+matching blur/focus pairs. The experience remained on its original PID 17,545,
+current and authority both remained at `0560f50d…`, and no activation journal
+or process failure appeared. The verified 8,775-byte focused-result bundle is
+at
+`/home/carlid/dev/sos/artifacts/linux-live-image/evidence/framework12-20260824/framework12-fb70478-focus-fix`;
+its 166-byte manifest has SHA-256
+`0c7089c3d753ccf9dc1ff5a3a719f7599ebbbd96b73038e93d42b50791697fe5`.
+
+**Rejected inference / final source / next gate:** The first implementation
+also made active-field restoration one-shot. Review against the original
+activation journal showed this was unproved and unsafe: repeated restoration
+had correctly returned keyboard focus after compositor quiescing. That change
+was removed; the final diff contains only native touch hit routing and its
+coverage. All 27 Linux-host tests passed in 0.12 seconds and warning-denying
+Clippy passed. The final 17,071,928-byte host built in 79.24 seconds with
+2,011,288 KiB maximum RSS and has SHA-256
+`ce3c8a486c03f47b1a08d7c2dcfea51dd1ff00c77bc938520327f2e76f394418`.
+GDM powered the live system off before that narrowed binary could replace the
+diagnostic build, so the physical result closes the touch-routing mechanism on
+the overlay but is not exact final-binary or baked-artifact evidence. Commit,
+bake a clean revision-pinned ISO, and repeat the complete Framework campaign;
+do not promote the hardware gate until artifact-matched focus transfer and
+single-host activation both pass.
+
+## 2026-08-25 — Bake and audit the touch-focus Fedora live ISO
+
+**Goal / clean source / host:** Build the first artifact containing the Linux
+native touchscreen-to-text-field routing fix, without treating a host bake as
+physical acceptance. The Fedora 44 x86-64 host passed strict
+`tools/linux-live-image doctor`; the source worktree was clean at
+`d9d783cd65b7e6faabacc5dc4c26e63d4bf0eca6`. All 27 Linux-host tests,
+warning-denying Clippy, Bash parsing of the live-image and nested-compositor
+workflows, and `git diff --check` passed before the privileged bake. The pinned
+official Fedora Workstation 44 source remained 2,851,612,672 bytes with
+SHA-256
+`1620295f6a00c27c3208f0c00b8ece4eab1ec69b9002152d97488bf26a426ddf`.
+
+**Bake result / measurements:** The complete privileged remix passed rootfs
+extraction and metadata preservation, Fedora runtime-package mutation, the
+release host and offline-agent builds, offline-user staging, rootfs identity
+validation, SELinux policy assignment, EROFS repack, ISO replay, and the
+embedded media check. It completed in 2,703.62 seconds wall time with
+2,041,868 KiB maximum RSS. The finalized 8,924-byte bake log at
+`/home/carlid/dev/sos/artifacts/linux-live-bake-d9d783c.log` has SHA-256
+`ed22f055cbe8008aa0019185dcd69ad01bb1d4d62400d5c2176742562c110bd4`;
+the 985-byte GNU-time record has SHA-256
+`144c05d8f95dac71d0f29f78ecc6d7c040b1097e6dcf470626b4e9ab74517809`.
+No model provider ran, so live-model and model-weighted cost were zero.
+
+The resulting live-boot artifact is:
+
+| Artifact | Revision | Bytes | SHA-256 |
+| --- | --- | ---: | --- |
+| `/home/carlid/dev/sos/artifacts/linux-live-image-d9d783c/sos-fedora-workstation-live-d9d783cd65b7.iso` | `d9d783cd65b7e6faabacc5dc4c26e63d4bf0eca6` | 3,056,074,752 | `21332392b6564e4f286c527f79645d564270f287d5313a1243c3b040f37738f9` |
+
+Its 821-byte sidecar has SHA-256
+`b8d30725b4c10e5e4ca4860b9aaf9cd0bc96a2780eb230153a1626786515ee46`
+and records `source_dirty=false`, Fedora/build-host release 44, offline agent
+mode, `live-boot`, and `not_installed_product=true`. The payload is the expected
+flat EROFS rootfs, 2,691,596,288 bytes with SHA-256
+`dc3c28416007457a72548b1959653cd869585b378900cefde8bb2d1275810235`.
+
+**Independent audit / decision / next gate:** A fresh SHA-256 computation
+matched the sidecar; `checkisomd5` independently passed in 3.31 seconds; direct
+extraction of the ISO-level identity matched the revision, source, payload,
+release, agent, and live-boot claims; direct extraction and hashing of
+`LiveOS/squashfs.img` matched its declared size and digest; both
+`check-payload` and `fsck.erofs` passed. Xorriso confirmed volume ID
+`Fedora-WS-Live-44`, bootable BIOS and UEFI El Torito entries, protective MBR,
+and GPT. The finalized 5,336-byte audit bundle at
+`/home/carlid/dev/sos/artifacts/linux-live-image-d9d783c-audit` verifies all ten
+evidence files through its 834-byte manifest, whose SHA-256 is
+`5eb95ac37cac70a7a83f14b7fb506a4db52364d9e10149cda85ecb2e747c3a64`.
+The temporary 2.69-GB extracted payload used for this audit was removed after
+hashing and remains reproducible from the preserved ISO.
+
+Accept this exact ISO as flashable live-test media only. It is not an installed
+product and the host bake does not prove physical DRM, focus transfer, stable
+single-host activation, input, or logout. Write this exact hybrid ISO to the
+removable USB, boot it on the Framework Laptop 12, and run one fresh same-boot
+prepare, mouse/touch field-transfer, offline-agent activation, clean logout,
+collect, copy-off, and manifest-audit campaign before promoting the gate.
+
+## 2026-08-25 — Diagnose and close Framework touch-triggered host starvation
+
+**Goal / media / complete-gate result:** Write the revision-pinned Fedora 44
+ISO from the preceding entry to the removable device, run its complete
+Framework Laptop 12 gate, and use focused live-overlay experiments to resolve
+the remaining host-lifecycle and input failures without repeatedly baking the
+3-GB image. The exact 3,056,074,752-byte ISO with SHA-256
+`21332392b6564e4f286c527f79645d564270f287d5313a1243c3b040f37738f9`
+was written to `/dev/sda` with
+`sudo dd if=...iso of=/dev/sda bs=16M status=progress conv=fsync` and verified
+byte-for-byte. The write took 5 minutes 15.20 seconds with 18,828 KiB maximum
+RSS. The 276-byte write log, 852-byte time record, and 57-byte verification log
+have SHA-256
+`a189ed58d99c4c149a93cb8861fe6d7825f8ccb8fbdeca5f139436432de247f1`,
+`5448b31022d418190f53f2b3e2c1016e6c7e8d9786994582f9ff22909141e9a4`,
+and `741e2a6c327be22bc80654a2917206f5906792292ec605a7713abe79624219c5`.
+
+The 357,403,147,177-nanosecond same-boot campaign on boot ID
+`9ad78727-161a-45ca-b84c-57b95d020f59` passed live-image identity, recovery and
+direct DRM page flips, session and agent readiness, keyboard, touchpad,
+touchscreen, clean logout, transactional activation, fallback display manager,
+and kernel GPU checks. It correctly failed overall: `stable_host_lifecycle`
+observed two host launches, durable authority remained at candidate
+`0560f50d…` while the current pointer stayed at `32f4b2a9…`, and SOS process
+failures were present. All 36 files verify in the copied 149,313-byte evidence
+directory
+`/home/carlid/dev/sos/artifacts/linux-live-image/evidence/framework12-20260825/framework12-d9d783c-gate`.
+Its 3,372-byte manifest, 1,008-byte verdict, 93,916-byte user journal, and
+1,072-byte kernel journal have SHA-256
+`d8e39496f33f5c171f6dfc4d51fa18bc3fa95ff107ec251f08be5c57022c71e3`,
+`128a21ef749ee330f6d1fe427976e49870bfaa7aeec0bef0f21b4989229f0853`,
+`6f3c2b625238cc310a15168d304827dc48bc7baafb881fdadaff6050540b0172`,
+and `6c4c168e92364c18615ee7f1981ac9f1d6f3a047fa33708c0b5ea7f8ebdf1fc4`.
+
+**Focused failures and rejected approaches:** Physical retests first proved
+touch focus but exposed three independent symptoms: a native field reverted to
+an older authority value on blur, foreground action results could stop draining
+under continuous animation, and touch eventually made text, focus, and Submit
+lag or stall. A local input-state shadow fixed the stale-value race and one-shot
+focus restoration preserved activation focus without stealing ordinary field
+transfers. Counting successful foreground sends and re-pinging calloop fixed
+lost readiness; limiting each dispatch to 64 tasks prevented an endlessly
+self-replenishing foreground queue from monopolizing the loop. Running tasks
+directly inside the calloop callback and then bounding those direct runs were
+both rejected after physical tests: they initially responded, then touch focus
+could be delayed for seconds and Submit again stopped. Moving tasks to
+calloop's idle list was also rejected because continuous frame traffic could
+starve that idle queue.
+
+The decisive `eu-stack` sample of the stalled exact host showed its main thread
+in `ppoll`, `wl_display_dispatch_queue`, Wayland WSI present,
+`anv_QueuePresentKHR`, and the SOS host, while the Luau worker was idle. Wayland
+frame callbacks and raw touch callbacks were calling `window.frame()`
+synchronously; Vulkan presentation could wait for a swapchain-buffer release
+before the Wayland source callback returned, preventing staged action results
+from running. The 8,675-byte stack and its 154,585-byte bounded journal have
+SHA-256
+`98d75d0f7916a584beb1917883d84b7c847dea61510dc89abeb4e66144f87a36`
+and `380ff03462020db901b759b0ec9b589614afd33e1a1bc9c4a88baca34f04da06`.
+The first queued-frame build correctly moved rendering out of protocol
+dispatch but kept a `RefCell` borrow alive through `window.frame()` and
+deterministically panicked during startup; separating the pop and render
+statements fixed that rejected implementation.
+
+**Changed runtime and lifecycle:** Raw Linux touch now supplies a bounded,
+coalesced wake receiver to the experience host so touch-only input marks its
+entity dirty. Native text state is shadowed until the serialized authority
+catches up, and activation restores focus once rather than on every render.
+The GPUI calloop bridge now tracks unmatched sends, re-wakes while work remains,
+bounds foreground batches, stages them until all ready protocol sources have
+run, and services foreground work before a deduplicated post-dispatch frame
+queue. Frame-callback, touch, and tablet paths enqueue frames rather than
+rendering synchronously inside Wayland dispatch.
+
+The isolated host launcher also reaps the actual GPU host after an unexpected
+proxy disconnect, closing the overlapping-restart failure from the complete
+gate. Orderly logout needed a distinct path: the compositor now sends a private
+`0600` Unix-datagram request and remains alive while the lifecycle owner shuts
+down the supervisor, provider, and host first. Proxy EOF grants an
+already-delivered Shutdown request 250 milliseconds to exit; `/proc` state
+decides whether a still-live host needs SIGKILL. Tests cover both graceful exit
+and forced orphan reaping. This replaced two rejected logout variants: exiting
+the compositor first caused a supervisor recovery launch, and unconditional
+SIGKILL on proxy EOF produced a false `linux_host_launcher_failed` during
+intentional shutdown.
+
+**Exact focused physical result:** The final 17,080,760-byte experience host
+has SHA-256
+`5214883604708ce504b8cdbdae7ec21399d655de6f25566e1f4c4027635bc9f6`;
+its release build took 1 minute 27.98 seconds with 2,010,032 KiB maximum RSS,
+and the 820-byte GNU-time record has SHA-256
+`9ceac69443469ff3582dd80c92e02b1f96a710ba48dfdca3fb1ccda52b9fd79a`.
+`/proc/<pid>/exe` was verified against that digest before interaction. Across
+54 complete physical touchscreen contacts, the compositor recorded 54 downs
+and 54 releases and the host routed 36 native field-focus changes. It drained
+and durably committed all 115 action requests, including 95 text changes and
+21 focus changes. The user reported that touch, typing, Submit, and scrolling
+were much better and remained responsive. Submit request 115 completed in
+2,840 microseconds, committed authority revision 498, prepared and committed
+revision `90e852f54c9d07465f5986d19d1e68a18916edd9eaf7080d958d4d9018b5c699`
+in 5,121 microseconds of worker time, presented it by direct DRM page flip, and
+activated it under the same supervisor host PID.
+
+The final 5,706,016-byte compositor and 1,632,504-byte session owner have
+SHA-256
+`7bd3b6a0f50969e80cd8369cf33d4b746eb286d5335fd550e95db6a4481516d8`
+and `352543f9cbfafb8f7e3ffa2701f5d132e73be8d5f42c7bccc65c103b53e48fe3`.
+The exact-source logout emitted the compositor request and handoff followed by
+`linux_login_session_stopped reason=user_logout`; it emitted no SOS failure,
+panic, Vulkan surface error, or recovery launch, and the post-logout process
+table contained no SOS compositor, supervisor, proxy, or experience host. The
+final session-owner-only release build took 8.05 seconds with 349,400 KiB
+maximum RSS; its 801-byte time record has SHA-256
+`b91284dc5e2733d9e8154146a04928312a645e90349f2746a9a4dba42e021778`.
+
+**Evidence / checks / decision / next gate:** The copied focused bundle at
+`/home/carlid/dev/sos/artifacts/linux-live-image/evidence/framework12-20260825/framework12-staged-frame-focused-20260825`
+is 341,138 bytes. All eight evidence files verify through its 1,179-byte
+manifest, SHA-256
+`013b91b17c88582a42d241e62b16f34cb239d09a17655d5dca24e5eba3045ff7`.
+The 107,152-byte interaction journal, 42,142-byte exact logout journal, and
+1,112-byte kernel journal have SHA-256
+`c0c99d2ddef86af1aa33fb45a2ff3eeb2fc40531272dd2a4c4b5feaa0e65b066`,
+`020b595447d1efeeb90787117598334b53e63bbbde4420ea848c6ac7c09ea4f4`,
+and `a19dd8f9f0fab4f4af068661169ece01717dc2eb995031f34b8cc757fb73bf94`.
+Three GPUI dispatcher tests, 29 Linux-host experience tests, nine Linux-session
+unit tests plus its authority integration test, and 11 compositor tests passed;
+warning-denying Clippy passed for all three affected products and both direct
+Linux feature sets. No live model ran, so model and model-weighted cost were
+zero.
+
+Accept the focused overlay as physical evidence for the diagnosed mechanisms,
+not as promotion of the old ISO: the booted artifact still contains revision
+`d9d783c`, and the final binaries were installed into its disposable overlay.
+Commit these fixes, bake one clean revision-pinned ISO, then run a fresh full
+prepare, touch/keyboard/scroll/Submit, clean logout, collect, copy-off, and
+manifest-audit campaign. Only that artifact-matched campaign can promote the
+Framework live gate.
+
+## 2026-08-25 — Replace acceptance-live with a mutable development environment
+
+**Goal / decision / rejected workflow:** Separate fast physical iteration from
+future release promotion. Rebuilding the prior 3.06-GB Fedora remix took
+2,703.62 seconds and writing it to USB took another 315.20 seconds, so requiring
+that cycle after every SOS patch is disproportionate during diagnosis. The
+intermediate acceptance-live artifact class was rejected: it adds almost the
+same compose/flash cost as release without providing the immutable SOS-only
+artifact that will eventually ship. SOS now has two image classes only:
+`development-live`, which is mutable and always
+`promotion_eligible=false`, and a future immutable `release`, whose composer
+and artifact-matched promotion gate remain to be built. The existing focused
+Framework overlay evidence remains diagnostic mechanism evidence; it is not
+retroactively promoted.
+
+**Changed environment and controls:** `tools/linux-live-image` now labels the
+Fedora Workstation remix `development-live`, installs and enables
+`openssh-server`, opens the Fedora firewall's SSH service, and requires a
+private non-symlink `--liveuser-password-file`. Password authentication is
+restricted to `liveuser`, root SSH is disabled, reusable host keys are removed
+so Fedora generates them at boot, and GDM liveuser autologin is disabled so the
+operator can choose GNOME or SOS. Fedora creates `liveuser` during boot, so the
+builder derives a SHA-512 password hash and installs a root-owned mode-`0700`
+`livesys-session-extra` hook that assigns it after account creation, relocks
+Fedora's temporary passwordless root account, and disables GDM autologin after
+the GNOME live hook enables it. SSH requires and follows `livesys.service`.
+Rootfs validation checks that boot-time provisioning, SSHD
+enablement/configuration, absent host keys, and the non-promotable/mutable
+identity fields without exposing the password.
+
+`tools/linux-live-deploy` builds any selected compositor, experience-host,
+provider, supervisor, session, or authoring binary locally and deploys it over
+one multiplexed SSH connection. It refuses targets whose baked identity is not
+mutable/non-promotable development-live and refuses a running SOS session. It
+records base/source revision and dirty state, installs root-owned files into the
+RAM overlay, verifies their remote SHA-256 values, and preserves matching host
+and target deployment manifests. `tools/linux-hardware-gate` verifies that
+manifest, snapshots the current bytes against the baked install manifest, and
+emits only `DIAGNOSTIC_PASS promotion_eligible=false` or `DIAGNOSTIC_FAIL` for
+development-live. Installed-workstation criteria remain available, but no
+current environment is labeled a release artifact.
+
+**Evidence / failures / measurement:**
+`./tests/linux-live-image-test.sh` exercises identity fields, password-file
+rejection, mocked password-hash/livesys/systemd/firewalld provisioning,
+root-owned private rootfs validation, component selection, the complete mocked
+SSH deployment, remote installation, metadata, and digest verification. It
+passed with
+`linux_live_image_host_tests=PASS`. `./tests/linux-hardware-gate-test.sh`
+passed with `linux_hardware_gate_host_tests=PASS`, including the rule that a
+complete development campaign is diagnostic rather than a normal PASS and a
+missing touch observation is `DIAGNOSTIC_FAIL`. The combined suites, Bash
+parsing, and `git diff --check` completed in 1.21 seconds with 30,316 KiB
+maximum RSS. The test harness initially attempted root-owned fixture installs
+without an effective-root mock and then exposed an EXIT-trap lifetime bug in
+the deployer's SSH cleanup; the fixture now strips ownership flags while the
+production path still uses sudo, and successful deployment explicitly cleans
+up before function-local state goes out of scope. No model provider ran, so
+model and model-weighted cost were zero.
+
+**Remaining risk / next gate:** No new ISO or physical acceptance is claimed.
+The rootfs tests use controlled command doubles; a real Fedora bake must still
+prove the boot-time `livesys` password/root-lock/GDM hook, offline
+`sshd.service` enablement and ordering, firewall persistence, GDM session
+selection, and per-boot host-key generation together. Bake and flash
+development-live once, boot the Framework Laptop 12, verify password SSH and
+GNOME/SOS selection, deploy one changed binary with
+`tools/linux-live-deploy`, verify its recorded digest on the laptop, and run a
+same-boot diagnostic collect. Ordinary SOS patches can then reuse that base;
+design and gate the immutable SOS-only `release` process separately.
+
+## 2026-08-25 — Move development-live account setup to Fedora boot provisioning
+
+**Goal / environment:** Run the first real `development-live` bake at clean
+revision `659003a35635da8423a7393ddf8d9b109ac355e1` from the checksum-pinned
+Fedora Workstation Live 44 x86-64 source
+`artifacts/linux-live-source/Fedora-Workstation-Live-44-1.7.x86_64.iso`
+(2,851,612,672 bytes,
+SHA-256 `1620295f6a00c27c3208f0c00b8ece4eab1ec69b9002152d97488bf26a426ddf`)
+and validate the new development access against a real Fedora rootfs.
+
+**Failure / rejected approach:** The bake extracted and staged SOS, then failed
+with `error: development rootfs has no liveuser account`. It exited 1 after
+207.79 seconds with 2,001,264 KiB maximum RSS; no ISO was produced and no
+physical-device result is claimed. The finalized failure log is
+`artifacts/development-live-659003a-bake.log` (8,659 bytes, SHA-256
+`90094fc77daa4aead345817069023a78c9449613e478db5f70716b699a0b42d7`),
+and its timing record is `artifacts/development-live-659003a-bake.time` (92
+bytes, SHA-256
+`d7fc757d673677f5465d5d2ace3801d8afaa515f346a18e933fa44f246051645`).
+Inspection of the extracted Fedora rootfs showed that
+`/usr/libexec/livesys/livesys-main` creates `liveuser` at boot, temporarily
+clears the root password, runs the GNOME hook that enables autologin, and only
+then sources `/var/lib/livesys/livesys-session-extra`. Offline `chpasswd` was
+therefore impossible, while editing GDM offline would be overwritten at boot;
+both approaches were rejected.
+
+**Decision / changed code:** `tools/linux-live-image` now verifies Fedora's
+expected `livesys` contract, derives a salted SHA-512 password hash with
+OpenSSL, and installs a root-owned mode-`0700` derived-spin hook. At boot the
+hook assigns that hash to the newly created `liveuser`, relocks root, and
+disables GDM autologin after Fedora's GNOME hook. An SSH unit drop-in requires
+and follows `livesys.service`, failing remote access closed if provisioning
+fails. Rootfs validation requires the hook, its ownership/mode and hash form,
+the root relock, disabled autologin, and SSH ordering while confirming that no
+pre-boot `liveuser` was fabricated. The Fedora-realistic test fixture now
+models boot-time account creation rather than an offline shadow entry.
+
+**Evidence / remaining risk / next gate:**
+`./tests/linux-live-image-test.sh` and
+`./tests/linux-hardware-gate-test.sh` passed with
+`linux_live_image_host_tests=PASS` and
+`linux_hardware_gate_host_tests=PASS`; combined with Bash parsing and
+`git diff --check`, the measured run took 1.25 seconds with 30,428 KiB maximum
+RSS. No model provider ran, so model and model-weighted cost were zero. These
+host tests prove the generated files and fail-closed relationships, not Fedora
+boot behavior. Commit the correction, rerun a clean bake in a new output
+directory, independently audit the ISO, then boot it and verify root remains
+locked, liveuser password SSH starts only after livesys, GDM offers both GNOME
+and SOS without autologin, and reboot removes incremental deployments.
+
+## 2026-08-25 — Activate development SSH from the completed livesys hook
+
+**Goal / environment:** Complete the first real `development-live` bake and
+boot it on the Framework Laptop 12 without touching its installed Omarchy
+disk, then verify password-protected remote access before using the image as
+the reusable SOS development base. The clean source revision was
+`f057d251de7781622bb60a70c960d4bc01f8e37d`; the target identified itself as
+Framework `Laptop 12 (13th Gen Intel Core)` revision A5, running Fedora 44
+kernel `6.19.10-300.fc44.x86_64` in boot
+`edb42181-55f8-4a36-a388-971f5db601e2`.
+
+**Bake and media evidence:** The first bake invocation completed extraction,
+package/runtime staging, rootfs validation, and EROFS repacking, but its cached
+sudo authorization expired after 2,910.74 seconds; it exited 1 while waiting
+to remove the work tree. The failure/resume inputs remain
+`artifacts/development-live-f057d25-bake.log` (8,867 bytes, SHA-256
+`a07f97f70385d288e05ced0a01613e1da81b3b4025fa2c7320d37b74bd54140a`)
+and `artifacts/development-live-f057d25-bake.time` (92 bytes, SHA-256
+`39ddd08d869807a026eecb18815989831e54582e1a1948f499f8f4b206390da8`).
+Resuming from the already finalized payload produced
+`artifacts/development-live-f057d25/sos-development-live-f057d251de77.iso`
+(3,056,205,824 bytes, SHA-256
+`c2232111ab8b4aa6d55907dfdf5830a688468bf4be7b8dd218f26c727925ffc0`).
+Its embedded EROFS payload is 2,691,727,360 bytes with SHA-256
+`c222e53420d88b7ac541e18629573660d2bc71f6174379cea1659ee37edc7f7e`.
+An independent `checkisomd5` completed in 3.45 seconds with PASS. Uploading the
+ISO to PiKVM virtual media took 138.62 seconds; the PiKVM copy matched the host
+byte count and SHA-256 and remained connected read-only.
+
+**Physical failure / rejected approach:** GDM required the configured
+`liveuser` password instead of autologging in, and `livesys.service` completed
+the password assignment, root relock, and GDM rewrite successfully. SSH did
+not start: `sshd.service` was inactive/disabled with no port 22 listener, and
+the boot journal contained no SSH start attempt. Direct EROFS inspection proved
+the baked lower rootfs contained the offline
+`multi-user.target.wants/sshd.service` link and the
+`Requires=livesys.service` drop-in, while the initial running merged rootfs did
+not expose the enablement link. Therefore offline enablement plus a dependency
+on a successful but normally inactive oneshot service is rejected as the
+development access boundary.
+
+Before any live mutation, `findmnt` showed `/` as the writable
+`LiveOS_rootfs` overlay with `/run/rootfsbase` as its lower directory and a
+RAM-backed `/run/overlayfs` upper directory. `lsblk` showed the internal 1 TB
+WD_BLACK NVMe with VFAT and LUKS partitions and no mountpoints. No installer
+target was selected and no internal-disk write was performed.
+
+**Focused proof / decision / changed code:** On that same disposable overlay,
+disabling the dependency drop-in and running
+`systemctl enable --now sshd.service` after completed provisioning made SSH
+enabled and active with IPv4 and IPv6 port 22 listeners. A fresh independent
+password SSH connection then passed; root reported locked, `liveuser` reported
+a password, and the per-boot Ed25519 host private/public keys were root-owned
+mode `0600`/`0644`. `tools/linux-live-image` now omits offline SSH enablement
+and the `Requires=livesys.service` drop-in. The root-only Fedora hook makes
+GDM configuration fail closed and performs `systemctl enable --now
+sshd.service` as its final action, only after assigning the liveuser password
+and relocking root. Rootfs validation requires that exact final action and
+rejects any pre-provisioning SSH enablement. The fixture tests cover the new
+metadata and reject a hook with any action after SSH activation;
+`docs/linux-live-image.md` records the boundary.
+
+Raw console screenshots, OCR, SSH audits, upload timing, ISO integrity, and
+host test records are indexed by
+`artifacts/pikvm-development-live-f057d25/evidence-manifest.tsv` (2,493 bytes,
+SHA-256
+`8c86900caa2b6d033610b760bf9e9271c064ccfd1701dc6f52788456d89694d5`).
+`./tests/linux-live-image-test.sh` and
+`./tests/linux-hardware-gate-test.sh` passed with
+`linux_live_image_host_tests=PASS` and
+`linux_hardware_gate_host_tests=PASS`; together with Bash parsing and
+`git diff --check`, they completed in 1.30 seconds with 30,316 KiB maximum
+RSS. No model provider ran, so model and model-weighted cost were zero.
+
+**Remaining risk / next gate:** This physical boot proved the failure and the
+focused live-overlay correction, not the newly generated hook on a fresh boot.
+No hardware, latency, release, or promotion gate is complete. Bake the corrected
+clean revision once, attach it read-only, cold-boot the Framework, and require
+automatic SSH enablement only after successful `livesys` provisioning. Then
+verify GDM offers GNOME and SOS, deploy one changed SOS component with
+`tools/linux-live-deploy`, verify its recorded digest, and run a same-boot
+diagnostic campaign before treating this image as the reusable development
+base.
+
+## 2026-08-25 — Add private Wi-Fi autoconnect to development-live
+
+**Goal / environment:** Make the reusable Framework development image join its
+lab Wi-Fi without console input so PiKVM can cold-boot directly into an
+SSH-manageable environment. Reuse the NetworkManager profile created by the
+running Fedora 44 development boot instead of reconstructing or printing its
+secret. The profile was copied over the already authenticated SSH channel to a
+private host file, validated as mode `0600` and 288 bytes, and intentionally
+excluded from Git, logs, hashes, and evidence manifests because it contains a
+network credential.
+
+**Security decision / changed code:** This is an optional development-only
+facility. `tools/linux-live-image` accepts
+`--networkmanager-profile-file`, rejects symlinks and group/world-readable
+inputs, and validates a Wi-Fi connection UUID, autoconnect, WPA-PSK/SAE with a
+stored boot-time PSK, and automatic IPv4 without printing the SSID or PSK. It
+installs the profile as root-owned mode `0600` under
+`/etc/NetworkManager/system-connections`; rootfs validation rechecks the
+profile and its root-owned mode `0700` parent. Matching rootfs and outer image
+identities record only `wifi_autoconnect=true` and
+`network_credentials_embedded=true`. Omitting the option records both fields
+as false and embeds no SOS-owned profile. The standalone
+`check-networkmanager-profile` command validates a prospective private input
+before a long bake.
+
+Runtime file permissions do not make the ISO secret: anyone holding the image
+can extract an equivalent Wi-Fi credential offline. Documentation now says the
+credentialed ISO must remain private, its network credential must be rotated if
+custody is lost, and the future immutable release must exclude the profile.
+The network name and credential are not present in source, identity metadata,
+progress records, or test output.
+
+**Evidence:** The fixture suite covers credentialed and uncredentialed identity
+fields, private-file and non-symlink enforcement, disabled autoconnect,
+missing PSK, installed ownership/mode, metadata agreement, and the no-profile
+case. The actual private Framework profile emitted only
+`linux_live_image_network_profile_checked=PASS wifi_autoconnect=true
+network_credentials_embedded=true`. Bash parsing,
+`./tests/linux-live-image-test.sh`,
+`./tests/linux-hardware-gate-test.sh`, and `git diff --check` all passed in
+1.69 seconds with 30,308 KiB maximum RSS. ShellCheck was not installed. The
+finalized output is
+`artifacts/development-live-network-profile/host-tests.log` (227 bytes,
+SHA-256 `196ce54c4aa66c4c4b7a78d5842cee7c98b9f947edd3866b2c7275bda684c09f`)
+and its timing is
+`artifacts/development-live-network-profile/host-tests.time` (1,133 bytes,
+SHA-256 `32a7d3f5a0339bf818ea300a36cac7849c60007fee89548071c2d8c66f919b05`).
+No model provider ran, so model and model-weighted cost were zero.
+
+**Remaining risk / next gate:** No new ISO or unattended network boot is yet
+claimed. Commit the builder change, bake one clean credentialed
+`development-live` ISO, attach it read-only through PiKVM, and cold-boot the
+Framework without network HID input. Require the identity classification,
+automatic Wi-Fi activation, the post-`livesys` SSH listener, password SSH, and
+the still-unmounted internal Omarchy NVMe to pass together before adopting the
+image as the reusable base.
+
+## 2026-08-25 — Bake the credentialed development-live image
+
+**Goal / environment:** Produce the first clean reusable development image
+that combines the post-`livesys` SSH activation with private Wi-Fi
+autoconnect. The clean source revision was
+`28cf8fffee8e2492fc4f2b69fcfe27db3baf7b36`; the source media was
+`artifacts/linux-live-source/Fedora-Workstation-Live-44-1.7.x86_64.iso`
+(SHA-256
+`1620295f6a00c27c3208f0c00b8ece4eab1ec69b9002152d97488bf26a426ddf`).
+The private NetworkManager input remained outside Git and build evidence.
+
+**Bake evidence / decision:** `tools/linux-live-image bake` staged SOS,
+configured the development account and post-provisioning SSH activation,
+installed the private NetworkManager profile, validated the rootfs, repacked
+EROFS, and passed the embedded media check. It completed in 2,640.49 seconds
+with 704,264 KiB maximum RSS. The result is
+`artifacts/development-live-28cf8ff/sos-development-live-28cf8fffee8e.iso`
+(3,056,205,824 bytes, SHA-256
+`a346369a50cf5d1b32610fcf1c55c95ea7238172a46a2b7c6c1618428f4ed152`).
+Its identity is
+`artifacts/development-live-28cf8ff/image-identity.env` (954 bytes, SHA-256
+`7685dab93216d94d8e512d4108ea553e143bbe003fb9d01d5f7d46b68c596c6d`)
+and records the exact source revision, `development-live`,
+`promotion_eligible=false`, `wifi_autoconnect=true`, and
+`network_credentials_embedded=true` without an SSID, password, PSK, or
+passphrase field.
+
+The finalized bake output is `artifacts/development-live-28cf8ff-bake.log`
+(9,189 bytes, SHA-256
+`a9faee06c622fad34dcaddd341f223ff5c5721afcbc54ddd775a17fd18d5f69a`)
+and its timing record is `artifacts/development-live-28cf8ff-bake.time` (54
+bytes, SHA-256
+`faff5ef450ed1fa5cf4cba1221f6a68119d18409c7c6c9849acc8ced5ce6c1ca`).
+An independent SHA-256, `checkisomd5`, identity-agreement, and secret-field
+audit passed in 5.10 seconds with 3,456 KiB maximum RSS. Its output is
+`artifacts/development-live-28cf8ff-audit.log` (309 bytes, SHA-256
+`b5a9672ed9ca23127a13a479f49827f5d30ef9e878175081179baed3cb31ceac`)
+and timing is `artifacts/development-live-28cf8ff-audit.time` (49 bytes,
+SHA-256
+`97667dd628bd7bd8574a391693c728971343807a3a576987419d2a5a65f3ecb5`).
+No model provider ran, so model and model-weighted cost were zero.
+
+**Remaining risk / next gate:** This is build evidence, not unattended-boot or
+hardware acceptance. Keep the credentialed ISO private. Attach this exact hash
+read-only through PiKVM, cold-boot the Framework without network HID input,
+and require automatic Wi-Fi activation, post-`livesys` SSH availability,
+password SSH, correct image identity, and an unmounted internal Omarchy NVMe
+before adopting it as the reusable development base.
+
+## 2026-08-25 — Prove development-live Wi-Fi and SSH on Framework 12
+
+**Goal / environment:** Boot the credentialed revision
+`28cf8fffee8e2492fc4f2b69fcfe27db3baf7b36` on the Framework Laptop 12 and
+prove that it becomes remotely manageable without entering a network
+credential while preserving the installed Omarchy NVMe. The exact ISO was
+uploaded to PiKVM in 134.96 seconds with 5,978,736 KiB maximum host RSS. The
+PiKVM-side SHA-256 matched
+`a346369a50cf5d1b32610fcf1c55c95ea7238172a46a2b7c6c1618428f4ed152`,
+and the selected 3,056,205,824-byte virtual CD-ROM reported connected,
+complete, read-only, and non-writable.
+
+**Boot failure / boundary:** PiKVM's ATX state did not track or change the
+laptop's power state, and remote HID did not reliably catch the Framework
+firmware boot-menu window. The first reboot therefore entered the installed
+Omarchy lock screen rather than the virtual CD-ROM. No installer or
+block-device writer was invoked. The user then selected the already attached
+read-only PiKVM CD-ROM and booted Fedora. This rejects fully unattended remote
+cold boot with the present console wiring/configuration; it does not reject the
+image's development-network path.
+
+**Physical evidence / decision:** PiKVM captured Fedora startup and the GDM
+`Live System User` chooser without autologin. The live boot obtained
+`192.168.1.129` from the embedded Wi-Fi profile with no network HID input, and
+password SSH became reachable. A 4.54-second SSH audit with 9,584 KiB maximum
+host RSS reported `image_kind=development-live`, the exact source revision,
+`promotion_eligible=false`, `wifi_autoconnect=true`,
+`network_credentials_embedded=true`, enabled and active `sshd`, connected
+Wi-Fi, `LiveOS_rootfs` overlay root, and boot ID
+`c1e6564e-b427-471d-946e-9d83f2d8efde`. It also proved no
+`/dev/nvme0n1` source was mounted. The credentialed ISO is accepted as the
+reusable development base when selected explicitly at boot; it remains
+private and is not a release candidate.
+
+The finalized upload, stored-image state and digest, boot/GDM screenshots,
+OCR capability state, SSH audit, and timing records are indexed by
+`artifacts/pikvm-development-live-28cf8ff/evidence-manifest.tsv` (1,110 bytes,
+SHA-256
+`dd6f8ec86ce40b8cfb36509ae8b54c98bbe9d25fd2355b4a9fdcd6e80c9fe9ea`).
+No model provider ran, so model and model-weighted cost were zero.
+
+**Remaining risk / next gate:** Firmware boot selection still requires local
+help until PiKVM power/boot-menu control is made reliable. The image has not
+passed a release, promotion, latency, or full SOS interaction gate. Use this
+boot for incremental `tools/linux-live-deploy` iterations, verify each deployed
+digest and same-boot identity, and keep the internal NVMe unmounted. Later,
+define a separate credential-free immutable release bake and physical release
+gate.

@@ -16,9 +16,9 @@ use experience_ir::{
     MAX_AGENT_MESSAGES, MAX_AGENT_MESSAGE_BYTES,
 };
 use gpui::{
-    div, img, prelude::*, px, relative, rgb, size, Animation as GpuiAnimation, AnimationExt as _,
-    AnyElement, App, Bounds, Context, Entity, MouseButton, Render, SharedString, Window,
-    WindowBounds, WindowOptions,
+    div, img, point, prelude::*, px, relative, rgb, size, Animation as GpuiAnimation,
+    AnimationExt as _, AnyElement, App, Bounds, Context, Entity, MouseButton, Render, SharedString,
+    Window, WindowBounds, WindowOptions,
 };
 use provider_state_service::ServiceClient;
 use providers_linux::{load_grants, ProviderContext, ProviderFrame, ProviderHub, ProviderSnapshot};
@@ -205,7 +205,7 @@ struct DurableState {
 }
 
 pub fn run() -> Result<()> {
-    pointer_input::install();
+    let touch_wakes = pointer_input::install();
     let options = parse_options(std::env::args().skip(1))?;
     let accessibility =
         linux_accessibility::start_from_environment().map_err(|error| anyhow::anyhow!(error))?;
@@ -297,6 +297,7 @@ pub fn run() -> Result<()> {
                             accessibility,
                             options.service_socket,
                             compositor_fence,
+                            touch_wakes,
                             cx,
                         )
                     })
@@ -332,7 +333,9 @@ pub(super) struct LinuxExperienceHost {
     action_in_flight: bool,
     pending_input_events: VecDeque<SceneEvent>,
     inputs: HashMap<String, Entity<NativeTextInput>>,
+    input_state_shadow: HashMap<String, String>,
     active_input_id: Option<String>,
+    pending_focus_restore: Option<String>,
     action_commits: async_channel::Sender<ActionCommitResult>,
     next_action_request_id: u64,
     surface_gestures: HashMap<String, GestureSession>,
@@ -365,6 +368,7 @@ impl LinuxExperienceHost {
         accessibility: Option<linux_accessibility::Service>,
         service_socket: Option<PathBuf>,
         compositor_fence: Option<CompositorFence>,
+        touch_wakes: async_channel::Receiver<()>,
         cx: &mut Context<Self>,
     ) -> Self {
         let (action_commits, action_results) = async_channel::unbounded();
@@ -374,6 +378,7 @@ impl LinuxExperienceHost {
         Self::attach_provider_updates(provider_updates, cx);
         Self::attach_action_results(action_results, cx);
         Self::attach_agent_updates(agent_results, cx);
+        Self::attach_touch_wakes(touch_wakes, cx);
         if let Some(accessibility) = &accessibility {
             Self::attach_accessibility_actions(accessibility.actions(), cx);
         }
@@ -406,7 +411,9 @@ impl LinuxExperienceHost {
             action_in_flight: false,
             pending_input_events: VecDeque::new(),
             inputs: HashMap::new(),
+            input_state_shadow: HashMap::new(),
             active_input_id: None,
+            pending_focus_restore: None,
             action_commits,
             next_action_request_id: 1,
             surface_gestures: HashMap::new(),
@@ -570,6 +577,22 @@ impl LinuxExperienceHost {
                 if this
                     .update(cx, |this, cx| {
                         this.accessibility_actions.push_back(action);
+                        cx.notify();
+                    })
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        })
+        .detach();
+    }
+
+    fn attach_touch_wakes(wakes: async_channel::Receiver<()>, cx: &mut Context<Self>) {
+        cx.spawn(async move |this, cx| {
+            while wakes.recv().await.is_ok() {
+                if this
+                    .update(cx, |_, cx| {
                         cx.notify();
                     })
                     .is_err()
@@ -989,6 +1012,7 @@ impl LinuxExperienceHost {
                     return;
                 }
                 let revision_id = commit.revision.revision.revision_id.clone();
+                self.pending_focus_restore = self.active_input_id.clone();
                 if let Some(fence) = &self.compositor_fence {
                     let after_commit_sequence = match fence
                         .arm(commit.present_request_id, &revision_id)
@@ -1096,7 +1120,9 @@ impl LinuxExperienceHost {
                 let Some(service_socket) = self.service_socket.clone() else {
                     self.action_in_flight = false;
                     if effects.is_empty() {
+                        reconcile_input_state_shadow(&mut self.input_state_shadow, &state);
                         self.state = state;
+                        merge_input_state_shadow(&mut self.state, &self.input_state_shadow);
                         self.scene = scene;
                         self.status = None;
                     } else {
@@ -1166,7 +1192,12 @@ impl LinuxExperienceHost {
                         result.request_id
                     );
                 } else {
+                    reconcile_input_state_shadow(
+                        &mut self.input_state_shadow,
+                        &authoritative.state,
+                    );
                     self.state = authoritative.state;
+                    merge_input_state_shadow(&mut self.state, &self.input_state_shadow);
                     self.scene = result.scene;
                     self.status = None;
                     eprintln!(
@@ -1232,8 +1263,9 @@ impl LinuxExperienceHost {
             self.state = serde_json::json!({});
         }
         if let Some(object) = self.state.as_object_mut() {
-            object.insert(state_key, JsonValue::String(value.clone()));
+            object.insert(state_key.clone(), JsonValue::String(value.clone()));
         }
+        self.input_state_shadow.insert(state_key, value.clone());
         eprintln!(
             "sos_linux_text_changed node_id={} bytes={}",
             node_id,
@@ -1310,6 +1342,7 @@ impl LinuxExperienceHost {
         let request_id = self.next_action_request_id;
         self.next_action_request_id = self.next_action_request_id.wrapping_add(1).max(1);
         self.action_in_flight = true;
+        merge_input_state_shadow(&mut self.state, &self.input_state_shadow);
         if let Err(error) =
             self.worker
                 .action(request_id, self.model.clone(), self.state.clone(), event)
@@ -1329,6 +1362,15 @@ impl LinuxExperienceHost {
             && self.pending_presentation.is_none()
         {
             self.dispatch_event(event, cx);
+        } else {
+            eprintln!(
+                "sos_input_event_blocked action={} preparing={} prepared={} pending_commit={} pending_presentation={}",
+                event.action,
+                self.preparing.is_some(),
+                self.prepared.is_some(),
+                self.pending_commit.is_some(),
+                self.pending_presentation.is_some()
+            );
         }
     }
 
@@ -1808,6 +1850,11 @@ impl LinuxExperienceHost {
                 .child(SharedString::from(text.value.clone()));
         }
         if let Some(Content::TextSession(input)) = &node.content {
+            let displayed_value = self
+                .input_state_shadow
+                .get(&input.state_key)
+                .cloned()
+                .unwrap_or_else(|| input.value.clone());
             let created = !self.inputs.contains_key(&element_id);
             let native = if let Some(native) = self.inputs.get(&element_id) {
                 native.clone()
@@ -1829,11 +1876,11 @@ impl LinuxExperienceHost {
                 native
             };
             let should_activate = (created && input.autofocus)
-                || self.active_input_id.as_deref() == Some(element_id.as_str());
+                || self.pending_focus_restore.as_deref() == Some(element_id.as_str());
             native.update(cx, |native, native_cx| {
                 native.sync(
                     &input.state_key,
-                    &input.value,
+                    &displayed_value,
                     &input.placeholder,
                     input.submit_action.as_deref(),
                     window,
@@ -1843,6 +1890,9 @@ impl LinuxExperienceHost {
                     native.activate(window, native_cx);
                 }
             });
+            if self.pending_focus_restore.as_deref() == Some(element_id.as_str()) {
+                self.pending_focus_restore = None;
+            }
             element = element
                 .border_1()
                 .border_color(rgb(0x98A29B))
@@ -2023,6 +2073,22 @@ impl Render for LinuxExperienceHost {
             );
         }
         for sample in pointer_input::take_samples() {
+            if sample.phase == pointer_input::Phase::Down {
+                if let Some(node_id) = pointer_input::native_input_at(sample.x, sample.y) {
+                    if let Some(input) = self.inputs.get(&node_id).cloned() {
+                        let position = point(px(sample.x), px(sample.y));
+                        eprintln!(
+                            "sos_linux_touch_focus node_id={node_id} x={:.1} y={:.1}",
+                            sample.x, sample.y
+                        );
+                        window.defer(cx, move |window, cx| {
+                            input.update(cx, |input, input_cx| {
+                                input.focus_at(position, window, input_cx)
+                            });
+                        });
+                    }
+                }
+            }
             for event in pointer_input::route(sample) {
                 self.queue_input_event(event, cx);
             }
@@ -2079,6 +2145,23 @@ fn node_by_id<'a>(node: &'a SceneNode, id: &str) -> Option<&'a SceneNode> {
         return Some(node);
     }
     node.children.iter().find_map(|child| node_by_id(child, id))
+}
+
+fn merge_input_state_shadow(state: &mut JsonValue, shadow: &HashMap<String, String>) {
+    if !state.is_object() {
+        *state = serde_json::json!({});
+    }
+    if let Some(object) = state.as_object_mut() {
+        for (key, value) in shadow {
+            object.insert(key.clone(), JsonValue::String(value.clone()));
+        }
+    }
+}
+
+fn reconcile_input_state_shadow(shadow: &mut HashMap<String, String>, authoritative: &JsonValue) {
+    shadow.retain(|key, value| {
+        authoritative.get(key).and_then(JsonValue::as_str) != Some(value.as_str())
+    });
 }
 
 fn semantic_ids(scene: &Scene) -> Vec<String> {
@@ -2635,6 +2718,20 @@ mod tests {
             Some(PathBuf::from("/run/sos-agent/agent.sock"))
         );
         assert!(parse_options(["--unknown".into()].into_iter()).is_err());
+    }
+
+    #[test]
+    fn newer_native_text_survives_an_older_authority_result_until_caught_up() {
+        let mut shadow = HashMap::from([("draft".into(), "newest".into())]);
+        let mut local = serde_json::json!({"draft": "older"});
+
+        reconcile_input_state_shadow(&mut shadow, &local);
+        assert_eq!(shadow.get("draft").map(String::as_str), Some("newest"));
+        merge_input_state_shadow(&mut local, &shadow);
+        assert_eq!(local["draft"], "newest");
+
+        reconcile_input_state_shadow(&mut shadow, &serde_json::json!({"draft": "newest"}));
+        assert!(shadow.is_empty());
     }
 
     #[test]

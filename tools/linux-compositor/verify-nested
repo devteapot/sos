@@ -350,6 +350,29 @@ gate_accessibility_generation="$(accessibility_call '{"method":"snapshot"}' | jq
 gate_accessibility_wait="$(accessibility_call "{\"method\":\"wait\",\"after_generation\":$gate_accessibility_generation,\"timeout_ms\":2000}")"
 [[ "$(jq -r '.ok' <<<"$gate_accessibility_wait")" == true ]]
 [[ "$(jq -r '.snapshot.focused' <<<"$gate_accessibility_wait")" == note-draft ]]
+# A looping scene animation rerenders both native inputs continuously. Prove
+# that ordinary focus transfer still works while the host also preserves the
+# active field across a compositor-quiesced revision switch.
+gate_agent_focus_before="$(grep -c 'sos_linux_text_focus node_id=agent-prompt focused=true' "$gate_run_dir/session.log" || true)"
+[[ "$(accessibility_call '{"method":"action","kind":"focus","target":"agent-prompt"}' | jq -r '.ok')" == true ]]
+for _ in {1..500}; do
+  gate_agent_focus_after="$(grep -c 'sos_linux_text_focus node_id=agent-prompt focused=true' "$gate_run_dir/session.log" || true)"
+  if (( gate_agent_focus_after > gate_agent_focus_before )); then
+    break
+  fi
+  sleep 0.01
+done
+(( gate_agent_focus_after > gate_agent_focus_before ))
+gate_note_focus_before="$(grep -c 'sos_linux_text_focus node_id=note-draft focused=true' "$gate_run_dir/session.log" || true)"
+[[ "$(accessibility_call '{"method":"action","kind":"focus","target":"note-draft"}' | jq -r '.ok')" == true ]]
+for _ in {1..500}; do
+  gate_note_focus_after="$(grep -c 'sos_linux_text_focus node_id=note-draft focused=true' "$gate_run_dir/session.log" || true)"
+  if (( gate_note_focus_after > gate_note_focus_before )); then
+    break
+  fi
+  sleep 0.01
+done
+(( gate_note_focus_after > gate_note_focus_before ))
 [[ "$(accessibility_call '{"method":"action","kind":"set_selection","target":"note-draft","value":"0:7"}' | jq -r '.ok')" == true ]]
 [[ "$(accessibility_call '{"method":"action","kind":"copy","target":"note-draft"}' | jq -r '.ok')" == true ]]
 [[ "$(accessibility_call '{"method":"action","kind":"cut","target":"note-draft"}' | jq -r '.ok')" == true ]]

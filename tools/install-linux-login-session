@@ -14,7 +14,7 @@ sos_install_usage() {
   printf '%s\n' \
     'usage:' \
     '  tools/install-linux-login-session doctor' \
-    '  tools/install-linux-login-session install [--offline]' \
+    '  tools/install-linux-login-session install [--offline] [--destdir ROOT]' \
     '  tools/install-linux-login-session uninstall'
 }
 
@@ -36,6 +36,10 @@ sos_install_dependency_hint() {
   fi
 }
 
+sos_install_target() {
+  printf '%s%s\n' "${sos_install_destdir:-}" "$1"
+}
+
 sos_install_preflight() {
   local sos_install_command node_version
   for sos_install_command in cargo git install node npm pkg-config rustc sha256sum stat sudo; do
@@ -45,8 +49,10 @@ sos_install_preflight() {
   node_version="$(node --version | sed 's/^v//')"
   [[ "$(printf '%s\n' 22.19.0 "$node_version" | sort -V | head -n 1)" == 22.19.0 ]] || \
     sos_install_fail "sos-agent requires Node 22.19 or newer"
-  [[ -d /usr/share/wayland-sessions ]] || \
-    sos_install_fail "/usr/share/wayland-sessions is missing; install GDM or another Wayland-capable display manager first"
+  if [[ -z "${sos_install_destdir:-}" ]]; then
+    [[ -d /usr/share/wayland-sessions ]] || \
+      sos_install_fail "/usr/share/wayland-sessions is missing; install GDM or another Wayland-capable display manager first"
+  fi
 
   sos_install_missing_modules=()
   for sos_install_module in gbm libinput libseat libudev wayland-client xkbcommon xkbcommon-x11; do
@@ -106,11 +112,28 @@ fi
   exit 1
 }
 sos_install_agent_mode=live
-if [[ "${1:-}" == --offline ]]; then
-  sos_install_agent_mode=offline
-  shift
+sos_install_destdir=""
+while [[ "$#" -gt 0 ]]; do
+  case "$1" in
+    --offline)
+      sos_install_agent_mode=offline
+      shift
+      ;;
+    --destdir)
+      [[ "$#" -ge 2 ]] || sos_install_fail "--destdir requires a directory"
+      sos_install_destdir="$(realpath -m -- "$2")"
+      [[ "$sos_install_destdir" == /* ]] || sos_install_fail "--destdir must be an absolute path"
+      [[ "$sos_install_destdir" != / ]] || sos_install_fail "--destdir / is the host install path; omit --destdir"
+      shift 2
+      ;;
+    *)
+      sos_install_fail "install accepts only --offline and --destdir ROOT"
+      ;;
+  esac
+done
+if [[ -n "$sos_install_destdir" && "$sos_install_agent_mode" != offline ]]; then
+  sos_install_fail "image destroot staging accepts only the offline agent; pass --offline"
 fi
-[[ "$#" -eq 0 ]] || sos_install_fail "install accepts only the optional --offline flag"
 sos_install_preflight
 
 sos_install_source_revision="$(git rev-parse HEAD)"
@@ -135,10 +158,10 @@ cargo build --locked --release \
 
 sos_install_bin_dir=/usr/local/libexec/sos
 sudo install -d -o root -g root -m 0755 \
-  "$sos_install_bin_dir" \
-  /usr/share/sos/experiences \
-  /usr/share/doc/sos \
-  /usr/share/wayland-sessions
+  "$(sos_install_target "$sos_install_bin_dir")" \
+  "$(sos_install_target /usr/share/sos/experiences)" \
+  "$(sos_install_target /usr/share/doc/sos)" \
+  "$(sos_install_target /usr/share/wayland-sessions)"
 for sos_install_binary in \
   sos-compositor \
   sos-experience-host \
@@ -147,31 +170,39 @@ for sos_install_binary in \
   sos-linux-session \
   sos-agent-authoring; do
   sudo install -o root -g root -m 0755 \
-    "target/release/$sos_install_binary" "$sos_install_bin_dir/$sos_install_binary"
+    "target/release/$sos_install_binary" \
+    "$(sos_install_target "$sos_install_bin_dir/$sos_install_binary")"
 done
 sudo install -o root -g root -m 0755 \
-  packaging/libexec/sos-login-session "$sos_install_bin_dir/sos-login-session"
+  packaging/libexec/sos-login-session \
+  "$(sos_install_target "$sos_install_bin_dir/sos-login-session")"
 sudo install -o root -g root -m 0755 \
-  packaging/libexec/sos-agent-login "$sos_install_bin_dir/sos-agent-login"
-sudo install -d -o root -g root -m 0755 /usr/local/libexec/sos-agent
+  packaging/libexec/sos-agent-login \
+  "$(sos_install_target "$sos_install_bin_dir/sos-agent-login")"
+sudo install -d -o root -g root -m 0755 "$(sos_install_target /usr/local/libexec/sos-agent)"
 sudo cp -a \
   services/sos-agent/dist \
   services/sos-agent/node_modules \
   services/sos-agent/package.json \
-  /usr/local/libexec/sos-agent/
-sudo chown -R root:root /usr/local/libexec/sos-agent
+  "$(sos_install_target /usr/local/libexec/sos-agent)/"
+sudo chown -R root:root "$(sos_install_target /usr/local/libexec/sos-agent)"
+# npm's clean build can leave dist private to the builder. The live session
+# executes the bundle as an unprivileged desktop user, so publish code and
+# dependencies readably while retaining executable bits on tools that need it.
+sudo chmod -R u=rwX,go=rX "$(sos_install_target /usr/local/libexec/sos-agent)"
 sudo install -o root -g root -m 0644 \
-  packaging/wayland-sessions/sos.desktop /usr/share/wayland-sessions/sos.desktop
+  packaging/wayland-sessions/sos.desktop \
+  "$(sos_install_target /usr/share/wayland-sessions/sos.desktop)"
 sudo install -o root -g root -m 0644 \
-  experiences/default.luau /usr/share/sos/experiences/default.luau
+  experiences/default.luau "$(sos_install_target /usr/share/sos/experiences/default.luau)"
 sudo install -o root -g root -m 0644 \
-  experiences/daily-flow.luau /usr/share/sos/experiences/daily-flow.luau
+  experiences/daily-flow.luau "$(sos_install_target /usr/share/sos/experiences/daily-flow.luau)"
 sudo install -o root -g root -m 0644 \
-  docs/experience-api.md /usr/share/doc/sos/experience-api.md
+  docs/experience-api.md "$(sos_install_target /usr/share/doc/sos/experience-api.md)"
 sudo install -o root -g root -m 0644 \
-  docs/linux-stable-host.md /usr/share/doc/sos/linux-stable-host.md
+  docs/linux-stable-host.md "$(sos_install_target /usr/share/doc/sos/linux-stable-host.md)"
 sudo install -o root -g root -m 0644 \
-  docs/sos-agent.md /usr/share/doc/sos/sos-agent.md
+  docs/sos-agent.md "$(sos_install_target /usr/share/doc/sos/sos-agent.md)"
 
 sos_install_metadata="$(mktemp -t sos-install-metadata.XXXXXX)"
 sos_install_manifest="$(mktemp -t sos-install-manifest.XXXXXX)"
@@ -202,40 +233,56 @@ sos_install_artifacts=(
   /usr/share/sos/experiences/daily-flow.luau
 )
 for sos_install_artifact in "${sos_install_artifacts[@]}"; do
+  sos_install_artifact_target="$(sos_install_target "$sos_install_artifact")"
+  [[ -f "$sos_install_artifact_target" && -r "$sos_install_artifact_target" ]] || \
+    sos_install_fail "installed artifact is not readable: $sos_install_artifact"
+  sos_install_artifact_bytes="$(stat -c %s "$sos_install_artifact_target")"
+  sos_install_artifact_sha="$(sha256sum "$sos_install_artifact_target" | cut -d ' ' -f 1)"
+  [[ "$sos_install_artifact_bytes" =~ ^[1-9][0-9]*$ \
+    && "$sos_install_artifact_sha" =~ ^[0-9a-f]{64}$ ]] || \
+    sos_install_fail "installed artifact identity is invalid: $sos_install_artifact"
   printf '%s\t%s\t%s\n' \
     "$sos_install_artifact" \
-    "$(stat -c %s "$sos_install_artifact")" \
-    "$(sha256sum "$sos_install_artifact" | cut -d ' ' -f 1)" >>"$sos_install_manifest"
+    "$sos_install_artifact_bytes" \
+    "$sos_install_artifact_sha" \
+    >>"$sos_install_manifest"
 done
 sudo install -o root -g root -m 0644 \
-  "$sos_install_metadata" /usr/share/doc/sos/install-metadata.env
+  "$sos_install_metadata" "$(sos_install_target /usr/share/doc/sos/install-metadata.env)"
 sudo install -o root -g root -m 0644 \
-  "$sos_install_manifest" /usr/share/doc/sos/install-manifest.tsv
+  "$sos_install_manifest" "$(sos_install_target /usr/share/doc/sos/install-manifest.tsv)"
 
-if [[ "$sos_install_agent_mode" == offline ]]; then
-  SOS_AGENT_FAKE_SOURCE=/usr/share/sos/experiences/daily-flow.luau \
-    "$sos_install_bin_dir/sos-agent-login" --offline
-else
-  sos_install_existing_agent_config="${XDG_STATE_HOME:-$HOME/.local/state}/sos/agent/config.env"
-  if [[ -s "$sos_install_existing_agent_config" ]] \
-    && grep -q '^SOS_AGENT_FAKE_SOURCE=' "$sos_install_existing_agent_config"; then
-    "$sos_install_bin_dir/sos-agent-login"
+if [[ -z "$sos_install_destdir" ]]; then
+  if [[ "$sos_install_agent_mode" == offline ]]; then
+    SOS_AGENT_FAKE_SOURCE=/usr/share/sos/experiences/daily-flow.luau \
+      "$sos_install_bin_dir/sos-agent-login" --offline
   else
-    "$sos_install_bin_dir/sos-agent-login" --if-needed
+    sos_install_existing_agent_config="${XDG_STATE_HOME:-$HOME/.local/state}/sos/agent/config.env"
+    if [[ -s "$sos_install_existing_agent_config" ]] \
+      && grep -q '^SOS_AGENT_FAKE_SOURCE=' "$sos_install_existing_agent_config"; then
+      "$sos_install_bin_dir/sos-agent-login"
+    else
+      "$sos_install_bin_dir/sos-agent-login" --if-needed
+    fi
   fi
+  sos_install_user_state="${XDG_STATE_HOME:-$HOME/.local/state}/sos"
+  install -d -m 0700 "${XDG_STATE_HOME:-$HOME/.local/state}" "$sos_install_user_state"
+  if [[ ! -e "$sos_install_user_state/output.json" ]]; then
+    printf '{}\n' >"$sos_install_user_state/output.json"
+  fi
+  [[ ! -L "$sos_install_user_state/output.json" && -f "$sos_install_user_state/output.json" \
+    && -O "$sos_install_user_state/output.json" ]] || \
+    sos_install_fail "output configuration must be a regular file"
+  chmod 0600 "$sos_install_user_state/output.json"
+  printf '%s\n' \
+    "SOS login session and resident agent installed in $sos_install_agent_mode mode." \
+    "Source revision: $sos_install_source_revision (dirty=$sos_install_source_dirty)." \
+    'Log out, select SOS from the login screen session menu, and log in.' \
+    'Selecting the previous desktop session returns to GNOME on the next login.'
+else
+  printf '%s\n' \
+    "SOS offline login session staged under destroot $sos_install_destdir." \
+    "Source revision: $sos_install_source_revision (dirty=$sos_install_source_dirty)." \
+    'GDM and the default boot target were not changed. No host user state was written.' \
+    'Do not treat destroot staging alone as an installed product or development-live image.'
 fi
-sos_install_user_state="${XDG_STATE_HOME:-$HOME/.local/state}/sos"
-install -d -m 0700 "${XDG_STATE_HOME:-$HOME/.local/state}" "$sos_install_user_state"
-if [[ ! -e "$sos_install_user_state/output.json" ]]; then
-  printf '{}\n' >"$sos_install_user_state/output.json"
-fi
-[[ ! -L "$sos_install_user_state/output.json" && -f "$sos_install_user_state/output.json" \
-  && -O "$sos_install_user_state/output.json" ]] || \
-  sos_install_fail "output configuration must be a regular file"
-chmod 0600 "$sos_install_user_state/output.json"
-
-printf '%s\n' \
-  "SOS login session and resident agent installed in $sos_install_agent_mode mode." \
-  "Source revision: $sos_install_source_revision (dirty=$sos_install_source_dirty)." \
-  'Log out, select SOS from the login screen session menu, and log in.' \
-  'Selecting the previous desktop session returns to GNOME on the next login.'

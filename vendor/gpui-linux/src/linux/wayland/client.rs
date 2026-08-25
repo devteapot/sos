@@ -1,5 +1,6 @@
 use std::{
     cell::{RefCell, RefMut},
+    collections::VecDeque,
     hash::Hash,
     os::fd::{AsRawFd, BorrowedFd},
     path::PathBuf,
@@ -303,6 +304,8 @@ pub(crate) struct WaylandClientState {
     primary_data_offer: Option<DataOffer<ZwpPrimarySelectionOfferV1>>,
     cursor: Cursor,
     pending_activation: Option<PendingActivation>,
+    pending_main_tasks: VecDeque<gpui::RunnableVariant>,
+    pending_frames: VecDeque<WaylandWindowStatePtr>,
     event_loop: Option<EventLoop<'static, WaylandClientStatePtr>>,
     pub common: LinuxCommon,
 }
@@ -350,6 +353,19 @@ impl WaylandClientStatePtr {
 
     pub fn get_serial(&self, kind: SerialKind) -> u32 {
         self.0.upgrade().unwrap().borrow().serial_tracker.get(kind)
+    }
+
+    fn queue_frame(&self, window: WaylandWindowStatePtr) {
+        let client = self.get_client();
+        let mut state = client.borrow_mut();
+        if state
+            .pending_frames
+            .iter()
+            .any(|pending| pending.ptr_eq(&window))
+        {
+            return;
+        }
+        state.pending_frames.push_back(window);
     }
 
     pub fn set_pending_activation(&self, window: ObjectId) {
@@ -553,29 +569,18 @@ impl WaylandClient {
 
         let handle = event_loop.handle();
         handle
-            .insert_source(main_receiver, {
-                let handle = handle.clone();
-                move |event, _, _: &mut WaylandClientStatePtr| {
+            .insert_source(
+                main_receiver,
+                |event, _, state: &mut WaylandClientStatePtr| {
                     if let calloop::channel::Event::Msg(runnable) = event {
-                        handle.insert_idle(|_| {
-                            let start = Instant::now();
-                            let location = runnable.metadata().location;
-                            let mut timing = TaskTiming {
-                                location,
-                                start,
-                                end: None,
-                            };
-                            profiler::add_task_timing(timing);
-
-                            runnable.run();
-
-                            let end = Instant::now();
-                            timing.end = Some(end);
-                            profiler::add_task_timing(timing);
-                        });
+                        state
+                            .get_client()
+                            .borrow_mut()
+                            .pending_main_tasks
+                            .push_back(runnable);
                     }
-                }
-            })
+                },
+            )
             .unwrap();
 
         let compositor_gpu = detect_compositor_gpu();
@@ -716,6 +721,8 @@ impl WaylandClient {
             primary_data_offer: None,
             cursor,
             pending_activation: None,
+            pending_main_tasks: VecDeque::new(),
+            pending_frames: VecDeque::new(),
             event_loop: Some(event_loop),
         }));
 
@@ -912,7 +919,51 @@ impl LinuxClient for WaylandClient {
             .run(
                 None,
                 &mut WaylandClientStatePtr(Rc::downgrade(&self.0)),
-                |_| {},
+                |state| {
+                    // Run the bounded batch staged by the foreground source
+                    // only after every ready calloop source has had its turn.
+                    // This avoids both idle-callback starvation during
+                    // continuous animation and re-entering GPUI from inside a
+                    // Wayland/calloop source callback.
+                    loop {
+                        let runnable = state
+                            .get_client()
+                            .borrow_mut()
+                            .pending_main_tasks
+                            .pop_front();
+                        let Some(runnable) = runnable else {
+                            break;
+                        };
+                        let start = Instant::now();
+                        let location = runnable.metadata().location;
+                        let mut timing = TaskTiming {
+                            location,
+                            start,
+                            end: None,
+                        };
+                        profiler::add_task_timing(timing);
+
+                        runnable.run();
+
+                        timing.end = Some(Instant::now());
+                        profiler::add_task_timing(timing);
+                    }
+                    loop {
+                        // Keep the RefCell borrow in a separate statement so
+                        // it is released before frame rendering reads the
+                        // client GPU state.
+                        let window = state.get_client().borrow_mut().pending_frames.pop_front();
+                        let Some(window) = window else {
+                            break;
+                        };
+                        // Drawing may block in the Vulkan Wayland present path
+                        // until a swapchain buffer is released. Keep that wait
+                        // outside protocol dispatch so a newly arriving frame
+                        // callback cannot recursively render and prevent this
+                        // post-dispatch phase from servicing foreground work.
+                        window.frame();
+                    }
+                },
             )
             .log_err();
     }
@@ -1146,22 +1197,22 @@ delegate_noop!(WaylandClientStatePtr: ignore wp_viewport::WpViewport);
 
 impl Dispatch<WlCallback, ObjectId> for WaylandClientStatePtr {
     fn event(
-        state: &mut WaylandClientStatePtr,
+        this: &mut WaylandClientStatePtr,
         _: &wl_callback::WlCallback,
         event: wl_callback::Event,
         surface_id: &ObjectId,
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
-        let client = state.get_client();
-        let mut state = client.borrow_mut();
-        let Some(window) = get_window(&mut state, surface_id) else {
+        let client = this.get_client();
+        let mut client_state = client.borrow_mut();
+        let Some(window) = get_window(&mut client_state, surface_id) else {
             return;
         };
-        drop(state);
+        drop(client_state);
 
         if let wl_callback::Event::Done { .. } = event {
-            window.frame();
+            this.queue_frame(window);
         }
     }
 }
@@ -1549,7 +1600,7 @@ impl Dispatch<wl_touch::WlTouch, ()> for WaylandClientStatePtr {
         };
         for (event, window) in dispatched {
             dispatch_raw_touch(event);
-            window.frame();
+            this.queue_frame(window);
         }
     }
 }
@@ -1684,7 +1735,7 @@ impl Dispatch<zwp_tablet_tool_v2::ZwpTabletToolV2, ()> for WaylandClientStatePtr
         }
         if let Some((event, window)) = dispatch {
             dispatch_raw_touch(event);
-            window.frame();
+            this.queue_frame(window);
         }
     }
 }

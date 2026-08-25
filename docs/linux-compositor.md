@@ -231,10 +231,16 @@ dispatching callbacks/frames after releasing that borrow fixed the crash.
 Core `wl_touch` has no pressure field, so finger samples explicitly report
 pressure unavailable. A separate pressure stylus is carried through
 tablet-v2; the direct VM gate observes normalized nonzero Scene pressure.
-The VM's software GBM/EGL stack lacks `EGL_WL_bind_wayland_display`, so the
-compositor uses its advertised `wl_shm` path for clients. None of this run is a
-physical display, latency, touch, GPU-performance, suspend/resume, or thermal
-claim.
+The VM's software GBM/EGL stack lacks `EGL_WL_bind_wayland_display`; the cited
+run therefore used the compositor's advertised `wl_shm` path. The direct
+backend now also advertises explicit Linux dmabuf feedback from the formats
+importable by every renderer with a connected output. It validates each client
+dmabuf against those active renderers before completing buffer creation and
+updates the feedback across connector/device changes. This is independent of
+the optional EGL Wayland binding and leaves `wl_shm` as the safe fallback. The
+cited VM result predates that protocol path and remains a software-rendering
+result; none of it is a physical display, latency, touch, GPU-performance,
+suspend/resume, or thermal claim.
 
 ## Source pin and remaining boundary
 

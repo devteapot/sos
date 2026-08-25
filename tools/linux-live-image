@@ -1,0 +1,1158 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+umask 077
+
+live_image_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+live_image_identity_path=/usr/share/doc/sos/image-identity.env
+live_image_offline_source=/usr/share/sos/experiences/daily-flow.luau
+live_image_harness=/usr/local/libexec/sos/linux-hardware-gate
+live_image_development_access=/usr/share/doc/sos/development-access.env
+live_image_ssh_config=/etc/ssh/sshd_config.d/60-sos-development-live.conf
+live_image_livesys_hook=/var/lib/livesys/livesys-session-extra
+live_image_networkmanager_profile=/etc/NetworkManager/system-connections/60-sos-development-live.nmconnection
+
+live_image_fail() {
+  printf 'error: %s\n' "$*" >&2
+  exit 1
+}
+
+live_image_usage() {
+  printf '%s\n' \
+    'usage:' \
+    '  tools/linux-live-image doctor [--layout-only]' \
+    '  tools/linux-live-image format-identity [identity fields...]' \
+    '  tools/linux-live-image write-offline-user-state --home-root DIR' \
+    '  tools/linux-live-image check-networkmanager-profile --profile-file FILE' \
+    '  tools/linux-live-image configure-development-access --root DIR --password-file FILE [--networkmanager-profile-file FILE]' \
+    '  tools/linux-live-image check-payload --payload FILE' \
+    '  tools/linux-live-image check-rootfs --root DIR' \
+    '  tools/linux-live-image bake --source-iso ISO --source-sha256 SHA256 --output-dir DIR --liveuser-password-file FILE [--networkmanager-profile-file FILE]'
+}
+
+live_image_require_command() {
+  command -v "$1" >/dev/null 2>&1 || live_image_fail "required command not found: $1"
+}
+
+live_image_validate_sha256() {
+  local name="$1" value="$2"
+  [[ "$value" =~ ^[0-9a-f]{64}$ ]] || live_image_fail "$name must be a lowercase SHA-256"
+}
+
+live_image_validate_bytes() {
+  local name="$1" value="$2"
+  [[ "$value" =~ ^[1-9][0-9]*$ ]] || live_image_fail "$name must be a positive byte count"
+}
+
+live_image_os_release_value() {
+  local file="$1" key="$2" value
+  value="$(sed -n "s/^${key}=//p" "$file" | tail -n 1)"
+  value="${value#\"}"
+  value="${value%\"}"
+  printf '%s\n' "$value"
+}
+
+live_image_metadata_value() {
+  local file="$1" key="$2"
+  sed -n "s/^${key}=//p" "$file" | tail -n 1
+}
+
+live_image_target() {
+  printf '%s%s\n' "$live_image_rootfs" "$1"
+}
+
+live_image_absolute_leaf_path() {
+  local path="$1" parent leaf
+  parent="$(dirname -- "$path")"
+  leaf="$(basename -- "$path")"
+  printf '%s/%s\n' "$(realpath -m -- "$parent")" "$leaf"
+}
+
+live_image_runtime_packages() {
+  printf '%s\n' \
+    nodejs \
+    libseat \
+    libinput \
+    libinput-utils \
+    mesa-libgbm \
+    libxkbcommon \
+    libxkbcommon-x11 \
+    vulkan-loader \
+    mesa-dri-drivers \
+    mesa-vulkan-drivers \
+    pipewire-libs \
+    alsa-lib \
+    fontconfig \
+    libgit2 \
+    glib2 \
+    sqlite \
+    openssl \
+    libzstd \
+    jq \
+    python3 \
+    pciutils \
+    openssh-server
+}
+
+live_image_parse_root_option() {
+  local expected_option="$1"
+  shift
+  local parsed_root=""
+  while [[ "$#" -gt 0 ]]; do
+    case "$1" in
+      "$expected_option")
+        [[ "$#" -ge 2 ]] || live_image_fail "$1 requires a directory"
+        parsed_root="$(realpath -m -- "$2")"
+        shift 2
+        ;;
+      *) live_image_fail "unexpected option: $1" ;;
+    esac
+  done
+  [[ -n "$parsed_root" ]] || live_image_fail "$expected_option is required"
+  printf '%s\n' "$parsed_root"
+}
+
+live_image_doctor() {
+  local layout_only=false
+  if [[ "${1:-}" == --layout-only ]]; then
+    layout_only=true
+    shift
+  fi
+  [[ "$#" -eq 0 ]] || live_image_fail "doctor accepts only --layout-only"
+  local command
+  for command in awk basename cargo cmp dirname find firewall-offline-cmd getfattr \
+    git install mount mountpoint node npm pkg-config python3 realpath rsync rustc sha256sum \
+    sort stat sudo umount openssl; do
+    live_image_require_command "$command"
+  done
+  local missing=()
+  for command in checkisomd5 dnf dump.erofs fsck.erofs implantisomd5 mkfs.erofs setfiles xorriso; do
+    command -v "$command" >/dev/null 2>&1 || missing+=("$command")
+  done
+  local missing_modules=()
+  for command in gbm libinput libseat libudev wayland-client xkbcommon xkbcommon-x11; do
+    pkg-config --exists "$command" || missing_modules+=("$command")
+  done
+  local host_id="unknown" host_release="unknown" host_arch
+  if [[ -r /etc/os-release ]]; then
+    host_id="$(live_image_os_release_value /etc/os-release ID)"
+    host_release="$(live_image_os_release_value /etc/os-release VERSION_ID)"
+  fi
+  host_arch="$(uname -m)"
+  printf 'linux_live_image_doctor host=%s release=%s arch=%s rust=%s node=%s\n' \
+    "$host_id" "$host_release" "$host_arch" "$(rustc --version | tr ' ' '_')" "$(node --version)"
+  if [[ "$host_id" != fedora ]]; then
+    printf 'linux_live_image_doctor_problem bake requires a Fedora x86_64 host\n'
+  fi
+  if [[ "$host_arch" != x86_64 ]]; then
+    printf 'linux_live_image_doctor_problem bake requires x86_64; found %s\n' "$host_arch"
+  fi
+  if [[ "${#missing[@]}" -ne 0 ]]; then
+    printf 'linux_live_image_doctor_missing %s\n' "${missing[*]}"
+  fi
+  if [[ "${#missing_modules[@]}" -ne 0 ]]; then
+    printf 'linux_live_image_doctor_missing_modules %s\n' "${missing_modules[*]}"
+  fi
+  printf 'linux_live_image_runtime_packages %s\n' "$(live_image_runtime_packages | tr '\n' ' ')"
+  if [[ "$layout_only" == true ]]; then
+    printf 'linux_live_image_doctor=PASS mode=layout-only bake_ready=false\n'
+    return 0
+  fi
+  if [[ "$host_id" != fedora || "$host_arch" != x86_64 \
+    || "${#missing[@]}" -ne 0 || "${#missing_modules[@]}" -ne 0 ]]; then
+    printf 'linux_live_image_doctor=FAIL bake_ready=false\n'
+    return 1
+  fi
+  printf 'linux_live_image_doctor=PASS bake_ready=true\n'
+}
+
+live_image_format_identity() {
+  local source_revision="" source_dirty=false agent_mode=offline
+  local image_format=fedora-workstation-live-remix
+  local fedora_release="" build_host_release=""
+  local base_iso_filename="" base_iso_bytes="" base_iso_sha256=""
+  local payload_relpath="" payload_bytes="" payload_sha256=""
+  local container_format="" baked_at_utc=""
+  local output_iso_filename="" output_iso_bytes="" output_iso_sha256=""
+  local wifi_autoconnect=false
+  while [[ "$#" -gt 0 ]]; do
+    case "$1" in
+      --source-revision) source_revision="$2"; shift 2 ;;
+      --source-dirty) source_dirty="$2"; shift 2 ;;
+      --agent-mode) agent_mode="$2"; shift 2 ;;
+      --image-format) image_format="$2"; shift 2 ;;
+      --fedora-release) fedora_release="$2"; shift 2 ;;
+      --build-host-release) build_host_release="$2"; shift 2 ;;
+      --base-iso-filename) base_iso_filename="$2"; shift 2 ;;
+      --base-iso-bytes) base_iso_bytes="$2"; shift 2 ;;
+      --base-iso-sha256) base_iso_sha256="$2"; shift 2 ;;
+      --payload-relpath) payload_relpath="$2"; shift 2 ;;
+      --payload-bytes) payload_bytes="$2"; shift 2 ;;
+      --payload-sha256) payload_sha256="$2"; shift 2 ;;
+      --container-format) container_format="$2"; shift 2 ;;
+      --baked-at-utc) baked_at_utc="$2"; shift 2 ;;
+      --output-iso-filename) output_iso_filename="$2"; shift 2 ;;
+      --output-iso-bytes) output_iso_bytes="$2"; shift 2 ;;
+      --output-iso-sha256) output_iso_sha256="$2"; shift 2 ;;
+      --wifi-autoconnect) wifi_autoconnect="$2"; shift 2 ;;
+      *) live_image_fail "unexpected identity field: $1" ;;
+    esac
+  done
+  [[ -n "$source_revision" && -n "$base_iso_filename" && -n "$base_iso_bytes" && -n "$base_iso_sha256" ]] || \
+    live_image_fail "format-identity requires source revision and base ISO identity"
+  [[ "$source_revision" =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ]] || \
+    live_image_fail "source revision must be a full lowercase Git object ID"
+  [[ "$base_iso_filename" != */* && "$base_iso_filename" != *$'\n'* \
+    && "$base_iso_filename" != *$'\t'* && "$base_iso_filename" != *=* ]] || \
+    live_image_fail "base ISO filename is unsafe for identity metadata"
+  live_image_validate_bytes "base ISO bytes" "$base_iso_bytes"
+  live_image_validate_sha256 "base ISO SHA-256" "$base_iso_sha256"
+  [[ "$fedora_release" =~ ^[1-9][0-9]*$ && "$build_host_release" == "$fedora_release" ]] || \
+    live_image_fail "Fedora image and build host must use the same numeric release"
+  [[ "$payload_relpath" == LiveOS/squashfs.img ]] || \
+    live_image_fail "only LiveOS/squashfs.img is supported"
+  [[ "$container_format" == erofs-rootfs ]] || \
+    live_image_fail "only metadata-preserving erofs-rootfs is supported"
+  [[ "$agent_mode" == offline ]] || live_image_fail "live images bake the offline agent only"
+  [[ "$source_dirty" == false ]] || live_image_fail "live images require a clean source revision"
+  [[ "$wifi_autoconnect" == true || "$wifi_autoconnect" == false ]] || \
+    live_image_fail "Wi-Fi autoconnect identity must be true or false"
+  [[ -n "$baked_at_utc" ]] || baked_at_utc="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  [[ "$baked_at_utc" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] || \
+    live_image_fail "baked timestamp must be UTC in YYYY-MM-DDTHH:MM:SSZ form"
+  printf '%s\n' \
+    'image_kind=development-live' \
+    'image_label=development-live' \
+    'campaign_class=development-live' \
+    'not_installed_product=true' \
+    'promotion_eligible=false' \
+    'mutable_runtime=true' \
+    'ssh_enabled=true' \
+    "wifi_autoconnect=$wifi_autoconnect" \
+    "network_credentials_embedded=$wifi_autoconnect" \
+    "image_format=$image_format" \
+    "container_format=$container_format" \
+    "fedora_release=$fedora_release" \
+    "build_host_release=$build_host_release" \
+    "source_revision=$source_revision" \
+    "source_dirty=$source_dirty" \
+    "agent_mode=$agent_mode" \
+    "base_iso_filename=$base_iso_filename" \
+    "base_iso_bytes=$base_iso_bytes" \
+    "base_iso_sha256=$base_iso_sha256" \
+    "payload_relpath=$payload_relpath"
+  if [[ -n "$payload_bytes" || -n "$payload_sha256" ]]; then
+    [[ -n "$payload_bytes" && -n "$payload_sha256" ]] || \
+      live_image_fail "payload identity requires both bytes and sha256"
+    live_image_validate_bytes "payload bytes" "$payload_bytes"
+    live_image_validate_sha256 "payload SHA-256" "$payload_sha256"
+    printf '%s\n' \
+      "payload_bytes=$payload_bytes" \
+      "payload_sha256=$payload_sha256"
+  fi
+  if [[ -n "$output_iso_filename" ]]; then
+    [[ -n "$output_iso_bytes" && -n "$output_iso_sha256" ]] || \
+      live_image_fail "output ISO identity requires filename, bytes, and sha256"
+    [[ "$output_iso_filename" != */* && "$output_iso_filename" != *$'\n'* \
+      && "$output_iso_filename" != *$'\t'* && "$output_iso_filename" != *=* ]] || \
+      live_image_fail "output ISO filename is unsafe for identity metadata"
+    live_image_validate_bytes "output ISO bytes" "$output_iso_bytes"
+    live_image_validate_sha256 "output ISO SHA-256" "$output_iso_sha256"
+    printf '%s\n' \
+      "output_iso_filename=$output_iso_filename" \
+      "output_iso_bytes=$output_iso_bytes" \
+      "output_iso_sha256=$output_iso_sha256"
+  fi
+  printf 'baked_at_utc=%s\n' "$baked_at_utc"
+}
+
+live_image_write_offline_user_state() {
+  local home_root
+  home_root="$(live_image_parse_root_option --home-root "$@")"
+  local state="$home_root/.local/state/sos"
+  install -d -m 0700 \
+    "$home_root/.local" \
+    "$home_root/.local/state" \
+    "$state" \
+    "$state/agent"
+  printf '{}\n' >"$state/output.json"
+  printf '%s\n' \
+    'SOS_AGENT_PROVIDER=openai-codex' \
+    'SOS_AGENT_MODEL=faux' \
+    "SOS_AGENT_FAKE_SOURCE=$live_image_offline_source" >"$state/agent/config.env"
+  chmod 0600 "$state/output.json" "$state/agent/config.env"
+  printf 'linux_live_image_offline_user_state home_root=%s\n' "$home_root"
+}
+
+live_image_read_development_password() {
+  local password_file="$1" password="" extra=""
+  [[ -f "$password_file" && ! -L "$password_file" && -r "$password_file" ]] || \
+    live_image_fail "liveuser password file must be a readable regular file, not a symlink"
+  exec 9<"$password_file"
+  IFS= read -r password <&9 || [[ -n "$password" ]] || \
+    live_image_fail "liveuser password file is empty"
+  if IFS= read -r extra <&9; then
+    live_image_fail "liveuser password file must contain exactly one line"
+  fi
+  exec 9<&-
+  [[ -n "$password" && "$password" != *:* && "$password" != *$'\r'* ]] || \
+    live_image_fail "liveuser password must be non-empty and contain no colon or carriage return"
+  [[ "${#password}" -le 128 ]] || live_image_fail "liveuser password exceeds 128 characters"
+  printf '%s' "$password"
+}
+
+live_image_networkmanager_value() {
+  local profile="$1" section="$2" key="$3" privileged="${4:-false}"
+  local -a reader=(awk)
+  [[ "$privileged" == false ]] || reader=(sudo awk)
+  "${reader[@]}" -v wanted_section="$section" -v wanted_key="$key" '
+    $0 == "[" wanted_section "]" { in_section=1; next }
+    /^\[/ { in_section=0 }
+    in_section && index($0, wanted_key "=") == 1 {
+      value=substr($0, length(wanted_key) + 2)
+    }
+    END { print value }
+  ' "$profile"
+}
+
+live_image_networkmanager_has_nonempty_value() {
+  local profile="$1" section="$2" key="$3" privileged="${4:-false}"
+  local -a reader=(awk)
+  [[ "$privileged" == false ]] || reader=(sudo awk)
+  "${reader[@]}" -v wanted_section="$section" -v wanted_key="$key" '
+    $0 == "[" wanted_section "]" { in_section=1; next }
+    /^\[/ { in_section=0 }
+    in_section && index($0, wanted_key "=") == 1 \
+      && length($0) > length(wanted_key) + 1 { found=1 }
+    END { exit !found }
+  ' "$profile"
+}
+
+live_image_validate_networkmanager_profile() {
+  local profile="$1" privileged="${2:-false}"
+  if [[ "$privileged" == true ]]; then
+    sudo test -f "$profile" && sudo test ! -L "$profile" && sudo test -r "$profile" || \
+      live_image_fail "NetworkManager profile must be a readable regular file, not a symlink"
+  else
+    [[ -f "$profile" && ! -L "$profile" && -r "$profile" ]] || \
+      live_image_fail "NetworkManager profile must be a readable regular file, not a symlink"
+  fi
+  local mode
+  if [[ "$privileged" == true ]]; then
+    mode="$(sudo stat -c %a "$profile")"
+  else
+    mode="$(stat -c %a "$profile")"
+  fi
+  [[ "$mode" =~ ^[0-7]{3,4}$ ]] || \
+    live_image_fail "NetworkManager profile permissions could not be validated"
+  (( (8#$mode & 8#077) == 0 )) || \
+    live_image_fail "NetworkManager profile must not be accessible by group or other users"
+
+  local type uuid autoconnect ssid key_mgmt psk_flags ipv4_method
+  type="$(live_image_networkmanager_value "$profile" connection type "$privileged")"
+  uuid="$(live_image_networkmanager_value "$profile" connection uuid "$privileged")"
+  autoconnect="$(live_image_networkmanager_value \
+    "$profile" connection autoconnect "$privileged")"
+  ssid="$(live_image_networkmanager_value "$profile" wifi ssid "$privileged")"
+  key_mgmt="$(live_image_networkmanager_value \
+    "$profile" wifi-security key-mgmt "$privileged")"
+  psk_flags="$(live_image_networkmanager_value \
+    "$profile" wifi-security psk-flags "$privileged")"
+  ipv4_method="$(live_image_networkmanager_value \
+    "$profile" ipv4 method "$privileged")"
+  [[ "$type" == wifi ]] || \
+    live_image_fail "NetworkManager profile must have connection type wifi"
+  [[ "$uuid" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]] || \
+    live_image_fail "NetworkManager profile must contain a UUID"
+  [[ -z "$autoconnect" || "$autoconnect" == true || "$autoconnect" == yes \
+    || "$autoconnect" == 1 ]] || \
+    live_image_fail "NetworkManager profile must enable autoconnect"
+  [[ -n "$ssid" && "$ssid" != *$'\r'* ]] || \
+    live_image_fail "NetworkManager profile must contain a Wi-Fi SSID"
+  [[ "$key_mgmt" == wpa-psk || "$key_mgmt" == sae ]] || \
+    live_image_fail "NetworkManager profile must use WPA-PSK or SAE"
+  [[ -z "$psk_flags" || "$psk_flags" == 0 ]] || \
+    live_image_fail "NetworkManager profile must store its PSK for boot-time autoconnect"
+  live_image_networkmanager_has_nonempty_value \
+    "$profile" wifi-security psk "$privileged" || \
+    live_image_fail "NetworkManager profile must contain a boot-time Wi-Fi PSK"
+  [[ "$ipv4_method" == auto ]] || \
+    live_image_fail "NetworkManager profile must use automatic IPv4 configuration"
+}
+
+live_image_check_networkmanager_profile() {
+  local profile_file=""
+  while [[ "$#" -gt 0 ]]; do
+    case "$1" in
+      --profile-file)
+        [[ "$#" -ge 2 ]] || live_image_fail "--profile-file requires a file"
+        profile_file="$(live_image_absolute_leaf_path "$2")"
+        shift 2
+        ;;
+      *) live_image_fail "unexpected check-networkmanager-profile option: $1" ;;
+    esac
+  done
+  [[ -n "$profile_file" ]] || \
+    live_image_fail "check-networkmanager-profile requires --profile-file FILE"
+  live_image_validate_networkmanager_profile "$profile_file"
+  printf 'linux_live_image_network_profile_checked=PASS wifi_autoconnect=true network_credentials_embedded=true\n'
+}
+
+live_image_configure_development_access() {
+  local root="" password_file="" networkmanager_profile_file=""
+  while [[ "$#" -gt 0 ]]; do
+    case "$1" in
+      --root)
+        [[ "$#" -ge 2 ]] || live_image_fail "--root requires a directory"
+        root="$(realpath -m -- "$2")"
+        shift 2
+        ;;
+      --password-file)
+        [[ "$#" -ge 2 ]] || live_image_fail "--password-file requires a file"
+        password_file="$(live_image_absolute_leaf_path "$2")"
+        shift 2
+        ;;
+      --networkmanager-profile-file)
+        [[ "$#" -ge 2 ]] || live_image_fail "--networkmanager-profile-file requires a file"
+        networkmanager_profile_file="$(live_image_absolute_leaf_path "$2")"
+        shift 2
+        ;;
+      *) live_image_fail "unexpected configure-development-access option: $1" ;;
+    esac
+  done
+  [[ -n "$root" && -d "$root" && -n "$password_file" ]] || \
+    live_image_fail "configure-development-access requires --root DIR and --password-file FILE"
+  local password
+  password="$(live_image_read_development_password "$password_file")"
+  local wifi_autoconnect=false
+  if [[ -n "$networkmanager_profile_file" ]]; then
+    live_image_validate_networkmanager_profile "$networkmanager_profile_file"
+    wifi_autoconnect=true
+  fi
+  [[ -f "$root/etc/passwd" && -f "$root/etc/shadow" ]] || \
+    live_image_fail "development rootfs is missing passwd or shadow"
+  [[ -f "$root/usr/libexec/livesys/livesys-main" ]] || \
+    live_image_fail "development rootfs is missing Fedora livesys provisioning"
+  grep -F 'useradd ${USERADDARGS:+"$USERADDARGS"} -c "Live System User" liveuser' \
+    "$root/usr/libexec/livesys/livesys-main" >/dev/null || \
+    live_image_fail "Fedora livesys no longer provisions liveuser as expected"
+  grep -F '. /var/lib/livesys/livesys-session-extra' \
+    "$root/usr/libexec/livesys/livesys-main" >/dev/null || \
+    live_image_fail "Fedora livesys no longer exposes the derived-spin session hook"
+  [[ ! -e "$root$live_image_livesys_hook" ]] || \
+    live_image_fail "source image already owns the livesys session-extra hook"
+  [[ -f "$root/usr/lib/systemd/system/sshd.service" ]] || \
+    live_image_fail "development rootfs is missing openssh-server"
+  [[ -x "$root/usr/bin/systemctl" ]] || \
+    live_image_fail "development rootfs is missing systemctl"
+  [[ -d "$root/usr/lib/firewalld" ]] || \
+    live_image_fail "development rootfs is missing firewalld defaults"
+  [[ -f "$root/usr/lib/systemd/system/NetworkManager.service" ]] || \
+    live_image_fail "development rootfs is missing NetworkManager"
+  [[ ! -e "$root$live_image_networkmanager_profile" \
+    && ! -L "$root$live_image_networkmanager_profile" ]] || \
+    live_image_fail "source image already owns the SOS development network profile"
+  [[ ! -e "$root/etc/systemd/system/multi-user.target.wants/sshd.service" \
+    && ! -L "$root/etc/systemd/system/multi-user.target.wants/sshd.service" ]] || \
+    live_image_fail "source image already enables sshd before liveuser provisioning"
+
+  local password_hash ssh_config livesys_hook access_metadata
+  password_hash="$(printf '%s\n' "$password" | openssl passwd -6 -stdin)"
+  unset password
+  [[ "$password_hash" =~ ^\$6\$[^:[:space:]]+$ ]] || \
+    live_image_fail "could not derive a SHA-512 liveuser password hash"
+  ssh_config="$(mktemp -t sos-development-sshd.XXXXXX)"
+  livesys_hook="$(mktemp -t sos-development-livesys.XXXXXX)"
+  access_metadata="$(mktemp -t sos-development-access.XXXXXX)"
+  printf '%s\n' \
+    'PasswordAuthentication yes' \
+    'PermitRootLogin no' \
+    'AllowUsers liveuser' >"$ssh_config"
+  {
+    printf '%s\n' \
+      '#!/usr/bin/sh' \
+      '# SOS development-live customization, sourced by Fedora livesys-main.'
+    printf "usermod --password '%s' liveuser || exit 1\n" "$password_hash"
+    printf '%s\n' \
+      'passwd --lock root >/dev/null || exit 1' \
+      "cat > /etc/gdm/custom.conf <<'SOS_DEVELOPMENT_GDM' || exit 1" \
+      '[daemon]' \
+      'AutomaticLoginEnable=False' \
+      'SOS_DEVELOPMENT_GDM' \
+      'systemctl enable --now sshd.service >/dev/null || exit 1'
+  } >"$livesys_hook"
+  unset password_hash
+  printf '%s\n' \
+    'image_kind=development-live' \
+    'ssh_enabled=true' \
+    'ssh_user=liveuser' \
+    'password_authentication=true' \
+    'root_login=false' \
+    'root_account_locked=true' \
+    'host_keys=generated_at_boot' \
+    'liveuser_provisioning=livesys-session-extra' \
+    'ssh_activation=livesys-session-extra-final-action' \
+    'gdm_autologin=false_after_livesys' \
+    'firewall_service=ssh' >"$access_metadata"
+  printf '%s\n' \
+    "wifi_autoconnect=$wifi_autoconnect" \
+    "network_credentials_embedded=$wifi_autoconnect" >>"$access_metadata"
+
+  sudo install -d -o root -g root -m 0755 \
+    "$root/etc/ssh/sshd_config.d" \
+    "$root/var/lib/livesys" \
+    "$root/usr/share/doc/sos"
+  if [[ "$wifi_autoconnect" == true ]]; then
+    sudo install -d -o root -g root -m 0700 \
+      "$root/etc/NetworkManager/system-connections"
+    sudo install -o root -g root -m 0600 \
+      "$networkmanager_profile_file" "$root$live_image_networkmanager_profile"
+  fi
+  sudo install -o root -g root -m 0644 "$ssh_config" "$root$live_image_ssh_config"
+  sudo install -o root -g root -m 0700 "$livesys_hook" "$root$live_image_livesys_hook"
+  sudo install -o root -g root -m 0644 \
+    "$access_metadata" "$root$live_image_development_access"
+  sudo find "$root/etc/ssh" -maxdepth 1 -type f -name 'ssh_host_*_key*' -delete
+  sudo firewall-offline-cmd \
+    --system-config "$root/etc/firewalld" \
+    --default-config "$root/usr/lib/firewalld" \
+    --service=ssh >/dev/null
+  rm -f -- "$ssh_config" "$livesys_hook" "$access_metadata"
+  printf 'linux_live_image_development_access=PASS root=%s ssh_user=liveuser autologin=false wifi_autoconnect=%s\n' \
+    "$root" "$wifi_autoconnect"
+}
+
+live_image_symlink_basename() {
+  local link="$1" target=""
+  if [[ -L "$link" ]]; then
+    target="$(readlink -- "$link")"
+  fi
+  printf '%s\n' "$(basename "${target:-}")"
+}
+
+live_image_require_exact_line() {
+  local file="$1" expected="$2" missing_description="$3" mismatch_description="$4"
+  if [[ -r "$file" ]]; then
+    [[ -f "$file" ]] || live_image_fail "$missing_description"
+    grep -Fx "$expected" "$file" >/dev/null || live_image_fail "$mismatch_description"
+  else
+    sudo test -f "$file" || live_image_fail "$missing_description"
+    sudo grep -Fx "$expected" "$file" >/dev/null || live_image_fail "$mismatch_description"
+  fi
+}
+
+live_image_check_rootfs() {
+  local live_image_rootfs
+  live_image_rootfs="$(live_image_parse_root_option --root "$@")"
+  [[ -d "$live_image_rootfs" ]] || live_image_fail "rootfs directory is missing: $live_image_rootfs"
+  local path
+  for path in \
+    /usr/local/libexec/sos/sos-login-session \
+    /usr/local/libexec/sos/sos-agent-login \
+    "$live_image_harness" \
+    /usr/local/libexec/sos-agent/dist/agent-runner.cjs \
+    /usr/share/wayland-sessions/sos.desktop \
+    /usr/share/sos/experiences/daily-flow.luau \
+    /usr/share/doc/sos/install-metadata.env \
+    /usr/share/doc/sos/install-manifest.tsv \
+    "$live_image_development_access" \
+    "$live_image_ssh_config" \
+    "$live_image_livesys_hook" \
+    /usr/lib/systemd/system/sshd.service \
+    /usr/bin/systemctl \
+    "$live_image_identity_path"; do
+    [[ -f "$(live_image_target "$path")" ]] || \
+      live_image_fail "baked live rootfs is missing $path"
+  done
+  [[ -e "$(live_image_target /usr/lib/systemd/system/gdm.service)" \
+    || -e "$(live_image_target /usr/sbin/gdm)" \
+    || -e "$(live_image_target /usr/bin/gdm)" ]] || \
+    live_image_fail "baked live rootfs does not contain GDM"
+  local default_target display_manager
+  default_target="$(live_image_symlink_basename "$(live_image_target /etc/systemd/system/default.target)")"
+  if [[ -z "$default_target" ]]; then
+    default_target="$(live_image_symlink_basename "$(live_image_target /usr/lib/systemd/system/default.target)")"
+  fi
+  [[ "$default_target" != sos-session.target ]] || \
+    live_image_fail "baked live rootfs enables the boot-owned appliance target"
+  display_manager="$(live_image_symlink_basename "$(live_image_target /etc/systemd/system/display-manager.service)")"
+  [[ -z "$display_manager" || "$display_manager" == gdm.service || "$display_manager" == gdm3.service ]] || \
+    live_image_fail "baked live rootfs replaces GDM as the display manager"
+  local identity metadata
+  identity="$(live_image_target "$live_image_identity_path")"
+  metadata="$(live_image_target /usr/share/doc/sos/install-metadata.env)"
+  [[ "$(live_image_metadata_value "$identity" image_kind)" == development-live ]] || \
+    live_image_fail "image identity is not labeled development-live"
+  [[ "$(live_image_metadata_value "$identity" not_installed_product)" == true ]] || \
+    live_image_fail "image identity must say this is not an installed product"
+  [[ "$(live_image_metadata_value "$identity" agent_mode)" == offline ]] || \
+    live_image_fail "image identity must pin the offline agent"
+  [[ "$(live_image_metadata_value "$identity" promotion_eligible)" == false ]] || \
+    live_image_fail "development image must not be promotion eligible"
+  [[ "$(live_image_metadata_value "$identity" mutable_runtime)" == true ]] || \
+    live_image_fail "development image must permit measured runtime mutation"
+  [[ "$(live_image_metadata_value "$identity" ssh_enabled)" == true ]] || \
+    live_image_fail "development image identity must declare SSH access"
+  local wifi_autoconnect
+  wifi_autoconnect="$(live_image_metadata_value "$identity" wifi_autoconnect)"
+  [[ "$wifi_autoconnect" == true || "$wifi_autoconnect" == false ]] || \
+    live_image_fail "development image identity must classify Wi-Fi autoconnect"
+  [[ "$(live_image_metadata_value "$identity" network_credentials_embedded)" \
+    == "$wifi_autoconnect" ]] || \
+    live_image_fail "development image identity must classify embedded network credentials"
+  [[ "$(live_image_metadata_value "$identity" source_dirty)" == false ]] || \
+    live_image_fail "image identity came from a dirty source tree"
+  [[ "$(live_image_metadata_value "$identity" container_format)" == erofs-rootfs ]] || \
+    live_image_fail "image identity is not the metadata-preserving EROFS rootfs format"
+  [[ "$(live_image_metadata_value "$identity" payload_relpath)" == LiveOS/squashfs.img ]] || \
+    live_image_fail "image identity has an unsupported payload path"
+  local identity_release rootfs_release
+  identity_release="$(live_image_metadata_value "$identity" fedora_release)"
+  rootfs_release="$(live_image_os_release_value "$(live_image_target /etc/os-release)" VERSION_ID)"
+  [[ -n "$identity_release" && "$identity_release" == "$rootfs_release" \
+    && "$(live_image_metadata_value "$identity" build_host_release)" == "$identity_release" ]] || \
+    live_image_fail "Fedora rootfs, identity, and build-host releases do not match"
+  local image_revision installed_revision
+  image_revision="$(live_image_metadata_value "$identity" source_revision)"
+  installed_revision="$(live_image_metadata_value "$metadata" source_revision)"
+  [[ -n "$image_revision" && "$image_revision" == "$installed_revision" ]] || \
+    live_image_fail "image identity revision does not match staged install metadata"
+  [[ "$(live_image_metadata_value "$metadata" agent_mode)" == offline ]] || \
+    live_image_fail "staged install metadata must pin the offline agent"
+  local skel_config liveuser_config=""
+  skel_config="$(live_image_target /etc/skel/.local/state/sos/agent/config.env)"
+  live_image_require_exact_line "$skel_config" \
+    "SOS_AGENT_FAKE_SOURCE=$live_image_offline_source" \
+    "offline live skel agent config is missing" \
+    "offline live skel does not pin the baked daily-flow source"
+  if [[ -d "$(live_image_target /home/liveuser)" ]]; then
+    liveuser_config="$(live_image_target /home/liveuser/.local/state/sos/agent/config.env)"
+    live_image_require_exact_line "$liveuser_config" \
+      "SOS_AGENT_FAKE_SOURCE=$live_image_offline_source" \
+      "existing liveuser is missing offline agent config" \
+      "existing liveuser does not pin the baked daily-flow source"
+  fi
+  live_image_require_exact_line "$(live_image_target "$live_image_ssh_config")" \
+    'PasswordAuthentication yes' \
+    'development SSH configuration is missing' \
+    'development SSH configuration does not enable password authentication'
+  live_image_require_exact_line "$(live_image_target "$live_image_ssh_config")" \
+    'PermitRootLogin no' \
+    'development SSH configuration is missing' \
+    'development SSH configuration does not disable root login'
+  live_image_require_exact_line "$(live_image_target "$live_image_ssh_config")" \
+    'AllowUsers liveuser' \
+    'development SSH configuration is missing' \
+    'development SSH configuration does not restrict access to liveuser'
+  live_image_require_exact_line "$(live_image_target "$live_image_development_access")" \
+    'host_keys=generated_at_boot' \
+    'development access metadata is missing' \
+    'development access metadata does not require per-boot SSH host keys'
+  live_image_require_exact_line "$(live_image_target "$live_image_development_access")" \
+    'liveuser_provisioning=livesys-session-extra' \
+    'development access metadata is missing' \
+    'development access metadata does not identify boot-time liveuser provisioning'
+  live_image_require_exact_line "$(live_image_target "$live_image_development_access")" \
+    'ssh_activation=livesys-session-extra-final-action' \
+    'development access metadata is missing' \
+    'development access metadata does not identify fail-closed SSH activation'
+  live_image_require_exact_line "$(live_image_target "$live_image_development_access")" \
+    "wifi_autoconnect=$wifi_autoconnect" \
+    'development access metadata is missing' \
+    'development access metadata does not match Wi-Fi autoconnect identity'
+  live_image_require_exact_line "$(live_image_target "$live_image_development_access")" \
+    "network_credentials_embedded=$wifi_autoconnect" \
+    'development access metadata is missing' \
+    'development access metadata does not match network credential identity'
+  local installed_network_profile
+  installed_network_profile="$(live_image_target "$live_image_networkmanager_profile")"
+  if [[ "$wifi_autoconnect" == true ]]; then
+    live_image_validate_networkmanager_profile "$installed_network_profile" true
+    [[ "$(sudo stat -c '%U:%G:%a' "$installed_network_profile")" \
+      == root:root:600 ]] || \
+      live_image_fail "development NetworkManager profile must be root-owned mode 0600"
+    [[ "$(sudo stat -c '%U:%G:%a' "$(dirname "$installed_network_profile")")" \
+      == root:root:700 ]] || \
+      live_image_fail "development NetworkManager profile directory must be root-owned mode 0700"
+  else
+    sudo test ! -e "$installed_network_profile" \
+      && sudo test ! -L "$installed_network_profile" || \
+      live_image_fail "development rootfs embeds a network profile without declaring it"
+  fi
+  live_image_require_exact_line "$(live_image_target "$live_image_livesys_hook")" \
+    'passwd --lock root >/dev/null || exit 1' \
+    'development livesys hook is missing' \
+    'development livesys hook does not relock the root account'
+  live_image_require_exact_line "$(live_image_target "$live_image_livesys_hook")" \
+    'AutomaticLoginEnable=False' \
+    'development livesys hook is missing' \
+    'development livesys hook does not disable GDM autologin'
+  live_image_require_exact_line "$(live_image_target "$live_image_livesys_hook")" \
+    "cat > /etc/gdm/custom.conf <<'SOS_DEVELOPMENT_GDM' || exit 1" \
+    'development livesys hook is missing' \
+    'development livesys hook does not fail closed when GDM configuration fails'
+  live_image_require_exact_line "$(live_image_target "$live_image_livesys_hook")" \
+    'systemctl enable --now sshd.service >/dev/null || exit 1' \
+    'development livesys hook is missing' \
+    'development livesys hook does not activate SSH after provisioning'
+  [[ "$(sudo tail -n 1 "$(live_image_target "$live_image_livesys_hook")")" \
+    == 'systemctl enable --now sshd.service >/dev/null || exit 1' ]] || \
+    live_image_fail "development livesys hook does not activate SSH as its final action"
+  sudo grep -Eq "^usermod --password '\\\$6\\\$[^']+' liveuser \\|\\| exit 1$" \
+    "$(live_image_target "$live_image_livesys_hook")" || \
+    live_image_fail "development livesys hook does not install a SHA-512 liveuser password hash"
+  [[ "$(sudo stat -c '%U:%G:%a' "$(live_image_target "$live_image_livesys_hook")")" \
+    == root:root:700 ]] || \
+    live_image_fail "development livesys hook must be root-owned mode 0700"
+  [[ ! -e "$(live_image_target /etc/systemd/system/multi-user.target.wants/sshd.service)" \
+    && ! -L "$(live_image_target /etc/systemd/system/multi-user.target.wants/sshd.service)" ]] || \
+    live_image_fail "development rootfs enables sshd before liveuser provisioning"
+  ! awk -F: '$1 == "liveuser" { found=1 } END { exit !found }' \
+    "$(live_image_target /etc/passwd)" || \
+    live_image_fail "development rootfs unexpectedly contains a pre-boot liveuser account"
+  [[ -z "$(sudo find "$(live_image_target /etc/ssh)" -maxdepth 1 -type f \
+    -name 'ssh_host_*_key*' -print -quit)" ]] || \
+    live_image_fail "development image contains reusable SSH host keys"
+  printf 'linux_live_image_rootfs_checked=PASS root=%s revision=%s boot_kind=development-live promotion_eligible=false not_installed_product=true\n' \
+    "$live_image_rootfs" "$image_revision"
+}
+
+live_image_probe_payload() {
+  local payload="$1"
+  dump.erofs "$payload" >/dev/null 2>&1 || \
+    live_image_fail "LiveOS/squashfs.img is not an EROFS root filesystem"
+  dump.erofs --ls --path=/etc/os-release "$payload" >/dev/null 2>&1 || \
+    live_image_fail "EROFS payload is not a flat Fedora root filesystem"
+  printf 'erofs-rootfs\n'
+}
+
+live_image_find_payload() {
+  local iso_tree="$1"
+  [[ -f "$iso_tree/LiveOS/squashfs.img" ]] || \
+    live_image_fail "source ISO has no LiveOS/squashfs.img; the Fedora Workstation live payload is missing"
+  printf 'LiveOS/squashfs.img\n'
+}
+
+live_image_check_payload() {
+  local payload="" container_format
+  while [[ "$#" -gt 0 ]]; do
+    case "$1" in
+      --payload)
+        [[ "$#" -ge 2 ]] || live_image_fail "--payload requires a file"
+        payload="$(realpath -e -- "$2")"
+        shift 2
+        ;;
+      *) live_image_fail "check-payload accepts only --payload FILE" ;;
+    esac
+  done
+  [[ -n "$payload" ]] || live_image_fail "check-payload requires --payload FILE"
+  container_format="$(live_image_probe_payload "$payload")"
+  printf 'linux_live_image_payload_checked=PASS path=%s container_format=%s\n' \
+    "$payload" "$container_format"
+}
+
+live_image_write_xattr_manifest() {
+  local root="$1" output="$2"
+  (
+    cd "$root"
+    sudo getfattr -hRPd -m- .
+  ) | awk '
+    /^# file: / {
+      path = substr($0, 9)
+      next
+    }
+    /^(user|trusted|security)\./ && \
+      !/^security\.selinux=/ && \
+      !/^trusted\.SGI_ACL_/ {
+      print path "\t" $0
+    }
+  ' | LC_ALL=C sort >"$output"
+}
+
+live_image_extract_payload() {
+  local payload="$1" format="$2" dest="$3" work="$4"
+  local mountpoint="$work/erofs-source"
+  local audit="$work/erofs-rsync-audit.txt"
+  local source_xattrs="$work/erofs-source-xattrs.txt"
+  local dest_xattrs="$work/erofs-dest-xattrs.txt"
+  mkdir -p -- "$dest" "$mountpoint"
+  [[ -z "$(find "$dest" -mindepth 1 -print -quit)" ]] || \
+    live_image_fail "rootfs extraction destination is not empty: $dest"
+  case "$format" in
+    erofs-rootfs)
+      # The official image can carry build-filesystem SELinux labels such as
+      # fusefs_t that the destination filesystem rejects. Mount the source
+      # read-only and copy every other metadata class; mkfs.erofs later applies
+      # the image's own policy directly to the rebuilt filesystem.
+      (
+        # Invoked indirectly by the EXIT trap below.
+        # shellcheck disable=SC2329
+        live_image_cleanup_erofs_mount() {
+          if mountpoint -q "$mountpoint"; then
+            sudo umount -- "$mountpoint"
+          fi
+        }
+        trap live_image_cleanup_erofs_mount EXIT
+        sudo mount -t erofs -o loop,ro "$payload" "$mountpoint"
+        sudo rsync -aHAXS --numeric-ids \
+          --filter='-x security.selinux' \
+          --filter='-x system.*' \
+          "$mountpoint/" "$dest/"
+        # The builder intentionally owns this audit file for inspection.
+        # shellcheck disable=SC2024
+        sudo rsync -aHASni --numeric-ids \
+          "$mountpoint/" "$dest/" >"$audit"
+        [[ ! -s "$audit" ]] || \
+          live_image_fail "rootfs metadata audit differs after copy; inspect $audit"
+        live_image_write_xattr_manifest "$mountpoint" "$source_xattrs"
+        live_image_write_xattr_manifest "$dest" "$dest_xattrs"
+        cmp -s -- "$source_xattrs" "$dest_xattrs" || \
+          live_image_fail "rootfs xattr audit differs after copy; inspect $source_xattrs and $dest_xattrs"
+        rm -- "$audit" "$source_xattrs" "$dest_xattrs"
+        sudo umount -- "$mountpoint"
+        trap - EXIT
+      )
+      rmdir -- "$mountpoint"
+      ;;
+    *) live_image_fail "cannot extract container format: $format" ;;
+  esac
+}
+
+live_image_selinux_policy_file() {
+  local root="$1"
+  local policy_dir="$root/etc/selinux/targeted/policy" policy="" candidate
+  while IFS= read -r -d '' candidate; do
+    policy="$candidate"
+  done < <(find "$policy_dir" -maxdepth 1 -type f -name 'policy.*' -print0 2>/dev/null \
+    | sort -zV)
+  [[ -n "$policy" && -r "$policy" ]] || \
+    live_image_fail "Fedora SELinux binary policy is missing from the extracted rootfs"
+  printf '%s\n' "$policy"
+}
+
+live_image_validate_rootfs_policy() {
+  local root="$1"
+  local file_contexts="$root/etc/selinux/targeted/contexts/files/file_contexts"
+  [[ -r "$file_contexts" ]] || \
+    live_image_fail "Fedora SELinux file-context policy is missing from the extracted rootfs"
+  local policy
+  policy="$(live_image_selinux_policy_file "$root")"
+  # Validate every context against the image policy, not the host's loaded
+  # policy. -n deliberately leaves host-filesystem labels untouched.
+  sudo setfiles -n -m -c "$policy" -r "$root" "$file_contexts" "$root" >/dev/null
+}
+
+live_image_repack_payload() {
+  local format="$1" rootfs="$2" output="$3"
+  case "$format" in
+    erofs-rootfs)
+      # Root execution preserves distinct system/liveuser ownership, ACLs,
+      # capabilities, and portable xattrs. Apply SELinux labels while creating
+      # EROFS so the host kernel never has to accept image-policy-only types.
+      local file_contexts="$rootfs/etc/selinux/targeted/contexts/files/file_contexts"
+      [[ -r "$file_contexts" ]] || \
+        live_image_fail "Fedora SELinux file-context policy is missing from the staged rootfs"
+      sudo mkfs.erofs -zlzma -E dedupe,all-fragments -C65536 \
+        --file-contexts="$file_contexts" \
+        "$output" "$rootfs" >/dev/null
+      sudo fsck.erofs --xattrs "$output" >/dev/null
+      sudo chown "$(id -u):$(id -g)" "$output"
+      ;;
+    *) live_image_fail "cannot repack container format: $format" ;;
+  esac
+}
+
+live_image_verify_fedora_workstation() {
+  local root="$1" os_release="$1/etc/os-release"
+  [[ -r "$os_release" ]] || live_image_fail "extracted live rootfs has no /etc/os-release"
+  local image_id variant_id variant
+  image_id="$(live_image_os_release_value "$os_release" ID)"
+  variant_id="$(live_image_os_release_value "$os_release" VARIANT_ID)"
+  variant="$(live_image_os_release_value "$os_release" VARIANT)"
+  live_image_base_release="$(live_image_os_release_value "$os_release" VERSION_ID)"
+  [[ "$image_id" == fedora ]] || \
+    live_image_fail "source live image is not Fedora (ID=${image_id:-unknown})"
+  [[ "$variant_id" == workstation || "$variant" == *Workstation* ]] || \
+    live_image_fail "source live image is not Fedora Workstation (VARIANT=${variant:-unknown})"
+  [[ "$live_image_base_release" =~ ^[1-9][0-9]*$ ]] || \
+    live_image_fail "source live image has an invalid Fedora release"
+}
+
+live_image_install_runtime_packages() {
+  local root="$1" releasever="$2"
+  [[ -r /etc/os-release ]] || live_image_fail "bake host has no /etc/os-release"
+  local host_id host_release
+  host_id="$(live_image_os_release_value /etc/os-release ID)"
+  host_release="$(live_image_os_release_value /etc/os-release VERSION_ID)"
+  [[ "$host_id" == fedora ]] || \
+    live_image_fail "baking a Fedora live remix requires a Fedora host; found ${host_id:-unknown}"
+  [[ "$(uname -m)" == x86_64 ]] || \
+    live_image_fail "Framework 12 live images must be baked on x86_64"
+  [[ "$host_release" == "$releasever" ]] || \
+    live_image_fail "build host Fedora $host_release does not match source image Fedora $releasever"
+  live_image_require_command dnf
+  # Runtime packages only; do not install -devel toolchains or appliance units.
+  # shellcheck disable=SC2046
+  sudo dnf -y --installroot="$root" --releasever="$releasever" \
+    --setopt=install_weak_deps=False \
+    install $(live_image_runtime_packages)
+  sudo dnf --installroot="$root" --releasever="$releasever" clean all
+}
+
+live_image_stage_sos() {
+  local root="$1"
+  (
+    cd "$live_image_root"
+    ./tools/install-linux-login-session install --offline --destdir "$root"
+  )
+  sudo install -o root -g root -m 0755 \
+    "$live_image_root/tools/linux-hardware-gate" \
+    "$(live_image_target "$live_image_harness")"
+  sudo install -o root -g root -m 0644 \
+    "$live_image_root/docs/linux-hardware-gate.md" \
+    "$(live_image_target /usr/share/doc/sos/linux-hardware-gate.md)"
+  sudo install -o root -g root -m 0644 \
+    "$live_image_root/docs/linux-live-image.md" \
+    "$(live_image_target /usr/share/doc/sos/linux-live-image.md)"
+  sudo mkdir -p -- "$(live_image_target /etc/skel)"
+  local skel_tmp
+  skel_tmp="$(mktemp -d -t sos-live-skel.XXXXXX)"
+  live_image_write_offline_user_state --home-root "$skel_tmp"
+  sudo mkdir -p -- "$(live_image_target /etc/skel/.local/state)"
+  sudo cp -a "$skel_tmp/.local" "$(live_image_target /etc/skel)/"
+  sudo chown -R root:root "$(live_image_target /etc/skel/.local)"
+  rm -r -- "$skel_tmp"
+  if [[ -d "$(live_image_target /home/liveuser)" ]]; then
+    local liveuser_tmp live_uid=1000 live_gid=1000
+    liveuser_tmp="$(mktemp -d -t sos-liveuser.XXXXXX)"
+    live_image_write_offline_user_state --home-root "$liveuser_tmp"
+    if [[ -r "$(live_image_target /etc/passwd)" ]]; then
+      live_uid="$(awk -F: '$1=="liveuser"{print $3}' "$(live_image_target /etc/passwd)")"
+      live_gid="$(awk -F: '$1=="liveuser"{print $4}' "$(live_image_target /etc/passwd)")"
+      [[ -n "$live_uid" && -n "$live_gid" ]] || {
+        live_uid=1000
+        live_gid=1000
+      }
+    fi
+    sudo mkdir -p -- "$(live_image_target /home/liveuser/.local/state)"
+    sudo cp -a "$liveuser_tmp/.local" "$(live_image_target /home/liveuser)/"
+    sudo chown -R "$live_uid:$live_gid" "$(live_image_target /home/liveuser/.local)"
+    rm -r -- "$liveuser_tmp"
+  fi
+}
+
+live_image_write_identity_file() {
+  local dest="$1"
+  shift
+  local temporary
+  temporary="$(mktemp -t sos-image-identity.XXXXXX)"
+  live_image_format_identity "$@" >"$temporary"
+  if [[ -n "${live_image_rootfs:-}" && "$dest" == "$(live_image_target "$live_image_identity_path")" ]]; then
+    sudo install -o root -g root -m 0644 "$temporary" "$dest"
+  else
+    install -m 0644 "$temporary" "$dest"
+  fi
+  rm -f -- "$temporary"
+}
+
+live_image_bake() {
+  local source_iso="" source_sha256="" output_dir="" liveuser_password_file=""
+  local networkmanager_profile_file=""
+  while [[ "$#" -gt 0 ]]; do
+    case "$1" in
+      --source-iso)
+        [[ "$#" -ge 2 ]] || live_image_fail "--source-iso requires a path"
+        source_iso="$(realpath -e -- "$2")"
+        shift 2
+        ;;
+      --source-sha256)
+        [[ "$#" -ge 2 ]] || live_image_fail "--source-sha256 requires a digest"
+        source_sha256="${2,,}"
+        shift 2
+        ;;
+      --output-dir)
+        [[ "$#" -ge 2 ]] || live_image_fail "--output-dir requires a directory"
+        output_dir="$(realpath -m -- "$2")"
+        shift 2
+        ;;
+      --liveuser-password-file)
+        [[ "$#" -ge 2 ]] || live_image_fail "--liveuser-password-file requires a file"
+        liveuser_password_file="$(live_image_absolute_leaf_path "$2")"
+        shift 2
+        ;;
+      --networkmanager-profile-file)
+        [[ "$#" -ge 2 ]] || live_image_fail "--networkmanager-profile-file requires a file"
+        networkmanager_profile_file="$(live_image_absolute_leaf_path "$2")"
+        shift 2
+        ;;
+      *) live_image_fail "unexpected option: $1" ;;
+    esac
+  done
+  [[ -n "$source_iso" && -n "$source_sha256" && -n "$output_dir" \
+    && -n "$liveuser_password_file" ]] || \
+    live_image_fail "bake requires --source-iso ISO, --source-sha256 SHA256, --output-dir DIR, and --liveuser-password-file FILE"
+  live_image_read_development_password "$liveuser_password_file" >/dev/null
+  local wifi_autoconnect=false
+  if [[ -n "$networkmanager_profile_file" ]]; then
+    live_image_validate_networkmanager_profile "$networkmanager_profile_file"
+    wifi_autoconnect=true
+  fi
+  live_image_validate_sha256 "source ISO SHA-256" "$source_sha256"
+  [[ "$(id -u)" -ne 0 ]] || live_image_fail "run bake as a normal user; it invokes sudo only for rootfs mutation"
+  live_image_doctor || live_image_fail "live-image bake prerequisites are incomplete"
+  local actual_source_sha host_release
+  actual_source_sha="$(sha256sum "$source_iso" | cut -d ' ' -f 1)"
+  [[ "$actual_source_sha" == "$source_sha256" ]] || \
+    live_image_fail "source ISO SHA-256 does not match the expected Fedora checksum"
+  host_release="$(live_image_os_release_value /etc/os-release VERSION_ID)"
+
+  cd "$live_image_root"
+  [[ -z "$(git status --porcelain --untracked-files=normal)" ]] || \
+    live_image_fail "live image bake requires a clean source worktree"
+  local source_revision
+  source_revision="$(git rev-parse HEAD)"
+
+  mkdir -p -- "$output_dir"
+  chmod 0700 "$output_dir"
+  local output_iso
+  output_iso="$output_dir/sos-development-live-${source_revision:0:12}.iso"
+  [[ ! -e "$output_iso" ]] || live_image_fail "output ISO already exists: $output_iso"
+  [[ ! -e "$output_dir/image-identity.env" ]] || \
+    live_image_fail "output identity already exists: $output_dir/image-identity.env"
+  local work payload_relpath payload_path container_format
+  work="$output_dir/work"
+  [[ "$work" == "$output_dir/work" && "$work" != /work ]] || \
+    live_image_fail "unsafe live-image work path: $work"
+  [[ ! -e "$work" ]] || \
+    live_image_fail "live-image work path already exists; inspect it and use a new output directory: $work"
+  mkdir -p -- "$work/iso" "$work/rootfs"
+  live_image_rootfs="$work/rootfs"
+
+  xorriso -osirrox on -indev "$source_iso" -extract / "$work/iso" >/dev/null
+  chmod -R u+w "$work/iso"
+  payload_relpath="$(live_image_find_payload "$work/iso")"
+  payload_path="$work/iso/$payload_relpath"
+  container_format="$(live_image_probe_payload "$payload_path")"
+  live_image_extract_payload "$payload_path" "$container_format" "$live_image_rootfs" "$work"
+  live_image_verify_fedora_workstation "$live_image_rootfs"
+  [[ "$live_image_base_release" == "$host_release" ]] || \
+    live_image_fail "build host Fedora $host_release does not match source image Fedora $live_image_base_release"
+  [[ -e "$live_image_rootfs/usr/lib/systemd/system/gdm.service" \
+    || -e "$live_image_rootfs/usr/sbin/gdm" \
+    || -e "$live_image_rootfs/usr/bin/gdm" ]] || \
+    live_image_fail "source live image does not contain GDM"
+  live_image_install_runtime_packages "$live_image_rootfs" "$live_image_base_release"
+  live_image_stage_sos "$live_image_rootfs"
+  local -a development_access_args=(
+    --root "$live_image_rootfs"
+    --password-file "$liveuser_password_file"
+  )
+  if [[ "$wifi_autoconnect" == true ]]; then
+    development_access_args+=(
+      --networkmanager-profile-file "$networkmanager_profile_file"
+    )
+  fi
+  live_image_configure_development_access "${development_access_args[@]}"
+
+  local base_name base_bytes base_sha baked_at
+  base_name="$(basename -- "$source_iso")"
+  base_bytes="$(stat -c %s "$source_iso")"
+  base_sha="$actual_source_sha"
+  baked_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  live_image_write_identity_file \
+    "$(live_image_target "$live_image_identity_path")" \
+    --source-revision "$source_revision" \
+    --source-dirty false \
+    --agent-mode offline \
+    --fedora-release "$live_image_base_release" \
+    --build-host-release "$host_release" \
+    --base-iso-filename "$base_name" \
+    --base-iso-bytes "$base_bytes" \
+    --base-iso-sha256 "$base_sha" \
+    --payload-relpath "$payload_relpath" \
+    --container-format "$container_format" \
+    --wifi-autoconnect "$wifi_autoconnect" \
+    --baked-at-utc "$baked_at"
+  live_image_validate_rootfs_policy "$live_image_rootfs"
+  live_image_check_rootfs --root "$live_image_rootfs"
+
+  local new_payload payload_bytes payload_sha
+  new_payload="$work/payload.img"
+  live_image_repack_payload "$container_format" "$live_image_rootfs" "$new_payload"
+  payload_bytes="$(stat -c %s "$new_payload")"
+  payload_sha="$(sha256sum "$new_payload" | cut -d ' ' -f 1)"
+  live_image_write_identity_file \
+    "$work/image-identity.env" \
+    --source-revision "$source_revision" \
+    --source-dirty false \
+    --agent-mode offline \
+    --fedora-release "$live_image_base_release" \
+    --build-host-release "$host_release" \
+    --base-iso-filename "$base_name" \
+    --base-iso-bytes "$base_bytes" \
+    --base-iso-sha256 "$base_sha" \
+    --payload-relpath "$payload_relpath" \
+    --payload-bytes "$payload_bytes" \
+    --payload-sha256 "$payload_sha" \
+    --container-format "$container_format" \
+    --wifi-autoconnect "$wifi_autoconnect" \
+    --baked-at-utc "$baked_at"
+
+  install -m 0644 "$work/image-identity.env" "$work/iso/sos-image-identity.env"
+  cp -- "$new_payload" "$work/iso/$payload_relpath"
+  # Preserve the source volume ID and El Torito/EFI boot. Changing the label
+  # breaks Fedora's root=live:CDLABEL=... cmdline.
+  xorriso -report_about WARNING \
+    -indev "$source_iso" -outdev "$output_iso" \
+    -boot_image any replay \
+    -map "$work/iso/$payload_relpath" "/$payload_relpath" \
+    -map "$work/iso/sos-image-identity.env" /sos-image-identity.env
+  implantisomd5 --force "$output_iso" >/dev/null
+  checkisomd5 "$output_iso" >/dev/null
+  local output_bytes output_sha
+  output_bytes="$(stat -c %s "$output_iso")"
+  output_sha="$(sha256sum "$output_iso" | cut -d ' ' -f 1)"
+  live_image_write_identity_file \
+    "$output_dir/image-identity.env" \
+    --source-revision "$source_revision" \
+    --source-dirty false \
+    --agent-mode offline \
+    --fedora-release "$live_image_base_release" \
+    --build-host-release "$host_release" \
+    --base-iso-filename "$base_name" \
+    --base-iso-bytes "$base_bytes" \
+    --base-iso-sha256 "$base_sha" \
+    --payload-relpath "$payload_relpath" \
+    --payload-bytes "$payload_bytes" \
+    --payload-sha256 "$payload_sha" \
+    --container-format "$container_format" \
+    --wifi-autoconnect "$wifi_autoconnect" \
+    --baked-at-utc "$baked_at" \
+    --output-iso-filename "$(basename -- "$output_iso")" \
+    --output-iso-bytes "$output_bytes" \
+    --output-iso-sha256 "$output_sha"
+  sudo rm -r -- "$work"
+  printf 'linux_live_image_baked=PASS iso=%s bytes=%s sha256=%s boot_kind=development-live promotion_eligible=false not_installed_product=true wifi_autoconnect=%s\n' \
+    "$output_iso" "$output_bytes" "$output_sha" "$wifi_autoconnect"
+}
+
+[[ "$#" -ge 1 ]] || {
+  live_image_usage >&2
+  exit 1
+}
+live_image_command="$1"
+shift
+case "$live_image_command" in
+  doctor) live_image_doctor "$@" ;;
+  format-identity) live_image_format_identity "$@" ;;
+  write-offline-user-state) live_image_write_offline_user_state "$@" ;;
+  check-networkmanager-profile) live_image_check_networkmanager_profile "$@" ;;
+  configure-development-access) live_image_configure_development_access "$@" ;;
+  check-payload) live_image_check_payload "$@" ;;
+  check-rootfs) live_image_check_rootfs "$@" ;;
+  bake) live_image_bake "$@" ;;
+  *)
+    live_image_usage >&2
+    exit 1
+    ;;
+esac

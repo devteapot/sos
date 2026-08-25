@@ -194,6 +194,13 @@ local function attention_center(providers)
     return group("column", { gap = 9 }, rows, nil, 0, "attention-center")
 end
 
+local function has_agent_configuration_action(agent, action)
+    for _, supported in ipairs(agent.configuration_actions or {}) do
+        if supported == action then return true end
+    end
+    return false
+end
+
 local function authoring_surface(model, state)
     local agent = model.agent or {}
     local messages = {}
@@ -224,20 +231,34 @@ local function authoring_surface(model, state)
             hint = "Type a request and press enter",
         },
     })
-    return group("column", { padding = 16, gap = 9 }, {
+    local children = {
         group("row", { justify = "between", align = "center" }, {
             text("MAKE IT YOURS", 12, moss),
             text(agent.activity or (agent.available and "Ready" or "Unavailable"), 11, muted),
         }),
-        group("row", { gap = 6 }, {
-            button("OPENAI", "agent_configure_openai", moss),
-            button("OPENROUTER", "agent_configure_openrouter", moss),
-            button("CODEX", "agent_configure_codex", moss),
-            button("OFFLINE", "agent_use_fake", moss),
-        }),
-        group("column", { gap = 7 }, messages),
-        agent.error and text(agent.error, 11, alert) or text("", 1, muted),
-    }, 0xECE9DC, 20, "authoring-surface")
+    }
+    local controls = {}
+    if has_agent_configuration_action(agent, "configure_openai") then
+        table.insert(controls, button("OPENAI", "agent_configure_openai", moss))
+    end
+    if has_agent_configuration_action(agent, "configure_openrouter") then
+        table.insert(controls, button("OPENROUTER", "agent_configure_openrouter", moss))
+    end
+    if has_agent_configuration_action(agent, "configure_codex") then
+        table.insert(controls, button("CODEX", "agent_configure_codex", moss))
+    end
+    if has_agent_configuration_action(agent, "use_fake") then
+        table.insert(controls, button("OFFLINE", "agent_use_fake", moss))
+    end
+    if #controls > 0 then
+        table.insert(children, group("row", { gap = 6 }, controls))
+    else
+        table.insert(children, text("Provider changes are managed before login.", 10, muted))
+    end
+    table.insert(children, group("column", { gap = 7 }, messages))
+    table.insert(children, agent.error and text(agent.error, 11, alert) or text("", 1, muted))
+    return group("column", { padding = 16, gap = 9 }, children,
+        0xECE9DC, 20, "authoring-surface")
 end
 
 local function render(model, state)

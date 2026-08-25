@@ -10,7 +10,7 @@ use gpui::{
 };
 use unicode_segmentation::UnicodeSegmentation as _;
 
-use crate::linux::LinuxExperienceHost;
+use crate::{linux::LinuxExperienceHost, pointer_input};
 
 actions!(
     sos_linux_text_input,
@@ -134,6 +134,18 @@ impl NativeTextInput {
         if !self.focus_handle.is_focused(window) {
             window.focus(&self.focus_handle, cx);
         }
+    }
+
+    pub fn focus_at(
+        &mut self,
+        position: Point<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.focus_handle.is_focused(window) {
+            window.focus(&self.focus_handle, cx);
+        }
+        self.move_to(self.index_for_mouse_position(position), cx);
     }
 
     pub fn accessibility_set_value(
@@ -751,7 +763,11 @@ impl Element for TextElement {
         window: &mut Window,
         cx: &mut App,
     ) {
-        let focus = self.input.read(cx).focus_handle.clone();
+        let (focus, node_id) = {
+            let input = self.input.read(cx);
+            (input.focus_handle.clone(), input.node_id.clone())
+        };
+        pointer_input::record_native_input(&node_id, bounds);
         window.handle_input(
             &focus,
             ElementInputHandler::new(bounds, self.input.clone()),

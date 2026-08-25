@@ -78,7 +78,7 @@ pub fn init_winit(
             }
             WinitEvent::Input(event) => {
                 data.state.process_input_event(event);
-                if data.state.take_session_exit_request() {
+                if data.state.handoff_session_exit_request() {
                     data.loop_signal.stop();
                 }
             }

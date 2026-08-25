@@ -38,6 +38,14 @@ struct Surface {
 }
 
 #[derive(Clone)]
+struct NativeInput {
+    id: String,
+    bounds: [f32; 4],
+    epoch: u64,
+    order: u64,
+}
+
+#[derive(Clone)]
 struct Capture {
     surface: Surface,
     target: String,
@@ -53,6 +61,7 @@ struct Router {
     epoch: u64,
     order: u64,
     surfaces: HashMap<String, Surface>,
+    native_inputs: HashMap<String, NativeInput>,
     captures: HashMap<u64, Capture>,
 }
 
@@ -92,8 +101,9 @@ pub fn install() {
 }
 
 #[cfg(target_os = "linux")]
-pub fn install() {
+pub fn install() -> async_channel::Receiver<()> {
     let start = *CLOCK.get_or_init(Instant::now);
+    let (wake_tx, wake_rx) = async_channel::bounded(1);
     gpui_linux::set_raw_touch_callback(Some(Box::new(move |event| {
         let phase = match event.phase {
             gpui_linux::RawTouchPhase::Down => Phase::Down,
@@ -113,16 +123,20 @@ pub fn install() {
                     .unwrap_or_else(|| "unavailable".into()),
             );
         }
-        push_sample(Sample {
-            id: event.id.max(0) as u64,
-            phase,
-            x: event.x,
-            y: event.y,
-            pressure: event.pressure.unwrap_or(1.0).clamp(0.0, 1.0),
-            pointer_count: event.pointer_count.min(32),
-            event_time_nanos: start.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64,
-        });
+        push_sample_and_wake(
+            Sample {
+                id: event.id.max(0) as u64,
+                phase,
+                x: event.x,
+                y: event.y,
+                pressure: event.pressure.unwrap_or(1.0).clamp(0.0, 1.0),
+                pointer_count: event.pointer_count.min(32),
+                event_time_nanos: start.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64,
+            },
+            &wake_tx,
+        );
     })));
+    wake_rx
 }
 
 pub fn begin_frame() {
@@ -135,6 +149,9 @@ pub fn begin_frame() {
     router
         .surfaces
         .retain(|_, surface| epoch.saturating_sub(surface.epoch) <= 2);
+    router
+        .native_inputs
+        .retain(|_, input| epoch.saturating_sub(input.epoch) <= 2);
 }
 
 pub fn record_surface(id: &str, bounds: Bounds<Pixels>, interaction: &Interaction) {
@@ -159,6 +176,34 @@ pub fn record_surface(id: &str, bounds: Bounds<Pixels>, interaction: &Interactio
         order: router.order,
     };
     router.surfaces.insert(id.to_owned(), surface);
+}
+
+pub fn record_native_input(id: &str, bounds: Bounds<Pixels>) {
+    let mut router = ROUTER
+        .get_or_init(|| Mutex::new(Router::default()))
+        .lock()
+        .expect("pointer router lock");
+    router.order = router.order.wrapping_add(1).max(1);
+    let input = NativeInput {
+        id: id.to_owned(),
+        bounds: [
+            f32::from(bounds.origin.x),
+            f32::from(bounds.origin.y),
+            f32::from(bounds.size.width),
+            f32::from(bounds.size.height),
+        ],
+        epoch: router.epoch,
+        order: router.order,
+    };
+    router.native_inputs.insert(id.to_owned(), input);
+}
+
+pub fn native_input_at(x: f32, y: f32) -> Option<String> {
+    let router = ROUTER
+        .get_or_init(|| Mutex::new(Router::default()))
+        .lock()
+        .expect("pointer router lock");
+    hit_native_input(&router, x, y).map(|input| input.id.clone())
 }
 
 pub fn take_samples() -> Vec<Sample> {
@@ -318,6 +363,14 @@ fn hit_surface(router: &Router, x: f32, y: f32, event_time_nanos: u64) -> Option
     })
 }
 
+fn hit_native_input(router: &Router, x: f32, y: f32) -> Option<&NativeInput> {
+    router
+        .native_inputs
+        .values()
+        .filter(|input| contains(input.bounds, x, y))
+        .max_by_key(|input| input.order)
+}
+
 fn contains(bounds: [f32; 4], x: f32, y: f32) -> bool {
     x >= bounds[0] && y >= bounds[1] && x <= bounds[0] + bounds[2] && y <= bounds[1] + bounds[3]
 }
@@ -342,6 +395,15 @@ fn push_sample(sample: Sample) {
     samples.push_back(sample);
 }
 
+#[cfg(target_os = "linux")]
+fn push_sample_and_wake(sample: Sample, wakes: &async_channel::Sender<()>) {
+    push_sample(sample);
+    // Raw Wayland touch bypasses GPUI's element input path. Mark the host
+    // dirty through its foreground task instead of waiting for an unrelated
+    // mouse/key event to trigger the next entity render.
+    let _ = wakes.try_send(());
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -351,6 +413,61 @@ mod tests {
     fn phase_names_are_stable() {
         assert_eq!(phase_name(Phase::Down), "down");
         assert_eq!(phase_name(Phase::Cancel), "cancel");
+    }
+
+    #[test]
+    fn native_input_hit_uses_the_topmost_recorded_bounds() {
+        let mut router = Router::default();
+        router.native_inputs.insert(
+            "note-draft".into(),
+            NativeInput {
+                id: "note-draft".into(),
+                bounds: [10.0, 10.0, 80.0, 40.0],
+                epoch: 1,
+                order: 1,
+            },
+        );
+        router.native_inputs.insert(
+            "agent-prompt".into(),
+            NativeInput {
+                id: "agent-prompt".into(),
+                bounds: [20.0, 20.0, 80.0, 40.0],
+                epoch: 1,
+                order: 2,
+            },
+        );
+
+        assert_eq!(
+            hit_native_input(&router, 25.0, 25.0).map(|input| input.id.as_str()),
+            Some("agent-prompt")
+        );
+        assert_eq!(
+            hit_native_input(&router, 15.0, 15.0).map(|input| input.id.as_str()),
+            Some("note-draft")
+        );
+        assert!(hit_native_input(&router, 200.0, 200.0).is_none());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn raw_touch_queues_one_coalesced_host_wake() {
+        take_samples();
+        let (wake_tx, wake_rx) = async_channel::bounded(1);
+        let sample = Sample {
+            id: 1,
+            phase: Phase::Down,
+            x: 4.0,
+            y: 8.0,
+            pressure: 1.0,
+            pointer_count: 1,
+            event_time_nanos: 10,
+        };
+        push_sample_and_wake(sample, &wake_tx);
+        push_sample_and_wake(sample, &wake_tx);
+
+        assert!(wake_rx.try_recv().is_ok());
+        assert!(wake_rx.try_recv().is_err());
+        assert_eq!(take_samples().len(), 2);
     }
 
     #[test]

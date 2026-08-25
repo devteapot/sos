@@ -33,6 +33,13 @@ local function group(flow, layout, children, options)
     }
 end
 
+local function has_agent_configuration_action(agent, action)
+    for _, supported in ipairs(agent.configuration_actions or {}) do
+        if supported == action then return true end
+    end
+    return false
+end
+
 local function agent_panel(model, state)
     local agent = model.agent or {}
     local messages = {}
@@ -64,7 +71,7 @@ local function agent_panel(model, state)
             hint = "Type a request and press enter",
         },
     })
-    return group("column", { gap = 9, padding = 16 }, {
+    local children = {
         group("row", { justify = "between" }, {
             text("MAKE IT YOURS", 12, coral),
             text(agent.activity or (agent.available and "Ready" or "Agent unavailable"), 11, muted, {
@@ -72,32 +79,56 @@ local function agent_panel(model, state)
                 value = agent.activity or (agent.available and "Ready" or "Agent unavailable"),
             }, "agent-status"),
         }),
-        group("row", { gap = 6 }, {
+    }
+    local primary_controls = {}
+    if has_agent_configuration_action(agent, "configure_openai") then
+        table.insert(primary_controls,
             group("row", { padding = 8 }, { text("OPENAI", 10, coral) }, {
                 id = "agent-configure", background = 0xF0ECE4, radius = 10,
                 tap_action = "agent_configure_openai",
-            }),
+            }))
+    end
+    if has_agent_configuration_action(agent, "configure_openrouter") then
+        table.insert(primary_controls,
             group("row", { padding = 8 }, { text("OPENROUTER", 10, coral) }, {
                 id = "agent-configure-openrouter", background = 0xF0ECE4, radius = 10,
                 tap_action = "agent_configure_openrouter",
-            }),
+            }))
+    end
+    if has_agent_configuration_action(agent, "configure_codex") then
+        table.insert(primary_controls,
             group("row", { padding = 8 }, { text("CODEX SUB", 10, coral) }, {
                 id = "agent-configure-codex", background = 0xF0ECE4, radius = 10,
                 tap_action = "agent_configure_codex",
-            }),
-        }),
-        group("row", { gap = 6 }, {
+            }))
+    end
+    local secondary_controls = {}
+    if has_agent_configuration_action(agent, "use_fake") then
+        table.insert(secondary_controls,
             group("row", { padding = 8 }, { text("FAKE", 10, coral) }, {
                 id = "agent-use-fake", background = 0xF0ECE4, radius = 10,
                 tap_action = "agent_use_fake",
-            }),
+            }))
+    end
+    if has_agent_configuration_action(agent, "clear_credential") then
+        table.insert(secondary_controls,
             group("row", { padding = 8 }, { text("REMOVE KEY", 10, 0x9A3D36) }, {
                 id = "agent-clear-key", background = 0xF0ECE4, radius = 10,
                 tap_action = "agent_clear_credential",
-            }),
-        }),
-        group("column", { gap = 7 }, messages),
-    }, { id = "agent-conversation", background = white, radius = 20 })
+            }))
+    end
+    if #primary_controls > 0 then
+        table.insert(children, group("row", { gap = 6 }, primary_controls))
+    end
+    if #secondary_controls > 0 then
+        table.insert(children, group("row", { gap = 6 }, secondary_controls))
+    end
+    if #primary_controls == 0 and #secondary_controls == 0 then
+        table.insert(children, text("Provider changes are managed before login.", 10, muted))
+    end
+    table.insert(children, group("column", { gap = 7 }, messages))
+    return group("column", { gap = 9, padding = 16 }, children,
+        { id = "agent-conversation", background = white, radius = 20 })
 end
 
 local function network_panel(model)

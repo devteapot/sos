@@ -14,7 +14,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use async_channel::Sender;
-use experience_ir::{AgentConversation, ExperienceModel};
+use experience_ir::{AgentConfigurationAction, AgentConversation, ExperienceModel};
 #[cfg(not(feature = "core-native"))]
 use gpui_mobile::android::jni::{activity, find_app_class, get_string, with_env};
 #[cfg(not(feature = "core-native"))]
@@ -246,10 +246,32 @@ pub fn status() -> Result<AgentStatus, String> {
 
 pub fn apply_status(conversation: &mut AgentConversation, status: &AgentStatus) {
     conversation.available = status.provider == "fake" || status.configured;
+    conversation.configuration_actions = supported_configuration_actions();
     if !conversation.busy {
         conversation.activity = status.activity.clone();
     }
     conversation.error = reconciled_request_error(conversation.error.take(), false);
+}
+
+fn supported_configuration_actions() -> Vec<AgentConfigurationAction> {
+    #[cfg(feature = "core-native")]
+    {
+        vec![
+            AgentConfigurationAction::ConfigureOpenRouter,
+            AgentConfigurationAction::UseFake,
+            AgentConfigurationAction::ClearCredential,
+        ]
+    }
+    #[cfg(not(feature = "core-native"))]
+    {
+        vec![
+            AgentConfigurationAction::ConfigureOpenAi,
+            AgentConfigurationAction::ConfigureOpenRouter,
+            AgentConfigurationAction::ConfigureCodex,
+            AgentConfigurationAction::UseFake,
+            AgentConfigurationAction::ClearCredential,
+        ]
+    }
 }
 
 pub fn configure_openai() -> Result<(), String> {

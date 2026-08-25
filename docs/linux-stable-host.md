@@ -212,6 +212,9 @@ and a text console available, then use
 `tools/linux-hardware-gate` and the exact PASS contract in
 [`linux-hardware-gate.md`](linux-hardware-gate.md). The gate refuses VMs, dirty
 or revision-mismatched installs, missing observations, and tampered evidence.
+A SOS-baked Fedora Workstation `development-live` remix is a mutable diagnostic
+path; it is not an installed product or release-acceptance artifact. See
+[`linux-live-image.md`](linux-live-image.md).
 
 After returning to the conventional desktop,
 `./tools/install-linux-login-session uninstall` removes the exact installed SOS

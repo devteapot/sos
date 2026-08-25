@@ -1144,9 +1144,16 @@ fn decode_effects(table: Option<Table>, lua: &Lua) -> Result<Vec<ProviderEffect>
                 | ("agent", "configure_codex")
                 | ("agent", "use_fake")
                 | ("agent", "clear_credential")
+                | ("audio", "set_volume")
+                | ("audio", "set_muted")
+                | ("media", "play_pause")
+                | ("media", "next")
+                | ("media", "previous")
                 | ("network", "refresh")
                 | ("network", "connect")
                 | ("network", "disconnect")
+                | ("apps", "launch")
+                | ("attention", "acknowledge")
         ) {
             return Err(RuntimeError::Invalid(format!(
                 "provider action is not allowed: {provider}.{action}"
