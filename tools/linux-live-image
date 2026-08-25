@@ -9,7 +9,6 @@ live_image_offline_source=/usr/share/sos/experiences/daily-flow.luau
 live_image_harness=/usr/local/libexec/sos/linux-hardware-gate
 live_image_development_access=/usr/share/doc/sos/development-access.env
 live_image_ssh_config=/etc/ssh/sshd_config.d/60-sos-development-live.conf
-live_image_ssh_unit_dropin=/etc/systemd/system/sshd.service.d/60-sos-development-live.conf
 live_image_livesys_hook=/var/lib/livesys/livesys-session-extra
 
 live_image_fail() {
@@ -121,7 +120,7 @@ live_image_doctor() {
   local command
   for command in awk basename cargo cmp dirname find firewall-offline-cmd getfattr \
     git install mount mountpoint node npm pkg-config python3 realpath rsync rustc sha256sum \
-    sort stat sudo systemctl umount openssl; do
+    sort stat sudo umount openssl; do
     live_image_require_command "$command"
   done
   local missing=()
@@ -329,26 +328,26 @@ live_image_configure_development_access() {
     live_image_fail "source image already owns the livesys session-extra hook"
   [[ -f "$root/usr/lib/systemd/system/sshd.service" ]] || \
     live_image_fail "development rootfs is missing openssh-server"
+  [[ -x "$root/usr/bin/systemctl" ]] || \
+    live_image_fail "development rootfs is missing systemctl"
   [[ -d "$root/usr/lib/firewalld" ]] || \
     live_image_fail "development rootfs is missing firewalld defaults"
+  [[ ! -e "$root/etc/systemd/system/multi-user.target.wants/sshd.service" \
+    && ! -L "$root/etc/systemd/system/multi-user.target.wants/sshd.service" ]] || \
+    live_image_fail "source image already enables sshd before liveuser provisioning"
 
-  local password_hash ssh_config ssh_unit_dropin livesys_hook access_metadata
+  local password_hash ssh_config livesys_hook access_metadata
   password_hash="$(printf '%s\n' "$password" | openssl passwd -6 -stdin)"
   unset password
   [[ "$password_hash" =~ ^\$6\$[^:[:space:]]+$ ]] || \
     live_image_fail "could not derive a SHA-512 liveuser password hash"
   ssh_config="$(mktemp -t sos-development-sshd.XXXXXX)"
-  ssh_unit_dropin="$(mktemp -t sos-development-sshd-unit.XXXXXX)"
   livesys_hook="$(mktemp -t sos-development-livesys.XXXXXX)"
   access_metadata="$(mktemp -t sos-development-access.XXXXXX)"
   printf '%s\n' \
     'PasswordAuthentication yes' \
     'PermitRootLogin no' \
     'AllowUsers liveuser' >"$ssh_config"
-  printf '%s\n' \
-    '[Unit]' \
-    'After=livesys.service' \
-    'Requires=livesys.service' >"$ssh_unit_dropin"
   {
     printf '%s\n' \
       '#!/usr/bin/sh' \
@@ -356,10 +355,11 @@ live_image_configure_development_access() {
     printf "usermod --password '%s' liveuser || exit 1\n" "$password_hash"
     printf '%s\n' \
       'passwd --lock root >/dev/null || exit 1' \
-      "cat > /etc/gdm/custom.conf <<'SOS_DEVELOPMENT_GDM'" \
+      "cat > /etc/gdm/custom.conf <<'SOS_DEVELOPMENT_GDM' || exit 1" \
       '[daemon]' \
       'AutomaticLoginEnable=False' \
-      'SOS_DEVELOPMENT_GDM'
+      'SOS_DEVELOPMENT_GDM' \
+      'systemctl enable --now sshd.service >/dev/null || exit 1'
   } >"$livesys_hook"
   unset password_hash
   printf '%s\n' \
@@ -371,27 +371,24 @@ live_image_configure_development_access() {
     'root_account_locked=true' \
     'host_keys=generated_at_boot' \
     'liveuser_provisioning=livesys-session-extra' \
+    'ssh_activation=livesys-session-extra-final-action' \
     'gdm_autologin=false_after_livesys' \
     'firewall_service=ssh' >"$access_metadata"
 
   sudo install -d -o root -g root -m 0755 \
     "$root/etc/ssh/sshd_config.d" \
-    "$root/etc/systemd/system/sshd.service.d" \
     "$root/var/lib/livesys" \
     "$root/usr/share/doc/sos"
   sudo install -o root -g root -m 0644 "$ssh_config" "$root$live_image_ssh_config"
-  sudo install -o root -g root -m 0644 \
-    "$ssh_unit_dropin" "$root$live_image_ssh_unit_dropin"
   sudo install -o root -g root -m 0700 "$livesys_hook" "$root$live_image_livesys_hook"
   sudo install -o root -g root -m 0644 \
     "$access_metadata" "$root$live_image_development_access"
   sudo find "$root/etc/ssh" -maxdepth 1 -type f -name 'ssh_host_*_key*' -delete
-  sudo systemctl --root="$root" enable sshd.service >/dev/null
   sudo firewall-offline-cmd \
     --system-config "$root/etc/firewalld" \
     --default-config "$root/usr/lib/firewalld" \
     --service=ssh >/dev/null
-  rm -f -- "$ssh_config" "$ssh_unit_dropin" "$livesys_hook" "$access_metadata"
+  rm -f -- "$ssh_config" "$livesys_hook" "$access_metadata"
   printf 'linux_live_image_development_access=PASS root=%s ssh_user=liveuser autologin=false\n' \
     "$root"
 }
@@ -431,9 +428,9 @@ live_image_check_rootfs() {
     /usr/share/doc/sos/install-manifest.tsv \
     "$live_image_development_access" \
     "$live_image_ssh_config" \
-    "$live_image_ssh_unit_dropin" \
     "$live_image_livesys_hook" \
     /usr/lib/systemd/system/sshd.service \
+    /usr/bin/systemctl \
     "$live_image_identity_path"; do
     [[ -f "$(live_image_target "$path")" ]] || \
       live_image_fail "baked live rootfs is missing $path"
@@ -519,14 +516,10 @@ live_image_check_rootfs() {
     'liveuser_provisioning=livesys-session-extra' \
     'development access metadata is missing' \
     'development access metadata does not identify boot-time liveuser provisioning'
-  live_image_require_exact_line "$(live_image_target "$live_image_ssh_unit_dropin")" \
-    'After=livesys.service' \
-    'development SSH unit ordering is missing' \
-    'development SSH does not wait for livesys provisioning'
-  live_image_require_exact_line "$(live_image_target "$live_image_ssh_unit_dropin")" \
-    'Requires=livesys.service' \
-    'development SSH unit dependency is missing' \
-    'development SSH does not fail closed with livesys provisioning'
+  live_image_require_exact_line "$(live_image_target "$live_image_development_access")" \
+    'ssh_activation=livesys-session-extra-final-action' \
+    'development access metadata is missing' \
+    'development access metadata does not identify fail-closed SSH activation'
   live_image_require_exact_line "$(live_image_target "$live_image_livesys_hook")" \
     'passwd --lock root >/dev/null || exit 1' \
     'development livesys hook is missing' \
@@ -535,14 +528,26 @@ live_image_check_rootfs() {
     'AutomaticLoginEnable=False' \
     'development livesys hook is missing' \
     'development livesys hook does not disable GDM autologin'
+  live_image_require_exact_line "$(live_image_target "$live_image_livesys_hook")" \
+    "cat > /etc/gdm/custom.conf <<'SOS_DEVELOPMENT_GDM' || exit 1" \
+    'development livesys hook is missing' \
+    'development livesys hook does not fail closed when GDM configuration fails'
+  live_image_require_exact_line "$(live_image_target "$live_image_livesys_hook")" \
+    'systemctl enable --now sshd.service >/dev/null || exit 1' \
+    'development livesys hook is missing' \
+    'development livesys hook does not activate SSH after provisioning'
+  [[ "$(sudo tail -n 1 "$(live_image_target "$live_image_livesys_hook")")" \
+    == 'systemctl enable --now sshd.service >/dev/null || exit 1' ]] || \
+    live_image_fail "development livesys hook does not activate SSH as its final action"
   sudo grep -Eq "^usermod --password '\\\$6\\\$[^']+' liveuser \\|\\| exit 1$" \
     "$(live_image_target "$live_image_livesys_hook")" || \
     live_image_fail "development livesys hook does not install a SHA-512 liveuser password hash"
   [[ "$(sudo stat -c '%U:%G:%a' "$(live_image_target "$live_image_livesys_hook")")" \
     == root:root:700 ]] || \
     live_image_fail "development livesys hook must be root-owned mode 0700"
-  [[ -L "$(live_image_target /etc/systemd/system/multi-user.target.wants/sshd.service)" ]] || \
-    live_image_fail "development rootfs does not enable sshd.service"
+  [[ ! -e "$(live_image_target /etc/systemd/system/multi-user.target.wants/sshd.service)" \
+    && ! -L "$(live_image_target /etc/systemd/system/multi-user.target.wants/sshd.service)" ]] || \
+    live_image_fail "development rootfs enables sshd before liveuser provisioning"
   ! awk -F: '$1 == "liveuser" { found=1 } END { exit !found }' \
     "$(live_image_target /etc/passwd)" || \
     live_image_fail "development rootfs unexpectedly contains a pre-boot liveuser account"

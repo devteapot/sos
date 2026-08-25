@@ -35,8 +35,10 @@ build/operator machine.
 - a root-only Fedora `livesys` hook that assigns the baked SHA-512 password hash
   after Fedora creates `liveuser`, relocks Fedora's temporary passwordless root
   account, and disables GDM autologin after the GNOME live hook enables it
-- SSH ordered after successful `livesys` provisioning so remote access cannot
-  start with the source image's passwordless live accounts
+- no offline SSH enablement; the `livesys` hook enables and starts SSH as its
+  final fail-closed action, after password assignment, root relock, and GDM
+  configuration, so remote access cannot start with Fedora's temporary
+  passwordless live accounts
 - `/usr/local/libexec/sos/linux-hardware-gate` for same-boot diagnostics
 - matching rootfs and ISO-level `image-identity.env` records with the embedded
   EROFS payload size and SHA-256

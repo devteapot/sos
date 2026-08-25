@@ -377,18 +377,6 @@ chmod 0755 "$test_root/bin/openssl"
 printf '%s\n' \
   '#!/usr/bin/env bash' \
   'set -euo pipefail' \
-  'root=""' \
-  'for argument in "$@"; do' \
-  '  case "$argument" in --root=*) root="${argument#--root=}" ;; esac' \
-  'done' \
-  '[[ -n "$root" && "${*: -2}" == "enable sshd.service" ]]' \
-  'mkdir -p "$root/etc/systemd/system/multi-user.target.wants"' \
-  'ln -s /usr/lib/systemd/system/sshd.service "$root/etc/systemd/system/multi-user.target.wants/sshd.service"' \
-  >"$test_root/bin/systemctl"
-chmod 0755 "$test_root/bin/systemctl"
-printf '%s\n' \
-  '#!/usr/bin/env bash' \
-  'set -euo pipefail' \
   'printf "%s\\n" "$*" >>"$TEST_FIREWALL_LOG"' \
   '[[ " $* " == *" --service=ssh "* ]]' \
   >"$test_root/bin/firewall-offline-cmd"
@@ -431,6 +419,7 @@ test_rootfs="$test_root/rootfs"
 mkdir -p \
   "$test_rootfs/usr/local/libexec/sos" \
   "$test_rootfs/usr/local/libexec/sos-agent/dist" \
+  "$test_rootfs/usr/bin" \
   "$test_rootfs/usr/libexec/livesys" \
   "$test_rootfs/usr/share/wayland-sessions" \
   "$test_rootfs/usr/share/sos/experiences" \
@@ -450,6 +439,8 @@ mkdir -p \
 : >"$test_rootfs/usr/share/sos/experiences/daily-flow.luau"
 : >"$test_rootfs/usr/lib/systemd/system/gdm.service"
 : >"$test_rootfs/usr/lib/systemd/system/sshd.service"
+: >"$test_rootfs/usr/bin/systemctl"
+chmod 0755 "$test_rootfs/usr/bin/systemctl"
 printf '%s\n' \
   'root:x:0:0:root:/root:/bin/bash' >"$test_rootfs/etc/passwd"
 printf '%s\n' \
@@ -479,6 +470,20 @@ mkdir -p "$test_rootfs/etc/systemd/system"
 ln -s graphical.target "$test_rootfs/usr/lib/systemd/system/default.target"
 printf 'development-password\n' >"$test_root/liveuser-password"
 : >"$test_root/firewall.log"
+mkdir -p "$test_rootfs/etc/systemd/system/multi-user.target.wants"
+ln -s /usr/lib/systemd/system/sshd.service \
+  "$test_rootfs/etc/systemd/system/multi-user.target.wants/sshd.service"
+if PATH="$test_root/bin:$PATH" TEST_FIREWALL_LOG="$test_root/firewall.log" \
+  "$test_image" configure-development-access \
+    --root "$test_rootfs" \
+    --password-file "$test_root/liveuser-password" \
+    >"$test_root/configure-premature-ssh.txt" 2>&1; then
+  printf 'error: development access accepted pre-provisioning SSH enablement\n' >&2
+  exit 1
+fi
+grep -F 'source image already enables sshd before liveuser provisioning' \
+  "$test_root/configure-premature-ssh.txt" >/dev/null
+rm -f -- "$test_rootfs/etc/systemd/system/multi-user.target.wants/sshd.service"
 PATH="$test_root/bin:$PATH" TEST_FIREWALL_LOG="$test_root/firewall.log" \
   "$test_image" configure-development-access \
     --root "$test_rootfs" \
@@ -489,10 +494,6 @@ grep -F 'linux_live_image_development_access=PASS' \
 grep -F -- '--service=ssh' "$test_root/firewall.log" >/dev/null
 grep -Fx 'PermitRootLogin no' \
   "$test_rootfs/etc/ssh/sshd_config.d/60-sos-development-live.conf" >/dev/null
-grep -Fx 'After=livesys.service' \
-  "$test_rootfs/etc/systemd/system/sshd.service.d/60-sos-development-live.conf" >/dev/null
-grep -Fx 'Requires=livesys.service' \
-  "$test_rootfs/etc/systemd/system/sshd.service.d/60-sos-development-live.conf" >/dev/null
 test_livesys_hook="$test_rootfs/var/lib/livesys/livesys-session-extra"
 [[ "$(stat -c %a "$test_livesys_hook")" == 700 ]]
 sh -n "$test_livesys_hook"
@@ -500,6 +501,15 @@ grep -Fx "usermod --password '\$6\$development-salt\$development-hash' liveuser 
   "$test_livesys_hook" >/dev/null
 grep -Fx 'passwd --lock root >/dev/null || exit 1' "$test_livesys_hook" >/dev/null
 grep -Fx 'AutomaticLoginEnable=False' "$test_livesys_hook" >/dev/null
+grep -Fx "cat > /etc/gdm/custom.conf <<'SOS_DEVELOPMENT_GDM' || exit 1" \
+  "$test_livesys_hook" >/dev/null
+grep -Fx 'systemctl enable --now sshd.service >/dev/null || exit 1' \
+  "$test_livesys_hook" >/dev/null
+grep -Fx 'ssh_activation=livesys-session-extra-final-action' \
+  "$test_rootfs/usr/share/doc/sos/development-access.env" >/dev/null
+[[ ! -e "$test_rootfs/etc/systemd/system/multi-user.target.wants/sshd.service" ]]
+[[ ! -L "$test_rootfs/etc/systemd/system/multi-user.target.wants/sshd.service" ]]
+[[ ! -e "$test_rootfs/etc/systemd/system/sshd.service.d/60-sos-development-live.conf" ]]
 printf 'one\ntwo\n' >"$test_root/two-line-password"
 if PATH="$test_root/bin:$PATH" TEST_FIREWALL_LOG="$test_root/firewall.log" \
   "$test_image" configure-development-access \
@@ -526,6 +536,17 @@ grep -F 'linux_live_image_rootfs_checked=PASS' "$test_root/check-pass.txt" >/dev
 grep -F 'boot_kind=development-live' "$test_root/check-pass.txt" >/dev/null
 grep -F 'promotion_eligible=false' "$test_root/check-pass.txt" >/dev/null
 grep -F 'not_installed_product=true' "$test_root/check-pass.txt" >/dev/null
+
+printf '%s\n' '# activation must remain the final hook action' >>"$test_livesys_hook"
+if PATH="$test_root/bin:$PATH" \
+  "$test_image" check-rootfs --root "$test_rootfs" \
+  >"$test_root/check-premature-ssh.txt" 2>&1; then
+  printf 'error: check-rootfs accepted SSH activation before the final hook action\n' >&2
+  exit 1
+fi
+grep -F 'does not activate SSH as its final action' \
+  "$test_root/check-premature-ssh.txt" >/dev/null
+sed -i '$d' "$test_livesys_hook"
 
 test_locked_dir="$test_rootfs/etc/skel/.local"
 test_locked_config="$test_locked_dir/state/sos/agent/config.env"

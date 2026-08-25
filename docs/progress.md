@@ -10178,3 +10178,87 @@ boot behavior. Commit the correction, rerun a clean bake in a new output
 directory, independently audit the ISO, then boot it and verify root remains
 locked, liveuser password SSH starts only after livesys, GDM offers both GNOME
 and SOS without autologin, and reboot removes incremental deployments.
+
+## 2026-08-25 — Activate development SSH from the completed livesys hook
+
+**Goal / environment:** Complete the first real `development-live` bake and
+boot it on the Framework Laptop 12 without touching its installed Omarchy
+disk, then verify password-protected remote access before using the image as
+the reusable SOS development base. The clean source revision was
+`f057d251de7781622bb60a70c960d4bc01f8e37d`; the target identified itself as
+Framework `Laptop 12 (13th Gen Intel Core)` revision A5, running Fedora 44
+kernel `6.19.10-300.fc44.x86_64` in boot
+`edb42181-55f8-4a36-a388-971f5db601e2`.
+
+**Bake and media evidence:** The first bake invocation completed extraction,
+package/runtime staging, rootfs validation, and EROFS repacking, but its cached
+sudo authorization expired after 2,910.74 seconds; it exited 1 while waiting
+to remove the work tree. The failure/resume inputs remain
+`artifacts/development-live-f057d25-bake.log` (8,867 bytes, SHA-256
+`a07f97f70385d288e05ced0a01613e1da81b3b4025fa2c7320d37b74bd54140a`)
+and `artifacts/development-live-f057d25-bake.time` (92 bytes, SHA-256
+`39ddd08d869807a026eecb18815989831e54582e1a1948f499f8f4b206390da8`).
+Resuming from the already finalized payload produced
+`artifacts/development-live-f057d25/sos-development-live-f057d251de77.iso`
+(3,056,205,824 bytes, SHA-256
+`c2232111ab8b4aa6d55907dfdf5830a688468bf4be7b8dd218f26c727925ffc0`).
+Its embedded EROFS payload is 2,691,727,360 bytes with SHA-256
+`c222e53420d88b7ac541e18629573660d2bc71f6174379cea1659ee37edc7f7e`.
+An independent `checkisomd5` completed in 3.45 seconds with PASS. Uploading the
+ISO to PiKVM virtual media took 138.62 seconds; the PiKVM copy matched the host
+byte count and SHA-256 and remained connected read-only.
+
+**Physical failure / rejected approach:** GDM required the configured
+`liveuser` password instead of autologging in, and `livesys.service` completed
+the password assignment, root relock, and GDM rewrite successfully. SSH did
+not start: `sshd.service` was inactive/disabled with no port 22 listener, and
+the boot journal contained no SSH start attempt. Direct EROFS inspection proved
+the baked lower rootfs contained the offline
+`multi-user.target.wants/sshd.service` link and the
+`Requires=livesys.service` drop-in, while the initial running merged rootfs did
+not expose the enablement link. Therefore offline enablement plus a dependency
+on a successful but normally inactive oneshot service is rejected as the
+development access boundary.
+
+Before any live mutation, `findmnt` showed `/` as the writable
+`LiveOS_rootfs` overlay with `/run/rootfsbase` as its lower directory and a
+RAM-backed `/run/overlayfs` upper directory. `lsblk` showed the internal 1 TB
+WD_BLACK NVMe with VFAT and LUKS partitions and no mountpoints. No installer
+target was selected and no internal-disk write was performed.
+
+**Focused proof / decision / changed code:** On that same disposable overlay,
+disabling the dependency drop-in and running
+`systemctl enable --now sshd.service` after completed provisioning made SSH
+enabled and active with IPv4 and IPv6 port 22 listeners. A fresh independent
+password SSH connection then passed; root reported locked, `liveuser` reported
+a password, and the per-boot Ed25519 host private/public keys were root-owned
+mode `0600`/`0644`. `tools/linux-live-image` now omits offline SSH enablement
+and the `Requires=livesys.service` drop-in. The root-only Fedora hook makes
+GDM configuration fail closed and performs `systemctl enable --now
+sshd.service` as its final action, only after assigning the liveuser password
+and relocking root. Rootfs validation requires that exact final action and
+rejects any pre-provisioning SSH enablement. The fixture tests cover the new
+metadata and reject a hook with any action after SSH activation;
+`docs/linux-live-image.md` records the boundary.
+
+Raw console screenshots, OCR, SSH audits, upload timing, ISO integrity, and
+host test records are indexed by
+`artifacts/pikvm-development-live-f057d25/evidence-manifest.tsv` (2,493 bytes,
+SHA-256
+`8c86900caa2b6d033610b760bf9e9271c064ccfd1701dc6f52788456d89694d5`).
+`./tests/linux-live-image-test.sh` and
+`./tests/linux-hardware-gate-test.sh` passed with
+`linux_live_image_host_tests=PASS` and
+`linux_hardware_gate_host_tests=PASS`; together with Bash parsing and
+`git diff --check`, they completed in 1.30 seconds with 30,316 KiB maximum
+RSS. No model provider ran, so model and model-weighted cost were zero.
+
+**Remaining risk / next gate:** This physical boot proved the failure and the
+focused live-overlay correction, not the newly generated hook on a fresh boot.
+No hardware, latency, release, or promotion gate is complete. Bake the corrected
+clean revision once, attach it read-only, cold-boot the Framework, and require
+automatic SSH enablement only after successful `livesys` provisioning. Then
+verify GDM offers GNOME and SOS, deploy one changed SOS component with
+`tools/linux-live-deploy`, verify its recorded digest, and run a same-boot
+diagnostic campaign before treating this image as the reusable development
+base.
