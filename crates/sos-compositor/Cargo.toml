@@ -21,6 +21,9 @@ smithay-drm-extras = { version = "=0.1.0", default-features = false, optional = 
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
+[dev-dependencies]
+tempfile = "3"
+
 [features]
 default = ["nested-backend"]
 direct-backend = [

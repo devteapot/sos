@@ -101,8 +101,9 @@ pub fn install() {
 }
 
 #[cfg(target_os = "linux")]
-pub fn install() {
+pub fn install() -> async_channel::Receiver<()> {
     let start = *CLOCK.get_or_init(Instant::now);
+    let (wake_tx, wake_rx) = async_channel::bounded(1);
     gpui_linux::set_raw_touch_callback(Some(Box::new(move |event| {
         let phase = match event.phase {
             gpui_linux::RawTouchPhase::Down => Phase::Down,
@@ -122,16 +123,20 @@ pub fn install() {
                     .unwrap_or_else(|| "unavailable".into()),
             );
         }
-        push_sample(Sample {
-            id: event.id.max(0) as u64,
-            phase,
-            x: event.x,
-            y: event.y,
-            pressure: event.pressure.unwrap_or(1.0).clamp(0.0, 1.0),
-            pointer_count: event.pointer_count.min(32),
-            event_time_nanos: start.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64,
-        });
+        push_sample_and_wake(
+            Sample {
+                id: event.id.max(0) as u64,
+                phase,
+                x: event.x,
+                y: event.y,
+                pressure: event.pressure.unwrap_or(1.0).clamp(0.0, 1.0),
+                pointer_count: event.pointer_count.min(32),
+                event_time_nanos: start.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64,
+            },
+            &wake_tx,
+        );
     })));
+    wake_rx
 }
 
 pub fn begin_frame() {
@@ -390,6 +395,15 @@ fn push_sample(sample: Sample) {
     samples.push_back(sample);
 }
 
+#[cfg(target_os = "linux")]
+fn push_sample_and_wake(sample: Sample, wakes: &async_channel::Sender<()>) {
+    push_sample(sample);
+    // Raw Wayland touch bypasses GPUI's element input path. Mark the host
+    // dirty through its foreground task instead of waiting for an unrelated
+    // mouse/key event to trigger the next entity render.
+    let _ = wakes.try_send(());
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -432,6 +446,28 @@ mod tests {
             Some("note-draft")
         );
         assert!(hit_native_input(&router, 200.0, 200.0).is_none());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn raw_touch_queues_one_coalesced_host_wake() {
+        take_samples();
+        let (wake_tx, wake_rx) = async_channel::bounded(1);
+        let sample = Sample {
+            id: 1,
+            phase: Phase::Down,
+            x: 4.0,
+            y: 8.0,
+            pressure: 1.0,
+            pointer_count: 1,
+            event_time_nanos: 10,
+        };
+        push_sample_and_wake(sample, &wake_tx);
+        push_sample_and_wake(sample, &wake_tx);
+
+        assert!(wake_rx.try_recv().is_ok());
+        assert!(wake_rx.try_recv().is_err());
+        assert_eq!(take_samples().len(), 2);
     }
 
     #[test]

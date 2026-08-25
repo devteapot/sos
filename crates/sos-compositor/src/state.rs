@@ -4,6 +4,9 @@
 use std::{
     collections::{HashMap, HashSet},
     ffi::OsString,
+    io,
+    os::unix::net::UnixDatagram,
+    path::{Path, PathBuf},
     sync::Arc,
 };
 
@@ -76,6 +79,7 @@ pub struct SosCompositor {
     pub recovery_button_pressed: bool,
     pub session_exit_enabled: bool,
     pub session_exit_requested: bool,
+    pub session_exit_socket: Option<PathBuf>,
 
     pub compositor_state: CompositorState,
     pub xdg_shell_state: XdgShellState,
@@ -169,6 +173,7 @@ impl SosCompositor {
             recovery_button_pressed: false,
             session_exit_enabled: std::env::var("SOS_ALLOW_SESSION_EXIT").as_deref() == Ok("1"),
             session_exit_requested: false,
+            session_exit_socket: std::env::var_os("SOS_SESSION_EXIT_SOCKET").map(PathBuf::from),
             compositor_state,
             xdg_shell_state,
             xwayland_shell_state,
@@ -199,6 +204,25 @@ impl SosCompositor {
 
     pub fn take_session_exit_request(&mut self) -> bool {
         std::mem::take(&mut self.session_exit_requested)
+    }
+
+    pub fn handoff_session_exit_request(&mut self) -> bool {
+        if !self.take_session_exit_request() {
+            return false;
+        }
+        let Some(socket) = self.session_exit_socket.as_deref() else {
+            return true;
+        };
+        match notify_session_owner(socket) {
+            Ok(()) => {
+                tracing::info!(socket = %socket.display(), "handed logout request to session owner");
+                false
+            }
+            Err(error) => {
+                tracing::warn!(%error, socket = %socket.display(), "could not hand logout request to session owner");
+                true
+            }
+        }
     }
 
     fn init_wayland_listener(
@@ -419,6 +443,12 @@ impl SosCompositor {
     }
 }
 
+fn notify_session_owner(path: &Path) -> io::Result<()> {
+    let socket = UnixDatagram::unbound()?;
+    socket.send_to(b"logout\n", path)?;
+    Ok(())
+}
+
 pub struct ClientState {
     pub compositor_state: CompositorClientState,
     pub pid: u32,
@@ -430,5 +460,24 @@ impl ClientData for ClientState {
 
     fn disconnected(&self, _client_id: ClientId, reason: DisconnectReason) {
         tracing::info!(pid = self.pid, role = ?self.role, ?reason, "Wayland client disconnected");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::notify_session_owner;
+    use std::os::unix::net::UnixDatagram;
+
+    #[test]
+    fn session_exit_notification_reaches_the_lifecycle_owner() {
+        let temporary = tempfile::tempdir().unwrap();
+        let path = temporary.path().join("logout.sock");
+        let receiver = UnixDatagram::bind(&path).unwrap();
+
+        notify_session_owner(&path).unwrap();
+
+        let mut buffer = [0_u8; 16];
+        let size = receiver.recv(&mut buffer).unwrap();
+        assert_eq!(&buffer[..size], b"logout\n");
     }
 }

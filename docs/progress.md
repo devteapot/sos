@@ -9918,3 +9918,142 @@ single-host activation, input, or logout. Write this exact hybrid ISO to the
 removable USB, boot it on the Framework Laptop 12, and run one fresh same-boot
 prepare, mouse/touch field-transfer, offline-agent activation, clean logout,
 collect, copy-off, and manifest-audit campaign before promoting the gate.
+
+## 2026-08-25 — Diagnose and close Framework touch-triggered host starvation
+
+**Goal / media / complete-gate result:** Write the revision-pinned Fedora 44
+ISO from the preceding entry to the removable device, run its complete
+Framework Laptop 12 gate, and use focused live-overlay experiments to resolve
+the remaining host-lifecycle and input failures without repeatedly baking the
+3-GB image. The exact 3,056,074,752-byte ISO with SHA-256
+`21332392b6564e4f286c527f79645d564270f287d5313a1243c3b040f37738f9`
+was written to `/dev/sda` with
+`sudo dd if=...iso of=/dev/sda bs=16M status=progress conv=fsync` and verified
+byte-for-byte. The write took 5 minutes 15.20 seconds with 18,828 KiB maximum
+RSS. The 276-byte write log, 852-byte time record, and 57-byte verification log
+have SHA-256
+`a189ed58d99c4c149a93cb8861fe6d7825f8ccb8fbdeca5f139436432de247f1`,
+`5448b31022d418190f53f2b3e2c1016e6c7e8d9786994582f9ff22909141e9a4`,
+and `741e2a6c327be22bc80654a2917206f5906792292ec605a7713abe79624219c5`.
+
+The 357,403,147,177-nanosecond same-boot campaign on boot ID
+`9ad78727-161a-45ca-b84c-57b95d020f59` passed live-image identity, recovery and
+direct DRM page flips, session and agent readiness, keyboard, touchpad,
+touchscreen, clean logout, transactional activation, fallback display manager,
+and kernel GPU checks. It correctly failed overall: `stable_host_lifecycle`
+observed two host launches, durable authority remained at candidate
+`0560f50d…` while the current pointer stayed at `32f4b2a9…`, and SOS process
+failures were present. All 36 files verify in the copied 149,313-byte evidence
+directory
+`/home/carlid/dev/sos/artifacts/linux-live-image/evidence/framework12-20260825/framework12-d9d783c-gate`.
+Its 3,372-byte manifest, 1,008-byte verdict, 93,916-byte user journal, and
+1,072-byte kernel journal have SHA-256
+`d8e39496f33f5c171f6dfc4d51fa18bc3fa95ff107ec251f08be5c57022c71e3`,
+`128a21ef749ee330f6d1fe427976e49870bfaa7aeec0bef0f21b4989229f0853`,
+`6f3c2b625238cc310a15168d304827dc48bc7baafb881fdadaff6050540b0172`,
+and `6c4c168e92364c18615ee7f1981ac9f1d6f3a047fa33708c0b5ea7f8ebdf1fc4`.
+
+**Focused failures and rejected approaches:** Physical retests first proved
+touch focus but exposed three independent symptoms: a native field reverted to
+an older authority value on blur, foreground action results could stop draining
+under continuous animation, and touch eventually made text, focus, and Submit
+lag or stall. A local input-state shadow fixed the stale-value race and one-shot
+focus restoration preserved activation focus without stealing ordinary field
+transfers. Counting successful foreground sends and re-pinging calloop fixed
+lost readiness; limiting each dispatch to 64 tasks prevented an endlessly
+self-replenishing foreground queue from monopolizing the loop. Running tasks
+directly inside the calloop callback and then bounding those direct runs were
+both rejected after physical tests: they initially responded, then touch focus
+could be delayed for seconds and Submit again stopped. Moving tasks to
+calloop's idle list was also rejected because continuous frame traffic could
+starve that idle queue.
+
+The decisive `eu-stack` sample of the stalled exact host showed its main thread
+in `ppoll`, `wl_display_dispatch_queue`, Wayland WSI present,
+`anv_QueuePresentKHR`, and the SOS host, while the Luau worker was idle. Wayland
+frame callbacks and raw touch callbacks were calling `window.frame()`
+synchronously; Vulkan presentation could wait for a swapchain-buffer release
+before the Wayland source callback returned, preventing staged action results
+from running. The 8,675-byte stack and its 154,585-byte bounded journal have
+SHA-256
+`98d75d0f7916a584beb1917883d84b7c847dea61510dc89abeb4e66144f87a36`
+and `380ff03462020db901b759b0ec9b589614afd33e1a1bc9c4a88baca34f04da06`.
+The first queued-frame build correctly moved rendering out of protocol
+dispatch but kept a `RefCell` borrow alive through `window.frame()` and
+deterministically panicked during startup; separating the pop and render
+statements fixed that rejected implementation.
+
+**Changed runtime and lifecycle:** Raw Linux touch now supplies a bounded,
+coalesced wake receiver to the experience host so touch-only input marks its
+entity dirty. Native text state is shadowed until the serialized authority
+catches up, and activation restores focus once rather than on every render.
+The GPUI calloop bridge now tracks unmatched sends, re-wakes while work remains,
+bounds foreground batches, stages them until all ready protocol sources have
+run, and services foreground work before a deduplicated post-dispatch frame
+queue. Frame-callback, touch, and tablet paths enqueue frames rather than
+rendering synchronously inside Wayland dispatch.
+
+The isolated host launcher also reaps the actual GPU host after an unexpected
+proxy disconnect, closing the overlapping-restart failure from the complete
+gate. Orderly logout needed a distinct path: the compositor now sends a private
+`0600` Unix-datagram request and remains alive while the lifecycle owner shuts
+down the supervisor, provider, and host first. Proxy EOF grants an
+already-delivered Shutdown request 250 milliseconds to exit; `/proc` state
+decides whether a still-live host needs SIGKILL. Tests cover both graceful exit
+and forced orphan reaping. This replaced two rejected logout variants: exiting
+the compositor first caused a supervisor recovery launch, and unconditional
+SIGKILL on proxy EOF produced a false `linux_host_launcher_failed` during
+intentional shutdown.
+
+**Exact focused physical result:** The final 17,080,760-byte experience host
+has SHA-256
+`5214883604708ce504b8cdbdae7ec21399d655de6f25566e1f4c4027635bc9f6`;
+its release build took 1 minute 27.98 seconds with 2,010,032 KiB maximum RSS,
+and the 820-byte GNU-time record has SHA-256
+`9ceac69443469ff3582dd80c92e02b1f96a710ba48dfdca3fb1ccda52b9fd79a`.
+`/proc/<pid>/exe` was verified against that digest before interaction. Across
+54 complete physical touchscreen contacts, the compositor recorded 54 downs
+and 54 releases and the host routed 36 native field-focus changes. It drained
+and durably committed all 115 action requests, including 95 text changes and
+21 focus changes. The user reported that touch, typing, Submit, and scrolling
+were much better and remained responsive. Submit request 115 completed in
+2,840 microseconds, committed authority revision 498, prepared and committed
+revision `90e852f54c9d07465f5986d19d1e68a18916edd9eaf7080d958d4d9018b5c699`
+in 5,121 microseconds of worker time, presented it by direct DRM page flip, and
+activated it under the same supervisor host PID.
+
+The final 5,706,016-byte compositor and 1,632,504-byte session owner have
+SHA-256
+`7bd3b6a0f50969e80cd8369cf33d4b746eb286d5335fd550e95db6a4481516d8`
+and `352543f9cbfafb8f7e3ffa2701f5d132e73be8d5f42c7bccc65c103b53e48fe3`.
+The exact-source logout emitted the compositor request and handoff followed by
+`linux_login_session_stopped reason=user_logout`; it emitted no SOS failure,
+panic, Vulkan surface error, or recovery launch, and the post-logout process
+table contained no SOS compositor, supervisor, proxy, or experience host. The
+final session-owner-only release build took 8.05 seconds with 349,400 KiB
+maximum RSS; its 801-byte time record has SHA-256
+`b91284dc5e2733d9e8154146a04928312a645e90349f2746a9a4dba42e021778`.
+
+**Evidence / checks / decision / next gate:** The copied focused bundle at
+`/home/carlid/dev/sos/artifacts/linux-live-image/evidence/framework12-20260825/framework12-staged-frame-focused-20260825`
+is 341,138 bytes. All eight evidence files verify through its 1,179-byte
+manifest, SHA-256
+`013b91b17c88582a42d241e62b16f34cb239d09a17655d5dca24e5eba3045ff7`.
+The 107,152-byte interaction journal, 42,142-byte exact logout journal, and
+1,112-byte kernel journal have SHA-256
+`c0c99d2ddef86af1aa33fb45a2ff3eeb2fc40531272dd2a4c4b5feaa0e65b066`,
+`020b595447d1efeeb90787117598334b53e63bbbde4420ea848c6ac7c09ea4f4`,
+and `a19dd8f9f0fab4f4af068661169ece01717dc2eb995031f34b8cc757fb73bf94`.
+Three GPUI dispatcher tests, 29 Linux-host experience tests, nine Linux-session
+unit tests plus its authority integration test, and 11 compositor tests passed;
+warning-denying Clippy passed for all three affected products and both direct
+Linux feature sets. No live model ran, so model and model-weighted cost were
+zero.
+
+Accept the focused overlay as physical evidence for the diagnosed mechanisms,
+not as promotion of the old ISO: the booted artifact still contains revision
+`d9d783c`, and the final binaries were installed into its disposable overlay.
+Commit these fixes, bake one clean revision-pinned ISO, then run a fresh full
+prepare, touch/keyboard/scroll/Submit, clean logout, collect, copy-off, and
+manifest-audit campaign. Only that artifact-matched campaign can promote the
+Framework live gate.
