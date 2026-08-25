@@ -11,6 +11,10 @@ live_image_development_access=/usr/share/doc/sos/development-access.env
 live_image_ssh_config=/etc/ssh/sshd_config.d/60-sos-development-live.conf
 live_image_livesys_hook=/var/lib/livesys/livesys-session-extra
 live_image_networkmanager_profile=/etc/NetworkManager/system-connections/60-sos-development-live.nmconnection
+live_image_build_image="${SOS_LIVE_IMAGE_BUILD_IMAGE:-localhost/sos-linux-live-build:fedora-44}"
+live_image_containerfile="$live_image_root/tools/linux-live/Containerfile"
+live_image_container_context="$live_image_root/tools/linux-live"
+live_image_rootless_xattr_filter=/usr/local/libexec/sos-live-image/libskip-selinux-xattr.so
 
 live_image_fail() {
   printf 'error: %s\n' "$*" >&2
@@ -21,6 +25,9 @@ live_image_usage() {
   printf '%s\n' \
     'usage:' \
     '  tools/linux-live-image doctor [--layout-only]' \
+    '  tools/linux-live-image rootless-doctor' \
+    '  tools/linux-live-image image' \
+    '  tools/linux-live-image rootless-test' \
     '  tools/linux-live-image format-identity [identity fields...]' \
     '  tools/linux-live-image write-offline-user-state --home-root DIR' \
     '  tools/linux-live-image check-networkmanager-profile --profile-file FILE' \
@@ -32,6 +39,74 @@ live_image_usage() {
 
 live_image_require_command() {
   command -v "$1" >/dev/null 2>&1 || live_image_fail "required command not found: $1"
+}
+
+live_image_require_rootless_podman() {
+  live_image_require_command podman
+  [[ "$(id -u)" -ne 0 ]] || live_image_fail "rootless live-image commands must run as a normal user"
+  [[ "$(uname -m)" == x86_64 ]] || \
+    live_image_fail "Framework 12 live images require an x86_64 Podman host"
+  [[ "$(podman info --format '{{.Host.Security.Rootless}}')" == true ]] || \
+    live_image_fail "Podman is not running rootless"
+  local user subuid_count subgid_count
+  user="$(id -un)"
+  subuid_count="$(awk -F: -v user="$user" '$1 == user { print $3; exit }' /etc/subuid 2>/dev/null || true)"
+  subgid_count="$(awk -F: -v user="$user" '$1 == user { print $3; exit }' /etc/subgid 2>/dev/null || true)"
+  [[ "$subuid_count" =~ ^[0-9]+$ && "$subuid_count" -ge 65536 ]] || \
+    live_image_fail "rootless bake requires at least 65536 subordinate UIDs for $user"
+  [[ "$subgid_count" =~ ^[0-9]+$ && "$subgid_count" -ge 65536 ]] || \
+    live_image_fail "rootless bake requires at least 65536 subordinate GIDs for $user"
+}
+
+live_image_rootless_doctor() {
+  [[ "$#" -eq 0 ]] || live_image_fail "rootless-doctor accepts no options"
+  live_image_require_rootless_podman
+  [[ -f "$live_image_containerfile" \
+    && -f "$live_image_container_context/skip-selinux-xattr.c" ]] || \
+    live_image_fail "rootless live-image container sources are incomplete"
+  local image_present=false
+  if podman image exists "$live_image_build_image"; then
+    image_present=true
+  fi
+  printf 'linux_live_image_rootless_doctor=PASS image=%s image_present=%s rootless=true subordinate_ids=true\n' \
+    "$live_image_build_image" "$image_present"
+}
+
+live_image_container_image_id() {
+  local image_id
+  image_id="$(podman image inspect --format '{{.Id}}' "$live_image_build_image")"
+  image_id="${image_id#sha256:}"
+  [[ "$image_id" =~ ^[0-9a-f]{64}$ ]] || \
+    live_image_fail "rootless build image has an invalid image ID"
+  printf 'sha256:%s\n' "$image_id"
+}
+
+live_image_build_container() {
+  [[ "$#" -eq 0 ]] || live_image_fail "image accepts no options"
+  live_image_require_rootless_podman
+  podman build \
+    --tag "$live_image_build_image" \
+    --build-arg "BUILD_UID=$(id -u)" \
+    --build-arg "BUILD_GID=$(id -g)" \
+    --file "$live_image_containerfile" \
+    "$live_image_container_context"
+  local image_id
+  image_id="$(live_image_container_image_id)"
+  printf 'linux_live_image_build_container=PASS image=%s image_id=%s\n' \
+    "$live_image_build_image" "$image_id"
+}
+
+live_image_run_rootless_metadata_test() {
+  [[ "$#" -eq 0 ]] || live_image_fail "rootless-test accepts no options"
+  live_image_build_container
+  podman run --rm \
+    --userns=keep-id \
+    --security-opt label=disable \
+    --volume "$live_image_root:$live_image_root" \
+    --workdir "$live_image_root" \
+    --env SOS_LIVE_IMAGE_IN_CONTAINER=true \
+    "$live_image_build_image" \
+    "$live_image_root/tools/linux-live/rootless-metadata-test"
 }
 
 live_image_validate_sha256() {
@@ -170,6 +245,7 @@ live_image_format_identity() {
   local source_revision="" source_dirty=false agent_mode=offline
   local image_format=fedora-workstation-live-remix
   local fedora_release="" build_host_release=""
+  local build_mode=native-sudo build_image_id=none
   local base_iso_filename="" base_iso_bytes="" base_iso_sha256=""
   local payload_relpath="" payload_bytes="" payload_sha256=""
   local container_format="" baked_at_utc=""
@@ -183,6 +259,8 @@ live_image_format_identity() {
       --image-format) image_format="$2"; shift 2 ;;
       --fedora-release) fedora_release="$2"; shift 2 ;;
       --build-host-release) build_host_release="$2"; shift 2 ;;
+      --build-mode) build_mode="$2"; shift 2 ;;
+      --build-image-id) build_image_id="$2"; shift 2 ;;
       --base-iso-filename) base_iso_filename="$2"; shift 2 ;;
       --base-iso-bytes) base_iso_bytes="$2"; shift 2 ;;
       --base-iso-sha256) base_iso_sha256="$2"; shift 2 ;;
@@ -209,6 +287,15 @@ live_image_format_identity() {
   live_image_validate_sha256 "base ISO SHA-256" "$base_iso_sha256"
   [[ "$fedora_release" =~ ^[1-9][0-9]*$ && "$build_host_release" == "$fedora_release" ]] || \
     live_image_fail "Fedora image and build host must use the same numeric release"
+  [[ "$build_mode" == native-sudo || "$build_mode" == rootless-podman ]] || \
+    live_image_fail "build mode must be native-sudo or rootless-podman"
+  if [[ "$build_mode" == rootless-podman ]]; then
+    [[ "$build_image_id" =~ ^sha256:[0-9a-f]{64}$ ]] || \
+      live_image_fail "rootless Podman identity requires a build image ID"
+  else
+    [[ "$build_image_id" == none ]] || \
+      live_image_fail "native-sudo identity must not name a build image"
+  fi
   [[ "$payload_relpath" == LiveOS/squashfs.img ]] || \
     live_image_fail "only LiveOS/squashfs.img is supported"
   [[ "$container_format" == erofs-rootfs ]] || \
@@ -234,6 +321,8 @@ live_image_format_identity() {
     "container_format=$container_format" \
     "fedora_release=$fedora_release" \
     "build_host_release=$build_host_release" \
+    "build_mode=$build_mode" \
+    "build_image_id=$build_image_id" \
     "source_revision=$source_revision" \
     "source_dirty=$source_dirty" \
     "agent_mode=$agent_mode" \
@@ -769,6 +858,47 @@ live_image_write_xattr_manifest() {
   ' | LC_ALL=C sort >"$output"
 }
 
+live_image_extract_rootless_payload() {
+  local payload="$1" dest="$2"
+  [[ "${SOS_LIVE_IMAGE_IN_CONTAINER:-false}" == true ]] || \
+    live_image_fail "rootless extraction is available only inside the pinned build container"
+  sudo test -f "$live_image_rootless_xattr_filter" || \
+    live_image_fail "rootless SELinux xattr filter is missing from the build container"
+  [[ -d "$dest" && -z "$(find "$dest" -mindepth 1 -print -quit)" ]] || \
+    live_image_fail "rootfs extraction destination is not empty: $dest"
+  # Container-root can preserve ownership, ACLs, capabilities, and portable
+  # xattrs through the rootless user namespace. The host kernel cannot apply
+  # image-policy SELinux labels, so suppress exactly security.selinux here;
+  # mkfs.erofs regenerates it from the extracted image's file_contexts policy.
+  sudo env LD_PRELOAD="$live_image_rootless_xattr_filter" \
+    fsck.erofs --path=/ --extract="$dest" --xattrs --preserve "$payload" >/dev/null
+  printf 'linux_live_image_rootless_payload_extracted=PASS payload=%s root=%s selinux_xattr=deferred-to-mkfs\n' \
+    "$payload" "$dest"
+}
+
+live_image_extract_rootless_command() {
+  local payload="" root=""
+  while [[ "$#" -gt 0 ]]; do
+    case "$1" in
+      --payload)
+        [[ "$#" -ge 2 ]] || live_image_fail "--payload requires a file"
+        payload="$(realpath -e -- "$2")"
+        shift 2
+        ;;
+      --root)
+        [[ "$#" -ge 2 ]] || live_image_fail "--root requires a directory"
+        root="$(realpath -m -- "$2")"
+        shift 2
+        ;;
+      *) live_image_fail "extract-rootless accepts --payload FILE and --root DIR" ;;
+    esac
+  done
+  [[ -n "$payload" && -n "$root" ]] || \
+    live_image_fail "extract-rootless requires --payload FILE and --root DIR"
+  mkdir -p -- "$root"
+  live_image_extract_rootless_payload "$payload" "$root"
+}
+
 live_image_extract_payload() {
   local payload="$1" format="$2" dest="$3" work="$4"
   local mountpoint="$work/erofs-source"
@@ -780,6 +910,11 @@ live_image_extract_payload() {
     live_image_fail "rootfs extraction destination is not empty: $dest"
   case "$format" in
     erofs-rootfs)
+      if [[ "${SOS_LIVE_IMAGE_IN_CONTAINER:-false}" == true ]]; then
+        live_image_extract_rootless_payload "$payload" "$dest"
+        rmdir -- "$mountpoint"
+        return 0
+      fi
       # The official image can carry build-filesystem SELinux labels such as
       # fusefs_t that the destination filesystem rejects. Mount the source
       # read-only and copy every other metadata class; mkfs.erofs later applies
@@ -852,9 +987,16 @@ live_image_repack_payload() {
       local file_contexts="$rootfs/etc/selinux/targeted/contexts/files/file_contexts"
       [[ -r "$file_contexts" ]] || \
         live_image_fail "Fedora SELinux file-context policy is missing from the staged rootfs"
-      sudo mkfs.erofs -zlzma -E dedupe,all-fragments -C65536 \
-        --file-contexts="$file_contexts" \
-        "$output" "$rootfs" >/dev/null
+      local -a mkfs_command=(sudo)
+      if [[ "${SOS_LIVE_IMAGE_IN_CONTAINER:-false}" == true ]]; then
+        mkfs_command+=(env LD_PRELOAD="$live_image_rootless_xattr_filter")
+      fi
+      mkfs_command+=(
+        mkfs.erofs -zlzma -E dedupe,all-fragments -C65536
+        --file-contexts="$file_contexts"
+        "$output" "$rootfs"
+      )
+      "${mkfs_command[@]}" >/dev/null
       sudo fsck.erofs --xattrs "$output" >/dev/null
       sudo chown "$(id -u):$(id -g)" "$output"
       ;;
@@ -955,9 +1097,95 @@ live_image_write_identity_file() {
   rm -f -- "$temporary"
 }
 
+live_image_rootless_bake() {
+  local source_iso="" source_sha256="" output_dir="" liveuser_password_file=""
+  local networkmanager_profile_file=""
+  while [[ "$#" -gt 0 ]]; do
+    case "$1" in
+      --source-iso)
+        [[ "$#" -ge 2 ]] || live_image_fail "--source-iso requires a path"
+        source_iso="$(realpath -e -- "$2")"
+        shift 2
+        ;;
+      --source-sha256)
+        [[ "$#" -ge 2 ]] || live_image_fail "--source-sha256 requires a digest"
+        source_sha256="${2,,}"
+        shift 2
+        ;;
+      --output-dir)
+        [[ "$#" -ge 2 ]] || live_image_fail "--output-dir requires a directory"
+        output_dir="$(realpath -m -- "$2")"
+        shift 2
+        ;;
+      --liveuser-password-file)
+        [[ "$#" -ge 2 ]] || live_image_fail "--liveuser-password-file requires a file"
+        liveuser_password_file="$(live_image_absolute_leaf_path "$2")"
+        shift 2
+        ;;
+      --networkmanager-profile-file)
+        [[ "$#" -ge 2 ]] || live_image_fail "--networkmanager-profile-file requires a file"
+        networkmanager_profile_file="$(live_image_absolute_leaf_path "$2")"
+        shift 2
+        ;;
+      *) live_image_fail "unexpected option: $1" ;;
+    esac
+  done
+  [[ -n "$source_iso" && -n "$source_sha256" && -n "$output_dir" \
+    && -n "$liveuser_password_file" ]] || \
+    live_image_fail "bake requires --source-iso ISO, --source-sha256 SHA256, --output-dir DIR, and --liveuser-password-file FILE"
+  live_image_validate_sha256 "source ISO SHA-256" "$source_sha256"
+  live_image_read_development_password "$liveuser_password_file" >/dev/null
+  if [[ -n "$networkmanager_profile_file" ]]; then
+    live_image_validate_networkmanager_profile "$networkmanager_profile_file"
+  fi
+  cd "$live_image_root"
+  [[ -z "$(git status --porcelain --untracked-files=normal)" ]] || \
+    live_image_fail "live image bake requires a clean source worktree"
+  live_image_build_container
+
+  mkdir -p -- "$output_dir"
+  chmod 0700 "$output_dir"
+  local build_image_id git_common_dir
+  build_image_id="$(live_image_container_image_id)"
+  git_common_dir="$(realpath -e -- "$(git rev-parse --git-common-dir)")"
+
+  local -a container_args=(
+    podman run --rm
+    --userns=keep-id
+    --security-opt label=disable
+    --volume "$live_image_root:$live_image_root"
+    --volume "$git_common_dir:$git_common_dir:ro"
+    --volume "$source_iso:$source_iso:ro"
+    --volume "$liveuser_password_file:$liveuser_password_file:ro"
+    --volume "$output_dir:$output_dir"
+    --workdir "$live_image_root"
+    --env SOS_LIVE_IMAGE_IN_CONTAINER=true
+    --env SOS_LIVE_IMAGE_WORK_DIR=/var/tmp/sos-live-image-work
+    --env SOS_LIVE_IMAGE_BUILD_MODE=rootless-podman
+    --env "SOS_LIVE_IMAGE_BUILD_IMAGE_ID=$build_image_id"
+  )
+  if [[ -n "$networkmanager_profile_file" ]]; then
+    container_args+=(--volume "$networkmanager_profile_file:$networkmanager_profile_file:ro")
+  fi
+  container_args+=(
+    "$live_image_build_image"
+    "$live_image_root/tools/linux-live-image" bake-in-container
+    --source-iso "$source_iso"
+    --source-sha256 "$source_sha256"
+    --output-dir "$output_dir"
+    --liveuser-password-file "$liveuser_password_file"
+  )
+  if [[ -n "$networkmanager_profile_file" ]]; then
+    container_args+=(--networkmanager-profile-file "$networkmanager_profile_file")
+  fi
+  "${container_args[@]}"
+}
+
 live_image_bake() {
   local source_iso="" source_sha256="" output_dir="" liveuser_password_file=""
   local networkmanager_profile_file=""
+  local build_mode="${SOS_LIVE_IMAGE_BUILD_MODE:-native-sudo}"
+  local build_image_id="${SOS_LIVE_IMAGE_BUILD_IMAGE_ID:-none}"
   while [[ "$#" -gt 0 ]]; do
     case "$1" in
       --source-iso)
@@ -1020,8 +1248,9 @@ live_image_bake() {
   [[ ! -e "$output_dir/image-identity.env" ]] || \
     live_image_fail "output identity already exists: $output_dir/image-identity.env"
   local work payload_relpath payload_path container_format
-  work="$output_dir/work"
-  [[ "$work" == "$output_dir/work" && "$work" != /work ]] || \
+  work="${SOS_LIVE_IMAGE_WORK_DIR:-$output_dir/work}"
+  work="$(realpath -m -- "$work")"
+  [[ "$work" != / && "$work" != /work && "$work" != "$live_image_root" ]] || \
     live_image_fail "unsafe live-image work path: $work"
   [[ ! -e "$work" ]] || \
     live_image_fail "live-image work path already exists; inspect it and use a new output directory: $work"
@@ -1066,6 +1295,8 @@ live_image_bake() {
     --agent-mode offline \
     --fedora-release "$live_image_base_release" \
     --build-host-release "$host_release" \
+    --build-mode "$build_mode" \
+    --build-image-id "$build_image_id" \
     --base-iso-filename "$base_name" \
     --base-iso-bytes "$base_bytes" \
     --base-iso-sha256 "$base_sha" \
@@ -1088,6 +1319,8 @@ live_image_bake() {
     --agent-mode offline \
     --fedora-release "$live_image_base_release" \
     --build-host-release "$host_release" \
+    --build-mode "$build_mode" \
+    --build-image-id "$build_image_id" \
     --base-iso-filename "$base_name" \
     --base-iso-bytes "$base_bytes" \
     --base-iso-sha256 "$base_sha" \
@@ -1119,6 +1352,8 @@ live_image_bake() {
     --agent-mode offline \
     --fedora-release "$live_image_base_release" \
     --build-host-release "$host_release" \
+    --build-mode "$build_mode" \
+    --build-image-id "$build_image_id" \
     --base-iso-filename "$base_name" \
     --base-iso-bytes "$base_bytes" \
     --base-iso-sha256 "$base_sha" \
@@ -1144,13 +1379,22 @@ live_image_command="$1"
 shift
 case "$live_image_command" in
   doctor) live_image_doctor "$@" ;;
+  rootless-doctor) live_image_rootless_doctor "$@" ;;
+  image) live_image_build_container "$@" ;;
+  rootless-test) live_image_run_rootless_metadata_test "$@" ;;
   format-identity) live_image_format_identity "$@" ;;
   write-offline-user-state) live_image_write_offline_user_state "$@" ;;
   check-networkmanager-profile) live_image_check_networkmanager_profile "$@" ;;
   configure-development-access) live_image_configure_development_access "$@" ;;
   check-payload) live_image_check_payload "$@" ;;
   check-rootfs) live_image_check_rootfs "$@" ;;
-  bake) live_image_bake "$@" ;;
+  extract-rootless) live_image_extract_rootless_command "$@" ;;
+  bake) live_image_rootless_bake "$@" ;;
+  bake-in-container)
+    [[ "${SOS_LIVE_IMAGE_IN_CONTAINER:-false}" == true ]] || \
+      live_image_fail "bake-in-container is reserved for the rootless Podman wrapper"
+    live_image_bake "$@"
+    ;;
   *)
     live_image_usage >&2
     exit 1

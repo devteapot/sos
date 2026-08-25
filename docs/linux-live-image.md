@@ -51,10 +51,11 @@ volume label, or claim release acceptance.
 ## Bake the development environment
 
 Download an official Fedora Workstation live x86-64 ISO and verify its signed
-CHECKSUM using Fedora's documented process. The Fedora x86-64 build host must
-be at the same release as the ISO. Install the dependencies listed in
-[`linux-hardware-gate.md`](linux-hardware-gate.md), plus `erofs-utils`,
-`isomd5sum`, `policycoreutils`, `rsync`, and `xorriso`.
+CHECKSUM using Fedora's documented process. The x86-64 host needs rootless Podman
+with at least 65,536 subordinate UIDs and GIDs. The pinned Fedora build
+container supplies the matching-release Rust, Node, native development, EROFS,
+SELinux, ISO, and checksum tools; the host does not need those packages and the
+bake never invokes host `sudo`.
 
 Write the development password to a private, non-symlink file. The bake reads
 exactly one non-empty line and never places the plaintext password in metadata
@@ -92,7 +93,9 @@ nmcli --offline connection add \
 unset SOS_WIFI_SSID SOS_WIFI_PSK
 chmod 0600 /tmp/sos-development-wifi.nmconnection
 
-./tools/linux-live-image doctor
+./tools/linux-live-image rootless-doctor
+./tools/linux-live-image image
+./tools/linux-live-image rootless-test
 ./tools/linux-live-image check-networkmanager-profile \
   --profile-file /tmp/sos-development-wifi.nmconnection
 ./tools/linux-live-image bake \
@@ -103,18 +106,30 @@ chmod 0600 /tmp/sos-development-wifi.nmconnection
   --networkmanager-profile-file /tmp/sos-development-wifi.nmconnection
 ```
 
+`bake` rebuilds the cached container when its pinned definition changes, then
+runs as the calling user through `--userns=keep-id`. Passwordless `sudo` exists
+only inside that user namespace; container root maps to subordinate host IDs
+and receives no host capability or device. The source ISO and private inputs
+are read-only mounts. Intermediate rootfs bytes stay in disposable container
+storage, while only the final ISO and identity sidecar are written to the
+requested output directory.
+
 The base bake still requires a clean source revision. Fedora 44 calls its
 payload `LiveOS/squashfs.img`, but it is a flat EROFS root filesystem. The
-builder verifies that layout, mounts it read-only, copies it as root while
-preserving numeric ownership, permissions, hardlinks, ACLs, capabilities, and
-portable xattrs, validates the image's own SELinux policy, and applies file
-contexts during root-owned EROFS repacking. It preserves the source volume ID
-and BIOS/UEFI boot records, re-implants Fedora's media checksum, and verifies
-that embedded media checksum.
+builder verifies that layout and extracts it with `fsck.erofs` while preserving
+numeric ownership, permissions, hardlinks, ACLs, capabilities, and portable
+xattrs. A build-container compatibility library suppresses only the source
+`security.selinux` write, which a rootless user namespace cannot perform, and
+restores a file capability after `fsck.erofs` changes ownership. It also hides
+the container filesystem's ambient SELinux label from `mkfs.erofs`, so the
+image's own validated policy regenerates the shipped labels. `rootless-test`
+gates that complete metadata round trip. The builder preserves the source
+volume ID and BIOS/UEFI boot records, re-implants Fedora's media checksum, and
+verifies that embedded media checksum.
 
-The output sidecar records the clean base revision, Fedora/build-host release,
-base ISO identity, EROFS payload hash, output ISO hash, and these immutable
-classification fields:
+The output sidecar records the clean base revision, Fedora/build-container
+release, exact build image ID, base ISO identity, EROFS payload hash, output ISO
+hash, and these immutable classification fields:
 
 ```text
 image_kind=development-live
@@ -125,6 +140,8 @@ mutable_runtime=true
 ssh_enabled=true
 wifi_autoconnect=true
 network_credentials_embedded=true
+build_mode=rootless-podman
+build_image_id=sha256:...
 ```
 
 Omit `--networkmanager-profile-file` to bake a development image without

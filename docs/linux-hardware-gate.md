@@ -106,9 +106,10 @@ bake; the bake requires that expected SHA-256.
   --evidence-dir /home/liveuser/framework12-first-gate
 ```
 
-The bake verifies that Fedora's `LiveOS/squashfs.img` is a flat EROFS rootfs,
-extracts it as root while preserving owners, permissions, and xattrs, applies
-the image's SELinux file-context policy after staging SOS, and repacks as root.
+The rootless Podman bake verifies that Fedora's `LiveOS/squashfs.img` is a flat
+EROFS rootfs, uses user-namespace root to preserve owners, permissions, ACLs,
+capabilities, and portable xattrs, applies the image's SELinux file-context
+policy after staging SOS, and repacks without host `sudo`.
 Prepare records
 `boot_kind=development-live`, `not_installed_product=true`,
 `promotion_eligible=false`, the exact kernel `boot_id`,

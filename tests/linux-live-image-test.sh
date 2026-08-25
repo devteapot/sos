@@ -8,6 +8,7 @@ test_deploy="$test_repo_root/tools/linux-live-deploy"
 test_install="$test_repo_root/tools/install-linux-login-session"
 test_root="$(mktemp -d -t sos-linux-live-image-test.XXXXXX)"
 test_revision=abcdef1234567890abcdef1234567890abcdef12
+test_build_image_id=sha256:1111111111111111111111111111111111111111111111111111111111111111
 test_namespace_dir=""
 test_locked_dir=""
 
@@ -155,6 +156,8 @@ fi
   --agent-mode offline \
   --fedora-release 44 \
   --build-host-release 44 \
+  --build-mode rootless-podman \
+  --build-image-id "$test_build_image_id" \
   --base-iso-filename Fedora-Workstation-Live-x86_64-44-1.1.iso \
   --base-iso-bytes 2048 \
   --base-iso-sha256 0000000000000000000000000000000000000000000000000000000000000001 \
@@ -179,6 +182,8 @@ for test_key in \
   network_credentials_embedded=true \
   fedora_release=44 \
   build_host_release=44 \
+  build_mode=rootless-podman \
+  build_image_id="$test_build_image_id" \
   source_revision="$test_revision" \
   source_dirty=false \
   agent_mode=offline \
@@ -203,6 +208,26 @@ done
 grep -Fx 'wifi_autoconnect=false' "$test_root/identity-no-wifi.env" >/dev/null
 grep -Fx 'network_credentials_embedded=false' \
   "$test_root/identity-no-wifi.env" >/dev/null
+grep -Fx 'build_mode=native-sudo' "$test_root/identity-no-wifi.env" >/dev/null
+grep -Fx 'build_image_id=none' "$test_root/identity-no-wifi.env" >/dev/null
+if "$test_image" format-identity \
+  --source-revision "$test_revision" \
+  --source-dirty false \
+  --agent-mode offline \
+  --fedora-release 44 \
+  --build-host-release 44 \
+  --build-mode rootless-podman \
+  --base-iso-filename Fedora-Workstation-Live-x86_64-44-1.1.iso \
+  --base-iso-bytes 2048 \
+  --base-iso-sha256 0000000000000000000000000000000000000000000000000000000000000001 \
+  --payload-relpath LiveOS/squashfs.img \
+  --container-format erofs-rootfs \
+  >"$test_root/rootless-identity-without-image.txt" 2>&1; then
+  printf 'error: format-identity accepted rootless Podman without a build image ID\n' >&2
+  exit 1
+fi
+grep -F 'rootless Podman identity requires a build image ID' \
+  "$test_root/rootless-identity-without-image.txt" >/dev/null
 if "$test_image" format-identity \
   --source-revision "$test_revision" \
   --source-dirty true \
@@ -778,6 +803,9 @@ grep -F -- '--liveuser-password-file FILE' "$test_root/image-usage.txt" >/dev/nu
 grep -F -- '--networkmanager-profile-file FILE' "$test_root/image-usage.txt" >/dev/null
 grep -F -- 'check-networkmanager-profile --profile-file FILE' \
   "$test_root/image-usage.txt" >/dev/null
+grep -F 'tools/linux-live-image rootless-doctor' "$test_root/image-usage.txt" >/dev/null
+grep -F 'tools/linux-live-image rootless-test' "$test_root/image-usage.txt" >/dev/null
+grep -F 'tools/linux-live-image image' "$test_root/image-usage.txt" >/dev/null
 grep -F 'rootfs extraction destination is not empty' "$test_image" >/dev/null
 grep -F "sudo mount -t erofs -o loop,ro \"\$payload\" \"\$mountpoint\"" \
   "$test_image" >/dev/null
@@ -795,6 +823,24 @@ grep -F -- '--file-contexts="$file_contexts"' "$test_image" >/dev/null
 grep -F 'sudo fsck.erofs --xattrs "$output"' "$test_image" >/dev/null
 grep -F 'implantisomd5 --force' "$test_image" >/dev/null
 grep -F "checkisomd5 \"\$output_iso\"" "$test_image" >/dev/null
+grep -F -- '--userns=keep-id' "$test_image" >/dev/null
+grep -F -- '--security-opt label=disable' "$test_image" >/dev/null
+grep -F 'LD_PRELOAD="$live_image_rootless_xattr_filter"' "$test_image" >/dev/null
+grep -F 'SOS_LIVE_IMAGE_BUILD_MODE=rootless-podman' "$test_image" >/dev/null
+grep -F 'bake-in-container is reserved for the rootless Podman wrapper' \
+  "$test_image" >/dev/null
+if grep -F -- '--privileged' "$test_image" >/dev/null; then
+  printf 'error: rootless live-image wrapper grants Podman --privileged\n' >&2
+  exit 1
+fi
+grep -F 'security.selinux' \
+  "$test_repo_root/tools/linux-live/skip-selinux-xattr.c" >/dev/null
+grep -F 'security.capability' \
+  "$test_repo_root/tools/linux-live/skip-selinux-xattr.c" >/dev/null
+grep -F 'FROM registry.fedoraproject.org/fedora@sha256:' \
+  "$test_repo_root/tools/linux-live/Containerfile" >/dev/null
+grep -F 'linux_live_image_rootless_metadata_test=PASS' \
+  "$test_repo_root/tools/linux-live/rootless-metadata-test" >/dev/null
 
 for test_doc in \
   "$test_repo_root/docs/linux-live-image.md" \
@@ -817,6 +863,7 @@ grep -F 'install-linux-login-session' "$test_repo_root/docs/linux-live-image.md"
 grep -F 'same-boot' "$test_repo_root/docs/linux-hardware-gate.md" >/dev/null
 grep -F -- '--source-sha256' "$test_repo_root/docs/linux-live-image.md" >/dev/null
 grep -F 'embedded media' "$test_repo_root/docs/linux-live-image.md" >/dev/null
+grep -F 'rootless Podman' "$test_repo_root/docs/linux-live-image.md" >/dev/null
 grep -F 'recovery_page_flip' "$test_repo_root/tools/linux-hardware-gate" >/dev/null
 grep -F 'completed significant DRM page flip.*recovery_view=true' \
   "$test_repo_root/tools/linux-hardware-gate" >/dev/null

@@ -1,0 +1,76 @@
+FROM registry.fedoraproject.org/fedora@sha256:6ee5af99b2a80c00dbfd6d9589ca961886b58d35c2d7a161d988bd84cf363553
+
+ARG BUILD_UID=1000
+ARG BUILD_GID=1000
+
+RUN dnf -q -y install --setopt=install_weak_deps=False \
+        acl \
+        alsa-lib-devel \
+        attr \
+        cargo \
+        clang \
+        cmake \
+        diffutils \
+        erofs-utils \
+        findutils \
+        firewalld \
+        fontconfig-devel \
+        gawk \
+        gcc \
+        gcc-c++ \
+        git \
+        glib2-devel \
+        grep \
+        isomd5sum \
+        jq \
+        libcap \
+        libgit2-devel \
+        libinput-devel \
+        libinput-utils \
+        libseat-devel \
+        libva-devel \
+        libX11-devel \
+        libxkbcommon-devel \
+        libxkbcommon-x11-devel \
+        libzstd-devel \
+        make \
+        mesa-libgbm-devel \
+        nodejs24-npm \
+        openssl \
+        openssl-devel \
+        patch \
+        pipewire-devel \
+        pkgconf-pkg-config \
+        policycoreutils \
+        python3 \
+        rsync \
+        rust \
+        sed \
+        shadow-utils \
+        sqlite-devel \
+        sudo \
+        systemd-devel \
+        util-linux \
+        vulkan-loader-devel \
+        wayland-devel \
+        xorriso \
+    && dnf clean all \
+    && rm -rf /var/cache/dnf
+
+COPY skip-selinux-xattr.c /tmp/skip-selinux-xattr.c
+RUN install -d -m 0755 /usr/local/libexec/sos-live-image \
+    && gcc -shared -fPIC -O2 -Wall -Wextra -Werror \
+        -o /usr/local/libexec/sos-live-image/libskip-selinux-xattr.so \
+        /tmp/skip-selinux-xattr.c -ldl \
+    && rm -f /tmp/skip-selinux-xattr.c \
+    && groupadd --non-unique --gid "$BUILD_GID" builder \
+    && useradd --non-unique --uid "$BUILD_UID" --gid "$BUILD_GID" \
+        --create-home --shell /bin/bash builder \
+    && printf 'builder ALL=(ALL) NOPASSWD: ALL\n' \
+        > /etc/sudoers.d/sos-live-image-builder \
+    && chmod 0440 /etc/sudoers.d/sos-live-image-builder
+
+USER builder
+ENV HOME=/home/builder
+ENV CARGO_HOME=/home/builder/.cargo
+ENV npm_config_cache=/home/builder/.cache/npm
