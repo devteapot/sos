@@ -10079,9 +10079,14 @@ Fedora Workstation remix `development-live`, installs and enables
 private non-symlink `--liveuser-password-file`. Password authentication is
 restricted to `liveuser`, root SSH is disabled, reusable host keys are removed
 so Fedora generates them at boot, and GDM liveuser autologin is disabled so the
-operator can choose GNOME or SOS. Rootfs validation checks the unlocked account,
-SSHD enablement/configuration, absent host keys, disabled autologin, and the
-non-promotable/mutable identity fields without exposing the password.
+operator can choose GNOME or SOS. Fedora creates `liveuser` during boot, so the
+builder derives a SHA-512 password hash and installs a root-owned mode-`0700`
+`livesys-session-extra` hook that assigns it after account creation, relocks
+Fedora's temporary passwordless root account, and disables GDM autologin after
+the GNOME live hook enables it. SSH requires and follows `livesys.service`.
+Rootfs validation checks that boot-time provisioning, SSHD
+enablement/configuration, absent host keys, and the non-promotable/mutable
+identity fields without exposing the password.
 
 `tools/linux-live-deploy` builds any selected compositor, experience-host,
 provider, supervisor, session, or authoring binary locally and deploys it over
@@ -10097,9 +10102,10 @@ current environment is labeled a release artifact.
 
 **Evidence / failures / measurement:**
 `./tests/linux-live-image-test.sh` exercises identity fields, password-file
-rejection, mocked chpasswd/systemd/firewalld provisioning, root-owned private
-rootfs validation, component selection, the complete mocked SSH deployment,
-remote installation, metadata, and digest verification. It passed with
+rejection, mocked password-hash/livesys/systemd/firewalld provisioning,
+root-owned private rootfs validation, component selection, the complete mocked
+SSH deployment, remote installation, metadata, and digest verification. It
+passed with
 `linux_live_image_host_tests=PASS`. `./tests/linux-hardware-gate-test.sh`
 passed with `linux_hardware_gate_host_tests=PASS`, including the rule that a
 complete development campaign is diagnostic rather than a normal PASS and a
@@ -10114,10 +10120,61 @@ model and model-weighted cost were zero.
 
 **Remaining risk / next gate:** No new ISO or physical acceptance is claimed.
 The rootfs tests use controlled command doubles; a real Fedora bake must still
-prove `chpasswd --root`, offline `sshd.service` enablement, firewall persistence,
-GDM session selection, and per-boot host-key generation together. Bake and
-flash development-live once, boot the Framework Laptop 12, verify password SSH
-and GNOME/SOS selection, deploy one changed binary with
+prove the boot-time `livesys` password/root-lock/GDM hook, offline
+`sshd.service` enablement and ordering, firewall persistence, GDM session
+selection, and per-boot host-key generation together. Bake and flash
+development-live once, boot the Framework Laptop 12, verify password SSH and
+GNOME/SOS selection, deploy one changed binary with
 `tools/linux-live-deploy`, verify its recorded digest on the laptop, and run a
 same-boot diagnostic collect. Ordinary SOS patches can then reuse that base;
 design and gate the immutable SOS-only `release` process separately.
+
+## 2026-08-25 — Move development-live account setup to Fedora boot provisioning
+
+**Goal / environment:** Run the first real `development-live` bake at clean
+revision `659003a35635da8423a7393ddf8d9b109ac355e1` from the checksum-pinned
+Fedora Workstation Live 44 x86-64 source
+`artifacts/linux-live-source/Fedora-Workstation-Live-44-1.7.x86_64.iso`
+(2,851,612,672 bytes,
+SHA-256 `1620295f6a00c27c3208f0c00b8ece4eab1ec69b9002152d97488bf26a426ddf`)
+and validate the new development access against a real Fedora rootfs.
+
+**Failure / rejected approach:** The bake extracted and staged SOS, then failed
+with `error: development rootfs has no liveuser account`. It exited 1 after
+207.79 seconds with 2,001,264 KiB maximum RSS; no ISO was produced and no
+physical-device result is claimed. The finalized failure log is
+`artifacts/development-live-659003a-bake.log` (8,659 bytes, SHA-256
+`90094fc77daa4aead345817069023a78c9449613e478db5f70716b699a0b42d7`),
+and its timing record is `artifacts/development-live-659003a-bake.time` (92
+bytes, SHA-256
+`d7fc757d673677f5465d5d2ace3801d8afaa515f346a18e933fa44f246051645`).
+Inspection of the extracted Fedora rootfs showed that
+`/usr/libexec/livesys/livesys-main` creates `liveuser` at boot, temporarily
+clears the root password, runs the GNOME hook that enables autologin, and only
+then sources `/var/lib/livesys/livesys-session-extra`. Offline `chpasswd` was
+therefore impossible, while editing GDM offline would be overwritten at boot;
+both approaches were rejected.
+
+**Decision / changed code:** `tools/linux-live-image` now verifies Fedora's
+expected `livesys` contract, derives a salted SHA-512 password hash with
+OpenSSL, and installs a root-owned mode-`0700` derived-spin hook. At boot the
+hook assigns that hash to the newly created `liveuser`, relocks root, and
+disables GDM autologin after Fedora's GNOME hook. An SSH unit drop-in requires
+and follows `livesys.service`, failing remote access closed if provisioning
+fails. Rootfs validation requires the hook, its ownership/mode and hash form,
+the root relock, disabled autologin, and SSH ordering while confirming that no
+pre-boot `liveuser` was fabricated. The Fedora-realistic test fixture now
+models boot-time account creation rather than an offline shadow entry.
+
+**Evidence / remaining risk / next gate:**
+`./tests/linux-live-image-test.sh` and
+`./tests/linux-hardware-gate-test.sh` passed with
+`linux_live_image_host_tests=PASS` and
+`linux_hardware_gate_host_tests=PASS`; combined with Bash parsing and
+`git diff --check`, the measured run took 1.25 seconds with 30,428 KiB maximum
+RSS. No model provider ran, so model and model-weighted cost were zero. These
+host tests prove the generated files and fail-closed relationships, not Fedora
+boot behavior. Commit the correction, rerun a clean bake in a new output
+directory, independently audit the ISO, then boot it and verify root remains
+locked, liveuser password SSH starts only after livesys, GDM offers both GNOME
+and SOS without autologin, and reboot removes incremental deployments.

@@ -341,6 +341,10 @@ chmod 0755 "$test_root/bin/dump.erofs"
 printf '%s\n' \
   '#!/usr/bin/env bash' \
   'set -euo pipefail' \
+  'if [[ "${1:-}" == stat && "$*" == *"/var/lib/livesys/livesys-session-extra" ]]; then' \
+  '  printf "root:root:700\\n"' \
+  '  exit 0' \
+  'fi' \
   'if [[ -z "${TEST_SUDO_UNLOCK_DIR:-}" || -z "${TEST_SUDO_LOG:-}" ]]; then' \
   '  if [[ "${1:-}" == install ]]; then' \
   '    shift' \
@@ -364,19 +368,12 @@ chmod 0755 "$test_root/bin/sudo"
 printf '%s\n' \
   '#!/usr/bin/env bash' \
   'set -euo pipefail' \
-  'root=""' \
-  'while [[ "$#" -gt 0 ]]; do' \
-  '  case "$1" in' \
-  '    --root) root="$2"; shift 2 ;;' \
-  '    --crypt-method) shift 2 ;;' \
-  '    *) exit 2 ;;' \
-  '  esac' \
-  'done' \
-  'IFS=: read -r user password' \
-  '[[ "$user" == liveuser && -n "$password" ]]' \
-  'sed -i "s|^liveuser:[^:]*:|liveuser:\$y\$development-hash:|" "$root/etc/shadow"' \
-  >"$test_root/bin/chpasswd"
-chmod 0755 "$test_root/bin/chpasswd"
+  '[[ "$*" == "passwd -6 -stdin" ]]' \
+  'IFS= read -r password' \
+  '[[ -n "$password" ]]' \
+  'printf "\\x24%s\\x24%s\\x24%s\\n" 6 development-salt development-hash' \
+  >"$test_root/bin/openssl"
+chmod 0755 "$test_root/bin/openssl"
 printf '%s\n' \
   '#!/usr/bin/env bash' \
   'set -euo pipefail' \
@@ -434,6 +431,7 @@ test_rootfs="$test_root/rootfs"
 mkdir -p \
   "$test_rootfs/usr/local/libexec/sos" \
   "$test_rootfs/usr/local/libexec/sos-agent/dist" \
+  "$test_rootfs/usr/libexec/livesys" \
   "$test_rootfs/usr/share/wayland-sessions" \
   "$test_rootfs/usr/share/sos/experiences" \
   "$test_rootfs/usr/share/doc/sos" \
@@ -453,11 +451,14 @@ mkdir -p \
 : >"$test_rootfs/usr/lib/systemd/system/gdm.service"
 : >"$test_rootfs/usr/lib/systemd/system/sshd.service"
 printf '%s\n' \
-  'root:x:0:0:root:/root:/bin/bash' \
-  'liveuser:x:1000:1000:Live User:/home/liveuser:/bin/bash' >"$test_rootfs/etc/passwd"
+  'root:x:0:0:root:/root:/bin/bash' >"$test_rootfs/etc/passwd"
 printf '%s\n' \
-  'root:*:20000:0:99999:7:::' \
-  'liveuser:!:20000:0:99999:7:::' >"$test_rootfs/etc/shadow"
+  'root:*:20000:0:99999:7:::' >"$test_rootfs/etc/shadow"
+printf '%s\n' \
+  '#!/usr/bin/sh' \
+  'useradd ${USERADDARGS:+"$USERADDARGS"} -c "Live System User" liveuser' \
+  '. /var/lib/livesys/livesys-session-extra' \
+  >"$test_rootfs/usr/libexec/livesys/livesys-main"
 printf '%s\n' \
   '[daemon]' \
   'AutomaticLoginEnable=True' \
@@ -486,10 +487,19 @@ PATH="$test_root/bin:$PATH" TEST_FIREWALL_LOG="$test_root/firewall.log" \
 grep -F 'linux_live_image_development_access=PASS' \
   "$test_root/configure-development-access.txt" >/dev/null
 grep -F -- '--service=ssh' "$test_root/firewall.log" >/dev/null
-grep -Fx 'AutomaticLoginEnable=False' "$test_rootfs/etc/gdm/custom.conf" >/dev/null
 grep -Fx 'PermitRootLogin no' \
   "$test_rootfs/etc/ssh/sshd_config.d/60-sos-development-live.conf" >/dev/null
-grep -F 'liveuser:$y$development-hash:' "$test_rootfs/etc/shadow" >/dev/null
+grep -Fx 'After=livesys.service' \
+  "$test_rootfs/etc/systemd/system/sshd.service.d/60-sos-development-live.conf" >/dev/null
+grep -Fx 'Requires=livesys.service' \
+  "$test_rootfs/etc/systemd/system/sshd.service.d/60-sos-development-live.conf" >/dev/null
+test_livesys_hook="$test_rootfs/var/lib/livesys/livesys-session-extra"
+[[ "$(stat -c %a "$test_livesys_hook")" == 700 ]]
+sh -n "$test_livesys_hook"
+grep -Fx "usermod --password '\$6\$development-salt\$development-hash' liveuser || exit 1" \
+  "$test_livesys_hook" >/dev/null
+grep -Fx 'passwd --lock root >/dev/null || exit 1' "$test_livesys_hook" >/dev/null
+grep -Fx 'AutomaticLoginEnable=False' "$test_livesys_hook" >/dev/null
 printf 'one\ntwo\n' >"$test_root/two-line-password"
 if PATH="$test_root/bin:$PATH" TEST_FIREWALL_LOG="$test_root/firewall.log" \
   "$test_image" configure-development-access \
