@@ -1,5 +1,7 @@
 //! Linux-backed provider adapters for the prototype experience model.
 
+mod system;
+
 use std::{
     collections::BTreeSet,
     fs,
@@ -22,8 +24,11 @@ use thiserror::Error;
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "snake_case")]
 pub enum Capability {
+    ApplicationLaunch,
+    AudioControl,
     CalendarRead,
     CalendarWrite,
+    NetworkControl,
     NotesRead,
     NotesWrite,
     MusicRead,
@@ -103,6 +108,7 @@ pub enum ProviderError {
 #[derive(Clone, Debug)]
 pub struct ProviderHub {
     root: PathBuf,
+    system: system::SystemAdapter,
 }
 
 impl ProviderHub {
@@ -111,7 +117,10 @@ impl ProviderHub {
         fs::create_dir_all(root.join("notes"))?;
         fs::create_dir_all(root.join("calendar"))?;
         fs::create_dir_all(root.join("surfaces"))?;
-        Ok(Self { root })
+        Ok(Self {
+            root,
+            system: system::SystemAdapter::connect(),
+        })
     }
 
     pub fn snapshot(&self, context: &ProviderContext) -> Result<ExperienceModel, ProviderError> {
@@ -131,6 +140,7 @@ impl ProviderHub {
         model.calendar = self.calendar()?;
         model.music = self.music()?;
         model.system = self.system(context)?;
+        model.providers = self.system.snapshot(context)?;
         let (surfaces, frames) = self.surfaces(context)?;
         model.surfaces = surfaces;
         Ok(ProviderSnapshot { model, frames })
@@ -210,6 +220,9 @@ impl ProviderHub {
         effect: &ProviderEffect,
     ) -> Result<(), ProviderError> {
         context.cancellation.check()?;
+        if system::is_system_effect(effect) {
+            return self.system.execute(context, effect);
+        }
         match (effect.provider.as_str(), effect.action.as_str()) {
             ("notes", "write") => self.write_note(
                 context,
@@ -259,6 +272,7 @@ impl ProviderHub {
         // event trigger. Connectivity, audio, power, and device changes are.
         system.unix_time_ms = 0;
         digest.update(serde_json::to_vec(&system)?);
+        digest.update(serde_json::to_vec(&self.system.fingerprint()?)?);
         Ok(format!("{:x}", digest.finalize()))
     }
 
@@ -311,9 +325,11 @@ impl ProviderHub {
                     playing: lines.next() == Some("Playing"),
                 })
             }
-            _ => Err(ProviderError::Unavailable(
-                "no music.json or active MPRIS player".into(),
-            )),
+            _ => Ok(Music {
+                title: String::new(),
+                artist: String::new(),
+                playing: false,
+            }),
         }
     }
 
@@ -403,8 +419,11 @@ pub fn prototype_grants(revision_id: impl Into<String>) -> ProviderContext {
     ProviderContext {
         revision_id: revision_id.into(),
         grants: [
+            Capability::ApplicationLaunch,
+            Capability::AudioControl,
             Capability::CalendarRead,
             Capability::CalendarWrite,
+            Capability::NetworkControl,
             Capability::NotesRead,
             Capability::NotesWrite,
             Capability::MusicRead,
@@ -562,6 +581,15 @@ fn read_battery_capacity(root: &Path) -> Option<u8> {
     fs::read_dir(root)
         .ok()?
         .filter_map(Result::ok)
+        .filter(|entry| {
+            let path = entry.path();
+            fs::read_to_string(path.join("type"))
+                .ok()
+                .is_some_and(|value| value.trim() == "Battery")
+                && !fs::read_to_string(path.join("scope"))
+                    .ok()
+                    .is_some_and(|value| value.trim() == "Device")
+        })
         .find_map(|entry| {
             fs::read_to_string(entry.path().join("capacity"))
                 .ok()?
@@ -572,14 +600,16 @@ fn read_battery_capacity(root: &Path) -> Option<u8> {
 }
 
 fn read_ac_online(root: &Path) -> Option<bool> {
-    fs::read_dir(root)
-        .ok()?
-        .filter_map(Result::ok)
-        .find_map(|entry| {
-            fs::read_to_string(entry.path().join("online"))
-                .ok()
-                .map(|value| value.trim() == "1")
-        })
+    let mut found = false;
+    let mut online = false;
+    for entry in fs::read_dir(root).ok()?.filter_map(Result::ok) {
+        let Ok(value) = fs::read_to_string(entry.path().join("online")) else {
+            continue;
+        };
+        found = true;
+        online |= value.trim() == "1";
+    }
+    found.then_some(online)
 }
 
 fn system_snapshot(net: &Path, power: &Path, drm: &Path, input: &Path) -> SystemSnapshot {
@@ -708,6 +738,23 @@ mod tests {
         hub.write_note(&context, "idea", "# Changed\nLive event.")
             .unwrap();
         assert_ne!(hub.generation().unwrap(), before);
+    }
+
+    #[test]
+    fn empty_optional_domains_do_not_hide_live_system_providers() {
+        let temp = tempfile::tempdir().unwrap();
+        let snapshot = ProviderHub::open(temp.path())
+            .unwrap()
+            .snapshot(&prototype_grants("empty-provider-root"))
+            .unwrap();
+        assert_eq!(
+            snapshot.providers.abi_version,
+            experience_ir::SYSTEM_PROVIDER_ABI_VERSION
+        );
+        assert!(snapshot.providers.clock.unix_time_ms > 0);
+        assert!(snapshot.music.title.is_empty());
+        assert!(snapshot.music.artist.is_empty());
+        assert!(!snapshot.music.playing);
     }
 
     #[test]
@@ -868,10 +915,19 @@ mod tests {
         }
         fs::create_dir(net.join("eth0")).unwrap();
         fs::write(net.join("eth0/operstate"), "up\n").unwrap();
-        fs::create_dir(power.join("BAT0")).unwrap();
-        fs::write(power.join("BAT0/capacity"), "73\n").unwrap();
         fs::create_dir(power.join("AC")).unwrap();
+        fs::write(power.join("AC/type"), "Mains\n").unwrap();
+        fs::write(power.join("AC/capacity"), "0\n").unwrap();
         fs::write(power.join("AC/online"), "1\n").unwrap();
+        fs::create_dir(power.join("BAT0")).unwrap();
+        fs::write(power.join("BAT0/type"), "Battery\n").unwrap();
+        fs::write(power.join("BAT0/capacity"), "73\n").unwrap();
+        fs::create_dir(power.join("hid-device-battery")).unwrap();
+        fs::write(power.join("hid-device-battery/type"), "Battery\n").unwrap();
+        fs::write(power.join("hid-device-battery/scope"), "Device\n").unwrap();
+        fs::write(power.join("hid-device-battery/capacity"), "0\n").unwrap();
+        fs::create_dir(power.join("USB-C")).unwrap();
+        fs::write(power.join("USB-C/online"), "0\n").unwrap();
         fs::create_dir(drm.join("card0-HDMI-A-1")).unwrap();
         fs::write(drm.join("card0-HDMI-A-1/status"), "connected\n").unwrap();
         fs::create_dir(input.join("event4")).unwrap();

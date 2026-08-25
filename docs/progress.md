@@ -10417,3 +10417,192 @@ boot for incremental `tools/linux-live-deploy` iterations, verify each deployed
 digest and same-boot identity, and keep the internal NVMe unmounted. Later,
 define a separate credential-free immutable release bake and physical release
 gate.
+
+## 2026-08-25 — Start Linux System Providers v1 on development-live
+
+**Goal / architecture:** Replace the Linux host's synthetic
+`model.providers` value with the same System Providers v1 contract used by
+Stock Base and generated Luau. The first Linux slice covers normalized
+clock/locale/time-zone facts, UPower power/thermal, NetworkManager connectivity
+and saved Wi-Fi, PipeWire/WirePlumber volume, MPRIS media sessions, and
+freedesktop application discovery/launch. Existing file/iCalendar notes and
+calendar plus sysfs display/input facts remain available through their current
+typed compatibility fields while the remaining canonical display, session,
+notification, clipboard, Bluetooth, and UDisks domains are designed as later
+ABI slices.
+
+`crates/providers-linux` now owns an in-process `SystemAdapter`. It uses typed
+blocking D-Bus proxies for UPower, NetworkManager, systemd-timedated, and MPRIS.
+The only command adapters are fixed-path `/usr/bin/wpctl` and
+`/usr/bin/gio launch` calls with fixed argument vectors and no shell.
+NetworkManager object paths, MPRIS bus names, desktop-file paths, and executable
+commands never cross the provider boundary; Luau receives bounded labels and
+SHA-256-derived opaque IDs. Capabilities are the intersection of revision
+grants and resources observed in the current snapshot. Power ceremonies remain
+ungranted and fail closed. The Linux host now routes the v1 audio, media,
+network, application, and attention envelopes to this provider boundary and
+polls provider fingerprints once per second.
+
+**Development-live integration:** `sos-login-session` now creates a private
+provider store and mode-`0600` wildcard grant manifest only when the image
+identity is both `development-live` and mutable, or when the development escape
+hatch is explicitly supplied. Stable sessions still require an exact private
+revision grant. `tools/linux-live-deploy` can atomically overlay and hash the
+new `provider-probe`, `login-session`, `stock-base`, and `api-doc` components in
+addition to the six session binaries; `tools/linux-hardware-gate` accepts only
+their fixed destinations. The read-only `sos-linux-provider-probe` exercises
+the same `ProviderHub` and grant loader used by the host and has no action mode.
+
+**Failures and corrections:** The first real probe found that an empty provider
+store and absent media player caused the legacy music adapter to fail the whole
+snapshot. Missing media now produces an inactive value so unrelated provider
+domains remain available, with a regression test. A second probe found that
+the first offline USB power-supply entry could mask an online AC entry; AC state
+now aggregates all readable supplies, and charging remains absent when there is
+no battery. Locale values are normalized to bounded language tags and the
+time-zone identifier comes from timedated with safe fallbacks. Public app,
+network, and MPRIS labels are UTF-8 byte-bounded and control-free, and action
+IDs require the expected opaque syntax before resource lookup.
+
+**Host evidence:** `cargo test --workspace --all-targets`,
+`cargo test -p sos-experience --features linux-host --all-targets`,
+`cargo clippy -p providers-linux --all-targets -- -D warnings`,
+`cargo clippy -p sos-experience --features linux-host --all-targets -- -D
+warnings`, `tests/linux-login-session-test.sh`,
+`tests/linux-live-image-test.sh`, Bash parsing, formatting, and
+`git diff --check` all passed. The provider crate has 17 passing tests and the
+Linux-host feature has 29. A release provider probe built in 10.04 seconds and
+is 1,738,120 bytes with SHA-256
+`b0de0b6e928e70373d39402980535541e67b772b801c0a8d9408eb534fecfdc5`.
+Its local live-service snapshot is
+`artifacts/linux-system-providers-framework12-20260825/host-provider-snapshot.json`
+(1,905 bytes, SHA-256
+`2cea5568db36c690d8ea6e39fc996082b5031100dc2f6d07cc7d2232ed5db4f1`):
+ABI 1, `Europe/Zurich`, validated Ethernet, AC power with no invented battery,
+two opaque compatible applications, and only `app_launch` available because
+this build host had no session audio or MPRIS resource. No model provider ran,
+so model and model-weighted cost were zero.
+
+**Physical state / next gate:** PiKVM still has the exact 3,056,205,824-byte
+development ISO attached as a complete read-only virtual CD-ROM. During this
+iteration its 1920x1080 stream remained byte-for-byte black, its ATX LED stayed
+off after one bounded short power click, and enabling the unavailable keyboard
+output did not create a live HID endpoint; no reset, long press, reboot, or
+internal-disk action followed. The Framework appeared as `fw12` at
+`192.168.1.123` and answered ICMP, but TCP/22 remained filtered through the
+complete provisioning wait. Therefore no overlay was deployed and no physical
+provider or interaction gate is claimed. Restore target SSH (or a working
+PiKVM keyboard/video path), deploy `experience-host`, `provider-probe`, and
+`login-session`, run the probe against live UPower/NetworkManager/PipeWire,
+enter a fresh SOS login, exercise reversible volume and saved-Wi-Fi actions,
+capture the stock provider UI, return to the original state, and only then
+finalize and verify the physical evidence manifest.
+
+## 2026-08-25 — Prove the first Linux System Providers slice on Framework 12
+
+**Goal / environment:** Continue on the same mutable development-live Fedora
+44 overlay instead of rebaking the ISO, then prove Stock Base and a generated
+revision can consume and act through the Linux provider boundary on the
+Framework Laptop 12. The physical campaign used boot ID
+`9b1818f2-c6c3-4829-8109-c9b3320a02a3`; PiKVM retained the exact
+3,056,205,824-byte development ISO as a complete, connected, read-only,
+non-writable virtual CD-ROM. Every storage audit kept `/dev/nvme0n1` and its
+partitions unmounted, with no installer or block writer present.
+
+**Implementation and decisions:** The selectable host now keeps the real login
+`HOME`, cache, D-Bus, and `XDG_RUNTIME_DIR`, while using an absolute compositor
+socket in its private runtime directory. This lets the provider reach the user
+PipeWire/WirePlumber service and lets ordinary native applications use portals.
+The login publishes `SOS:GNOME` to the user manager and starts a dedicated
+`sos-session.target`; a paired conflict target stops the standard graphical
+session and portal services on SOS logout. Existing applications are therefore
+indexed from bounded freedesktop entries and launched through a fixed
+`gio launch` argument vector rather than rewritten or exposed to generated
+code. A visible Calculator window, active generic/GNOME/GTK portal services,
+and clean process removal proved that path. The GNOME portal backend still
+warns that the Mutter ServiceChannel is absent; operations tied specifically
+to that Mutter protocol remain open.
+
+The power adapter originally selected a 0% HID peripheral ahead of the laptop
+battery. It now excludes `scope=Device` power supplies, and the physical
+snapshot reports the Framework battery at 80%. The host also creates a private
+semantic socket and Stock Base gives its status, controls, networks, and
+applications stable accessible roles and labels. The first horizontal status
+layout overflowed at 1920x1080; stacking the three bounded cards made power,
+network, and audio simultaneously visible. Stock exposes 24 bounded launch
+rows while the canonical provider probe truthfully inventories 34 eligible
+desktop entries.
+
+Rapid absolute-volume actions exposed a stale-snapshot race: a second click
+could derive its target from the pre-action model. System Providers v1 now has
+`audio.adjust_volume(delta)`, authorized by the existing volume capability and
+applied relative to current platform state. Linux uses fixed `wpctl` relative
+arguments; the Compat framework and Core native adapters implement the same
+closed action so the shared stock source remains portable. Zero and out-of-range
+deltas fail before adapter access. The physical semantic round trip queued up
+at `1787689676410221077` ns, reached 50% in 62.25 ms, queued down immediately,
+and returned exactly to the 40% baseline 59.38 ms later (123.97 ms total), then
+published `Volume 40%` again.
+
+**Physical evidence:** Development overlay
+`20260825T202116Z-da87df989f18-1889609` deployed the host, probe, Stock Base,
+and API documentation in 105.077 seconds; final Stock Base overlay
+`20260825T203215Z-da87df989f18-1893733` completed in 13.838 seconds and its
+remote SHA-256 matched the source. Coordinated activations retained host PID
+54637 and ended on durable revision
+`acaad98458e6b7b566362f91ac6bef3d8b57c106edb416367dac1788e531e51c`.
+The final canonical snapshot is
+`artifacts/linux-system-providers-framework12-20260825/target-final-provider-snapshot.json`
+(5,681 bytes, SHA-256
+`516abee2f8367cd0ccf598f514c3b4d525bf379dae88ec1c301ba64f6da78be5`):
+ABI 1, 80% battery, validated Wi-Fi, unmuted 40% audio, 34 applications, and
+only audio, saved-Wi-Fi, and application actions granted by observed resources.
+The atomic action record is
+`target-final-audio-semantic-roundtrip.txt` (492 bytes, SHA-256
+`25299a2de68cd2ded95540749ef7e98957acaa3b4d1aedd43fe3d248ac16a496`).
+The final 1920x1080 PiKVM frame is
+`pikvm/final-stock-system-providers-layout-fixed.jpg` (84,513 bytes, SHA-256
+`4cb3e02516f399d109a3064963e1933281004630e13cb89e1778d677835f4cfd`).
+
+One PiKVM coordinate test unintentionally selected Wi-Fi disconnect because
+the pointer scale was wrong; a bounded saved-network provider action restored
+the link without exposing a network credential, and raw coordinate input was
+retired for action evidence. PiKVM video remained healthy, but its keyboard
+reported no available output; a same-boot, non-secret-calibrated temporary
+uinput helper was used only at observed GDM fields and then removed. Repeated
+development logins made GDM reach its display-failure limit once; restarting
+only GDM restored a fresh greeter. The final logout left all SOS processes,
+both graphical targets, and the portal inactive, kept volume at 40%, and kept
+the internal NVMe unmounted.
+
+**Verification / verdict:** `cargo test --workspace --all-targets`, the
+29-test Linux-host experience suite, the 17-test provider suite, the 11-test
+Android authority suite, strict Clippy for the changed Rust boundaries,
+formatting, Bash parsing, `tests/linux-login-session-test.sh`,
+`tests/linux-live-image-test.sh`, and `git diff --check` passed. The shared
+Compat Java and Core C++ relative-volume adapters were not rebuilt into Android
+artifacts in this Linux campaign. No model request ran, so model and
+model-weighted cost were zero.
+
+The prepared same-boot hardware campaign correctly ended
+`DIAGNOSTIC_FAIL`, not provider acceptance PASS: touchpad motion and touchscreen
+input were not exercised, seven iterative host launches fail the stable-host
+lifecycle criterion, and earlier failed login/session experiments remain in
+the campaign journal. Same boot, recovery page flip, direct compositor,
+session readiness, agent start, keyboard input, touchpad button, clean logout,
+transactional activation, durable authority, fallback GDM, and kernel GPU
+criteria passed. Its deterministic nested manifest has 38 files. The complete
+campaign is indexed by
+`artifacts/linux-system-providers-framework12-20260825/evidence-manifest.tsv`
+(30,662 bytes, SHA-256
+`389f2cbb34041bc23f3cacbd6b7ebc8c13ff911eab624961f3212cae29081479`),
+independently verified with 275 files.
+
+**Remaining risk / next gate:** This accepts the first canonical Linux slice,
+not the whole requested matrix or a release. Normalize session/display/input,
+notifications/attention, files/storage/clipboard, calendar/notes, Bluetooth,
+and removable devices into subsequent provider ABI slices. Then run a fresh
+single-login Framework campaign with physical touchpad motion, touchscreen,
+suspend/resume, portal dialogs needed by stock applications, and no historical
+process failures. Keep power confirmation, credentials, permissions,
+emergency, and Recovery surfaces fixed native UI.

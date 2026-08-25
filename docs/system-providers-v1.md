@@ -2,11 +2,14 @@
 
 ## Scope
 
-This milestone replaces the Android system product's seeded HOME model with a
-live, versioned system-provider plane. The first vertical slice is clock,
-power/thermal, connectivity/Wi-Fi, audio/media, compatible applications, and
-attention. Display, session, telephony, alarm, and personal-data providers are
-later slices.
+This milestone replaces seeded HOME models with a live, versioned
+system-provider plane on Android, Core, and Linux. The first vertical slice is
+clock, power/thermal, connectivity/Wi-Fi, audio/media, compatible applications,
+and attention. The Linux adapter also preserves the earlier typed notes,
+calendar, display, and input snapshots while those domains are normalized into
+the canonical provider document in later ABI slices. Session, richer display
+control, telephony, alarm, clipboard, Bluetooth, and removable-storage
+contracts remain later slices.
 
 Safety-critical credential, lock, permission, emergency, trusted power
 confirmation, and Recovery surfaces remain fixed native code. A Luau revision
@@ -37,6 +40,26 @@ application manifest, and bounded media/attention state. Its initial app
 manifest is empty and it has no registered media or attention producers, so
 those inventories and capabilities remain truthfully absent.
 
+Linux selects an in-process adapter in the isolated experience host. UPower,
+NetworkManager, and MPRIS are called over typed D-Bus proxies. PipeWire volume
+and desktop application launch use strict `wpctl` and `gio launch` argument
+vectors because those are stable command surfaces owned by the corresponding
+desktop projects. The adapter never invokes a shell. It inventories eligible
+`.desktop` entries once per session and exposes only labels plus opaque IDs;
+desktop paths, D-Bus object paths, MPRIS names, and executable command lines do
+not cross into Luau. Missing daemons or tools remove facts/capabilities rather
+than replacing them with guessed state.
+
+Existing native applications are not rewritten. The applications provider
+indexes eligible freedesktop desktop entries, exposes only a bounded label and
+opaque selection ID, resolves that ID again inside the adapter, and launches
+the entry with `gio launch`. The SOS login publishes a normal graphical-session
+environment and identifies itself as `SOS:GNOME`, allowing launched clients to
+use the user D-Bus and XDG desktop portals while their windows remain ordinary
+surfaces under the SOS compositor. A portal or service integration that needs
+compositor-specific protocol support can therefore fail independently without
+granting Luau direct access to that service.
+
 Only bounded scalar values, visible labels, and opaque selection IDs cross the
 socket. Binder objects, Intents, package/Activity names, notification keys,
 credentials, and permission tokens do not. The Rust authority rejects an
@@ -59,11 +82,21 @@ action enum, checks payload bounds and opaque-ID syntax, and requires the
 matching capability from a fresh adapter snapshot. Only the typed enum reaches
 the selected adapter. Stock and generated revisions use the same path.
 
-The v1 adapters grant bounded volume/mute, media, saved-Wi-Fi,
+The v1 adapters grant bounded absolute or atomic-relative volume, mute, media,
+saved-Wi-Fi,
 compatible-application launch, and attention-acknowledgement actions when their
 underlying resource is present. Lock, restart, and shutdown variants exist in
 the authority type boundary but are intentionally absent from the granted
 allowlist until the fixed trusted-confirmation surface exists.
+
+On mutable Linux development-live media, `sos-login-session` creates a private
+`0600` wildcard grant manifest and explicitly enables the development wildcard
+escape hatch. That permits generated revisions to exercise the provider set
+while iterating without rebaking the ISO. Non-development sessions do not get
+this wildcard; they must supply a private revision-keyed grant manifest.
+The development-only `sos-linux-provider-probe` reads through the same
+`ProviderHub` and grant manifest and emits a bounded JSON snapshot for SSH
+acceptance evidence; it has no action mode.
 
 ## Stock trust and fallback
 

@@ -26,8 +26,10 @@ bash -n "$test_image"
 bash -n "$test_deploy"
 bash -n "$test_install"
 "$test_deploy" components >"$test_root/deploy-components.txt"
-for test_component in compositor experience-host provider supervisor session authoring; do
-  grep -E "^${test_component}[[:space:]]+/usr/local/libexec/sos/" \
+for test_component in \
+  compositor experience-host provider supervisor session authoring provider-probe \
+  login-session session-target session-shutdown-target hardware-gate stock-base api-doc; do
+  grep -E "^${test_component}[[:space:]]+/" \
     "$test_root/deploy-components.txt" >/dev/null
 done
 if "$test_deploy" deploy --target root@example.test --component compositor \
@@ -81,8 +83,13 @@ printf '%s\n' \
   '    ;;' \
   '  "set -euo pipefail;"*)' \
   '    stage="$(cat "$TEST_DEPLOY_STATE")"' \
-  '    mkdir -p "$TEST_DEPLOY_REMOTE/usr/local/libexec/sos" "$TEST_DEPLOY_REMOTE/usr/share/doc/sos"' \
+  '    mkdir -p "$TEST_DEPLOY_REMOTE/usr/local/libexec/sos" "$TEST_DEPLOY_REMOTE/usr/local/lib/systemd/user" "$TEST_DEPLOY_REMOTE/usr/share/doc/sos" "$TEST_DEPLOY_REMOTE/usr/share/sos/experiences"' \
   '    for source in "$stage"/sos-*; do cp -- "$source" "$TEST_DEPLOY_REMOTE/usr/local/libexec/sos/$(basename "$source")"; done' \
+  '    [[ ! -f "$stage/linux-hardware-gate" ]] || cp -- "$stage/linux-hardware-gate" "$TEST_DEPLOY_REMOTE/usr/local/libexec/sos/"' \
+  '    [[ ! -f "$stage/sos-session.target" ]] || cp -- "$stage/sos-session.target" "$TEST_DEPLOY_REMOTE/usr/local/lib/systemd/user/"' \
+  '    [[ ! -f "$stage/sos-session-shutdown.target" ]] || cp -- "$stage/sos-session-shutdown.target" "$TEST_DEPLOY_REMOTE/usr/local/lib/systemd/user/"' \
+  '    [[ ! -f "$stage/default.luau" ]] || cp -- "$stage/default.luau" "$TEST_DEPLOY_REMOTE/usr/share/sos/experiences/"' \
+  '    [[ ! -f "$stage/experience-api.md" ]] || cp -- "$stage/experience-api.md" "$TEST_DEPLOY_REMOTE/usr/share/doc/sos/"' \
   '    cp -- "$stage/development-deployment.env" "$TEST_DEPLOY_REMOTE/usr/share/doc/sos/"' \
   '    cp -- "$stage/development-deployment-manifest.tsv" "$TEST_DEPLOY_REMOTE/usr/share/doc/sos/"' \
   '    rm -r -- "$stage"' \
@@ -119,17 +126,29 @@ SOS_DEVELOPMENT_DEPLOY_ARTIFACTS_DIR="$test_root/deploy-artifacts" \
     --target liveuser@mock-target \
     --component experience-host \
     --component compositor \
+    --component provider-probe \
+    --component login-session \
+    --component session-target \
+    --component session-shutdown-target \
+    --component hardware-gate \
+    --component stock-base \
+    --component api-doc \
     >"$test_root/deploy-pass.txt"
 grep -F 'linux_development_live_deployed=PASS' "$test_root/deploy-pass.txt" >/dev/null
 grep -F 'promotion_eligible=false' "$test_root/deploy-pass.txt" >/dev/null
-for test_binary in sos-experience-host sos-compositor; do
+for test_binary in \
+  sos-experience-host sos-compositor sos-linux-provider-probe sos-login-session linux-hardware-gate; do
   [[ -x "$test_deploy_remote/usr/local/libexec/sos/$test_binary" ]]
 done
+[[ -f "$test_deploy_remote/usr/share/sos/experiences/default.luau" ]]
+[[ -f "$test_deploy_remote/usr/share/doc/sos/experience-api.md" ]]
+[[ -f "$test_deploy_remote/usr/local/lib/systemd/user/sos-session.target" ]]
+[[ -f "$test_deploy_remote/usr/local/lib/systemd/user/sos-session-shutdown.target" ]]
 test_deployment_metadata="$test_deploy_remote/usr/share/doc/sos/development-deployment.env"
 test_deployment_manifest="$test_deploy_remote/usr/share/doc/sos/development-deployment-manifest.tsv"
 grep -Fx 'image_kind=development-live' "$test_deployment_metadata" >/dev/null
 grep -Fx 'promotion_eligible=false' "$test_deployment_metadata" >/dev/null
-[[ "$(wc -l <"$test_deployment_manifest")" -eq 2 ]]
+[[ "$(wc -l <"$test_deployment_manifest")" -eq 9 ]]
 while IFS=$'\t' read -r test_path test_bytes test_sha; do
   [[ "$(stat -c %s "$test_deploy_remote$test_path")" == "$test_bytes" ]]
   [[ "$(sha256sum "$test_deploy_remote$test_path" | cut -d ' ' -f 1)" == "$test_sha" ]]

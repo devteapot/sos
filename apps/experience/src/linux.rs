@@ -2216,11 +2216,15 @@ fn start_provider_updates(
             == Some(std::ffi::OsStr::new("1")),
         active_revision: Arc::new(Mutex::new(revision_id.into())),
     };
+    // Fingerprint before taking the initial snapshot. Providers such as PipeWire
+    // can become ready while the first model is being collected; recording the
+    // generation afterwards would make that newer state the watcher baseline
+    // while leaving the UI stuck with the older snapshot.
+    let hub = access.hub.clone();
+    let generation = hub.generation().context("fingerprint Linux providers")?;
     let snapshot = access.snapshot(revision_id)?;
     assets::install_provider_frames(&snapshot.frames);
     let model = snapshot.model;
-    let hub = access.hub.clone();
-    let generation = hub.generation().context("fingerprint Linux providers")?;
     let watcher_access = access.clone();
     thread::Builder::new()
         .name("sos-provider-events".into())
@@ -2228,7 +2232,7 @@ fn start_provider_updates(
             let mut generation = generation;
             let mut revision_id = watcher_access.active_revision();
             while !sender.is_closed() {
-                thread::sleep(Duration::from_millis(250));
+                thread::sleep(Duration::from_secs(1));
                 let next_revision_id = watcher_access.active_revision();
                 let next = match hub.generation() {
                     Ok(next) if next != generation || next_revision_id != revision_id => next,
@@ -2624,7 +2628,19 @@ fn provider_action(
                 event_title: event_title.into(),
             })))
         }
-        ("notes", "write") | ("calendar", "append") | ("music", "command") => Ok(None),
+        ("notes", "write")
+        | ("calendar", "append")
+        | ("music", "command")
+        | ("audio", "set_volume")
+        | ("audio", "adjust_volume")
+        | ("audio", "set_muted")
+        | ("media", "play_pause")
+        | ("media", "next")
+        | ("media", "previous")
+        | ("network", "connect")
+        | ("network", "disconnect")
+        | ("apps", "launch")
+        | ("attention", "acknowledge") => Ok(None),
         (provider, action) => Err(format!("unsupported provider effect: {provider}.{action}")),
     }
 }
@@ -2760,6 +2776,29 @@ mod tests {
             .unwrap(),
             None
         );
+        for (provider, action) in [
+            ("audio", "set_volume"),
+            ("audio", "adjust_volume"),
+            ("audio", "set_muted"),
+            ("media", "play_pause"),
+            ("media", "next"),
+            ("media", "previous"),
+            ("network", "connect"),
+            ("network", "disconnect"),
+            ("apps", "launch"),
+            ("attention", "acknowledge"),
+        ] {
+            assert_eq!(
+                provider_action(&experience_ir::ProviderEffect {
+                    provider: provider.into(),
+                    action: action.into(),
+                    payload: JsonValue::Null,
+                })
+                .unwrap(),
+                None,
+                "{provider}.{action} must stay inside the Linux provider boundary"
+            );
+        }
         assert!(provider_action(&experience_ir::ProviderEffect {
             provider: "shell".into(),
             action: "exec".into(),

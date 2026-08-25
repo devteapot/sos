@@ -28,6 +28,7 @@ version = "0.1.0"
 [workspace.dependencies]
 android-authority-protocol = { path = "crates/android-authority-protocol" }
 async-channel = "2.5"
+chrono = "0.4.45"
 compositor-control-protocol = { path = "crates/compositor-control-protocol" }
 experience-host-protocol = { path = "crates/experience-host-protocol" }
 experience-ir = { path = "crates/experience-ir" }
@@ -41,6 +42,7 @@ serde_json = "1"
 sha2 = "0.10"
 service-protocol = { path = "crates/service-protocol" }
 thiserror = "2"
+zbus = "5.18.0"
 zeroize = "1.9"
 
 [patch.crates-io]

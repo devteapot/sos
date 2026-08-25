@@ -47,6 +47,18 @@ if name == "sos-revision-supervisor":
 if name == "sos-linux-session":
     runtime = option("--runtime-dir")
     root = option("--root")
+    environment_file = os.environ.get("SOS_TEST_SESSION_ENV_FILE")
+    if environment_file:
+        with open(environment_file, "w", encoding="utf-8") as output:
+            for variable in (
+                "SOS_LINUX_PROVIDER_ROOT",
+                "SOS_PROVIDER_GRANTS",
+                "SOS_PROVIDER_DEVELOPMENT_GRANTS",
+                "SOS_ACCESSIBILITY_SOCKET",
+                "XDG_CURRENT_DESKTOP",
+                "WAYLAND_DISPLAY",
+            ):
+                output.write(variable + "=" + os.environ.get(variable, "") + "\n")
     provider = listener(os.path.join(runtime, "provider-state.sock"))
     supervisor = listener(os.path.join(root, "run", "supervisor.sock"))
     print("linux_system_session_ready revision_id=" + "1" * 64 + " evidence=drm_page_flip", flush=True)
@@ -60,6 +72,13 @@ if name == "sos-agent-authoring":
     authoring = listener(option("--listen-socket"))
     wait_for_stop()
     authoring.close()
+    raise SystemExit(0)
+
+if name == "systemctl":
+    arguments_file = os.environ.get("SOS_TEST_SYSTEMCTL_ARGS_FILE")
+    if arguments_file:
+        with open(arguments_file, "a", encoding="utf-8") as output:
+            output.write(" ".join(sys.argv[1:]) + "\n")
     raise SystemExit(0)
 
 if name == "node":

@@ -19,6 +19,7 @@ const MAX_OPAQUE_ID_BYTES: usize = 128;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum SystemAction {
     SetVolume(u8),
+    AdjustVolume(i8),
     SetMuted(bool),
     MediaPlayPause,
     MediaNext,
@@ -35,7 +36,7 @@ pub(crate) enum SystemAction {
 impl SystemAction {
     fn capability(&self) -> SystemCapability {
         match self {
-            Self::SetVolume(_) => SystemCapability::AudioSetVolume,
+            Self::SetVolume(_) | Self::AdjustVolume(_) => SystemCapability::AudioSetVolume,
             Self::SetMuted(_) => SystemCapability::AudioSetMuted,
             Self::MediaPlayPause => SystemCapability::MediaPlayPause,
             Self::MediaNext => SystemCapability::MediaNext,
@@ -55,6 +56,9 @@ impl SystemAction {
         match self {
             Self::SetVolume(percent) => {
                 json!({"provider":"audio","action":"set_volume","payload":{"percent":percent}})
+            }
+            Self::AdjustVolume(delta) => {
+                json!({"provider":"audio","action":"adjust_volume","payload":{"delta":delta}})
             }
             Self::SetMuted(muted) => {
                 json!({"provider":"audio","action":"set_muted","payload":{"muted":muted}})
@@ -226,6 +230,13 @@ fn parse_action(effect: &ProviderEffect) -> Result<SystemAction, String> {
             .filter(|percent| *percent <= 100)
             .map(|percent| SystemAction::SetVolume(percent as u8))
             .ok_or_else(|| "audio.set_volume requires percent in 0..100".into()),
+        ("audio", "adjust_volume") => effect
+            .payload
+            .get("delta")
+            .and_then(Value::as_i64)
+            .filter(|delta| (-100..=100).contains(delta) && *delta != 0)
+            .map(|delta| SystemAction::AdjustVolume(delta as i8))
+            .ok_or_else(|| "audio.adjust_volume requires a non-zero delta in -100..100".into()),
         ("audio", "set_muted") => effect
             .payload
             .get("muted")
@@ -873,6 +884,25 @@ mod tests {
                 .unwrap(),
             SystemAction::SetVolume(75)
         );
+        assert_eq!(
+            registry
+                .parse_and_authorize(&ProviderEffect {
+                    provider: "audio".into(),
+                    action: "adjust_volume".into(),
+                    payload: json!({"delta": -10}),
+                })
+                .unwrap(),
+            SystemAction::AdjustVolume(-10)
+        );
+        for delta in [0, -101, 101] {
+            assert!(registry
+                .parse_and_authorize(&ProviderEffect {
+                    provider: "audio".into(),
+                    action: "adjust_volume".into(),
+                    payload: json!({"delta": delta}),
+                })
+                .is_err());
+        }
         assert!(registry
             .parse_and_authorize(&ProviderEffect {
                 provider: "audio".into(),

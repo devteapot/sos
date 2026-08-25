@@ -20,7 +20,7 @@ local function text(value, size, color, semantics, id)
     }
 end
 
-local function group(flow, layout, children, background, radius, id, tap_action)
+local function group(flow, layout, children, background, radius, id, tap_action, tap_label)
     layout = layout or {}
     layout.flow = flow
     return {
@@ -28,6 +28,7 @@ local function group(flow, layout, children, background, radius, id, tap_action)
         layout = layout,
         paint = background and {{ kind = "fill_bounds", color = background, radius = radius or 0 }} or nil,
         interaction = tap_action and { tap_action = tap_action } or nil,
+        semantics = tap_action and { role = "button", label = tap_label or tap_action } or nil,
         children = children,
     }
 end
@@ -35,11 +36,7 @@ end
 local function button(label, action, tone, id)
     return group("row", { padding = 10, justify = "center", align = "center" }, {
         text(label, 11, tone or moss),
-    }, white, 12, id or action, action)
-end
-
-local function bounded_percent(value)
-    return math.max(0, math.min(100, tonumber(value) or 0))
+    }, white, 12, id or action, action, label)
 end
 
 local function has_capability(providers, expected)
@@ -72,15 +69,22 @@ local function status_plane(providers)
             }),
             text("SOS", 13, moss),
         }),
-        group("row", { gap = 8 }, {
-            group("column", { padding = 12, gap = 3, grow = true }, {
-                text("POWER", 10, moss), text(battery, 13, ink),
+        group("column", { gap = 8 }, {
+            group("column", { padding = 12, gap = 3 }, {
+                text("POWER", 10, moss),
+                text(battery, 13, ink,
+                    { role = "status", label = "Power status", value = battery }, "stock-power"),
             }, white, 14),
-            group("column", { padding = 12, gap = 3, grow = true }, {
-                text("NETWORK", 10, moss), text(connection, 13, ink),
+            group("column", { padding = 12, gap = 3 }, {
+                text("NETWORK", 10, moss),
+                text(connection, 13, ink,
+                    { role = "status", label = "Network status", value = connection },
+                    "stock-network"),
             }, white, 14),
-            group("column", { padding = 12, gap = 3, grow = true }, {
-                text("AUDIO", 10, moss), text(volume, 13, ink),
+            group("column", { padding = 12, gap = 3 }, {
+                text("AUDIO", 10, moss),
+                text(volume, 13, ink,
+                    { role = "status", label = "Audio status", value = volume }, "stock-audio"),
             }, white, 14),
         }),
     }, mint, 22, "status-plane")
@@ -133,7 +137,8 @@ local function quick_controls(providers)
             }),
             text(network.connected and "CURRENT" or "CONNECT", 10, moss),
         }, white, 14, "wifi-network-" .. tostring(index),
-            can_connect and "wifi_connect_" .. tostring(index) or nil))
+            can_connect and "wifi_connect_" .. tostring(index) or nil,
+            can_connect and "Connect to " .. network.label or nil))
     end
     return group("column", { gap = 9 }, controls, nil, 0, "quick-controls")
 end
@@ -154,7 +159,8 @@ local function application_workspace(providers)
             text(application.label, 15, ink), text(can_launch and "OPEN" or "UNAVAILABLE", 10,
                 can_launch and moss or muted),
         }, white, 15, "application-" .. tostring(index),
-            can_launch and "app_launch_" .. tostring(index) or nil))
+            can_launch and "app_launch_" .. tostring(index) or nil,
+            can_launch and "Open " .. application.label or nil))
     end
     return group("column", { gap = 9 }, rows, nil, 0, "application-workspace")
 end
@@ -282,13 +288,11 @@ local function update(model, state, event)
     local connectivity = providers.connectivity or {}
     if event.action == "audio_volume_down" then
         return { state = state, effects = {{
-            provider = "audio", action = "set_volume",
-            payload = { percent = bounded_percent((audio.volume_percent or 0) - 10) },
+            provider = "audio", action = "adjust_volume", payload = { delta = -10 },
         }} }
     elseif event.action == "audio_volume_up" then
         return { state = state, effects = {{
-            provider = "audio", action = "set_volume",
-            payload = { percent = bounded_percent((audio.volume_percent or 0) + 10) },
+            provider = "audio", action = "adjust_volume", payload = { delta = 10 },
         }} }
     elseif event.action == "audio_toggle_mute" then
         return { state = state, effects = {{

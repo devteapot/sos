@@ -29,7 +29,14 @@ development_deploy_components() {
     'provider            /usr/local/libexec/sos/sos-provider-state-service' \
     'supervisor          /usr/local/libexec/sos/sos-revision-supervisor' \
     'session             /usr/local/libexec/sos/sos-linux-session' \
-    'authoring           /usr/local/libexec/sos/sos-agent-authoring'
+    'authoring           /usr/local/libexec/sos/sos-agent-authoring' \
+    'provider-probe      /usr/local/libexec/sos/sos-linux-provider-probe' \
+    'login-session       /usr/local/libexec/sos/sos-login-session' \
+    'session-target      /usr/local/lib/systemd/user/sos-session.target' \
+    'session-shutdown-target /usr/local/lib/systemd/user/sos-session-shutdown.target' \
+    'hardware-gate       /usr/local/libexec/sos/linux-hardware-gate' \
+    'stock-base          /usr/share/sos/experiences/default.luau' \
+    'api-doc             /usr/share/doc/sos/experience-api.md'
 }
 
 development_deploy_metadata_value() {
@@ -45,6 +52,50 @@ development_deploy_binary_name() {
     supervisor) printf 'sos-revision-supervisor\n' ;;
     session) printf 'sos-linux-session\n' ;;
     authoring) printf 'sos-agent-authoring\n' ;;
+    provider-probe) printf 'sos-linux-provider-probe\n' ;;
+    login-session) printf 'sos-login-session\n' ;;
+    session-target) printf 'sos-session.target\n' ;;
+    session-shutdown-target) printf 'sos-session-shutdown.target\n' ;;
+    hardware-gate) printf 'linux-hardware-gate\n' ;;
+    stock-base) printf 'default.luau\n' ;;
+    api-doc) printf 'experience-api.md\n' ;;
+    *) development_deploy_fail "unknown component: $1" ;;
+  esac
+}
+
+development_deploy_source_path() {
+  case "$1" in
+    compositor|experience-host|provider|supervisor|session|authoring|provider-probe)
+      printf '%s/release/%s\n' \
+        "$development_deploy_target_dir" "$(development_deploy_binary_name "$1")"
+      ;;
+    login-session) printf '%s/packaging/libexec/sos-login-session\n' "$development_deploy_root" ;;
+    session-target) printf '%s/packaging/systemd/user/sos-session.target\n' "$development_deploy_root" ;;
+    session-shutdown-target) printf '%s/packaging/systemd/user/sos-session-shutdown.target\n' "$development_deploy_root" ;;
+    hardware-gate) printf '%s/tools/linux-hardware-gate\n' "$development_deploy_root" ;;
+    stock-base) printf '%s/experiences/default.luau\n' "$development_deploy_root" ;;
+    api-doc) printf '%s/docs/experience-api.md\n' "$development_deploy_root" ;;
+    *) development_deploy_fail "unknown component: $1" ;;
+  esac
+}
+
+development_deploy_destination() {
+  case "$1" in
+    compositor|experience-host|provider|supervisor|session|authoring|provider-probe|login-session|hardware-gate)
+      printf '/usr/local/libexec/sos/%s\n' "$(development_deploy_binary_name "$1")"
+      ;;
+    session-target) printf '/usr/local/lib/systemd/user/sos-session.target\n' ;;
+    session-shutdown-target) printf '/usr/local/lib/systemd/user/sos-session-shutdown.target\n' ;;
+    stock-base) printf '/usr/share/sos/experiences/default.luau\n' ;;
+    api-doc) printf '/usr/share/doc/sos/experience-api.md\n' ;;
+    *) development_deploy_fail "unknown component: $1" ;;
+  esac
+}
+
+development_deploy_mode() {
+  case "$1" in
+    compositor|experience-host|provider|supervisor|session|authoring|provider-probe|login-session|hardware-gate) printf '0755\n' ;;
+    session-target|session-shutdown-target|stock-base|api-doc) printf '0644\n' ;;
     *) development_deploy_fail "unknown component: $1" ;;
   esac
 }
@@ -76,6 +127,11 @@ development_deploy_build_component() {
       cargo build --locked --release \
         -p sos-linux-session --bin sos-agent-authoring
       ;;
+    provider-probe)
+      cargo build --locked --release \
+        -p providers-linux --bin sos-linux-provider-probe
+      ;;
+    login-session|session-target|session-shutdown-target|hardware-gate|stock-base|api-doc) ;;
     *) development_deploy_fail "unknown component: $component" ;;
   esac
 }
@@ -101,7 +157,10 @@ development_deploy_run() {
   [[ "$target" =~ ^liveuser@([A-Za-z0-9._-]+|\[[0-9A-Fa-f:]+\])$ ]] || \
     development_deploy_fail "target must be liveuser@HOST without SSH options"
   if [[ "${#requested_components[@]}" -eq 0 ]]; then
-    requested_components=(compositor experience-host provider supervisor session authoring)
+    requested_components=(
+      compositor experience-host provider supervisor session authoring provider-probe
+      login-session session-target session-shutdown-target hardware-gate stock-base api-doc
+    )
   fi
 
   local -A selected=()
@@ -167,18 +226,22 @@ development_deploy_run() {
 
   local staging="$temporary/staging"
   mkdir "$staging"
-  local binary source_path destination bytes digest
+  local artifact source_path destination mode bytes digest
   local manifest="$staging/development-deployment-manifest.tsv"
   : >"$manifest"
   for component in "${components[@]}"; do
     development_deploy_build_component "$component"
-    binary="$(development_deploy_binary_name "$component")"
-    source_path="$development_deploy_target_dir/release/$binary"
-    destination="/usr/local/libexec/sos/$binary"
-    [[ -x "$source_path" ]] || development_deploy_fail "built artifact is missing: $source_path"
-    install -m 0755 "$source_path" "$staging/$binary"
-    bytes="$(stat -c %s "$staging/$binary")"
-    digest="$(sha256sum "$staging/$binary" | cut -d ' ' -f 1)"
+    artifact="$(development_deploy_binary_name "$component")"
+    source_path="$(development_deploy_source_path "$component")"
+    destination="$(development_deploy_destination "$component")"
+    mode="$(development_deploy_mode "$component")"
+    [[ -f "$source_path" ]] || development_deploy_fail "deployment artifact is missing: $source_path"
+    if [[ "$mode" == 0755 && ! -x "$source_path" ]]; then
+      development_deploy_fail "deployment artifact is not executable: $source_path"
+    fi
+    install -m "$mode" "$source_path" "$staging/$artifact"
+    bytes="$(stat -c %s "$staging/$artifact")"
+    digest="$(sha256sum "$staging/$artifact" | cut -d ' ' -f 1)"
     printf '%s\t%s\t%s\n' "$destination" "$bytes" "$digest" >>"$manifest"
   done
 
@@ -202,9 +265,14 @@ development_deploy_run() {
   scp "${ssh_options[@]}" "$staging"/* "$target:$remote_dir/"
 
   local remote_command="set -euo pipefail; trap 'rm -r -- \"$remote_dir\"' EXIT;"
+  if [[ -n "${selected[session-target]:-}" || -n "${selected[session-shutdown-target]:-}" ]]; then
+    remote_command+=" sudo install -d -o root -g root -m 0755 '/usr/local/lib/systemd/user';"
+  fi
   for component in "${components[@]}"; do
-    binary="$(development_deploy_binary_name "$component")"
-    remote_command+=" sudo install -o root -g root -m 0755 '$remote_dir/$binary' '/usr/local/libexec/sos/$binary';"
+    artifact="$(development_deploy_binary_name "$component")"
+    destination="$(development_deploy_destination "$component")"
+    mode="$(development_deploy_mode "$component")"
+    remote_command+=" sudo install -o root -g root -m '$mode' '$remote_dir/$artifact' '$destination';"
   done
   remote_command+=" sudo install -o root -g root -m 0644 '$remote_dir/development-deployment.env' '$development_deploy_metadata';"
   remote_command+=" sudo install -o root -g root -m 0644 '$remote_dir/development-deployment-manifest.tsv' '$development_deploy_manifest';"

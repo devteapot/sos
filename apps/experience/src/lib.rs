@@ -139,8 +139,8 @@ mod tests {
             )
             .unwrap();
         assert_eq!(outcome.effects[0].provider, "audio");
-        assert_eq!(outcome.effects[0].action, "set_volume");
-        assert_eq!(outcome.effects[0].payload["percent"], 60);
+        assert_eq!(outcome.effects[0].action, "adjust_volume");
+        assert_eq!(outcome.effects[0].payload["delta"], 10);
 
         let timeflow = runtime_luau::LuauRuntime::compile(super::TIMEFLOW_EXPERIENCE).unwrap();
         let timeflow_scene = timeflow

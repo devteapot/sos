@@ -35,6 +35,7 @@
 #include <climits>
 #include <condition_variable>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <memory>
@@ -330,6 +331,19 @@ Json::Value audioSnapshot(bool* available) {
 bool setVolume(int percent) {
     if (percent < 0 || percent > 100) return false;
     const int index = (percent * kMusicVolumeMaximum + 50) / 100;
+    return android::AudioSystem::setStreamVolumeIndex(AUDIO_STREAM_MUSIC, index,
+            persistedMuted(), AUDIO_DEVICE_OUT_DEFAULT) == android::OK;
+}
+
+bool adjustVolume(int delta) {
+    if (delta < -100 || delta > 100 || delta == 0) return false;
+    int current = 0;
+    android::status_t status = android::UNKNOWN_ERROR;
+    if (!probeMusicVolume(&current, &status, 250) || status != android::OK) return false;
+    int change = (std::abs(delta) * kMusicVolumeMaximum + 50) / 100;
+    if (change == 0) change = 1;
+    const int index = std::clamp(current + (delta > 0 ? change : -change),
+                                 0, kMusicVolumeMaximum);
     return android::AudioSystem::setStreamVolumeIndex(AUDIO_STREAM_MUSIC, index,
             persistedMuted(), AUDIO_DEVICE_OUT_DEFAULT) == android::OK;
 }
@@ -644,6 +658,9 @@ bool executeAction(const Json::Value& request) {
     const Json::Value payload = request["payload"];
     if (provider == "audio" && action == "set_volume" && payload["percent"].isInt()) {
         return setVolume(payload["percent"].asInt());
+    }
+    if (provider == "audio" && action == "adjust_volume" && payload["delta"].isInt()) {
+        return adjustVolume(payload["delta"].asInt());
     }
     if (provider == "audio" && action == "set_muted" && payload["muted"].isBool()) {
         return setMuted(payload["muted"].asBool());
