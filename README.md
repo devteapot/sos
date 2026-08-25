@@ -199,9 +199,11 @@ model:
 
 The same offline install can be baked into a checksum-pinned Fedora Workstation
 `development-live` environment so the Framework 12 loop does not touch its
-internal disk. Its password-protected SSH service and mutable overlay allow
-changed SOS binaries to be deployed with `tools/linux-live-deploy` without
-rebuilding the ISO. The bake accepts only Fedora's flat
+internal disk. Its password-protected SSH service, optional development-only
+Wi-Fi autoconnect profile, and mutable overlay allow changed SOS binaries to be
+deployed with `tools/linux-live-deploy` without rebuilding the ISO. Embedded
+Wi-Fi credentials make that private development ISO unsuitable for sharing or
+release. The bake accepts only Fedora's flat
 EROFS rootfs format and performs a privileged metadata-preserving copy,
 policy-based SELinux relabel, and repack so Linux ownership, ACLs,
 capabilities, and security metadata are preserved.

@@ -98,7 +98,8 @@ bake; the bake requires that expected SHA-256.
   --source-iso /path/to/Fedora-Workstation-Live-x86_64-*.iso \
   --source-sha256 "$FEDORA_ISO_SHA256" \
   --output-dir artifacts/linux-live-image \
-  --liveuser-password-file /path/to/private-password-file
+  --liveuser-password-file /path/to/private-password-file \
+  --networkmanager-profile-file /path/to/private-development-wifi.nmconnection
 # Boot the remixed ISO, then from the GNOME live session:
 /usr/local/libexec/sos/linux-hardware-gate prepare \
   --expect-product 'Laptop 12' \

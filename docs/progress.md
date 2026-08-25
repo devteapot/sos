@@ -10262,3 +10262,60 @@ verify GDM offers GNOME and SOS, deploy one changed SOS component with
 `tools/linux-live-deploy`, verify its recorded digest, and run a same-boot
 diagnostic campaign before treating this image as the reusable development
 base.
+
+## 2026-08-25 — Add private Wi-Fi autoconnect to development-live
+
+**Goal / environment:** Make the reusable Framework development image join its
+lab Wi-Fi without console input so PiKVM can cold-boot directly into an
+SSH-manageable environment. Reuse the NetworkManager profile created by the
+running Fedora 44 development boot instead of reconstructing or printing its
+secret. The profile was copied over the already authenticated SSH channel to a
+private host file, validated as mode `0600` and 288 bytes, and intentionally
+excluded from Git, logs, hashes, and evidence manifests because it contains a
+network credential.
+
+**Security decision / changed code:** This is an optional development-only
+facility. `tools/linux-live-image` accepts
+`--networkmanager-profile-file`, rejects symlinks and group/world-readable
+inputs, and validates a Wi-Fi connection UUID, autoconnect, WPA-PSK/SAE with a
+stored boot-time PSK, and automatic IPv4 without printing the SSID or PSK. It
+installs the profile as root-owned mode `0600` under
+`/etc/NetworkManager/system-connections`; rootfs validation rechecks the
+profile and its root-owned mode `0700` parent. Matching rootfs and outer image
+identities record only `wifi_autoconnect=true` and
+`network_credentials_embedded=true`. Omitting the option records both fields
+as false and embeds no SOS-owned profile. The standalone
+`check-networkmanager-profile` command validates a prospective private input
+before a long bake.
+
+Runtime file permissions do not make the ISO secret: anyone holding the image
+can extract an equivalent Wi-Fi credential offline. Documentation now says the
+credentialed ISO must remain private, its network credential must be rotated if
+custody is lost, and the future immutable release must exclude the profile.
+The network name and credential are not present in source, identity metadata,
+progress records, or test output.
+
+**Evidence:** The fixture suite covers credentialed and uncredentialed identity
+fields, private-file and non-symlink enforcement, disabled autoconnect,
+missing PSK, installed ownership/mode, metadata agreement, and the no-profile
+case. The actual private Framework profile emitted only
+`linux_live_image_network_profile_checked=PASS wifi_autoconnect=true
+network_credentials_embedded=true`. Bash parsing,
+`./tests/linux-live-image-test.sh`,
+`./tests/linux-hardware-gate-test.sh`, and `git diff --check` all passed in
+1.69 seconds with 30,308 KiB maximum RSS. ShellCheck was not installed. The
+finalized output is
+`artifacts/development-live-network-profile/host-tests.log` (227 bytes,
+SHA-256 `196ce54c4aa66c4c4b7a78d5842cee7c98b9f947edd3866b2c7275bda684c09f`)
+and its timing is
+`artifacts/development-live-network-profile/host-tests.time` (1,133 bytes,
+SHA-256 `32a7d3f5a0339bf818ea300a36cac7849c60007fee89548071c2d8c66f919b05`).
+No model provider ran, so model and model-weighted cost were zero.
+
+**Remaining risk / next gate:** No new ISO or unattended network boot is yet
+claimed. Commit the builder change, bake one clean credentialed
+`development-live` ISO, attach it read-only through PiKVM, and cold-boot the
+Framework without network HID input. Require the identity classification,
+automatic Wi-Fi activation, the post-`livesys` SSH listener, password SSH, and
+the still-unmounted internal Omarchy NVMe to pass together before adopting the
+image as the reusable base.

@@ -162,6 +162,7 @@ fi
   --payload-bytes 1024 \
   --payload-sha256 0000000000000000000000000000000000000000000000000000000000000002 \
   --container-format erofs-rootfs \
+  --wifi-autoconnect true \
   --baked-at-utc 2026-08-23T00:00:00Z \
   --output-iso-filename sos-development-live-abcdef123456.iso \
   --output-iso-bytes 4096 \
@@ -174,6 +175,8 @@ for test_key in \
   promotion_eligible=false \
   mutable_runtime=true \
   ssh_enabled=true \
+  wifi_autoconnect=true \
+  network_credentials_embedded=true \
   fedora_release=44 \
   build_host_release=44 \
   source_revision="$test_revision" \
@@ -184,6 +187,22 @@ for test_key in \
   output_iso_sha256=0000000000000000000000000000000000000000000000000000000000000003; do
   grep -Fx "$test_key" "$test_root/identity.env" >/dev/null
 done
+"$test_image" format-identity \
+  --source-revision "$test_revision" \
+  --source-dirty false \
+  --agent-mode offline \
+  --fedora-release 44 \
+  --build-host-release 44 \
+  --base-iso-filename Fedora-Workstation-Live-x86_64-44-1.1.iso \
+  --base-iso-bytes 2048 \
+  --base-iso-sha256 0000000000000000000000000000000000000000000000000000000000000001 \
+  --payload-relpath LiveOS/squashfs.img \
+  --container-format erofs-rootfs \
+  --baked-at-utc 2026-08-23T00:00:00Z \
+  >"$test_root/identity-no-wifi.env"
+grep -Fx 'wifi_autoconnect=false' "$test_root/identity-no-wifi.env" >/dev/null
+grep -Fx 'network_credentials_embedded=false' \
+  "$test_root/identity-no-wifi.env" >/dev/null
 if "$test_image" format-identity \
   --source-revision "$test_revision" \
   --source-dirty true \
@@ -345,6 +364,14 @@ printf '%s\n' \
   '  printf "root:root:700\\n"' \
   '  exit 0' \
   'fi' \
+  'if [[ "${1:-}" == stat && "$*" == *"/etc/NetworkManager/system-connections/60-sos-development-live.nmconnection" ]]; then' \
+  '  if [[ "$*" == *"%U:%G:%a"* ]]; then printf "root:root:600\\n"; else printf "600\\n"; fi' \
+  '  exit 0' \
+  'fi' \
+  'if [[ "${1:-}" == stat && "$*" == *"/etc/NetworkManager/system-connections" ]]; then' \
+  '  printf "root:root:700\\n"' \
+  '  exit 0' \
+  'fi' \
   'if [[ -z "${TEST_SUDO_UNLOCK_DIR:-}" || -z "${TEST_SUDO_LOG:-}" ]]; then' \
   '  if [[ "${1:-}" == install ]]; then' \
   '    shift' \
@@ -439,6 +466,7 @@ mkdir -p \
 : >"$test_rootfs/usr/share/sos/experiences/daily-flow.luau"
 : >"$test_rootfs/usr/lib/systemd/system/gdm.service"
 : >"$test_rootfs/usr/lib/systemd/system/sshd.service"
+: >"$test_rootfs/usr/lib/systemd/system/NetworkManager.service"
 : >"$test_rootfs/usr/bin/systemctl"
 chmod 0755 "$test_rootfs/usr/bin/systemctl"
 printf '%s\n' \
@@ -469,7 +497,73 @@ cp -- "$test_root/identity.env" "$test_rootfs/usr/share/doc/sos/image-identity.e
 mkdir -p "$test_rootfs/etc/systemd/system"
 ln -s graphical.target "$test_rootfs/usr/lib/systemd/system/default.target"
 printf 'development-password\n' >"$test_root/liveuser-password"
+test_network_profile="$test_root/development-wifi.nmconnection"
+printf '%s\n' \
+  '[connection]' \
+  'id=SOS development Wi-Fi' \
+  'uuid=11111111-2222-4333-8444-555555555555' \
+  'type=wifi' \
+  'autoconnect=true' \
+  '' \
+  '[wifi]' \
+  'mode=infrastructure' \
+  'ssid=Test Network' \
+  '' \
+  '[wifi-security]' \
+  'key-mgmt=wpa-psk' \
+  'psk=test-network-password' \
+  '' \
+  '[ipv4]' \
+  'method=auto' \
+  '' \
+  '[ipv6]' \
+  'method=auto' >"$test_network_profile"
+chmod 0644 "$test_network_profile"
 : >"$test_root/firewall.log"
+if PATH="$test_root/bin:$PATH" TEST_FIREWALL_LOG="$test_root/firewall.log" \
+  "$test_image" configure-development-access \
+    --root "$test_rootfs" \
+    --password-file "$test_root/liveuser-password" \
+    --networkmanager-profile-file "$test_network_profile" \
+    >"$test_root/configure-public-network-profile.txt" 2>&1; then
+  printf 'error: development access accepted a public network profile\n' >&2
+  exit 1
+fi
+grep -F 'must not be accessible by group or other users' \
+  "$test_root/configure-public-network-profile.txt" >/dev/null
+chmod 0600 "$test_network_profile"
+"$test_image" check-networkmanager-profile \
+  --profile-file "$test_network_profile" \
+  >"$test_root/check-network-profile.txt"
+grep -Fx \
+  'linux_live_image_network_profile_checked=PASS wifi_autoconnect=true network_credentials_embedded=true' \
+  "$test_root/check-network-profile.txt" >/dev/null
+ln -s development-wifi.nmconnection "$test_root/symlink-network-profile"
+if PATH="$test_root/bin:$PATH" TEST_FIREWALL_LOG="$test_root/firewall.log" \
+  "$test_image" configure-development-access \
+    --root "$test_rootfs" \
+    --password-file "$test_root/liveuser-password" \
+    --networkmanager-profile-file "$test_root/symlink-network-profile" \
+    >"$test_root/configure-symlink-network-profile.txt" 2>&1; then
+  printf 'error: development access accepted a symlink network profile\n' >&2
+  exit 1
+fi
+grep -F 'readable regular file, not a symlink' \
+  "$test_root/configure-symlink-network-profile.txt" >/dev/null
+sed 's/autoconnect=true/autoconnect=false/' "$test_network_profile" \
+  >"$test_root/disabled-network-profile.nmconnection"
+chmod 0600 "$test_root/disabled-network-profile.nmconnection"
+if PATH="$test_root/bin:$PATH" TEST_FIREWALL_LOG="$test_root/firewall.log" \
+  "$test_image" configure-development-access \
+    --root "$test_rootfs" \
+    --password-file "$test_root/liveuser-password" \
+    --networkmanager-profile-file "$test_root/disabled-network-profile.nmconnection" \
+    >"$test_root/configure-disabled-network-profile.txt" 2>&1; then
+  printf 'error: development access accepted disabled Wi-Fi autoconnect\n' >&2
+  exit 1
+fi
+grep -F 'NetworkManager profile must enable autoconnect' \
+  "$test_root/configure-disabled-network-profile.txt" >/dev/null
 mkdir -p "$test_rootfs/etc/systemd/system/multi-user.target.wants"
 ln -s /usr/lib/systemd/system/sshd.service \
   "$test_rootfs/etc/systemd/system/multi-user.target.wants/sshd.service"
@@ -477,6 +571,7 @@ if PATH="$test_root/bin:$PATH" TEST_FIREWALL_LOG="$test_root/firewall.log" \
   "$test_image" configure-development-access \
     --root "$test_rootfs" \
     --password-file "$test_root/liveuser-password" \
+    --networkmanager-profile-file "$test_network_profile" \
     >"$test_root/configure-premature-ssh.txt" 2>&1; then
   printf 'error: development access accepted pre-provisioning SSH enablement\n' >&2
   exit 1
@@ -488,8 +583,11 @@ PATH="$test_root/bin:$PATH" TEST_FIREWALL_LOG="$test_root/firewall.log" \
   "$test_image" configure-development-access \
     --root "$test_rootfs" \
     --password-file "$test_root/liveuser-password" \
+    --networkmanager-profile-file "$test_network_profile" \
     >"$test_root/configure-development-access.txt"
 grep -F 'linux_live_image_development_access=PASS' \
+  "$test_root/configure-development-access.txt" >/dev/null
+grep -F 'wifi_autoconnect=true' \
   "$test_root/configure-development-access.txt" >/dev/null
 grep -F -- '--service=ssh' "$test_root/firewall.log" >/dev/null
 grep -Fx 'PermitRootLogin no' \
@@ -507,6 +605,13 @@ grep -Fx 'systemctl enable --now sshd.service >/dev/null || exit 1' \
   "$test_livesys_hook" >/dev/null
 grep -Fx 'ssh_activation=livesys-session-extra-final-action' \
   "$test_rootfs/usr/share/doc/sos/development-access.env" >/dev/null
+grep -Fx 'wifi_autoconnect=true' \
+  "$test_rootfs/usr/share/doc/sos/development-access.env" >/dev/null
+grep -Fx 'network_credentials_embedded=true' \
+  "$test_rootfs/usr/share/doc/sos/development-access.env" >/dev/null
+test_installed_network_profile="$test_rootfs/etc/NetworkManager/system-connections/60-sos-development-live.nmconnection"
+[[ "$(stat -c %a "$test_installed_network_profile")" == 600 ]]
+grep -Fx 'ssid=Test Network' "$test_installed_network_profile" >/dev/null
 [[ ! -e "$test_rootfs/etc/systemd/system/multi-user.target.wants/sshd.service" ]]
 [[ ! -L "$test_rootfs/etc/systemd/system/multi-user.target.wants/sshd.service" ]]
 [[ ! -e "$test_rootfs/etc/systemd/system/sshd.service.d/60-sos-development-live.conf" ]]
@@ -515,6 +620,7 @@ if PATH="$test_root/bin:$PATH" TEST_FIREWALL_LOG="$test_root/firewall.log" \
   "$test_image" configure-development-access \
     --root "$test_rootfs" \
     --password-file "$test_root/two-line-password" \
+    --networkmanager-profile-file "$test_network_profile" \
     >"$test_root/two-line-password.txt" 2>&1; then
   printf 'error: development access accepted a multi-line password file\n' >&2
   exit 1
@@ -525,6 +631,7 @@ if PATH="$test_root/bin:$PATH" TEST_FIREWALL_LOG="$test_root/firewall.log" \
   "$test_image" configure-development-access \
     --root "$test_rootfs" \
     --password-file "$test_root/symlink-password" \
+    --networkmanager-profile-file "$test_network_profile" \
     >"$test_root/symlink-password.txt" 2>&1; then
   printf 'error: development access accepted a symlink password file\n' >&2
   exit 1
@@ -536,6 +643,18 @@ grep -F 'linux_live_image_rootfs_checked=PASS' "$test_root/check-pass.txt" >/dev
 grep -F 'boot_kind=development-live' "$test_root/check-pass.txt" >/dev/null
 grep -F 'promotion_eligible=false' "$test_root/check-pass.txt" >/dev/null
 grep -F 'not_installed_product=true' "$test_root/check-pass.txt" >/dev/null
+
+cp -- "$test_installed_network_profile" "$test_root/installed-network-profile.saved"
+sed -i 's/^psk=.*/psk=/' "$test_installed_network_profile"
+if PATH="$test_root/bin:$PATH" \
+  "$test_image" check-rootfs --root "$test_rootfs" \
+  >"$test_root/check-network-secret.txt" 2>&1; then
+  printf 'error: check-rootfs accepted a network profile without a PSK\n' >&2
+  exit 1
+fi
+grep -F 'must contain a boot-time Wi-Fi PSK' \
+  "$test_root/check-network-secret.txt" >/dev/null
+cp -- "$test_root/installed-network-profile.saved" "$test_installed_network_profile"
 
 printf '%s\n' '# activation must remain the final hook action' >>"$test_livesys_hook"
 if PATH="$test_root/bin:$PATH" \
@@ -607,6 +726,8 @@ if [[ "$test_uid" -ne 0 && -n "$test_subuid_start" && -n "$test_subgid_start" ]]
       trap cleanup_namespace_fixture EXIT
       chmod 0755 "$(dirname "$rootfs")"
       find "$rootfs" -type d -exec chmod 0755 {} +
+      chmod 0700 "$rootfs/etc/NetworkManager/system-connections"
+      chmod 0600 "$rootfs/etc/NetworkManager/system-connections/60-sos-development-live.nmconnection"
       find "$rootfs/etc/skel/.local" -type d -exec chmod 0700 {} +
       chmod 0600 "$rootfs/etc/skel/.local/state/sos/agent/config.env"
       chown -R 1000:1000 "$rootfs/home/liveuser/.local"
@@ -654,6 +775,9 @@ grep -F 'installed artifact is not readable:' "$test_install" >/dev/null
 "$test_image" 2>"$test_root/image-usage.txt" || true
 grep -F -- '--source-sha256 SHA256' "$test_root/image-usage.txt" >/dev/null
 grep -F -- '--liveuser-password-file FILE' "$test_root/image-usage.txt" >/dev/null
+grep -F -- '--networkmanager-profile-file FILE' "$test_root/image-usage.txt" >/dev/null
+grep -F -- 'check-networkmanager-profile --profile-file FILE' \
+  "$test_root/image-usage.txt" >/dev/null
 grep -F 'rootfs extraction destination is not empty' "$test_image" >/dev/null
 grep -F "sudo mount -t erofs -o loop,ro \"\$payload\" \"\$mountpoint\"" \
   "$test_image" >/dev/null
@@ -682,6 +806,8 @@ done
 grep -F 'promotion_eligible=false' "$test_repo_root/docs/linux-live-image.md" >/dev/null
 grep -F 'future `release`' "$test_repo_root/docs/linux-live-image.md" >/dev/null
 grep -F 'tools/linux-live-deploy' "$test_repo_root/docs/linux-live-image.md" >/dev/null
+grep -F 'network_credentials_embedded=true' \
+  "$test_repo_root/docs/linux-live-image.md" >/dev/null
 grep -F "target is not a mutable, non-promotable development-live image" \
   "$test_deploy" >/dev/null
 grep -F "log out of SOS before deploying" "$test_deploy" >/dev/null

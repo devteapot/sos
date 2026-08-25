@@ -10,6 +10,7 @@ live_image_harness=/usr/local/libexec/sos/linux-hardware-gate
 live_image_development_access=/usr/share/doc/sos/development-access.env
 live_image_ssh_config=/etc/ssh/sshd_config.d/60-sos-development-live.conf
 live_image_livesys_hook=/var/lib/livesys/livesys-session-extra
+live_image_networkmanager_profile=/etc/NetworkManager/system-connections/60-sos-development-live.nmconnection
 
 live_image_fail() {
   printf 'error: %s\n' "$*" >&2
@@ -22,10 +23,11 @@ live_image_usage() {
     '  tools/linux-live-image doctor [--layout-only]' \
     '  tools/linux-live-image format-identity [identity fields...]' \
     '  tools/linux-live-image write-offline-user-state --home-root DIR' \
-    '  tools/linux-live-image configure-development-access --root DIR --password-file FILE' \
+    '  tools/linux-live-image check-networkmanager-profile --profile-file FILE' \
+    '  tools/linux-live-image configure-development-access --root DIR --password-file FILE [--networkmanager-profile-file FILE]' \
     '  tools/linux-live-image check-payload --payload FILE' \
     '  tools/linux-live-image check-rootfs --root DIR' \
-    '  tools/linux-live-image bake --source-iso ISO --source-sha256 SHA256 --output-dir DIR --liveuser-password-file FILE'
+    '  tools/linux-live-image bake --source-iso ISO --source-sha256 SHA256 --output-dir DIR --liveuser-password-file FILE [--networkmanager-profile-file FILE]'
 }
 
 live_image_require_command() {
@@ -172,6 +174,7 @@ live_image_format_identity() {
   local payload_relpath="" payload_bytes="" payload_sha256=""
   local container_format="" baked_at_utc=""
   local output_iso_filename="" output_iso_bytes="" output_iso_sha256=""
+  local wifi_autoconnect=false
   while [[ "$#" -gt 0 ]]; do
     case "$1" in
       --source-revision) source_revision="$2"; shift 2 ;;
@@ -191,6 +194,7 @@ live_image_format_identity() {
       --output-iso-filename) output_iso_filename="$2"; shift 2 ;;
       --output-iso-bytes) output_iso_bytes="$2"; shift 2 ;;
       --output-iso-sha256) output_iso_sha256="$2"; shift 2 ;;
+      --wifi-autoconnect) wifi_autoconnect="$2"; shift 2 ;;
       *) live_image_fail "unexpected identity field: $1" ;;
     esac
   done
@@ -211,6 +215,8 @@ live_image_format_identity() {
     live_image_fail "only metadata-preserving erofs-rootfs is supported"
   [[ "$agent_mode" == offline ]] || live_image_fail "live images bake the offline agent only"
   [[ "$source_dirty" == false ]] || live_image_fail "live images require a clean source revision"
+  [[ "$wifi_autoconnect" == true || "$wifi_autoconnect" == false ]] || \
+    live_image_fail "Wi-Fi autoconnect identity must be true or false"
   [[ -n "$baked_at_utc" ]] || baked_at_utc="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   [[ "$baked_at_utc" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] || \
     live_image_fail "baked timestamp must be UTC in YYYY-MM-DDTHH:MM:SSZ form"
@@ -222,6 +228,8 @@ live_image_format_identity() {
     'promotion_eligible=false' \
     'mutable_runtime=true' \
     'ssh_enabled=true' \
+    "wifi_autoconnect=$wifi_autoconnect" \
+    "network_credentials_embedded=$wifi_autoconnect" \
     "image_format=$image_format" \
     "container_format=$container_format" \
     "fedora_release=$fedora_release" \
@@ -293,8 +301,105 @@ live_image_read_development_password() {
   printf '%s' "$password"
 }
 
+live_image_networkmanager_value() {
+  local profile="$1" section="$2" key="$3" privileged="${4:-false}"
+  local -a reader=(awk)
+  [[ "$privileged" == false ]] || reader=(sudo awk)
+  "${reader[@]}" -v wanted_section="$section" -v wanted_key="$key" '
+    $0 == "[" wanted_section "]" { in_section=1; next }
+    /^\[/ { in_section=0 }
+    in_section && index($0, wanted_key "=") == 1 {
+      value=substr($0, length(wanted_key) + 2)
+    }
+    END { print value }
+  ' "$profile"
+}
+
+live_image_networkmanager_has_nonempty_value() {
+  local profile="$1" section="$2" key="$3" privileged="${4:-false}"
+  local -a reader=(awk)
+  [[ "$privileged" == false ]] || reader=(sudo awk)
+  "${reader[@]}" -v wanted_section="$section" -v wanted_key="$key" '
+    $0 == "[" wanted_section "]" { in_section=1; next }
+    /^\[/ { in_section=0 }
+    in_section && index($0, wanted_key "=") == 1 \
+      && length($0) > length(wanted_key) + 1 { found=1 }
+    END { exit !found }
+  ' "$profile"
+}
+
+live_image_validate_networkmanager_profile() {
+  local profile="$1" privileged="${2:-false}"
+  if [[ "$privileged" == true ]]; then
+    sudo test -f "$profile" && sudo test ! -L "$profile" && sudo test -r "$profile" || \
+      live_image_fail "NetworkManager profile must be a readable regular file, not a symlink"
+  else
+    [[ -f "$profile" && ! -L "$profile" && -r "$profile" ]] || \
+      live_image_fail "NetworkManager profile must be a readable regular file, not a symlink"
+  fi
+  local mode
+  if [[ "$privileged" == true ]]; then
+    mode="$(sudo stat -c %a "$profile")"
+  else
+    mode="$(stat -c %a "$profile")"
+  fi
+  [[ "$mode" =~ ^[0-7]{3,4}$ ]] || \
+    live_image_fail "NetworkManager profile permissions could not be validated"
+  (( (8#$mode & 8#077) == 0 )) || \
+    live_image_fail "NetworkManager profile must not be accessible by group or other users"
+
+  local type uuid autoconnect ssid key_mgmt psk_flags ipv4_method
+  type="$(live_image_networkmanager_value "$profile" connection type "$privileged")"
+  uuid="$(live_image_networkmanager_value "$profile" connection uuid "$privileged")"
+  autoconnect="$(live_image_networkmanager_value \
+    "$profile" connection autoconnect "$privileged")"
+  ssid="$(live_image_networkmanager_value "$profile" wifi ssid "$privileged")"
+  key_mgmt="$(live_image_networkmanager_value \
+    "$profile" wifi-security key-mgmt "$privileged")"
+  psk_flags="$(live_image_networkmanager_value \
+    "$profile" wifi-security psk-flags "$privileged")"
+  ipv4_method="$(live_image_networkmanager_value \
+    "$profile" ipv4 method "$privileged")"
+  [[ "$type" == wifi ]] || \
+    live_image_fail "NetworkManager profile must have connection type wifi"
+  [[ "$uuid" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]] || \
+    live_image_fail "NetworkManager profile must contain a UUID"
+  [[ -z "$autoconnect" || "$autoconnect" == true || "$autoconnect" == yes \
+    || "$autoconnect" == 1 ]] || \
+    live_image_fail "NetworkManager profile must enable autoconnect"
+  [[ -n "$ssid" && "$ssid" != *$'\r'* ]] || \
+    live_image_fail "NetworkManager profile must contain a Wi-Fi SSID"
+  [[ "$key_mgmt" == wpa-psk || "$key_mgmt" == sae ]] || \
+    live_image_fail "NetworkManager profile must use WPA-PSK or SAE"
+  [[ -z "$psk_flags" || "$psk_flags" == 0 ]] || \
+    live_image_fail "NetworkManager profile must store its PSK for boot-time autoconnect"
+  live_image_networkmanager_has_nonempty_value \
+    "$profile" wifi-security psk "$privileged" || \
+    live_image_fail "NetworkManager profile must contain a boot-time Wi-Fi PSK"
+  [[ "$ipv4_method" == auto ]] || \
+    live_image_fail "NetworkManager profile must use automatic IPv4 configuration"
+}
+
+live_image_check_networkmanager_profile() {
+  local profile_file=""
+  while [[ "$#" -gt 0 ]]; do
+    case "$1" in
+      --profile-file)
+        [[ "$#" -ge 2 ]] || live_image_fail "--profile-file requires a file"
+        profile_file="$(live_image_absolute_leaf_path "$2")"
+        shift 2
+        ;;
+      *) live_image_fail "unexpected check-networkmanager-profile option: $1" ;;
+    esac
+  done
+  [[ -n "$profile_file" ]] || \
+    live_image_fail "check-networkmanager-profile requires --profile-file FILE"
+  live_image_validate_networkmanager_profile "$profile_file"
+  printf 'linux_live_image_network_profile_checked=PASS wifi_autoconnect=true network_credentials_embedded=true\n'
+}
+
 live_image_configure_development_access() {
-  local root="" password_file=""
+  local root="" password_file="" networkmanager_profile_file=""
   while [[ "$#" -gt 0 ]]; do
     case "$1" in
       --root)
@@ -307,6 +412,11 @@ live_image_configure_development_access() {
         password_file="$(live_image_absolute_leaf_path "$2")"
         shift 2
         ;;
+      --networkmanager-profile-file)
+        [[ "$#" -ge 2 ]] || live_image_fail "--networkmanager-profile-file requires a file"
+        networkmanager_profile_file="$(live_image_absolute_leaf_path "$2")"
+        shift 2
+        ;;
       *) live_image_fail "unexpected configure-development-access option: $1" ;;
     esac
   done
@@ -314,6 +424,11 @@ live_image_configure_development_access() {
     live_image_fail "configure-development-access requires --root DIR and --password-file FILE"
   local password
   password="$(live_image_read_development_password "$password_file")"
+  local wifi_autoconnect=false
+  if [[ -n "$networkmanager_profile_file" ]]; then
+    live_image_validate_networkmanager_profile "$networkmanager_profile_file"
+    wifi_autoconnect=true
+  fi
   [[ -f "$root/etc/passwd" && -f "$root/etc/shadow" ]] || \
     live_image_fail "development rootfs is missing passwd or shadow"
   [[ -f "$root/usr/libexec/livesys/livesys-main" ]] || \
@@ -332,6 +447,11 @@ live_image_configure_development_access() {
     live_image_fail "development rootfs is missing systemctl"
   [[ -d "$root/usr/lib/firewalld" ]] || \
     live_image_fail "development rootfs is missing firewalld defaults"
+  [[ -f "$root/usr/lib/systemd/system/NetworkManager.service" ]] || \
+    live_image_fail "development rootfs is missing NetworkManager"
+  [[ ! -e "$root$live_image_networkmanager_profile" \
+    && ! -L "$root$live_image_networkmanager_profile" ]] || \
+    live_image_fail "source image already owns the SOS development network profile"
   [[ ! -e "$root/etc/systemd/system/multi-user.target.wants/sshd.service" \
     && ! -L "$root/etc/systemd/system/multi-user.target.wants/sshd.service" ]] || \
     live_image_fail "source image already enables sshd before liveuser provisioning"
@@ -374,11 +494,20 @@ live_image_configure_development_access() {
     'ssh_activation=livesys-session-extra-final-action' \
     'gdm_autologin=false_after_livesys' \
     'firewall_service=ssh' >"$access_metadata"
+  printf '%s\n' \
+    "wifi_autoconnect=$wifi_autoconnect" \
+    "network_credentials_embedded=$wifi_autoconnect" >>"$access_metadata"
 
   sudo install -d -o root -g root -m 0755 \
     "$root/etc/ssh/sshd_config.d" \
     "$root/var/lib/livesys" \
     "$root/usr/share/doc/sos"
+  if [[ "$wifi_autoconnect" == true ]]; then
+    sudo install -d -o root -g root -m 0700 \
+      "$root/etc/NetworkManager/system-connections"
+    sudo install -o root -g root -m 0600 \
+      "$networkmanager_profile_file" "$root$live_image_networkmanager_profile"
+  fi
   sudo install -o root -g root -m 0644 "$ssh_config" "$root$live_image_ssh_config"
   sudo install -o root -g root -m 0700 "$livesys_hook" "$root$live_image_livesys_hook"
   sudo install -o root -g root -m 0644 \
@@ -389,8 +518,8 @@ live_image_configure_development_access() {
     --default-config "$root/usr/lib/firewalld" \
     --service=ssh >/dev/null
   rm -f -- "$ssh_config" "$livesys_hook" "$access_metadata"
-  printf 'linux_live_image_development_access=PASS root=%s ssh_user=liveuser autologin=false\n' \
-    "$root"
+  printf 'linux_live_image_development_access=PASS root=%s ssh_user=liveuser autologin=false wifi_autoconnect=%s\n' \
+    "$root" "$wifi_autoconnect"
 }
 
 live_image_symlink_basename() {
@@ -464,6 +593,13 @@ live_image_check_rootfs() {
     live_image_fail "development image must permit measured runtime mutation"
   [[ "$(live_image_metadata_value "$identity" ssh_enabled)" == true ]] || \
     live_image_fail "development image identity must declare SSH access"
+  local wifi_autoconnect
+  wifi_autoconnect="$(live_image_metadata_value "$identity" wifi_autoconnect)"
+  [[ "$wifi_autoconnect" == true || "$wifi_autoconnect" == false ]] || \
+    live_image_fail "development image identity must classify Wi-Fi autoconnect"
+  [[ "$(live_image_metadata_value "$identity" network_credentials_embedded)" \
+    == "$wifi_autoconnect" ]] || \
+    live_image_fail "development image identity must classify embedded network credentials"
   [[ "$(live_image_metadata_value "$identity" source_dirty)" == false ]] || \
     live_image_fail "image identity came from a dirty source tree"
   [[ "$(live_image_metadata_value "$identity" container_format)" == erofs-rootfs ]] || \
@@ -520,6 +656,29 @@ live_image_check_rootfs() {
     'ssh_activation=livesys-session-extra-final-action' \
     'development access metadata is missing' \
     'development access metadata does not identify fail-closed SSH activation'
+  live_image_require_exact_line "$(live_image_target "$live_image_development_access")" \
+    "wifi_autoconnect=$wifi_autoconnect" \
+    'development access metadata is missing' \
+    'development access metadata does not match Wi-Fi autoconnect identity'
+  live_image_require_exact_line "$(live_image_target "$live_image_development_access")" \
+    "network_credentials_embedded=$wifi_autoconnect" \
+    'development access metadata is missing' \
+    'development access metadata does not match network credential identity'
+  local installed_network_profile
+  installed_network_profile="$(live_image_target "$live_image_networkmanager_profile")"
+  if [[ "$wifi_autoconnect" == true ]]; then
+    live_image_validate_networkmanager_profile "$installed_network_profile" true
+    [[ "$(sudo stat -c '%U:%G:%a' "$installed_network_profile")" \
+      == root:root:600 ]] || \
+      live_image_fail "development NetworkManager profile must be root-owned mode 0600"
+    [[ "$(sudo stat -c '%U:%G:%a' "$(dirname "$installed_network_profile")")" \
+      == root:root:700 ]] || \
+      live_image_fail "development NetworkManager profile directory must be root-owned mode 0700"
+  else
+    sudo test ! -e "$installed_network_profile" \
+      && sudo test ! -L "$installed_network_profile" || \
+      live_image_fail "development rootfs embeds a network profile without declaring it"
+  fi
   live_image_require_exact_line "$(live_image_target "$live_image_livesys_hook")" \
     'passwd --lock root >/dev/null || exit 1' \
     'development livesys hook is missing' \
@@ -798,6 +957,7 @@ live_image_write_identity_file() {
 
 live_image_bake() {
   local source_iso="" source_sha256="" output_dir="" liveuser_password_file=""
+  local networkmanager_profile_file=""
   while [[ "$#" -gt 0 ]]; do
     case "$1" in
       --source-iso)
@@ -820,6 +980,11 @@ live_image_bake() {
         liveuser_password_file="$(live_image_absolute_leaf_path "$2")"
         shift 2
         ;;
+      --networkmanager-profile-file)
+        [[ "$#" -ge 2 ]] || live_image_fail "--networkmanager-profile-file requires a file"
+        networkmanager_profile_file="$(live_image_absolute_leaf_path "$2")"
+        shift 2
+        ;;
       *) live_image_fail "unexpected option: $1" ;;
     esac
   done
@@ -827,6 +992,11 @@ live_image_bake() {
     && -n "$liveuser_password_file" ]] || \
     live_image_fail "bake requires --source-iso ISO, --source-sha256 SHA256, --output-dir DIR, and --liveuser-password-file FILE"
   live_image_read_development_password "$liveuser_password_file" >/dev/null
+  local wifi_autoconnect=false
+  if [[ -n "$networkmanager_profile_file" ]]; then
+    live_image_validate_networkmanager_profile "$networkmanager_profile_file"
+    wifi_autoconnect=true
+  fi
   live_image_validate_sha256 "source ISO SHA-256" "$source_sha256"
   [[ "$(id -u)" -ne 0 ]] || live_image_fail "run bake as a normal user; it invokes sudo only for rootfs mutation"
   live_image_doctor || live_image_fail "live-image bake prerequisites are incomplete"
@@ -873,9 +1043,16 @@ live_image_bake() {
     live_image_fail "source live image does not contain GDM"
   live_image_install_runtime_packages "$live_image_rootfs" "$live_image_base_release"
   live_image_stage_sos "$live_image_rootfs"
-  live_image_configure_development_access \
-    --root "$live_image_rootfs" \
+  local -a development_access_args=(
+    --root "$live_image_rootfs"
     --password-file "$liveuser_password_file"
+  )
+  if [[ "$wifi_autoconnect" == true ]]; then
+    development_access_args+=(
+      --networkmanager-profile-file "$networkmanager_profile_file"
+    )
+  fi
+  live_image_configure_development_access "${development_access_args[@]}"
 
   local base_name base_bytes base_sha baked_at
   base_name="$(basename -- "$source_iso")"
@@ -894,6 +1071,7 @@ live_image_bake() {
     --base-iso-sha256 "$base_sha" \
     --payload-relpath "$payload_relpath" \
     --container-format "$container_format" \
+    --wifi-autoconnect "$wifi_autoconnect" \
     --baked-at-utc "$baked_at"
   live_image_validate_rootfs_policy "$live_image_rootfs"
   live_image_check_rootfs --root "$live_image_rootfs"
@@ -917,6 +1095,7 @@ live_image_bake() {
     --payload-bytes "$payload_bytes" \
     --payload-sha256 "$payload_sha" \
     --container-format "$container_format" \
+    --wifi-autoconnect "$wifi_autoconnect" \
     --baked-at-utc "$baked_at"
 
   install -m 0644 "$work/image-identity.env" "$work/iso/sos-image-identity.env"
@@ -947,13 +1126,14 @@ live_image_bake() {
     --payload-bytes "$payload_bytes" \
     --payload-sha256 "$payload_sha" \
     --container-format "$container_format" \
+    --wifi-autoconnect "$wifi_autoconnect" \
     --baked-at-utc "$baked_at" \
     --output-iso-filename "$(basename -- "$output_iso")" \
     --output-iso-bytes "$output_bytes" \
     --output-iso-sha256 "$output_sha"
   sudo rm -r -- "$work"
-  printf 'linux_live_image_baked=PASS iso=%s bytes=%s sha256=%s boot_kind=development-live promotion_eligible=false not_installed_product=true\n' \
-    "$output_iso" "$output_bytes" "$output_sha"
+  printf 'linux_live_image_baked=PASS iso=%s bytes=%s sha256=%s boot_kind=development-live promotion_eligible=false not_installed_product=true wifi_autoconnect=%s\n' \
+    "$output_iso" "$output_bytes" "$output_sha" "$wifi_autoconnect"
 }
 
 [[ "$#" -ge 1 ]] || {
@@ -966,6 +1146,7 @@ case "$live_image_command" in
   doctor) live_image_doctor "$@" ;;
   format-identity) live_image_format_identity "$@" ;;
   write-offline-user-state) live_image_write_offline_user_state "$@" ;;
+  check-networkmanager-profile) live_image_check_networkmanager_profile "$@" ;;
   configure-development-access) live_image_configure_development_access "$@" ;;
   check-payload) live_image_check_payload "$@" ;;
   check-rootfs) live_image_check_rootfs "$@" ;;
