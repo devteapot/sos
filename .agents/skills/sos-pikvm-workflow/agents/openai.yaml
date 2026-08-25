@@ -1,0 +1,4 @@
+interface:
+  display_name: "SOS PiKVM Workflow"
+  short_description: "Safely control PiKVM-backed SOS hardware"
+  default_prompt: "Use $sos-pikvm-workflow to upload, boot, and verify this SOS image through PiKVM."
