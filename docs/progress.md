@@ -10319,3 +10319,52 @@ Framework without network HID input. Require the identity classification,
 automatic Wi-Fi activation, the post-`livesys` SSH listener, password SSH, and
 the still-unmounted internal Omarchy NVMe to pass together before adopting the
 image as the reusable base.
+
+## 2026-08-25 — Bake the credentialed development-live image
+
+**Goal / environment:** Produce the first clean reusable development image
+that combines the post-`livesys` SSH activation with private Wi-Fi
+autoconnect. The clean source revision was
+`28cf8fffee8e2492fc4f2b69fcfe27db3baf7b36`; the source media was
+`artifacts/linux-live-source/Fedora-Workstation-Live-44-1.7.x86_64.iso`
+(SHA-256
+`1620295f6a00c27c3208f0c00b8ece4eab1ec69b9002152d97488bf26a426ddf`).
+The private NetworkManager input remained outside Git and build evidence.
+
+**Bake evidence / decision:** `tools/linux-live-image bake` staged SOS,
+configured the development account and post-provisioning SSH activation,
+installed the private NetworkManager profile, validated the rootfs, repacked
+EROFS, and passed the embedded media check. It completed in 2,640.49 seconds
+with 704,264 KiB maximum RSS. The result is
+`artifacts/development-live-28cf8ff/sos-development-live-28cf8fffee8e.iso`
+(3,056,205,824 bytes, SHA-256
+`a346369a50cf5d1b32610fcf1c55c95ea7238172a46a2b7c6c1618428f4ed152`).
+Its identity is
+`artifacts/development-live-28cf8ff/image-identity.env` (954 bytes, SHA-256
+`7685dab93216d94d8e512d4108ea553e143bbe003fb9d01d5f7d46b68c596c6d`)
+and records the exact source revision, `development-live`,
+`promotion_eligible=false`, `wifi_autoconnect=true`, and
+`network_credentials_embedded=true` without an SSID, password, PSK, or
+passphrase field.
+
+The finalized bake output is `artifacts/development-live-28cf8ff-bake.log`
+(9,189 bytes, SHA-256
+`a9faee06c622fad34dcaddd341f223ff5c5721afcbc54ddd775a17fd18d5f69a`)
+and its timing record is `artifacts/development-live-28cf8ff-bake.time` (54
+bytes, SHA-256
+`faff5ef450ed1fa5cf4cba1221f6a68119d18409c7c6c9849acc8ced5ce6c1ca`).
+An independent SHA-256, `checkisomd5`, identity-agreement, and secret-field
+audit passed in 5.10 seconds with 3,456 KiB maximum RSS. Its output is
+`artifacts/development-live-28cf8ff-audit.log` (309 bytes, SHA-256
+`b5a9672ed9ca23127a13a479f49827f5d30ef9e878175081179baed3cb31ceac`)
+and timing is `artifacts/development-live-28cf8ff-audit.time` (49 bytes,
+SHA-256
+`97667dd628bd7bd8574a391693c728971343807a3a576987419d2a5a65f3ecb5`).
+No model provider ran, so model and model-weighted cost were zero.
+
+**Remaining risk / next gate:** This is build evidence, not unattended-boot or
+hardware acceptance. Keep the credentialed ISO private. Attach this exact hash
+read-only through PiKVM, cold-boot the Framework without network HID input,
+and require automatic Wi-Fi activation, post-`livesys` SSH availability,
+password SSH, correct image identity, and an unmounted internal Omarchy NVMe
+before adopting it as the reusable development base.
