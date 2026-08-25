@@ -10057,3 +10057,67 @@ Commit these fixes, bake one clean revision-pinned ISO, then run a fresh full
 prepare, touch/keyboard/scroll/Submit, clean logout, collect, copy-off, and
 manifest-audit campaign. Only that artifact-matched campaign can promote the
 Framework live gate.
+
+## 2026-08-25 — Replace acceptance-live with a mutable development environment
+
+**Goal / decision / rejected workflow:** Separate fast physical iteration from
+future release promotion. Rebuilding the prior 3.06-GB Fedora remix took
+2,703.62 seconds and writing it to USB took another 315.20 seconds, so requiring
+that cycle after every SOS patch is disproportionate during diagnosis. The
+intermediate acceptance-live artifact class was rejected: it adds almost the
+same compose/flash cost as release without providing the immutable SOS-only
+artifact that will eventually ship. SOS now has two image classes only:
+`development-live`, which is mutable and always
+`promotion_eligible=false`, and a future immutable `release`, whose composer
+and artifact-matched promotion gate remain to be built. The existing focused
+Framework overlay evidence remains diagnostic mechanism evidence; it is not
+retroactively promoted.
+
+**Changed environment and controls:** `tools/linux-live-image` now labels the
+Fedora Workstation remix `development-live`, installs and enables
+`openssh-server`, opens the Fedora firewall's SSH service, and requires a
+private non-symlink `--liveuser-password-file`. Password authentication is
+restricted to `liveuser`, root SSH is disabled, reusable host keys are removed
+so Fedora generates them at boot, and GDM liveuser autologin is disabled so the
+operator can choose GNOME or SOS. Rootfs validation checks the unlocked account,
+SSHD enablement/configuration, absent host keys, disabled autologin, and the
+non-promotable/mutable identity fields without exposing the password.
+
+`tools/linux-live-deploy` builds any selected compositor, experience-host,
+provider, supervisor, session, or authoring binary locally and deploys it over
+one multiplexed SSH connection. It refuses targets whose baked identity is not
+mutable/non-promotable development-live and refuses a running SOS session. It
+records base/source revision and dirty state, installs root-owned files into the
+RAM overlay, verifies their remote SHA-256 values, and preserves matching host
+and target deployment manifests. `tools/linux-hardware-gate` verifies that
+manifest, snapshots the current bytes against the baked install manifest, and
+emits only `DIAGNOSTIC_PASS promotion_eligible=false` or `DIAGNOSTIC_FAIL` for
+development-live. Installed-workstation criteria remain available, but no
+current environment is labeled a release artifact.
+
+**Evidence / failures / measurement:**
+`./tests/linux-live-image-test.sh` exercises identity fields, password-file
+rejection, mocked chpasswd/systemd/firewalld provisioning, root-owned private
+rootfs validation, component selection, the complete mocked SSH deployment,
+remote installation, metadata, and digest verification. It passed with
+`linux_live_image_host_tests=PASS`. `./tests/linux-hardware-gate-test.sh`
+passed with `linux_hardware_gate_host_tests=PASS`, including the rule that a
+complete development campaign is diagnostic rather than a normal PASS and a
+missing touch observation is `DIAGNOSTIC_FAIL`. The combined suites, Bash
+parsing, and `git diff --check` completed in 1.21 seconds with 30,316 KiB
+maximum RSS. The test harness initially attempted root-owned fixture installs
+without an effective-root mock and then exposed an EXIT-trap lifetime bug in
+the deployer's SSH cleanup; the fixture now strips ownership flags while the
+production path still uses sudo, and successful deployment explicitly cleans
+up before function-local state goes out of scope. No model provider ran, so
+model and model-weighted cost were zero.
+
+**Remaining risk / next gate:** No new ISO or physical acceptance is claimed.
+The rootfs tests use controlled command doubles; a real Fedora bake must still
+prove `chpasswd --root`, offline `sshd.service` enablement, firewall persistence,
+GDM session selection, and per-boot host-key generation together. Bake and
+flash development-live once, boot the Framework Laptop 12, verify password SSH
+and GNOME/SOS selection, deploy one changed binary with
+`tools/linux-live-deploy`, verify its recorded digest on the laptop, and run a
+same-boot diagnostic collect. Ordinary SOS patches can then reuse that base;
+design and gate the immutable SOS-only `release` process separately.

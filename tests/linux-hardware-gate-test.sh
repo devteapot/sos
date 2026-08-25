@@ -70,7 +70,7 @@ grep -Fx \
 grep -Fx 'boot_kind=installed campaign_class=installed-workstation' \
   "$test_root/pass-audit.txt" >/dev/null
 if grep -F 'not_installed_product=true' "$test_root/pass-audit.txt" >/dev/null; then
-  printf 'error: installed-workstation audit labeled the campaign live-boot product=false\n' >&2
+  printf 'error: installed-workstation audit labeled the campaign as a live non-product\n' >&2
   exit 1
 fi
 
@@ -108,26 +108,32 @@ grep -F 'manifested evidence size changed' "$test_root/manifest-fail.txt" >/dev/
 printf '2222\n' >"$test_evidence/current-revision.txt"
 printf '%s\n' \
   'agent_mode=offline' \
-  'boot_kind=live-boot' \
-  'campaign_class=live-boot' \
+  'boot_kind=development-live' \
+  'campaign_class=development-live' \
   'not_installed_product=true' \
+  'promotion_eligible=false' \
   "boot_id=$test_boot_id" >"$test_evidence/campaign.env"
 printf '%s\n' \
   'observed native compositor input input_class="touch"' >>"$test_evidence/journal-user.txt"
 "$test_gate" audit --evidence-dir "$test_evidence" >"$test_root/live-audit.txt"
 grep -Fx \
-  'linux_hardware_gate_result=PASS evidence=drm_page_flip physical_input=keyboard,touchpad,touchscreen' \
+  'linux_hardware_gate_result=DIAGNOSTIC_PASS promotion_eligible=false evidence=drm_page_flip physical_input=keyboard,touchpad,touchscreen' \
   "$test_root/live-audit.txt" >/dev/null
-grep -Fx 'boot_kind=live-boot campaign_class=live-boot' "$test_root/live-audit.txt" >/dev/null
+grep -Fx 'boot_kind=development-live campaign_class=development-live' \
+  "$test_root/live-audit.txt" >/dev/null
 grep -Fx 'not_installed_product=true' "$test_root/live-audit.txt" >/dev/null
+grep -Fx 'promotion_eligible=false' "$test_root/live-audit.txt" >/dev/null
 
 sed -i '/input_class="touch"/d' "$test_evidence/journal-user.txt"
 if "$test_gate" audit --evidence-dir "$test_evidence" >"$test_root/live-fail-audit.txt"; then
-  printf 'error: live-boot audit accepted evidence without physical touchscreen input\n' >&2
+  printf 'error: development-live audit accepted evidence without physical touchscreen input\n' >&2
   exit 1
 fi
 grep -Fx 'criterion=touchscreen_input result=FAIL' "$test_root/live-fail-audit.txt" >/dev/null
-grep -Fx 'boot_kind=live-boot campaign_class=live-boot' "$test_root/live-fail-audit.txt" >/dev/null
+grep -Fx 'linux_hardware_gate_result=DIAGNOSTIC_FAIL promotion_eligible=false' \
+  "$test_root/live-fail-audit.txt" >/dev/null
+grep -Fx 'boot_kind=development-live campaign_class=development-live' \
+  "$test_root/live-fail-audit.txt" >/dev/null
 
 test_sysroot="$test_root/sysroot"
 mkdir -p \
@@ -137,9 +143,12 @@ mkdir -p \
 printf '12345678-1234-1234-1234-123456789abc\n' \
   >"$test_sysroot/proc/sys/kernel/random/boot_id"
 printf '%s\n' \
-  'image_kind=live-boot' \
-  'campaign_class=live-boot' \
+  'image_kind=development-live' \
+  'campaign_class=development-live' \
   'not_installed_product=true' \
+  'promotion_eligible=false' \
+  'mutable_runtime=true' \
+  'ssh_enabled=true' \
   'container_format=erofs-rootfs' \
   'fedora_release=44' \
   'build_host_release=44' \
@@ -166,8 +175,9 @@ printf '%s\n' \
   'payload_sha256=0000000000000000000000000000000000000000000000000000000000000002' \
   >>"$test_sysroot/run/initramfs/live/sos-image-identity.env"
 "$test_gate" classify-boot --sysroot "$test_sysroot" >"$test_root/classify-live.txt"
-grep -Fx 'boot_kind=live-boot' "$test_root/classify-live.txt" >/dev/null
+grep -Fx 'boot_kind=development-live' "$test_root/classify-live.txt" >/dev/null
 grep -Fx 'not_installed_product=true' "$test_root/classify-live.txt" >/dev/null
+grep -Fx 'promotion_eligible=false' "$test_root/classify-live.txt" >/dev/null
 grep -Fx 'boot_id=12345678-1234-1234-1234-123456789abc' \
   "$test_root/classify-live.txt" >/dev/null
 grep -Fx 'live_overlay=present' "$test_root/classify-live.txt" >/dev/null
@@ -184,10 +194,11 @@ grep -F 'rootfs and ISO-level image identities disagree' \
 
 rm -r -- "$test_sysroot/run/initramfs/live"
 if "$test_gate" classify-boot --sysroot "$test_sysroot" >"$test_root/classify-stale.txt" 2>&1; then
-  printf 'error: classify-boot accepted live-boot identity without a live overlay\n' >&2
+  printf 'error: classify-boot accepted development-live identity without a live overlay\n' >&2
   exit 1
 fi
-grep -F 'do not collect it as live-boot or installed product' "$test_root/classify-stale.txt" >/dev/null
+grep -F 'do not collect it as development-live or an installed product' \
+  "$test_root/classify-stale.txt" >/dev/null
 
 rm -f -- "$test_sysroot/usr/share/doc/sos/image-identity.env"
 mkdir -p "$test_sysroot/run/initramfs/live"
@@ -195,19 +206,20 @@ if "$test_gate" classify-boot --sysroot "$test_sysroot" >"$test_root/classify-st
   printf 'error: classify-boot accepted stock live media without SOS identity\n' >&2
   exit 1
 fi
-grep -F 'stock live media is not a hardware-gate image' "$test_root/classify-stock.txt" >/dev/null
+grep -F 'stock live media is not a development image' "$test_root/classify-stock.txt" >/dev/null
 
 rm -r -- "$test_sysroot/run/initramfs/live"
 "$test_gate" classify-boot --sysroot "$test_sysroot" >"$test_root/classify-installed.txt"
 grep -Fx 'boot_kind=installed' "$test_root/classify-installed.txt" >/dev/null
 grep -Fx 'campaign_class=installed-workstation' "$test_root/classify-installed.txt" >/dev/null
 
-for test_label in live-boot 'not an installed product' image-identity squashfs; do
+for test_label in development-live 'not an installed product' image-identity squashfs; do
   grep -F "$test_label" "$test_repo_root/docs/linux-hardware-gate.md" >/dev/null
   grep -F "$test_label" "$test_repo_root/docs/linux-live-image.md" >/dev/null
 done
-grep -F 'boot_kind=live-boot' "$test_gate" >/dev/null
+grep -F 'boot_kind=development-live' "$test_gate" >/dev/null
 grep -F 'not_installed_product=true' "$test_gate" >/dev/null
+grep -F 'DIAGNOSTIC_PASS promotion_eligible=false' "$test_gate" >/dev/null
 grep -F 'image-identity.env' "$test_gate" >/dev/null
 grep -F 'payload_sha256' "$test_gate" >/dev/null
 grep -F 'boot_id=' "$test_gate" >/dev/null

@@ -4,6 +4,7 @@ set -euo pipefail
 
 test_repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 test_image="$test_repo_root/tools/linux-live-image"
+test_deploy="$test_repo_root/tools/linux-live-deploy"
 test_install="$test_repo_root/tools/install-linux-login-session"
 test_root="$(mktemp -d -t sos-linux-live-image-test.XXXXXX)"
 test_revision=abcdef1234567890abcdef1234567890abcdef12
@@ -22,7 +23,117 @@ test_cleanup() {
 trap test_cleanup EXIT
 
 bash -n "$test_image"
+bash -n "$test_deploy"
 bash -n "$test_install"
+"$test_deploy" components >"$test_root/deploy-components.txt"
+for test_component in compositor experience-host provider supervisor session authoring; do
+  grep -E "^${test_component}[[:space:]]+/usr/local/libexec/sos/" \
+    "$test_root/deploy-components.txt" >/dev/null
+done
+if "$test_deploy" deploy --target root@example.test --component compositor \
+  >"$test_root/deploy-unsafe-target.txt" 2>&1; then
+  printf 'error: development deploy accepted a non-liveuser SSH target\n' >&2
+  exit 1
+fi
+grep -F 'target must be liveuser@HOST' "$test_root/deploy-unsafe-target.txt" >/dev/null
+if "$test_deploy" deploy --target liveuser@example.test --component unknown \
+  >"$test_root/deploy-unknown-component.txt" 2>&1; then
+  printf 'error: development deploy accepted an unknown component\n' >&2
+  exit 1
+fi
+grep -F 'unknown component: unknown' "$test_root/deploy-unknown-component.txt" >/dev/null
+
+test_deploy_bin="$test_root/deploy-bin"
+test_deploy_remote="$test_root/deploy-remote"
+test_deploy_target="$test_root/deploy-target"
+test_deploy_state="$test_root/deploy-stage-path"
+mkdir -p "$test_deploy_bin" "$test_deploy_remote" "$test_deploy_target/release"
+printf '%s\n' \
+  '#!/usr/bin/env bash' \
+  'set -euo pipefail' \
+  'binary=""' \
+  'while [[ "$#" -gt 0 ]]; do' \
+  '  if [[ "$1" == --bin ]]; then binary="$2"; shift 2; else shift; fi' \
+  'done' \
+  '[[ -n "$binary" ]]' \
+  'mkdir -p "$CARGO_TARGET_DIR/release"' \
+  'printf "mock binary %s\\n" "$binary" >"$CARGO_TARGET_DIR/release/$binary"' \
+  'chmod 0755 "$CARGO_TARGET_DIR/release/$binary"' \
+  >"$test_deploy_bin/cargo"
+chmod 0755 "$test_deploy_bin/cargo"
+printf '%s\n' \
+  '#!/usr/bin/env bash' \
+  'set -euo pipefail' \
+  'if [[ "${1:-}" == -tt ]]; then shift; fi' \
+  'while [[ "${1:-}" == -o ]]; do shift 2; done' \
+  'if [[ "${1:-}" == -O ]]; then exit 0; fi' \
+  'target="$1"; shift' \
+  'command="$*"' \
+  '[[ "$target" == liveuser@mock-target ]]' \
+  'case "$command" in' \
+  '  true) exit 0 ;;' \
+  '  *"pgrep -f"*) exit 0 ;;' \
+  '  "cat /usr/share/doc/sos/image-identity.env"|"cat '\''/usr/share/doc/sos/image-identity.env'\''")' \
+  '    printf "%s\\n" image_kind=development-live promotion_eligible=false mutable_runtime=true source_revision=1111111111111111111111111111111111111111' \
+  '    ;;' \
+  '  "umask 077; mktemp -d -p /tmp sos-development-deploy.XXXXXX")' \
+  '    mktemp -d -p /tmp sos-development-deploy.XXXXXX' \
+  '    ;;' \
+  '  "set -euo pipefail;"*)' \
+  '    stage="$(cat "$TEST_DEPLOY_STATE")"' \
+  '    mkdir -p "$TEST_DEPLOY_REMOTE/usr/local/libexec/sos" "$TEST_DEPLOY_REMOTE/usr/share/doc/sos"' \
+  '    for source in "$stage"/sos-*; do cp -- "$source" "$TEST_DEPLOY_REMOTE/usr/local/libexec/sos/$(basename "$source")"; done' \
+  '    cp -- "$stage/development-deployment.env" "$TEST_DEPLOY_REMOTE/usr/share/doc/sos/"' \
+  '    cp -- "$stage/development-deployment-manifest.tsv" "$TEST_DEPLOY_REMOTE/usr/share/doc/sos/"' \
+  '    rm -r -- "$stage"' \
+  '    ;;' \
+  '  "sha256sum "*)' \
+  '    path="${command:11:-1}"' \
+  '    sha256sum "$TEST_DEPLOY_REMOTE$path" | sed "s|$TEST_DEPLOY_REMOTE||"' \
+  '    ;;' \
+  '  "rm -r -- "*)' \
+  '    path="${command:10:-1}"' \
+  '    [[ ! -e "$path" ]] || rm -r -- "$path"' \
+  '    ;;' \
+  '  *) printf "unexpected mock SSH command: %s\\n" "$command" >&2; exit 1 ;;' \
+  'esac' \
+  >"$test_deploy_bin/ssh"
+chmod 0755 "$test_deploy_bin/ssh"
+printf '%s\n' \
+  '#!/usr/bin/env bash' \
+  'set -euo pipefail' \
+  'while [[ "${1:-}" == -o ]]; do shift 2; done' \
+  'sources=()' \
+  'while [[ "$#" -gt 1 ]]; do sources+=("$1"); shift; done' \
+  'destination="${1#*:}"' \
+  'cp -- "${sources[@]}" "$destination/"' \
+  'printf "%s\\n" "$destination" >"$TEST_DEPLOY_STATE"' \
+  >"$test_deploy_bin/scp"
+chmod 0755 "$test_deploy_bin/scp"
+PATH="$test_deploy_bin:$PATH" \
+CARGO_TARGET_DIR="$test_deploy_target" \
+TEST_DEPLOY_REMOTE="$test_deploy_remote" \
+TEST_DEPLOY_STATE="$test_deploy_state" \
+SOS_DEVELOPMENT_DEPLOY_ARTIFACTS_DIR="$test_root/deploy-artifacts" \
+  "$test_deploy" deploy \
+    --target liveuser@mock-target \
+    --component experience-host \
+    --component compositor \
+    >"$test_root/deploy-pass.txt"
+grep -F 'linux_development_live_deployed=PASS' "$test_root/deploy-pass.txt" >/dev/null
+grep -F 'promotion_eligible=false' "$test_root/deploy-pass.txt" >/dev/null
+for test_binary in sos-experience-host sos-compositor; do
+  [[ -x "$test_deploy_remote/usr/local/libexec/sos/$test_binary" ]]
+done
+test_deployment_metadata="$test_deploy_remote/usr/share/doc/sos/development-deployment.env"
+test_deployment_manifest="$test_deploy_remote/usr/share/doc/sos/development-deployment-manifest.tsv"
+grep -Fx 'image_kind=development-live' "$test_deployment_metadata" >/dev/null
+grep -Fx 'promotion_eligible=false' "$test_deployment_metadata" >/dev/null
+[[ "$(wc -l <"$test_deployment_manifest")" -eq 2 ]]
+while IFS=$'\t' read -r test_path test_bytes test_sha; do
+  [[ "$(stat -c %s "$test_deploy_remote$test_path")" == "$test_bytes" ]]
+  [[ "$(sha256sum "$test_deploy_remote$test_path" | cut -d ' ' -f 1)" == "$test_sha" ]]
+done <"$test_deployment_manifest"
 "$test_image" doctor --layout-only >"$test_root/doctor.txt"
 grep -Fx 'linux_live_image_doctor=PASS mode=layout-only bake_ready=false' \
   "$test_root/doctor.txt" >/dev/null
@@ -32,6 +143,7 @@ else
   grep -Fx 'linux_live_image_doctor=FAIL bake_ready=false' "$test_root/bake-doctor.txt" >/dev/null
 fi
 grep -F 'nodejs' "$test_root/doctor.txt" >/dev/null
+grep -F 'openssh-server' "$test_root/doctor.txt" >/dev/null
 if grep -E 'libinput-devel|mesa-libgbm-devel|libseat-devel' "$test_root/doctor.txt" >/dev/null; then
   printf 'error: live image doctor advertised development packages as runtime deps\n' >&2
   exit 1
@@ -51,14 +163,17 @@ fi
   --payload-sha256 0000000000000000000000000000000000000000000000000000000000000002 \
   --container-format erofs-rootfs \
   --baked-at-utc 2026-08-23T00:00:00Z \
-  --output-iso-filename sos-fedora-workstation-live-abcdef123456.iso \
+  --output-iso-filename sos-development-live-abcdef123456.iso \
   --output-iso-bytes 4096 \
   --output-iso-sha256 0000000000000000000000000000000000000000000000000000000000000003 \
   >"$test_root/identity.env"
 for test_key in \
-  image_kind=live-boot \
-  campaign_class=live-boot \
+  image_kind=development-live \
+  campaign_class=development-live \
   not_installed_product=true \
+  promotion_eligible=false \
+  mutable_runtime=true \
+  ssh_enabled=true \
   fedora_release=44 \
   build_host_release=44 \
   source_revision="$test_revision" \
@@ -226,7 +341,17 @@ chmod 0755 "$test_root/bin/dump.erofs"
 printf '%s\n' \
   '#!/usr/bin/env bash' \
   'set -euo pipefail' \
-  '[[ -n "${TEST_SUDO_UNLOCK_DIR:-}" && -n "${TEST_SUDO_LOG:-}" ]] || exec "$@"' \
+  'if [[ -z "${TEST_SUDO_UNLOCK_DIR:-}" || -z "${TEST_SUDO_LOG:-}" ]]; then' \
+  '  if [[ "${1:-}" == install ]]; then' \
+  '    shift' \
+  '    filtered=()' \
+  '    while [[ "$#" -gt 0 ]]; do' \
+  '      case "$1" in -o|-g) shift 2 ;; *) filtered+=("$1"); shift ;; esac' \
+  '    done' \
+  '    exec install "${filtered[@]}"' \
+  '  fi' \
+  '  exec "$@"' \
+  'fi' \
   'printf "%s\\n" "$*" >>"$TEST_SUDO_LOG"' \
   'chmod 0700 "$TEST_SUDO_UNLOCK_DIR"' \
   'set +e' \
@@ -236,6 +361,41 @@ printf '%s\n' \
   'chmod 000 "$TEST_SUDO_UNLOCK_DIR"' \
   'exit "$status"' >"$test_root/bin/sudo"
 chmod 0755 "$test_root/bin/sudo"
+printf '%s\n' \
+  '#!/usr/bin/env bash' \
+  'set -euo pipefail' \
+  'root=""' \
+  'while [[ "$#" -gt 0 ]]; do' \
+  '  case "$1" in' \
+  '    --root) root="$2"; shift 2 ;;' \
+  '    --crypt-method) shift 2 ;;' \
+  '    *) exit 2 ;;' \
+  '  esac' \
+  'done' \
+  'IFS=: read -r user password' \
+  '[[ "$user" == liveuser && -n "$password" ]]' \
+  'sed -i "s|^liveuser:[^:]*:|liveuser:\$y\$development-hash:|" "$root/etc/shadow"' \
+  >"$test_root/bin/chpasswd"
+chmod 0755 "$test_root/bin/chpasswd"
+printf '%s\n' \
+  '#!/usr/bin/env bash' \
+  'set -euo pipefail' \
+  'root=""' \
+  'for argument in "$@"; do' \
+  '  case "$argument" in --root=*) root="${argument#--root=}" ;; esac' \
+  'done' \
+  '[[ -n "$root" && "${*: -2}" == "enable sshd.service" ]]' \
+  'mkdir -p "$root/etc/systemd/system/multi-user.target.wants"' \
+  'ln -s /usr/lib/systemd/system/sshd.service "$root/etc/systemd/system/multi-user.target.wants/sshd.service"' \
+  >"$test_root/bin/systemctl"
+chmod 0755 "$test_root/bin/systemctl"
+printf '%s\n' \
+  '#!/usr/bin/env bash' \
+  'set -euo pipefail' \
+  'printf "%s\\n" "$*" >>"$TEST_FIREWALL_LOG"' \
+  '[[ " $* " == *" --service=ssh "* ]]' \
+  >"$test_root/bin/firewall-offline-cmd"
+chmod 0755 "$test_root/bin/firewall-offline-cmd"
 : >"$test_root/payload.img"
 PATH="$test_root/bin:$PATH" TEST_PAYLOAD_LAYOUT=erofs-root \
   "$test_image" check-payload --payload "$test_root/payload.img" \
@@ -278,7 +438,11 @@ mkdir -p \
   "$test_rootfs/usr/share/sos/experiences" \
   "$test_rootfs/usr/share/doc/sos" \
   "$test_rootfs/usr/lib/systemd/system" \
+  "$test_rootfs/usr/lib/firewalld" \
   "$test_rootfs/etc/skel" \
+  "$test_rootfs/etc/gdm" \
+  "$test_rootfs/etc/ssh" \
+  "$test_rootfs/etc/firewalld" \
   "$test_rootfs/home/liveuser"
 : >"$test_rootfs/usr/local/libexec/sos/sos-login-session"
 : >"$test_rootfs/usr/local/libexec/sos/sos-agent-login"
@@ -287,6 +451,17 @@ mkdir -p \
 : >"$test_rootfs/usr/share/wayland-sessions/sos.desktop"
 : >"$test_rootfs/usr/share/sos/experiences/daily-flow.luau"
 : >"$test_rootfs/usr/lib/systemd/system/gdm.service"
+: >"$test_rootfs/usr/lib/systemd/system/sshd.service"
+printf '%s\n' \
+  'root:x:0:0:root:/root:/bin/bash' \
+  'liveuser:x:1000:1000:Live User:/home/liveuser:/bin/bash' >"$test_rootfs/etc/passwd"
+printf '%s\n' \
+  'root:*:20000:0:99999:7:::' \
+  'liveuser:!:20000:0:99999:7:::' >"$test_rootfs/etc/shadow"
+printf '%s\n' \
+  '[daemon]' \
+  'AutomaticLoginEnable=True' \
+  'AutomaticLogin=liveuser' >"$test_rootfs/etc/gdm/custom.conf"
 printf '%s\n' \
   'ID=fedora' \
   'VERSION_ID=44' \
@@ -301,9 +476,45 @@ cp -- "$test_root/identity.env" "$test_rootfs/usr/share/doc/sos/image-identity.e
 "$test_image" write-offline-user-state --home-root "$test_rootfs/home/liveuser" >/dev/null
 mkdir -p "$test_rootfs/etc/systemd/system"
 ln -s graphical.target "$test_rootfs/usr/lib/systemd/system/default.target"
-"$test_image" check-rootfs --root "$test_rootfs" >"$test_root/check-pass.txt"
+printf 'development-password\n' >"$test_root/liveuser-password"
+: >"$test_root/firewall.log"
+PATH="$test_root/bin:$PATH" TEST_FIREWALL_LOG="$test_root/firewall.log" \
+  "$test_image" configure-development-access \
+    --root "$test_rootfs" \
+    --password-file "$test_root/liveuser-password" \
+    >"$test_root/configure-development-access.txt"
+grep -F 'linux_live_image_development_access=PASS' \
+  "$test_root/configure-development-access.txt" >/dev/null
+grep -F -- '--service=ssh' "$test_root/firewall.log" >/dev/null
+grep -Fx 'AutomaticLoginEnable=False' "$test_rootfs/etc/gdm/custom.conf" >/dev/null
+grep -Fx 'PermitRootLogin no' \
+  "$test_rootfs/etc/ssh/sshd_config.d/60-sos-development-live.conf" >/dev/null
+grep -F 'liveuser:$y$development-hash:' "$test_rootfs/etc/shadow" >/dev/null
+printf 'one\ntwo\n' >"$test_root/two-line-password"
+if PATH="$test_root/bin:$PATH" TEST_FIREWALL_LOG="$test_root/firewall.log" \
+  "$test_image" configure-development-access \
+    --root "$test_rootfs" \
+    --password-file "$test_root/two-line-password" \
+    >"$test_root/two-line-password.txt" 2>&1; then
+  printf 'error: development access accepted a multi-line password file\n' >&2
+  exit 1
+fi
+grep -F 'must contain exactly one line' "$test_root/two-line-password.txt" >/dev/null
+ln -s liveuser-password "$test_root/symlink-password"
+if PATH="$test_root/bin:$PATH" TEST_FIREWALL_LOG="$test_root/firewall.log" \
+  "$test_image" configure-development-access \
+    --root "$test_rootfs" \
+    --password-file "$test_root/symlink-password" \
+    >"$test_root/symlink-password.txt" 2>&1; then
+  printf 'error: development access accepted a symlink password file\n' >&2
+  exit 1
+fi
+grep -F 'regular file, not a symlink' "$test_root/symlink-password.txt" >/dev/null
+PATH="$test_root/bin:$PATH" \
+  "$test_image" check-rootfs --root "$test_rootfs" >"$test_root/check-pass.txt"
 grep -F 'linux_live_image_rootfs_checked=PASS' "$test_root/check-pass.txt" >/dev/null
-grep -F 'boot_kind=live-boot' "$test_root/check-pass.txt" >/dev/null
+grep -F 'boot_kind=development-live' "$test_root/check-pass.txt" >/dev/null
+grep -F 'promotion_eligible=false' "$test_root/check-pass.txt" >/dev/null
 grep -F 'not_installed_product=true' "$test_root/check-pass.txt" >/dev/null
 
 test_locked_dir="$test_rootfs/etc/skel/.local"
@@ -411,6 +622,7 @@ grep -F 'sudo chmod -R u=rwX,go=rX' "$test_install" >/dev/null
 grep -F 'installed artifact is not readable:' "$test_install" >/dev/null
 "$test_image" 2>"$test_root/image-usage.txt" || true
 grep -F -- '--source-sha256 SHA256' "$test_root/image-usage.txt" >/dev/null
+grep -F -- '--liveuser-password-file FILE' "$test_root/image-usage.txt" >/dev/null
 grep -F 'rootfs extraction destination is not empty' "$test_image" >/dev/null
 grep -F "sudo mount -t erofs -o loop,ro \"\$payload\" \"\$mountpoint\"" \
   "$test_image" >/dev/null
@@ -433,9 +645,16 @@ for test_doc in \
   "$test_repo_root/docs/linux-live-image.md" \
   "$test_repo_root/docs/linux-hardware-gate.md" \
   "$test_repo_root/README.md"; do
-  grep -F 'live-boot' "$test_doc" >/dev/null
+  grep -F 'development-live' "$test_doc" >/dev/null
   grep -E 'not an installed product|not_installed_product' "$test_doc" >/dev/null
 done
+grep -F 'promotion_eligible=false' "$test_repo_root/docs/linux-live-image.md" >/dev/null
+grep -F 'future `release`' "$test_repo_root/docs/linux-live-image.md" >/dev/null
+grep -F 'tools/linux-live-deploy' "$test_repo_root/docs/linux-live-image.md" >/dev/null
+grep -F "target is not a mutable, non-promotable development-live image" \
+  "$test_deploy" >/dev/null
+grep -F "log out of SOS before deploying" "$test_deploy" >/dev/null
+grep -F 'development-deployment-manifest.tsv' "$test_deploy" >/dev/null
 grep -F 'lorax' "$test_repo_root/docs/linux-live-image.md" >/dev/null
 grep -F 'install-linux-login-session' "$test_repo_root/docs/linux-live-image.md" >/dev/null
 grep -F 'same-boot' "$test_repo_root/docs/linux-hardware-gate.md" >/dev/null

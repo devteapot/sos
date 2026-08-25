@@ -8,6 +8,8 @@ hardware_gate_install_metadata=/usr/share/doc/sos/install-metadata.env
 hardware_gate_install_manifest=/usr/share/doc/sos/install-manifest.tsv
 hardware_gate_image_identity=/usr/share/doc/sos/image-identity.env
 hardware_gate_live_media_identity=/sos-image-identity.env
+hardware_gate_development_metadata=/usr/share/doc/sos/development-deployment.env
+hardware_gate_development_manifest=/usr/share/doc/sos/development-deployment-manifest.tsv
 hardware_gate_session_entry=/usr/share/wayland-sessions/sos.desktop
 hardware_gate_state_home="${XDG_STATE_HOME:-$HOME/.local/state}"
 
@@ -146,15 +148,19 @@ hardware_gate_classify_boot() {
   if [[ -r "$identity_file" ]]; then
     image_kind="$(hardware_gate_metadata_value "$identity_file" image_kind)"
   fi
-  if [[ "$overlay" == present && "$image_kind" == live-boot ]]; then
+  if [[ "$overlay" == present && "$image_kind" == development-live ]]; then
     [[ -r "$media_identity" ]] || \
       hardware_gate_fail "SOS live overlay is missing the ISO-level image identity: $media_identity"
     local inner_revision media_revision media_kind media_product_flag
+    local media_promotion_eligible media_mutable_runtime media_ssh_enabled
     local payload_relpath payload_bytes payload_sha container_format
     inner_revision="$(hardware_gate_metadata_value "$identity_file" source_revision)"
     media_revision="$(hardware_gate_metadata_value "$media_identity" source_revision)"
     media_kind="$(hardware_gate_metadata_value "$media_identity" image_kind)"
     media_product_flag="$(hardware_gate_metadata_value "$media_identity" not_installed_product)"
+    media_promotion_eligible="$(hardware_gate_metadata_value "$media_identity" promotion_eligible)"
+    media_mutable_runtime="$(hardware_gate_metadata_value "$media_identity" mutable_runtime)"
+    media_ssh_enabled="$(hardware_gate_metadata_value "$media_identity" ssh_enabled)"
     payload_relpath="$(hardware_gate_metadata_value "$media_identity" payload_relpath)"
     payload_bytes="$(hardware_gate_metadata_value "$media_identity" payload_bytes)"
     payload_sha="$(hardware_gate_metadata_value "$media_identity" payload_sha256)"
@@ -163,7 +169,8 @@ hardware_gate_classify_boot() {
       hardware_gate_fail "rootfs and ISO-level image identities disagree"
     local identity_key inner_value media_value
     for identity_key in \
-      image_kind campaign_class not_installed_product container_format \
+      image_kind campaign_class not_installed_product promotion_eligible \
+      mutable_runtime ssh_enabled container_format \
       fedora_release build_host_release source_revision source_dirty agent_mode \
       base_iso_filename base_iso_bytes base_iso_sha256 payload_relpath baked_at_utc; do
       inner_value="$(hardware_gate_metadata_value "$identity_file" "$identity_key")"
@@ -171,8 +178,10 @@ hardware_gate_classify_boot() {
       [[ -n "$inner_value" && "$inner_value" == "$media_value" ]] || \
         hardware_gate_fail "rootfs and ISO-level image identities disagree on $identity_key"
     done
-    [[ "$media_kind" == live-boot && "$media_product_flag" == true ]] || \
-      hardware_gate_fail "ISO-level identity is not a live-boot non-product image"
+    [[ "$media_kind" == development-live && "$media_product_flag" == true \
+      && "$media_promotion_eligible" == false && "$media_mutable_runtime" == true \
+      && "$media_ssh_enabled" == true ]] || \
+      hardware_gate_fail "ISO-level identity is not a mutable, non-promotable development-live image"
     [[ "$payload_relpath" == LiveOS/squashfs.img ]] || \
       hardware_gate_fail "unsupported or unsafe live payload path: $payload_relpath"
     [[ "$container_format" == erofs-rootfs ]] || \
@@ -182,9 +191,11 @@ hardware_gate_classify_boot() {
     [[ "$payload_sha" =~ ^[0-9a-f]{64}$ ]] || \
       hardware_gate_fail "ISO-level identity has an invalid payload SHA-256"
     printf '%s\n' \
-      'boot_kind=live-boot' \
-      'campaign_class=live-boot' \
+      'boot_kind=development-live' \
+      'campaign_class=development-live' \
       'not_installed_product=true' \
+      'promotion_eligible=false' \
+      'mutable_runtime=true' \
       "boot_id=$boot_id" \
       "live_overlay=$overlay" \
       "image_kind=$image_kind" \
@@ -193,15 +204,16 @@ hardware_gate_classify_boot() {
     return 0
   fi
   if [[ "$overlay" == present ]]; then
-    hardware_gate_fail "live overlay without SOS image-identity (stock live media is not a hardware-gate image)"
+    hardware_gate_fail "live overlay without SOS image-identity (stock live media is not a development image)"
   fi
-  if [[ "$image_kind" == live-boot ]]; then
-    hardware_gate_fail "image-identity is live-boot but this boot is not a live overlay; do not collect it as live-boot or installed product"
+  if [[ "$image_kind" == development-live ]]; then
+    hardware_gate_fail "image-identity is development-live but this boot is not a live overlay; do not collect it as development-live or an installed product"
   fi
   printf '%s\n' \
     'boot_kind=installed' \
     'campaign_class=installed-workstation' \
     'not_installed_product=false' \
+    'promotion_eligible=false' \
     "boot_id=$boot_id" \
     "live_overlay=$overlay" \
     'image_kind='
@@ -227,6 +239,69 @@ hardware_gate_verify_installed_files() {
   done <"$hardware_gate_install_manifest"
   [[ "$count" -gt 0 ]] || hardware_gate_fail "installed artifact manifest is empty"
   printf 'installed_artifacts_verified=PASS files=%s\n' "$count" >>"$output"
+}
+
+hardware_gate_snapshot_development_files() {
+  local output="$1" path expected_bytes expected_sha actual_bytes actual_sha count=0 status
+  : >"$output"
+  while IFS=$'\t' read -r path expected_bytes expected_sha; do
+    [[ -n "$path" && -n "$expected_bytes" && -n "$expected_sha" ]] || \
+      hardware_gate_fail "malformed baked artifact manifest"
+    case "$path" in
+      /usr/local/libexec/sos/*|/usr/local/libexec/sos-agent/*|/usr/share/wayland-sessions/sos.desktop|/usr/share/sos/*) ;;
+      *) hardware_gate_fail "unsafe baked artifact path: $path" ;;
+    esac
+    [[ -f "$path" ]] || hardware_gate_fail "development artifact is missing: $path"
+    actual_bytes="$(stat -c %s "$path")"
+    actual_sha="$(sha256sum "$path" | cut -d ' ' -f 1)"
+    status=modified
+    if [[ "$actual_bytes" == "$expected_bytes" && "$actual_sha" == "$expected_sha" ]]; then
+      status=baked
+    fi
+    printf '%s\t%s\t%s\t%s\t%s\t%s\n' \
+      "$path" "$actual_bytes" "$actual_sha" "$status" "$expected_bytes" "$expected_sha" \
+      >>"$output"
+    count=$((count + 1))
+  done <"$hardware_gate_install_manifest"
+  [[ "$count" -gt 0 ]] || hardware_gate_fail "baked artifact manifest is empty"
+  printf 'development_artifacts_snapshotted=PASS files=%s promotion_eligible=false\n' \
+    "$count" >>"$output"
+}
+
+hardware_gate_verify_development_deployment() {
+  local evidence_dir="$1"
+  [[ -e "$hardware_gate_development_metadata" \
+    || -e "$hardware_gate_development_manifest" ]] || return 0
+  [[ -r "$hardware_gate_development_metadata" \
+    && -r "$hardware_gate_development_manifest" ]] || \
+    hardware_gate_fail "development deployment metadata and manifest must be present together"
+  local source_revision source_dirty path expected_bytes expected_sha count=0
+  source_revision="$(hardware_gate_metadata_value "$hardware_gate_development_metadata" source_revision)"
+  source_dirty="$(hardware_gate_metadata_value "$hardware_gate_development_metadata" source_dirty)"
+  [[ "$source_revision" =~ ^[0-9a-f]{40}$ && "$source_dirty" =~ ^(true|false)$ ]] || \
+    hardware_gate_fail "development deployment source identity is invalid"
+  while IFS=$'\t' read -r path expected_bytes expected_sha; do
+    case "$path" in
+      /usr/local/libexec/sos/sos-compositor|\
+      /usr/local/libexec/sos/sos-experience-host|\
+      /usr/local/libexec/sos/sos-provider-state-service|\
+      /usr/local/libexec/sos/sos-revision-supervisor|\
+      /usr/local/libexec/sos/sos-linux-session|\
+      /usr/local/libexec/sos/sos-agent-authoring) ;;
+      *) hardware_gate_fail "unsafe development deployment path: $path" ;;
+    esac
+    [[ "$expected_bytes" =~ ^[1-9][0-9]*$ && "$expected_sha" =~ ^[0-9a-f]{64}$ ]] || \
+      hardware_gate_fail "invalid development deployment identity: $path"
+    [[ -f "$path" && "$(stat -c %s "$path")" == "$expected_bytes" \
+      && "$(sha256sum "$path" | cut -d ' ' -f 1)" == "$expected_sha" ]] || \
+      hardware_gate_fail "development deployment no longer matches: $path"
+    count=$((count + 1))
+  done <"$hardware_gate_development_manifest"
+  [[ "$count" -gt 0 ]] || hardware_gate_fail "development deployment manifest is empty"
+  cp -- "$hardware_gate_development_metadata" \
+    "$evidence_dir/installed/development-deployment.env"
+  cp -- "$hardware_gate_development_manifest" \
+    "$evidence_dir/installed/development-deployment-manifest.tsv"
 }
 
 hardware_gate_capture_drm() {
@@ -285,7 +360,7 @@ hardware_gate_prepare() {
   [[ -r "$hardware_gate_install_metadata" && -r "$hardware_gate_install_manifest" ]] || \
     hardware_gate_fail "SOS install metadata is missing; reinstall with the current installer"
 
-  local source_revision installed_revision installed_dirty installed_mode product evidence_dir
+  local source_revision source_dirty installed_revision installed_dirty installed_mode product evidence_dir
   installed_revision="$(hardware_gate_metadata_value "$hardware_gate_install_metadata" source_revision)"
   installed_dirty="$(hardware_gate_metadata_value "$hardware_gate_install_metadata" source_dirty)"
   installed_mode="$(hardware_gate_metadata_value "$hardware_gate_install_metadata" agent_mode)"
@@ -293,23 +368,18 @@ hardware_gate_prepare() {
     hardware_gate_fail "installed binaries came from a dirty source tree"
   [[ "$installed_mode" == offline || "$installed_mode" == live ]] || \
     hardware_gate_fail "installed agent mode is invalid: $installed_mode"
-  if [[ "$boot_kind" == live-boot ]]; then
+  source_dirty=false
+  if [[ "$boot_kind" == development-live ]]; then
     [[ "$installed_mode" == offline ]] || \
-      hardware_gate_fail "the first live-boot campaign requires the baked offline agent"
+      hardware_gate_fail "development-live requires the baked offline agent"
     local image_revision
     image_revision="$(hardware_gate_metadata_value "$hardware_gate_image_identity" source_revision)"
     [[ -n "$image_revision" && "$image_revision" == "$installed_revision" ]] || \
-      hardware_gate_fail "live-boot image revision $image_revision does not match installed $installed_revision"
+      hardware_gate_fail "development-live image revision $image_revision does not match its baked install $installed_revision"
     source_revision="$image_revision"
-    if command -v git >/dev/null 2>&1 \
-      && git -C "$hardware_gate_root" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-      cd "$hardware_gate_root"
-      [[ -z "$(git status --porcelain --untracked-files=normal)" ]] || \
-        hardware_gate_fail "physical acceptance requires a clean source worktree"
-      local worktree_revision
-      worktree_revision="$(git rev-parse HEAD)"
-      [[ "$worktree_revision" == "$source_revision" ]] || \
-        hardware_gate_fail "installed revision $installed_revision does not match source $worktree_revision"
+    if [[ -r "$hardware_gate_development_metadata" ]]; then
+      source_revision="$(hardware_gate_metadata_value "$hardware_gate_development_metadata" source_revision)"
+      source_dirty="$(hardware_gate_metadata_value "$hardware_gate_development_metadata" source_dirty)"
     fi
   else
     cd "$hardware_gate_root"
@@ -345,7 +415,7 @@ hardware_gate_prepare() {
   if [[ -r "$hardware_gate_image_identity" ]]; then
     cp -- "$hardware_gate_image_identity" "$evidence_dir/installed/image-identity.env"
   fi
-  if [[ "$boot_kind" == live-boot ]]; then
+  if [[ "$boot_kind" == development-live ]]; then
     local live_media=/run/initramfs/live payload_relpath payload_path
     local actual_payload_bytes actual_payload_sha expected_payload_bytes expected_payload_sha
     [[ -d "$live_media" && -r "$live_media$hardware_gate_live_media_identity" ]] || \
@@ -370,7 +440,13 @@ hardware_gate_prepare() {
       "payload_sha256=$actual_payload_sha" \
       "payload_identity_match=PASS" >"$evidence_dir/installed/live-payload.txt"
   fi
-  hardware_gate_verify_installed_files "$evidence_dir/installed/verified-artifacts.tsv"
+  if [[ "$boot_kind" == development-live ]]; then
+    hardware_gate_verify_development_deployment "$evidence_dir"
+    hardware_gate_snapshot_development_files \
+      "$evidence_dir/installed/current-artifacts.tsv"
+  else
+    hardware_gate_verify_installed_files "$evidence_dir/installed/verified-artifacts.tsv"
+  fi
   [[ -f "$hardware_gate_state_home/sos/output.json" \
     && ! -L "$hardware_gate_state_home/sos/output.json" \
     && -O "$hardware_gate_state_home/sos/output.json" \
@@ -405,10 +481,12 @@ hardware_gate_prepare() {
   hardware_gate_capture_optional "$evidence_dir/environment/display-manager-before.txt" \
     systemctl status display-manager --no-pager
   printf '%s\n' "$display_manager_unit" >"$evidence_dir/environment/display-manager-unit.txt"
-  if [[ "$boot_kind" == live-boot ]]; then
+  if [[ "$boot_kind" == development-live ]]; then
     {
-      printf 'boot_kind=live-boot\n'
+      printf 'boot_kind=development-live\n'
       printf 'not_installed_product=true\n'
+      printf 'promotion_eligible=false\n'
+      printf 'mutable_runtime=true\n'
       printf 'rustc_version=%s\n' \
         "$(hardware_gate_metadata_value "$hardware_gate_install_metadata" rustc_version)"
       printf 'node_version=%s\n' \
@@ -433,13 +511,13 @@ hardware_gate_prepare() {
   started_ns="$(hardware_gate_monotonic_ns)"
   printf '%s\n' \
     "source_revision=$source_revision" \
-    "source_dirty=false" \
+    "source_dirty=$source_dirty" \
     "agent_mode=$installed_mode" \
     "boot_id=$boot_id" \
     "boot_kind=$boot_kind" \
     "campaign_class=$campaign_class" \
     "not_installed_product=$not_installed_product" \
-    "boot_id=$boot_id" \
+    'promotion_eligible=false' \
     "user_uid=$(id -u)" \
     "state_home=$hardware_gate_state_home" \
     "product_name=$product" \
@@ -448,7 +526,7 @@ hardware_gate_prepare() {
     "started_monotonic_ns=$started_ns" >"$evidence_dir/campaign.env"
   printf '%s\n' "$cursor" >"$evidence_dir/journal.cursor"
   local collect_command='./tools/linux-hardware-gate collect'
-  if [[ "$boot_kind" == live-boot ]]; then
+  if [[ "$boot_kind" == development-live ]]; then
     collect_command='/usr/local/libexec/sos/linux-hardware-gate collect'
   fi
   printf '%s\n' \
@@ -459,9 +537,10 @@ hardware_gate_prepare() {
     '5. Press Ctrl+Alt+Backspace, return to GDM, and log into the fallback desktop.' \
     "6. Run: $collect_command --evidence-dir $evidence_dir" \
     >"$evidence_dir/instructions.txt"
-  if [[ "$boot_kind" == live-boot ]]; then
+  if [[ "$boot_kind" == development-live ]]; then
     printf '%s\n' \
-      'This campaign is live-boot evidence, not an installed product.' \
+      'This is mutable development-live diagnostic evidence, not release acceptance.' \
+      'Its verdict is never promotion eligible, even when every criterion passes.' \
       'Collect on this same boot and copy the evidence directory off before reboot.' \
       >>"$evidence_dir/instructions.txt"
   fi
@@ -515,8 +594,9 @@ hardware_gate_audit_dir() {
   fi
   if [[ -n "$boot_kind" ]]; then
     printf 'boot_kind=%s campaign_class=%s\n' "$boot_kind" "${campaign_class:-$boot_kind}"
-    if [[ "$boot_kind" == live-boot ]]; then
+    if [[ "$boot_kind" == development-live ]]; then
       printf 'not_installed_product=true\n'
+      printf 'promotion_eligible=false\n'
     fi
   fi
   hardware_gate_criterion_pattern recovery_page_flip \
@@ -584,8 +664,16 @@ hardware_gate_audit_dir() {
     'GPU HANG|drm.*(ERROR|FAULT)|i915.*(reset|hang)|xe.*(reset|hang)' \
     "$evidence_dir/journal-kernel.txt"
   if [[ "$hardware_gate_audit_failed" == true ]]; then
-    printf 'linux_hardware_gate_result=FAIL\n'
+    if [[ "$boot_kind" == development-live ]]; then
+      printf 'linux_hardware_gate_result=DIAGNOSTIC_FAIL promotion_eligible=false\n'
+    else
+      printf 'linux_hardware_gate_result=FAIL\n'
+    fi
     return 1
+  fi
+  if [[ "$boot_kind" == development-live ]]; then
+    printf 'linux_hardware_gate_result=DIAGNOSTIC_PASS promotion_eligible=false evidence=drm_page_flip physical_input=keyboard,touchpad,touchscreen\n'
+    return 0
   fi
   printf 'linux_hardware_gate_result=PASS evidence=drm_page_flip physical_input=keyboard,touchpad,touchscreen\n'
 }
@@ -662,10 +750,10 @@ hardware_gate_collect() {
   current_boot_id="$(hardware_gate_read_boot_id)"
   [[ -n "$prepared_boot_id" && "$current_boot_id" == "$prepared_boot_id" ]] || \
     hardware_gate_fail "evidence must be collected on the exact kernel boot that prepared it"
-  if [[ "$prepared_boot_kind" == live-boot ]]; then
+  if [[ "$prepared_boot_kind" == development-live ]]; then
     current_boot_kind="$(hardware_gate_classify_boot | sed -n 's/^boot_kind=//p' | tail -n 1)"
-    [[ "$current_boot_kind" == live-boot ]] || \
-      hardware_gate_fail "live-boot evidence must be collected on the same live overlay boot"
+    [[ "$current_boot_kind" == development-live ]] || \
+      hardware_gate_fail "development-live evidence must be collected on the same live overlay boot"
   fi
 
   # The redirects intentionally run as the evidence owner; only journal access needs sudo.

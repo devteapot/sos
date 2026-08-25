@@ -1,0 +1,253 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+umask 077
+
+development_deploy_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+development_deploy_target_dir="${CARGO_TARGET_DIR:-$development_deploy_root/target}"
+development_deploy_artifacts_dir="${SOS_DEVELOPMENT_DEPLOY_ARTIFACTS_DIR:-$development_deploy_root/artifacts/linux-live-deploy}"
+development_deploy_identity=/usr/share/doc/sos/image-identity.env
+development_deploy_metadata=/usr/share/doc/sos/development-deployment.env
+development_deploy_manifest=/usr/share/doc/sos/development-deployment-manifest.tsv
+
+development_deploy_fail() {
+  printf 'error: %s\n' "$*" >&2
+  exit 1
+}
+
+development_deploy_usage() {
+  printf '%s\n' \
+    'usage:' \
+    '  tools/linux-live-deploy components' \
+    '  tools/linux-live-deploy deploy --target liveuser@HOST [--component NAME]...'
+}
+
+development_deploy_components() {
+  printf '%s\n' \
+    'compositor          /usr/local/libexec/sos/sos-compositor' \
+    'experience-host     /usr/local/libexec/sos/sos-experience-host' \
+    'provider            /usr/local/libexec/sos/sos-provider-state-service' \
+    'supervisor          /usr/local/libexec/sos/sos-revision-supervisor' \
+    'session             /usr/local/libexec/sos/sos-linux-session' \
+    'authoring           /usr/local/libexec/sos/sos-agent-authoring'
+}
+
+development_deploy_metadata_value() {
+  local file="$1" key="$2"
+  sed -n "s/^${key}=//p" "$file" | tail -n 1
+}
+
+development_deploy_binary_name() {
+  case "$1" in
+    compositor) printf 'sos-compositor\n' ;;
+    experience-host) printf 'sos-experience-host\n' ;;
+    provider) printf 'sos-provider-state-service\n' ;;
+    supervisor) printf 'sos-revision-supervisor\n' ;;
+    session) printf 'sos-linux-session\n' ;;
+    authoring) printf 'sos-agent-authoring\n' ;;
+    *) development_deploy_fail "unknown component: $1" ;;
+  esac
+}
+
+development_deploy_build_component() {
+  local component="$1"
+  case "$component" in
+    compositor)
+      cargo build --locked --release \
+        -p sos-compositor --features direct-backend --bin sos-compositor
+      ;;
+    experience-host)
+      cargo build --locked --release \
+        -p sos-experience --features linux-host --bin sos-experience-host
+      ;;
+    provider)
+      cargo build --locked --release \
+        -p provider-state-service --bin sos-provider-state-service
+      ;;
+    supervisor)
+      cargo build --locked --release \
+        -p revision-supervisor --bin sos-revision-supervisor
+      ;;
+    session)
+      cargo build --locked --release \
+        -p sos-linux-session --bin sos-linux-session
+      ;;
+    authoring)
+      cargo build --locked --release \
+        -p sos-linux-session --bin sos-agent-authoring
+      ;;
+    *) development_deploy_fail "unknown component: $component" ;;
+  esac
+}
+
+development_deploy_run() {
+  local target=""
+  local -a requested_components=()
+  while [[ "$#" -gt 0 ]]; do
+    case "$1" in
+      --target)
+        [[ "$#" -ge 2 ]] || development_deploy_fail "--target requires liveuser@HOST"
+        target="$2"
+        shift 2
+        ;;
+      --component)
+        [[ "$#" -ge 2 ]] || development_deploy_fail "--component requires a name"
+        requested_components+=("$2")
+        shift 2
+        ;;
+      *) development_deploy_fail "unexpected deploy option: $1" ;;
+    esac
+  done
+  [[ "$target" =~ ^liveuser@([A-Za-z0-9._-]+|\[[0-9A-Fa-f:]+\])$ ]] || \
+    development_deploy_fail "target must be liveuser@HOST without SSH options"
+  if [[ "${#requested_components[@]}" -eq 0 ]]; then
+    requested_components=(compositor experience-host provider supervisor session authoring)
+  fi
+
+  local -A selected=()
+  local -a components=()
+  local component
+  for component in "${requested_components[@]}"; do
+    development_deploy_binary_name "$component" >/dev/null
+    if [[ -z "${selected[$component]:-}" ]]; then
+      selected[$component]=true
+      components+=("$component")
+    fi
+  done
+  local command
+  for command in cargo date git install mktemp scp sed sha256sum ssh stat; do
+    command -v "$command" >/dev/null 2>&1 || \
+      development_deploy_fail "required command not found: $command"
+  done
+  [[ "$(id -u)" -ne 0 ]] || development_deploy_fail "run deployment as the development user, not root"
+
+  cd "$development_deploy_root"
+  local source_revision source_dirty=false started_ns
+  source_revision="$(git rev-parse HEAD)"
+  [[ "$source_revision" =~ ^[0-9a-f]{40}$ ]] || \
+    development_deploy_fail "source revision is not a full Git object ID"
+  if [[ -n "$(git status --porcelain --untracked-files=normal)" ]]; then
+    source_dirty=true
+  fi
+  started_ns="$(date +%s%N)"
+
+  local temporary control_socket connection_started=false remote_dir=""
+  temporary="$(mktemp -d -t sos-development-deploy.XXXXXX)"
+  control_socket="$temporary/ssh-control"
+  local -a ssh_options=(
+    -o ControlMaster=auto
+    -o ControlPersist=120
+    -o "ControlPath=$control_socket"
+  )
+  development_deploy_cleanup() {
+    if [[ "$connection_started" == true ]]; then
+      if [[ -n "$remote_dir" ]]; then
+        ssh "${ssh_options[@]}" "$target" "rm -r -- '$remote_dir'" >/dev/null 2>&1 || true
+      fi
+      ssh "${ssh_options[@]}" -O exit "$target" >/dev/null 2>&1 || true
+    fi
+    rm -r -- "$temporary"
+  }
+  trap development_deploy_cleanup EXIT
+
+  ssh "${ssh_options[@]}" "$target" true
+  connection_started=true
+  ssh "${ssh_options[@]}" "$target" \
+    "command -v pgrep >/dev/null && ! pgrep -f '^/usr/local/libexec/sos/sos-(compositor|experience-host|provider-state-service|revision-supervisor|linux-session|agent-authoring)' >/dev/null" || \
+    development_deploy_fail "log out of SOS before deploying, and ensure pgrep is installed"
+
+  local identity="$temporary/image-identity.env"
+  ssh "${ssh_options[@]}" "$target" "cat '$development_deploy_identity'" >"$identity"
+  [[ "$(development_deploy_metadata_value "$identity" image_kind)" == development-live \
+    && "$(development_deploy_metadata_value "$identity" promotion_eligible)" == false \
+    && "$(development_deploy_metadata_value "$identity" mutable_runtime)" == true ]] || \
+    development_deploy_fail "target is not a mutable, non-promotable development-live image"
+  local base_revision
+  base_revision="$(development_deploy_metadata_value "$identity" source_revision)"
+
+  local staging="$temporary/staging"
+  mkdir "$staging"
+  local binary source_path destination bytes digest
+  local manifest="$staging/development-deployment-manifest.tsv"
+  : >"$manifest"
+  for component in "${components[@]}"; do
+    development_deploy_build_component "$component"
+    binary="$(development_deploy_binary_name "$component")"
+    source_path="$development_deploy_target_dir/release/$binary"
+    destination="/usr/local/libexec/sos/$binary"
+    [[ -x "$source_path" ]] || development_deploy_fail "built artifact is missing: $source_path"
+    install -m 0755 "$source_path" "$staging/$binary"
+    bytes="$(stat -c %s "$staging/$binary")"
+    digest="$(sha256sum "$staging/$binary" | cut -d ' ' -f 1)"
+    printf '%s\t%s\t%s\n' "$destination" "$bytes" "$digest" >>"$manifest"
+  done
+
+  local deployed_at deployment_id metadata evidence_dir
+  deployed_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  deployment_id="$(date -u +%Y%m%dT%H%M%SZ)-${source_revision:0:12}-$$"
+  metadata="$staging/development-deployment.env"
+  printf '%s\n' \
+    "deployment_id=$deployment_id" \
+    "source_revision=$source_revision" \
+    "source_dirty=$source_dirty" \
+    "base_image_revision=$base_revision" \
+    "deployed_at_utc=$deployed_at" \
+    'image_kind=development-live' \
+    'promotion_eligible=false' >"$metadata"
+
+  remote_dir="$(ssh "${ssh_options[@]}" "$target" \
+    'umask 077; mktemp -d -p /tmp sos-development-deploy.XXXXXX')"
+  [[ "$remote_dir" =~ ^/tmp/sos-development-deploy\.[A-Za-z0-9]+$ ]] || \
+    development_deploy_fail "target returned an unsafe staging path"
+  scp "${ssh_options[@]}" "$staging"/* "$target:$remote_dir/"
+
+  local remote_command="set -euo pipefail; trap 'rm -r -- \"$remote_dir\"' EXIT;"
+  for component in "${components[@]}"; do
+    binary="$(development_deploy_binary_name "$component")"
+    remote_command+=" sudo install -o root -g root -m 0755 '$remote_dir/$binary' '/usr/local/libexec/sos/$binary';"
+  done
+  remote_command+=" sudo install -o root -g root -m 0644 '$remote_dir/development-deployment.env' '$development_deploy_metadata';"
+  remote_command+=" sudo install -o root -g root -m 0644 '$remote_dir/development-deployment-manifest.tsv' '$development_deploy_manifest';"
+  ssh -tt "${ssh_options[@]}" "$target" "$remote_command"
+  remote_dir=""
+
+  while IFS=$'\t' read -r destination bytes digest; do
+    [[ "$(ssh "${ssh_options[@]}" "$target" "sha256sum '$destination'" | cut -d ' ' -f 1)" \
+      == "$digest" ]] || development_deploy_fail "remote digest mismatch: $destination"
+  done <"$manifest"
+
+  evidence_dir="$development_deploy_artifacts_dir/$deployment_id"
+  mkdir -p -- "$evidence_dir"
+  install -m 0644 "$metadata" "$evidence_dir/development-deployment.env"
+  install -m 0644 "$manifest" "$evidence_dir/development-deployment-manifest.tsv"
+  local finished_ns duration_ns
+  finished_ns="$(date +%s%N)"
+  duration_ns=$((finished_ns - started_ns))
+  printf '%s\n' \
+    "target=$target" \
+    "measured_wall_time_ns=$duration_ns" \
+    "components=${components[*]}" >"$evidence_dir/deployment-result.env"
+  development_deploy_cleanup
+  trap - EXIT
+  printf 'linux_development_live_deployed=PASS target=%s deployment_id=%s revision=%s dirty=%s components=%s measured_wall_time_ns=%s evidence_dir=%s promotion_eligible=false\n' \
+    "$target" "$deployment_id" "$source_revision" "$source_dirty" \
+    "${components[*]}" "$duration_ns" "$evidence_dir"
+}
+
+[[ "$#" -ge 1 ]] || {
+  development_deploy_usage >&2
+  exit 1
+}
+development_deploy_command="$1"
+shift
+case "$development_deploy_command" in
+  components)
+    [[ "$#" -eq 0 ]] || development_deploy_fail "components accepts no options"
+    development_deploy_components
+    ;;
+  deploy) development_deploy_run "$@" ;;
+  *)
+    development_deploy_usage >&2
+    exit 1
+    ;;
+esac

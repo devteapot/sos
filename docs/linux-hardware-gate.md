@@ -1,7 +1,7 @@
 # First physical Linux hardware gate
 
 Date: 2026-08-21
-Updated: 2026-08-23
+Updated: 2026-08-25
 
 The first physical Linux gate uses the selectable GDM session. It does not
 install the boot-owned appliance target, stop or reconfigure GDM, or change the
@@ -15,18 +15,20 @@ bounded interactions below, and the controller collects finalized evidence
 after SOS returns cleanly to GDM. It never injects input or infers physical
 behavior from VM results.
 
-Two boot media are allowed for first Framework 12 evidence. They share the
-PASS contract below. They are not the same product claim:
+Two environments can exercise the criteria below, but they do not produce the
+same verdict:
 
 - **installed-workstation:** Fedora Workstation installed to disk, SOS
   installed from this checkout with `install --offline`.
-- **live-boot:** a SOS-baked Fedora Workstation live remix, prepared and
-  collected on the same live overlay boot. That campaign is not an installed product.
+- **development-live:** a mutable SOS-baked Fedora Workstation live remix,
+  prepared and collected on the same live overlay boot. It produces diagnostic
+  evidence only, is not an installed product, and is never promotion eligible.
   See [`linux-live-image.md`](linux-live-image.md).
 
 Hardware (DRM, input, DMI) is the same silicon on both. Persistence, disk,
 and bootloader differ. Stock Fedora live media without SOS baked in is not a
-gate image.
+development image. A future immutable `release` image owns release promotion;
+there is no acceptance-live artifact class.
 
 ## Prepare the target
 
@@ -82,21 +84,21 @@ the preferred panel mode, scale 1.0, and rotation 0. A bounded override may set
 Automatic tablet rotation is not part of the first gate. Finalize this file
 before preparing evidence; the harness records its exact contents.
 
-### Live-boot remix, same-boot collect
+### Development-live remix, same-boot diagnostics
 
-The first Framework 12 iteration may boot a remixed Fedora Workstation live
-ISO that already contains that offline install output. Do not run
-`install-linux-login-session` on the live system. Rebuild the image on a
-Fedora x86_64 host at the same Fedora release as the ISO, boot it, prepare,
-select SOS in GDM, collect on the same kernel boot, and copy the evidence
-directory off the overlay before reboot. Verify Fedora's signed CHECKSUM first;
-the bake requires that expected SHA-256.
+The Framework development loop may boot the mutable Fedora Workstation remix.
+It keeps GNOME, password-protected SSH, and the selectable SOS session. Rebuild
+the base only when its environment changes; for ordinary SOS patches use
+`tools/linux-live-deploy` from GNOME after logging out of SOS. Copy evidence
+off the overlay before reboot. Verify Fedora's signed CHECKSUM before the base
+bake; the bake requires that expected SHA-256.
 
 ```sh
 ./tools/linux-live-image bake \
   --source-iso /path/to/Fedora-Workstation-Live-x86_64-*.iso \
   --source-sha256 "$FEDORA_ISO_SHA256" \
-  --output-dir artifacts/linux-live-image
+  --output-dir artifacts/linux-live-image \
+  --liveuser-password-file /path/to/private-password-file
 # Boot the remixed ISO, then from the GNOME live session:
 /usr/local/libexec/sos/linux-hardware-gate prepare \
   --expect-product 'Laptop 12' \
@@ -107,12 +109,14 @@ The bake verifies that Fedora's `LiveOS/squashfs.img` is a flat EROFS rootfs,
 extracts it as root while preserving owners, permissions, and xattrs, applies
 the image's SELinux file-context policy after staging SOS, and repacks as root.
 Prepare records
-`boot_kind=live-boot`, `not_installed_product=true`, the exact kernel `boot_id`,
+`boot_kind=development-live`, `not_installed_product=true`,
+`promotion_eligible=false`, the exact kernel `boot_id`,
 both matching `image-identity.env` records, and the mandatory live-media payload
-byte size and SHA-256. Persistence is optional only because prepare and collect prove the
-same boot ID. A live overlay without both SOS image identities is refused. An
-install-to-disk of this remix is also refused: it is neither live-boot nor the
-installed-workstation campaign.
+byte size and SHA-256. It also verifies any incremental deployment manifest and
+snapshots the current SOS bytes. Persistence is optional only because prepare
+and collect prove the same boot ID. A live overlay without both SOS image
+identities is refused. An install-to-disk of this remix is also refused: it is
+neither development-live nor the installed-workstation campaign.
 
 ## Run the clamshell smoke gate
 
@@ -128,10 +132,11 @@ new ignored or external evidence directory:
 The command proves that it is running on bare metal, checks the exact installed
 manifest and revision pin, records the OS, kernel, BIOS, CPU, GPU/driver,
 DRM connectors and EDID hashes, libinput inventory, package/tool versions,
-live-versus-installed image identity, and the current journal cursor. The
-installed-workstation pin is a clean matching source worktree. The live-boot
-pin is the baked image identity plus matching install metadata; a present
-worktree must still be clean and match. It then prints the operator steps:
+development-versus-installed image identity, and the current journal cursor.
+The installed-workstation pin is a clean matching source worktree. The
+development-live pin preserves the baked image identity but permits an exact,
+hashed overlay deployment whose source dirty state is recorded. It then prints
+the operator steps:
 
 1. Log out and choose **SOS** from GDM.
 2. Confirm the compositor recovery view and generated experience appear.
@@ -155,17 +160,17 @@ measures campaign wall time from same-boot monotonic timestamps, generates
 `evidence-manifest.tsv`, and independently verifies every path, byte size, and
 SHA-256.
 
-On the live remix, use the baked harness for collection:
+On development-live, use the baked harness for collection:
 
 ```sh
 /usr/local/libexec/sos/linux-hardware-gate collect \
   --evidence-dir /home/liveuser/framework12-first-gate
 ```
 
-## PASS contract
+## Runtime criteria and verdicts
 
-Every criterion is required; a missing observation is a FAIL rather than a
-SKIP:
+Every criterion is required; a missing observation fails the run rather than
+becoming a SKIP:
 
 - the compositor's recovery view reaches a physical DRM page flip before the
   generated shell starts;
@@ -184,14 +189,17 @@ SKIP:
 - the campaign contains no SOS process failure, Rust panic, or matching kernel
   DRM/GPU hang/reset marker.
 
-This first PASS establishes the physical panel, Intel DRM/KMS/GBM path,
+An installed-workstation PASS establishes the physical panel, Intel DRM/KMS/GBM path,
 keyboard, touchpad, touchscreen, deterministic resident authoring, durable
 activation, and reversible GDM lifecycle for the exact evidence revision. It
 does not establish stylus pressure/calibration, tablet rotation, suspend/resume,
 external-display hotplug, host crash recovery, latency, memory pressure,
 thermals, or soak. Run those as later focused gates without weakening this
-baseline. A live-boot PASS is still this hardware contract; it does not become
-an installed-product claim.
+baseline. Development-live uses the same observations to diagnose the mutable
+runtime, but emits `DIAGNOSTIC_PASS promotion_eligible=false` or
+`DIAGNOSTIC_FAIL`; it can never emit the normal PASS line. Only the future
+immutable `release` artifact and its artifact-matched gate may support release
+promotion.
 
 ## Audit, recovery, and uninstall
 

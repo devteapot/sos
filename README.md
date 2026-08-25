@@ -198,13 +198,16 @@ model:
 ```
 
 The same offline install can be baked into a checksum-pinned Fedora Workstation
-live remix so the first Framework 12 loop does not touch its internal disk:
-rebuild ISO, boot removable media, prepare, select SOS in GDM, collect on that
-exact kernel boot, and copy evidence off. The bake accepts only Fedora's flat
+`development-live` environment so the Framework 12 loop does not touch its
+internal disk. Its password-protected SSH service and mutable overlay allow
+changed SOS binaries to be deployed with `tools/linux-live-deploy` without
+rebuilding the ISO. The bake accepts only Fedora's flat
 EROFS rootfs format and performs a privileged metadata-preserving copy,
 policy-based SELinux relabel, and repack so Linux ownership, ACLs,
 capabilities, and security metadata are preserved.
-That campaign is live-boot evidence, not an installed product. See
+Development-live diagnostics always record `promotion_eligible=false`; only a
+future immutable release image can own release promotion.
+It is not an installed product. See
 [`docs/linux-live-image.md`](docs/linux-live-image.md).
 
 `./tools/install-linux-login-session uninstall` removes the installed SOS

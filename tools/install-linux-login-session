@@ -284,5 +284,5 @@ else
     "SOS offline login session staged under destroot $sos_install_destdir." \
     "Source revision: $sos_install_source_revision (dirty=$sos_install_source_dirty)." \
     'GDM and the default boot target were not changed. No host user state was written.' \
-    'Do not treat destroot staging as an installed product or a live-boot campaign.'
+    'Do not treat destroot staging alone as an installed product or development-live image.'
 fi
