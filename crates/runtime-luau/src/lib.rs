@@ -1145,6 +1145,7 @@ fn decode_effects(table: Option<Table>, lua: &Lua) -> Result<Vec<ProviderEffect>
                 | ("agent", "use_fake")
                 | ("agent", "clear_credential")
                 | ("audio", "set_volume")
+                | ("audio", "adjust_volume")
                 | ("audio", "set_muted")
                 | ("media", "play_pause")
                 | ("media", "next")

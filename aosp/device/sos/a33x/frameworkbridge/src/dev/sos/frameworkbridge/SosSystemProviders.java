@@ -105,6 +105,20 @@ final class SosSystemProviders {
             int volume = Math.round(maximum * percent / 100.0f);
             audio.setStreamVolume(AudioManager.STREAM_MUSIC, volume, 0);
             accepted = true;
+        } else if ("audio".equals(provider) && "adjust_volume".equals(action)) {
+            int delta = payload.getInt("delta");
+            if (delta < -100 || delta > 100 || delta == 0) {
+                throw new IllegalArgumentException("bad delta");
+            }
+            AudioManager audio = context.getSystemService(AudioManager.class);
+            if (audio == null) throw new IllegalStateException("audio service unavailable");
+            int maximum = audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC);
+            int current = audio.getStreamVolume(AudioManager.STREAM_MUSIC);
+            int change = Math.round(maximum * delta / 100.0f);
+            if (change == 0) change = delta > 0 ? 1 : -1;
+            int volume = Math.max(0, Math.min(maximum, current + change));
+            audio.setStreamVolume(AudioManager.STREAM_MUSIC, volume, 0);
+            accepted = true;
         } else if ("audio".equals(provider) && "set_muted".equals(action)) {
             AudioManager audio = context.getSystemService(AudioManager.class);
             if (audio == null) throw new IllegalStateException("audio service unavailable");

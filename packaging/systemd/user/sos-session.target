@@ -1,0 +1,10 @@
+[Unit]
+Description=SOS graphical session
+Documentation=man:systemd.special(7)
+DefaultDependencies=no
+Conflicts=shutdown.target sos-session-shutdown.target
+Wants=graphical-session-pre.target
+After=graphical-session-pre.target
+BindsTo=graphical-session.target
+Before=graphical-session.target
+PartOf=graphical-session.target

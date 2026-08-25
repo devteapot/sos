@@ -287,7 +287,14 @@ hardware_gate_verify_development_deployment() {
       /usr/local/libexec/sos/sos-provider-state-service|\
       /usr/local/libexec/sos/sos-revision-supervisor|\
       /usr/local/libexec/sos/sos-linux-session|\
-      /usr/local/libexec/sos/sos-agent-authoring) ;;
+      /usr/local/libexec/sos/sos-agent-authoring|\
+      /usr/local/libexec/sos/sos-linux-provider-probe|\
+      /usr/local/libexec/sos/sos-login-session|\
+      /usr/local/lib/systemd/user/sos-session.target|\
+      /usr/local/lib/systemd/user/sos-session-shutdown.target|\
+      /usr/local/libexec/sos/linux-hardware-gate|\
+      /usr/share/sos/experiences/default.luau|\
+      /usr/share/doc/sos/experience-api.md) ;;
       *) hardware_gate_fail "unsafe development deployment path: $path" ;;
     esac
     [[ "$expected_bytes" =~ ^[1-9][0-9]*$ && "$expected_sha" =~ ^[0-9a-f]{64}$ ]] || \

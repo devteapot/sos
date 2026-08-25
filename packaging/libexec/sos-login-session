@@ -51,7 +51,38 @@ sos_login_output_config="$sos_login_state_dir/output.json"
 sos_login_agent_state_dir="$sos_login_state_dir/agent"
 sos_login_agent_credentials="$sos_login_agent_state_dir/auth.json"
 sos_login_agent_config="$sos_login_agent_state_dir/config.env"
+sos_login_provider_root="${SOS_LINUX_PROVIDER_ROOT:-$sos_login_state_dir/providers}"
+sos_login_provider_grants="${SOS_PROVIDER_GRANTS:-$sos_login_state_dir/provider-grants.json}"
 install -d -m 0700 "$sos_login_state_home" "$sos_login_state_dir" "$sos_login_revision_root"
+
+for sos_login_path in "$sos_login_provider_root" "$sos_login_provider_grants"; do
+  [[ "$sos_login_path" == /* ]] || \
+    sos_login_fail "provider paths must be absolute: $sos_login_path"
+done
+sos_login_development_grants="${SOS_PROVIDER_DEVELOPMENT_GRANTS:-}"
+sos_login_image_identity="${SOS_IMAGE_IDENTITY_FILE:-/usr/share/doc/sos/image-identity.env}"
+if [[ -z "$sos_login_development_grants" && -r "$sos_login_image_identity" ]] \
+  && grep -Fx 'image_kind=development-live' "$sos_login_image_identity" >/dev/null \
+  && grep -Fx 'mutable_runtime=true' "$sos_login_image_identity" >/dev/null; then
+  sos_login_development_grants=1
+fi
+if [[ "$sos_login_development_grants" == 1 ]]; then
+  install -d -m 0700 "$sos_login_provider_root"
+  sos_login_grants_tmp="$sos_login_state_dir/.provider-grants.$$"
+  printf '%s\n' \
+    '{"*":["application_launch","audio_control","calendar_read","calendar_write","network_control","notes_read","notes_write","music_read","music_control","system_read","video_read","camera_read"]}' \
+    >"$sos_login_grants_tmp"
+  chmod 0600 "$sos_login_grants_tmp"
+  mv -f -- "$sos_login_grants_tmp" "$sos_login_provider_grants"
+  export SOS_LINUX_PROVIDER_ROOT="$sos_login_provider_root"
+  export SOS_PROVIDER_GRANTS="$sos_login_provider_grants"
+  export SOS_PROVIDER_DEVELOPMENT_GRANTS=1
+elif [[ -n "${SOS_LINUX_PROVIDER_ROOT:-}" || -n "${SOS_PROVIDER_GRANTS:-}" ]]; then
+  [[ -n "${SOS_LINUX_PROVIDER_ROOT:-}" && -n "${SOS_PROVIDER_GRANTS:-}" ]] || \
+    sos_login_fail "SOS_LINUX_PROVIDER_ROOT and SOS_PROVIDER_GRANTS must be configured together"
+  [[ -d "$sos_login_provider_root" && -r "$sos_login_provider_grants" ]] || \
+    sos_login_fail "configured Linux provider root or grants are unavailable"
+fi
 
 if [[ ! -f "$sos_login_token_file" ]]; then
   sos_login_token_tmp="$sos_login_state_dir/.shell-token.$$"
@@ -90,13 +121,18 @@ sos_login_runtime="$(mktemp -d "$XDG_RUNTIME_DIR/sos-session.XXXXXX")"
 sos_login_agent_socket="$sos_login_runtime/agent.sock"
 sos_login_agent_authoring_socket="$sos_login_runtime/agent-authoring.sock"
 sos_login_provider_socket="$sos_login_runtime/provider-state.sock"
+sos_login_accessibility_socket="$sos_login_runtime/accessibility.sock"
 sos_login_supervisor_socket="$sos_login_revision_root/run/supervisor.sock"
 sos_login_session_pid=""
 sos_login_authoring_pid=""
 sos_login_agent_pid=""
+sos_login_graphical_target_started=false
 # ShellCheck cannot infer that EXIT invokes this callback.
 # shellcheck disable=SC2317,SC2329
 sos_login_cleanup() {
+  if [[ "$sos_login_graphical_target_started" == true ]]; then
+    systemctl --user start sos-session-shutdown.target >/dev/null 2>&1 || true
+  fi
   for sos_login_cleanup_pid in \
     "$sos_login_agent_pid" \
     "$sos_login_authoring_pid" \
@@ -130,12 +166,14 @@ trap sos_login_forward_stop HUP INT TERM
 
 export XDG_SESSION_TYPE=wayland
 export XDG_SESSION_DESKTOP=SOS
-export XDG_CURRENT_DESKTOP=SOS
+export XDG_CURRENT_DESKTOP=SOS:GNOME
 export DESKTOP_SESSION=sos
 export LIBSEAT_BACKEND=logind
 export SOS_ALLOW_SESSION_EXIT=1
 export SOS_OUTPUT_CONFIG_FILE="$sos_login_output_config"
-unset DISPLAY WAYLAND_DISPLAY
+export SOS_ACCESSIBILITY_SOCKET="$sos_login_accessibility_socket"
+export WAYLAND_DISPLAY="$sos_login_runtime/wayland-sos"
+unset DISPLAY
 
 "$sos_login_session_bin" run-user \
   --root "$sos_login_revision_root" \
@@ -167,6 +205,14 @@ sos_login_wait_for_socket "$sos_login_provider_socket" \
   "$sos_login_session_pid" "SOS provider"
 sos_login_wait_for_socket "$sos_login_supervisor_socket" \
   "$sos_login_session_pid" "SOS supervisor"
+command -v systemctl >/dev/null 2>&1 || sos_login_fail "systemctl is not installed"
+systemctl --user import-environment \
+  XDG_SESSION_TYPE XDG_SESSION_DESKTOP XDG_CURRENT_DESKTOP DESKTOP_SESSION \
+  WAYLAND_DISPLAY SOS_ACCESSIBILITY_SOCKET || \
+  sos_login_fail "could not publish the SOS graphical-session environment"
+systemctl --user start sos-session.target || \
+  sos_login_fail "could not start sos-session.target"
+sos_login_graphical_target_started=true
 
 [[ -s "$sos_login_agent_config" ]] || \
   sos_login_fail "resident agent is not configured; run /usr/local/libexec/sos/sos-agent-login or sos-agent-login --offline"

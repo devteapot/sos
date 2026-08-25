@@ -30,9 +30,9 @@ return {
 
 `model` retains the prototype `greeting`, `date`, `weather`, `calendar`,
 `notes`, `music`, `system`, `surfaces`, `network`, and `agent` values for Linux
-and development compatibility. Android system products additionally expose the
-canonical `model.providers` System Providers ABI. The stock experience and a
-generated experience receive exactly the same value:
+and development compatibility. Android system products and configured Linux
+hosts expose the canonical `model.providers` System Providers ABI. The stock
+experience and a generated experience receive exactly the same value:
 
 ```luau
 model.providers = {
@@ -76,9 +76,10 @@ model.providers = {
 ```
 
 Application, network, and attention IDs are bounded authority-scoped opaque
-selections. Package names, Activity components, Android notification keys,
-Binder objects, Intents, credentials, and framework handles are not part of the
-ABI. The authority provides clock and public link/thermal fallback facts.
+selections. Package names, Activity components, desktop-file paths,
+NetworkManager object paths, MPRIS bus names, Android notification keys, Binder
+objects, Intents, credentials, and framework handles are not part of the ABI.
+The authority provides clock and public link/thermal fallback facts.
 Compat selects a peer-credential-checked headless framework adapter; Core 1
 selects a peer-credential-checked native platform adapter backed by stable
 Health/Supplicant AIDL HALs, native audio, and signed native inventories. Both
@@ -86,9 +87,12 @@ return exactly this typed document. The authority merges it and remains the
 canonical registry; [`core1-provider-parity.md`](core1-provider-parity.md)
 documents target-specific resource availability.
 
-A configured Linux host replaces its resource domains with
-file/iCalendar/MPRIS-backed data and capability-scoped system/media snapshots,
-then pushes live changes into the accepted VM without installing a revision.
+A configured Linux host replaces its resource domains with private files,
+UPower, NetworkManager, PipeWire/WirePlumber, MPRIS, and freedesktop desktop
+entries behind the same typed model and effects. It pushes live changes into
+the accepted VM without installing a revision. D-Bus object paths and process
+arguments stay inside the provider adapter. `wpctl` and `gio launch` are used
+as strict argument-vector adapters; no shell command is accepted from Luau.
 The compatibility `system` value includes time/timezone, online interfaces,
 battery/AC, audio volume/mute, connected DRM displays, and input devices.
 `state` is JSON-like durable experience state.
@@ -136,9 +140,11 @@ return {
 }
 ```
 
-The Android System Providers v1 effect allowlist is:
+The System Providers v1 effect allowlist is:
 
 - `audio.set_volume(percent)` where `percent` is an integer in `0..100`;
+- `audio.adjust_volume(delta)` where `delta` is a non-zero integer in
+  `-100..100`; the platform applies it atomically to current volume;
 - `audio.set_muted(muted)` with a boolean payload;
 - `media.play_pause`, `media.next`, and `media.previous`;
 - `network.connect(network_id)` and `network.disconnect`;

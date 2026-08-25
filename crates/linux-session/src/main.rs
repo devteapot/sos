@@ -83,6 +83,25 @@ fn run() -> Result<()> {
             let shared_identity = shared_login_user
                 .then(ServiceIdentity::current)
                 .transpose()?;
+            let runtime_directory = PathBuf::from(options.required("--runtime-dir")?);
+            let host_runtime_directory = if shared_login_user {
+                absolute_environment_path("XDG_RUNTIME_DIR")?
+            } else {
+                runtime_directory.clone()
+            };
+            let host_home_directory = if shared_login_user {
+                absolute_environment_path("HOME")?
+            } else {
+                runtime_directory.join("cache-host")
+            };
+            let host_cache_directory = if shared_login_user {
+                match std::env::var_os("XDG_CACHE_HOME") {
+                    Some(_) => absolute_environment_path("XDG_CACHE_HOME")?,
+                    None => host_home_directory.join(".cache"),
+                }
+            } else {
+                runtime_directory.join("cache-host")
+            };
             let resolve_identity = |option: &str| -> Result<ServiceIdentity> {
                 if let Some(identity) = &shared_identity {
                     if options.optional(option).is_some() {
@@ -95,7 +114,10 @@ fn run() -> Result<()> {
             };
             run_system_session(SystemSessionOptions {
                 revision_root: PathBuf::from(options.required("--root")?),
-                runtime_directory: PathBuf::from(options.required("--runtime-dir")?),
+                runtime_directory,
+                host_runtime_directory,
+                host_home_directory,
+                host_cache_directory,
                 authority_file: PathBuf::from(options.required("--authority-file")?),
                 shell_token_file: PathBuf::from(options.required("--shell-token-file")?),
                 agent_socket: PathBuf::from(options.required("--agent-socket")?),
@@ -122,6 +144,15 @@ fn run() -> Result<()> {
         _ => bail!(usage()),
     }
     Ok(())
+}
+
+fn absolute_environment_path(name: &str) -> Result<PathBuf> {
+    let value = std::env::var_os(name).with_context(|| format!("{name} is not set"))?;
+    let path = PathBuf::from(value);
+    if !path.is_absolute() {
+        bail!("{name} must be an absolute path: {}", path.display());
+    }
+    Ok(path)
 }
 
 struct Options(BTreeMap<String, String>);

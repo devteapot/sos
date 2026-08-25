@@ -165,7 +165,9 @@ checkout, deploy only the changed native components:
 ```
 
 With no `--component`, the tool builds and deploys all six native session
-components. It opens one multiplexed SSH connection, verifies the target's
+components, the read-only `provider-probe`, `login-session`, the two per-user
+graphical-session targets, `hardware-gate`, `stock-base`, and `api-doc`. It opens one
+multiplexed SSH connection, verifies the target's
 `development-live`/non-promotable identity, refuses deployment while SOS is
 running, builds locally, stages files under a private target directory, and
 installs them root-owned into the live overlay. It then verifies every remote
