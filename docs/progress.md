@@ -10368,3 +10368,52 @@ read-only through PiKVM, cold-boot the Framework without network HID input,
 and require automatic Wi-Fi activation, post-`livesys` SSH availability,
 password SSH, correct image identity, and an unmounted internal Omarchy NVMe
 before adopting it as the reusable development base.
+
+## 2026-08-25 — Prove development-live Wi-Fi and SSH on Framework 12
+
+**Goal / environment:** Boot the credentialed revision
+`28cf8fffee8e2492fc4f2b69fcfe27db3baf7b36` on the Framework Laptop 12 and
+prove that it becomes remotely manageable without entering a network
+credential while preserving the installed Omarchy NVMe. The exact ISO was
+uploaded to PiKVM in 134.96 seconds with 5,978,736 KiB maximum host RSS. The
+PiKVM-side SHA-256 matched
+`a346369a50cf5d1b32610fcf1c55c95ea7238172a46a2b7c6c1618428f4ed152`,
+and the selected 3,056,205,824-byte virtual CD-ROM reported connected,
+complete, read-only, and non-writable.
+
+**Boot failure / boundary:** PiKVM's ATX state did not track or change the
+laptop's power state, and remote HID did not reliably catch the Framework
+firmware boot-menu window. The first reboot therefore entered the installed
+Omarchy lock screen rather than the virtual CD-ROM. No installer or
+block-device writer was invoked. The user then selected the already attached
+read-only PiKVM CD-ROM and booted Fedora. This rejects fully unattended remote
+cold boot with the present console wiring/configuration; it does not reject the
+image's development-network path.
+
+**Physical evidence / decision:** PiKVM captured Fedora startup and the GDM
+`Live System User` chooser without autologin. The live boot obtained
+`192.168.1.129` from the embedded Wi-Fi profile with no network HID input, and
+password SSH became reachable. A 4.54-second SSH audit with 9,584 KiB maximum
+host RSS reported `image_kind=development-live`, the exact source revision,
+`promotion_eligible=false`, `wifi_autoconnect=true`,
+`network_credentials_embedded=true`, enabled and active `sshd`, connected
+Wi-Fi, `LiveOS_rootfs` overlay root, and boot ID
+`c1e6564e-b427-471d-946e-9d83f2d8efde`. It also proved no
+`/dev/nvme0n1` source was mounted. The credentialed ISO is accepted as the
+reusable development base when selected explicitly at boot; it remains
+private and is not a release candidate.
+
+The finalized upload, stored-image state and digest, boot/GDM screenshots,
+OCR capability state, SSH audit, and timing records are indexed by
+`artifacts/pikvm-development-live-28cf8ff/evidence-manifest.tsv` (1,110 bytes,
+SHA-256
+`dd6f8ec86ce40b8cfb36509ae8b54c98bbe9d25fd2355b4a9fdcd6e80c9fe9ea`).
+No model provider ran, so model and model-weighted cost were zero.
+
+**Remaining risk / next gate:** Firmware boot selection still requires local
+help until PiKVM power/boot-menu control is made reliable. The image has not
+passed a release, promotion, latency, or full SOS interaction gate. Use this
+boot for incremental `tools/linux-live-deploy` iterations, verify each deployed
+digest and same-boot identity, and keep the internal NVMe unmounted. Later,
+define a separate credential-free immutable release bake and physical release
+gate.
