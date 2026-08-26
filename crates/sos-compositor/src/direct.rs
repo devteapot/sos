@@ -35,6 +35,7 @@ use smithay::{
             element::{
                 memory::{MemoryRenderBuffer, MemoryRenderBufferRenderElement},
                 surface::{render_elements_from_surface_tree, WaylandSurfaceRenderElement},
+                utils::{Relocate, RelocateRenderElement, RescaleRenderElement},
                 Kind, RenderElementStates,
             },
             gles::GlesRenderer,
@@ -56,7 +57,7 @@ use smithay::{
         wayland_protocols::wp::presentation_time::server::wp_presentation_feedback,
         wayland_server::{protocol::wl_surface::WlSurface, Resource as _},
     },
-    utils::{DeviceFd, Monotonic, Time, Transform},
+    utils::{DeviceFd, Monotonic, Point, Scale as CoordinateScale, Time, Transform},
     wayland::{
         compositor,
         dmabuf::{DmabufFeedbackBuilder, DmabufState},
@@ -80,10 +81,16 @@ const CURSOR_WIDTH: i32 = 18;
 const CURSOR_HEIGHT: i32 = 24;
 
 smithay::backend::renderer::element::render_elements! {
-    DirectRenderElement<=GlesRenderer>;
+    BaseDirectRenderElement<=GlesRenderer>;
     Window=SosWindowRenderElement,
     CursorSurface=WaylandSurfaceRenderElement<GlesRenderer>,
     Cursor=MemoryRenderBufferRenderElement<GlesRenderer>,
+}
+
+smithay::backend::renderer::element::render_elements! {
+    DirectRenderElement<=GlesRenderer>;
+    Base=BaseDirectRenderElement,
+    Projected=RelocateRenderElement<RescaleRenderElement<BaseDirectRenderElement>>,
 }
 
 type DirectOutput = DrmOutput<
@@ -758,21 +765,17 @@ fn compute_output_layout(
         OutputLayout::Mirror => {
             let canvas = outputs
                 .iter()
-                .fold(None::<(i32, i32)>, |canvas, (_, size)| {
-                    Some(match canvas {
-                        Some((width, height)) => (width.min(size.0), height.min(size.1)),
-                        None => *size,
-                    })
-                });
+                .max_by_key(|(name, size)| {
+                    let internal = i64::from(name.starts_with("eDP-"));
+                    (internal, i64::from(size.0) * i64::from(size.1))
+                })
+                .map(|(_, size)| *size);
             let Some(canvas) = canvas else {
                 return ((0, 0), BTreeMap::new());
             };
             let placements = outputs
                 .into_iter()
-                .map(|(name, size)| {
-                    let location = ((canvas.0 - size.0) / 2, (canvas.1 - size.1) / 2);
-                    (name, location)
-                })
+                .map(|(name, _)| (name, (0, 0)))
                 .collect();
             (canvas, placements)
         }
@@ -886,7 +889,7 @@ fn render_output(data: &mut CompositorData, node: DrmNode, crtc: crtc::Handle) -
             Kind::Unspecified,
         )
         .context("upload initial output damage marker")?;
-        vec![DirectRenderElement::Cursor(marker)]
+        vec![BaseDirectRenderElement::Cursor(marker)]
     } else {
         Vec::new()
     };
@@ -905,12 +908,13 @@ fn render_output(data: &mut CompositorData, node: DrmNode, crtc: crtc::Handle) -
         elements.extend(
             window_render_elements(&mut renderer, state, &output_data.output)?
                 .into_iter()
-                .map(DirectRenderElement::Window),
+                .map(BaseDirectRenderElement::Window),
         );
     } else if let Some(element) = recovery_render_element(&mut renderer, state, &output_data.output)
     {
-        elements.push(DirectRenderElement::Cursor(element));
+        elements.push(BaseDirectRenderElement::Cursor(element));
     }
+    let elements = project_output_elements(state, &output_data.output, elements);
     let result = output_data
         .drm_output
         .render_frame(&mut *renderer, &elements, CLEAR_COLOR, FrameFlags::DEFAULT)
@@ -974,7 +978,7 @@ fn input_method_render_elements(
     renderer: &mut GlesRenderer,
     state: &SosCompositor,
     output: &Output,
-) -> Vec<DirectRenderElement> {
+) -> Vec<BaseDirectRenderElement> {
     let Some(output_geometry) = state.space.output_geometry(output) else {
         return Vec::new();
     };
@@ -997,7 +1001,7 @@ fn input_method_render_elements(
                 Kind::Unspecified,
             )
             .into_iter()
-            .map(DirectRenderElement::CursorSurface)
+            .map(BaseDirectRenderElement::CursorSurface)
         })
         .collect()
 }
@@ -1007,7 +1011,7 @@ fn cursor_render_elements(
     state: &SosCompositor,
     output: &Output,
     fallback: &MemoryRenderBuffer,
-) -> Vec<DirectRenderElement> {
+) -> Vec<BaseDirectRenderElement> {
     let Some(output_geometry) = state.space.output_geometry(output) else {
         return Vec::new();
     };
@@ -1034,7 +1038,7 @@ fn cursor_render_elements(
             );
             render_elements_from_surface_tree(renderer, surface, location, 1.0, 1.0, Kind::Cursor)
                 .into_iter()
-                .map(DirectRenderElement::CursorSurface)
+                .map(BaseDirectRenderElement::CursorSurface)
                 .collect()
         }
         _ => MemoryRenderBufferRenderElement::from_buffer(
@@ -1046,12 +1050,80 @@ fn cursor_render_elements(
             None,
             Kind::Cursor,
         )
-        .map(|element| vec![DirectRenderElement::Cursor(element)])
+        .map(|element| vec![BaseDirectRenderElement::Cursor(element)])
         .unwrap_or_else(|error| {
             tracing::warn!(%error, "could not upload compositor cursor");
             Vec::new()
         }),
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct MirrorProjection {
+    pub scale: f64,
+    pub offset: (i32, i32),
+}
+
+pub(crate) fn mirror_projection(canvas: (i32, i32), output: (i32, i32)) -> MirrorProjection {
+    if canvas.0 <= 0 || canvas.1 <= 0 || output.0 <= 0 || output.1 <= 0 {
+        return MirrorProjection {
+            scale: 1.0,
+            offset: (0, 0),
+        };
+    }
+    let scale =
+        (f64::from(output.0) / f64::from(canvas.0)).min(f64::from(output.1) / f64::from(canvas.1));
+    let projected_width = (f64::from(canvas.0) * scale).round() as i32;
+    let projected_height = (f64::from(canvas.1) * scale).round() as i32;
+    MirrorProjection {
+        scale,
+        offset: (
+            (output.0 - projected_width) / 2,
+            (output.1 - projected_height) / 2,
+        ),
+    }
+}
+
+fn project_output_elements(
+    state: &SosCompositor,
+    output: &Output,
+    elements: Vec<BaseDirectRenderElement>,
+) -> Vec<DirectRenderElement> {
+    if !state.output_layout_mirrored {
+        return elements
+            .into_iter()
+            .map(DirectRenderElement::Base)
+            .collect();
+    }
+    let Some(geometry) = state.space.output_geometry(output) else {
+        return elements
+            .into_iter()
+            .map(DirectRenderElement::Base)
+            .collect();
+    };
+    let projection = mirror_projection(
+        state.output_size,
+        (geometry.size.w.max(0), geometry.size.h.max(0)),
+    );
+    if (projection.scale - 1.0).abs() < f64::EPSILON && projection.offset == (0, 0) {
+        return elements
+            .into_iter()
+            .map(DirectRenderElement::Base)
+            .collect();
+    }
+    let scale = CoordinateScale::from(projection.scale);
+    let offset: Point<i32, smithay::utils::Physical> = projection.offset.into();
+    elements
+        .into_iter()
+        .map(|element| {
+            let element = RescaleRenderElement::from_element(element, (0, 0).into(), scale);
+            DirectRenderElement::Projected(RelocateRenderElement::from_element(
+                element,
+                offset,
+                Relocate::Relative,
+            ))
+        })
+        .collect()
 }
 
 fn default_cursor_buffer() -> MemoryRenderBuffer {
@@ -1235,8 +1307,8 @@ mod tests {
     use smithay::backend::allocator::{format::FormatSet, Format, Fourcc, Modifier};
 
     use super::{
-        common_dmabuf_formats, compute_output_layout, default_cursor_pixels, OutputConfigFile,
-        OutputLayout, CURSOR_HEIGHT, CURSOR_WIDTH,
+        common_dmabuf_formats, compute_output_layout, default_cursor_pixels, mirror_projection,
+        OutputConfigFile, OutputLayout, CURSOR_HEIGHT, CURSOR_WIDTH,
     };
 
     #[test]
@@ -1266,7 +1338,7 @@ mod tests {
     }
 
     #[test]
-    fn mirror_layout_centers_outputs_on_the_smallest_shared_canvas() {
+    fn mirror_layout_uses_the_internal_panel_as_the_canonical_canvas() {
         let (canvas, placements) = compute_output_layout(
             OutputLayout::Mirror,
             vec![
@@ -1275,9 +1347,18 @@ mod tests {
             ],
         );
 
-        assert_eq!(canvas, (1920, 1080));
+        assert_eq!(canvas, (1920, 1200));
         assert_eq!(placements["DP-1"], (0, 0));
-        assert_eq!(placements["eDP-1"], (0, -60));
+        assert_eq!(placements["eDP-1"], (0, 0));
+    }
+
+    #[test]
+    fn mirror_projection_fits_the_full_internal_canvas_on_pikvm() {
+        let projection = mirror_projection((1920, 1200), (1920, 1080));
+
+        assert!((projection.scale - 0.9).abs() < f64::EPSILON);
+        assert_eq!(projection.offset, (96, 0));
+        assert_eq!(mirror_projection((1920, 1200), (1920, 1200)).offset, (0, 0));
     }
 
     #[test]

@@ -34,8 +34,9 @@ The initial stock revision is a complete source-defined shell with:
   application region;
 - one compositor-owned agent overlay above shell and application surfaces. Its
   bubble can be dragged anywhere inside the logical output, expands an inline
-  source-defined composer above or below its anchor on hover, and opens the
-  full agent rail on a stationary click;
+  source-defined composer centered over the action and above or below it on
+  hover, clamps the composer without moving the action at an output edge, and
+  opens the full agent rail only from a stationary action click;
 - a command center for workspaces, application launch and window policy; and
 - one source-defined native application surface, managed in the same window
   space as compatibility clients, whose current revision exposes eight
@@ -99,25 +100,30 @@ there is no stock-only asset path.
 The root and shell body measure against the complete logical output. The top
 bar remains fixed, the application region grows, and opening the 390-pixel
 command panel or 430-pixel agent panel reserves that width. The agent overlay
-does not reserve shell space and clamps its compositor-owned surface to the
-logical output. Rows containing
+does not reserve shell space. Its 64-pixel action is the persisted anchor; the
+expanded composer centers on it when possible and clamps independently at an
+edge. The overlay collapses while it is actively moving and expands again after
+release, avoiding hover/layout feedback during the gesture. Rows containing
 navigation, cards, controls, notes and applications use retained flex wrapping;
 the application region enforces a 320-by-240 minimum and publishes bounds only
 once it is at least 160-by-120. This provides one clamshell/tablet source
 without branching on a device name or calling back into Luau during layout.
 
-The compositor-backed shell is physically accepted at 1,920 by 1,080 on the
-Framework development target. PiKVM clicks opened both reserving rails,
+The compositor-backed shell is physically accepted on the Framework's native
+1,920-by-1,200 panel and fitted as a complete undistorted canvas on the
+1,920-by-1,080 PiKVM output. PiKVM clicks opened both reserving rails,
 selected tiling, and launched Calculator and Calendar through the applications
 provider. Closing Calendar unmapped it and immediately expanded Calculator;
 opening the agent pane did not restore the closed client. The source-native
 application surface was registered independently as `NativeApplication`.
 Stationary bubble input opened the agent rail exactly once, while a drag moved
-the overlay across the output and persisted its new anchor without opening the
-rail. Hover exposed a working inline composer above the moved anchor. A
-physical portrait/tablet gate remains open. The direct compositor mirrors one
-logical canvas across the Framework panel and PiKVM by default; independent
-per-output shell surfaces remain separate work.
+the overlay to the logical edge and persisted its new anchor without opening
+the rail. Hover exposed a working inline composer, centered in ordinary space
+and clamped while its action remained at the edge. Its field accepted keyboard
+focus without opening the agent rail. In Floating mode, both the stock native
+chrome and a GNOME Calculator `xdg_toplevel.move` gesture changed and retained
+their bounded positions. A physical portrait/tablet gate remains open.
+Independent per-output shell surfaces remain separate work.
 
 ## Stock trust and recovery
 

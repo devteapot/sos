@@ -18,8 +18,9 @@ use compositor_control_protocol::{
 use experience_host_protocol::{HostEvent, HostRequest};
 use experience_ir::{
     AgentMessage, AgentMessageRole, Align, AnimationKind, Content, ExperienceModel, Flow,
-    HitRegion, Interaction, Justify, PaintOp, Scene, SceneEvent, SceneNode, WindowLayoutMode,
-    WindowSpaceContent, EXPERIENCE_API_VERSION, MAX_AGENT_MESSAGES, MAX_AGENT_MESSAGE_BYTES,
+    HitRegion, Interaction, Justify, PaintOp, Scene, SceneEvent, SceneNode, ShellOverlayContent,
+    WindowLayoutMode, WindowSpaceContent, EXPERIENCE_API_VERSION, MAX_AGENT_MESSAGES,
+    MAX_AGENT_MESSAGE_BYTES,
 };
 use gpui::{
     div, img, point, prelude::*, px, relative, rgb, size, Animation as GpuiAnimation,
@@ -379,6 +380,56 @@ enum RenderTarget {
     Application,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ResolvedShellOverlay {
+    configuration: ShellOverlayConfiguration,
+    anchor: Option<(i32, i32)>,
+    anchor_local: Option<(i32, i32)>,
+}
+
+fn resolve_shell_overlay(overlay: ShellOverlayContent, output: (i32, i32)) -> ResolvedShellOverlay {
+    let width = overlay.width.round().clamp(48.0, 720.0) as u32;
+    let height = overlay.height.round().clamp(48.0, 360.0) as u32;
+    let width_i32 = i32::try_from(width).unwrap_or(i32::MAX);
+    let height_i32 = i32::try_from(height).unwrap_or(i32::MAX);
+    let max_x = (output.0 - width_i32).max(0);
+    let max_y = (output.1 - height_i32).max(0);
+    let Some(anchor) = overlay.anchor else {
+        return ResolvedShellOverlay {
+            configuration: ShellOverlayConfiguration {
+                x: (overlay.x.round() as i32).clamp(0, max_x),
+                y: (overlay.y.round() as i32).clamp(0, max_y),
+                width,
+                height,
+            },
+            anchor: None,
+            anchor_local: None,
+        };
+    };
+
+    let anchor_width = (anchor.width.round() as i32).clamp(1, width_i32);
+    let anchor_height = (anchor.height.round() as i32).clamp(1, height_i32);
+    let anchor_x = (anchor.x.round() as i32).clamp(0, (output.0 - anchor_width).max(0));
+    let anchor_y = (anchor.y.round() as i32).clamp(0, (output.1 - anchor_height).max(0));
+    let x = (anchor_x + anchor_width / 2 - width_i32 / 2).clamp(0, max_x);
+    let desired_y = if anchor.above {
+        anchor_y - (height_i32 - anchor_height)
+    } else {
+        anchor_y
+    };
+    let y = desired_y.clamp(0, max_y);
+    ResolvedShellOverlay {
+        configuration: ShellOverlayConfiguration {
+            x,
+            y,
+            width,
+            height,
+        },
+        anchor: Some((anchor_x, anchor_y)),
+        anchor_local: Some((anchor_x - x, anchor_y - y)),
+    }
+}
+
 struct ShellOverlayView {
     host: Entity<LinuxExperienceHost>,
 }
@@ -462,6 +513,8 @@ pub(super) struct LinuxExperienceHost {
     compositor_fence: Option<CompositorFence>,
     last_window_space: Option<WindowSpaceConfiguration>,
     last_shell_overlay: Option<ShellOverlayConfiguration>,
+    last_shell_overlay_anchor_local: Option<(i32, i32)>,
+    pending_shell_overlay_anchor: Option<(i32, i32)>,
     preparing: Option<PreparingRevision>,
     prepared: Option<PreparedRevision>,
     pending_commit: Option<PendingCommit>,
@@ -539,6 +592,8 @@ impl LinuxExperienceHost {
             compositor_fence,
             last_window_space: None,
             last_shell_overlay: None,
+            last_shell_overlay_anchor_local: None,
+            pending_shell_overlay_anchor: None,
             preparing: None,
             prepared: None,
             pending_commit: None,
@@ -855,11 +910,17 @@ impl LinuxExperienceHost {
             }
             FenceEvent::ShellOverlayMoved(configuration) => {
                 self.last_shell_overlay = Some(configuration);
+                let anchor_local = self.last_shell_overlay_anchor_local.unwrap_or((0, 0));
+                let anchor = (
+                    configuration.x.saturating_add(anchor_local.0),
+                    configuration.y.saturating_add(anchor_local.1),
+                );
+                self.pending_shell_overlay_anchor = Some(anchor);
                 let event = SceneEvent {
                     action: "shell_overlay_moved".into(),
                     target: Some("agent-overlay".into()),
-                    x: Some(configuration.x as f32),
-                    y: Some(configuration.y as f32),
+                    x: Some(anchor.0 as f32),
+                    y: Some(anchor.1 as f32),
                     ..Default::default()
                 };
                 if self.pending_presentation.is_some() {
@@ -1959,21 +2020,18 @@ impl LinuxExperienceHost {
         let viewport = window.viewport_size();
         let output_width = f32::from(viewport.width).floor().max(1.0) as i32;
         let output_height = f32::from(viewport.height).floor().max(1.0) as i32;
-        let width = overlay.width.round().clamp(48.0, 720.0) as u32;
-        let height = overlay.height.round().clamp(48.0, 360.0) as u32;
-        let max_x = (output_width - i32::try_from(width).unwrap_or(i32::MAX)).max(0);
-        let max_y = (output_height - i32::try_from(height).unwrap_or(i32::MAX)).max(0);
-        let configuration = ShellOverlayConfiguration {
-            x: overlay.x.round() as i32,
-            y: overlay.y.round() as i32,
-            width,
-            height,
-        };
-        let configuration = ShellOverlayConfiguration {
-            x: configuration.x.clamp(0, max_x),
-            y: configuration.y.clamp(0, max_y),
-            ..configuration
-        };
+        let resolved = resolve_shell_overlay(*overlay, (output_width, output_height));
+        self.last_shell_overlay_anchor_local = resolved.anchor_local;
+        if let Some(pending_anchor) = self.pending_shell_overlay_anchor {
+            if resolved.anchor != Some(pending_anchor) {
+                // The compositor has already moved the live surface. Do not
+                // let an older scene notification snap it back while the
+                // authoritative state update is still in flight.
+                return;
+            }
+            self.pending_shell_overlay_anchor = None;
+        }
+        let configuration = resolved.configuration;
         if self.last_shell_overlay == Some(configuration) {
             return;
         }
@@ -2051,6 +2109,11 @@ impl LinuxExperienceHost {
         }
         if let Some(position) = node.layout.position {
             element = element.absolute().left(px(position.x)).top(px(position.y));
+        }
+        if target == RenderTarget::Overlay && node.interaction.surface_drag {
+            if let Some((x, y)) = self.last_shell_overlay_anchor_local {
+                element = element.absolute().left(px(x as f32)).top(px(y as f32));
+            }
         }
         if let Some(program) = node.layout.program {
             if let Some(width) = program.measure_width {
@@ -2228,11 +2291,20 @@ impl LinuxExperienceHost {
             element = element.child(self.render_node(child, child_path, target, window, cx));
         }
         let surface_owns_tap = uses_surface && node.interaction.tap_action.is_some();
-        let mut rendered = if let Some(action) = node
+        let mut rendered = if node.interaction.surface_drag {
+            element
+                .id(SharedString::from(format!("surface-drag-{element_id}")))
+                .on_mouse_down(MouseButton::Left, move |_, window, app| {
+                    window.prevent_default();
+                    app.stop_propagation();
+                    window.start_window_move();
+                })
+                .into_any_element()
+        } else if let Some(action) = node
             .interaction
             .tap_action
             .as_ref()
-            .filter(|_| !surface_owns_tap && !node.interaction.surface_drag)
+            .filter(|_| !surface_owns_tap)
         {
             let action = action.clone();
             element
@@ -2250,18 +2322,6 @@ impl LinuxExperienceHost {
         } else {
             element.into_any_element()
         };
-        if node.interaction.surface_drag {
-            rendered = div()
-                .id(SharedString::from(format!("surface-drag-{element_id}")))
-                .size_full()
-                .child(rendered)
-                .on_mouse_down(MouseButton::Left, move |_, window, app| {
-                    window.prevent_default();
-                    app.stop_propagation();
-                    window.start_window_move();
-                })
-                .into_any_element();
-        }
         if target == RenderTarget::Base {
             if let Some(action) = &node.interaction.hover_action {
                 let action = action.clone();
@@ -3085,6 +3145,53 @@ fn emit(event: &HostEvent) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn anchored_shell_overlay_centers_and_clamps_without_moving_action() {
+        let centered = resolve_shell_overlay(
+            ShellOverlayContent {
+                x: 0.0,
+                y: 0.0,
+                width: 430.0,
+                height: 146.0,
+                anchor: Some(experience_ir::ShellOverlayAnchor {
+                    x: 900.0,
+                    y: 900.0,
+                    width: 64.0,
+                    height: 64.0,
+                    above: true,
+                }),
+            },
+            (1920, 1200),
+        );
+        assert_eq!(centered.configuration.x, 717);
+        assert_eq!(centered.configuration.y, 818);
+        assert_eq!(centered.anchor_local, Some((183, 82)));
+
+        let left_edge = resolve_shell_overlay(
+            ShellOverlayContent {
+                anchor: Some(experience_ir::ShellOverlayAnchor {
+                    x: 8.0,
+                    y: 40.0,
+                    width: 64.0,
+                    height: 64.0,
+                    above: false,
+                }),
+                ..ShellOverlayContent {
+                    x: 0.0,
+                    y: 0.0,
+                    width: 430.0,
+                    height: 146.0,
+                    anchor: None,
+                }
+            },
+            (1920, 1200),
+        );
+        assert_eq!(left_edge.configuration.x, 0);
+        assert_eq!(left_edge.configuration.y, 40);
+        assert_eq!(left_edge.anchor, Some((8, 40)));
+        assert_eq!(left_edge.anchor_local, Some((8, 0)));
+    }
 
     fn start_service(
         socket: PathBuf,

@@ -615,10 +615,25 @@ pub struct WindowSpaceContent {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ShellOverlayContent {
+    /// Legacy absolute surface origin. Used directly when `anchor` is absent.
     pub x: f32,
     pub y: f32,
     pub width: f32,
     pub height: f32,
+    /// Optional stable action bounds. The host centers the overlay surface on
+    /// this anchor, clamps the surface to the output, and keeps the anchor at
+    /// the requested screen position. This lets expanded overlays reflow at
+    /// an edge without moving their floating action.
+    pub anchor: Option<ShellOverlayAnchor>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ShellOverlayAnchor {
+    pub x: f32,
+    pub y: f32,
+    pub width: f32,
+    pub height: f32,
+    pub above: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -938,6 +953,16 @@ pub fn validate_scene(scene: &Scene) -> Result<usize, ValidationError> {
                     || !(48.0..=360.0).contains(&overlay.height)
                 {
                     return Err(ValidationError::InvalidDimension("shell overlay"));
+                }
+                if overlay.anchor.is_some_and(|anchor| {
+                    !valid_scene_number(anchor.x)
+                        || !valid_scene_number(anchor.y)
+                        || !valid_dimension(anchor.width)
+                        || !valid_dimension(anchor.height)
+                        || anchor.width > overlay.width
+                        || anchor.height > overlay.height
+                }) {
+                    return Err(ValidationError::InvalidDimension("shell overlay anchor"));
                 }
             }
             Some(Content::ApplicationSurface(application)) => {
@@ -1360,6 +1385,7 @@ mod tests {
                 y: 30.0,
                 width: 64.0,
                 height: 64.0,
+                anchor: None,
             })),
             interaction: Interaction {
                 hover_action: Some("overlay_hover".into()),

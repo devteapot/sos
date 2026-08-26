@@ -432,6 +432,7 @@ impl SosCompositor {
                     },
                 );
                 self.update_shell_overlay_drag(location);
+                self.update_application_window_drag(location);
                 self.update_shell_overlay_hover(location);
                 pointer.relative_motion(
                     self,
@@ -448,8 +449,10 @@ impl SosCompositor {
                 let Some(output_geometry) = self.absolute_output_geometry(&event.device()) else {
                     return;
                 };
-                let position =
-                    event.position_transformed(output_geometry.size) + output_geometry.loc.to_f64();
+                let position = self.canonical_absolute_position(
+                    event.position_transformed(output_geometry.size) + output_geometry.loc.to_f64(),
+                    output_geometry,
+                );
                 let pointer = self.seat.get_pointer().expect("seat has a pointer");
                 pointer.motion(
                     self,
@@ -461,6 +464,7 @@ impl SosCompositor {
                     },
                 );
                 self.update_shell_overlay_drag(position);
+                self.update_application_window_drag(position);
                 self.update_shell_overlay_hover(position);
                 pointer.frame(self);
             }
@@ -492,6 +496,7 @@ impl SosCompositor {
                         self.pressed_pointer_buttons.remove(&event.button_code());
                         if event.button_code() == 0x110 {
                             self.finish_shell_overlay_drag();
+                            self.finish_application_window_drag();
                         }
                         if self.suppressed_pointer_buttons.remove(&event.button_code()) {
                             tracing::info!(
@@ -777,7 +782,32 @@ impl SosCompositor {
         E: AbsolutePositionEvent<I>,
     {
         let geometry = self.absolute_output_geometry(&event.device())?;
-        Some(event.position_transformed(geometry.size) + geometry.loc.to_f64())
+        Some(self.canonical_absolute_position(
+            event.position_transformed(geometry.size) + geometry.loc.to_f64(),
+            geometry,
+        ))
+    }
+
+    fn canonical_absolute_position(
+        &self,
+        position: smithay::utils::Point<f64, smithay::utils::Logical>,
+        output: smithay::utils::Rectangle<i32, smithay::utils::Logical>,
+    ) -> smithay::utils::Point<f64, smithay::utils::Logical> {
+        #[cfg(feature = "direct-backend")]
+        if self.output_layout_mirrored {
+            let projection = crate::direct::mirror_projection(
+                self.output_size,
+                (output.size.w.max(0), output.size.h.max(0)),
+            );
+            let x = (position.x - f64::from(output.loc.x + projection.offset.0)) / projection.scale;
+            let y = (position.y - f64::from(output.loc.y + projection.offset.1)) / projection.scale;
+            return (
+                x.clamp(0.0, f64::from((self.output_size.0 - 1).max(0))),
+                y.clamp(0.0, f64::from((self.output_size.1 - 1).max(0))),
+            )
+                .into();
+        }
+        position
     }
 
     fn absolute_output_geometry<D>(

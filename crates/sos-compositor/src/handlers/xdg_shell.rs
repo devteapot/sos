@@ -26,7 +26,7 @@ use crate::{
         default_shell_overlay, default_window_space, validate_shell_overlay, validate_window_space,
         window_rectangles, ClientRole, WindowRectangle, MAX_COMPATIBILITY_TOPLEVELS,
     },
-    state::{ShellOverlayDrag, SosCompositor, SurfaceRoleData},
+    state::{ApplicationWindowDrag, ShellOverlayDrag, SosCompositor, SurfaceRoleData},
 };
 
 impl XdgShellHandler for SosCompositor {
@@ -192,6 +192,13 @@ impl XdgShellHandler for SosCompositor {
         let was_mapped = window
             .as_ref()
             .is_some_and(|window| self.space.elements().any(|candidate| candidate == window));
+        if window.as_ref().is_some_and(|window| {
+            self.application_window_drag
+                .as_ref()
+                .is_some_and(|drag| &drag.window == window)
+        }) {
+            self.application_window_drag = None;
+        }
         if let Some(window) = window.filter(|_| was_mapped) {
             self.space.unmap_elem(&window);
         }
@@ -227,17 +234,51 @@ impl XdgShellHandler for SosCompositor {
     }
 
     fn move_request(&mut self, surface: ToplevelSurface, _seat: wl_seat::WlSeat, _serial: Serial) {
-        if Self::client_role(surface.wl_surface()) != Some(ClientRole::ShellOverlay)
-            || !self.pressed_pointer_buttons.contains(&0x110)
-        {
+        if !self.pressed_pointer_buttons.contains(&0x110) {
             return;
         }
         let pointer = self.seat.get_pointer().expect("seat has a pointer");
-        self.shell_overlay_drag = Some(ShellOverlayDrag {
-            pointer: pointer.current_location(),
-            origin: (self.shell_overlay.x, self.shell_overlay.y),
-        });
-        tracing::info!("began trusted shell overlay move");
+        let pointer_location = pointer.current_location();
+        match Self::client_role(surface.wl_surface()) {
+            Some(ClientRole::ShellOverlay) => {
+                if self.shell_overlay_hovered {
+                    self.shell_overlay_hovered = false;
+                    if let Some((_, events)) = &self.shell_events {
+                        let _ = events.send(
+                            compositor_control_protocol::CompositorEvent::ShellOverlayHoverChanged {
+                                request_id: 0,
+                                hovered: false,
+                            },
+                        );
+                    }
+                    tracing::info!("collapsed trusted shell overlay for move");
+                }
+                self.shell_overlay_drag = Some(ShellOverlayDrag {
+                    pointer: pointer_location,
+                    origin: (self.shell_overlay.x, self.shell_overlay.y),
+                });
+                tracing::info!("began trusted shell overlay move");
+            }
+            Some(ClientRole::NativeApplication | ClientRole::Compatibility)
+                if self.window_space.layout
+                    == compositor_control_protocol::WindowLayoutMode::Floating =>
+            {
+                let Some(window) = self.xdg_windows.get(&surface.wl_surface().id()).cloned() else {
+                    return;
+                };
+                let Some(origin) = self.space.element_location(&window) else {
+                    return;
+                };
+                self.space.raise_element(&window, false);
+                self.application_window_drag = Some(ApplicationWindowDrag {
+                    window,
+                    pointer: pointer_location,
+                    origin,
+                });
+                tracing::info!("began compositor-managed application move");
+            }
+            _ => {}
+        }
     }
 
     fn reposition_request(
@@ -390,7 +431,17 @@ impl SosCompositor {
                 .current_location();
             self.synchronize_shell_overlay_hover(pointer, true);
         } else {
-            self.space.map_element(window, (0, 0), false);
+            let application_count = self
+                .space
+                .elements()
+                .filter(|candidate| self.is_application_window(candidate))
+                .count()
+                + 1;
+            let location = window_rectangles(self.window_space, application_count)
+                .last()
+                .map(|rectangle| (rectangle.x, rectangle.y))
+                .unwrap_or((self.window_space.geometry.x, self.window_space.geometry.y));
+            self.space.map_element(window, location, false);
             self.reconfigure_application_windows();
         }
         tracing::info!(?role, "mapped compositor-managed XDG toplevel buffer");
@@ -402,6 +453,13 @@ impl SosCompositor {
             .and_then(|surface| Self::client_role(&surface))
             .unwrap_or(ClientRole::Compatibility);
         self.space.unmap_elem(&window);
+        if self
+            .application_window_drag
+            .as_ref()
+            .is_some_and(|drag| drag.window == window)
+        {
+            self.application_window_drag = None;
+        }
         self.policy.unmap(role);
         if matches!(
             role,
@@ -440,6 +498,41 @@ impl SosCompositor {
                             )
                         })
             })
+            .cloned()
+            .collect::<Vec<_>>();
+        let mut rectangles = window_rectangles(self.window_space, windows.len());
+        if self.window_space.layout == compositor_control_protocol::WindowLayoutMode::Floating {
+            for (window, rectangle) in windows.iter().zip(&mut rectangles) {
+                if let Some(location) = self.space.element_location(window) {
+                    let geometry = self.window_space.geometry;
+                    let right = geometry
+                        .x
+                        .saturating_add(i32::try_from(geometry.width).unwrap_or(i32::MAX));
+                    let bottom = geometry
+                        .y
+                        .saturating_add(i32::try_from(geometry.height).unwrap_or(i32::MAX));
+                    rectangle.x = location.x.clamp(
+                        geometry.x,
+                        right.saturating_sub(rectangle.width).max(geometry.x),
+                    );
+                    rectangle.y = location.y.clamp(
+                        geometry.y,
+                        bottom.saturating_sub(rectangle.height).max(geometry.y),
+                    );
+                }
+            }
+        }
+        for (window, rectangle) in windows.into_iter().zip(rectangles) {
+            self.configure_application_window(window, rectangle);
+        }
+    }
+
+    pub(crate) fn reset_application_window_layout(&mut self) {
+        self.application_window_drag = None;
+        let windows = self
+            .space
+            .elements()
+            .filter(|window| self.is_application_window(window))
             .cloned()
             .collect::<Vec<_>>();
         let rectangles = window_rectangles(self.window_space, windows.len());

@@ -811,7 +811,7 @@ local function agent_overlay(model, state)
     local hovered = state.agent_overlay_hovered == true
     local bubble_x = state.agent_overlay_x or 1838
     local bubble_y = state.agent_overlay_y or 990
-    local above = bubble_y > 520
+    local above = bubble_y >= 96
     local width = hovered and 430 or 64
     local height = hovered and 146 or 64
     local x = hovered and (bubble_x - (width - 64)) or bubble_x
@@ -846,18 +846,23 @@ local function agent_overlay(model, state)
     elseif above then
         flow = "overlay"
         composer.layout.position = { x = 0, y = 0 }
-        bubble.layout.position = { x = width - 64, y = height - 64 }
+        bubble.layout.position = { x = (width - 64) / 2, y = height - 64 }
         children = { composer, bubble }
     else
         flow = "overlay"
-        bubble.layout.position = { x = width - 64, y = 0 }
+        bubble.layout.position = { x = (width - 64) / 2, y = 0 }
         composer.layout.position = { x = 0, y = 64 }
         children = { bubble, composer }
     end
     return {
         id = "agent-overlay",
         layout = { width = width, height = height, flow = flow },
-        content = { kind = "shell_overlay", x = x, y = y, width = width, height = height },
+        content = {
+            kind = "shell_overlay", x = x, y = y, width = width, height = height,
+            anchor = {
+                x = bubble_x, y = bubble_y, width = 64, height = 64, above = above,
+            },
+        },
         interaction = { hover_action = "agent_overlay_hover" },
         semantics = { role = "status", label = "SOS agent overlay" },
         children = children,
@@ -879,6 +884,11 @@ end
 
 local function stock_application(model, state, providers)
     local workspace = active_workspace(state)
+    local chrome = group("row", { justify = "between", align = "center", gap = 12 }, {
+        text("SOS NATIVE EXPERIENCE", 9, moss),
+        text(string.upper(workspace), 9, muted),
+    }, panel, 10, "stock-application-chrome")
+    chrome.interaction = { surface_drag = true }
     return {
         id = "stock-application-surface",
         layout = {
@@ -889,10 +899,7 @@ local function stock_application(model, state, providers)
         paint = {{ kind = "fill_bounds", color = paper, radius = 0 }},
         semantics = { role = "scroll_area", label = "SOS " .. workspace .. " experience" },
         children = {
-            group("row", { justify = "between", align = "center", gap = 12 }, {
-                text("SOS NATIVE EXPERIENCE", 9, moss),
-                text(string.upper(workspace), 9, muted),
-            }, panel, 10, "stock-application-chrome"),
+            chrome,
             group("column", { scroll_y = true, gap = 14, grow = true }, {
                 render_workspace(model, state, providers),
                 group("row", { justify = "between", gap = 12 }, {
@@ -940,14 +947,8 @@ local function update(model, state, event)
         state.agent_overlay_hovered = event.focused == true
         return state
     elseif action == "shell_overlay_moved" then
-        local above = (state.agent_overlay_y or 990) > 520
-        if state.agent_overlay_hovered == true then
-            state.agent_overlay_x = (event.x or 0) + 366
-            state.agent_overlay_y = (event.y or 0) + (above and 82 or 0)
-        else
-            state.agent_overlay_x = event.x or state.agent_overlay_x
-            state.agent_overlay_y = event.y or state.agent_overlay_y
-        end
+        state.agent_overlay_x = event.x or state.agent_overlay_x
+        state.agent_overlay_y = event.y or state.agent_overlay_y
         return state
     elseif action == "window_layout_floating" then
         state.window_layout = "floating"

@@ -319,6 +319,9 @@ content = {
 content = {
     kind = "shell_overlay",
     x = 1440, y = 860, width = 430, height = 146,
+    anchor = {
+        x = 1838, y = 990, width = 64, height = 64, above = true,
+    },
 }
 
 content = { kind = "application_surface", title = "SOS Home" }
@@ -380,13 +383,22 @@ the shell and application windows. It requires a stable ID; validation admits
 at most one, bounds width to 48..720 and height to 48..360 logical pixels, and
 the compositor clamps its origin to the logical output. The trusted host opens
 it as a transparent GPUI/XDG surface, while the compositor owns placement,
-hover hit testing, and interactive movement. A descendant with
-`interaction.surface_drag = true` starts that move. A stationary press/release
-produces the fixed `shell_overlay_activated` Scene action; a completed move
-produces `shell_overlay_moved` with the final surface `x` and `y`. Luau can
-persist an internal anchor or change the overlay's source-defined layout, but
-cannot address or reposition another surface. Android renders an unavailable
-placeholder.
+hover hit testing, and interactive movement. The optional `anchor` is a stable
+action rectangle in output coordinates. The host centers an expanded overlay
+over that rectangle when space permits, clamps only the expanded surface at an
+edge, and relocates the action inside that surface so the action itself does
+not jump. `above` selects whether the extra height grows above or below the
+action. Without `anchor`, `x` and `y` retain their legacy surface-origin
+meaning.
+
+A descendant with `interaction.surface_drag = true` starts a move only from
+that exact node; sibling controls and text fields retain ordinary input. A
+stationary press/release produces the fixed `shell_overlay_activated` Scene
+action. A completed move produces `shell_overlay_moved`; `x` and `y` are the
+final action-anchor origin when `anchor` is present, and otherwise the legacy
+surface origin. Luau can persist that anchor or change the source-defined
+layout, but cannot address or reposition another surface. Android renders an
+unavailable placeholder.
 
 `application_surface` moves its complete subtree out of the shell window and
 into a separate normal GPUI/XDG toplevel. It requires a stable ID and a bounded
@@ -466,7 +478,11 @@ meaning while the host owns bounded routing and capture lifetime.
 `event.focused`. `surface_drag` is a structural Linux integration flag rather
 than a general-purpose drag callback: on a node rendered inside
 `shell_overlay`, it transfers the pointer gesture to the compositor. It is
-ignored as a surface-management authority elsewhere.
+also accepted on the source chrome inside `application_surface`, where it asks
+the compositor to move that native application in Floating mode. The handler
+is attached to the declared node rather than an implicit full-size wrapper, so
+nearby inputs are not converted into move gestures. It is ignored as a
+surface-management authority elsewhere.
 
 For the SM-A336B audit, keep a low-level paint node's complete initial draggable
 region at local `y <= 400`. This is a measured viewport constraint, not a
