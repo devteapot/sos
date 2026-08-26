@@ -30,9 +30,9 @@ return {
 
 `model` retains the prototype `greeting`, `date`, `weather`, `calendar`,
 `notes`, `music`, `system`, `surfaces`, `network`, and `agent` values for Linux
-and development compatibility. Android system products additionally expose the
-canonical `model.providers` System Providers ABI. The stock experience and a
-generated experience receive exactly the same value:
+and development compatibility. Android system products and configured Linux
+hosts expose the canonical `model.providers` System Providers ABI. The stock
+experience and a generated experience receive exactly the same value:
 
 ```luau
 model.providers = {
@@ -62,7 +62,13 @@ model.providers = {
         volume_percent = 50, muted = false,
         media = { active = true, playing = true, title = "…", artist = "…" },
     },
-    apps = { compatible = {{ id = "app-…", label = "Calculator" }} },
+    apps = {
+        compatible = {{ id = "app-…", label = "Calculator" }},
+        status_widgets = {{
+            id = "timer", label = "TIMER", value = "04:20",
+            application_id = "app-…", -- optional bounded launch selection
+        }},
+    },
     attention = {
         urgent_count = 0,
         items = {{
@@ -76,9 +82,10 @@ model.providers = {
 ```
 
 Application, network, and attention IDs are bounded authority-scoped opaque
-selections. Package names, Activity components, Android notification keys,
-Binder objects, Intents, credentials, and framework handles are not part of the
-ABI. The authority provides clock and public link/thermal fallback facts.
+selections. Package names, Activity components, desktop-file paths,
+NetworkManager object paths, MPRIS bus names, Android notification keys, Binder
+objects, Intents, credentials, and framework handles are not part of the ABI.
+The authority provides clock and public link/thermal fallback facts.
 Compat selects a peer-credential-checked headless framework adapter; Core 1
 selects a peer-credential-checked native platform adapter backed by stable
 Health/Supplicant AIDL HALs, native audio, and signed native inventories. Both
@@ -86,9 +93,12 @@ return exactly this typed document. The authority merges it and remains the
 canonical registry; [`core1-provider-parity.md`](core1-provider-parity.md)
 documents target-specific resource availability.
 
-A configured Linux host replaces its resource domains with
-file/iCalendar/MPRIS-backed data and capability-scoped system/media snapshots,
-then pushes live changes into the accepted VM without installing a revision.
+A configured Linux host replaces its resource domains with private files,
+UPower, NetworkManager, PipeWire/WirePlumber, MPRIS, and freedesktop desktop
+entries behind the same typed model and effects. It pushes live changes into
+the accepted VM without installing a revision. D-Bus object paths and process
+arguments stay inside the provider adapter. `wpctl` and `gio launch` are used
+as strict argument-vector adapters; no shell command is accepted from Luau.
 The compatibility `system` value includes time/timezone, online interfaces,
 battery/AC, audio volume/mute, connected DRM displays, and input devices.
 `state` is JSON-like durable experience state.
@@ -122,6 +132,21 @@ change its resident provider.
 The resident-agent validation path requires each submitted revision to retain
 at least one Luau `text_session` with `submit_action = "agent_submit"`.
 
+## Stock Shell is a replaceable revision
+
+The default [`experiences/default.luau`](../experiences/default.luau) exercises
+this contract as the product integration target. Its top bar, status
+contributions, command center, application-region policy, agent FAB/rail,
+Home, Agenda, Notes, Media, Attention, System, Apps and Agent workspaces,
+unavailable states, responsive layout and inline SVG mark are declared in
+Luau. A user or agent can replace the complete source, state schema and
+revision assets while compositor mechanism, providers and trusted ceremonies
+remain fixed. The one structural exception is the native-backed
+`window_space` content primitive described below: Luau places and configures it
+but never owns its application surfaces. See
+[`stock-experience.md`](stock-experience.md) for its surface and recovery
+status.
+
 `render` returns the root scene node. `update` may mutate and return state, or
 return a typed effect envelope:
 
@@ -136,9 +161,11 @@ return {
 }
 ```
 
-The Android System Providers v1 effect allowlist is:
+The System Providers v1 effect allowlist is:
 
 - `audio.set_volume(percent)` where `percent` is an integer in `0..100`;
+- `audio.adjust_volume(delta)` where `delta` is a non-zero integer in
+  `-100..100`; the platform applies it atomically to current volume;
 - `audio.set_muted(muted)` with a boolean payload;
 - `media.play_pause`, `media.next`, and `media.previous`;
 - `network.connect(network_id)` and `network.disconnect`;
@@ -221,6 +248,7 @@ those helpers are not permanent host components.
 ```luau
 layout = {
     flow = "overlay" | "column" | "row", -- defaults to overlay
+    wrap = true, -- wrap flow children when the containing block becomes narrow
     scroll_y = true,
     padding = 16,
     gap = 8,
@@ -251,7 +279,15 @@ removes a node from its parent's flow while preserving a host-owned retained
 element. `program` is a bounded responsive measure/arrange program: finite
 fractions in `[-4, 4]` are retained and evaluated by GPUI/Taffy against the
 current containing block. It composes with min/max and aspect constraints
-without a high-frequency Luau callback.
+without a high-frequency Luau callback. `wrap` uses the same retained host
+layout pass; combined with child `min_width` and `grow`, one source can form a
+multi-column clamshell layout and collapse to one column in a narrow or portrait
+tablet layout.
+
+`grow` means that the node owns flexible remaining space and may shrink below
+the intrinsic size of its descendants. The host applies zero automatic minimum
+width and height to growing nodes, so a long list inside `scroll_y` stays
+bounded by its viewport instead of enlarging a shell row or window space.
 
 ### Content
 
@@ -272,6 +308,23 @@ content = {
 }
 
 content = { kind = "provider_surface", surface = "camera-preview" }
+
+content = {
+    kind = "window_space",
+    layout = "floating", -- or "tiling" / "scrolling"
+    gap = 12,
+    fallback = "No application windows are open",
+}
+
+content = {
+    kind = "shell_overlay",
+    x = 1440, y = 860, width = 430, height = 146,
+    anchor = {
+        x = 1838, y = 990, width = 64, height = 64, above = true,
+    },
+}
+
+content = { kind = "application_surface", title = "SOS Home" }
 ```
 
 `text_session` is a host-owned editing session and requires a stable node ID.
@@ -300,6 +353,62 @@ also requires its explicit grant but reports `protected_unavailable` and never
 maps bytes because the prototype does not claim a secure scanout path. The
 Android host renders an explicit unavailable placeholder for this Linux
 integration primitive.
+
+`window_space` is the shell/compositor composition point on Linux. It requires
+a stable node ID, and validation admits at most one per scene. During GPUI
+prepaint the host converts the node's actual logical bounds into an
+authenticated, bounded compositor configuration. The region must be at least
+160 by 120 logical pixels, must remain inside the active output, and has a gap
+bounded to 128. The compositor deterministically places at most eight ordinary
+Wayland/XWayland application windows within it. `floating` cascades bounded
+windows and retains click-to-raise focus; `tiling` uses a bounded grid;
+`scrolling` currently presents overlapping horizontal cards and reserves true
+scroll-position/focused-window controls for a later ABI addition. Children of
+the node are normal Luau content painted in the shell below those independent
+application surfaces, which supplies home/empty content without pretending
+that a client window is a GPUI child.
+
+The compositor treats each assigned application rectangle as a paint and input
+boundary, not merely an XDG size hint. A client whose toolkit enforces a larger
+minimum buffer is clipped and cannot paint or receive pointer focus over a
+sibling tile, status bar, command center or agent rail.
+
+The control message contains only integer geometry and the closed layout enum.
+Luau never receives a Wayland handle, window PID, client command line, native
+input object or arbitrary placement operation. Android renders the fallback
+string because it has no Linux compositor window space.
+
+`shell_overlay` declares the one source-defined surface that may remain above
+the shell and application windows. It requires a stable ID; validation admits
+at most one, bounds width to 48..720 and height to 48..360 logical pixels, and
+the compositor clamps its origin to the logical output. The trusted host opens
+it as a transparent GPUI/XDG surface, while the compositor owns placement,
+hover hit testing, and interactive movement. The optional `anchor` is a stable
+action rectangle in output coordinates. The host centers an expanded overlay
+over that rectangle when space permits, clamps only the expanded surface at an
+edge, and relocates the action inside that surface so the action itself does
+not jump. `above` selects whether the extra height grows above or below the
+action. Without `anchor`, `x` and `y` retain their legacy surface-origin
+meaning.
+
+A descendant with `interaction.surface_drag = true` starts a move only from
+that exact node; sibling controls and text fields retain ordinary input. A
+stationary press/release produces the fixed `shell_overlay_activated` Scene
+action. A completed move produces `shell_overlay_moved`; `x` and `y` are the
+final action-anchor origin when `anchor` is present, and otherwise the legacy
+surface origin. Luau can persist that anchor or change the source-defined
+layout, but cannot address or reposition another surface. Android renders an
+unavailable placeholder.
+
+`application_surface` moves its complete subtree out of the shell window and
+into a separate normal GPUI/XDG toplevel. It requires a stable ID and a bounded
+non-empty title, and validation currently admits at most one. The compositor
+classifies the toplevel as `NativeApplication` and applies the same window-space
+placement, clipping, focus, unmap, and reflow policy used for compatibility
+clients. The base shell does not paint that subtree beneath the application.
+This first cut is still hosted by the shell revision's permanent process;
+independent native-app revision processes and lifecycle supervision remain a
+separate application-runtime layer. Android renders an unavailable placeholder.
 
 ### Paint and interaction
 
@@ -333,6 +442,8 @@ Paint and hit testing are facets of any node, not a `canvas` escape-hatch type:
     },
     interaction = {
         tap_action = "select_flow", -- optional whole-node action
+        hover_action = "hover_changed", -- event.focused carries enter/leave
+        surface_drag = true, -- Linux shell-overlay descendants only
         pointer_action = "pointer_sample",
         multi_pointer_action = "transform_gesture",
         capture = "none" | "pointer" | "surface",
@@ -362,6 +473,16 @@ host-derived centroid, scale, and rotation for the first two captured pointers.
 `pointer` capture follows one pointer outside the node; `surface` also assigns
 subsequent pointers to that surface. The revision owns geometry and gesture
 meaning while the host owns bounded routing and capture lifetime.
+
+`hover_action` emits only when hover state changes and supplies
+`event.focused`. `surface_drag` is a structural Linux integration flag rather
+than a general-purpose drag callback: on a node rendered inside
+`shell_overlay`, it transfers the pointer gesture to the compositor. It is
+also accepted on the source chrome inside `application_surface`, where it asks
+the compositor to move that native application in Floating mode. The handler
+is attached to the declared node rather than an implicit full-size wrapper, so
+nearby inputs are not converted into move gestures. It is ignored as a
+surface-management authority elsewhere.
 
 For the SM-A336B audit, keep a low-level paint node's complete initial draggable
 region at local `y <= 400`. This is a measured viewport constraint, not a
@@ -425,6 +546,8 @@ Before presentation the host enforces, among other checks:
   and effect payloads;
 - unique IDs and stable IDs for interactive, animated, semantic, and
   text-session nodes;
+- at most one keyed `window_space`, `shell_overlay`, and
+  `application_surface`, with their primitive-specific geometry/title bounds;
 - a 16 MiB VM limit and fixed render/update time budgets.
 - at most 64 revision assets, 4 MiB each and 16 MiB total, with checks repeated
   by the supervisor and runtime.

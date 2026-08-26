@@ -3,7 +3,14 @@
 // SOS policy independent from KMS and releases an activation fence only from the
 // VBlank event corresponding to the queued shell buffer.
 
-use std::{cell::RefCell, collections::HashMap, fs, path::Path, rc::Rc, time::Duration};
+use std::{
+    cell::RefCell,
+    collections::{BTreeMap, HashMap},
+    fs,
+    path::Path,
+    rc::Rc,
+    time::Duration,
+};
 
 use anyhow::{bail, Context as _, Result};
 use compositor_control_protocol::{PresentationClock, PresentationEvidence};
@@ -28,6 +35,7 @@ use smithay::{
             element::{
                 memory::{MemoryRenderBuffer, MemoryRenderBufferRenderElement},
                 surface::{render_elements_from_surface_tree, WaylandSurfaceRenderElement},
+                utils::{Relocate, RelocateRenderElement, RescaleRenderElement},
                 Kind, RenderElementStates,
             },
             gles::GlesRenderer,
@@ -36,10 +44,7 @@ use smithay::{
         session::{libseat::LibSeatSession, Event as SessionEvent, Session},
         udev::{UdevBackend, UdevEvent},
     },
-    desktop::{
-        space::{space_render_elements, SpaceRenderElements},
-        utils::OutputPresentationFeedback,
-    },
+    desktop::utils::OutputPresentationFeedback,
     output::{Mode, Output, PhysicalProperties, Scale, Subpixel},
     reexports::{
         calloop::{
@@ -52,7 +57,7 @@ use smithay::{
         wayland_protocols::wp::presentation_time::server::wp_presentation_feedback,
         wayland_server::{protocol::wl_surface::WlSurface, Resource as _},
     },
-    utils::{DeviceFd, Monotonic, Time, Transform},
+    utils::{DeviceFd, Monotonic, Point, Scale as CoordinateScale, Time, Transform},
     wayland::{
         compositor,
         dmabuf::{DmabufFeedbackBuilder, DmabufState},
@@ -61,7 +66,13 @@ use smithay::{
 };
 use smithay_drm_extras::drm_scanner::{DrmScanEvent, DrmScanner};
 
-use crate::{mark_backend_ready, policy::QueuedRevision, state::SosCompositor, CompositorData};
+use crate::{
+    mark_backend_ready,
+    policy::QueuedRevision,
+    render::{window_render_elements, SosWindowRenderElement},
+    state::SosCompositor,
+    CompositorData,
+};
 
 const FRAME_INTERVAL: Duration = Duration::from_millis(8);
 const CLEAR_COLOR: [f32; 4] = [0.025, 0.03, 0.035, 1.0];
@@ -70,10 +81,16 @@ const CURSOR_WIDTH: i32 = 18;
 const CURSOR_HEIGHT: i32 = 24;
 
 smithay::backend::renderer::element::render_elements! {
-    DirectRenderElement<=GlesRenderer>;
-    Space=SpaceRenderElements<GlesRenderer, WaylandSurfaceRenderElement<GlesRenderer>>,
+    BaseDirectRenderElement<=GlesRenderer>;
+    Window=SosWindowRenderElement,
     CursorSurface=WaylandSurfaceRenderElement<GlesRenderer>,
     Cursor=MemoryRenderBufferRenderElement<GlesRenderer>,
+}
+
+smithay::backend::renderer::element::render_elements! {
+    DirectRenderElement<=GlesRenderer>;
+    Base=BaseDirectRenderElement,
+    Projected=RelocateRenderElement<RescaleRenderElement<BaseDirectRenderElement>>,
 }
 
 type DirectOutput = DrmOutput<
@@ -113,6 +130,16 @@ struct OutputConfig {
     requested_size: Option<(i32, i32)>,
     rotation: u16,
     scale: f64,
+    layout: OutputLayout,
+    input_outputs: BTreeMap<String, String>,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+enum OutputLayout {
+    #[default]
+    Mirror,
+    Extend,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -121,6 +148,8 @@ struct OutputConfigFile {
     mode: Option<String>,
     rotation: Option<u16>,
     scale: Option<f64>,
+    layout: Option<OutputLayout>,
+    input_outputs: BTreeMap<String, String>,
 }
 
 pub struct DirectBackend {
@@ -211,6 +240,8 @@ pub fn init_direct(
 
     let loop_handle = event_loop.handle();
     let output_config = load_output_config()?;
+    data.state
+        .set_input_output_mappings(output_config.input_outputs.clone());
     data.direct = Some(DirectBackend {
         session,
         devices: HashMap::new(),
@@ -457,7 +488,8 @@ fn remove_device(
         tracing::error!(%error, ?node, "could not update dmabuf feedback after device removal");
     }
     loop_handle.remove(device.event_token);
-    update_output_layout(&mut data.state);
+    let layout = device_output_layout(data);
+    update_output_layout(&mut data.state, layout);
 }
 
 fn scan_connectors(data: &mut CompositorData, node: DrmNode) -> Result<()> {
@@ -510,6 +542,9 @@ fn refresh_output_config(data: &mut CompositorData) -> Result<bool> {
         return Ok(false);
     }
     tracing::info!(?next, "applying changed direct output configuration");
+    data.state
+        .set_input_output_mappings(next.input_outputs.clone());
+    let layout = next.layout;
     direct.output_config = next;
     let nodes = direct.devices.keys().copied().collect::<Vec<_>>();
     for device in direct.devices.values_mut() {
@@ -518,7 +553,7 @@ fn refresh_output_config(data: &mut CompositorData) -> Result<bool> {
         }
         device.scanner = DrmScanner::new();
     }
-    update_output_layout(&mut data.state);
+    update_output_layout(&mut data.state, layout);
     for node in nodes {
         scan_connectors(data, node)?;
     }
@@ -534,7 +569,8 @@ fn disconnect_output(data: &mut CompositorData, node: DrmNode, crtc: crtc::Handl
         .map(|output| output.output);
     if let Some(output) = output {
         data.state.space.unmap_output(&output);
-        update_output_layout(&mut data.state);
+        let layout = device_output_layout(data);
+        update_output_layout(&mut data.state, layout);
     }
 }
 
@@ -635,7 +671,7 @@ fn connect_output(
             needs_initial_damage: true,
         },
     );
-    update_output_layout(&mut data.state);
+    update_output_layout(&mut data.state, config.layout);
     tracing::info!(
         output = name,
         width = mode.size.w,
@@ -677,10 +713,25 @@ fn load_output_config() -> Result<OutputConfig> {
     if !scale.is_finite() || !(1.0..=4.0).contains(&scale) {
         bail!("output scale must be finite and between 1.0 and 4.0");
     }
+    if file.input_outputs.len() > 32 {
+        bail!("input_outputs exceeds 32 device mappings");
+    }
+    for (device, output) in &file.input_outputs {
+        for (label, value) in [("input device", device), ("output", output)] {
+            if value.is_empty()
+                || value.len() > 128
+                || value.chars().any(|character| character.is_control())
+            {
+                bail!("{label} mapping names must be 1..128 printable bytes");
+            }
+        }
+    }
     Ok(OutputConfig {
         requested_size,
         rotation,
         scale,
+        layout: file.layout.unwrap_or_default(),
+        input_outputs: file.input_outputs,
     })
 }
 
@@ -698,26 +749,86 @@ fn parse_output_mode(value: &str) -> Result<(i32, i32)> {
     Ok(size)
 }
 
-fn update_output_layout(state: &mut SosCompositor) {
+fn device_output_layout(data: &CompositorData) -> OutputLayout {
+    data.direct
+        .as_ref()
+        .map(|direct| direct.output_config.layout)
+        .unwrap_or_default()
+}
+
+fn compute_output_layout(
+    layout: OutputLayout,
+    mut outputs: Vec<(String, (i32, i32))>,
+) -> ((i32, i32), BTreeMap<String, (i32, i32)>) {
+    outputs.sort_by(|left, right| left.0.cmp(&right.0));
+    match layout {
+        OutputLayout::Mirror => {
+            let canvas = outputs
+                .iter()
+                .max_by_key(|(name, size)| {
+                    let internal = i64::from(name.starts_with("eDP-"));
+                    (internal, i64::from(size.0) * i64::from(size.1))
+                })
+                .map(|(_, size)| *size);
+            let Some(canvas) = canvas else {
+                return ((0, 0), BTreeMap::new());
+            };
+            let placements = outputs
+                .into_iter()
+                .map(|(name, _)| (name, (0, 0)))
+                .collect();
+            (canvas, placements)
+        }
+        OutputLayout::Extend => {
+            let mut width = 0i32;
+            let mut height = 0i32;
+            let placements = outputs
+                .into_iter()
+                .map(|(name, size)| {
+                    let location = (width, 0);
+                    width = width.saturating_add(size.0);
+                    height = height.max(size.1);
+                    (name, location)
+                })
+                .collect();
+            ((width, height), placements)
+        }
+    }
+}
+
+fn update_output_layout(state: &mut SosCompositor, layout: OutputLayout) {
     let mut outputs = state.space.outputs().cloned().collect::<Vec<_>>();
     outputs.sort_by_key(Output::name);
-    let mut x = 0;
-    let mut height = 0;
+    let geometry = outputs
+        .iter()
+        .filter_map(|output| {
+            state.space.output_geometry(output).map(|geometry| {
+                (
+                    output.name(),
+                    (geometry.size.w.max(0), geometry.size.h.max(0)),
+                )
+            })
+        })
+        .collect();
+    let (canvas, placements) = compute_output_layout(layout, geometry);
     for output in outputs {
-        state.space.map_output(&output, (x, 0));
+        let location = placements.get(&output.name()).copied().unwrap_or_default();
+        output.change_current_state(None, None, None, Some(location.into()));
+        state.space.map_output(&output, location);
         if let Some(geometry) = state.space.output_geometry(&output) {
             tracing::info!(
                 output = output.name(),
-                x,
+                ?layout,
+                x = location.0,
+                y = location.1,
                 width = geometry.size.w,
                 height = geometry.size.h,
                 "positioned direct output"
             );
-            x += geometry.size.w;
-            height = height.max(geometry.size.h);
         }
     }
-    state.output_size = (x, height);
+    state.output_layout_mirrored = layout == OutputLayout::Mirror;
+    state.output_size = canvas;
     state.reconfigure_for_output_layout();
 }
 
@@ -778,7 +889,7 @@ fn render_output(data: &mut CompositorData, node: DrmNode, crtc: crtc::Handle) -
             Kind::Unspecified,
         )
         .context("upload initial output damage marker")?;
-        vec![DirectRenderElement::Cursor(marker)]
+        vec![BaseDirectRenderElement::Cursor(marker)]
     } else {
         Vec::new()
     };
@@ -795,14 +906,15 @@ fn render_output(data: &mut CompositorData, node: DrmNode, crtc: crtc::Handle) -
             &output_data.output,
         ));
         elements.extend(
-            space_render_elements(&mut *renderer, [&state.space], &output_data.output, 1.0)?
+            window_render_elements(&mut renderer, state, &output_data.output)?
                 .into_iter()
-                .map(DirectRenderElement::Space),
+                .map(BaseDirectRenderElement::Window),
         );
     } else if let Some(element) = recovery_render_element(&mut renderer, state, &output_data.output)
     {
-        elements.push(DirectRenderElement::Cursor(element));
+        elements.push(BaseDirectRenderElement::Cursor(element));
     }
+    let elements = project_output_elements(state, &output_data.output, elements);
     let result = output_data
         .drm_output
         .render_frame(&mut *renderer, &elements, CLEAR_COLOR, FrameFlags::DEFAULT)
@@ -866,7 +978,7 @@ fn input_method_render_elements(
     renderer: &mut GlesRenderer,
     state: &SosCompositor,
     output: &Output,
-) -> Vec<DirectRenderElement> {
+) -> Vec<BaseDirectRenderElement> {
     let Some(output_geometry) = state.space.output_geometry(output) else {
         return Vec::new();
     };
@@ -889,7 +1001,7 @@ fn input_method_render_elements(
                 Kind::Unspecified,
             )
             .into_iter()
-            .map(DirectRenderElement::CursorSurface)
+            .map(BaseDirectRenderElement::CursorSurface)
         })
         .collect()
 }
@@ -899,7 +1011,7 @@ fn cursor_render_elements(
     state: &SosCompositor,
     output: &Output,
     fallback: &MemoryRenderBuffer,
-) -> Vec<DirectRenderElement> {
+) -> Vec<BaseDirectRenderElement> {
     let Some(output_geometry) = state.space.output_geometry(output) else {
         return Vec::new();
     };
@@ -926,7 +1038,7 @@ fn cursor_render_elements(
             );
             render_elements_from_surface_tree(renderer, surface, location, 1.0, 1.0, Kind::Cursor)
                 .into_iter()
-                .map(DirectRenderElement::CursorSurface)
+                .map(BaseDirectRenderElement::CursorSurface)
                 .collect()
         }
         _ => MemoryRenderBufferRenderElement::from_buffer(
@@ -938,12 +1050,80 @@ fn cursor_render_elements(
             None,
             Kind::Cursor,
         )
-        .map(|element| vec![DirectRenderElement::Cursor(element)])
+        .map(|element| vec![BaseDirectRenderElement::Cursor(element)])
         .unwrap_or_else(|error| {
             tracing::warn!(%error, "could not upload compositor cursor");
             Vec::new()
         }),
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct MirrorProjection {
+    pub scale: f64,
+    pub offset: (i32, i32),
+}
+
+pub(crate) fn mirror_projection(canvas: (i32, i32), output: (i32, i32)) -> MirrorProjection {
+    if canvas.0 <= 0 || canvas.1 <= 0 || output.0 <= 0 || output.1 <= 0 {
+        return MirrorProjection {
+            scale: 1.0,
+            offset: (0, 0),
+        };
+    }
+    let scale =
+        (f64::from(output.0) / f64::from(canvas.0)).min(f64::from(output.1) / f64::from(canvas.1));
+    let projected_width = (f64::from(canvas.0) * scale).round() as i32;
+    let projected_height = (f64::from(canvas.1) * scale).round() as i32;
+    MirrorProjection {
+        scale,
+        offset: (
+            (output.0 - projected_width) / 2,
+            (output.1 - projected_height) / 2,
+        ),
+    }
+}
+
+fn project_output_elements(
+    state: &SosCompositor,
+    output: &Output,
+    elements: Vec<BaseDirectRenderElement>,
+) -> Vec<DirectRenderElement> {
+    if !state.output_layout_mirrored {
+        return elements
+            .into_iter()
+            .map(DirectRenderElement::Base)
+            .collect();
+    }
+    let Some(geometry) = state.space.output_geometry(output) else {
+        return elements
+            .into_iter()
+            .map(DirectRenderElement::Base)
+            .collect();
+    };
+    let projection = mirror_projection(
+        state.output_size,
+        (geometry.size.w.max(0), geometry.size.h.max(0)),
+    );
+    if (projection.scale - 1.0).abs() < f64::EPSILON && projection.offset == (0, 0) {
+        return elements
+            .into_iter()
+            .map(DirectRenderElement::Base)
+            .collect();
+    }
+    let scale = CoordinateScale::from(projection.scale);
+    let offset: Point<i32, smithay::utils::Physical> = projection.offset.into();
+    elements
+        .into_iter()
+        .map(|element| {
+            let element = RescaleRenderElement::from_element(element, (0, 0).into(), scale);
+            DirectRenderElement::Projected(RelocateRenderElement::from_element(
+                element,
+                offset,
+                Relocate::Relative,
+            ))
+        })
+        .collect()
 }
 
 fn default_cursor_buffer() -> MemoryRenderBuffer {
@@ -1126,7 +1306,79 @@ fn take_presentation_feedback(
 mod tests {
     use smithay::backend::allocator::{format::FormatSet, Format, Fourcc, Modifier};
 
-    use super::{common_dmabuf_formats, default_cursor_pixels, CURSOR_HEIGHT, CURSOR_WIDTH};
+    use super::{
+        common_dmabuf_formats, compute_output_layout, default_cursor_pixels, mirror_projection,
+        OutputConfigFile, OutputLayout, CURSOR_HEIGHT, CURSOR_WIDTH,
+    };
+
+    #[test]
+    fn empty_output_config_preserves_safe_defaults() {
+        let config: OutputConfigFile = serde_json::from_str("{}").unwrap();
+
+        assert_eq!(config.layout.unwrap_or_default(), OutputLayout::Mirror);
+        assert!(config.input_outputs.is_empty());
+    }
+
+    #[test]
+    fn output_config_decodes_absolute_device_routes() {
+        let config: OutputConfigFile = serde_json::from_str(
+            r#"{
+                "layout": "extend",
+                "input_outputs": {
+                    "PiKVM PiKVM Composite Device": "DP-1",
+                    "Integrated Touchscreen": "eDP-1"
+                }
+            }"#,
+        )
+        .unwrap();
+
+        assert_eq!(config.input_outputs["PiKVM PiKVM Composite Device"], "DP-1");
+        assert_eq!(config.input_outputs["Integrated Touchscreen"], "eDP-1");
+        assert_eq!(config.layout, Some(OutputLayout::Extend));
+    }
+
+    #[test]
+    fn mirror_layout_uses_the_internal_panel_as_the_canonical_canvas() {
+        let (canvas, placements) = compute_output_layout(
+            OutputLayout::Mirror,
+            vec![
+                ("eDP-1".into(), (1920, 1200)),
+                ("DP-1".into(), (1920, 1080)),
+            ],
+        );
+
+        assert_eq!(canvas, (1920, 1200));
+        assert_eq!(placements["DP-1"], (0, 0));
+        assert_eq!(placements["eDP-1"], (0, 0));
+    }
+
+    #[test]
+    fn mirror_projection_fits_the_full_internal_canvas_on_pikvm() {
+        let projection = mirror_projection((1920, 1200), (1920, 1080));
+
+        assert!((projection.scale - 0.9).abs() < f64::EPSILON);
+        assert_eq!(projection.offset, (96, 0));
+        assert_eq!(mirror_projection((1920, 1200), (1920, 1200)).offset, (0, 0));
+    }
+
+    #[test]
+    fn extended_layout_remains_available_and_connector_order_independent() {
+        for outputs in [
+            vec![
+                ("eDP-1".into(), (1920, 1200)),
+                ("DP-1".into(), (1920, 1080)),
+            ],
+            vec![
+                ("DP-1".into(), (1920, 1080)),
+                ("eDP-1".into(), (1920, 1200)),
+            ],
+        ] {
+            let (canvas, placements) = compute_output_layout(OutputLayout::Extend, outputs);
+            assert_eq!(canvas, (3840, 1200));
+            assert_eq!(placements["DP-1"], (0, 0));
+            assert_eq!(placements["eDP-1"], (1920, 0));
+        }
+    }
 
     #[test]
     fn fallback_cursor_has_a_stable_nonempty_extent() {

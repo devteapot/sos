@@ -2427,6 +2427,9 @@ impl ExperienceHost {
             Flow::Column => element = element.flex().flex_col(),
             Flow::Row => element = element.flex().flex_row(),
         }
+        if node.layout.wrap {
+            element = element.flex_wrap();
+        }
         if node.layout.scroll_y {
             element = element.size_full();
         }
@@ -2524,6 +2527,30 @@ impl ExperienceHost {
                     .items_center()
                     .justify_center()
                     .child("Provider surface unavailable on this host"),
+            );
+        }
+        if let Some(Content::WindowSpace(space)) = &node.content {
+            element = element.child(
+                div()
+                    .size_full()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(if space.fallback.is_empty() {
+                        "Application windows are unavailable on this host".into()
+                    } else {
+                        space.fallback.clone()
+                    }),
+            );
+        }
+        if matches!(&node.content, Some(Content::ApplicationSurface(_))) {
+            element = element.child(
+                div()
+                    .size_full()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child("Application surfaces are unavailable on this host"),
             );
         }
         if let Some(Content::TextSession(input)) = &node.content {

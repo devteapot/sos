@@ -10582,3 +10582,1134 @@ needed, and boot its exact hash in the disposable Fedora VM. Only after that VM
 gate should a physical Framework diagnostic run. A later performance change
 may benchmark dropping EROFS `dedupe` to unlock parallel compression, but must
 compare image size, boot compatibility, and metadata before adoption.
+## 2026-08-25 — Start Linux System Providers v1 on development-live
+
+**Goal / architecture:** Replace the Linux host's synthetic
+`model.providers` value with the same System Providers v1 contract used by
+Stock Base and generated Luau. The first Linux slice covers normalized
+clock/locale/time-zone facts, UPower power/thermal, NetworkManager connectivity
+and saved Wi-Fi, PipeWire/WirePlumber volume, MPRIS media sessions, and
+freedesktop application discovery/launch. Existing file/iCalendar notes and
+calendar plus sysfs display/input facts remain available through their current
+typed compatibility fields while the remaining canonical display, session,
+notification, clipboard, Bluetooth, and UDisks domains are designed as later
+ABI slices.
+
+`crates/providers-linux` now owns an in-process `SystemAdapter`. It uses typed
+blocking D-Bus proxies for UPower, NetworkManager, systemd-timedated, and MPRIS.
+The only command adapters are fixed-path `/usr/bin/wpctl` and
+`/usr/bin/gio launch` calls with fixed argument vectors and no shell.
+NetworkManager object paths, MPRIS bus names, desktop-file paths, and executable
+commands never cross the provider boundary; Luau receives bounded labels and
+SHA-256-derived opaque IDs. Capabilities are the intersection of revision
+grants and resources observed in the current snapshot. Power ceremonies remain
+ungranted and fail closed. The Linux host now routes the v1 audio, media,
+network, application, and attention envelopes to this provider boundary and
+polls provider fingerprints once per second.
+
+**Development-live integration:** `sos-login-session` now creates a private
+provider store and mode-`0600` wildcard grant manifest only when the image
+identity is both `development-live` and mutable, or when the development escape
+hatch is explicitly supplied. Stable sessions still require an exact private
+revision grant. `tools/linux-live-deploy` can atomically overlay and hash the
+new `provider-probe`, `login-session`, `stock-base`, and `api-doc` components in
+addition to the six session binaries; `tools/linux-hardware-gate` accepts only
+their fixed destinations. The read-only `sos-linux-provider-probe` exercises
+the same `ProviderHub` and grant loader used by the host and has no action mode.
+
+**Failures and corrections:** The first real probe found that an empty provider
+store and absent media player caused the legacy music adapter to fail the whole
+snapshot. Missing media now produces an inactive value so unrelated provider
+domains remain available, with a regression test. A second probe found that
+the first offline USB power-supply entry could mask an online AC entry; AC state
+now aggregates all readable supplies, and charging remains absent when there is
+no battery. Locale values are normalized to bounded language tags and the
+time-zone identifier comes from timedated with safe fallbacks. Public app,
+network, and MPRIS labels are UTF-8 byte-bounded and control-free, and action
+IDs require the expected opaque syntax before resource lookup.
+
+**Host evidence:** `cargo test --workspace --all-targets`,
+`cargo test -p sos-experience --features linux-host --all-targets`,
+`cargo clippy -p providers-linux --all-targets -- -D warnings`,
+`cargo clippy -p sos-experience --features linux-host --all-targets -- -D
+warnings`, `tests/linux-login-session-test.sh`,
+`tests/linux-live-image-test.sh`, Bash parsing, formatting, and
+`git diff --check` all passed. The provider crate has 17 passing tests and the
+Linux-host feature has 29. A release provider probe built in 10.04 seconds and
+is 1,738,120 bytes with SHA-256
+`b0de0b6e928e70373d39402980535541e67b772b801c0a8d9408eb534fecfdc5`.
+Its local live-service snapshot is
+`artifacts/linux-system-providers-framework12-20260825/host-provider-snapshot.json`
+(1,905 bytes, SHA-256
+`2cea5568db36c690d8ea6e39fc996082b5031100dc2f6d07cc7d2232ed5db4f1`):
+ABI 1, `Europe/Zurich`, validated Ethernet, AC power with no invented battery,
+two opaque compatible applications, and only `app_launch` available because
+this build host had no session audio or MPRIS resource. No model provider ran,
+so model and model-weighted cost were zero.
+
+**Physical state / next gate:** PiKVM still has the exact 3,056,205,824-byte
+development ISO attached as a complete read-only virtual CD-ROM. During this
+iteration its 1920x1080 stream remained byte-for-byte black, its ATX LED stayed
+off after one bounded short power click, and enabling the unavailable keyboard
+output did not create a live HID endpoint; no reset, long press, reboot, or
+internal-disk action followed. The Framework appeared as `fw12` at
+`192.168.1.123` and answered ICMP, but TCP/22 remained filtered through the
+complete provisioning wait. Therefore no overlay was deployed and no physical
+provider or interaction gate is claimed. Restore target SSH (or a working
+PiKVM keyboard/video path), deploy `experience-host`, `provider-probe`, and
+`login-session`, run the probe against live UPower/NetworkManager/PipeWire,
+enter a fresh SOS login, exercise reversible volume and saved-Wi-Fi actions,
+capture the stock provider UI, return to the original state, and only then
+finalize and verify the physical evidence manifest.
+
+## 2026-08-25 — Prove the first Linux System Providers slice on Framework 12
+
+**Goal / environment:** Continue on the same mutable development-live Fedora
+44 overlay instead of rebaking the ISO, then prove Stock Base and a generated
+revision can consume and act through the Linux provider boundary on the
+Framework Laptop 12. The physical campaign used boot ID
+`9b1818f2-c6c3-4829-8109-c9b3320a02a3`; PiKVM retained the exact
+3,056,205,824-byte development ISO as a complete, connected, read-only,
+non-writable virtual CD-ROM. Every storage audit kept `/dev/nvme0n1` and its
+partitions unmounted, with no installer or block writer present.
+
+**Implementation and decisions:** The selectable host now keeps the real login
+`HOME`, cache, D-Bus, and `XDG_RUNTIME_DIR`, while using an absolute compositor
+socket in its private runtime directory. This lets the provider reach the user
+PipeWire/WirePlumber service and lets ordinary native applications use portals.
+The login publishes `SOS:GNOME` to the user manager and starts a dedicated
+`sos-session.target`; a paired conflict target stops the standard graphical
+session and portal services on SOS logout. Existing applications are therefore
+indexed from bounded freedesktop entries and launched through a fixed
+`gio launch` argument vector rather than rewritten or exposed to generated
+code. A visible Calculator window, active generic/GNOME/GTK portal services,
+and clean process removal proved that path. The GNOME portal backend still
+warns that the Mutter ServiceChannel is absent; operations tied specifically
+to that Mutter protocol remain open.
+
+The power adapter originally selected a 0% HID peripheral ahead of the laptop
+battery. It now excludes `scope=Device` power supplies, and the physical
+snapshot reports the Framework battery at 80%. The host also creates a private
+semantic socket and Stock Base gives its status, controls, networks, and
+applications stable accessible roles and labels. The first horizontal status
+layout overflowed at 1920x1080; stacking the three bounded cards made power,
+network, and audio simultaneously visible. Stock exposes 24 bounded launch
+rows while the canonical provider probe truthfully inventories 34 eligible
+desktop entries.
+
+Rapid absolute-volume actions exposed a stale-snapshot race: a second click
+could derive its target from the pre-action model. System Providers v1 now has
+`audio.adjust_volume(delta)`, authorized by the existing volume capability and
+applied relative to current platform state. Linux uses fixed `wpctl` relative
+arguments; the Compat framework and Core native adapters implement the same
+closed action so the shared stock source remains portable. Zero and out-of-range
+deltas fail before adapter access. The physical semantic round trip queued up
+at `1787689676410221077` ns, reached 50% in 62.25 ms, queued down immediately,
+and returned exactly to the 40% baseline 59.38 ms later (123.97 ms total), then
+published `Volume 40%` again.
+
+**Physical evidence:** Development overlay
+`20260825T202116Z-da87df989f18-1889609` deployed the host, probe, Stock Base,
+and API documentation in 105.077 seconds; final Stock Base overlay
+`20260825T203215Z-da87df989f18-1893733` completed in 13.838 seconds and its
+remote SHA-256 matched the source. Coordinated activations retained host PID
+54637 and ended on durable revision
+`acaad98458e6b7b566362f91ac6bef3d8b57c106edb416367dac1788e531e51c`.
+The final canonical snapshot is
+`artifacts/linux-system-providers-framework12-20260825/target-final-provider-snapshot.json`
+(5,681 bytes, SHA-256
+`516abee2f8367cd0ccf598f514c3b4d525bf379dae88ec1c301ba64f6da78be5`):
+ABI 1, 80% battery, validated Wi-Fi, unmuted 40% audio, 34 applications, and
+only audio, saved-Wi-Fi, and application actions granted by observed resources.
+The atomic action record is
+`target-final-audio-semantic-roundtrip.txt` (492 bytes, SHA-256
+`25299a2de68cd2ded95540749ef7e98957acaa3b4d1aedd43fe3d248ac16a496`).
+The final 1920x1080 PiKVM frame is
+`pikvm/final-stock-system-providers-layout-fixed.jpg` (84,513 bytes, SHA-256
+`4cb3e02516f399d109a3064963e1933281004630e13cb89e1778d677835f4cfd`).
+
+One PiKVM coordinate test unintentionally selected Wi-Fi disconnect because
+the pointer scale was wrong; a bounded saved-network provider action restored
+the link without exposing a network credential, and raw coordinate input was
+retired for action evidence. PiKVM video remained healthy, but its keyboard
+reported no available output; a same-boot, non-secret-calibrated temporary
+uinput helper was used only at observed GDM fields and then removed. Repeated
+development logins made GDM reach its display-failure limit once; restarting
+only GDM restored a fresh greeter. The final logout left all SOS processes,
+both graphical targets, and the portal inactive, kept volume at 40%, and kept
+the internal NVMe unmounted.
+
+**Verification / verdict:** `cargo test --workspace --all-targets`, the
+29-test Linux-host experience suite, the 17-test provider suite, the 11-test
+Android authority suite, strict Clippy for the changed Rust boundaries,
+formatting, Bash parsing, `tests/linux-login-session-test.sh`,
+`tests/linux-live-image-test.sh`, and `git diff --check` passed. The shared
+Compat Java and Core C++ relative-volume adapters were not rebuilt into Android
+artifacts in this Linux campaign. No model request ran, so model and
+model-weighted cost were zero.
+
+The prepared same-boot hardware campaign correctly ended
+`DIAGNOSTIC_FAIL`, not provider acceptance PASS: touchpad motion and touchscreen
+input were not exercised, seven iterative host launches fail the stable-host
+lifecycle criterion, and earlier failed login/session experiments remain in
+the campaign journal. Same boot, recovery page flip, direct compositor,
+session readiness, agent start, keyboard input, touchpad button, clean logout,
+transactional activation, durable authority, fallback GDM, and kernel GPU
+criteria passed. Its deterministic nested manifest has 38 files. The complete
+campaign is indexed by
+`artifacts/linux-system-providers-framework12-20260825/evidence-manifest.tsv`
+(30,662 bytes, SHA-256
+`389f2cbb34041bc23f3cacbd6b7ebc8c13ff911eab624961f3212cae29081479`),
+independently verified with 275 files.
+
+**Remaining risk / next gate:** This accepts the first canonical Linux slice,
+not the whole requested matrix or a release. Normalize session/display/input,
+notifications/attention, files/storage/clipboard, calendar/notes, Bluetooth,
+and removable devices into subsequent provider ABI slices. Then run a fresh
+single-login Framework campaign with physical touchpad motion, touchscreen,
+suspend/resume, portal dialogs needed by stock applications, and no historical
+process failures. Keep power confirmation, credentials, permissions,
+emergency, and Recovery surfaces fixed native UI.
+
+## 2026-08-26 — Make Stock Base the editable Linux integration target
+
+**Goal / architecture:** Replace the small provider demonstration with a
+substantial default experience while preserving the rule that stock has no
+special native UI authority. `experiences/default.luau` is now a 35,843-byte
+Scene ABI v3 revision with eight source-defined workspaces: Home, Agenda,
+Notes, Media, Attention, System, Apps, and Agent. Navigation, agenda and note
+composers, media controls, notification acknowledgement, connectivity/power/
+audio controls, compatible-application launch rows, the resident-agent
+conversation/composer, explicit unavailable/empty states, and the inline SVG
+mark all use the same retained nodes, revision assets, typed provider effects,
+and capability checks available to generated content. Its SHA-256 is
+`02d7438ef81720eeb0640b376e503e43ecd70cacdee54cd7c5d9a3e200280428`.
+
+Scene layout now has an explicit bounded `wrap` facet decoded by the Luau
+runtime and implemented by both Linux and Android GPUI renderers. Stock opts
+its navigation, cards, controls, notes, applications, and agent actions into
+wrapping. The readable inner frame measures relative to its parent and is
+bounded to 1,876 logical pixels; fixed card widths then reflow without a
+device-name branch or render-time Luau callback. Tests identify the responsive
+home grid and content frame by stable IDs and require wrapping, the maximum
+width, relative measurement, all eight navigable workspaces, the agent
+composer, typed audio/calendar/notes effects, one revision-scoped asset, and a
+system-provider unavailable state. The final note transaction also exposes its
+`Saved` result as an accessible status. The API and focused
+`stock-experience.md` documentation define source-level replacement—not themes
+or widget rearrangement—as the customization boundary.
+
+**Host verification:** `cargo check -p sos-experience --features linux-host
+--bin sos-experience-host`; `cargo test -p experience-ir -p runtime-luau -p
+sos-experience --all-targets`; `cargo test -p revision-supervisor
+--all-targets`; `bash tests/linux-login-session-test.sh`; formatting; and
+`git diff --check` passed. The focused suites reported 5 experience-IR, 22
+Luau-runtime, 16 experience, 1 revision-store signing, 10 coordinator, and 15
+supervisor tests. No model request ran, so model and model-weighted cost were
+zero.
+
+**Framework 12 physical evidence:** The mutable development-live image at
+base revision `28cf8fffee8e2492fc4f2b69fcfe27db3baf7b36` remained on the same
+boot ID `9b1818f2-c6c3-4829-8109-c9b3320a02a3`, with overlay root and every
+internal-NVMe partition unmounted. The final root-owned `/usr/share` source and
+activated revision source had the same 35,843-byte SHA-256 above. Coordinated
+activation committed revision
+`40c4ec85c7577938d9e4a323f65e6c61e21f9197b7577e0a82eece8f3b99c76d`
+while retaining stable host PID 62841. After logout, the exact-source
+`stock-base` development overlay
+`20260825T223150Z-5e7d3d2bda31-1923240` completed in 8,752,359,761 ns; its
+111-byte deployment manifest has SHA-256
+`9547249eebf5ca0d9292e52da4853eac929c49f5bf89db7c5f7eba7babcd66cb`.
+
+The semantic interface navigated all eight workspaces. Agenda creation wrote
+`09:30 Framework stock gate` through `calendar.append`; note creation wrote
+through `notes.write`; and the final note test cleared the composer, published
+an accessible `Saved` status, and found the provider-created file. Its
+2,743-byte semantic snapshot has SHA-256
+`1552885f53e2fdf4eb42a7d88e58b4c2dac553776cd6595943809589632a5b6c`.
+The canonical audio action moved the live PipeWire sink from 40% to 50% and
+back to 40%. PiKVM visually confirmed Home, Agenda, Notes, System, Apps, and
+Agent; `pikvm/stock-home-bounded.jpg` is 79,074 bytes with SHA-256
+`3a0dc32f05f1ca454f8a2878db320fb99e34a8fc72994903de9a5c3f67322094`,
+and the final visible plus semantic note result is
+`pikvm/stock-note-final-accessible.jpg` (70,811 bytes, SHA-256
+`0df751168fa1fac57caa22ba9041d08063b926ec47cd9df7435eef74c7932092`).
+
+**Failures / rejected evidence:** The direct compositor exposes PiKVM DP-1 and
+the internal eDP-1 side by side as a 3,840-pixel global layout. The first Stock
+revision stretched across that space; intrinsic growth and wrapping alone did
+not constrain it. The retained maximum-width content frame fixed the visible
+PiKVM output, while per-output workspaces remain host work. The first note UI
+reported `Saving` after a committed effect and did not expose the status
+semantically; transactionally committed state now reports `Saved` and has a
+semantic regression test. One exploratory audio assertion looked for a
+nonexistent system semantic value and is retained only as rejected evidence;
+the saved `wpctl` 40/50/40 measurements are the acceptance record.
+
+The clean lifecycle request stopped every SOS process and all three graphical
+user targets, with GDM greeter session `c3` present. The sink reappeared at
+100% after the graphical logout, so it was explicitly restored to the original
+40% before finalization. The target then transiently withdrew its address and
+PiKVM streamer; two screenshot requests returned HTTP 503. It returned at the
+same address without power or HID input and accepted the final overlay, but the
+PiKVM streamer remained unavailable, so there is no post-logout GDM frame.
+HID, ATX, and read-only virtual-media state were byte-identical before/after;
+the exact 3,056,205,824-byte development ISO stayed complete, connected,
+CD-ROM, non-writable, and `rw=false`.
+
+**Trust decision / next gates:** Android already loads this stock source from
+AVB/OTA-protected `/system_ext`, pins the resulting revision separately from
+the mutable current pointer, and falls back to it transactionally. Linux
+development-live has content addressing and a read-only system source, but no
+system-owned pinned stock revision or provisioned release-verification key.
+The revision store's optional symmetric manifest HMAC is now documented
+accurately and is not counted as an asymmetric signed-recovery boundary. A
+Linux release still needs an immutable stock pointer plus asymmetric release
+signature verification and a fixed recovery request.
+
+This accepts Stock Base as the substantial editable integration target on a
+physical clamshell, not as a release or physical tablet result. Run a
+single-output nested portrait/tablet campaign, then add per-output host
+surfaces for the dual-display topology. Exercise real MPRIS and attention
+resources and an application launch/return under this final source. Continue
+normalizing the remaining provider domains without moving credentials,
+permissions, trusted power confirmation, emergency, lock, or Recovery above
+the native boundary. The complete 75-file physical campaign manifest is
+`artifacts/linux-stock-base-framework12-20260825/evidence-manifest.tsv`
+(7,871 bytes, SHA-256
+`5b60e5be27fa6e389d36f73a0d79f9923867fdd743dfa43f59164e8a5b93e059`),
+independently verified after every evidence file was finalized.
+
+## 2026-08-26 — Diagnose PiKVM pointer loss on the dual-output Stock session
+
+**Goal / evidence:** Explain why Stock Base accepts touch and touchpad input on
+the Framework but clicks from the PiKVM web console do not reach the visible
+DP-1 surface. A same-boot, read-only SSH audit found the compositor initializing
+eDP-1 first at 1,920x1,200, then positioning DP-1 at x=0 and eDP-1 at x=1,920
+after DP-1 appeared. Libinput registered the PiKVM composite keyboard and two
+mouse interfaces; sysfs reports its absolute mouse interface with ABS_X/ABS_Y
+and the separate relative interface with relative axes. The integrated
+touchscreen and touchpad remain distinct device groups.
+
+**Cause / decision:** The direct compositor currently discards the device from
+`PointerMotionAbsolute` and maps every absolute pointer through
+`space.outputs().next()`. Touch uses the same first-output rule, and relative
+pointer motion is clamped to that output. Because eDP-1 was inserted first on
+this boot, PiKVM absolute coordinates target the internal panel even though
+PiKVM video displays DP-1. This is an output-association bug below the Luau
+revision, not missing Stock interaction handlers. No HID, power, media, disk,
+session, or revision mutation was made during diagnosis.
+
+**Next gate:** Preserve input-device identity through routing. Map configured
+absolute devices to one named output (PiKVM to DP-1 and the integrated
+touchscreen to eDP-1), let relative pointers traverse the complete output
+layout, and fail safely when a configured connector is absent. Add deterministic
+tests with reversed connector discovery order, deploy the compositor through
+the development overlay, then prove the same visible Stock control from PiKVM
+and the integrated panel before accepting multi-output interaction.
+
+## 2026-08-26 — Route absolute input to explicit direct outputs
+
+**Goal / change:** Remove connector discovery order from direct-session input
+routing. The compositor now preserves each libinput device identity and resolves
+absolute pointer, touchscreen, and tablet coordinates against a bounded
+`input_outputs` map in the existing private `output.json`. An exact device name
+selects one connector, a single connected output remains automatic, and an
+unmapped multi-output device or absent configured connector fails closed with a
+one-time diagnostic. Relative pointer motion now uses the complete logical
+output layout and clamps to the nearest valid output rectangle rather than the
+first inserted output. The mapping is reapplied with the existing direct-output
+configuration refresh; generated Luau content receives no DRM, libinput, or
+connector capability.
+
+The Framework deployment configuration maps `PiKVM PiKVM Composite Device` to
+DP-1 and all three observed `ILIT2901:00 222A:5539` touchscreen/stylus/mouse
+device names to eDP-1. It also selects the new `mirror` layout: the direct
+backend defaults to one logical canvas sized to the minimum connected-output
+extent and centers that canvas on every physical mode. For the Framework this
+keeps DP-1 at `(0,0)` on a 1,920x1,080 canvas and places the 1,920x1,200 eDP-1
+at `(0,-60)`, yielding equal content with compositor-owned bars instead of a
+second workspace. `extend` remains an explicit, connector-sorted horizontal
+policy. The 221-byte configuration is
+`artifacts/linux-multi-output-input-framework12-20260826/framework12-output.json`
+with SHA-256
+`9131a704962daf72ae15c9c9d0cc719552b17f0d84a158897712847d4396c0b8`.
+Documentation now defines this mapping as direct-compositor policy and records
+the safe ambiguous/unavailable behavior.
+
+**Host evidence:** Deterministic tests reverse eDP-1/DP-1 discovery order and
+still route PiKVM to DP-1 and the integrated panel to eDP-1. They also cover no
+output, single-output automatic routing, ambiguous multi-output routing,
+missing configured connectors, relative crossing into the second output, and
+gap/outer-edge clamping. Mirror geometry tests require the 1,920x1,080 shared
+canvas and centered panel placement independent of connector order; the
+extended-policy regression still requires a 3,840x1,200 aggregate. Relative
+input is separately bounded to the mirror canvas. `cargo test -p
+sos-compositor --features direct-backend --all-targets` passed 21 tests; the
+no-feature compositor suite passed 15; `cargo clippy -p sos-compositor
+--features direct-backend
+--all-targets -- -D warnings`, the 10-test `sos-linux-session` suite,
+`tests/linux-login-session-test.sh`, formatting, and `git diff --check` passed.
+The exact logs are under
+`artifacts/linux-multi-output-input-framework12-20260826/host/`. The nested
+verifier remains unavailable on this development host because `weston` is not
+installed; its saved probe fails immediately with `error: required command not
+found: weston`, so no nested-runtime claim is made.
+
+The combined release compositor built in 33.98 seconds with maximum RSS
+772,488 KiB. It is 5,745,112 bytes with SHA-256
+`c1ee04496782b9db853c10d621843127b8ca4242fea882a2623566f4287b354d`.
+No model request ran, so model and model-weighted cost were zero.
+
+**Physical deployment / open gate:** The Framework first withdrew its known
+address while PiKVM had no active streamer; the screenshot endpoint returned
+HTTP 503 and no mutation was sent while target state was unknowable. It later
+returned at 192.168.1.132 on the same boot ID
+`9b1818f2-c6c3-4829-8109-c9b3320a02a3`. The audited root remained the live
+overlay, the internal 1-TB NVMe and both partitions were unmounted, no installer
+or block writer was present, and GDM was at its greeter with no SOS process.
+
+`linux-live-deploy` then installed only the compositor in 20,538,381,724 ns as
+deployment `20260826T055729Z-5e7d3d2bda31-1947278`; the target's root-owned
+5,745,112-byte binary has the exact release SHA-256 above. The private 221-byte
+mirror/input configuration was installed mode 0600 for `liveuser` and verified
+against its local SHA-256. Deployment evidence is under
+`artifacts/linux-multi-output-input-framework12-20260826/deploy/`.
+
+The post-deployment session gate remains open. PiKVM again reported an online
+1,920x1,080, 60-fps capture source, and both DP-1 and eDP-1 were connected, but
+every captured frame stayed black while logind described the GDM Wayland
+greeter as active and non-idle. GNOME logged repeated stage-view allocation,
+EGL damage-region, and atomic cursor failures. One reset plus one harmless
+keyboard wake and one absolute-mouse move were accepted by PiKVM without a
+visible transition; both helpers were retired for this boot and no click,
+credential entry, power action, or speculative input followed. A local login
+is now required. After Stock starts, acceptance still requires the compositor
+diagnostic to show mirror placement and PiKVM-to-DP-1 routing, one harmless
+PiKVM click to change visible Stock state, and an integrated-panel/touchpad
+regression check. The code is host-verified and physically deployed, but the
+mirrored interaction claim is not yet accepted.
+
+## 2026-08-26 — Default the Framework/PiKVM GDM pair to a cloned display
+
+**Goal / cause:** Opening the Framework lid still appeared to extend the
+desktop after the direct compositor had been changed to mirror. A same-boot
+audit established that no SOS process was running: session `c3` was the active
+GDM Wayland greeter. Mutter's `gdctl show --modes --properties` reported DP-1
+as the primary 1,920x1,080 logical monitor at `(0,0)` and eDP-1 as a separate
+1,920x1,200 logical monitor at `(1920,0)` with scale 1.3333. The observed
+extension was therefore GDM policy below the login chooser, not a failure of
+the new SOS direct-backend layout.
+
+A verified and then applied `gdctl` clone briefly placed the PiKVM capture
+monitor and built-in panel into one logical monitor, but no user
+`monitors.xml` was written for the ephemeral `gdm-greeter` account. A later
+readback after the lid event showed the original two-monitor extension again.
+That runtime-only `gdctl --persistent` attempt is rejected as a boot/hotplug
+default.
+
+**Change / host evidence:**
+`packaging/xdg/framework12-pikvm-monitors.xml` is now the explicit fallback for
+the observed HJW `HDMI TO USB` DP-1 EDID and BOE `NV122WUM-N42` eDP-1 panel. It
+uses Mutter's version-2 monitor schema and puts both monitors in one primary
+logical monitor at `(0,0)`, scale 1, using their shared 1,920x1,080 modes. It
+does not declare a system-only store policy, so a user's own monitor
+configuration can still override the default. The SOS compositor remains
+separately controlled by `output.json`.
+
+The live-image baker now installs the 911-byte file root-owned at
+`/etc/xdg/monitors.xml`, and `check-rootfs` rejects a missing or divergent
+copy. `linux-live-deploy` exposes the same file as the `display-defaults`
+component so this disposable overlay can be updated without rebaking the ISO.
+The regression test parses the XML, requires one logical monitor containing
+DP-1 and eDP-1 at 1,920x1,080, requires the absence of a locked system policy,
+and verifies both hot-deployment and baked-rootfs identity. XML validation,
+shell parsing, `git diff --check`, and `tests/linux-live-image-test.sh` passed;
+the final complete live-image test took 1.43 seconds with maximum RSS 30,440
+KiB. The packaged file SHA-256 is
+`e194c48097e6c26039a572e11642075f54dee3d8530aa8d9bac7e57f4dd7c38a`.
+
+**Physical evidence / decision:** `linux-live-deploy` first installed only
+`display-defaults` as deployment
+`20260826T062416Z-5e7d3d2bda31-1949972` in 8,559,035,868 ns. Before
+finalization, the compositor and display default were deployed together as
+`20260826T063120Z-5e7d3d2bda31-1951918` in 31,322,176,090 ns so the target's
+current development manifest accounts for both patched artifacts rather than
+superseding the compositor record. It names the 5,745,112-byte compositor SHA
+`c1ee04496782b9db853c10d621843127b8ca4242fea882a2623566f4287b354d`
+and the display default. The remote XML is root-owned, mode 0644, 911 bytes,
+and has the exact packaged SHA-256. GDM was restarted without rebooting: the
+unit returned in 1,212,987,561 ns and a new active greeter `c4` was ready in
+1,755,857,538 ns on the unchanged boot ID
+`9b1818f2-c6c3-4829-8109-c9b3320a02a3`. Fresh `gdctl` readback reports DP-1
+at `1920x1080@60.000` and eDP-1 at `1920x1080@59.934` inside the same sole
+logical monitor at `(0,0)`, primary, scale 1. PiKVM simultaneously recovered a
+visible 1,920x1,080 GDM frame at 60 captured fps; the 49,316-byte JPEG SHA-256
+is `9dcf87928b8007ac507c5ab37576a6491c2a58f980f497c7db657cd68d81b0ef`.
+A later final snapshot was black again even though the active, non-idle greeter
+still reported the same one-logical-monitor clone and no new stage-view, EGL,
+cursor, or GNOME Shell crash was logged. The durable layout result therefore
+does not close the separate intermittent PiKVM/GDM frame-blanking issue.
+
+The root remained the writable live overlay, the internal NVMe had no mounted
+partition, GDM remained active, and no SOS process ran during this greeter
+change. The old GNOME Shell process logged a Mutter Cogl segmentation fault as
+the greeter restarted; the replacement greeter is active and produced the
+visible evidence frame, but that shutdown-path fault remains a diagnostic risk
+rather than being hidden. No PiKVM HID, ATX, virtual-media, disk, or power
+mutation was used for this fix. No model request ran, so model and
+model-weighted cost were zero.
+
+This accepts the Framework/PiKVM GDM mirror default for the currently connected
+pair and future development-live bakes. It is intentionally hardware-specific:
+different EDIDs or connector names fall back to Mutter discovery. The next
+physical gate remains logging into SOS and proving its independently deployed
+mirror geometry plus PiKVM absolute-click routing and integrated-panel input;
+that Stock interaction gate is not implied by the greeter result. The finalized
+75-file campaign manifest is
+`artifacts/linux-multi-output-input-framework12-20260826/evidence-manifest.tsv`
+(8,167 bytes, SHA-256
+`9e227218d7b7db5def47b87b04044501076b89bc6161714d656405f43b21f09d`),
+and every listed size and digest was independently rechecked after generation.
+
+## 2026-08-26 — Accept the replaceable Stock Shell on Framework 12
+
+**Goal / architecture:** Convert the substantial default revision into the
+actual product shell without moving application ownership or platform
+authority into Luau. Scene ABI v3 now has one additive, keyed `window_space`
+content facet with a bounded gap, fallback and closed `floating`, `tiling` and
+`scrolling` policies. GPUI measures its retained bounds and the permanent host
+sends only integer geometry plus policy over the authenticated compositor
+connection. Validation admits one such node per scene. Luau never receives a
+surface identity, PID, Wayland object, socket, executable path or arbitrary
+placement operation; Android renders the same primitive as unavailable.
+
+The compositor admits at most eight application windows across native Wayland
+and opt-in rootless XWayland, reflows them on configuration, map/unmap and output
+changes, and constrains both rendering and hit testing to each assigned
+rectangle. This hard clipping is required because an XDG client such as GNOME
+Calendar may enforce a buffer minimum wider than its tile. Floating uses a
+bounded cascade and click-to-raise; tiling uses a deterministic grid; the first
+scrolling policy is an overlapping horizontal card stack rather than a claim of
+Niri-style navigation. Existing applications remain opaque freedesktop launch
+selections handled by the typed `gio launch` adapter and independent compositor
+clients; none were rewritten or wrapped in generated shell commands.
+
+[`experiences/default.luau`](../experiences/default.luau) now owns the top
+status bar, bounded application container, collapsed command/agent rail, agent
+FAB, reserving command center, application launcher, selectable window policy
+and eight provider-backed workspaces. Bounded application status contributions
+carry only ID, visible label/value and an optional opaque compatible-app
+selection; Linux/Core publish none until the registration broker exists. The
+host's `grow` mapping now permits flexible nodes to shrink below intrinsic
+content, so a scroll list cannot enlarge the shell beyond its viewport. The
+agent workspace is safely reusable in the main canvas and FAB rail through
+scope-prefixed stable IDs. Top and side shell UI remains reserved outside the
+application rectangle because a true transient overlay shell surface is not
+yet implemented.
+
+**Failures and fixes:** The first physical candidate
+`988196dcf3c4b4122df51d9127f41951497db9f176795d4edb92166a7b212684`
+placed its absolute canvas at an inherited flow offset and sent geometry beyond
+the 1,920-by-1,080 canvas. The compositor rejected it correctly, but the host
+treated that policy rejection as fatal and the coordinator recovered the
+previous revision. Pinning the canvas at top-left, making the containing node
+relative and policy rejections non-fatal restored rollback-safe operation.
+Opening the command center then exposed the flex intrinsic-size bug: Luau sent
+height 1,553, so the compositor retained Floating despite the selected Tiling
+state. Zero automatic minimums for `grow` produced and acknowledged the correct
+1,530-by-1,022 region. GNOME Calendar next demonstrated that an XDG size request
+is not an enforcement boundary; per-window render/input clipping kept its
+minimum-size buffer out of the Luau rail. Finally, the FAB initially produced
+`interactive node requires a stable id`; the unnamed agent scroll region and
+reused IDs were fixed and covered by the embedded-experience test. Forcefully
+terminating repeated GDM sessions eventually reached GDM's display-failure
+limit; restarting GDM recovered it, and clean `Ctrl+Alt+Backspace` session exit
+remains the correct development gate path.
+
+**Host evidence:** Final runs passed 2 compositor-control-protocol, 6
+experience-IR, 23 Luau-runtime, 22 direct-feature compositor, 29 Linux-host
+experience, 17 Linux-provider, 11 Android-authority library and 5 Android
+authority binary tests. `tests/linux-login-session-test.sh` and
+`tests/linux-live-image-test.sh` passed; strict clippy passed for compositor and
+Linux experience host; format, shell syntax and `git diff --check` passed. The
+nested compositor gate is `SKIP`, not PASS: `weston` is absent on this host.
+No model request ran, so model and model-weighted cost were zero.
+
+**Physical evidence:** The unchanged 3,056,205,824-byte development ISO
+(`28cf8fffee8e2492fc4f2b69fcfe27db3baf7b36`) remained attached read-only.
+Boot `9b1818f2-c6c3-4829-8109-c9b3320a02a3` used `LiveOS_rootfs` with an overlay
+upper directory; the internal `nvme0n1` partitions remained unmounted. Wi-Fi
+was connected to `Lino WiFi`, battery read 81%, and PiKVM captured the mirrored
+1,920-by-1,080 canvas. Three exact hot deployments passed:
+
+- experience host `20260826T092123Z-91b99efddca3-2015524`,
+  108,048,939,075 ns;
+- compositor `20260826T093317Z-91b99efddca3-2041459`, 75,573,250,184 ns; and
+- Stock source `20260826T094053Z-91b99efddca3-2044852`, 9,379,079,456 ns.
+
+The target experience host is 17,393,592 bytes, SHA-256
+`36e766980614ef51032e3d5064515b366e97f2cd23265b2f54f91b529588ae8e`;
+the compositor is 5,782,032 bytes, SHA-256
+`c70de8ddb5bbd664c41d5f8b7c7a983f8e48bc42c2d237785b059e810b794c45`;
+the login wrapper is 13,020 bytes, SHA-256
+`fb0df2b872a3998c5f75cb1d980b9148625d39cc934d82769ca9cbf706e44ec3`;
+and Stock source is 45,044 bytes, SHA-256
+`6c5ccd60992cf64081237ebd8fdda1e37c8d784fecc89eacbd4de0813feddb2b`.
+Normal install/stage/activate committed revision
+`327459a9fb595be7db4183e4be31c671616842912bd75ed69e626980426e3eb8`
+with transaction `linux-activate-103-327459a9fb595be7db4183e4be31c671616842912bd75ed69e626980426e3eb8`.
+The compositor presented it from DRM page flip at commit 11,608 / submit 95,
+then acknowledged the agent rail's 1,490-by-1,022 Tiling region.
+
+PiKVM evidence
+`artifacts/linux-stock-shell-framework12-20260826/pikvm/final-clipped-two-apps-tiling.jpg`
+(SHA-256
+`8c7d7438613908f61fa5fe3a23357842c7463f132f00021a0b3e622b9b70c333`)
+shows Calculator and Calendar clipped side by side while the command panel is
+visible. `final-clipped-panel-close.jpg` (SHA-256
+`9daa3831dd760b5ce5629bc9636638eef8e3378740bc51ccb4e49bd2016cf98a`)
+proves the Luau close action remained clickable outside native buffers, and
+`final-agent-fab-panel-verified.jpg` (SHA-256
+`b2f699682cfc97915c9a00868e4584cd5abcb6058a726b7848239916f83348b9`)
+shows the independent agent rail and composer. The active login holds a block
+inhibitor for `sleep:idle:handle-lid-switch`; the process tree confirms it wraps
+the complete `sos-linux-session run-user` lifetime. With no PiKVM HID event
+after the FAB action at 09:48:42, `final-idle-five-minutes.jpg` remained visibly
+rendered more than five minutes later (76,689 bytes, SHA-256
+`2fd6af21780fc15540c6f40dc7be6800daf4fdfa44848317a73d66a0e96c34eb`);
+at 09:54:20 the same revision was active, the inhibitor remained held and
+NetworkManager still reported `Lino WiFi` connected. The finalized 53-file
+campaign manifest is
+`artifacts/linux-stock-shell-framework12-20260826/evidence-manifest.tsv`
+(5,626 bytes, SHA-256
+`fcb0fbacd773e5ed930c6de7025c4a73f89be27e4b48f3a7673f9929c00c0cdc`);
+independent verification passed after all evidence files were finalized.
+
+**Decision / next gate:** The replaceable Stock Shell, authenticated window
+space, provider launch path, PiKVM input, reserving command/agent rails, native
+two-window tiling and active-session always-awake policy are accepted on the
+Framework development target. Remaining product work is a real scrolling
+navigation/focus model, app contribution broker, title/window list, keyboard
+command-center/FAB shortcut, compositor overlay surface, physical portrait
+tablet gate and immutable asymmetrically signed Linux stock-recovery pointer.
+The session inhibitor is intentionally released at logout; if the always-on
+development requirement also includes the logged-out GDM greeter, its separate
+idle policy still needs an explicit image default.
+
+## 2026-08-26 — Separate shell, native applications, and the movable agent overlay
+
+**Goal / diagnosis:** Correct three boundaries exposed by manual Stock use on
+Framework 12: closing an XDG application had to remove it from layout without a
+later shell action restoring it; SOS-native content had to become a compositor-
+managed application rather than shell-owned workspace paint; and the agent FAB
+had to become a draggable surface above every application with an inline hover
+composer and click-through to the full agent rail.
+
+The lifecycle bug came from treating XDG role construction as mapping. The
+compositor now registers a role and retained `Window` before the first buffer,
+then maps or unmaps it from actual buffer presence on commit. Policy counts
+change only on those transitions. Null-buffer unmap, later remap, destroy-after-
+unmap, focus selection, and application reflow therefore share one state. The
+same application count now includes `NativeApplication` and `Compatibility`
+roles.
+
+**Changed:** Scene ABI v3 gained three bounded facets: keyed
+`shell_overlay(x,y,width,height)`, keyed `application_surface(title)`, and the
+`hover_action` / `surface_drag` interaction fields. The runtime decoder,
+validation, Android unavailable adapters, Linux GPUI host, control protocol,
+Smithay policy, rendering, input clipping, and tests were extended together.
+The trusted host now opens separate shell, transparent overlay, and native-
+application XDG toplevels from one revision. The compositor classifies those
+surfaces from the registered host PID, keeps the overlay above all other
+content, and tiles/focuses/reflows the native application beside freedesktop
+clients. The shell no longer paints the active Stock workspace inside itself;
+that subtree is rendered only in the separate application surface.
+
+The source-defined overlay expands from 64-by-64 to 430-by-146 on compositor
+hover. Its composer is placed above or below the persisted bubble anchor based
+on available vertical space and shares the keyed `agent_draft` session with the
+full Agent workspace. Pointer press starts the trusted XDG move immediately.
+Release with unchanged geometry emits `shell_overlay_activated`; changed
+geometry emits only bounded `shell_overlay_moved`. Luau decides what those
+events mean but never receives a surface handle or move authority.
+
+**Failures / rejected paths:** An initial compatibility implementation mapped
+toplevels before buffers and could not represent the normal null-buffer XDG
+lifecycle. The first overlay made the complete 430-by-146 surface a drag
+handle, which prevented focusing its composer; drag ownership was narrowed to
+the bubble. A flex row then visually placed the expanded bubble at the wrong
+edge, so composer and bubble now use explicit retained local positions. A
+client-side move triggered only after pointer motion lost the gesture when a
+large absolute step left the 64-pixel node; beginning the compositor move on
+press and distinguishing stationary completion is the accepted path. One
+intermediate handler dispatched on both press and release and toggled the pane
+twice; the final compositor-owned activation emits exactly once. During PiKVM
+acceptance, numeric mouse-button states returned HTTP success without producing
+input; the API requires literal boolean `true` / `false`, and all final clicks
+and drags used that form.
+
+**Host evidence:** `cargo fmt --all -- --check`, `git diff --check`, strict
+`cargo clippy ... -- -D warnings`, and
+`cargo test -p experience-ir -p runtime-luau
+-p compositor-control-protocol -p sos-compositor -p sos-experience --features
+sos-experience/linux-host` passed: 7 IR, 24 Luau-runtime, 2 control-protocol,
+18 compositor, and 29 Linux-host tests (80 total). New regressions cover keyed
+primitive cardinality and decoding, native plus compatibility application
+counts, first-buffer mapping, and null-buffer unmap without role destruction.
+No model request ran, so model and model-weighted cost were zero.
+
+**Physical evidence:** The same read-only development ISO and boot
+`9b1818f2-c6c3-4829-8109-c9b3320a02a3` remained in use. `/` was the writable
+`LiveOS_rootfs` overlay, while both internal NVMe partitions remained
+unmounted. The final dirty-development deployment
+`20260826T124920Z-c5581ad6160d-2154040` installed compositor, experience host,
+and Stock source in 146,419,707,996 ns. The target compositor is 5,824,312
+bytes, SHA-256 `b422bf8b1e9a190c3844e4792217c7cb2af84e31ca9a03198ee4d6a2f89fabf9`;
+the host is 17,445,048 bytes, SHA-256
+`5d8f6d87fe291ef2455179d0878b67da96f3b221040cbb212ed74e670756089a`;
+and Stock source is 48,769 bytes, SHA-256
+`41fb68ea03e3f5e41907f51848a396a0a3089422753e123db5f92fbe4cbe41e3`.
+Transactional authoring activated revision
+`ae84d67ee622eb148f79dceaec3c42ab420ae330c41c5114c6ed4b3de6611e36`.
+
+Calculator and Calendar were visible as two Tiling clients; closing Calendar
+removed it and Calculator immediately filled the available application space.
+Opening the agent rail afterward did not restore Calendar. A separately
+registered and mapped `NativeApplication` surface visibly carried the Stock
+workspace. Typing `PROBE` through the hover composer appeared in both that
+composer and the full Agent surface, proving one keyed editing state. On the
+final binaries, a stationary bubble gesture completed at `(0,881)` with
+`moved=false` and committed exactly one `shell_overlay_activated`. A later drag
+completed at `(602,586)` with `moved=true`, committed only
+`shell_overlay_moved`, and persisted the collapsed bubble at `(968,668)`.
+
+The finalized physical captures include `calendar-closed-reflow.jpg`
+(`55deb4b7...`), `agent-open-no-restore.jpg` (`b7de2765...`),
+`native-application-surface.jpg` (`5cac0a1b...`),
+`inline-composer-focus.jpg` (`8ee06480...`), `agent-bubble-click.jpg`
+(`321ede74...`), and the moved expanded/collapsed pair (`798f7676...` /
+`82454fbd...`). The complete target journal, binary identities, deployment
+manifests, and images are indexed by
+`artifacts/linux-shell-surfaces-framework12-20260826/evidence-manifest.tsv`
+(1,832 bytes, SHA-256
+`b07fb0750bc564b72fecf1602f8cddc3e591fc62c41b0ac0a954c1fc2a2032b6`);
+independent manifest verification passed for all 15 files.
+
+**Decision / next gate:** Accept XDG close/reflow, the bounded shell overlay,
+and the first native-application composition boundary on Framework 12. Do not
+call the application model complete: the current revision and permanent host
+still cohost one active native application surface. The next product gate is a
+real native-application registry/supervisor with independent content-addressed
+revisions, namespaced state and lifecycle, multiple native application
+surfaces, app-owned bounded status contributions, and command-center launch /
+close/focus integration. Overlay follow-up should add a keyboard toggle and
+exercise below-anchor placement and portrait/tablet geometry on hardware.
+
+## 2026-08-26 — Stable agent anchoring, floating moves, lifecycle reflow, and full-panel mirroring
+
+**Goal / diagnosis:** Resolve the next manual Framework findings without
+moving shell policy back into native special-case UI: keep the inline agent
+composer centered on its floating action except where the output edge requires
+clamping; let its field receive focus independently of action activation;
+remove hover/drag geometry flicker; support source-native and compatibility
+window movement in Floating mode; confirm normal title-bar close/unmap/reflow;
+and use the complete 1,920-by-1,200 laptop panel instead of the former
+1,920-by-1,080 shared canvas with 60-pixel bands.
+
+The composer focus bug was caused by the Linux host wrapping every
+`surface_drag` node in a full-size GPUI element. That implicit wrapper captured
+the complete overlay, including the text field. The visible bubble is now the
+exact move handle. The flashing came from two independent geometry loops: the
+expanded surface constrained movement, then a stale Scene notification could
+reapply its old origin while the moved state commit was in flight. The first
+edge probe confirmed a second consequence: a 430-pixel expanded surface could
+stop at `x=1490`, so its centered 64-pixel action could not reach the physical
+edge. The accepted interaction collapses the overlay to its action rectangle
+for the duration of the compositor move, rebases the gesture when that bounded
+configuration arrives, suppresses hover reconfiguration during the move, and
+re-expands after release. The host holds the compositor's pending anchor until
+the matching source state returns, eliminating the stale snap-back.
+
+**Changed:** Scene ABI v3 `shell_overlay` gained an optional bounded
+`anchor(x,y,width,height,above)`. The Linux host centers the surface on that
+stable action rectangle, clamps the surface to the output, and repositions the
+action locally when centering is impossible. Moved events report anchor rather
+than expanded-surface coordinates. Runtime decoding, IR validation, tests,
+Stock source, and API documentation changed together. The Stock bubble remains
+the only overlay drag node; its sibling composer keeps normal text focus and
+shares the existing `agent_draft` state.
+
+The compositor now accepts `xdg_toplevel.move` for both `Compatibility` and
+`NativeApplication` roles only while Floating and only with the primary button
+held. It raises the selected window, tracks the pointer in logical coordinates,
+and clamps the retained origin to `window_space`. Repeated Floating
+configuration preserves moved positions; changing to Tiling or Scrolling
+resets deterministic layout. Stock marks only its native application chrome as
+`surface_drag`. Unmap and destroy also cancel an active move. Existing
+first-buffer/null-buffer lifecycle handling remains authoritative, so an XDG
+close immediately removes the surface and recomputes the remaining layout.
+
+Mirror mode now selects an internal `eDP` connector as the canonical canvas,
+falling back to the largest connected mode. Base render elements are projected
+per output: identity on the Framework's 1,920-by-1,200 panel and a uniform 0.9
+fit plus 96-pixel horizontal inset on the 1,920-by-1,080 PiKVM output. Absolute
+PiKVM coordinates apply the inverse projection before hit testing, while the
+internal touchscreen remains identity-mapped. Filling two different aspect
+ratios simultaneously without crop, distortion, or unused pixels is
+impossible; preserving the full laptop panel and the complete remote frame is
+the chosen tradeoff, so the remote capture has side pillars instead of the
+laptop having top/bottom bands.
+
+**Failures / rejected paths:** Treating the expanded overlay origin as the
+persisted action made the action visibly jump and constrained its range. A
+full-overlay drag wrapper fixed neither focus nor composition and was removed.
+Allowing Scene geometry to reconfigure immediately after a move recreated the
+old-position flash and was replaced by pending-anchor suppression. During the
+PiKVM gate, numeric mouse-button states returned API success but did not emit
+clicks; literal JSON booleans are required. The first GNOME Calculator drag
+probe hit its invisible upper resize margin and correctly emitted
+`xdg_toplevel.resize(edge=top)`, not move; moving the probe lower into the
+header emitted `xdg_toplevel.move` and exercised the new path. A process still
+running as a GApplication service is not evidence that its window remains
+mapped. Boxes also exposed two independent XDG toplevels (main window and
+tutorial), so closing one can reveal the other without any lifecycle
+resurrection.
+
+**Host evidence:** Final `cargo fmt --all -- --check`, `git diff --check`, and
+strict clippy for `experience-ir`, `runtime-luau`, `sos-experience`, and
+direct-feature `sos-compositor` passed. Unit tests passed 2 compositor-control,
+7 IR, 24 Luau-runtime, 25 direct-feature compositor, and 16 Linux experience
+library cases. New checks cover anchor decoding/validation, centered and
+edge-clamped resolution, canonical eDP mirror selection, and the exact 0.9 / 96
+PiKVM projection. No model request ran, so model and model-weighted cost were
+zero.
+
+**Physical evidence:** The read-only development ISO remained mounted from
+`sr0`; `/` remained `LiveOS_rootfs`, and both internal `nvme0n1` partitions
+remained unmounted. Deployment
+`20260826T133703Z-710d04d63585-2172861` installed compositor, experience host,
+and Stock source in 131,024,294,235 ns. Final compositor deployment
+`20260826T135507Z-710d04d63585-2179458` took 77,636,366,845 ns. The target
+compositor is 5,836,424 bytes, SHA-256
+`3013305f59675f7d2a7c7c37530fd69e462152ea824958e05148be9fdbe0a95d`;
+the host is 17,447,864 bytes, SHA-256
+`2be09044fdab6aa332872fb5db81a15ba2c886c191a917a60e85385de136c83d`;
+and Stock source is 48,701 bytes, SHA-256
+`b121999d2630574c3c38f90f8610f6ae505af71bcc8e55e183fad4fa9e25bb37`.
+Normal transactional authoring activated revision
+`a3c2acc91aad69b507f07faaa9d495d8cc04dd917ad14ab4f519c33128f678ba`.
+
+The final session logged `eDP-1` at `(0,0)` / 1,920-by-1,200 and `DP-1` at
+`(0,0)` / 1,920-by-1,080, then presented nonempty frames on both. PiKVM showed
+the complete 16:10 scene with the expected side fit. Typing `abc` focused the
+inline composer without opening the agent rail. A drag collapsed the action,
+reached anchor `(0,523)`, emitted one moved action, and reconfigured the
+expanded overlay at `(0,441)` / 430-by-146; the capture shows the composer
+clamped left while the action remains at logical `x=0`. A normal Files
+title-bar X removed the mapped client and the remaining native surface filled
+the layout. Subsequent shell interaction did not restore it. In Floating mode,
+the source-native surface moved to `(604,480)` and a traced GNOME Calculator
+move finished at `(767,480)`, both bounded by the declared application region.
+
+The finalized 16-file campaign manifest is
+`artifacts/linux-shell-interactions-framework12-20260826/evidence-manifest.tsv`
+(1,788 bytes, SHA-256
+`0307ed05ab29c159b44fef786703b1f6f1270f41ca8f6819521972a839bf2b22`);
+independent verification passed. Key captures are
+`composer-focused-and-typed.jpeg` (`16f0b7da...`),
+`edge-drag-after-clamped.jpeg` (`b3769dbb...`),
+`titlebar-close-reflow.jpeg` (`850e1b74...`), the native move pair
+(`b6782392...` / `929a7bbe...`), and the compatibility move pair
+(`001dd9a0...` / `ba811660...`).
+
+**Decision / next gate:** Accept anchored composer placement and focus,
+flicker-free edge movement, XDG close/reflow, native and compatibility Floating
+movement, inverse PiKVM input, and the full Framework panel as the current
+physical development baseline. Remaining window-management work is resize,
+maximize/minimize, keyboard move/focus, true scrolling navigation, XWayland
+move parity, and independent native-application supervision. The next display
+gate is physical portrait/tablet geometry and an explicit policy for whether a
+remote mirror should fit, crop, or use an independently composed surface.
+
+## 2026-08-26 — Tiled XDG close hit-testing and stock-preserving faux prompts
+
+**Goal / diagnosis:** Reproduce and remove the remaining legacy-application
+“close, then reappear” behavior reported from the Stock shell, and stop the
+offline programmatic agent stub from replacing Stock with the older Daily Flow
+demo. PiKVM reproduced the window bug directly: with Calculator in Tiling, the
+pointer became GTK's north-edge resize cursor while centered on the visible X.
+The compositor assigned sizes but never advertised XDG tiled-edge states, so
+GTK retained its invisible client-side resize margin above the close control.
+Those clicks requested `xdg_toplevel.resize` rather than closing the window;
+the still-live mapped surface naturally appeared again after later shell
+composition. This was a hit-testing/state-contract failure, not resurrection of
+a correctly destroyed toplevel.
+
+**Changed:** Application XDG toplevels now receive all four `tiled_*` states in
+Tiling and Scrolling, both in their initial configure and every later relayout.
+Floating clears those states without disturbing activation. Resize requests are
+explicitly unsupported: managed layouts are restored from compositor policy,
+while Floating keeps its existing geometry until interactive resize is
+implemented. Tests prove managed layouts set every tiled edge, Floating clears
+them, and unrelated activation state survives both transitions.
+
+The default offline source is now the stock `default.luau` shell in
+`sos-agent-login`, the selectable-session installer, and development-live image
+state. A faux prompt still executes context, validation, and submission, but
+submission becomes the existing `already_active` no-op instead of activating
+Daily Flow. `daily-flow.luau` remains installed only as an explicit developer
+fixture for mutation/activation tests; it is no longer selected by default.
+The current live user's mutable configuration was changed to the same Stock
+source without rebuilding the ISO.
+
+**Failures / rejected paths:** The first resize handler resent the one-window
+fixed size, which could distort a multi-window managed layout if a stale or
+malicious client still requested resize. The accepted handler recomputes the
+complete managed layout instead. Process presence was rejected as the mapping
+oracle: GApplication processes may legitimately outlive a window, while the
+decisive evidence is XDG destroy/null-buffer plus compositor unmap/destroy.
+During the final direct-client trace, the first click followed a window mapping
+under a stationary pointer and therefore retained the old pointer focus. Moving
+away and back produced a real client `enter`/`motion`; the calibrated close
+then emitted the expected protocol sequence. This diagnostic artifact was not
+classified as an application lifecycle failure.
+
+**Host evidence:** `git diff --check`, `cargo fmt --all`, the four focused
+`sos-compositor` XDG tests, and direct-backend `cargo clippy ... -- -D warnings`
+passed. `tests/linux-login-session-test.sh`,
+`tests/linux-live-image-test.sh`, and
+`tests/linux-hardware-gate-test.sh` all reported `PASS`; final `bash -n`
+covered the changed packaging and image scripts. No model request ran, so model
+and model-weighted cost were zero.
+
+**Physical evidence:** The Framework 12 remained on the read-only development
+ISO: `/` was `LiveOS_rootfs`, `sr0` supplied the live payload, and all internal
+`nvme0n1` mountpoints were empty. No ISO rebuild or internal-disk write was
+performed. Final dirty-development deployment
+`20260826T153052Z-6fdd3b0a0db1-2205136` installed only the compositor in
+47,145,816,366 ns. The root-owned target binary is 5,838,768 bytes with SHA-256
+`4854c1f06a51c1993dffacc34ff271275332814899e0af87af7ff1984c6241d9`;
+the target manifest matches it.
+
+On that final binary, Calculator's close hover showed a normal arrow. The traced
+client then received pointer motion at local `(891.31,30.08)` and primary-button
+press/release, sent `xdg_toplevel.destroy` followed by `wl_surface.attach(nil)`,
+and exited. The compositor logged `destroyed ... role=Compatibility
+was_mapped=true`; the process was absent, and switching from Attention to Home
+did not remap a surface. A final faux prompt executed
+`get_experience_context`, `validate_experience`, and `submit_experience`; the
+active revision stayed
+`e2af4edc186d576187e8c205fdee6439bc8f9b5424a46538ff4b7640904e01a8`
+before and after, and PiKVM still showed Stock Home.
+
+The nine finalized artifacts are indexed by
+`artifacts/linux-window-lifecycle-framework12-20260826/MANIFEST.sha256`
+(860 bytes, SHA-256
+`809c6b5dcc925ac01d0f0271c43f58b7cbee1b67e039cf7d33a8e43cd647bf4a`);
+independent verification passed. Key captures are the pre-fix resize cursor
+(`ccc1ee28...`), post-fix arrow (`724b9519...`), closed application
+(`a17225b2...`), Home with no remap (`da78ab39...`), and Stock retained after
+the faux prompt (`da78ab39...`).
+
+**Decision / next gate:** Accept tiled/scrolling close hit-testing, ordinary GTK
+destroy lifecycle, no-remap navigation, and Stock-preserving offline prompts on
+Framework 12. The next window-management gate remains real interactive resize,
+maximize/minimize, keyboard focus/move, scrolling navigation, and XWayland
+parity; those should build on this XDG state contract rather than reintroducing
+client-side ambiguity in managed layouts.
+
+## 2026-08-26 — Stable managed-window identity and master-stack tiling
+
+**Goal / diagnosis:** Reproduce the remaining report that legacy windows appear
+to close but return when the Stock command rail opens, stop title-bar
+double-click from overflowing a tile, and replace the sparse three-window grid
+with conventional master-stack tiling. The untouched Framework state reproduced
+the exact lifecycle symptom: one click made both Firefox and Files disappear,
+but the compositor logged no null-buffer, unmap, or XDG destroy. Opening the
+command rail made both mapped clients visible again.
+
+The root cause was geometry identity being derived from stacking order.
+`application_window_rectangles` zipped policy rectangles to
+`Space::elements()`, while a pointer press raises the focused application and
+therefore changes that order. The mapped locations did not move, but rendering
+and hit testing immediately clipped each application against another window's
+rectangle. A later rail resize performed a complete relayout, realigned those
+two orders, and exposed the clients again. This was neither an application
+restart nor a valid close followed by remap.
+
+**Changed:** Managed Tiling and Scrolling now sort applications by their current
+spatial position before assigning policy rectangles. Click-to-raise can still
+change z-order, but it cannot change a window's geometry identity, clipping, or
+hit region. Floating retains stacking order and its independently preserved
+origins. A focused test proves the spatial order remains master, upper stack,
+lower stack even when the upper stack item is presented first as the raised
+window.
+
+Tiling is now deterministic master-stack: the first application occupies the
+full-height left half, and all later applications share equal rows in the
+right-hand half. Two applications remain equal halves; with three, the master
+is approximately twice the area of either stacked client. The calculation
+absorbs integer remainder in the final stack tile and reduces an impossible
+configured gap rather than placing any of the eight bounded windows outside
+the declared window space. Exact three-window and maximum-count/oversized-gap
+tests cover both policies.
+
+Application maximize, unmaximize, fullscreen, and unfullscreen requests are
+now denied by recomputing the complete active layout. Previously a title-bar
+double-click used the one-window rectangle as the selected tile's new size
+without moving its origin, which visibly overflowed the window space. Distinct
+maximize/fullscreen semantics remain unimplemented; the current behavior is an
+explicit no-op that preserves every assigned tile.
+
+**Bubble decision / diagnostic:** No source or compositor behavior changed for
+the agent bubble. Its composer intentionally collapses only while an XDG move
+is active so changing overlay bounds cannot feed back into its drag origin. On
+the final binary, PiKVM captured the 64-pixel action during the held drag and
+the centered composer expanded again at the new anchor after release. One
+initial absolute-pointer probe did not start a drag until a second small motion
+established focus after the hover expansion; physical pointer motion naturally
+provides that transition, but explicit focus synchronization for a stationary
+pointer beneath newly configured surface geometry remains a follow-up.
+
+**Host evidence:** `git diff --check`, `cargo fmt --all -- --check`, all 23
+`sos-compositor` unit tests, and direct-backend
+`cargo clippy --locked -p sos-compositor --features direct-backend --bin
+sos-compositor -- -D warnings` passed. The no-feature test build retains its
+existing cfg-dependent unused-`output` warning; the exercised direct build is
+warning-free. No model request ran, so model and model-weighted cost were zero.
+
+**Physical evidence:** The final compositor-only dirty development deployment
+`20260826T161919Z-ddbe5b579a3b-2211914` took 71,982,020,066 ns. Its root-owned
+mode-0755 compositor is 5,845,464 bytes with SHA-256
+`6127583436eada53324ab602e40503b61c6bca6a3ba55f7ce70b8117771a37de`,
+matching the target deployment manifest. The Framework remained on
+`LiveOS_rootfs` supplied by the read-only `sr0` development ISO; both internal
+`nvme0n1` partitions remained unmounted. No ISO rebuild, installer, internal
+mount, or internal-disk write occurred.
+
+On those exact bytes, Stock plus Calculator and Calendar visibly formed one
+full-height master and two equal stacked tiles. Closing Calendar emitted
+`destroyed compositor-managed XDG toplevel role=Compatibility was_mapped=true`;
+Calculator immediately expanded into the remaining half. The Calendar
+GApplication service was still resident, demonstrating again why a process is
+not a mapping oracle. Closing and reopening the command rail configured the
+window space from 1,530 to 1,844 and back to 1,530 logical pixels without any
+Calendar map, and the final frame contained only Stock plus Calculator. A
+Calculator title-bar double-click left it bounded in the same tile.
+
+The 18 finalized files are indexed by
+`artifacts/linux-window-manager-framework12-20260826/MANIFEST.sha256`
+(1,780 bytes, SHA-256
+`ede6f9e3f97b9f4a8519e98bd51b31694510e11116e6582f5c80bc2fd0782571`);
+independent verification passed. Key frames are the pre-fix focus/raise hide
+(`08839f58...`), pre-fix rail-triggered return (`201b2d32...`), final
+master-stack (`7ecf92e2...`), final no-remap rail replay (`300af871...`),
+contained double-click (`2dfc9985...`), active-drag collapse (`141e5070...`),
+and post-release expansion (`15f0318a...`).
+
+**Decision / next gate:** Accept stable managed geometry across focus raises,
+ordinary close followed by rail reconfiguration, master-stack Tiling, bounded
+state-request denial, and the temporary bubble-collapse drag policy on the
+Framework 12. The next window-management gate is explicit maximize/minimize and
+fullscreen policy, keyboard focus/move, true scrolling navigation, XWayland
+parity, and stationary-pointer focus synchronization after compositor-driven
+surface geometry changes.
+
+## 2026-08-26 — Balanced recursive tiling and CSD-accurate close input
+
+**Goal / diagnosis:** Replace the fixed master-stack policy with balanced
+recursive tiling and explain why GNOME Files still ignored some visible close
+clicks after Calculator and other compatibility applications had become
+reliable. The untouched Framework state retained one visible Files window. A
+PiKVM click on its visible close control produced no null buffer, XDG unmap, or
+destroy, while earlier windows had emitted real destroys. Nautilus remaining as
+a `--gapplication-service` process was therefore rejected as a lifecycle
+oracle; the visible toplevel had not closed.
+
+Refreshing Smithay's cached pointer target immediately before a press was a
+useful stationary-pointer hardening but did not fix Files by itself. The first
+development deployment proved both failed clicks were routed at canonical
+`(1495.546875, 657.71484375)` to the live Nautilus compatibility PID, and an
+ordinary Files folder selection worked at the same protocol boundary. A
+focused `WAYLAND_DEBUG=client` launch then captured the earliest discrepancy:
+Nautilus declared `xdg_surface.set_window_geometry(20, 20, 747, 553)`, but the
+visible close click arrived as `wl_pointer.enter(..., 724.546875,
+22.71484375)`. SOS rendered from the buffer origin (`mapped location -
+window_geometry.loc`) while its custom prioritized hit test subtracted only the
+mapped geometry origin. Input was consequently shifted 20 logical pixels up
+and left into the GTK client-side-decoration margin. This explains the resize
+cursor/gesture reports and why controls with larger hit regions appeared
+intermittent. Activation-configure ordering was considered and rejected: a
+second traced click emitted no configure between press and release and still
+missed before the origin fix.
+
+**Changed:** `window_under` now converts every mapped window geometry location
+to the same surface render origin used by the renderer before calling
+`surface_under`; a focused test covers the observed `(771, 635)` mapping and
+`(20, 20)` client-side-decoration inset. Every ungrabbed pointer press also
+re-evaluates its target at the current coordinates before dispatch, preventing
+a compositor map, unmap, or relayout beneath a stationary pointer from leaving
+stale focus. The minimal INFO trace records only logical coordinates, client
+role, and PID.
+
+Tiling now recursively splits each leaf along its longest edge. Branch length
+is proportional to branch window count, so areas remain balanced: three
+windows use three near-equal leaves appropriate to the current aspect ratio,
+four form a 2x2 quad, and later windows continue subdividing instead of joining
+an ever-longer right-hand stack. Returned rectangles are row-major so the
+existing spatial identity rule remains stable across focus raises, close, and
+relayout. Effective horizontal and vertical gaps are reduced only when needed
+to keep all eight bounded leaves positive and inside the declared window
+space. The compositor and Stock architecture documents now name this policy
+and the render-origin input contract.
+
+**Host evidence:** `cargo test -p sos-compositor --lib` passed all 25 tests,
+including exact three-window splits, the four-window quad, maximum-count bounds
+under an impossible gap, geometry-order stability, and CSD render-origin hit
+testing. `cargo clippy --locked -p sos-compositor --features direct-backend
+--bin sos-compositor -- -D warnings`, `cargo fmt --all -- --check`, and
+`git diff --check` passed. The no-feature test build retains its existing
+cfg-dependent unused-`output` warning; the exercised direct build is
+warning-free. No model provider ran, so model and model-weighted cost were
+zero.
+
+**Physical evidence:** The final compositor-only dirty development deployment
+`20260826T165827Z-6bf6dd9f741d-2216553` completed in 74,829,112,221 ns. Its
+root-owned mode-0755 compositor is 5,854,592 bytes with SHA-256
+`382888751be10c08b2981d7d0a9f476370f52907f06b4926b125ff4ab327fd5b`,
+matching the target and deployment manifest. Source metadata records parent
+`6bf6dd9f741d1ecba5cd2c5c07429ab41f656461` with the component code dirty; the
+deployed binary contains the compositor diff now committed, while this evidence
+ledger was finalized afterward. The development deployment itself remains
+promotion-ineligible. The Framework remained on `LiveOS_rootfs` from the
+complete 3,056,205,824-byte
+read-only, non-writable `sos-development-live-28cf8fffee8e.iso`; both internal
+`nvme0n1` partitions remained unmounted and no installer or block writer ran.
+
+On those bytes, Stock plus Calculator and Calendar formed three balanced
+recursive leaves, then Files opened as the fourth leaf of a visible 2x2 quad.
+One click on Files produced
+`destroyed compositor-managed XDG toplevel role=Compatibility was_mapped=true`
+49.937 ms after the compositor's press-routing record; Nautilus then
+disconnected. The remaining three leaves immediately rebalanced. Closing the
+command rail expanded them to three aspect-appropriate columns, and reopening
+it restored the earlier recursive geometry without any Files map or visible
+return. This is the first clean downstream replay after the focused protocol
+fix; repeated pre-fix full attempts were stopped at the runtime-debug circuit
+breaker.
+
+The 55 finalized files are indexed by
+`artifacts/linux-window-manager-framework12-20260826/followup-balanced-close/MANIFEST.sha256`
+(5,313 bytes, SHA-256
+`789f5965c975c49be7caebcee0a6df07b20eba7945fadf791e84a7b61562e169`);
+independent verification passed. Key evidence is the pre-fix Nautilus protocol
+trace, the final four-window quad, the one-click Files close, both rail states,
+the compositor lifecycle log, the storage/binary audit, and the exact
+deployment metadata.
+
+**Decision / next gate:** Accept balanced recursive Tiling, CSD-accurate pointer
+coordinates, stationary-pointer press synchronization, one-click Files close,
+and no-remap rail relayout on the Framework 12. The next window-management gate
+remains explicit minimize/maximize/fullscreen policy, compositor-owned keyboard
+close/focus/move commands, true scrolling navigation, and XWayland parity.

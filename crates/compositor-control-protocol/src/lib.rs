@@ -9,6 +9,41 @@ use serde::{Deserialize, Serialize};
 pub const MAX_CONTROL_LINE_BYTES: usize = 8 * 1024;
 pub const MAX_SHELL_TOKEN_BYTES: usize = 256;
 
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WindowLayoutMode {
+    Floating,
+    Tiling,
+    Scrolling,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct WindowSpaceGeometry {
+    pub x: i32,
+    pub y: i32,
+    pub width: u32,
+    pub height: u32,
+    pub gap: u32,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct WindowSpaceConfiguration {
+    pub geometry: WindowSpaceGeometry,
+    pub layout: WindowLayoutMode,
+}
+
+/// Logical output-space bounds for the shell's single trusted overlay.
+///
+/// The compositor validates these bounds and owns the final placement and
+/// z-order. Revision code never receives a Wayland surface handle.
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct ShellOverlayConfiguration {
+    pub x: i32,
+    pub y: i32,
+    pub width: u32,
+    pub height: u32,
+}
+
 pub fn valid_shell_token(token: &str) -> bool {
     !token.is_empty()
         && token.len() <= MAX_SHELL_TOKEN_BYTES
@@ -61,6 +96,14 @@ pub enum CompositorRequest {
         request_id: u64,
         revision_id: String,
     },
+    ConfigureWindowSpace {
+        request_id: u64,
+        configuration: WindowSpaceConfiguration,
+    },
+    ConfigureShellOverlay {
+        request_id: u64,
+        configuration: ShellOverlayConfiguration,
+    },
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -97,7 +140,9 @@ impl CompositorRequest {
             Self::RegisterShell { request_id, .. }
             | Self::QuiesceInput { request_id, .. }
             | Self::ResumeInput { request_id, .. }
-            | Self::ArmPresentation { request_id, .. } => *request_id,
+            | Self::ArmPresentation { request_id, .. }
+            | Self::ConfigureWindowSpace { request_id, .. }
+            | Self::ConfigureShellOverlay { request_id, .. } => *request_id,
         }
     }
 }
@@ -122,6 +167,29 @@ pub enum CompositorEvent {
         request_id: u64,
         revision_id: String,
     },
+    WindowSpaceConfigured {
+        request_id: u64,
+        configuration: WindowSpaceConfiguration,
+    },
+    ShellOverlayConfigured {
+        request_id: u64,
+        configuration: ShellOverlayConfiguration,
+    },
+    /// Unsolicited final geometry after a compositor-owned interactive move.
+    ShellOverlayMoved {
+        request_id: u64,
+        configuration: ShellOverlayConfiguration,
+    },
+    /// Unsolicited click completion for a compositor-owned overlay move that
+    /// ended without changing geometry.
+    ShellOverlayActivated {
+        request_id: u64,
+    },
+    /// Unsolicited compositor hit-test transition for the trusted overlay.
+    ShellOverlayHoverChanged {
+        request_id: u64,
+        hovered: bool,
+    },
     Presented {
         request_id: u64,
         revision_id: String,
@@ -142,6 +210,11 @@ impl CompositorEvent {
             | Self::Armed { request_id, .. }
             | Self::InputQuiesced { request_id, .. }
             | Self::InputResumed { request_id, .. }
+            | Self::WindowSpaceConfigured { request_id, .. }
+            | Self::ShellOverlayConfigured { request_id, .. }
+            | Self::ShellOverlayMoved { request_id, .. }
+            | Self::ShellOverlayActivated { request_id }
+            | Self::ShellOverlayHoverChanged { request_id, .. }
             | Self::Presented { request_id, .. }
             | Self::Rejected { request_id, .. } => *request_id,
         }
@@ -203,6 +276,60 @@ mod tests {
             event
         );
         assert_eq!(event.request_id(), 9);
+
+        let configuration = WindowSpaceConfiguration {
+            geometry: WindowSpaceGeometry {
+                x: 24,
+                y: 72,
+                width: 1000,
+                height: 680,
+                gap: 12,
+            },
+            layout: WindowLayoutMode::Floating,
+        };
+        let request = CompositorRequest::ConfigureWindowSpace {
+            request_id: 10,
+            configuration,
+        };
+        assert_eq!(
+            serde_json::from_str::<CompositorRequest>(&serde_json::to_string(&request).unwrap())
+                .unwrap(),
+            request
+        );
+        let configured = CompositorEvent::WindowSpaceConfigured {
+            request_id: 10,
+            configuration,
+        };
+        assert_eq!(
+            serde_json::from_str::<CompositorEvent>(&serde_json::to_string(&configured).unwrap())
+                .unwrap(),
+            configured
+        );
+
+        let overlay = ShellOverlayConfiguration {
+            x: 1510,
+            y: 904,
+            width: 392,
+            height: 158,
+        };
+        let request = CompositorRequest::ConfigureShellOverlay {
+            request_id: 11,
+            configuration: overlay,
+        };
+        assert_eq!(
+            serde_json::from_str::<CompositorRequest>(&serde_json::to_string(&request).unwrap())
+                .unwrap(),
+            request
+        );
+        let configured = CompositorEvent::ShellOverlayConfigured {
+            request_id: 11,
+            configuration: overlay,
+        };
+        assert_eq!(
+            serde_json::from_str::<CompositorEvent>(&serde_json::to_string(&configured).unwrap())
+                .unwrap(),
+            configured
+        );
     }
 
     #[test]

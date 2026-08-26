@@ -25,6 +25,8 @@ for test_binary in \
   sos-revision-supervisor \
   sos-linux-session \
   sos-agent-authoring \
+  systemd-inhibit \
+  systemctl \
   node; do
   ln -s "$test_mock_source" "$test_bin/$test_binary"
 done
@@ -44,6 +46,10 @@ SOS_INSTALL_ROOT="$test_bin" \
 SOS_AGENT_MAIN="$test_root/agent-runner.cjs" \
 SOS_DEFAULT_EXPERIENCE="$test_repo_root/experiences/default.luau" \
 SOS_TEST_AGENT_ARGS_FILE="$test_root/agent-arguments.txt" \
+SOS_TEST_SESSION_ENV_FILE="$test_root/session-environment.txt" \
+SOS_TEST_SYSTEMCTL_ARGS_FILE="$test_root/systemctl-arguments.txt" \
+SOS_TEST_INHIBIT_ARGS_FILE="$test_root/inhibit-arguments.txt" \
+SOS_PROVIDER_DEVELOPMENT_GRANTS=1 \
   "$test_session" >"$test_root/offline-session.txt" 2>&1
 
 grep -Fx 'sos_login_agent_mode mode=offline' "$test_root/offline-session.txt" >/dev/null
@@ -52,6 +58,30 @@ grep -F 'sos_login_agent_started' "$test_root/offline-session.txt" >/dev/null
 grep -Fx '{}' "$test_state/sos/output.json" >/dev/null
 grep -Fx -- '--fake-source' "$test_root/agent-arguments.txt" >/dev/null
 grep -Fx "$test_repo_root/experiences/daily-flow.luau" "$test_root/agent-arguments.txt" >/dev/null
+grep -Fx "SOS_LINUX_PROVIDER_ROOT=$test_state/sos/providers" \
+  "$test_root/session-environment.txt" >/dev/null
+grep -Fx "SOS_PROVIDER_GRANTS=$test_state/sos/provider-grants.json" \
+  "$test_root/session-environment.txt" >/dev/null
+grep -Fx 'SOS_PROVIDER_DEVELOPMENT_GRANTS=1' \
+  "$test_root/session-environment.txt" >/dev/null
+grep -E "^SOS_ACCESSIBILITY_SOCKET=$test_runtime/sos-session\.[A-Za-z0-9]+/accessibility\.sock$" \
+  "$test_root/session-environment.txt" >/dev/null
+grep -Fx 'XDG_CURRENT_DESKTOP=SOS:GNOME' "$test_root/session-environment.txt" >/dev/null
+grep -E "^WAYLAND_DISPLAY=$test_runtime/sos-session\.[A-Za-z0-9]+/wayland-sos$" \
+  "$test_root/session-environment.txt" >/dev/null
+grep -Fx -- '--user import-environment XDG_SESSION_TYPE XDG_SESSION_DESKTOP XDG_CURRENT_DESKTOP DESKTOP_SESSION WAYLAND_DISPLAY SOS_ACCESSIBILITY_SOCKET' \
+  "$test_root/systemctl-arguments.txt" >/dev/null
+grep -Fx -- '--user start sos-session.target' \
+  "$test_root/systemctl-arguments.txt" >/dev/null
+grep -Fx -- '--user start sos-session-shutdown.target' \
+  "$test_root/systemctl-arguments.txt" >/dev/null
+grep -Fx -- '--what=idle:sleep:handle-lid-switch' \
+  "$test_root/inhibit-arguments.txt" >/dev/null
+grep -Fx -- '--mode=block' "$test_root/inhibit-arguments.txt" >/dev/null
+grep -Fx -- "$test_bin/sos-linux-session" "$test_root/inhibit-arguments.txt" >/dev/null
+[[ "$(stat -c %a "$test_state/sos/provider-grants.json")" == 600 ]]
+grep -F '"application_launch"' "$test_state/sos/provider-grants.json" >/dev/null
+grep -F '"network_control"' "$test_state/sos/provider-grants.json" >/dev/null
 if grep -Fx -- '--credentials' "$test_root/agent-arguments.txt" >/dev/null; then
   printf 'error: offline selectable session passed a credential path to the faux agent\n' >&2
   exit 1

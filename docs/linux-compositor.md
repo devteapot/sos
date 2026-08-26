@@ -1,6 +1,6 @@
 # SOS compositor gates
 
-Date: 2026-08-09
+Date: 2026-08-26
 
 SOS now has a minimal Smithay compositor with a nested development backend and
 a direct DRM/GBM/libinput backend. Both keep Wayland beneath the generated
@@ -17,38 +17,87 @@ revision supervisor
     v
 permanent sos-experience-host PID
     | authenticated bounded control protocol
-    | register_shell / quiesce_input / arm_presentation <- compositor evidence
+    | register / quiesce / arm / configure bounded shell surfaces
     |
     | Luau -> Scene ABI v3 -> retained GPUI
     v
-authenticated shell wl_surface
-    |
+authenticated GPUI surfaces
+    | shell + shell overlay + native application
 sos-compositor (Smithay 0.7.0)
-    | one shell + bounded Wayland/X11 compatibility toplevels
+    | one shell + one overlay + bounded native/compatibility toplevels
     | shared focus/input/activation policy
     +-- nested winit submit -> outer development compositor
     `-- libseat + udev + DRM/GBM + libinput -> KMS output
 ```
 
-Luau still sees only the versioned Scene and provider capabilities. It never
-receives a Wayland object, socket, file descriptor, placement primitive, or
-compositor capability. `compositor-control-protocol` is a separate bounded
-newline-JSON ABI between the trusted permanent host and compositor.
+Luau still sees only the versioned Scene and provider capabilities. Its keyed
+`window_space`, `shell_overlay`, and `application_surface` nodes describe
+bounded composition intent. Only the trusted host converts measured bounds
+into compositor geometry or opens the corresponding GPUI/XDG surface. Luau
+never receives a Wayland object, socket, file descriptor, surface identity,
+PID, or arbitrary placement operation.
+`compositor-control-protocol` is a separate bounded newline-JSON ABI between
+the trusted permanent host and compositor.
 
 The compositor creates a mode-0600 control socket in a caller-owned mode-0700
 runtime directory. A client must present the launch token and a PID equal to
 the socket's `SO_PEERCRED` PID before opening its GPUI Wayland connection. The
-compositor records that PID as the shell; all other Wayland client PIDs are
-compatibility clients. This is a development-session authenticator. A
+compositor records that PID as trusted. Its first XDG toplevel is the shell,
+its second is the one topmost shell overlay, and subsequent trusted toplevels
+are `NativeApplication`; other Wayland client PIDs are compatibility clients.
+This is a development-session authenticator. A
 production session must also isolate service users/credentials so another
 same-UID process cannot inspect launch credentials.
 
-The policy admits one fullscreen shell, one fixed-policy native Wayland
-compatibility toplevel, and—only when explicitly enabled—up to eight bounded
-rootless XWayland windows. Compatibility surfaces stay above the shell. They
-are not embedded into GPUI or exposed as raw generated nodes. Popups and X11
-configure requests are constrained to the aggregate output layout; layer shell
-and arbitrary placement remain outside this gate.
+The policy admits one fullscreen shell, one bounded overlay, and at most eight
+application windows across SOS-native Wayland, ordinary Wayland, and the
+explicitly enabled rootless XWayland path.
+Application surfaces stay above the shell and within the active window-space
+rectangle. They are not embedded into GPUI or exposed as generated nodes.
+Floating mode uses bounded cascade placement and click-to-raise focus. A normal
+`xdg_toplevel.move` from a compatibility client, or a trusted source-native
+chrome gesture, moves the selected window and clamps it to the declared
+window-space. Repeating a Floating configuration preserves those positions;
+switching layout resets placement. Tiling recursively bisects the longest edge,
+allocates each branch in proportion to its window count, and produces a
+balanced quad for four windows instead of a fixed master and unbounded stack.
+Focus changes only stacking order and never reassign managed geometry or
+clipping rectangles. The initial
+scrolling mode uses overlapping horizontal cards while
+focus/scroll-position control remains a later protocol addition. Configure
+requests are constrained to the declared region, and each application's
+rendered surface tree and pointer hit test are clipped to its assigned
+rectangle. Hit testing uses the same buffer render origin as drawing—managed
+window location minus the client's `xdg_window_geometry` inset—and refreshes a
+stationary pointer target at an ungrabbed press boundary. This remains true
+when an XDG client advertises a minimum size
+larger than a tile. Popups are clipped with their owning application; layer
+shell and arbitrary client placement remain outside this gate. A null XDG
+buffer unmaps a role without destroying it; compositor application counts,
+focus candidates, and layout are recomputed immediately. Attaching a later
+buffer maps the same still-live role again. Destroy and unmap therefore cannot
+double-decrement policy state, and an unrelated shell action cannot resurrect
+an unmapped client.
+
+Client maximize, unmaximize, and fullscreen requests are currently denied for
+application roles by recomputing the complete selected layout. This prevents a
+client title-bar double-click from applying the one-window size to one tile in
+place and overflowing its assigned rectangle. Distinct maximize and fullscreen
+semantics remain future shell policy.
+
+Ordinary shell content cannot overlap an application surface. Stock therefore
+reserves its top bar and command or agent rail outside `window_space`; opening
+a rail reduces the application rectangle. The dedicated shell overlay is the
+narrow exception: it stays above all applications, is clamped to the output,
+and can be moved only through the compositor-owned XDG move path. Hover is
+hit-tested by the compositor. An expanded overlay collapses to its stable
+action rectangle for the duration of a move, so the action can reach every
+output edge without stale expanded geometry constraining it. A stationary
+trusted move gesture is reported as activation; a geometry-changing gesture
+reports only its final bounded anchor. The host suppresses stale scene geometry
+until that anchor commit returns, preventing a dragged overlay from flashing
+back to its previous position. This lets Luau define the bubble and composer
+without gaining surface handles or global placement authority.
 
 ## Activation fence
 
@@ -136,7 +185,8 @@ recovery, and maps `weston-simple-shm` as the compatibility client. It requires:
 - at least one compositor-owned backend event suppressed while activation is
   quiesced;
 - a new authenticated PID after forced host failure;
-- shell/native-compatibility role classification and fixed placement;
+- shell/native-compatibility role classification, authenticated window-space
+  configuration and bounded placement;
 - an opt-in real `Xwayland` process and bounded rootless `xmessage` window.
 
 Expected leading output:
@@ -195,12 +245,31 @@ both before boot and between the killed/restarted hosts, and the separate
 compatibility client mapped at `(280, 140)`.
 
 The direct backend remains intentionally one seat, but accepts multiple DRM
-devices and simultaneous connected outputs. It lays sorted outputs out
-horizontally, resizes the shell to their aggregate logical geometry, and
-survives connector and whole-device removal/addition. `SOS_OUTPUT_MODE`,
-`SOS_OUTPUT_SCALE`, and `SOS_OUTPUT_ROTATION` set boot configuration. A bounded
-JSON file selected by `SOS_OUTPUT_CONFIG_FILE` can change those values on a DRM
-udev event; the backend recreates outputs without restarting the compositor.
+devices and simultaneous connected outputs. Its default mirror policy prefers
+the internal `eDP` connector as the canonical logical canvas, falling back to
+the connected output with the largest pixel area. It renders that full canvas
+unchanged on the canonical output and fits it uniformly, without crop or
+distortion, on every other output. On Framework 12 this gives the laptop its
+native 1920x1200 canvas with no top/bottom bands; the 1920x1080 PiKVM capture
+receives the complete 16:10 scene at 0.9 scale with 96-pixel side pillars.
+`"layout": "extend"` retains the connector-sorted horizontal desktop when
+independent output space is wanted. Both policies survive connector and
+whole-device removal/addition.
+`SOS_OUTPUT_MODE`, `SOS_OUTPUT_SCALE`, and `SOS_OUTPUT_ROTATION` set boot
+configuration. A bounded JSON file selected by `SOS_OUTPUT_CONFIG_FILE` can
+change those values and `layout` on a DRM udev event; the backend recreates
+outputs without restarting the compositor.
+That file can also associate an exact libinput device name with a connector in
+`input_outputs`. Absolute mice, touchscreens, and tablets use the configured
+connector's logical geometry regardless of connector discovery order. They
+remain automatic on a single output, but fail closed when multiple outputs make
+an unconfigured route ambiguous or when the configured connector is absent.
+In mirror mode, absolute input on a fitted secondary output is transformed
+through the inverse scale and offset into canonical coordinates; an internal
+touchscreen remains identity-mapped to the panel.
+Relative pointers stay inside the shared mirror canvas. In extended mode they
+traverse the complete connected-output layout and clamp only to the nearest
+valid output rectangle, including across gaps between outputs.
 The direct VM gate changes Virtual-1 to 1024x768, 1.25 scale, and 180-degree
 rotation, then hot-adds Virtual-2 and requires a nonempty first frame and page
 flip on that second CRTC. The render graph composites either a live client

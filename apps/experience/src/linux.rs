@@ -1,24 +1,31 @@
 use std::{
+    cell::RefCell,
     collections::{HashMap, VecDeque},
     fs,
     io::{self, BufRead, BufReader, Write},
     path::{Path, PathBuf},
+    rc::Rc,
     sync::{Arc, Mutex},
     thread,
     time::{Duration, Instant},
 };
 
 use anyhow::{bail, Context as _, Result};
+use compositor_control_protocol::{
+    ShellOverlayConfiguration, WindowLayoutMode as CompositorWindowLayoutMode,
+    WindowSpaceConfiguration, WindowSpaceGeometry,
+};
 use experience_host_protocol::{HostEvent, HostRequest};
 use experience_ir::{
     AgentMessage, AgentMessageRole, Align, AnimationKind, Content, ExperienceModel, Flow,
-    HitRegion, Interaction, Justify, PaintOp, Scene, SceneEvent, SceneNode, EXPERIENCE_API_VERSION,
-    MAX_AGENT_MESSAGES, MAX_AGENT_MESSAGE_BYTES,
+    HitRegion, Interaction, Justify, PaintOp, Scene, SceneEvent, SceneNode, ShellOverlayContent,
+    WindowLayoutMode, WindowSpaceContent, EXPERIENCE_API_VERSION, MAX_AGENT_MESSAGES,
+    MAX_AGENT_MESSAGE_BYTES,
 };
 use gpui::{
     div, img, point, prelude::*, px, relative, rgb, size, Animation as GpuiAnimation,
     AnimationExt as _, AnyElement, App, Bounds, Context, Entity, MouseButton, Render, SharedString,
-    Window, WindowBounds, WindowOptions,
+    Window, WindowBackgroundAppearance, WindowBounds, WindowDecorations, WindowKind, WindowOptions,
 };
 use provider_state_service::ServiceClient;
 use providers_linux::{load_grants, ProviderContext, ProviderFrame, ProviderHub, ProviderSnapshot};
@@ -40,6 +47,7 @@ use crate::linux_accessibility::{self, Action as AccessibilityAction};
 use crate::linux_input::{self, NativeTextInput};
 use crate::pointer_input;
 use crate::scene_surface;
+use crate::window_space;
 
 #[derive(Clone, Debug)]
 struct Options {
@@ -274,6 +282,8 @@ pub fn run() -> Result<()> {
             } else {
                 WindowBounds::Fullscreen(restore_bounds)
             };
+            let host_entity = Rc::new(RefCell::new(None::<Entity<LinuxExperienceHost>>));
+            let host_entity_for_window = host_entity.clone();
             let host = cx.open_window(
                 WindowOptions {
                     window_bounds: Some(window_bounds),
@@ -282,7 +292,7 @@ pub fn run() -> Result<()> {
                     ..Default::default()
                 },
                 move |_, cx| {
-                    cx.new(|cx| {
+                    let entity = cx.new(|cx| {
                         LinuxExperienceHost::new(
                             model,
                             worker,
@@ -300,11 +310,60 @@ pub fn run() -> Result<()> {
                             touch_wakes,
                             cx,
                         )
-                    })
+                    });
+                    *host_entity_for_window.borrow_mut() = Some(entity.clone());
+                    entity
                 },
             );
             match host {
-                Ok(_) => cx.activate(true),
+                Ok(_) => {
+                    let Some(host_entity) = host_entity.borrow().clone() else {
+                        eprintln!("sos_experience_overlay_failed error=host entity unavailable");
+                        cx.quit();
+                        return;
+                    };
+                    let overlay_host = host_entity.clone();
+                    let overlay_bounds = Bounds {
+                        origin: point(px(0.), px(0.)),
+                        size: size(px(72.), px(72.)),
+                    };
+                    let overlay = cx.open_window(
+                        WindowOptions {
+                            window_bounds: Some(WindowBounds::Windowed(overlay_bounds)),
+                            titlebar: None,
+                            focus: false,
+                            kind: WindowKind::Normal,
+                            is_movable: true,
+                            is_resizable: false,
+                            window_background: WindowBackgroundAppearance::Transparent,
+                            window_decorations: Some(WindowDecorations::Client),
+                            app_id: Some("dev.sos.experience.overlay".into()),
+                            ..Default::default()
+                        },
+                        move |_, cx| cx.new(|cx| ShellOverlayView::new(overlay_host, cx)),
+                    );
+                    if let Err(error) = overlay {
+                        eprintln!("sos_experience_overlay_failed error={error}");
+                        cx.quit();
+                        return;
+                    }
+                    let application_bounds = Bounds::centered(None, size(px(900.), px(700.)), cx);
+                    let application = cx.open_window(
+                        WindowOptions {
+                            window_bounds: Some(WindowBounds::Windowed(application_bounds)),
+                            titlebar: None,
+                            app_id: Some("dev.sos.experience.application".into()),
+                            ..Default::default()
+                        },
+                        move |_, cx| cx.new(|cx| ApplicationSurfaceView::new(host_entity, cx)),
+                    );
+                    if let Err(error) = application {
+                        eprintln!("sos_experience_application_surface_failed error={error}");
+                        cx.quit();
+                        return;
+                    }
+                    cx.activate(true)
+                }
                 Err(error) => {
                     eprintln!("sos_experience_window_failed error={error}");
                     cx.quit();
@@ -312,6 +371,134 @@ pub fn run() -> Result<()> {
             }
         });
     Ok(())
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RenderTarget {
+    Base,
+    Overlay,
+    Application,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ResolvedShellOverlay {
+    configuration: ShellOverlayConfiguration,
+    anchor: Option<(i32, i32)>,
+    anchor_local: Option<(i32, i32)>,
+}
+
+fn resolve_shell_overlay(overlay: ShellOverlayContent, output: (i32, i32)) -> ResolvedShellOverlay {
+    let width = overlay.width.round().clamp(48.0, 720.0) as u32;
+    let height = overlay.height.round().clamp(48.0, 360.0) as u32;
+    let width_i32 = i32::try_from(width).unwrap_or(i32::MAX);
+    let height_i32 = i32::try_from(height).unwrap_or(i32::MAX);
+    let max_x = (output.0 - width_i32).max(0);
+    let max_y = (output.1 - height_i32).max(0);
+    let Some(anchor) = overlay.anchor else {
+        return ResolvedShellOverlay {
+            configuration: ShellOverlayConfiguration {
+                x: (overlay.x.round() as i32).clamp(0, max_x),
+                y: (overlay.y.round() as i32).clamp(0, max_y),
+                width,
+                height,
+            },
+            anchor: None,
+            anchor_local: None,
+        };
+    };
+
+    let anchor_width = (anchor.width.round() as i32).clamp(1, width_i32);
+    let anchor_height = (anchor.height.round() as i32).clamp(1, height_i32);
+    let anchor_x = (anchor.x.round() as i32).clamp(0, (output.0 - anchor_width).max(0));
+    let anchor_y = (anchor.y.round() as i32).clamp(0, (output.1 - anchor_height).max(0));
+    let x = (anchor_x + anchor_width / 2 - width_i32 / 2).clamp(0, max_x);
+    let desired_y = if anchor.above {
+        anchor_y - (height_i32 - anchor_height)
+    } else {
+        anchor_y
+    };
+    let y = desired_y.clamp(0, max_y);
+    ResolvedShellOverlay {
+        configuration: ShellOverlayConfiguration {
+            x,
+            y,
+            width,
+            height,
+        },
+        anchor: Some((anchor_x, anchor_y)),
+        anchor_local: Some((anchor_x - x, anchor_y - y)),
+    }
+}
+
+struct ShellOverlayView {
+    host: Entity<LinuxExperienceHost>,
+}
+
+impl ShellOverlayView {
+    fn new(host: Entity<LinuxExperienceHost>, cx: &mut Context<Self>) -> Self {
+        cx.observe(&host, |_, _, cx| cx.notify()).detach();
+        Self { host }
+    }
+}
+
+impl Render for ShellOverlayView {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        assets::install_fonts(window);
+        let host = self.host.clone();
+        let content = host.update(cx, |host, host_cx| {
+            let overlay = shell_overlay_node(&host.scene.root).cloned();
+            overlay.map(|node| {
+                host.render_node(
+                    &node,
+                    SharedString::from("shell-overlay"),
+                    RenderTarget::Overlay,
+                    window,
+                    host_cx,
+                )
+            })
+        });
+        div()
+            .id("shell-overlay-window")
+            .size_full()
+            .when_some(content, |root, content| root.child(content))
+    }
+}
+
+struct ApplicationSurfaceView {
+    host: Entity<LinuxExperienceHost>,
+}
+
+impl ApplicationSurfaceView {
+    fn new(host: Entity<LinuxExperienceHost>, cx: &mut Context<Self>) -> Self {
+        cx.observe(&host, |_, _, cx| cx.notify()).detach();
+        Self { host }
+    }
+}
+
+impl Render for ApplicationSurfaceView {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        assets::install_fonts(window);
+        let host = self.host.clone();
+        let content = host.update(cx, |host, host_cx| {
+            let application = application_surface_node(&host.scene.root).cloned();
+            application.map(|node| {
+                if let Some(Content::ApplicationSurface(application)) = &node.content {
+                    window.set_window_title(&application.title);
+                }
+                host.render_node(
+                    &node,
+                    SharedString::from("application-surface"),
+                    RenderTarget::Application,
+                    window,
+                    host_cx,
+                )
+            })
+        });
+        div()
+            .id("sos-application-window")
+            .size_full()
+            .when_some(content, |root, content| root.child(content))
+    }
 }
 
 pub(super) struct LinuxExperienceHost {
@@ -324,6 +511,10 @@ pub(super) struct LinuxExperienceHost {
     active_source_sha256: String,
     service_socket: Option<PathBuf>,
     compositor_fence: Option<CompositorFence>,
+    last_window_space: Option<WindowSpaceConfiguration>,
+    last_shell_overlay: Option<ShellOverlayConfiguration>,
+    last_shell_overlay_anchor_local: Option<(i32, i32)>,
+    pending_shell_overlay_anchor: Option<(i32, i32)>,
     preparing: Option<PreparingRevision>,
     prepared: Option<PreparedRevision>,
     pending_commit: Option<PendingCommit>,
@@ -399,6 +590,10 @@ impl LinuxExperienceHost {
             active_source_sha256: revision.source_sha256,
             service_socket,
             compositor_fence,
+            last_window_space: None,
+            last_shell_overlay: None,
+            last_shell_overlay_anchor_local: None,
+            pending_shell_overlay_anchor: None,
             preparing: None,
             prepared: None,
             pending_commit: None,
@@ -707,7 +902,64 @@ impl LinuxExperienceHost {
                     request_id: presented.request_id,
                     revision_id: presented.revision_id,
                 });
+                self.dispatch_pending_input_event(cx);
                 self.dispatch_queued_provider_model(cx);
+            }
+            FenceEvent::WindowSpaceRejected(error) => {
+                eprintln!("sos_window_space_rejected error={error}");
+            }
+            FenceEvent::ShellOverlayMoved(configuration) => {
+                self.last_shell_overlay = Some(configuration);
+                let anchor_local = self.last_shell_overlay_anchor_local.unwrap_or((0, 0));
+                let anchor = (
+                    configuration.x.saturating_add(anchor_local.0),
+                    configuration.y.saturating_add(anchor_local.1),
+                );
+                self.pending_shell_overlay_anchor = Some(anchor);
+                let event = SceneEvent {
+                    action: "shell_overlay_moved".into(),
+                    target: Some("agent-overlay".into()),
+                    x: Some(anchor.0 as f32),
+                    y: Some(anchor.1 as f32),
+                    ..Default::default()
+                };
+                if self.pending_presentation.is_some() {
+                    self.enqueue_pending_event(event);
+                } else {
+                    self.queue_input_event(event, cx);
+                }
+            }
+            FenceEvent::ShellOverlayActivated => {
+                let event = SceneEvent {
+                    action: "shell_overlay_activated".into(),
+                    target: Some("agent-overlay".into()),
+                    ..Default::default()
+                };
+                if self.pending_presentation.is_some() {
+                    self.enqueue_pending_event(event);
+                } else {
+                    self.queue_input_event(event, cx);
+                }
+            }
+            FenceEvent::ShellOverlayHoverChanged(hovered) => {
+                let action = shell_overlay_node(&self.scene.root)
+                    .and_then(|node| node.interaction.hover_action.clone());
+                if let Some(action) = action {
+                    let event = SceneEvent {
+                        action,
+                        target: Some("agent-overlay".into()),
+                        focused: Some(hovered),
+                        ..Default::default()
+                    };
+                    if self.pending_presentation.is_some() {
+                        self.enqueue_pending_event(event);
+                    } else {
+                        self.queue_input_event(event, cx);
+                    }
+                }
+            }
+            FenceEvent::ShellOverlayRejected(error) => {
+                eprintln!("sos_shell_overlay_rejected error={error}");
             }
             FenceEvent::Failed(error) => {
                 eprintln!("sos_compositor_fence_failed error={error}");
@@ -1343,6 +1595,11 @@ impl LinuxExperienceHost {
         self.next_action_request_id = self.next_action_request_id.wrapping_add(1).max(1);
         self.action_in_flight = true;
         merge_input_state_shadow(&mut self.state, &self.input_state_shadow);
+        eprintln!(
+            "sos_action_dispatched request_id={request_id} action={} target={}",
+            event.action,
+            event.target.as_deref().unwrap_or("none")
+        );
         if let Err(error) =
             self.worker
                 .action(request_id, self.model.clone(), self.state.clone(), event)
@@ -1754,19 +2011,65 @@ impl LinuxExperienceHost {
         }
     }
 
+    fn sync_shell_overlay(&mut self, window: &Window) {
+        let Some(Content::ShellOverlay(overlay)) =
+            shell_overlay_node(&self.scene.root).and_then(|node| node.content.as_ref())
+        else {
+            return;
+        };
+        let viewport = window.viewport_size();
+        let output_width = f32::from(viewport.width).floor().max(1.0) as i32;
+        let output_height = f32::from(viewport.height).floor().max(1.0) as i32;
+        let resolved = resolve_shell_overlay(*overlay, (output_width, output_height));
+        self.last_shell_overlay_anchor_local = resolved.anchor_local;
+        if let Some(pending_anchor) = self.pending_shell_overlay_anchor {
+            if resolved.anchor != Some(pending_anchor) {
+                // The compositor has already moved the live surface. Do not
+                // let an older scene notification snap it back while the
+                // authoritative state update is still in flight.
+                return;
+            }
+            self.pending_shell_overlay_anchor = None;
+        }
+        let configuration = resolved.configuration;
+        if self.last_shell_overlay == Some(configuration) {
+            return;
+        }
+        let Some(fence) = &self.compositor_fence else {
+            self.last_shell_overlay = Some(configuration);
+            return;
+        };
+        match fence.configure_shell_overlay(configuration) {
+            Ok(()) => self.last_shell_overlay = Some(configuration),
+            Err(error) => eprintln!("sos_shell_overlay_configure_failed error={error}"),
+        }
+    }
+
     fn render_node(
         &mut self,
         node: &SceneNode,
         path: SharedString,
+        target: RenderTarget,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        if target == RenderTarget::Base
+            && matches!(
+                node.content,
+                Some(Content::ShellOverlay(_) | Content::ApplicationSurface(_))
+            )
+        {
+            return div().into_any_element();
+        }
         let element_id = node.id.clone().unwrap_or_else(|| path.to_string());
         let mut element = div();
         match node.layout.flow {
             Flow::Overlay => {}
             Flow::Column => element = element.flex().flex_col(),
             Flow::Row => element = element.flex().flex_row(),
+        }
+        if node.layout.wrap {
+            element = element.flex_wrap();
         }
         if node.layout.scroll_y {
             element = element.size_full();
@@ -1807,6 +2110,11 @@ impl LinuxExperienceHost {
         if let Some(position) = node.layout.position {
             element = element.absolute().left(px(position.x)).top(px(position.y));
         }
+        if target == RenderTarget::Overlay && node.interaction.surface_drag {
+            if let Some((x, y)) = self.last_shell_overlay_anchor_local {
+                element = element.absolute().left(px(x as f32)).top(px(y as f32));
+            }
+        }
         if let Some(program) = node.layout.program {
             if let Some(width) = program.measure_width {
                 element = element.w(relative(width));
@@ -1828,7 +2136,10 @@ impl LinuxExperienceHost {
             element = element.overflow_hidden();
         }
         if node.layout.grow {
-            element = element.flex_1();
+            // A growing scene node represents the flexible remainder of its
+            // parent. Let it shrink below its contents' intrinsic size so a
+            // scrollable child cannot expand the shell past the viewport.
+            element = element.flex_1().min_w_0().min_h_0();
         }
         element = match node.layout.align {
             Some(Align::Start) => element.items_start(),
@@ -1933,6 +2244,29 @@ impl LinuxExperienceHost {
                 );
             }
         }
+        if let Some(Content::WindowSpace(space)) = &node.content {
+            element = element.relative();
+            if !space.fallback.is_empty() {
+                element = element.child(
+                    div()
+                        .absolute()
+                        .top_0()
+                        .left_0()
+                        .size_full()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .text_color(rgb(0x737A75))
+                        .text_size(px(14.))
+                        .child(SharedString::from(space.fallback.clone())),
+                );
+            }
+            element = element.child(window_space::render(
+                element_id.clone(),
+                space.clone(),
+                cx.weak_entity(),
+            ));
+        }
         let uses_surface = node
             .paint
             .iter()
@@ -1954,10 +2288,19 @@ impl LinuxExperienceHost {
         }
         for (index, child) in node.children.iter().enumerate() {
             let child_path = SharedString::from(format!("{path}-{index}"));
-            element = element.child(self.render_node(child, child_path, window, cx));
+            element = element.child(self.render_node(child, child_path, target, window, cx));
         }
         let surface_owns_tap = uses_surface && node.interaction.tap_action.is_some();
-        let mut rendered = if let Some(action) = node
+        let mut rendered = if node.interaction.surface_drag {
+            element
+                .id(SharedString::from(format!("surface-drag-{element_id}")))
+                .on_mouse_down(MouseButton::Left, move |_, window, app| {
+                    window.prevent_default();
+                    app.stop_propagation();
+                    window.start_window_move();
+                })
+                .into_any_element()
+        } else if let Some(action) = node
             .interaction
             .tap_action
             .as_ref()
@@ -1979,6 +2322,28 @@ impl LinuxExperienceHost {
         } else {
             element.into_any_element()
         };
+        if target == RenderTarget::Base {
+            if let Some(action) = &node.interaction.hover_action {
+                let action = action.clone();
+                let event_target = element_id.clone();
+                rendered = div()
+                    .id(SharedString::from(format!("hover-{element_id}")))
+                    .size_full()
+                    .child(rendered)
+                    .on_hover(cx.listener(move |this, hovered, _, cx| {
+                        this.queue_input_event(
+                            SceneEvent {
+                                action: action.clone(),
+                                target: Some(event_target.clone()),
+                                focused: Some(*hovered),
+                                ..Default::default()
+                            },
+                            cx,
+                        );
+                    }))
+                    .into_any_element();
+            }
+        }
         if let Some(animation) = &node.animation {
             let animation_id = SharedString::from(format!("animation-{element_id}"));
             let native_animation = GpuiAnimation::new(Duration::from_millis(animation.duration_ms));
@@ -2002,6 +2367,73 @@ impl LinuxExperienceHost {
                 .into_any_element();
         }
         rendered
+    }
+}
+
+impl window_space::WindowSpaceHost for LinuxExperienceHost {
+    fn record_window_space(
+        &mut self,
+        node_id: String,
+        bounds: Bounds<gpui::Pixels>,
+        specification: WindowSpaceContent,
+        _cx: &mut Context<Self>,
+    ) {
+        let x = f32::from(bounds.origin.x);
+        let y = f32::from(bounds.origin.y);
+        let width = f32::from(bounds.size.width);
+        let height = f32::from(bounds.size.height);
+        if [x, y, width, height]
+            .into_iter()
+            .any(|value| !value.is_finite())
+            || width < 160.0
+            || height < 120.0
+        {
+            return;
+        }
+        let left = x.ceil().max(0.0);
+        let top = y.ceil().max(0.0);
+        let right = (x + width).floor().max(left);
+        let bottom = (y + height).floor().max(top);
+        let configuration = WindowSpaceConfiguration {
+            geometry: WindowSpaceGeometry {
+                x: left as i32,
+                y: top as i32,
+                width: (right - left) as u32,
+                height: (bottom - top) as u32,
+                gap: specification.gap.round().clamp(0.0, 128.0) as u32,
+            },
+            layout: match specification.layout {
+                WindowLayoutMode::Floating => CompositorWindowLayoutMode::Floating,
+                WindowLayoutMode::Tiling => CompositorWindowLayoutMode::Tiling,
+                WindowLayoutMode::Scrolling => CompositorWindowLayoutMode::Scrolling,
+            },
+        };
+        if configuration.geometry.width < 160 || configuration.geometry.height < 120 {
+            return;
+        }
+        if self.last_window_space == Some(configuration) {
+            return;
+        }
+        let Some(fence) = &self.compositor_fence else {
+            return;
+        };
+        match fence.configure_window_space(configuration) {
+            Ok(()) => {
+                self.last_window_space = Some(configuration);
+                eprintln!(
+                    "sos_window_space node_id={node_id} x={} y={} width={} height={} gap={} layout={:?}",
+                    configuration.geometry.x,
+                    configuration.geometry.y,
+                    configuration.geometry.width,
+                    configuration.geometry.height,
+                    configuration.geometry.gap,
+                    configuration.layout
+                );
+            }
+            Err(error) => {
+                eprintln!("sos_window_space_failed node_id={node_id} error={error}");
+            }
+        }
     }
 }
 
@@ -2096,7 +2528,14 @@ impl Render for LinuxExperienceHost {
         pointer_input::begin_frame();
         assets::install_fonts(window);
         let scene = self.scene.clone();
-        let content = self.render_node(&scene.root, SharedString::from("root"), window, cx);
+        self.sync_shell_overlay(window);
+        let content = self.render_node(
+            &scene.root,
+            SharedString::from("root"),
+            RenderTarget::Base,
+            window,
+            cx,
+        );
         let mut root = div()
             .flex()
             .flex_col()
@@ -2145,6 +2584,20 @@ fn node_by_id<'a>(node: &'a SceneNode, id: &str) -> Option<&'a SceneNode> {
         return Some(node);
     }
     node.children.iter().find_map(|child| node_by_id(child, id))
+}
+
+fn shell_overlay_node(node: &SceneNode) -> Option<&SceneNode> {
+    if matches!(node.content, Some(Content::ShellOverlay(_))) {
+        return Some(node);
+    }
+    node.children.iter().find_map(shell_overlay_node)
+}
+
+fn application_surface_node(node: &SceneNode) -> Option<&SceneNode> {
+    if matches!(node.content, Some(Content::ApplicationSurface(_))) {
+        return Some(node);
+    }
+    node.children.iter().find_map(application_surface_node)
 }
 
 fn merge_input_state_shadow(state: &mut JsonValue, shadow: &HashMap<String, String>) {
@@ -2216,11 +2669,15 @@ fn start_provider_updates(
             == Some(std::ffi::OsStr::new("1")),
         active_revision: Arc::new(Mutex::new(revision_id.into())),
     };
+    // Fingerprint before taking the initial snapshot. Providers such as PipeWire
+    // can become ready while the first model is being collected; recording the
+    // generation afterwards would make that newer state the watcher baseline
+    // while leaving the UI stuck with the older snapshot.
+    let hub = access.hub.clone();
+    let generation = hub.generation().context("fingerprint Linux providers")?;
     let snapshot = access.snapshot(revision_id)?;
     assets::install_provider_frames(&snapshot.frames);
     let model = snapshot.model;
-    let hub = access.hub.clone();
-    let generation = hub.generation().context("fingerprint Linux providers")?;
     let watcher_access = access.clone();
     thread::Builder::new()
         .name("sos-provider-events".into())
@@ -2228,7 +2685,7 @@ fn start_provider_updates(
             let mut generation = generation;
             let mut revision_id = watcher_access.active_revision();
             while !sender.is_closed() {
-                thread::sleep(Duration::from_millis(250));
+                thread::sleep(Duration::from_secs(1));
                 let next_revision_id = watcher_access.active_revision();
                 let next = match hub.generation() {
                     Ok(next) if next != generation || next_revision_id != revision_id => next,
@@ -2624,7 +3081,19 @@ fn provider_action(
                 event_title: event_title.into(),
             })))
         }
-        ("notes", "write") | ("calendar", "append") | ("music", "command") => Ok(None),
+        ("notes", "write")
+        | ("calendar", "append")
+        | ("music", "command")
+        | ("audio", "set_volume")
+        | ("audio", "adjust_volume")
+        | ("audio", "set_muted")
+        | ("media", "play_pause")
+        | ("media", "next")
+        | ("media", "previous")
+        | ("network", "connect")
+        | ("network", "disconnect")
+        | ("apps", "launch")
+        | ("attention", "acknowledge") => Ok(None),
         (provider, action) => Err(format!("unsupported provider effect: {provider}.{action}")),
     }
 }
@@ -2676,6 +3145,53 @@ fn emit(event: &HostEvent) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn anchored_shell_overlay_centers_and_clamps_without_moving_action() {
+        let centered = resolve_shell_overlay(
+            ShellOverlayContent {
+                x: 0.0,
+                y: 0.0,
+                width: 430.0,
+                height: 146.0,
+                anchor: Some(experience_ir::ShellOverlayAnchor {
+                    x: 900.0,
+                    y: 900.0,
+                    width: 64.0,
+                    height: 64.0,
+                    above: true,
+                }),
+            },
+            (1920, 1200),
+        );
+        assert_eq!(centered.configuration.x, 717);
+        assert_eq!(centered.configuration.y, 818);
+        assert_eq!(centered.anchor_local, Some((183, 82)));
+
+        let left_edge = resolve_shell_overlay(
+            ShellOverlayContent {
+                anchor: Some(experience_ir::ShellOverlayAnchor {
+                    x: 8.0,
+                    y: 40.0,
+                    width: 64.0,
+                    height: 64.0,
+                    above: false,
+                }),
+                ..ShellOverlayContent {
+                    x: 0.0,
+                    y: 0.0,
+                    width: 430.0,
+                    height: 146.0,
+                    anchor: None,
+                }
+            },
+            (1920, 1200),
+        );
+        assert_eq!(left_edge.configuration.x, 0);
+        assert_eq!(left_edge.configuration.y, 40);
+        assert_eq!(left_edge.anchor, Some((8, 40)));
+        assert_eq!(left_edge.anchor_local, Some((8, 0)));
+    }
 
     fn start_service(
         socket: PathBuf,
@@ -2760,6 +3276,29 @@ mod tests {
             .unwrap(),
             None
         );
+        for (provider, action) in [
+            ("audio", "set_volume"),
+            ("audio", "adjust_volume"),
+            ("audio", "set_muted"),
+            ("media", "play_pause"),
+            ("media", "next"),
+            ("media", "previous"),
+            ("network", "connect"),
+            ("network", "disconnect"),
+            ("apps", "launch"),
+            ("attention", "acknowledge"),
+        ] {
+            assert_eq!(
+                provider_action(&experience_ir::ProviderEffect {
+                    provider: provider.into(),
+                    action: action.into(),
+                    payload: JsonValue::Null,
+                })
+                .unwrap(),
+                None,
+                "{provider}.{action} must stay inside the Linux provider boundary"
+            );
+        }
         assert!(provider_action(&experience_ir::ProviderEffect {
             provider: "shell".into(),
             action: "exec".into(),

@@ -9,14 +9,16 @@ use std::{
 };
 
 use experience_ir::{
-    validate_scene, Align, Animation, AnimationKind, ClipRect, Content, ExperienceModel, Flow,
-    GlyphRun, HitRegion, ImageContent, Interaction, Justify, Layout, LayoutPosition, LayoutProgram,
-    PaintOp, PaintPoint, PointerCapture, ProviderEffect, ProviderSurfaceContent, Scene, SceneEvent,
-    SceneNode, SemanticRole, Semantics, TextContent, TextSession, Transform2D,
-    EXPERIENCE_API_VERSION, MAX_CHILDREN, MAX_EFFECTS, MAX_EFFECT_PAYLOAD_BYTES, MAX_GLYPH_RUNS,
-    MAX_HIT_REGIONS, MAX_PAINT_DEPTH, MAX_PAINT_OPS, MAX_PAINT_POINTS, MAX_REVISION_ASSETS,
-    MAX_REVISION_ASSET_BYTES, MAX_REVISION_ASSET_TOTAL_BYTES, MAX_SCENE_DEPTH, MAX_SCENE_NODES,
-    MAX_STATE_BYTES, MAX_TEXT_BYTES,
+    validate_scene, Align, Animation, AnimationKind, ApplicationSurfaceContent, ClipRect, Content,
+    ExperienceModel, Flow, GlyphRun, HitRegion, ImageContent, Interaction, Justify, Layout,
+    LayoutPosition, LayoutProgram, PaintOp, PaintPoint, PointerCapture, ProviderEffect,
+    ProviderSurfaceContent, Scene, SceneEvent, SceneNode, SemanticRole, Semantics,
+    ShellOverlayContent, TextContent, TextSession, Transform2D, WindowLayoutMode,
+    WindowSpaceContent, EXPERIENCE_API_VERSION, MAX_CHILDREN, MAX_EFFECTS,
+    MAX_EFFECT_PAYLOAD_BYTES, MAX_GLYPH_RUNS, MAX_HIT_REGIONS, MAX_PAINT_DEPTH, MAX_PAINT_OPS,
+    MAX_PAINT_POINTS, MAX_REVISION_ASSETS, MAX_REVISION_ASSET_BYTES,
+    MAX_REVISION_ASSET_TOTAL_BYTES, MAX_SCENE_DEPTH, MAX_SCENE_NODES, MAX_STATE_BYTES,
+    MAX_TEXT_BYTES,
 };
 use mlua::{
     chunk::{ChunkMode, Compiler},
@@ -1145,6 +1147,7 @@ fn decode_effects(table: Option<Table>, lua: &Lua) -> Result<Vec<ProviderEffect>
                 | ("agent", "use_fake")
                 | ("agent", "clear_credential")
                 | ("audio", "set_volume")
+                | ("audio", "adjust_volume")
                 | ("audio", "set_muted")
                 | ("media", "play_pause")
                 | ("media", "next")
@@ -1245,6 +1248,7 @@ fn decode_layout(table: Option<Table>) -> Result<Layout, RuntimeError> {
             Some("row") => Flow::Row,
             Some(value) => return Err(RuntimeError::Invalid(format!("invalid flow: {value}"))),
         },
+        wrap: table.get::<Option<bool>>("wrap")?.unwrap_or(false),
         scroll_y: table.get::<Option<bool>>("scroll_y")?.unwrap_or(false),
         padding: finite_dimension(&table, "padding")?,
         gap: finite_dimension(&table, "gap")?,
@@ -1332,6 +1336,47 @@ fn decode_content(
         }
         "provider_surface" => Content::ProviderSurface(ProviderSurfaceContent {
             surface: required_bounded_string(&table, "surface", 128)?,
+        }),
+        "window_space" => Content::WindowSpace(WindowSpaceContent {
+            layout: match table.get::<Option<String>>("layout")?.as_deref() {
+                None | Some("floating") => WindowLayoutMode::Floating,
+                Some("tiling") => WindowLayoutMode::Tiling,
+                Some("scrolling") => WindowLayoutMode::Scrolling,
+                Some(value) => {
+                    return Err(RuntimeError::Invalid(format!(
+                        "invalid window-space layout: {value}"
+                    )))
+                }
+            },
+            gap: finite_dimension(&table, "gap")?.unwrap_or(12.0),
+            fallback: bounded_optional_string(&table, "fallback", MAX_TEXT_BYTES)?
+                .unwrap_or_default(),
+        }),
+        "shell_overlay" => {
+            let anchor = table
+                .get::<Option<Table>>("anchor")?
+                .map(
+                    |anchor| -> Result<experience_ir::ShellOverlayAnchor, RuntimeError> {
+                        Ok(experience_ir::ShellOverlayAnchor {
+                            x: scene_number(&anchor, "x")?,
+                            y: scene_number(&anchor, "y")?,
+                            width: required_dimension(&anchor, "width")?,
+                            height: required_dimension(&anchor, "height")?,
+                            above: anchor.get::<Option<bool>>("above")?.unwrap_or(false),
+                        })
+                    },
+                )
+                .transpose()?;
+            Content::ShellOverlay(ShellOverlayContent {
+                x: scene_number(&table, "x")?,
+                y: scene_number(&table, "y")?,
+                width: required_dimension(&table, "width")?,
+                height: required_dimension(&table, "height")?,
+                anchor,
+            })
+        }
+        "application_surface" => Content::ApplicationSurface(ApplicationSurfaceContent {
+            title: required_bounded_string(&table, "title", 256)?,
         }),
         other => {
             return Err(RuntimeError::Invalid(format!(
@@ -1538,6 +1583,8 @@ fn decode_interaction(table: Option<Table>) -> Result<Interaction, RuntimeError>
     }
     Ok(Interaction {
         tap_action: bounded_optional_string(&table, "tap_action", 256)?,
+        hover_action: bounded_optional_string(&table, "hover_action", 256)?,
+        surface_drag: table.get::<Option<bool>>("surface_drag")?.unwrap_or(false),
         double_tap_action: bounded_optional_string(&table, "double_tap_action", 256)?,
         long_press_action: bounded_optional_string(&table, "long_press_action", 256)?,
         swipe_action: bounded_optional_string(&table, "swipe_action", 256)?,
@@ -1758,6 +1805,93 @@ mod tests {
     }
 
     #[test]
+    fn decodes_the_bounded_window_space_contract() {
+        let runtime = LuauRuntime::compile(
+            r#"
+                return {
+                    api_version = 3,
+                    render = function()
+                        return {
+                            id = "applications",
+                            content = {
+                                kind = "window_space",
+                                layout = "tiling",
+                                gap = 16,
+                                fallback = "No applications are open",
+                            },
+                        }
+                    end,
+                }
+            "#,
+        )
+        .unwrap();
+        let scene = runtime
+            .render(&providers_fake_for_test(), &runtime.initial_state())
+            .unwrap();
+        assert_eq!(
+            scene.root.content,
+            Some(Content::WindowSpace(WindowSpaceContent {
+                layout: WindowLayoutMode::Tiling,
+                gap: 16.0,
+                fallback: "No applications are open".into(),
+            }))
+        );
+    }
+
+    #[test]
+    fn decodes_shell_overlay_application_surface_and_drag_handle() {
+        let runtime = LuauRuntime::compile(
+            r#"
+                return {
+                    api_version = 3,
+                    render = function()
+                        return { children = {
+                            {
+                                id = "overlay",
+                                content = {
+                                    kind = "shell_overlay", x = 20, y = 30,
+                                    width = 64, height = 64,
+                                    anchor = {
+                                        x = 20, y = 30, width = 64, height = 64,
+                                        above = true,
+                                    },
+                                },
+                                interaction = { hover_action = "hover" },
+                                children = {{
+                                    id = "bubble",
+                                    interaction = { tap_action = "open", surface_drag = true },
+                                }},
+                            },
+                            {
+                                id = "notes",
+                                content = { kind = "application_surface", title = "Notes" },
+                            },
+                        }}
+                    end,
+                }
+            "#,
+        )
+        .unwrap();
+        let scene = runtime
+            .render(&providers_fake_for_test(), &runtime.initial_state())
+            .unwrap();
+        let overlay = &scene.root.children[0];
+        assert_eq!(overlay.interaction.hover_action.as_deref(), Some("hover"));
+        assert!(overlay.children[0].interaction.surface_drag);
+        let Some(Content::ShellOverlay(overlay_content)) = &overlay.content else {
+            panic!("expected shell overlay content");
+        };
+        assert_eq!(overlay_content.anchor.unwrap().x, 20.0);
+        assert!(overlay_content.anchor.unwrap().above);
+        assert_eq!(
+            scene.root.children[1].content,
+            Some(Content::ApplicationSurface(ApplicationSurfaceContent {
+                title: "Notes".into(),
+            }))
+        );
+    }
+
+    #[test]
     fn decodes_bounded_native_primitives_and_semantics() {
         let runtime = LuauRuntime::compile(
             r#"
@@ -1833,7 +1967,7 @@ mod tests {
                             id = "surface",
                             layout = {
                                 width = 320, height = 480, min_width = 280, max_width = 360,
-                                aspect_ratio = 0.6666667, clip_bounds = true,
+                                aspect_ratio = 0.6666667, clip_bounds = true, wrap = true,
                                 position = { x = 4, y = 8 },
                                 program = { measure_width = 0.75, arrange_x = 0.125 },
                             },
@@ -1866,6 +2000,7 @@ mod tests {
             .unwrap();
         assert_eq!(scene.root.layout.position.unwrap().x, 4.0);
         assert_eq!(scene.root.layout.program.unwrap().measure_width, Some(0.75));
+        assert!(scene.root.layout.wrap);
         assert!(scene.root.layout.clip_bounds);
         assert!(matches!(scene.root.paint[0], PaintOp::Layer { .. }));
         assert_eq!(

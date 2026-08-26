@@ -76,6 +76,9 @@ pub enum SessionIdentityMode {
 pub struct SystemSessionOptions {
     pub revision_root: PathBuf,
     pub runtime_directory: PathBuf,
+    pub host_runtime_directory: PathBuf,
+    pub host_home_directory: PathBuf,
+    pub host_cache_directory: PathBuf,
     pub authority_file: PathBuf,
     pub shell_token_file: PathBuf,
     pub agent_socket: PathBuf,
@@ -128,6 +131,18 @@ fn validate_options(options: &SystemSessionOptions) -> Result<()> {
     for (name, path) in [
         ("revision root", options.revision_root.as_path()),
         ("runtime directory", options.runtime_directory.as_path()),
+        (
+            "experience host runtime directory",
+            options.host_runtime_directory.as_path(),
+        ),
+        (
+            "experience host home directory",
+            options.host_home_directory.as_path(),
+        ),
+        (
+            "experience host cache directory",
+            options.host_cache_directory.as_path(),
+        ),
         ("authority file", options.authority_file.as_path()),
         ("shell credential", options.shell_token_file.as_path()),
         ("agent socket", options.agent_socket.as_path()),
@@ -236,9 +251,20 @@ fn start_and_monitor(
         .parent()
         .context("revision root must have a parent state directory")?;
     let compositor_cache = options.runtime_directory.join("cache-compositor");
-    let host_cache = options.runtime_directory.join("cache-host");
     create_role_directory(&compositor_cache, &options.compositor_identity)?;
-    create_role_directory(&host_cache, &options.host_identity)?;
+    match options.identity_mode {
+        SessionIdentityMode::IsolatedServices => {
+            create_role_directory(&options.host_cache_directory, &options.host_identity)?;
+        }
+        SessionIdentityMode::SharedLoginUser => {
+            fs::create_dir_all(&options.host_cache_directory).with_context(|| {
+                format!(
+                    "create login user cache directory {}",
+                    options.host_cache_directory.display()
+                )
+            })?;
+        }
+    }
     let compositor_token_file = options
         .runtime_directory
         .join(format!("credential-compositor-{}", std::process::id()));
@@ -421,9 +447,14 @@ fn start_and_monitor(
                 options.agent_socket.clone().into_os_string(),
             ],
             identity: options.host_identity.clone(),
-            runtime_directory: options.runtime_directory.clone(),
-            cache_directory: host_cache,
-            wayland_display: wayland_display.to_owned(),
+            runtime_directory: options.host_runtime_directory.clone(),
+            home_directory: options.host_home_directory.clone(),
+            cache_directory: options.host_cache_directory.clone(),
+            // The host may use the login user's XDG runtime directory so
+            // providers and launched applications can reach PipeWire,
+            // portals, and other user-session services. Keep the compositor
+            // socket private and address it explicitly.
+            wayland_display: wayland_socket.as_os_str().to_owned(),
             control_socket: control_socket.clone(),
             token_file: host_token_file,
             safe_mode_file: safe_mode_file.clone(),
@@ -864,8 +895,9 @@ struct HostLaunchSpec {
     args: Vec<OsString>,
     identity: ServiceIdentity,
     runtime_directory: PathBuf,
+    home_directory: PathBuf,
     cache_directory: PathBuf,
-    wayland_display: String,
+    wayland_display: OsString,
     control_socket: PathBuf,
     token_file: PathBuf,
     safe_mode_file: PathBuf,
@@ -954,7 +986,7 @@ fn launch_host(mut stream: UnixStream, spec: &HostLaunchSpec) -> Result<()> {
     let mut child = command
         .args(&spec.args)
         .env("XDG_RUNTIME_DIR", &spec.runtime_directory)
-        .env("HOME", &spec.cache_directory)
+        .env("HOME", &spec.home_directory)
         .env("XDG_CACHE_HOME", &spec.cache_directory)
         .env("WAYLAND_DISPLAY", &spec.wayland_display)
         .env("SOS_COMPOSITOR_CONTROL", &spec.control_socket)
@@ -1404,8 +1436,9 @@ mod tests {
             ],
             identity: ServiceIdentity::current().unwrap(),
             runtime_directory: temporary.path().to_path_buf(),
+            home_directory: temporary.path().to_path_buf(),
             cache_directory: temporary.path().to_path_buf(),
-            wayland_display: "wayland-test".into(),
+            wayland_display: temporary.path().join("wayland-test").into_os_string(),
             control_socket: temporary.path().join("control.sock"),
             token_file: temporary.path().join("token"),
             safe_mode_file: temporary.path().join("safe-mode"),
@@ -1444,8 +1477,9 @@ mod tests {
             ],
             identity: current,
             runtime_directory: temporary.path().to_path_buf(),
+            home_directory: temporary.path().to_path_buf(),
             cache_directory: temporary.path().to_path_buf(),
-            wayland_display: "wayland-test".into(),
+            wayland_display: temporary.path().join("wayland-test").into_os_string(),
             control_socket: temporary.path().join("control.sock"),
             token_file: temporary.path().join("token"),
             safe_mode_file: temporary.path().join("safe-mode"),

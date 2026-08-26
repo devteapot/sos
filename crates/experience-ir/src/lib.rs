@@ -150,6 +150,11 @@ pub struct MediaProviderState {
 pub struct AppsProviderState {
     #[serde(default)]
     pub compatible: Vec<SystemApplication>,
+    /// Bounded, declarative status contributions from SOS-native
+    /// applications. Existing desktop applications do not gain this surface
+    /// implicitly; a trusted application provider must publish it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub status_widgets: Vec<ApplicationStatusWidget>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -158,6 +163,18 @@ pub struct SystemApplication {
     /// inside the framework bridge.
     pub id: String,
     pub label: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ApplicationStatusWidget {
+    pub id: String,
+    pub label: String,
+    #[serde(default)]
+    pub value: String,
+    /// When present, tapping the contribution requests the existing bounded
+    /// application-launch effect for this opaque application selection.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub application_id: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -500,6 +517,7 @@ pub struct SceneNode {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Layout {
     pub flow: Flow,
+    pub wrap: bool,
     pub scroll_y: bool,
     pub padding: Option<f32>,
     pub gap: Option<f32>,
@@ -549,6 +567,17 @@ pub enum Content {
     TextSession(TextSession),
     Image(ImageContent),
     ProviderSurface(ProviderSurfaceContent),
+    /// A compositor-owned application surface region placed by the shell.
+    /// The host reports the final logical bounds to the compositor; no native
+    /// surface identity or authority crosses into the revision.
+    WindowSpace(WindowSpaceContent),
+    /// A single trusted shell overlay rendered into a separate transparent
+    /// host surface. The compositor validates its requested output bounds.
+    ShellOverlay(ShellOverlayContent),
+    /// Source-defined application content rendered into its own native
+    /// toplevel. The compositor manages this surface in the same window space
+    /// as compatible desktop applications.
+    ApplicationSurface(ApplicationSurfaceContent),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -575,6 +604,49 @@ pub struct ImageContent {
 #[derive(Clone, Debug, PartialEq)]
 pub struct ProviderSurfaceContent {
     pub surface: String,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct WindowSpaceContent {
+    pub layout: WindowLayoutMode,
+    pub gap: f32,
+    pub fallback: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ShellOverlayContent {
+    /// Legacy absolute surface origin. Used directly when `anchor` is absent.
+    pub x: f32,
+    pub y: f32,
+    pub width: f32,
+    pub height: f32,
+    /// Optional stable action bounds. The host centers the overlay surface on
+    /// this anchor, clamps the surface to the output, and keeps the anchor at
+    /// the requested screen position. This lets expanded overlays reflow at
+    /// an edge without moving their floating action.
+    pub anchor: Option<ShellOverlayAnchor>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ShellOverlayAnchor {
+    pub x: f32,
+    pub y: f32,
+    pub width: f32,
+    pub height: f32,
+    pub above: bool,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct ApplicationSurfaceContent {
+    pub title: String,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum WindowLayoutMode {
+    #[default]
+    Floating,
+    Tiling,
+    Scrolling,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -669,6 +741,11 @@ pub struct PaintPoint {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Interaction {
     pub tap_action: Option<String>,
+    pub hover_action: Option<String>,
+    /// Lets a node act as the drag handle for its compositor-managed host
+    /// surface. Hosts ignore this outside an explicitly movable surface such
+    /// as a trusted shell overlay.
+    pub surface_drag: bool,
     pub double_tap_action: Option<String>,
     pub long_press_action: Option<String>,
     pub swipe_action: Option<String>,
@@ -780,6 +857,20 @@ pub enum ValidationError {
     TooManyHitRegions,
     #[error("layout program contains an invalid relative fraction")]
     InvalidLayoutProgram,
+    #[error("window space requires a stable id")]
+    MissingWindowSpaceId,
+    #[error("scene contains more than one window space")]
+    DuplicateWindowSpace,
+    #[error("shell overlay requires a stable id")]
+    MissingShellOverlayId,
+    #[error("scene contains more than one shell overlay")]
+    DuplicateShellOverlay,
+    #[error("application surface requires a stable id")]
+    MissingApplicationSurfaceId,
+    #[error("scene contains more than one application surface")]
+    DuplicateApplicationSurface,
+    #[error("application surface title must contain 1 through 256 bytes")]
+    InvalidApplicationSurfaceTitle,
 }
 
 pub fn validate_scene(scene: &Scene) -> Result<usize, ValidationError> {
@@ -788,6 +879,9 @@ pub fn validate_scene(scene: &Scene) -> Result<usize, ValidationError> {
         depth: usize,
         count: &mut usize,
         ids: &mut HashSet<String>,
+        window_spaces: &mut usize,
+        shell_overlays: &mut usize,
+        application_surfaces: &mut usize,
     ) -> Result<(), ValidationError> {
         if depth > MAX_SCENE_DEPTH {
             return Err(ValidationError::TooDeep);
@@ -828,10 +922,67 @@ pub fn validate_scene(scene: &Scene) -> Result<usize, ValidationError> {
             {
                 return Err(ValidationError::InvalidDimension("provider surface id"));
             }
+            Some(Content::WindowSpace(space)) => {
+                if node.id.is_none() {
+                    return Err(ValidationError::MissingWindowSpaceId);
+                }
+                *window_spaces += 1;
+                if *window_spaces > 1 {
+                    return Err(ValidationError::DuplicateWindowSpace);
+                }
+                if !valid_dimension(space.gap)
+                    || space.gap > 128.0
+                    || space.fallback.len() > MAX_TEXT_BYTES
+                {
+                    return Err(ValidationError::InvalidDimension("window space"));
+                }
+            }
+            Some(Content::ShellOverlay(overlay)) => {
+                if node.id.is_none() {
+                    return Err(ValidationError::MissingShellOverlayId);
+                }
+                *shell_overlays += 1;
+                if *shell_overlays > 1 {
+                    return Err(ValidationError::DuplicateShellOverlay);
+                }
+                if !valid_scene_number(overlay.x)
+                    || !valid_scene_number(overlay.y)
+                    || !valid_dimension(overlay.width)
+                    || !valid_dimension(overlay.height)
+                    || !(48.0..=720.0).contains(&overlay.width)
+                    || !(48.0..=360.0).contains(&overlay.height)
+                {
+                    return Err(ValidationError::InvalidDimension("shell overlay"));
+                }
+                if overlay.anchor.is_some_and(|anchor| {
+                    !valid_scene_number(anchor.x)
+                        || !valid_scene_number(anchor.y)
+                        || !valid_dimension(anchor.width)
+                        || !valid_dimension(anchor.height)
+                        || anchor.width > overlay.width
+                        || anchor.height > overlay.height
+                }) {
+                    return Err(ValidationError::InvalidDimension("shell overlay anchor"));
+                }
+            }
+            Some(Content::ApplicationSurface(application)) => {
+                if node.id.is_none() {
+                    return Err(ValidationError::MissingApplicationSurfaceId);
+                }
+                *application_surfaces += 1;
+                if *application_surfaces > 1 {
+                    return Err(ValidationError::DuplicateApplicationSurface);
+                }
+                if application.title.is_empty() || application.title.len() > 256 {
+                    return Err(ValidationError::InvalidApplicationSurfaceTitle);
+                }
+            }
             _ => {}
         }
         if (node.layout.scroll_y
             || node.interaction.tap_action.is_some()
+            || node.interaction.hover_action.is_some()
+            || node.interaction.surface_drag
             || node.interaction.double_tap_action.is_some()
             || node.interaction.long_press_action.is_some()
             || node.interaction.swipe_action.is_some()
@@ -888,7 +1039,15 @@ pub fn validate_scene(scene: &Scene) -> Result<usize, ValidationError> {
             return Err(ValidationError::InvalidLayoutProgram);
         }
         for child in &node.children {
-            visit(child, depth + 1, count, ids)?;
+            visit(
+                child,
+                depth + 1,
+                count,
+                ids,
+                window_spaces,
+                shell_overlays,
+                application_surfaces,
+            )?;
         }
         if let Some(animation) = &node.animation {
             if !(16..=60_000).contains(&animation.duration_ms) {
@@ -940,7 +1099,18 @@ pub fn validate_scene(scene: &Scene) -> Result<usize, ValidationError> {
     }
 
     let mut count = 0;
-    visit(&scene.root, 1, &mut count, &mut HashSet::new())?;
+    let mut window_spaces = 0;
+    let mut shell_overlays = 0;
+    let mut application_surfaces = 0;
+    visit(
+        &scene.root,
+        1,
+        &mut count,
+        &mut HashSet::new(),
+        &mut window_spaces,
+        &mut shell_overlays,
+        &mut application_surfaces,
+    )?;
     Ok(count)
 }
 
@@ -1163,6 +1333,109 @@ mod tests {
         assert_eq!(
             validate_scene(&scene),
             Err(ValidationError::MissingInteractiveId)
+        );
+    }
+
+    #[test]
+    fn window_space_is_single_bounded_and_keyed() {
+        let window_space = || SceneNode {
+            id: Some("applications".into()),
+            content: Some(Content::WindowSpace(WindowSpaceContent {
+                layout: WindowLayoutMode::Floating,
+                gap: 12.0,
+                fallback: "No applications are open".into(),
+            })),
+            ..Default::default()
+        };
+        assert_eq!(
+            validate_scene(&Scene {
+                root: window_space()
+            }),
+            Ok(1)
+        );
+
+        let mut unkeyed = window_space();
+        unkeyed.id = None;
+        assert_eq!(
+            validate_scene(&Scene { root: unkeyed }),
+            Err(ValidationError::MissingWindowSpaceId)
+        );
+
+        let second = SceneNode {
+            id: Some("applications-two".into()),
+            ..window_space()
+        };
+        assert_eq!(
+            validate_scene(&Scene {
+                root: SceneNode {
+                    children: vec![window_space(), second],
+                    ..Default::default()
+                }
+            }),
+            Err(ValidationError::DuplicateWindowSpace)
+        );
+    }
+
+    #[test]
+    fn shell_overlay_and_application_surface_are_single_keyed_primitives() {
+        let overlay = || SceneNode {
+            id: Some("agent-overlay".into()),
+            content: Some(Content::ShellOverlay(ShellOverlayContent {
+                x: 20.0,
+                y: 30.0,
+                width: 64.0,
+                height: 64.0,
+                anchor: None,
+            })),
+            interaction: Interaction {
+                hover_action: Some("overlay_hover".into()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let application = || SceneNode {
+            id: Some("notes".into()),
+            content: Some(Content::ApplicationSurface(ApplicationSurfaceContent {
+                title: "Notes".into(),
+            })),
+            ..Default::default()
+        };
+        assert_eq!(
+            validate_scene(&Scene {
+                root: SceneNode {
+                    children: vec![overlay(), application()],
+                    ..Default::default()
+                }
+            }),
+            Ok(3)
+        );
+
+        let second_overlay = SceneNode {
+            id: Some("second-overlay".into()),
+            ..overlay()
+        };
+        assert_eq!(
+            validate_scene(&Scene {
+                root: SceneNode {
+                    children: vec![overlay(), second_overlay],
+                    ..Default::default()
+                }
+            }),
+            Err(ValidationError::DuplicateShellOverlay)
+        );
+
+        let second_application = SceneNode {
+            id: Some("calendar".into()),
+            ..application()
+        };
+        assert_eq!(
+            validate_scene(&Scene {
+                root: SceneNode {
+                    children: vec![application(), second_application],
+                    ..Default::default()
+                }
+            }),
+            Err(ValidationError::DuplicateApplicationSurface)
         );
     }
 

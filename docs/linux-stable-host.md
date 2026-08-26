@@ -136,7 +136,8 @@ The installer builds the direct compositor, Linux host, authoring broker, and
 pinned Node agent in release mode. It installs the session binaries and
 launchers below `/usr/local/libexec/sos`, the resident agent below
 `/usr/local/libexec/sos-agent`, the reference experiences and API documentation
-below `/usr/share/sos` and `/usr/share/doc/sos`, and adds
+below `/usr/share/sos` and `/usr/share/doc/sos`, the per-user
+`sos-session.target` and `sos-session-shutdown.target`, and adds
 `/usr/share/wayland-sessions/sos.desktop`. On first installation it also runs
 the agent's device-code authentication flow as the desktop user; set
 `SOS_AGENT_MODEL` before invoking the installer to override the `gpt-5.6-sol`
@@ -149,6 +150,29 @@ private revision, authority, recovery, and shell-token state below
 `${XDG_STATE_HOME:-$HOME/.local/state}/sos`; each login receives a fresh private
 runtime directory below `XDG_RUNTIME_DIR`.
 
+The experience host keeps the authenticated login's real `HOME`,
+`XDG_CACHE_HOME`, user D-Bus address, and `XDG_RUNTIME_DIR`, while its compositor
+socket remains an absolute path in the private SOS runtime directory. This is
+required for user PipeWire, portals, and other session services. Once the
+provider and supervisor sockets are ready, the launcher publishes the bounded
+graphical environment to the user manager and starts `sos-session.target`.
+That target binds the standard `graphical-session.target`; its paired shutdown
+target conflicts both targets out on logout, so portal and native-application
+services cannot linger after SOS exits. `XDG_CURRENT_DESKTOP=SOS:GNOME` permits
+the standard GNOME and GTK portal backends to participate, although a portal
+operation that specifically requires a Mutter-only protocol remains unavailable
+under the SOS compositor.
+
+For an active SOS login, the launcher holds a logind block inhibitor for
+`idle`, `sleep`, and `handle-lid-switch` around the complete
+`sos-linux-session run-user` lifetime. The direct compositor has no independent
+screensaver, so the stock development behavior is an always-present shell that
+keeps its network link available and does not suspend when the lid changes.
+The inhibitor is released automatically on SOS logout and does not change the
+GNOME session's stored preferences. A future trusted suspend action must first
+release this session-owned inhibitor as part of its fixed native ceremony;
+generated Luau cannot remove or bypass it.
+
 For a credential- and network-independent first hardware gate, install with
 `./tools/install-linux-login-session install --offline`. This configures the
 same resident runner with the checked-in deterministic `daily-flow.luau`
@@ -160,9 +184,28 @@ subscription-backed mode.
 Each install writes `/usr/share/doc/sos/install-metadata.env` and
 `install-manifest.tsv` with the source revision, dirty state, toolchain, mode,
 and installed artifact sizes and SHA-256 values. The session reads bounded
-mode/scale/rotation overrides from the user's private
+mode/scale/rotation overrides and absolute-input output associations from the
+user's private
 `${XDG_STATE_HOME:-$HOME/.local/state}/sos/output.json`; `{}` retains preferred
-mode, scale 1.0, and rotation 0.
+mode, scale 1.0, rotation 0, and the mirrored output layout. Mirror mode uses
+the largest logical canvas that fits every connected output, centers it on each
+physical mode, and keeps one workspace when a lid or external output appears.
+Set `"layout": "extend"` for a connector-sorted horizontal desktop. On a
+multi-output system, every touchscreen, tablet, or absolute mouse must name its
+output; ambiguous or unavailable mappings fail closed. Relative pointers stay
+inside the mirrored canvas or traverse the complete extended layout.
+
+```json
+{
+  "layout": "mirror",
+  "input_outputs": {
+    "PiKVM PiKVM Composite Device": "DP-1",
+    "ILIT2901:00 222A:5539": "eDP-1",
+    "ILIT2901:00 222A:5539 Stylus": "eDP-1",
+    "ILIT2901:00 222A:5539 Mouse": "eDP-1"
+  }
+}
+```
 
 ```text
 GDM authentication (login user owns the active logind seat)
@@ -204,11 +247,12 @@ private, but processes in that login account are not security-isolated from one
 another. Use the system session below when the separate service identities are
 required.
 
-The selectable-session packaging and identity policy have desktop build and
-static packaging evidence plus host-tested offline/configuration and evidence
-audit paths only. They have not yet completed an instrumented physical GDM
-login, DRM page flip, input, logout, suspend/resume, or hardware gate. Keep SSH
-and a text console available, then use
+The selectable-session path has now completed physical GDM login, direct DRM
+page flip, provider actions, native application composition, coordinated
+activation, and clean logout on a Framework Laptop 12 development-live boot.
+The diagnostic campaign did not exercise touchpad motion or touchscreen input,
+and its iterative seven-host-launch journal is not a stable-lifecycle pass;
+suspend/resume also remains open. Keep SSH and a text console available, then use
 `tools/linux-hardware-gate` and the exact PASS contract in
 [`linux-hardware-gate.md`](linux-hardware-gate.md). The gate refuses VMs, dirty
 or revision-mismatched installs, missing observations, and tampered evidence.
@@ -282,7 +326,17 @@ snapshot before candidate render, switches the live watcher only at commit,
 and drops events tagged for another revision. A generated interface therefore
 receives typed data/effects, not provider handles, filesystem paths, network
 access, or ambient credentials. Development wildcard grants require the
-explicit `SOS_PROVIDER_DEVELOPMENT_GRANTS=1` escape hatch.
+explicit `SOS_PROVIDER_DEVELOPMENT_GRANTS=1` escape hatch. The selectable
+session enables that escape hatch automatically only when the baked image
+identity says both `image_kind=development-live` and `mutable_runtime=true`;
+stable and installed sessions still require exact revision grants.
+
+The first Linux canonical provider slice adapts UPower, NetworkManager, MPRIS,
+PipeWire/WirePlumber, and freedesktop desktop entries. D-Bus is preferred for
+stateful services. The narrow `wpctl` and `gio launch` adapters pass fixed
+argument vectors without a shell, and opaque selections are resolved again at
+action time inside the provider boundary. Stock and generated Luau receive the
+same `model.providers` value and cannot observe service paths or commands.
 
 `SOS_REVISION_SIGNING_KEY_FILE` makes revision installation emit a detached
 HMAC-SHA256 manifest authenticator; `SOS_REVISION_VERIFY_KEY_FILE` makes every
