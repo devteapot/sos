@@ -1,6 +1,6 @@
 ---
 name: sos-linux-acceptance
-description: Run and judge SOS Linux stable-host acceptance as one coherent campaign. Use for Wayland or GPUI host verification, the resident Pi agent path, nested compositor tests, GDM session installation, lifecycle recovery, Debian direct-DRM VM gates, or final Linux milestone acceptance. Do not use for Android or Samsung device gates.
+description: Run and judge an explicit SOS Linux stable-host acceptance campaign. Use when asked to gate, accept, soak, or make a milestone verdict for the Wayland/GPUI host, resident Pi agent, GDM session, lifecycle recovery, or Debian direct-DRM VM. Do not use for ordinary development iteration, focused live-overlay debugging, routine deployment, Android, or Samsung device gates.
 ---
 
 # SOS Linux acceptance
@@ -8,6 +8,10 @@ description: Run and judge SOS Linux stable-host acceptance as one coherent camp
 Treat Linux acceptance as a serial external-state campaign with one coherent
 owner, not as one agent or gate per phase. Isolate failures locally, then run
 one clean final campaign after every required component is green.
+
+Classify the request before starting. For ordinary development iteration, use
+focused checks plus `$sos-runtime-debug` and `$sos-pikvm-workflow` as needed;
+do not create a full evidence campaign or issue an acceptance verdict.
 
 ## Define the campaign
 

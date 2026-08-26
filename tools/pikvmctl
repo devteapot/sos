@@ -1,0 +1,443 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+umask 077
+
+pikvmctl_endpoint="${PIKVM_ENDPOINT:-}"
+pikvmctl_curl_config="${PIKVM_CURL_CONFIG:-}"
+pikvmctl_insecure="${PIKVM_INSECURE:-false}"
+pikvmctl_connect_timeout="${PIKVM_CONNECT_TIMEOUT:-10}"
+pikvmctl_request_timeout="${PIKVM_REQUEST_TIMEOUT:-30}"
+pikvmctl_cleanup_paths=()
+
+pikvmctl_cleanup() {
+  local path
+  for path in "${pikvmctl_cleanup_paths[@]}"; do
+    if [[ -d "$path" ]]; then
+      rm -r -- "$path"
+    else
+      rm -f -- "$path"
+    fi
+  done
+}
+
+trap pikvmctl_cleanup EXIT
+
+pikvmctl_fail() {
+  printf 'error: %s\n' "$*" >&2
+  exit 1
+}
+
+pikvmctl_usage() {
+  cat <<'EOF'
+usage: tools/pikvmctl [GLOBAL OPTIONS] COMMAND [COMMAND OPTIONS]
+
+Global options:
+  --endpoint URL       PiKVM origin, for example https://192.168.1.47
+  --curl-config FILE   curl config containing authentication options
+  --insecure           accept the PiKVM TLS certificate without verification
+  --connect-timeout S  connection timeout in seconds (default: 10)
+  --request-timeout S  ordinary request timeout in seconds (default: 30)
+
+Environment equivalents:
+  PIKVM_ENDPOINT, PIKVM_CURL_CONFIG, PIKVM_INSECURE,
+  PIKVM_CONNECT_TIMEOUT, PIKVM_REQUEST_TIMEOUT
+
+Commands:
+  status
+      Read authentication, HID, ATX, MSD, and streamer state as one JSON object.
+  capture --output FILE [--allow-offline]
+      Atomically save one JPEG snapshot and report its path, size, and SHA-256.
+  wait-frame --output FILE [--from FILE|--sha256 HEX]
+             [--timeout S] [--interval S] [--allow-offline]
+      Wait inside one command for a frame hash to change. Exit 2 on timeout.
+  hid-reset
+  key KEY
+  shortcut KEY[,KEY...]
+  type [--keymap NAME] [--slow] [--delay S] --text TEXT
+  mouse-move X Y
+  mouse-click [left|right|middle]
+  atx-click power --acknowledge-calibrated
+      Send only a short power-button click after external ATX calibration.
+EOF
+}
+
+pikvmctl_require_value() {
+  local option="$1" value="${2:-}"
+  [[ -n "$value" ]] || pikvmctl_fail "$option requires a value"
+}
+
+pikvmctl_is_true() {
+  case "$1" in
+    1|true|yes) return 0 ;;
+    0|false|no|'') return 1 ;;
+    *) pikvmctl_fail "expected boolean value, got: $1" ;;
+  esac
+}
+
+pikvmctl_validate_seconds() {
+  local name="$1" value="$2"
+  [[ "$value" =~ ^[0-9]+([.][0-9]+)?$ ]] || \
+    pikvmctl_fail "$name must be a non-negative number"
+}
+
+pikvmctl_validate_integer() {
+  local name="$1" value="$2"
+  [[ "$value" =~ ^-?[0-9]+$ ]] || pikvmctl_fail "$name must be an integer"
+}
+
+pikvmctl_validate_positive_integer() {
+  local name="$1" value="$2"
+  [[ "$value" =~ ^[1-9][0-9]*$ ]] || pikvmctl_fail "$name must be a positive integer"
+}
+
+pikvmctl_validate_hid_coordinate() {
+  local name="$1" value="$2" numeric
+  pikvmctl_validate_integer "$name" "$value"
+  if [[ "$value" == -* ]]; then
+    numeric=$((-10#${value#-}))
+  else
+    numeric=$((10#$value))
+  fi
+  ((numeric >= -32768 && numeric <= 32767)) || \
+    pikvmctl_fail "$name must be between -32768 and 32767"
+}
+
+pikvmctl_json_result() {
+  local response="$1"
+  jq -e 'type == "object" and .ok == true and has("result")' \
+    >/dev/null <<<"$response" || pikvmctl_fail "PiKVM returned an invalid API response"
+  printf '%s\n' "$response"
+}
+
+pikvmctl_request_json() {
+  local method="$1" path="$2" response
+  response="$("${pikvmctl_curl[@]}" --request "$method" \
+    --url "${pikvmctl_endpoint}${path}")"
+  pikvmctl_json_result "$response"
+}
+
+pikvmctl_request_text() {
+  local path="$1" text="$2" response
+  response="$(printf '%s' "$text" | "${pikvmctl_curl[@]}" --request POST \
+    --data-binary @- --url "${pikvmctl_endpoint}${path}")"
+  pikvmctl_json_result "$response"
+}
+
+pikvmctl_snapshot_to() {
+  local output="$1" allow_offline="$2"
+  "${pikvmctl_curl[@]}" --request GET \
+    --url "${pikvmctl_endpoint}/api/streamer/snapshot?save=false&load=false&allow_offline=${allow_offline}" \
+    >"$output"
+  [[ -s "$output" ]] || pikvmctl_fail "PiKVM returned an empty snapshot"
+}
+
+pikvmctl_prepare_output() {
+  local output="$1" parent
+  [[ -n "$output" ]] || pikvmctl_fail "--output requires a file path"
+  [[ ! -d "$output" ]] || pikvmctl_fail "output path is a directory: $output"
+  parent="$(dirname "$output")"
+  mkdir -p -- "$parent"
+}
+
+pikvmctl_capture() {
+  local output="" allow_offline=false temporary bytes digest
+  while [[ "$#" -gt 0 ]]; do
+    case "$1" in
+      --output)
+        pikvmctl_require_value "$1" "${2:-}"
+        output="$2"
+        shift 2
+        ;;
+      --allow-offline)
+        allow_offline=true
+        shift
+        ;;
+      *) pikvmctl_fail "unexpected capture option: $1" ;;
+    esac
+  done
+  pikvmctl_prepare_output "$output"
+  temporary="$(mktemp -p "$(dirname "$output")" ".$(basename "$output").tmp.XXXXXX")"
+  pikvmctl_cleanup_paths+=("$temporary")
+  pikvmctl_snapshot_to "$temporary" "$allow_offline"
+  chmod 0600 "$temporary"
+  bytes="$(stat -c %s "$temporary")"
+  digest="$(sha256sum "$temporary" | cut -d ' ' -f 1)"
+  mv -f -- "$temporary" "$output"
+  jq -n \
+    --arg path "$output" \
+    --argjson bytes "$bytes" \
+    --arg sha256 "$digest" \
+    '{ok:true, path:$path, bytes:$bytes, sha256:$sha256}'
+}
+
+pikvmctl_wait_frame() {
+  local output="" baseline_file="" baseline_hash="" timeout=30 interval=1
+  local allow_offline=false temporary_dir current_file current_hash start_ns end_ns
+  while [[ "$#" -gt 0 ]]; do
+    case "$1" in
+      --output)
+        pikvmctl_require_value "$1" "${2:-}"
+        output="$2"
+        shift 2
+        ;;
+      --from)
+        pikvmctl_require_value "$1" "${2:-}"
+        baseline_file="$2"
+        shift 2
+        ;;
+      --sha256)
+        pikvmctl_require_value "$1" "${2:-}"
+        baseline_hash="$2"
+        shift 2
+        ;;
+      --timeout)
+        pikvmctl_require_value "$1" "${2:-}"
+        timeout="$2"
+        shift 2
+        ;;
+      --interval)
+        pikvmctl_require_value "$1" "${2:-}"
+        interval="$2"
+        shift 2
+        ;;
+      --allow-offline)
+        allow_offline=true
+        shift
+        ;;
+      *) pikvmctl_fail "unexpected wait-frame option: $1" ;;
+    esac
+  done
+  pikvmctl_prepare_output "$output"
+  [[ -z "$baseline_file" || -z "$baseline_hash" ]] || \
+    pikvmctl_fail "use only one of --from and --sha256"
+  pikvmctl_validate_positive_integer "--timeout" "$timeout"
+  pikvmctl_validate_seconds "--interval" "$interval"
+  [[ "$interval" != 0 && "$interval" != 0.0 ]] || pikvmctl_fail "--interval must be positive"
+  if [[ -n "$baseline_file" ]]; then
+    [[ -f "$baseline_file" ]] || pikvmctl_fail "baseline is not a file: $baseline_file"
+    baseline_hash="$(sha256sum "$baseline_file" | cut -d ' ' -f 1)"
+  elif [[ -n "$baseline_hash" ]]; then
+    [[ "$baseline_hash" =~ ^[0-9A-Fa-f]{64}$ ]] || \
+      pikvmctl_fail "--sha256 must contain 64 hexadecimal characters"
+    baseline_hash="${baseline_hash,,}"
+  fi
+
+  temporary_dir="$(mktemp -d -t sos-pikvm-frame.XXXXXX)"
+  pikvmctl_cleanup_paths+=("$temporary_dir")
+  current_file="$temporary_dir/current.jpg"
+  if [[ -z "$baseline_hash" ]]; then
+    pikvmctl_snapshot_to "$current_file" "$allow_offline"
+    baseline_hash="$(sha256sum "$current_file" | cut -d ' ' -f 1)"
+  fi
+
+  start_ns="$(date +%s%N)"
+  while :; do
+    sleep "$interval"
+    pikvmctl_snapshot_to "$current_file" "$allow_offline"
+    current_hash="$(sha256sum "$current_file" | cut -d ' ' -f 1)"
+    end_ns="$(date +%s%N)"
+    if [[ "$current_hash" != "$baseline_hash" ]]; then
+      chmod 0600 "$current_file"
+      mv -f -- "$current_file" "$output"
+      jq -n \
+        --arg path "$output" \
+        --arg baseline_sha256 "$baseline_hash" \
+        --arg sha256 "$current_hash" \
+        --argjson measured_wall_time_ns "$((end_ns - start_ns))" \
+        '{ok:true, changed:true, path:$path, baseline_sha256:$baseline_sha256,
+          sha256:$sha256, measured_wall_time_ns:$measured_wall_time_ns}'
+      rm -r -- "$temporary_dir"
+      return 0
+    fi
+    if ((end_ns - start_ns >= timeout * 1000000000)); then
+      chmod 0600 "$current_file"
+      mv -f -- "$current_file" "$output"
+      jq -n \
+        --arg path "$output" \
+        --arg sha256 "$current_hash" \
+        --argjson measured_wall_time_ns "$((end_ns - start_ns))" \
+        '{ok:true, changed:false, path:$path, sha256:$sha256,
+          measured_wall_time_ns:$measured_wall_time_ns}'
+      rm -r -- "$temporary_dir"
+      return 2
+    fi
+  done
+}
+
+pikvmctl_status() {
+  [[ "$#" -eq 0 ]] || pikvmctl_fail "status accepts no options"
+  local auth hid atx msd streamer observed_at
+  auth="$(pikvmctl_request_json GET /api/auth/check)"
+  hid="$(pikvmctl_request_json GET /api/hid)"
+  atx="$(pikvmctl_request_json GET /api/atx)"
+  msd="$(pikvmctl_request_json GET /api/msd)"
+  streamer="$(pikvmctl_request_json GET /api/streamer)"
+  observed_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  jq -n \
+    --arg endpoint "$pikvmctl_endpoint" \
+    --arg observed_at "$observed_at" \
+    --argjson auth "$auth" \
+    --argjson hid "$hid" \
+    --argjson atx "$atx" \
+    --argjson msd "$msd" \
+    --argjson streamer "$streamer" \
+    '{ok:true, endpoint:$endpoint, observed_at:$observed_at,
+      auth:$auth.result, hid:$hid.result, atx:$atx.result,
+      msd:$msd.result, streamer:$streamer.result}'
+}
+
+pikvmctl_type_text() {
+  local keymap=en-us slow=false delay=0 text="" text_set=false
+  while [[ "$#" -gt 0 ]]; do
+    case "$1" in
+      --keymap)
+        pikvmctl_require_value "$1" "${2:-}"
+        keymap="$2"
+        shift 2
+        ;;
+      --slow)
+        slow=true
+        shift
+        ;;
+      --delay)
+        pikvmctl_require_value "$1" "${2:-}"
+        delay="$2"
+        shift 2
+        ;;
+      --text)
+        [[ "$#" -ge 2 ]] || pikvmctl_fail "--text requires a value"
+        text="$2"
+        text_set=true
+        shift 2
+        ;;
+      *) pikvmctl_fail "unexpected type option: $1" ;;
+    esac
+  done
+  [[ "$text_set" == true ]] || pikvmctl_fail "type requires --text"
+  [[ "$keymap" =~ ^[A-Za-z0-9._-]+$ ]] || pikvmctl_fail "invalid keymap name"
+  pikvmctl_validate_seconds "--delay" "$delay"
+  pikvmctl_request_text \
+    "/api/hid/print?limit=0&keymap=${keymap}&slow=${slow}&delay=${delay}" "$text"
+}
+
+pikvmctl_parse_global_options() {
+  while [[ "$#" -gt 0 ]]; do
+    case "$1" in
+      --endpoint)
+        pikvmctl_require_value "$1" "${2:-}"
+        pikvmctl_endpoint="$2"
+        shift 2
+        ;;
+      --curl-config)
+        pikvmctl_require_value "$1" "${2:-}"
+        pikvmctl_curl_config="$2"
+        shift 2
+        ;;
+      --insecure)
+        pikvmctl_insecure=true
+        shift
+        ;;
+      --connect-timeout)
+        pikvmctl_require_value "$1" "${2:-}"
+        pikvmctl_connect_timeout="$2"
+        shift 2
+        ;;
+      --request-timeout)
+        pikvmctl_require_value "$1" "${2:-}"
+        pikvmctl_request_timeout="$2"
+        shift 2
+        ;;
+      -h|--help)
+        pikvmctl_usage
+        exit 0
+        ;;
+      --*) pikvmctl_fail "unexpected global option: $1" ;;
+      *) break ;;
+    esac
+  done
+  pikvmctl_remaining=("$@")
+}
+
+pikvmctl_parse_global_options "$@"
+set -- "${pikvmctl_remaining[@]}"
+[[ "$#" -gt 0 ]] || {
+  pikvmctl_usage
+  exit 1
+}
+pikvmctl_command="$1"
+shift
+case "$pikvmctl_command" in
+  -h|--help|help)
+    pikvmctl_usage
+    exit 0
+    ;;
+esac
+
+for pikvmctl_dependency in \
+  basename cat chmod curl cut date dirname jq mkdir mktemp mv rm sha256sum sleep stat; do
+  command -v "$pikvmctl_dependency" >/dev/null || \
+    pikvmctl_fail "required command is missing: $pikvmctl_dependency"
+done
+[[ "$pikvmctl_endpoint" =~ ^https?://[^/?#@]+$ ]] || \
+  pikvmctl_fail "--endpoint must be an HTTP(S) origin without credentials or a path"
+pikvmctl_endpoint="${pikvmctl_endpoint%/}"
+pikvmctl_validate_seconds "--connect-timeout" "$pikvmctl_connect_timeout"
+pikvmctl_validate_seconds "--request-timeout" "$pikvmctl_request_timeout"
+if [[ -n "$pikvmctl_curl_config" ]]; then
+  [[ -f "$pikvmctl_curl_config" && -r "$pikvmctl_curl_config" ]] || \
+    pikvmctl_fail "curl config is not a readable file: $pikvmctl_curl_config"
+fi
+
+pikvmctl_curl=(
+  curl --silent --show-error --fail-with-body
+  --connect-timeout "$pikvmctl_connect_timeout"
+  --max-time "$pikvmctl_request_timeout"
+)
+[[ -z "$pikvmctl_curl_config" ]] || pikvmctl_curl+=(--config "$pikvmctl_curl_config")
+if pikvmctl_is_true "$pikvmctl_insecure"; then
+  pikvmctl_curl+=(--insecure)
+fi
+
+case "$pikvmctl_command" in
+  status) pikvmctl_status "$@" ;;
+  capture) pikvmctl_capture "$@" ;;
+  wait-frame) pikvmctl_wait_frame "$@" ;;
+  hid-reset)
+    [[ "$#" -eq 0 ]] || pikvmctl_fail "hid-reset accepts no options"
+    pikvmctl_request_json POST /api/hid/reset
+    ;;
+  key)
+    [[ "$#" -eq 1 ]] || pikvmctl_fail "key requires exactly one key name"
+    [[ "$1" =~ ^[A-Za-z][A-Za-z0-9]*$ ]] || pikvmctl_fail "invalid HID key name"
+    pikvmctl_request_json POST "/api/hid/events/send_key?key=$1"
+    ;;
+  shortcut)
+    [[ "$#" -eq 1 ]] || pikvmctl_fail "shortcut requires one comma-separated key list"
+    [[ "$1" =~ ^[A-Za-z][A-Za-z0-9]*(,[A-Za-z][A-Za-z0-9]*)*$ ]] || \
+      pikvmctl_fail "invalid HID shortcut"
+    pikvmctl_request_json POST "/api/hid/events/send_shortcut?keys=$1"
+    ;;
+  type) pikvmctl_type_text "$@" ;;
+  mouse-move)
+    [[ "$#" -eq 2 ]] || pikvmctl_fail "mouse-move requires X and Y"
+    pikvmctl_validate_hid_coordinate X "$1"
+    pikvmctl_validate_hid_coordinate Y "$2"
+    pikvmctl_request_json POST "/api/hid/events/send_mouse_move?to_x=$1&to_y=$2"
+    ;;
+  mouse-click)
+    [[ "$#" -le 1 ]] || pikvmctl_fail "mouse-click accepts at most one button"
+    pikvmctl_button="${1:-left}"
+    case "$pikvmctl_button" in
+      left|right|middle) ;;
+      *) pikvmctl_fail "mouse button must be left, right, or middle" ;;
+    esac
+    pikvmctl_request_json POST "/api/hid/events/send_mouse_button?button=$pikvmctl_button"
+    ;;
+  atx-click)
+    [[ "$#" -eq 2 && "$1" == power && "$2" == --acknowledge-calibrated ]] || \
+      pikvmctl_fail "atx-click requires: power --acknowledge-calibrated"
+    pikvmctl_request_json POST '/api/atx/click?button=power&wait=true'
+    ;;
+  *) pikvmctl_fail "unknown command: $pikvmctl_command" ;;
+esac

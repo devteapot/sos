@@ -9,6 +9,10 @@ Treat PiKVM and its target as one serial external-state transaction. Keep one
 console owner, observe every transition, and distinguish PiKVM state from
 target state. PiKVM virtual-media upload is not flashing the target.
 
+Use `./tools/pikvmctl --help`, then use that tool for aggregate state, atomic
+captures, bounded frame waits, HID actions, and guarded ATX clicks. Prefer its
+JSON output over handwritten curl loops; use raw API calls only for a gap.
+
 ## Establish the control envelope
 
 1. Resolve the PiKVM endpoint, target machine identity, requested operation,
