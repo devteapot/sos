@@ -1,5 +1,9 @@
 mod coordinator;
+mod graph;
+mod graph_supervisor;
 mod host;
+mod reference;
+mod registry;
 mod store;
 
 use std::{path::PathBuf, process::ExitStatus, time::Duration};
@@ -9,11 +13,18 @@ pub use coordinator::{
     CoordinatorFaultPoint, JournalPhase,
 };
 pub use experience_host_protocol::{HostEvent, HostRequest};
+pub use graph::{GraphResolver, GraphStore};
+pub use graph_supervisor::{
+    ExperienceGraphSupervisor, GraphActivationFaultPoint, GraphActivationJournal,
+    GraphActivationPhase, PreparedGraphActivation,
+};
 pub use host::{ExperienceHost, HostCommand};
+pub use reference::{install_reference_composition, ReferenceComposition};
+pub use registry::{ExperienceRecord, ExperienceRegistry, STOCK_SHELL_EXPERIENCE_ID};
 pub use store::{
     AssetIdentity, DurableState, FileIdentity, RevisionAssetInput, RevisionInput, RevisionManifest,
-    RevisionStore, VerifiedRevision, MAX_REVISION_ASSETS, MAX_REVISION_ASSET_BYTES,
-    MAX_REVISION_ASSET_TOTAL_BYTES,
+    RevisionPackageInput, RevisionStore, VerifiedRevision, MAX_REVISION_ASSETS,
+    MAX_REVISION_ASSET_BYTES, MAX_REVISION_ASSET_TOTAL_BYTES,
 };
 use thiserror::Error;
 
@@ -31,6 +42,10 @@ pub enum Error {
     InvalidRevision(String),
     #[error("invalid current pointer: {0}")]
     InvalidPointer(PathBuf),
+    #[error("invalid experience registry: {0}")]
+    InvalidRegistry(String),
+    #[error("invalid experience graph: {0}")]
+    InvalidGraph(String),
     #[error("experience host exited: {0}")]
     HostExited(ExitStatus),
     #[error("experience host did not respond within {0:?}")]
@@ -45,6 +60,8 @@ pub enum Error {
     NoCurrentRevision,
     #[error("the supervisor has no active experience host")]
     NoActiveHost,
+    #[error("injected graph activation fault: {0}")]
+    InjectedGraphActivationFault(String),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

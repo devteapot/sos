@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 experience-host-protocol.workspace = true
+experience-package.workspace = true
 naga = { version = "29.0.4", features = ["wgsl-in"] }
 provider-state-service.workspace = true
 serde.workspace = true

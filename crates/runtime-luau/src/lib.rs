@@ -10,15 +10,16 @@ use std::{
 
 use experience_ir::{
     validate_scene_detailed, Align, Animation, AnimationKind, ApplicationSurfaceContent, ClipRect,
-    Content, EdgePlacement, ExperienceModel, Flow, GlyphRun, HitRegion, ImageContent, Interaction,
-    Justify, Layout, LayoutPosition, LayoutProgram, PaintOp, PaintPoint, PointerCapture,
-    ProviderEffect, ProviderSurfaceContent, Scene, SceneEvent, SceneNode, SemanticRole, Semantics,
-    ShellOverlayContent, ShellOverlayPlacement, TextContent, TextSession, Transform2D,
-    WindowLayoutMode, WindowSpaceContent, EXPERIENCE_API_VERSION, MAX_CHILDREN, MAX_EFFECTS,
-    MAX_EFFECT_PAYLOAD_BYTES, MAX_GLYPH_RUNS, MAX_HIT_REGIONS, MAX_PAINT_DEPTH, MAX_PAINT_OPS,
-    MAX_PAINT_POINTS, MAX_REVISION_ASSETS, MAX_REVISION_ASSET_BYTES,
-    MAX_REVISION_ASSET_TOTAL_BYTES, MAX_SCENE_DEPTH, MAX_SCENE_NODES, MAX_STATE_BYTES,
-    MAX_TEXT_BYTES,
+    Content, EdgePlacement, ExperienceContext, ExperienceModel, ExperienceMountContent,
+    ExperienceOutputEvent, ExperienceViewport, Flow, GlyphRun, HitRegion, ImageContent,
+    Interaction, Justify, Layout, LayoutPosition, LayoutProgram, PaintOp, PaintPoint,
+    PointerCapture, ProviderEffect, ProviderSurfaceContent, Scene, SceneEvent, SceneNode,
+    SemanticRole, Semantics, ShellOverlayContent, ShellOverlayPlacement, TextContent, TextSession,
+    Transform2D, WindowLayoutMode, WindowSpaceContent, EXPERIENCE_API_VERSION,
+    EXPERIENCE_API_VERSION_V4, MAX_CHILDREN, MAX_EFFECTS, MAX_EFFECT_PAYLOAD_BYTES, MAX_GLYPH_RUNS,
+    MAX_HIT_REGIONS, MAX_PAINT_DEPTH, MAX_PAINT_OPS, MAX_PAINT_POINTS, MAX_REVISION_ASSETS,
+    MAX_REVISION_ASSET_BYTES, MAX_REVISION_ASSET_TOTAL_BYTES, MAX_SCENE_DEPTH, MAX_SCENE_NODES,
+    MAX_STATE_BYTES, MAX_TEXT_BYTES,
 };
 use mlua::{
     chunk::{ChunkMode, Compiler},
@@ -28,6 +29,13 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as JsonValue};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
+
+mod graph;
+
+pub use graph::{
+    GraphActionOutcome, GraphEffect, GraphRevisionInput, GraphRuntime, GraphRuntimeSnapshot,
+    GraphRuntimeWorker, GraphWorkerResult, RuntimeInstanceSnapshot, RuntimeInstanceStatus,
+};
 
 pub const MAX_SOURCE_BYTES: usize = 256 * 1024;
 pub const MEMORY_LIMIT_BYTES: usize = 16 * 1024 * 1024;
@@ -71,6 +79,7 @@ pub struct LuauRuntime {
     assets: Vec<RevisionAsset>,
     asset_paths: HashMap<String, String>,
     shader_paths: HashMap<String, String>,
+    api_version: u32,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -155,7 +164,7 @@ pub fn load_revision_assets(directory: &Path) -> Result<Vec<RevisionAssetInput>,
     })?;
     let manifest: SidecarManifest = serde_json::from_slice(&manifest)
         .map_err(|error| RuntimeError::Invalid(format!("invalid revision manifest: {error}")))?;
-    if manifest.format_version != 3 || manifest.assets.len() > MAX_REVISION_ASSETS {
+    if !matches!(manifest.format_version, 3 | 4) || manifest.assets.len() > MAX_REVISION_ASSETS {
         return Err(RuntimeError::Invalid(
             "unsupported revision sidecar manifest".into(),
         ));
@@ -245,6 +254,7 @@ pub struct WorkerReady {
 pub struct UpdateOutcome {
     pub state: JsonValue,
     pub effects: Vec<ProviderEffect>,
+    pub events: Vec<ExperienceOutputEvent>,
 }
 
 #[derive(Clone, Debug)]
@@ -848,27 +858,39 @@ impl LuauRuntime {
         let (module_sidecars, asset_sidecars) = partition_revision_sidecars(sidecars)?;
         install_revision_module_loader(&lua, module_sidecars)?;
 
-        let (module, mut assets, mut asset_paths) = {
+        let (module, mut assets, mut asset_paths, api_version) = {
             let result = run_bounded(&deadline, RENDER_BUDGET, || {
                 lua.load(source)
                     .set_name("experience")
                     .set_mode(ChunkMode::Text)
                     .eval::<Table>()
             })?;
-            let _: Function = result.get("render").map_err(|_| {
-                RuntimeError::Invalid("module must export render(model, state)".into())
-            })?;
             let api_version = result
                 .get::<Option<u32>>("api_version")?
                 .ok_or_else(|| RuntimeError::Invalid("module must export api_version".into()))?;
-            if api_version != EXPERIENCE_API_VERSION {
+            if !matches!(
+                api_version,
+                EXPERIENCE_API_VERSION | EXPERIENCE_API_VERSION_V4
+            ) {
                 return Err(RuntimeError::Invalid(format!(
-                    "experience API {api_version} is unsupported; host requires {EXPERIENCE_API_VERSION}"
+                    "experience API {api_version} is unsupported; host supports 3 and 4"
                 )));
+            }
+            if api_version == EXPERIENCE_API_VERSION {
+                let _: Function = result.get("render").map_err(|_| {
+                    RuntimeError::Invalid("module must export render(model, state)".into())
+                })?;
+            } else {
+                validate_export_table(result.get::<Table>("exports")?)?;
             }
             let (assets, asset_paths) =
                 decode_revision_assets(result.get::<Option<Table>>("assets")?)?;
-            (lua.create_registry_value(result)?, assets, asset_paths)
+            (
+                lua.create_registry_value(result)?,
+                assets,
+                asset_paths,
+                api_version,
+            )
         };
         merge_revision_assets(&mut assets, &mut asset_paths, asset_sidecars)?;
         let shader_paths = assets
@@ -884,6 +906,7 @@ impl LuauRuntime {
             assets,
             asset_paths,
             shader_paths,
+            api_version,
         })
     }
 
@@ -1042,6 +1065,16 @@ impl LuauRuntime {
         model: &ExperienceModel,
         state: &JsonValue,
     ) -> Result<Scene, RuntimeError> {
+        if self.api_version == EXPERIENCE_API_VERSION_V4 {
+            return self.render_export(
+                "main",
+                model,
+                state,
+                &JsonValue::Object(Default::default()),
+                ExperienceViewport::default(),
+                None,
+            );
+        }
         let module: Table = self.lua.registry_value(&self.module)?;
         let render: Function = module.get("render")?;
         let model = self.lua.to_value(model)?;
@@ -1052,6 +1085,88 @@ impl LuauRuntime {
         let scene = Scene {
             root: Decoder {
                 nodes: 0,
+                lua: &self.lua,
+                asset_paths: &self.asset_paths,
+                shader_paths: &self.shader_paths,
+            }
+            .node(value, 1, "root")?,
+        };
+        validate_scene_detailed(&scene).map_err(|failure| RuntimeError::InvalidAt {
+            path: failure.path,
+            message: failure.error.to_string(),
+        })?;
+        Ok(scene)
+    }
+
+    pub fn api_version(&self) -> u32 {
+        self.api_version
+    }
+
+    pub fn export_ids(&self) -> Result<Vec<String>, RuntimeError> {
+        if self.api_version == EXPERIENCE_API_VERSION {
+            return Ok(vec!["main".into()]);
+        }
+        let module: Table = self.lua.registry_value(&self.module)?;
+        let exports: Table = module.get("exports")?;
+        let mut ids = exports
+            .clone()
+            .pairs::<String, Table>()
+            .map(|pair| pair.map(|(id, _)| id))
+            .collect::<Result<Vec<_>, _>>()?;
+        ids.sort();
+        Ok(ids)
+    }
+
+    pub fn render_export(
+        &self,
+        export_id: &str,
+        model: &ExperienceModel,
+        state: &JsonValue,
+        properties: &JsonValue,
+        viewport: ExperienceViewport,
+        container_appearance: Option<JsonValue>,
+    ) -> Result<Scene, RuntimeError> {
+        if self.api_version != EXPERIENCE_API_VERSION_V4 {
+            if export_id != "main" {
+                return Err(RuntimeError::Invalid(format!(
+                    "legacy experience does not export `{export_id}`"
+                )));
+            }
+            return self.render(model, state);
+        }
+        validate_export_id(export_id)?;
+        if serde_json::to_vec(properties)
+            .map_err(|error| RuntimeError::Invalid(error.to_string()))?
+            .len()
+            > MAX_EFFECT_PAYLOAD_BYTES
+        {
+            return Err(RuntimeError::Invalid(
+                "export properties are too large".into(),
+            ));
+        }
+        let module: Table = self.lua.registry_value(&self.module)?;
+        let exports: Table = module.get("exports")?;
+        let export: Table = exports
+            .get(export_id)
+            .map_err(|_| RuntimeError::Invalid(format!("module does not export `{export_id}`")))?;
+        let render: Function = export.get("render")?;
+        let context = ExperienceContext {
+            export_id: export_id.into(),
+            viewport,
+            properties: properties.clone(),
+            container_appearance,
+        };
+        let model = self.lua.to_value(model)?;
+        let state = self.lua.to_value(state)?;
+        let properties = self.lua.to_value(properties)?;
+        let context = self.lua.to_value(&context)?;
+        let value = run_bounded(&self.deadline, RENDER_BUDGET, || {
+            render.call::<Value>((model, state, properties, context))
+        })?;
+        let scene = Scene {
+            root: Decoder {
+                nodes: 0,
+                lua: &self.lua,
                 asset_paths: &self.asset_paths,
                 shader_paths: &self.shader_paths,
             }
@@ -1079,12 +1194,26 @@ impl LuauRuntime {
         state: &JsonValue,
         event: &SceneEvent,
     ) -> Result<UpdateOutcome, RuntimeError> {
+        if self.api_version == EXPERIENCE_API_VERSION_V4 {
+            let event = serde_json::to_value(event)
+                .map_err(|error| RuntimeError::Invalid(error.to_string()))?;
+            return self.update_export_with_effects(
+                "main",
+                model,
+                state,
+                &event,
+                &JsonValue::Object(Default::default()),
+                ExperienceViewport::default(),
+                None,
+            );
+        }
         let module: Table = self.lua.registry_value(&self.module)?;
         let update: Option<Function> = module.get("update")?;
         let Some(update) = update else {
             return Ok(UpdateOutcome {
                 state: state.clone(),
                 effects: Vec::new(),
+                events: Vec::new(),
             });
         };
         let model = self.lua.to_value(model)?;
@@ -1098,14 +1227,165 @@ impl LuauRuntime {
             if let Some(envelope_state) = envelope_state {
                 let state = self.lua.from_value(envelope_state)?;
                 let effects = decode_effects(table.get::<Option<Table>>("effects")?, &self.lua)?;
-                return Ok(UpdateOutcome { state, effects });
+                return Ok(UpdateOutcome {
+                    state,
+                    effects,
+                    events: Vec::new(),
+                });
             }
         }
         Ok(UpdateOutcome {
             state: self.lua.from_value(value)?,
             effects: Vec::new(),
+            events: Vec::new(),
         })
     }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn update_export_with_effects(
+        &self,
+        export_id: &str,
+        model: &ExperienceModel,
+        state: &JsonValue,
+        event: &JsonValue,
+        properties: &JsonValue,
+        viewport: ExperienceViewport,
+        container_appearance: Option<JsonValue>,
+    ) -> Result<UpdateOutcome, RuntimeError> {
+        if self.api_version != EXPERIENCE_API_VERSION_V4 {
+            let event: SceneEvent = serde_json::from_value(event.clone())
+                .map_err(|error| RuntimeError::Invalid(error.to_string()))?;
+            return self.update_with_effects(model, state, &event);
+        }
+        validate_export_id(export_id)?;
+        for (name, value) in [("event", event), ("properties", properties)] {
+            if serde_json::to_vec(value)
+                .map_err(|error| RuntimeError::Invalid(error.to_string()))?
+                .len()
+                > MAX_EFFECT_PAYLOAD_BYTES
+            {
+                return Err(RuntimeError::Invalid(format!("export {name} is too large")));
+            }
+        }
+        let module: Table = self.lua.registry_value(&self.module)?;
+        let exports: Table = module.get("exports")?;
+        let export: Table = exports
+            .get(export_id)
+            .map_err(|_| RuntimeError::Invalid(format!("module does not export `{export_id}`")))?;
+        let Some(update) = export.get::<Option<Function>>("update")? else {
+            return Ok(UpdateOutcome {
+                state: state.clone(),
+                effects: vec![],
+                events: vec![],
+            });
+        };
+        let context = ExperienceContext {
+            export_id: export_id.into(),
+            viewport,
+            properties: properties.clone(),
+            container_appearance,
+        };
+        let value = run_bounded(&self.deadline, UPDATE_BUDGET, || {
+            update.call::<Value>((
+                self.lua.to_value(model)?,
+                self.lua.to_value(state)?,
+                self.lua.to_value(event)?,
+                self.lua.to_value(properties)?,
+                self.lua.to_value(&context)?,
+            ))
+        })?;
+        decode_update_outcome(&self.lua, value)
+    }
+}
+
+fn validate_export_table(exports: Table) -> Result<(), RuntimeError> {
+    let mut count = 0;
+    for pair in exports.clone().pairs::<String, Table>() {
+        let (id, export) = pair?;
+        validate_export_id(&id)?;
+        reject_unknown_keys(&export, &["render", "update", "validation_scenarios"])?;
+        let _: Function = export
+            .get("render")
+            .map_err(|_| RuntimeError::Invalid(format!("export `{id}` must define render")))?;
+        let _: Option<Function> = export.get("update")?;
+        count += 1;
+        if count > experience_package::MAX_EXPORTS {
+            return Err(RuntimeError::Invalid(
+                "module exports too many entries".into(),
+            ));
+        }
+    }
+    if count == 0 {
+        return Err(RuntimeError::Invalid(
+            "module exports table is empty".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_export_id(id: &str) -> Result<(), RuntimeError> {
+    experience_package::ExportId::parse(id)
+        .map(|_| ())
+        .map_err(|error| RuntimeError::Invalid(error.to_string()))
+}
+
+fn decode_update_outcome(lua: &Lua, value: Value) -> Result<UpdateOutcome, RuntimeError> {
+    if let Value::Table(table) = &value {
+        let envelope_state = table.get::<Option<Value>>("state")?;
+        if let Some(envelope_state) = envelope_state {
+            let state = lua.from_value(envelope_state)?;
+            let effects = decode_effects(table.get::<Option<Table>>("effects")?, lua)?;
+            let events = decode_output_events(table.get::<Option<Table>>("events")?, lua)?;
+            return Ok(UpdateOutcome {
+                state,
+                effects,
+                events,
+            });
+        }
+    }
+    Ok(UpdateOutcome {
+        state: lua.from_value(value)?,
+        effects: Vec::new(),
+        events: Vec::new(),
+    })
+}
+
+fn decode_output_events(
+    table: Option<Table>,
+    lua: &Lua,
+) -> Result<Vec<ExperienceOutputEvent>, RuntimeError> {
+    let Some(table) = table else {
+        return Ok(Vec::new());
+    };
+    let mut events = Vec::new();
+    for value in table.sequence_values::<Table>() {
+        if events.len() >= experience_package::MAX_SCHEMA_FIELDS {
+            return Err(RuntimeError::Invalid(
+                "export emitted too many child events".into(),
+            ));
+        }
+        let value = value?;
+        reject_unknown_keys(&value, &["event", "payload"])?;
+        let event = required_bounded_string(&value, "event", 64)?;
+        experience_package::EventId::parse(&event)
+            .map_err(|error| RuntimeError::Invalid(error.to_string()))?;
+        let payload = value
+            .get::<Option<Value>>("payload")?
+            .map(|value| lua.from_value(value))
+            .transpose()?
+            .unwrap_or(JsonValue::Null);
+        if serde_json::to_vec(&payload)
+            .map_err(|error| RuntimeError::Invalid(error.to_string()))?
+            .len()
+            > MAX_EFFECT_PAYLOAD_BYTES
+        {
+            return Err(RuntimeError::Invalid(
+                "export event payload is too large".into(),
+            ));
+        }
+        events.push(ExperienceOutputEvent { event, payload });
+    }
+    Ok(events)
 }
 
 fn partition_revision_sidecars(
@@ -1581,6 +1861,7 @@ pub fn scene_statistics(scene: &Scene) -> SceneStatistics {
 
 struct Decoder<'a> {
     nodes: usize,
+    lua: &'a Lua,
     asset_paths: &'a HashMap<String, String>,
     shader_paths: &'a HashMap<String, String>,
 }
@@ -1627,7 +1908,11 @@ impl Decoder<'_> {
             Ok(SceneNode {
                 id: bounded_optional_string(table, "id", 256)?,
                 layout: decode_layout(table.get::<Option<Table>>("layout")?)?,
-                content: decode_content(table.get::<Option<Table>>("content")?, self.asset_paths)?,
+                content: decode_content(
+                    table.get::<Option<Table>>("content")?,
+                    self.asset_paths,
+                    self.lua,
+                )?,
                 paint: decode_paint(table.get::<Option<Table>>("paint")?, self.shader_paths)?,
                 interaction: decode_interaction(table.get::<Option<Table>>("interaction")?)?,
                 animation: decode_animation(table.get::<Option<Table>>("animation")?)?,
@@ -1763,6 +2048,7 @@ fn decode_layout(table: Option<Table>) -> Result<Layout, RuntimeError> {
 fn decode_content(
     table: Option<Table>,
     asset_paths: &HashMap<String, String>,
+    lua: &Lua,
 ) -> Result<Option<Content>, RuntimeError> {
     let Some(table) = table else {
         return Ok(None);
@@ -1780,6 +2066,7 @@ fn decode_content(
         ],
         "image" => &["kind", "asset"],
         "provider_surface" => &["kind", "surface"],
+        "experience_mount" => &["kind", "dependency", "properties", "container_appearance"],
         "window_space" => &["kind", "layout", "gap", "fallback"],
         "shell_overlay" => &["kind", "x", "y", "width", "height", "placement", "anchor"],
         "application_surface" => &["kind", "title"],
@@ -1815,6 +2102,32 @@ fn decode_content(
         }
         "provider_surface" => Content::ProviderSurface(ProviderSurfaceContent {
             surface: required_bounded_string(&table, "surface", 128)?,
+        }),
+        "experience_mount" => Content::ExperienceMount(ExperienceMountContent {
+            dependency: required_bounded_string(&table, "dependency", 64)?,
+            properties: table
+                .get::<Option<Value>>("properties")?
+                .map(|value| lua.from_value(value))
+                .transpose()?
+                .unwrap_or_else(|| json!({})),
+            container_appearance: table
+                .get::<Option<Value>>("container_appearance")?
+                .map(
+                    |value| -> Result<experience_package::ContainerAppearance, RuntimeError> {
+                        let value: JsonValue = lua.from_value(value)?;
+                        let appearance: experience_package::ContainerAppearance =
+                            serde_json::from_value(value).map_err(|error| {
+                                RuntimeError::Invalid(format!(
+                                    "invalid container appearance: {error}"
+                                ))
+                            })?;
+                        appearance
+                            .validate()
+                            .map_err(|error| RuntimeError::Invalid(error.to_string()))?;
+                        Ok(appearance)
+                    },
+                )
+                .transpose()?,
         }),
         "window_space" => Content::WindowSpace(WindowSpaceContent {
             layout: match table.get::<Option<String>>("layout")?.as_deref() {
@@ -2338,7 +2651,94 @@ mod tests {
         .err()
         .unwrap()
         .to_string();
-        assert!(version_one.contains("host requires 3"));
+        assert!(version_one.contains("host supports 3 and 4"));
+    }
+
+    #[test]
+    fn api_v4_renders_named_exports_and_decodes_mount_properties() {
+        let runtime = LuauRuntime::compile(
+            r#"
+                return {
+                    api_version = 4,
+                    state_version = 1,
+                    exports = {
+                        main = {
+                            render = function()
+                                return {
+                                    id = "agenda-mount",
+                                    content = {
+                                        kind = "experience_mount",
+                                        dependency = "agenda",
+                                        properties = { title = "Today", compact = true },
+                                    },
+                                }
+                            end,
+                        },
+                        summary = {
+                            render = function(model, _, properties, context)
+                                return {
+                                    id = "summary",
+                                    content = {
+                                        kind = "text",
+                                        value = properties.title .. ":" .. tostring(context.viewport.width)
+                                            .. ":" .. model.appearance.scheme,
+                                        size = 16,
+                                        color = 0xffffffff,
+                                    },
+                                }
+                            end,
+                            update = function(_, state, event)
+                                return { state = { selected = event.value } }
+                            end,
+                        },
+                    },
+                }
+            "#,
+        )
+        .unwrap();
+        assert_eq!(runtime.api_version(), 4);
+        assert_eq!(runtime.export_ids().unwrap(), vec!["main", "summary"]);
+
+        let main = runtime
+            .render(&providers_fake_for_test(), &json!({}))
+            .unwrap();
+        let Content::ExperienceMount(mount) = main.root.content.unwrap() else {
+            panic!("expected an experience mount")
+        };
+        assert_eq!(mount.dependency, "agenda");
+        assert_eq!(mount.properties["compact"], true);
+
+        let summary = runtime
+            .render_export(
+                "summary",
+                &providers_fake_for_test(),
+                &json!({}),
+                &json!({"title": "Agenda"}),
+                ExperienceViewport {
+                    width: 320,
+                    height: 180,
+                    scale_milli: 1000,
+                },
+                None,
+            )
+            .unwrap();
+        let Content::Text(text) = summary.root.content.unwrap() else {
+            panic!("expected summary text")
+        };
+        assert_eq!(text.value, "Agenda:320:dark");
+
+        let update = runtime
+            .update_export_with_effects(
+                "summary",
+                &providers_fake_for_test(),
+                &json!({}),
+                &json!({"value": "next"}),
+                &json!({"title": "Agenda"}),
+                ExperienceViewport::default(),
+                None,
+            )
+            .unwrap();
+        assert_eq!(update.state["selected"], "next");
     }
 
     #[test]
@@ -3230,6 +3630,7 @@ mod tests {
             network: Default::default(),
             providers: Default::default(),
             shell: Default::default(),
+            appearance: Default::default(),
         }
     }
 }

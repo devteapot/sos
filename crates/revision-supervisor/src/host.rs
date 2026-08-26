@@ -104,6 +104,22 @@ impl ExperienceHost {
         expect_presented(event, request_id, &revision_id)
     }
 
+    pub fn boot_graph(
+        &mut self,
+        graph_id: &str,
+        graph_path: PathBuf,
+        revision_root: PathBuf,
+    ) -> Result<()> {
+        let request_id = self.request_id();
+        let event = self.call(HostRequest::BootGraph {
+            request_id,
+            graph_id: graph_id.into(),
+            graph_path,
+            revision_root,
+        })?;
+        expect_graph_presented(event, request_id, graph_id)
+    }
+
     pub fn prepare(&mut self, revision: &VerifiedRevision) -> Result<()> {
         let request_id = self.request_id();
         let revision_id = revision.manifest.revision_id.clone();
@@ -119,6 +135,29 @@ impl ExperienceHost {
                 revision_id: received_revision,
             } if received == request_id && received_revision == revision_id => Ok(()),
             HostEvent::Rejected { error, .. } => Err(Error::HostRejected(error)),
+            _ => Err(Error::InvalidHostEvent),
+        }
+    }
+
+    pub fn prepare_graph(
+        &mut self,
+        graph_id: &str,
+        graph_path: PathBuf,
+        revision_root: PathBuf,
+    ) -> Result<()> {
+        let request_id = self.request_id();
+        let event = self.call(HostRequest::PrepareGraph {
+            request_id,
+            graph_id: graph_id.into(),
+            graph_path,
+            revision_root,
+        })?;
+        match event {
+            HostEvent::GraphPrepared {
+                request_id: received,
+                graph_id: received_graph,
+            } if received == request_id && received_graph == graph_id => Ok(()),
+            HostEvent::GraphRejected { error, .. } => Err(Error::HostRejected(error)),
             _ => Err(Error::InvalidHostEvent),
         }
     }
@@ -144,6 +183,44 @@ impl ExperienceHost {
         }
     }
 
+    pub fn present_graph(&mut self, graph_id: &str) -> Result<()> {
+        let request_id = self.request_id();
+        let event = self.call(HostRequest::PresentGraph {
+            request_id,
+            graph_id: graph_id.into(),
+        })?;
+        expect_graph_presented(event, request_id, graph_id)?;
+        let request_id = self.request_id();
+        let event = self.call(HostRequest::ConfirmGraph {
+            request_id,
+            graph_id: graph_id.into(),
+        })?;
+        match event {
+            HostEvent::GraphConfirmed {
+                request_id: received,
+                graph_id: received_graph,
+            } if received == request_id && received_graph == graph_id => Ok(()),
+            HostEvent::GraphRejected { error, .. } => Err(Error::HostRejected(error)),
+            _ => Err(Error::InvalidHostEvent),
+        }
+    }
+
+    pub fn finalize_graph(&mut self, graph_id: &str) -> Result<()> {
+        let request_id = self.request_id();
+        let event = self.call(HostRequest::FinalizeGraph {
+            request_id,
+            graph_id: graph_id.into(),
+        })?;
+        match event {
+            HostEvent::GraphFinalized {
+                request_id: received,
+                graph_id: received_graph,
+            } if received == request_id && received_graph == graph_id => Ok(()),
+            HostEvent::GraphRejected { error, .. } => Err(Error::HostRejected(error)),
+            _ => Err(Error::InvalidHostEvent),
+        }
+    }
+
     pub fn quiesce_input(&mut self, revision_id: &str) -> Result<()> {
         let request_id = self.request_id();
         let event = self.call(HostRequest::QuiesceInput {
@@ -160,6 +237,22 @@ impl ExperienceHost {
         }
     }
 
+    pub fn quiesce_graph_input(&mut self, graph_id: &str) -> Result<()> {
+        let request_id = self.request_id();
+        let event = self.call(HostRequest::QuiesceGraphInput {
+            request_id,
+            graph_id: graph_id.into(),
+        })?;
+        match event {
+            HostEvent::GraphInputQuiesced {
+                request_id: received,
+                graph_id: received_graph,
+            } if received == request_id && received_graph == graph_id => Ok(()),
+            HostEvent::GraphRejected { error, .. } => Err(Error::HostRejected(error)),
+            _ => Err(Error::InvalidHostEvent),
+        }
+    }
+
     pub fn discard(&mut self, revision_id: &str) -> Result<()> {
         let request_id = self.request_id();
         let event = self.call(HostRequest::Discard {
@@ -171,6 +264,22 @@ impl ExperienceHost {
                 request_id: received,
                 revision_id: received_revision,
             } if received == request_id && received_revision == revision_id => Ok(()),
+            _ => Err(Error::InvalidHostEvent),
+        }
+    }
+
+    pub fn discard_graph(&mut self, graph_id: &str) -> Result<()> {
+        let request_id = self.request_id();
+        let event = self.call(HostRequest::DiscardGraph {
+            request_id,
+            graph_id: graph_id.into(),
+        })?;
+        match event {
+            HostEvent::GraphDiscarded {
+                request_id: received,
+                graph_id: received_graph,
+            } if received == request_id && received_graph == graph_id => Ok(()),
+            HostEvent::GraphRejected { error, .. } => Err(Error::HostRejected(error)),
             _ => Err(Error::InvalidHostEvent),
         }
     }
@@ -236,6 +345,17 @@ fn expect_presented(event: HostEvent, request_id: u64, revision_id: &str) -> Res
             revision_id: received_revision,
         } if received == request_id && received_revision == revision_id => Ok(()),
         HostEvent::Rejected { error, .. } => Err(Error::HostRejected(error)),
+        _ => Err(Error::InvalidHostEvent),
+    }
+}
+
+fn expect_graph_presented(event: HostEvent, request_id: u64, graph_id: &str) -> Result<()> {
+    match event {
+        HostEvent::GraphPresented {
+            request_id: received,
+            graph_id: received_graph,
+        } if received == request_id && received_graph == graph_id => Ok(()),
+        HostEvent::GraphRejected { error, .. } => Err(Error::HostRejected(error)),
         _ => Err(Error::InvalidHostEvent),
     }
 }

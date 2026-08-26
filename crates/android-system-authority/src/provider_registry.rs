@@ -382,6 +382,7 @@ fn compatibility_model(providers: SystemProviders) -> ExperienceModel {
         },
         providers,
         shell: Default::default(),
+        appearance: Default::default(),
     }
 }
 

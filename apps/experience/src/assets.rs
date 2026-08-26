@@ -34,6 +34,14 @@ static REVISION_FONTS: OnceLock<RwLock<Vec<RevisionFont>>> = OnceLock::new();
 static LOADED_FONTS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
 
 pub fn install(assets: &[RevisionAsset]) {
+    install_many(std::iter::once(assets));
+}
+
+pub fn install_graph<'a>(asset_sets: impl IntoIterator<Item = &'a [RevisionAsset]>) {
+    install_many(asset_sets);
+}
+
+fn install_many<'a>(asset_sets: impl IntoIterator<Item = &'a [RevisionAsset]>) {
     let registry = REVISION_ASSETS.get_or_init(|| RwLock::new(HashMap::new()));
     let mut registry = registry.write().expect("revision asset registry");
     registry.clear();
@@ -42,16 +50,49 @@ pub fn install(assets: &[RevisionAsset]) {
         .write()
         .expect("revision font registry");
     fonts.clear();
-    for asset in assets {
-        registry.insert(asset.path.clone(), asset.bytes.clone());
-        if asset.kind == "font" {
-            fonts.push((asset.sha256.clone(), asset.bytes.clone()));
+    for assets in asset_sets {
+        for asset in assets {
+            registry.insert(asset.path.clone(), asset.bytes.clone());
+            if asset.kind == "font" {
+                fonts.push((asset.sha256.clone(), asset.bytes.clone()));
+            }
         }
     }
 }
 
 #[cfg(target_os = "linux")]
 pub fn install_provider_frames(frames: &[providers_linux::ProviderFrame]) {
+    install_provider_frames_inner(None, frames, true);
+}
+
+#[cfg(target_os = "linux")]
+pub fn clear_provider_frames() {
+    PROVIDER_ASSETS
+        .get_or_init(|| RwLock::new(HashMap::new()))
+        .write()
+        .expect("provider asset registry")
+        .clear();
+    PROVIDER_SURFACES
+        .get_or_init(|| RwLock::new(HashMap::new()))
+        .write()
+        .expect("provider surface registry")
+        .clear();
+}
+
+#[cfg(target_os = "linux")]
+pub fn install_provider_frames_scoped(
+    revision_id: &str,
+    frames: &[providers_linux::ProviderFrame],
+) {
+    install_provider_frames_inner(Some(revision_id), frames, false);
+}
+
+#[cfg(target_os = "linux")]
+fn install_provider_frames_inner(
+    namespace: Option<&str>,
+    frames: &[providers_linux::ProviderFrame],
+    clear: bool,
+) {
     let mut assets = PROVIDER_ASSETS
         .get_or_init(|| RwLock::new(HashMap::new()))
         .write()
@@ -60,8 +101,14 @@ pub fn install_provider_frames(frames: &[providers_linux::ProviderFrame]) {
         .get_or_init(|| RwLock::new(HashMap::new()))
         .write()
         .expect("provider surface registry");
-    assets.clear();
-    surfaces.clear();
+    if clear {
+        assets.clear();
+        surfaces.clear();
+    }
+    if let Some(namespace) = namespace {
+        let prefix = format!("{namespace}::");
+        surfaces.retain(|surface, _| !surface.starts_with(&prefix));
+    }
     for frame in frames {
         let path = format!("sos/providers/{}.{}", frame.sha256, frame.extension);
         eprintln!(
@@ -71,7 +118,11 @@ pub fn install_provider_frames(frames: &[providers_linux::ProviderFrame]) {
             frame.bytes.len()
         );
         assets.insert(path.clone(), frame.bytes.clone());
-        surfaces.insert(frame.surface_id.clone(), path);
+        let surface_id = namespace.map_or_else(
+            || frame.surface_id.clone(),
+            |namespace| format!("{namespace}::{}", frame.surface_id),
+        );
+        surfaces.insert(surface_id, path);
     }
 }
 

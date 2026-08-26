@@ -85,17 +85,23 @@ contains no application ID, process identity, executable, or protocol handle.
 Its actions are closed `shell.focus_window` and `shell.close_window` effects;
 the compositor re-resolves an opaque ID and rejects stale selections.
 
-This is the first composition boundary, not the final application supervisor:
-the stock shell and its one active native application surface still come from
-the same revision and host process. Independent application revisions,
-namespaced state, lifecycle supervision, and an application registration
-broker are the next layer. SOS-native applications may additionally publish a
-bounded `status_widgets` contribution through the trusted applications
-provider: an ID, visible label/value and optional opaque compatible-application
-selection. The optional tap reuses the existing typed `apps.launch` authority;
-arbitrary callbacks or app-supplied Luau do not enter the bar. The current
-Linux provider publishes an empty contribution set until the native-app
-registration broker exists.
+This is a native-window coexistence boundary, not experience composition. The
+stock shell and its one active native application surface still come from the
+same revision and host process. They do not have separate source identities,
+state namespaces, grants, activation, or recovery. Independent application
+revision supervision remains future work for Stock's application window. The
+separate API v4 host-owned `experience_mount` contract is implemented for
+embedded live composition as defined in
+[`experience-composition.md`](experience-composition.md); Stock has not yet
+been repackaged as a v4 graph root.
+
+SOS-native applications may additionally publish a bounded `status_widgets`
+contribution through the trusted applications provider: an ID, visible
+label/value and optional opaque compatible-application selection. Stock
+renders that data in its own style. The optional tap reuses the existing typed
+`apps.launch` authority; arbitrary callbacks or app-supplied Luau do not enter
+the bar. The current Linux provider publishes an empty contribution set until
+the native-app registration broker exists.
 
 The mark is currently an inline immutable SVG declaration and therefore enters
 the same revision asset set and validation limits as agent content. Sidecar
@@ -107,6 +113,10 @@ demonstrates the typed token shape used by the bootstrap. Larger installed
 revisions can submit it as the namespaced `stock.theme` Luau sidecar and load it
 through the sandboxed revision-local `require`; the immutable cross-platform
 bootstrap keeps an in-file copy so Android can still start without sidecars.
+The intended multi-experience contract keeps style modules revision-local and
+publishes global accessibility preferences and semantic appearance tokens as
+authority-owned data. A mounted child may accept a bounded container override,
+but a parent never injects style code or repaints the child scene.
 
 ## Responsive contract
 

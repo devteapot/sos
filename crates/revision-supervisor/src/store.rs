@@ -11,9 +11,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
+use experience_package::{PackageMetadata, PACKAGE_FORMAT_VERSION};
+
 use crate::{Error, Result};
 
-const FORMAT_VERSION: u32 = 3;
+const LEGACY_FORMAT_VERSION: u32 = 3;
 pub const MAX_REVISION_ASSETS: usize = 64;
 pub const MAX_REVISION_ASSET_BYTES: usize = 4 * 1024 * 1024;
 pub const MAX_REVISION_ASSET_TOTAL_BYTES: usize = 16 * 1024 * 1024;
@@ -32,6 +34,12 @@ pub struct RevisionInput {
     pub schema_version: u64,
     pub experience_api_version: u32,
     pub assets: Vec<RevisionAssetInput>,
+}
+
+#[derive(Clone, Debug)]
+pub struct RevisionPackageInput {
+    pub revision: RevisionInput,
+    pub package: PackageMetadata,
 }
 
 #[derive(Clone, Debug)]
@@ -57,6 +65,8 @@ pub struct RevisionManifest {
     pub source: FileIdentity,
     pub state: FileIdentity,
     pub assets: Vec<AssetIdentity>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub package: Option<FileIdentity>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -77,6 +87,7 @@ pub struct DurableState {
 pub struct VerifiedRevision {
     pub directory: PathBuf,
     pub manifest: RevisionManifest,
+    pub package: Option<PackageMetadata>,
 }
 
 impl RevisionStore {
@@ -93,6 +104,22 @@ impl RevisionStore {
     }
 
     pub fn install(&self, input: RevisionInput) -> Result<VerifiedRevision> {
+        self.install_inner(input, None)
+    }
+
+    pub fn install_package(&self, input: RevisionPackageInput) -> Result<VerifiedRevision> {
+        input
+            .package
+            .validate()
+            .map_err(|error| Error::InvalidRevision(error.to_string()))?;
+        self.install_inner(input.revision, Some(input.package))
+    }
+
+    fn install_inner(
+        &self,
+        input: RevisionInput,
+        package: Option<PackageMetadata>,
+    ) -> Result<VerifiedRevision> {
         if input.schema_version == 0 {
             return Err(Error::InvalidRevision(
                 "schema version must be positive".into(),
@@ -118,21 +145,38 @@ impl RevisionStore {
             .map(|asset| asset.identity.clone())
             .collect::<Vec<_>>();
 
+        let package_bytes = package
+            .as_ref()
+            .map(PackageMetadata::canonical_bytes)
+            .transpose()
+            .map_err(|error| Error::InvalidRevision(error.to_string()))?;
+        let package_identity = package_bytes
+            .as_ref()
+            .map(|bytes| identity("package.json", bytes));
+        let format_version = if package.is_some() {
+            PACKAGE_FORMAT_VERSION
+        } else {
+            LEGACY_FORMAT_VERSION
+        };
+
         let revision_id = revision_identity(
+            format_version,
             input.schema_version,
             input.experience_api_version,
             &source,
             &state_identity,
             &asset_identities,
+            package_identity.as_ref(),
         );
         let manifest = RevisionManifest {
-            format_version: FORMAT_VERSION,
+            format_version,
             revision_id: revision_id.clone(),
             schema_version: input.schema_version,
             experience_api_version: input.experience_api_version,
             source,
             state: state_identity,
             assets: asset_identities,
+            package: package_identity,
         };
         let destination = self.revision_path(&revision_id)?;
         if destination.exists() {
@@ -149,6 +193,9 @@ impl RevisionStore {
         let result = (|| {
             write_synced(&temporary.join("source.luau"), &input.source, 0o444)?;
             write_synced(&temporary.join("state.json"), &state, 0o444)?;
+            if let Some(package_bytes) = &package_bytes {
+                write_synced(&temporary.join("package.json"), package_bytes, 0o444)?;
+            }
             if !assets.is_empty() {
                 let assets_directory = temporary.join("assets");
                 fs::create_dir(&assets_directory)?;
@@ -200,17 +247,25 @@ impl RevisionStore {
             }
         }
         let manifest: RevisionManifest = serde_json::from_slice(&manifest_bytes)?;
-        if manifest.format_version != FORMAT_VERSION || manifest.revision_id != revision_id {
+        if !matches!(
+            manifest.format_version,
+            LEGACY_FORMAT_VERSION | PACKAGE_FORMAT_VERSION
+        ) || manifest.revision_id != revision_id
+            || (manifest.format_version == LEGACY_FORMAT_VERSION && manifest.package.is_some())
+            || (manifest.format_version == PACKAGE_FORMAT_VERSION && manifest.package.is_none())
+        {
             return Err(Error::InvalidRevision(
                 "manifest format or revision identity mismatch".into(),
             ));
         }
         if revision_identity(
+            manifest.format_version,
             manifest.schema_version,
             manifest.experience_api_version,
             &manifest.source,
             &manifest.state,
             &manifest.assets,
+            manifest.package.as_ref(),
         ) != revision_id
         {
             return Err(Error::InvalidRevision(
@@ -229,6 +284,32 @@ impl RevisionStore {
             verify_file(&directory, &asset.file)?;
             validate_asset_bytes(&asset.kind, &fs::read(directory.join(&asset.file.path))?)?;
         }
+        let package = match &manifest.package {
+            Some(identity) => {
+                verify_file(&directory, identity)?;
+                if identity.path != "package.json" {
+                    return Err(Error::InvalidRevision(
+                        "package metadata must use package.json".into(),
+                    ));
+                }
+                let bytes = fs::read(directory.join(&identity.path))?;
+                let package: PackageMetadata = serde_json::from_slice(&bytes)?;
+                package
+                    .validate()
+                    .map_err(|error| Error::InvalidRevision(error.to_string()))?;
+                if package
+                    .canonical_bytes()
+                    .map_err(|error| Error::InvalidRevision(error.to_string()))?
+                    != bytes
+                {
+                    return Err(Error::InvalidRevision(
+                        "package metadata is not canonical JSON".into(),
+                    ));
+                }
+                Some(package)
+            }
+            None => None,
+        };
         let state: DurableState =
             serde_json::from_slice(&fs::read(directory.join(&manifest.state.path))?)?;
         if state.schema_version != manifest.schema_version
@@ -241,6 +322,7 @@ impl RevisionStore {
         Ok(VerifiedRevision {
             directory,
             manifest,
+            package,
         })
     }
 
@@ -405,14 +487,16 @@ fn digest(bytes: &[u8]) -> String {
 }
 
 fn revision_identity(
+    format_version: u32,
     schema_version: u64,
     experience_api_version: u32,
     source: &FileIdentity,
     state: &FileIdentity,
     assets: &[AssetIdentity],
+    package: Option<&FileIdentity>,
 ) -> String {
     let mut revision_digest = Sha256::new();
-    revision_digest.update(FORMAT_VERSION.to_le_bytes());
+    revision_digest.update(format_version.to_le_bytes());
     revision_digest.update(schema_version.to_le_bytes());
     revision_digest.update(experience_api_version.to_le_bytes());
     revision_digest.update(source.sha256.as_bytes());
@@ -425,6 +509,11 @@ fn revision_identity(
         revision_digest.update(asset.file.path.as_bytes());
         revision_digest.update(asset.file.size.to_le_bytes());
         revision_digest.update(asset.file.sha256.as_bytes());
+    }
+    if let Some(package) = package {
+        revision_digest.update(package.path.as_bytes());
+        revision_digest.update(package.size.to_le_bytes());
+        revision_digest.update(package.sha256.as_bytes());
     }
     format!("{:x}", revision_digest.finalize())
 }

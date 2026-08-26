@@ -98,16 +98,40 @@ experience revision
 ├── source
 ├── assets and optional shaders
 ├── provider bindings
+├── published exports and resolved experience dependencies
 ├── persistent-state schema and migrations
 ├── build/runtime metadata
 ├── originating user request and agent rationale
 ├── screenshots, logs, and acceptance telemetry
-└── parent revision for diff, rollback, and branching
+└── exact derivation parents for diff, rollback, branching, and remix
 ```
 
 The user must be able to pin a space, modify it conversationally, inspect which
 providers supply it, compare versions, undo changes, disable adaptation, and
 export its implementation without exporting private provider data.
+
+## Derivation and live composition
+
+SOS distinguishes derivation from live composition. A fork or remix reads one
+or more exact revisions and produces a new, self-contained experience. A live
+composition mounts a declared export from one experience inside another while
+each keeps separate code, state, provider grants, activation, and failure
+lifecycle. Opening independent windows is coexistence, and revision-local
+modules are code reuse.
+
+The parent of a live composition owns layout space and passes only declared,
+bounded values. A host-owned mount clips and composites the child, routes input
+and accessibility, validates typed child events, and keeps the child scene and
+state outside the parent VM. Deeply integrated cross-provider behavior should
+normally become a remix. Independently useful behavior and state should remain
+behind a live mount.
+
+The versioned identity, authority, appearance, update, authoring, and
+acceptance rules are defined in
+[`experience-composition.md`](experience-composition.md). Package and
+Experience API v4 implement them in the shared runtime and Linux host; API v3
+remains the legacy single-experience path, and Android host integration remains
+open.
 
 ## One experience language, not a permanent IR ceiling
 

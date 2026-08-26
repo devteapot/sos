@@ -11875,3 +11875,155 @@ source has a clean revision, rebuild with `--ssh-authorized-key-file
 /home/carlid/.ssh/id_ed25519.pub`, boot it on the Framework through the normal
 disk-protected workflow, verify public-key login and remote password rejection,
 and confirm that local password recovery still works.
+## 2026-08-26: Formalize experience derivation and live composition
+
+**Goal:** Define how SOS combines experiences without confusing source
+derivation, runtime composition, ordinary window coexistence, revision-local
+code reuse, or shared appearance. Preserve independent state, authority,
+activation, failure, and custom visual systems across a live boundary.
+
+**Changed:** Added `docs/experience-composition.md` as the architecture decision
+for stable experience/revision/instance identities, fork and remix lineage,
+published entry points, revision-bound dependency aliases, the proposed
+host-owned `experience_mount`, typed properties and child events, data-flow
+authorization, graph validation, locked and future tracked dependencies,
+runtime containment, appearance resolution, authoring targets, activation,
+rejected shortcuts, and the first acceptance gate. The document explicitly
+marks derivation metadata, the contract package, global appearance model, and
+mount content kind as unimplemented in Scene ABI v3.
+
+Updated the vision's canonical artifact from one parent revision to exact
+derivation parents plus exported contracts and dependencies. Updated the Stock
+report to classify its current same-revision `application_surface` as
+native-window coexistence rather than experience composition. The API documentation
+now states the current limit and points to the future contract, and the README
+documentation map links the focused decision.
+
+**Evidence:** `git diff --check` passed for tracked edits. A no-index whitespace
+check passed for the new untracked document. Focused relative-link checks
+resolved every local link in the changed README, vision, Stock, and API files.
+`docs/experience-composition.md` is 372 lines, 2,332 words, and 16,832 bytes.
+This was a documentation-only architecture change, so no runtime, compositor,
+device, or latency result is claimed.
+
+**Failures and rejected approaches:** No documentation check failed. The first
+framing used composition for independently presented windows; the decision now
+calls that coexistence. A derivation-only model was rejected because it loses
+child identity, state, independent updates, and failure isolation. Raw child
+scene injection, cross-revision `require`, implicit permission union,
+schema-only tracked updates, and a global executable style engine were also
+rejected. Live composition instead keeps the child behind a host-enforced
+mount, while a fork or remix emits a complete new revision.
+
+**Decision:** Support both derivation and live composition. A fork has one exact
+parent and a remix has several; both produce a self-contained experience with
+new grants. Live composition resolves a declared child export through a
+revision-bound alias and keeps parent and child VMs, state, grants, validation,
+and activation separate. Appearance crosses the boundary as typed data;
+styles remain revision-local code. Neither `application_surface` nor ordinary
+window placement satisfies this contract.
+
+**Open risks / next gate:** Fix numeric schema and graph limits, the exact
+contract serialization, experience registry and manifest identity rules,
+data-flow grant representation, child-event ABI, multi-VM lifecycle, global
+appearance ABI, and tracked graph transaction semantics. Then implement the
+Agenda and Media gate defined in `docs/experience-composition.md`: mount both
+exports in a Dashboard, prove containment and appearance propagation, exercise
+a tracked update, and create a self-contained remix from the same parents.
+
+## 2026-08-26: Implement experience derivation, composition, and appearance
+
+**Goal:** Build the complete shared and Linux-host milestone plan from the
+experience derivation and composition decision. Preserve the API v3 edit path,
+allow custom visual systems, keep authority at revision and experience
+boundaries, and make graph activation recoverable rather than inferring
+success from package installation.
+
+**Changed:** Added the platform-neutral `experience-package` crate with stable
+experience, revision, export, dependency, instance, and graph identities;
+closed bounded value schemas; canonical contract digests; exact fork/remix
+lineage; locked and tracked bindings; explicit boundary grants; typed global
+and container appearance; canonical resolved graphs; and fixed limits for
+exports, dependencies, values, depth, and instances. Revision manifest v4 now
+hashes the canonical package, while v3 remains readable for the legacy path.
+The durable registry owns stable experience identities and current/previous
+pointers. The resolver verifies exact exports, digests, grants, roles, cycles,
+and graph limits, and the graph store persists the exact accepted snapshot.
+
+Added Experience API v4 named exports and host-owned `experience_mount`
+content with bounded properties, container appearance, and declared child
+events. `GraphRuntime` runs one sandboxed VM, state namespace, asset namespace,
+and package per graph node. It validates every boundary value, contains a
+failed child, shares durable state across repeated instances of the same
+experience revision, and rolls back a partially failed child-event cascade.
+Provider/state protocol v2 now supports per-experience resources, durable
+revision-specific state, independent appearance generations, and atomic graph
+state promotions. Ordinary mounted experiences cannot use shell-only content
+or shell effects.
+
+Extended the host protocol and supervisor with prepare, quiesce, present,
+confirm, discard, and finalize graph operations. A durable activation journal
+coordinates registry and graph pointers, retains the previous graph until
+finalization, and selects a recoverable side after an injected crash. The Linux
+host prepares graphs on a dedicated worker, renders and clips the composed
+tree, routes input to one graph owner, namespaces text and accessibility state,
+maintains revision-bound provider subscriptions, and can restore the previous
+graph after a pre-commit failure.
+
+Added bounded derivation and composition context, validation, and submission
+tools to the trusted Rust broker and resident TypeScript agent. Validation is
+bound to exact parents, dependencies, source, modules, contracts, grants, and
+representative viewport and appearance scenarios. Submission installs the
+candidate and resolved graph but reports activation as still required. A new
+identity receives its initial registry pointer; replacing an existing identity
+leaves its current pointer unchanged until graph activation. Authoring also
+rejects replacement of a non-ordinary identity. Added Agenda, Media, Dashboard,
+and self-contained Agenda-Media Remix packages plus a deterministic reference
+installer and tracked-update/restart integration gate.
+
+**Evidence:**
+
+- `cargo test --workspace --locked --lib --bins --tests -q` passed every
+  product unit and integration target. The focused
+  `sos-linux-session` replacement-pointer regression passed, and
+  `cargo test --locked -p sos-experience --features linux-host -q` passed 32
+  Linux-host tests. `cargo test --workspace --locked --doc --exclude
+  gpui-mobile -q` passed the remaining workspace documentation targets.
+- `cargo check --workspace --locked --all-targets -q` passed. It retained the
+  pre-existing cfg-dependent unused-`output` warning in `sos-compositor`.
+- `npm --prefix services/sos-agent test` rebuilt the packaged runner and passed
+  16/16 tests, including exact derivation and composition package binding.
+- `./tools/sosctl typecheck` and `./tools/sosctl validate --json` passed all
+  four checked-in composition examples.
+- `cargo fmt --all`, `git diff --check`, and a focused relative-link check over
+  the changed README and architecture documents passed.
+
+**Failures and rejected approaches:** An unfiltered `cargo test --workspace
+--locked` passed the product suites and then failed two pre-existing
+`gpui-mobile` documentation examples: one refers to an illustrative
+`MyVideoFactory`, and one omits imports for `Arc`, `IntoElement`, and `div`.
+The vendored examples were not changed or counted as product failures. The
+Android target probe stopped in `psm` because this host has no
+`aarch64-linux-android-clang`; no Android build result is claimed. An early
+submission path could make a replacement revision current during registration;
+it was changed to leave existing pointers for activation and covered by a
+regression test. Automatic activation from the authoring broker was rejected
+because it would collapse validation, presentation, durable pointer commit,
+rollback, and truthful status into one unverified response.
+
+**Decision:** Adopt package and Experience API v4 for derivation and live
+composition while retaining API v3 for legacy single-experience revisions.
+Appearance is authority-owned typed data; executable styles stay local to the
+experience. A fork or remix is a self-contained new revision. A live
+composition preserves child identity, VM, state, grants, and failure ownership
+behind a host mount. Installation and validation never imply activation.
+
+**Open risks / next gate:** This entry completes the shared and Linux desktop
+implementation milestones, not physical acceptance. Run the SOS Linux stable
+host workflow to verify real pointer and text focus, accessibility focus,
+compositor clipping, presentation latency, and recovery on hardware. Add graph
+loading and rendering to the Android GPUI host, then run its build and physical
+device gate with the Android NDK available. The current Stock shell remains an
+API v3 top-level experience rather than a packaged v4 graph root. External
+provider side effects are revision-authorized, but provider-wide idempotency or
+compensation across a host crash remains future work.

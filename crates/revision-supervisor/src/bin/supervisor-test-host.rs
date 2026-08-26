@@ -11,6 +11,8 @@ fn main() {
     let stdin = io::stdin();
     let mut prepared: Option<(String, String)> = None;
     let mut quiesced_revision: Option<String> = None;
+    let mut prepared_graph: Option<String> = None;
+    let mut quiesced_graph: Option<String> = None;
     for line in stdin.lock().lines() {
         let request: HostRequest = serde_json::from_str(&line.expect("read host request"))
             .expect("deserialize host request");
@@ -21,7 +23,7 @@ fn main() {
                 revision_path,
                 experience_api_version,
             } => {
-                if !matches!(experience_api_version, 1 | 3) {
+                if !matches!(experience_api_version, 1 | 3 | 4) {
                     emit(HostEvent::Rejected {
                         request_id,
                         revision_id,
@@ -38,6 +40,25 @@ fn main() {
                 });
                 exit_later_if_requested(&mode);
             }
+            HostRequest::BootGraph {
+                request_id,
+                graph_id,
+                graph_path,
+                ..
+            } => {
+                if !graph_path.is_file() {
+                    emit(HostEvent::GraphRejected {
+                        request_id,
+                        graph_id,
+                        error: "graph file is missing".into(),
+                    });
+                } else {
+                    emit(HostEvent::GraphPresented {
+                        request_id,
+                        graph_id,
+                    });
+                }
+            }
             HostRequest::Prepare {
                 request_id,
                 revision_id,
@@ -45,7 +66,7 @@ fn main() {
                 experience_api_version,
             } => {
                 let mode = source_mode(&revision_path);
-                if !matches!(experience_api_version, 1 | 3) {
+                if !matches!(experience_api_version, 1 | 3 | 4) {
                     emit(HostEvent::Rejected {
                         request_id,
                         revision_id,
@@ -67,6 +88,26 @@ fn main() {
                     });
                 }
             }
+            HostRequest::PrepareGraph {
+                request_id,
+                graph_id,
+                graph_path,
+                ..
+            } => {
+                if !graph_path.is_file() {
+                    emit(HostEvent::GraphRejected {
+                        request_id,
+                        graph_id,
+                        error: "graph file is missing".into(),
+                    });
+                } else {
+                    prepared_graph = Some(graph_id.clone());
+                    emit(HostEvent::GraphPrepared {
+                        request_id,
+                        graph_id,
+                    });
+                }
+            }
             HostRequest::QuiesceInput {
                 request_id,
                 revision_id,
@@ -82,6 +123,24 @@ fn main() {
                     emit(HostEvent::InputQuiesced {
                         request_id,
                         revision_id,
+                    });
+                }
+            }
+            HostRequest::QuiesceGraphInput {
+                request_id,
+                graph_id,
+            } => {
+                if prepared_graph.as_ref() != Some(&graph_id) {
+                    emit(HostEvent::GraphRejected {
+                        request_id,
+                        graph_id,
+                        error: "cannot quiesce without the matching prepared graph".into(),
+                    });
+                } else {
+                    quiesced_graph = Some(graph_id.clone());
+                    emit(HostEvent::GraphInputQuiesced {
+                        request_id,
+                        graph_id,
                     });
                 }
             }
@@ -120,12 +179,47 @@ fn main() {
                     exit_later_if_requested(&mode);
                 }
             }
+            HostRequest::PresentGraph {
+                request_id,
+                graph_id,
+            } => {
+                if prepared_graph.as_ref() != Some(&graph_id)
+                    || quiesced_graph.as_ref() != Some(&graph_id)
+                {
+                    emit(HostEvent::GraphRejected {
+                        request_id,
+                        graph_id,
+                        error: "graph was not prepared and quiesced".into(),
+                    });
+                } else {
+                    prepared_graph = None;
+                    quiesced_graph = None;
+                    emit(HostEvent::GraphPresented {
+                        request_id,
+                        graph_id,
+                    });
+                }
+            }
             HostRequest::Confirm {
                 request_id,
                 revision_id,
             } => emit(HostEvent::Confirmed {
                 request_id,
                 revision_id,
+            }),
+            HostRequest::ConfirmGraph {
+                request_id,
+                graph_id,
+            } => emit(HostEvent::GraphConfirmed {
+                request_id,
+                graph_id,
+            }),
+            HostRequest::FinalizeGraph {
+                request_id,
+                graph_id,
+            } => emit(HostEvent::GraphFinalized {
+                request_id,
+                graph_id,
             }),
             HostRequest::Discard {
                 request_id,
@@ -138,6 +232,17 @@ fn main() {
                 emit(HostEvent::Discarded {
                     request_id,
                     revision_id,
+                });
+            }
+            HostRequest::DiscardGraph {
+                request_id,
+                graph_id,
+            } => {
+                prepared_graph = None;
+                quiesced_graph = None;
+                emit(HostEvent::GraphDiscarded {
+                    request_id,
+                    graph_id,
                 });
             }
             HostRequest::Shutdown { request_id } => {

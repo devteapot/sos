@@ -17,12 +17,12 @@ generated widgets. The architectural north star is
 
 ## Current status
 
-As of 2026-08-16, SOS has moved beyond its original Android application
+As of 2026-08-26, SOS has moved beyond its original Android application
 laboratory into the privileged system and native-ownership phase.
 
 | Track | Current evidence |
 | --- | --- |
-| Generated experience | Scene ABI v3 Luau revisions support responsive layout, paint, transforms, clips, host-shaped text, raw multi-pointer input, animation, semantics, text composition, and bounded image/font/shader sidecars. Revisions are validated and activated transactionally in one permanent Rust/GPUI host. |
+| Generated experience | API v3 supports legacy single-experience revisions. Package and Experience API v4 add named exports, exact fork/remix lineage, host-owned live mounts, isolated child VMs/state/grants, typed appearance, locked or tracked graphs, and transactional Linux activation. The Agenda, Media, Dashboard, and self-contained remix reference gate passes desktop tests; physical Linux and Android graph-host acceptance remain open. |
 | Android APK harness | The physical SM-A336B passed the stable-host regression, typed provider effect, durable state/authority recovery, and a 10,000-swap device soak. This remains a regression harness, not the product boundary. |
 | Linux | A permanent GPUI/Wayland host, durable provider/state service, revision supervisor, resident Pi authoring agent, authenticated Smithay compositor, selectable GDM session, and Debian direct-DRM VM gate are implemented. Physical Linux hardware remains unproven. |
 | AOSP Cuttlefish | Pristine Android 17, SOS-as-HOME, and an init-supervised on-device authority passed in x86-64 Cuttlefish. |
@@ -150,6 +150,19 @@ replacing the process or window:
 ./tools/sosctl linux-status
 ./tools/sosctl linux-stop
 ```
+
+Install the API v4 composition reference package into an isolated store:
+
+```sh
+demo_root=$(mktemp -d)
+cargo run --locked -p revision-supervisor --bin sos-revision-supervisor -- \
+  install-composition-demo --root "$demo_root"
+```
+
+The JSON result names the Agenda, Media, Dashboard, and remix revisions plus
+the resolved Dashboard graph. See
+[`docs/experience-composition.md`](docs/experience-composition.md) for graph
+activation and acceptance status.
 
 Run the resident-agent path deterministically without a model call:
 
@@ -331,6 +344,8 @@ documented external evidence directories and are intentionally not tracked.
   device, reproducible build, rollback risk, and hardware evidence.
 - [`docs/experience-api.md`](docs/experience-api.md) documents the Luau-facing
   capability API.
+- [`docs/experience-composition.md`](docs/experience-composition.md) defines
+  fork, remix, live mounting, experience boundaries, and shared appearance.
 - [`docs/runtime-evaluation.md`](docs/runtime-evaluation.md) records why Luau
   was selected for the current experience runtime.
 - [`docs/stable-host-device-gate.md`](docs/stable-host-device-gate.md) and

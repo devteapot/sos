@@ -15,27 +15,59 @@ pub enum HostRequest {
         revision_path: PathBuf,
         experience_api_version: u32,
     },
+    BootGraph {
+        request_id: u64,
+        graph_id: String,
+        graph_path: PathBuf,
+        revision_root: PathBuf,
+    },
     Prepare {
         request_id: u64,
         revision_id: String,
         revision_path: PathBuf,
         experience_api_version: u32,
     },
+    PrepareGraph {
+        request_id: u64,
+        graph_id: String,
+        graph_path: PathBuf,
+        revision_root: PathBuf,
+    },
     QuiesceInput {
         request_id: u64,
         revision_id: String,
+    },
+    QuiesceGraphInput {
+        request_id: u64,
+        graph_id: String,
     },
     Present {
         request_id: u64,
         revision_id: String,
     },
+    PresentGraph {
+        request_id: u64,
+        graph_id: String,
+    },
     Confirm {
         request_id: u64,
         revision_id: String,
     },
+    ConfirmGraph {
+        request_id: u64,
+        graph_id: String,
+    },
+    FinalizeGraph {
+        request_id: u64,
+        graph_id: String,
+    },
     Discard {
         request_id: u64,
         revision_id: String,
+    },
+    DiscardGraph {
+        request_id: u64,
+        graph_id: String,
     },
     Shutdown {
         request_id: u64,
@@ -46,11 +78,18 @@ impl HostRequest {
     pub fn request_id(&self) -> u64 {
         match self {
             Self::Boot { request_id, .. }
+            | Self::BootGraph { request_id, .. }
             | Self::Prepare { request_id, .. }
+            | Self::PrepareGraph { request_id, .. }
             | Self::QuiesceInput { request_id, .. }
+            | Self::QuiesceGraphInput { request_id, .. }
             | Self::Present { request_id, .. }
+            | Self::PresentGraph { request_id, .. }
             | Self::Confirm { request_id, .. }
+            | Self::ConfirmGraph { request_id, .. }
+            | Self::FinalizeGraph { request_id, .. }
             | Self::Discard { request_id, .. }
+            | Self::DiscardGraph { request_id, .. }
             | Self::Shutdown { request_id } => *request_id,
         }
     }
@@ -63,25 +102,54 @@ pub enum HostEvent {
         request_id: u64,
         revision_id: String,
     },
+    GraphPrepared {
+        request_id: u64,
+        graph_id: String,
+    },
     InputQuiesced {
         request_id: u64,
         revision_id: String,
+    },
+    GraphInputQuiesced {
+        request_id: u64,
+        graph_id: String,
     },
     Presented {
         request_id: u64,
         revision_id: String,
     },
+    GraphPresented {
+        request_id: u64,
+        graph_id: String,
+    },
     Confirmed {
         request_id: u64,
         revision_id: String,
+    },
+    GraphConfirmed {
+        request_id: u64,
+        graph_id: String,
+    },
+    GraphFinalized {
+        request_id: u64,
+        graph_id: String,
     },
     Discarded {
         request_id: u64,
         revision_id: String,
     },
+    GraphDiscarded {
+        request_id: u64,
+        graph_id: String,
+    },
     Rejected {
         request_id: u64,
         revision_id: String,
+        error: String,
+    },
+    GraphRejected {
+        request_id: u64,
+        graph_id: String,
         error: String,
     },
     Shutdown {
@@ -93,11 +161,18 @@ impl HostEvent {
     pub fn request_id(&self) -> u64 {
         match self {
             Self::Prepared { request_id, .. }
+            | Self::GraphPrepared { request_id, .. }
             | Self::InputQuiesced { request_id, .. }
+            | Self::GraphInputQuiesced { request_id, .. }
             | Self::Presented { request_id, .. }
+            | Self::GraphPresented { request_id, .. }
             | Self::Confirmed { request_id, .. }
+            | Self::GraphConfirmed { request_id, .. }
+            | Self::GraphFinalized { request_id, .. }
             | Self::Discarded { request_id, .. }
+            | Self::GraphDiscarded { request_id, .. }
             | Self::Rejected { request_id, .. }
+            | Self::GraphRejected { request_id, .. }
             | Self::Shutdown { request_id } => *request_id,
         }
     }

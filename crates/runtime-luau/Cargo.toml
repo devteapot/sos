@@ -7,6 +7,7 @@ license.workspace = true
 [dependencies]
 async-channel.workspace = true
 experience-ir.workspace = true
+experience-package.workspace = true
 mlua = { version = "=0.12.0", default-features = false, features = ["luau", "serde"] }
 naga = { version = "29.0.4", features = ["wgsl-in"] }
 serde.workspace = true

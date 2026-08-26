@@ -80,6 +80,7 @@ pub fn snapshot() -> ExperienceModel {
         },
         providers: Default::default(),
         shell: Default::default(),
+        appearance: Default::default(),
     }
 }
 

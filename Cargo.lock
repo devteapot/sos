@@ -1740,8 +1740,19 @@ dependencies = [
 name = "experience-ir"
 version = "0.1.0"
 dependencies = [
+ "experience-package",
  "serde",
  "serde_json",
+ "thiserror 2.0.19",
+]
+
+[[package]]
+name = "experience-package"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
  "thiserror 2.0.19",
 ]
 
@@ -4686,6 +4697,7 @@ dependencies = [
 name = "provider-state-service"
 version = "0.1.0"
 dependencies = [
+ "experience-package",
  "serde",
  "serde_json",
  "service-protocol",
@@ -5100,6 +5112,7 @@ version = "0.1.0"
 dependencies = [
  "experience-host-protocol",
  "experience-ir",
+ "experience-package",
  "naga 29.0.4",
  "provider-state-service",
  "providers-fake",
@@ -5133,6 +5146,7 @@ version = "0.1.0"
 dependencies = [
  "async-channel 2.5.0",
  "experience-ir",
+ "experience-package",
  "mlua",
  "naga 29.0.4",
  "providers-fake",
@@ -5487,6 +5501,7 @@ dependencies = [
 name = "service-protocol"
 version = "0.1.0"
 dependencies = [
+ "experience-package",
  "serde",
  "serde_json",
 ]
@@ -5794,6 +5809,7 @@ dependencies = [
  "compositor-control-protocol",
  "experience-host-protocol",
  "experience-ir",
+ "experience-package",
  "gpui",
  "gpui-mobile",
  "gpui_linux",
@@ -5825,6 +5841,7 @@ dependencies = [
  "anyhow",
  "compositor-control-protocol",
  "experience-ir",
+ "experience-package",
  "nix 0.31.3",
  "provider-state-service",
  "providers-fake",

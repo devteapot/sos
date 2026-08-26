@@ -8,14 +8,18 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 use service_protocol::{
-    EffectReceipt, FaultPoint, MigrationProof, NotesAction, NotesResource, PromotionDraft,
-    ProviderAction, ServiceError, ServiceEvent, ServiceEventKind, StateResource, TransactionRecord,
-    TransactionStatus, MAX_ACTIONS, MAX_EVENTS_PER_REQUEST, MAX_STATE_BYTES,
+    AppearanceResource, EffectReceipt, ExperiencePromotionDraft, FaultPoint, GraphEffectReceipt,
+    GraphPromotionDraft, GraphTransactionRecord, MigrationProof, NotesAction, NotesResource,
+    PromotionDraft, ProviderAction, ServiceError, ServiceEvent, ServiceEventKind, StateResource,
+    TransactionRecord, TransactionStatus, MAX_ACTIONS, MAX_EVENTS_PER_REQUEST,
+    MAX_GRAPH_PROMOTIONS, MAX_STATE_BYTES,
 };
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
-const AUTHORITY_FORMAT_VERSION: u32 = 1;
+const LEGACY_AUTHORITY_FORMAT_VERSION: u32 = 1;
+const AUTHORITY_FORMAT_VERSION: u32 = 2;
+const STOCK_SHELL_EXPERIENCE_ID: &str = "sos.stock.shell";
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Debug, Error)]
@@ -38,8 +42,16 @@ impl From<ServiceError> for AuthorityError {
 struct AuthorityData {
     format_version: u32,
     current: StateResource,
+    #[serde(default)]
+    experiences: BTreeMap<String, StateResource>,
+    #[serde(default)]
+    experience_revisions: BTreeMap<String, BTreeMap<String, StateResource>>,
+    #[serde(default)]
+    appearance: AppearanceResource,
     notes: NotesResource,
     transactions: BTreeMap<String, TransactionRecord>,
+    #[serde(default)]
+    graph_transactions: BTreeMap<String, GraphTransactionRecord>,
     events: Vec<ServiceEvent>,
     next_event_sequence: u64,
 }
@@ -49,8 +61,15 @@ impl Default for AuthorityData {
         Self {
             format_version: AUTHORITY_FORMAT_VERSION,
             current: StateResource::default(),
+            experiences: BTreeMap::from([(
+                STOCK_SHELL_EXPERIENCE_ID.into(),
+                StateResource::default(),
+            )]),
+            experience_revisions: BTreeMap::new(),
+            appearance: AppearanceResource::default(),
             notes: NotesResource::default(),
             transactions: BTreeMap::new(),
+            graph_transactions: BTreeMap::new(),
             events: Vec::new(),
             next_event_sequence: 1,
         }
@@ -75,7 +94,7 @@ impl Authority {
             fs::create_dir_all(parent)
                 .map_err(|error| io_context("create authority parent directory", error))?;
         }
-        let data = if state_file.exists() {
+        let mut data = if state_file.exists() {
             serde_json::from_slice(
                 &fs::read(&state_file)
                     .map_err(|error| io_context("read authority state file", error))?,
@@ -83,13 +102,14 @@ impl Authority {
         } else {
             AuthorityData::default()
         };
+        let migrated = migrate_loaded(&mut data)?;
         validate_loaded(&data)?;
         let mut authority = Self {
             state_file,
             data,
             fault: None,
         };
-        if !authority.state_file.exists() {
+        if !authority.state_file.exists() || migrated {
             authority.persist(&authority.data)?;
         }
         authority.recover_committing()?;
@@ -98,6 +118,34 @@ impl Authority {
 
     pub fn current(&self) -> StateResource {
         self.data.current.clone()
+    }
+
+    pub fn current_for(&self, experience_id: &str) -> StateResource {
+        self.data
+            .experiences
+            .get(experience_id)
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    pub fn current_at(&self, experience_id: &str, revision_id: &str) -> StateResource {
+        self.data
+            .experience_revisions
+            .get(experience_id)
+            .and_then(|revisions| revisions.get(revision_id))
+            .cloned()
+            .or_else(|| {
+                self.data
+                    .experiences
+                    .get(experience_id)
+                    .filter(|state| state.revision_id == revision_id)
+                    .cloned()
+            })
+            .unwrap_or_default()
+    }
+
+    pub fn appearance(&self) -> AppearanceResource {
+        self.data.appearance.clone()
     }
 
     pub fn notes(&self) -> NotesResource {
@@ -110,6 +158,17 @@ impl Authority {
             .get(transaction_id)
             .cloned()
             .ok_or_else(|| not_found(format!("unknown transaction: {transaction_id}")))
+    }
+
+    pub fn graph_transaction(
+        &self,
+        transaction_id: &str,
+    ) -> Result<GraphTransactionRecord, AuthorityError> {
+        self.data
+            .graph_transactions
+            .get(transaction_id)
+            .cloned()
+            .ok_or_else(|| not_found(format!("unknown graph transaction: {transaction_id}")))
     }
 
     pub fn events(&self, after_sequence: u64, limit: usize) -> Vec<ServiceEvent> {
@@ -131,9 +190,53 @@ impl Authority {
     }
 
     pub fn stage(&mut self, draft: PromotionDraft) -> Result<TransactionRecord, AuthorityError> {
+        self.stage_inner(None, draft)
+    }
+
+    pub fn stage_experience(
+        &mut self,
+        request: ExperiencePromotionDraft,
+    ) -> Result<TransactionRecord, AuthorityError> {
+        experience_package::ExperienceId::parse(request.experience_id.as_str())
+            .map_err(|error| invalid(error.to_string()))?;
+        self.stage_inner(Some(request.experience_id), request.draft)
+    }
+
+    pub fn stage_graph(
+        &mut self,
+        draft: GraphPromotionDraft,
+    ) -> Result<GraphTransactionRecord, AuthorityError> {
         self.inject(FaultPoint::BeforeStage)?;
-        validate_draft(&draft, &self.data.current)?;
-        if let Some(existing) = self.data.transactions.get(&draft.transaction_id) {
+        validate_transaction_id(&draft.transaction_id)?;
+        if draft.promotions.is_empty() || draft.promotions.len() > MAX_GRAPH_PROMOTIONS {
+            return Err(invalid(format!(
+                "graph transaction must contain 1 to {MAX_GRAPH_PROMOTIONS} promotions"
+            )));
+        }
+        let mut seen = std::collections::BTreeSet::new();
+        for promotion in &draft.promotions {
+            if !seen.insert(promotion.experience_id.clone()) {
+                return Err(invalid(format!(
+                    "duplicate experience in graph transaction: {}",
+                    promotion.experience_id
+                )));
+            }
+            let promotion_draft = promotion.as_promotion(&draft.transaction_id);
+            let current = revision_state_for(
+                &self.data,
+                promotion.experience_id.as_str(),
+                &promotion.revision_id,
+                &promotion_draft,
+            );
+            validate_draft(&promotion_draft, &current)?;
+        }
+        if self.data.transactions.contains_key(&draft.transaction_id) {
+            return Err(conflict(format!(
+                "transaction ID is already used: {}",
+                draft.transaction_id
+            )));
+        }
+        if let Some(existing) = self.data.graph_transactions.get(&draft.transaction_id) {
             return if existing.draft == draft && existing.status != TransactionStatus::Aborted {
                 Ok(existing.clone())
             } else {
@@ -144,7 +247,65 @@ impl Authority {
             };
         }
         let transaction_id = draft.transaction_id.clone();
+        let record = GraphTransactionRecord {
+            draft,
+            status: TransactionStatus::Staged,
+            committed_revisions: BTreeMap::new(),
+            effects: Vec::new(),
+        };
+        let mut next = self.data.clone();
+        next.graph_transactions
+            .insert(transaction_id.clone(), record.clone());
+        push_event(
+            &mut next,
+            ServiceEventKind::GraphTransactionStaged {
+                transaction_id,
+                experience_count: record.draft.promotions.len(),
+            },
+        );
+        self.replace_durably(next)?;
+        self.inject(FaultPoint::AfterStage)?;
+        Ok(record)
+    }
+
+    fn stage_inner(
+        &mut self,
+        experience_id: Option<experience_package::ExperienceId>,
+        draft: PromotionDraft,
+    ) -> Result<TransactionRecord, AuthorityError> {
+        self.inject(FaultPoint::BeforeStage)?;
+        validate_transaction_id(&draft.transaction_id)?;
+        let current = experience_id
+            .as_ref()
+            .map(|id| initial_state_for(&draft, self.data.experiences.get(id.as_str())))
+            .unwrap_or_else(|| self.data.current.clone());
+        validate_draft(&draft, &current)?;
+        if let Some(existing) = self.data.transactions.get(&draft.transaction_id) {
+            return if existing.draft == draft
+                && existing.experience_id == experience_id
+                && existing.status != TransactionStatus::Aborted
+            {
+                Ok(existing.clone())
+            } else {
+                Err(conflict(format!(
+                    "transaction ID is already used: {}",
+                    draft.transaction_id
+                )))
+            };
+        }
+        if self
+            .data
+            .graph_transactions
+            .contains_key(&draft.transaction_id)
+        {
+            return Err(conflict(format!(
+                "transaction ID is already used: {}",
+                draft.transaction_id
+            )));
+        }
+        let transaction_id = draft.transaction_id.clone();
         let record = TransactionRecord {
+            experience_id,
             draft,
             status: TransactionStatus::Staged,
             committed_revision: None,
@@ -165,6 +326,32 @@ impl Authority {
         Ok(record)
     }
 
+    pub fn update_appearance(
+        &mut self,
+        expected_generation: u64,
+        profile: experience_package::AppearanceProfile,
+    ) -> Result<AppearanceResource, AuthorityError> {
+        profile
+            .validate()
+            .map_err(|error| invalid(error.to_string()))?;
+        if self.data.appearance.profile.generation != expected_generation {
+            return Err(conflict(format!(
+                "appearance generation conflict: expected {expected_generation}, current {}",
+                self.data.appearance.profile.generation
+            )));
+        }
+        if profile.generation != expected_generation.saturating_add(1) {
+            return Err(invalid(
+                "new appearance generation must follow the expected generation",
+            ));
+        }
+        let mut next = self.data.clone();
+        next.appearance = AppearanceResource { profile };
+        let result = next.appearance.clone();
+        self.replace_durably(next)?;
+        Ok(result)
+    }
+
     pub fn promote(&mut self, transaction_id: &str) -> Result<TransactionRecord, AuthorityError> {
         let record = self.transaction(transaction_id)?;
         match record.status {
@@ -177,23 +364,48 @@ impl Authority {
             TransactionStatus::Committing => return self.finalize(transaction_id),
             TransactionStatus::Staged => {}
         }
-        if record.draft.expected_revision != self.data.current.revision {
+        let current = record
+            .experience_id
+            .as_ref()
+            .map(|id| initial_state_for(&record.draft, self.data.experiences.get(id.as_str())))
+            .unwrap_or_else(|| self.data.current.clone());
+        if record.draft.expected_revision != current.revision {
             return Err(conflict(format!(
                 "staged revision is stale: expected {}, current {}",
-                record.draft.expected_revision, self.data.current.revision
+                record.draft.expected_revision, current.revision
             )));
         }
         self.inject(FaultPoint::BeforePromotion)?;
 
-        let revision = self.data.current.revision.saturating_add(1);
+        let revision = current.revision.saturating_add(1);
         let mut committing = self.data.clone();
-        committing.current = StateResource {
+        let next_state = StateResource {
             revision,
             revision_id: record.draft.revision_id.clone(),
             schema_version: record.draft.schema_version,
             source_sha256: record.draft.source_sha256.clone(),
             state: record.draft.state.clone(),
         };
+        if let Some(experience_id) = &record.experience_id {
+            committing
+                .experiences
+                .insert(experience_id.to_string(), next_state.clone());
+            committing
+                .experience_revisions
+                .entry(experience_id.to_string())
+                .or_default()
+                .insert(record.draft.revision_id.clone(), next_state);
+        } else {
+            committing.current = next_state.clone();
+            committing
+                .experiences
+                .insert(STOCK_SHELL_EXPERIENCE_ID.into(), next_state.clone());
+            committing
+                .experience_revisions
+                .entry(STOCK_SHELL_EXPERIENCE_ID.into())
+                .or_default()
+                .insert(record.draft.revision_id.clone(), next_state);
+        }
         let committing_record = committing
             .transactions
             .get_mut(transaction_id)
@@ -211,6 +423,97 @@ impl Authority {
         self.replace_durably(committing)?;
         self.inject(FaultPoint::DuringPromotion)?;
         let completed = self.finalize(transaction_id)?;
+        self.inject(FaultPoint::AfterPromotion)?;
+        Ok(completed)
+    }
+
+    pub fn promote_graph(
+        &mut self,
+        transaction_id: &str,
+    ) -> Result<GraphTransactionRecord, AuthorityError> {
+        let record = self.graph_transaction(transaction_id)?;
+        match record.status {
+            TransactionStatus::Committed => return Ok(record),
+            TransactionStatus::Aborted => {
+                return Err(conflict(format!(
+                    "graph transaction is aborted: {transaction_id}"
+                )))
+            }
+            TransactionStatus::Committing => return self.finalize_graph(transaction_id),
+            TransactionStatus::Staged => {}
+        }
+        for promotion in &record.draft.promotions {
+            let promotion_draft = promotion.as_promotion(transaction_id);
+            let current = revision_state_for(
+                &self.data,
+                promotion.experience_id.as_str(),
+                &promotion.revision_id,
+                &promotion_draft,
+            );
+            if promotion.expected_revision != current.revision {
+                return Err(conflict(format!(
+                    "staged experience `{}` is stale: expected {}, current {}",
+                    promotion.experience_id, promotion.expected_revision, current.revision
+                )));
+            }
+        }
+        self.inject(FaultPoint::BeforePromotion)?;
+
+        let mut committing = self.data.clone();
+        let mut committed_revisions = BTreeMap::new();
+        for promotion in &record.draft.promotions {
+            let promotion_draft = promotion.as_promotion(transaction_id);
+            let current = revision_state_for(
+                &committing,
+                promotion.experience_id.as_str(),
+                &promotion.revision_id,
+                &promotion_draft,
+            );
+            let revision = current.revision.saturating_add(1);
+            let next_state = StateResource {
+                revision,
+                revision_id: promotion.revision_id.clone(),
+                schema_version: promotion.schema_version,
+                source_sha256: promotion.source_sha256.clone(),
+                state: promotion.state.clone(),
+            };
+            committing
+                .experience_revisions
+                .entry(promotion.experience_id.to_string())
+                .or_default()
+                .insert(promotion.revision_id.clone(), next_state.clone());
+            let is_current = committing
+                .experiences
+                .get(promotion.experience_id.as_str())
+                .is_none_or(|state| {
+                    state.revision_id.is_empty() || state.revision_id == promotion.revision_id
+                });
+            if is_current {
+                committing
+                    .experiences
+                    .insert(promotion.experience_id.to_string(), next_state.clone());
+            }
+            if is_current && promotion.experience_id.as_str() == STOCK_SHELL_EXPERIENCE_ID {
+                committing.current = next_state;
+            }
+            committed_revisions.insert(promotion.experience_id.clone(), revision);
+        }
+        let committing_record = committing
+            .graph_transactions
+            .get_mut(transaction_id)
+            .expect("staged graph transaction exists in clone");
+        committing_record.status = TransactionStatus::Committing;
+        committing_record.committed_revisions = committed_revisions.clone();
+        push_event(
+            &mut committing,
+            ServiceEventKind::GraphRevisionsCommitted {
+                transaction_id: transaction_id.into(),
+                revisions: committed_revisions,
+            },
+        );
+        self.replace_durably(committing)?;
+        self.inject(FaultPoint::DuringPromotion)?;
+        let completed = self.finalize_graph(transaction_id)?;
         self.inject(FaultPoint::AfterPromotion)?;
         Ok(completed)
     }
@@ -244,6 +547,38 @@ impl Authority {
         Ok(result)
     }
 
+    pub fn abort_graph(
+        &mut self,
+        transaction_id: &str,
+    ) -> Result<GraphTransactionRecord, AuthorityError> {
+        let existing = self.graph_transaction(transaction_id)?;
+        match existing.status {
+            TransactionStatus::Aborted => return Ok(existing),
+            TransactionStatus::Staged => {}
+            TransactionStatus::Committing | TransactionStatus::Committed => {
+                return Err(conflict(format!(
+                    "cannot abort graph transaction in {:?} state",
+                    existing.status
+                )))
+            }
+        }
+        let mut next = self.data.clone();
+        let record = next
+            .graph_transactions
+            .get_mut(transaction_id)
+            .expect("graph transaction exists in clone");
+        record.status = TransactionStatus::Aborted;
+        let result = record.clone();
+        push_event(
+            &mut next,
+            ServiceEventKind::GraphTransactionAborted {
+                transaction_id: transaction_id.into(),
+            },
+        );
+        self.replace_durably(next)?;
+        Ok(result)
+    }
+
     fn recover_committing(&mut self) -> Result<(), AuthorityError> {
         let transactions = self
             .data
@@ -254,6 +589,16 @@ impl Authority {
             .collect::<Vec<_>>();
         for transaction_id in transactions {
             self.finalize(&transaction_id)?;
+        }
+        let graph_transactions = self
+            .data
+            .graph_transactions
+            .iter()
+            .filter(|(_, record)| record.status == TransactionStatus::Committing)
+            .map(|(transaction_id, _)| transaction_id.clone())
+            .collect::<Vec<_>>();
+        for transaction_id in graph_transactions {
+            self.finalize_graph(&transaction_id)?;
         }
         Ok(())
     }
@@ -302,6 +647,58 @@ impl Authority {
             ServiceEventKind::TransactionCompleted {
                 transaction_id: transaction_id.into(),
                 revision,
+            },
+        );
+        self.replace_durably(next)?;
+        Ok(result)
+    }
+
+    fn finalize_graph(
+        &mut self,
+        transaction_id: &str,
+    ) -> Result<GraphTransactionRecord, AuthorityError> {
+        let existing = self.graph_transaction(transaction_id)?;
+        if existing.status == TransactionStatus::Committed {
+            return Ok(existing);
+        }
+        if existing.status != TransactionStatus::Committing {
+            return Err(conflict(format!(
+                "graph transaction is not committing: {transaction_id}"
+            )));
+        }
+        let mut next = self.data.clone();
+        let mut receipts = Vec::new();
+        for promotion in &existing.draft.promotions {
+            for (index, action) in promotion.actions.iter().enumerate() {
+                let effect_id = format!("{transaction_id}:{}:{index}", promotion.experience_id);
+                apply_action(&mut next.notes, action);
+                receipts.push(GraphEffectReceipt {
+                    experience_id: promotion.experience_id.clone(),
+                    effect_id: effect_id.clone(),
+                    action: action.clone(),
+                });
+                push_event(
+                    &mut next,
+                    ServiceEventKind::GraphActionApplied {
+                        transaction_id: transaction_id.into(),
+                        experience_id: promotion.experience_id.clone(),
+                        effect_id,
+                        action: action.clone(),
+                    },
+                );
+            }
+        }
+        let record = next
+            .graph_transactions
+            .get_mut(transaction_id)
+            .expect("committing graph transaction exists in clone");
+        record.effects = receipts;
+        record.status = TransactionStatus::Committed;
+        let result = record.clone();
+        push_event(
+            &mut next,
+            ServiceEventKind::GraphTransactionCompleted {
+                transaction_id: transaction_id.into(),
             },
         );
         self.replace_durably(next)?;
@@ -360,15 +757,7 @@ fn io_context(operation: &str, error: std::io::Error) -> std::io::Error {
 }
 
 fn validate_draft(draft: &PromotionDraft, current: &StateResource) -> Result<(), AuthorityError> {
-    if draft.transaction_id.is_empty()
-        || draft.transaction_id.len() > 128
-        || !draft
-            .transaction_id
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || b"._-".contains(&byte))
-    {
-        return Err(invalid("invalid transaction ID"));
-    }
+    validate_transaction_id(&draft.transaction_id)?;
     validate_sha256("revision ID", &draft.revision_id)?;
     validate_sha256("source SHA-256", &draft.source_sha256)?;
     if draft.schema_version == 0 {
@@ -390,6 +779,19 @@ fn validate_draft(draft: &PromotionDraft, current: &StateResource) -> Result<(),
         validate_action(action)?;
     }
     validate_migration(draft, current)
+}
+
+fn validate_transaction_id(transaction_id: &str) -> Result<(), AuthorityError> {
+    if transaction_id.is_empty()
+        || transaction_id.len() > 128
+        || !transaction_id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"._-".contains(&byte))
+    {
+        Err(invalid("invalid transaction ID"))
+    } else {
+        Ok(())
+    }
 }
 
 fn validate_migration(
@@ -473,12 +875,46 @@ fn validate_loaded(data: &AuthorityData) -> Result<(), AuthorityError> {
     if !data.current.source_sha256.is_empty() {
         validate_sha256("current source SHA-256", &data.current.source_sha256)?;
     }
+    data.appearance
+        .profile
+        .validate()
+        .map_err(|error| invalid(error.to_string()))?;
+    for (experience_id, state) in &data.experiences {
+        experience_package::ExperienceId::parse(experience_id)
+            .map_err(|error| invalid(error.to_string()))?;
+        validate_state_resource(state)?;
+    }
+    for (experience_id, revisions) in &data.experience_revisions {
+        experience_package::ExperienceId::parse(experience_id)
+            .map_err(|error| invalid(error.to_string()))?;
+        for (revision_id, state) in revisions {
+            validate_sha256("revision-state key", revision_id)?;
+            if state.revision_id != *revision_id {
+                return Err(invalid("revision-state index mismatch"));
+            }
+            validate_state_resource(state)?;
+        }
+    }
     if data
         .transactions
         .iter()
         .any(|(transaction_id, record)| transaction_id != &record.draft.transaction_id)
     {
         return Err(invalid("transaction index mismatch"));
+    }
+    if data
+        .graph_transactions
+        .iter()
+        .any(|(transaction_id, record)| transaction_id != &record.draft.transaction_id)
+    {
+        return Err(invalid("graph transaction index mismatch"));
+    }
+    if data
+        .transactions
+        .keys()
+        .any(|transaction_id| data.graph_transactions.contains_key(transaction_id))
+    {
+        return Err(invalid("transaction ID is shared across transaction kinds"));
     }
     if data
         .events
@@ -493,6 +929,82 @@ fn validate_loaded(data: &AuthorityData) -> Result<(), AuthorityError> {
         .is_some_and(|event| event.sequence >= data.next_event_sequence)
     {
         return Err(invalid("next event sequence is stale"));
+    }
+    Ok(())
+}
+
+fn migrate_loaded(data: &mut AuthorityData) -> Result<bool, AuthorityError> {
+    match data.format_version {
+        AUTHORITY_FORMAT_VERSION => Ok(backfill_revision_states(data)),
+        LEGACY_AUTHORITY_FORMAT_VERSION => {
+            data.format_version = AUTHORITY_FORMAT_VERSION;
+            data.experiences
+                .entry(STOCK_SHELL_EXPERIENCE_ID.into())
+                .or_insert_with(|| data.current.clone());
+            backfill_revision_states(data);
+            Ok(true)
+        }
+        _ => Err(invalid("invalid authority file version")),
+    }
+}
+
+fn backfill_revision_states(data: &mut AuthorityData) -> bool {
+    let mut changed = false;
+    for (experience_id, state) in &data.experiences {
+        if state.revision_id.is_empty() {
+            continue;
+        }
+        let revisions = data
+            .experience_revisions
+            .entry(experience_id.clone())
+            .or_default();
+        if !revisions.contains_key(&state.revision_id) {
+            revisions.insert(state.revision_id.clone(), state.clone());
+            changed = true;
+        }
+    }
+    changed
+}
+
+fn initial_state_for(draft: &PromotionDraft, current: Option<&StateResource>) -> StateResource {
+    current.cloned().unwrap_or_else(|| StateResource {
+        revision: 0,
+        revision_id: String::new(),
+        schema_version: draft.schema_version,
+        source_sha256: String::new(),
+        state: serde_json::json!({}),
+    })
+}
+
+fn revision_state_for(
+    data: &AuthorityData,
+    experience_id: &str,
+    revision_id: &str,
+    draft: &PromotionDraft,
+) -> StateResource {
+    let exact = data
+        .experience_revisions
+        .get(experience_id)
+        .and_then(|revisions| revisions.get(revision_id));
+    let current = data
+        .experiences
+        .get(experience_id)
+        .filter(|state| state.revision_id == revision_id);
+    initial_state_for(draft, exact.or(current))
+}
+
+fn validate_state_resource(state: &StateResource) -> Result<(), AuthorityError> {
+    if state.schema_version == 0 {
+        return Err(invalid("state schema version must be positive"));
+    }
+    if !state.revision_id.is_empty() {
+        validate_sha256("state revision ID", &state.revision_id)?;
+    }
+    if !state.source_sha256.is_empty() {
+        validate_sha256("state source SHA-256", &state.source_sha256)?;
+    }
+    if serde_json::to_vec(&state.state)?.len() > MAX_STATE_BYTES {
+        return Err(invalid("stored state exceeds the service limit"));
     }
     Ok(())
 }

@@ -114,6 +114,95 @@ test("a structured invalid report keeps the tools in validation phase", async ()
   ]);
 });
 
+test("derived authoring binds exact parents and the complete validated package", async () => {
+  const requests: unknown[] = [];
+  const backend: AuthoringBackend = {
+    async request(request) {
+      requests.push(request);
+      return { valid: true };
+    },
+  };
+  const tools = createAuthoringTools(backend);
+  const signal = new AbortController().signal;
+  const parents = [
+    { experience_id: "agenda", revision_id: "a".repeat(64) },
+    { experience_id: "media", revision_id: "b".repeat(64) },
+  ];
+  const candidate = {
+    target_experience_id: "agenda-media-remix",
+    parents,
+    request: "Combine agenda and media",
+    rationale: "The user requested one information architecture.",
+    contract: { contract_version: 1, exports: {} },
+    source: "return { api_version = 4, exports = {} }",
+  };
+  await tools[3]!.execute("parents", { parents }, signal);
+  await tools[4]!.execute("validate", candidate, signal);
+  await assert.rejects(
+    tools[5]!.execute("submit", { ...candidate, source: `${candidate.source} ` }, signal),
+    /exactly match the validated derived candidate/,
+  );
+  await tools[5]!.execute("submit", candidate, signal);
+  assert.deepEqual(
+    requests.map((request) => (request as { action: string }).action),
+    [
+      "get_derivation_context",
+      "validate_derived_experience",
+      "submit_derived_experience",
+    ],
+  );
+});
+
+test("composition authoring binds exact dependencies and the validated graph root", async () => {
+  const requests: unknown[] = [];
+  const backend: AuthoringBackend = {
+    async request(request) {
+      requests.push(request);
+      return { valid: true };
+    },
+  };
+  const tools = createAuthoringTools(backend);
+  const signal = new AbortController().signal;
+  const dependencies = [
+    {
+      alias: "agenda",
+      experience_id: "agenda",
+      revision_id: "a".repeat(64),
+      export_id: "main",
+      policy: "locked" as const,
+      grant: { events: ["item_selected"] },
+    },
+    {
+      alias: "media",
+      experience_id: "media",
+      revision_id: "b".repeat(64),
+      export_id: "compact",
+      policy: "tracked" as const,
+    },
+  ];
+  const candidate = {
+    target_experience_id: "dashboard",
+    dependencies,
+    contract: { contract_version: 1, exports: {} },
+    source: "return { api_version = 4, exports = {} }",
+  };
+  await tools[6]!.execute("dependencies", { dependencies }, signal);
+  await tools[7]!.execute("validate", candidate, signal);
+  await assert.rejects(
+    tools[8]!.execute("submit", { ...candidate, source: `${candidate.source} ` }, signal),
+    /exactly match the validated composed candidate/,
+  );
+  await tools[8]!.execute("submit", candidate, signal);
+  assert.deepEqual(
+    requests.map((request) => (request as { action: string }).action),
+    [
+      "get_composition_context",
+      "validate_composed_experience",
+      "submit_composed_experience",
+    ],
+  );
+});
+
 function exchange(socketPath: string, request: unknown): Promise<Record<string, unknown>[]> {
   return new Promise((resolve, reject) => {
     const events: Record<string, unknown>[] = [];

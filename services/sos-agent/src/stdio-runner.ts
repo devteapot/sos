@@ -381,6 +381,17 @@ async function prompt(request: PromptRequest, systemPrompt: string): Promise<voi
           schema_version: 3,
         };
       }
+      if (
+        action.action !== "validate_experience" &&
+        action.action !== "submit_experience"
+      ) {
+        fail({
+          stage: "protocol",
+          category: "tool_sequence",
+          error: "This runner request did not include derivation or composition context.",
+          model: live ? request.model : "faux",
+        });
+      }
       if (Buffer.byteLength(action.source) > MAX_SOURCE_BYTES) {
         fail({
           stage: "validation",

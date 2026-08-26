@@ -13,7 +13,8 @@ use std::os::linux::net::SocketAddrExt;
 
 use service_protocol::{
     ResourceQuery, ResourceValue, ResponsePayload, ServiceError, ServiceRequest,
-    ServiceRequestEnvelope, ServiceResponse, MAX_STATE_BYTES, PROTOCOL_VERSION,
+    ServiceRequestEnvelope, ServiceResponse, LEGACY_PROTOCOL_VERSION, MAX_STATE_BYTES,
+    PROTOCOL_VERSION,
 };
 
 use crate::{Authority, AuthorityError};
@@ -95,7 +96,12 @@ fn handle(stream: &mut UnixStream, authority: &mut Authority) -> std::io::Result
         )
     } else {
         match serde_json::from_slice::<ServiceRequestEnvelope>(&request_bytes) {
-            Ok(envelope) if envelope.protocol_version == PROTOCOL_VERSION => {
+            Ok(envelope)
+                if matches!(
+                    envelope.protocol_version,
+                    LEGACY_PROTOCOL_VERSION | PROTOCOL_VERSION
+                ) =>
+            {
                 let shutdown = matches!(envelope.request, ServiceRequest::Shutdown { .. });
                 (dispatch(envelope.request, authority), shutdown)
             }
@@ -152,12 +158,39 @@ pub fn dispatch(request: ServiceRequest, authority: &mut Authority) -> ServiceRe
                 ResourceQuery::ExperienceState => {
                     ResourceValue::ExperienceState(authority.current())
                 }
+                ResourceQuery::ExperienceStateFor { experience_id } => {
+                    ResourceValue::ExperienceStateFor(service_protocol::ExperienceStateResource {
+                        resource: authority.current_for(experience_id.as_str()),
+                        experience_id,
+                    })
+                }
+                ResourceQuery::ExperienceStateAt {
+                    experience_id,
+                    revision_id,
+                } => ResourceValue::ExperienceStateAt(service_protocol::ExperienceStateResource {
+                    resource: authority.current_at(experience_id.as_str(), &revision_id),
+                    experience_id,
+                }),
+                ResourceQuery::Appearance => ResourceValue::Appearance(authority.appearance()),
                 ResourceQuery::Notes => ResourceValue::Notes(authority.notes()),
             },
         }),
         ServiceRequest::StagePromotion { draft, .. } => authority
             .stage(draft)
             .map(|record| ResponsePayload::Transaction { record }),
+        ServiceRequest::StageExperiencePromotion { draft, .. } => authority
+            .stage_experience(draft)
+            .map(|record| ResponsePayload::Transaction { record }),
+        ServiceRequest::StageGraphPromotion { draft, .. } => authority
+            .stage_graph(draft)
+            .map(|record| ResponsePayload::GraphTransaction { record }),
+        ServiceRequest::UpdateAppearance {
+            expected_generation,
+            profile,
+            ..
+        } => authority
+            .update_appearance(expected_generation, profile)
+            .map(|value| ResponsePayload::AppearanceUpdated { value }),
         ServiceRequest::Promote { transaction_id, .. } => authority
             .promote(&transaction_id)
             .map(|record| ResponsePayload::Transaction { record }),
@@ -167,6 +200,15 @@ pub fn dispatch(request: ServiceRequest, authority: &mut Authority) -> ServiceRe
         ServiceRequest::GetTransaction { transaction_id, .. } => authority
             .transaction(&transaction_id)
             .map(|record| ResponsePayload::Transaction { record }),
+        ServiceRequest::PromoteGraph { transaction_id, .. } => authority
+            .promote_graph(&transaction_id)
+            .map(|record| ResponsePayload::GraphTransaction { record }),
+        ServiceRequest::AbortGraph { transaction_id, .. } => authority
+            .abort_graph(&transaction_id)
+            .map(|record| ResponsePayload::GraphTransaction { record }),
+        ServiceRequest::GetGraphTransaction { transaction_id, .. } => authority
+            .graph_transaction(&transaction_id)
+            .map(|record| ResponsePayload::GraphTransaction { record }),
         ServiceRequest::ListEvents {
             after_sequence,
             limit,

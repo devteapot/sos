@@ -1,6 +1,6 @@
 use std::{
     cell::RefCell,
-    collections::{HashMap, VecDeque},
+    collections::{BTreeMap, BTreeSet, HashMap, VecDeque},
     fs,
     io::{self, BufRead, BufReader, Write},
     path::{Path, PathBuf},
@@ -17,11 +17,16 @@ use compositor_control_protocol::{
 };
 use experience_host_protocol::{HostEvent, HostRequest};
 use experience_ir::{
-    AgentMessage, AgentMessageRole, Align, AnimationKind, Content, EdgePlacement, ExperienceModel,
-    Flow, HitRegion, Interaction, Justify, PaintOp, Scene, SceneEvent, SceneNode, ShellCanvas,
-    ShellCapability, ShellModel, ShellOutput, ShellOverlayContent, ShellWindow,
-    ShellWindowCapability, ShellWindowKind, WindowLayoutMode, WindowSpaceContent,
-    EXPERIENCE_API_VERSION, MAX_AGENT_MESSAGES, MAX_AGENT_MESSAGE_BYTES, SHELL_MODEL_ABI_VERSION,
+    AgentMessage, AgentMessageRole, Align, AnimationKind, AppearanceProfile, Content,
+    EdgePlacement, ExperienceModel, Flow, HitRegion, Interaction, Justify, PaintOp, Scene,
+    SceneEvent, SceneNode, ShellCanvas, ShellCapability, ShellModel, ShellOutput,
+    ShellOverlayContent, ShellWindow, ShellWindowCapability, ShellWindowKind, WindowLayoutMode,
+    WindowSpaceContent, EXPERIENCE_API_VERSION, EXPERIENCE_API_VERSION_V4, MAX_AGENT_MESSAGES,
+    MAX_AGENT_MESSAGE_BYTES, SHELL_MODEL_ABI_VERSION,
+};
+use experience_package::{
+    canonical_json, hex_sha256, ExperienceId, GraphNodeId, PackageMetadata, ResolvedGraph,
+    RevisionId,
 };
 use gpui::{
     div, img, point, prelude::*, px, relative, rgb, size, Animation as GpuiAnimation,
@@ -31,13 +36,16 @@ use gpui::{
 use provider_state_service::ServiceClient;
 use providers_linux::{load_grants, ProviderContext, ProviderFrame, ProviderHub, ProviderSnapshot};
 use runtime_luau::{
-    load_revision_assets, RevisionAssetInput, RuntimeWorker, WorkerReady, WorkerResult,
+    load_revision_assets, GraphRevisionInput, GraphRuntimeSnapshot, GraphRuntimeWorker,
+    GraphWorkerResult, RevisionAssetInput, RuntimeInstanceStatus, RuntimeWorker, WorkerReady,
+    WorkerResult,
 };
 use serde::Deserialize;
 use serde_json::Value as JsonValue;
 use service_protocol::{
-    NotesAction, PromotionDraft, ProviderAction, ResourceQuery, ResourceValue, ResponsePayload,
-    ServiceError, ServiceRequest, StateResource, TransactionStatus,
+    GraphExperiencePromotion, GraphPromotionDraft, GraphTransactionRecord, NotesAction,
+    PromotionDraft, ProviderAction, ResourceQuery, ResourceValue, ResponsePayload, ServiceError,
+    ServiceRequest, StateResource, TransactionStatus,
 };
 use sha2::{Digest, Sha256};
 
@@ -66,11 +74,16 @@ struct ProviderUpdate {
 }
 
 #[derive(Clone, Debug)]
+struct AppearanceUpdate {
+    profile: AppearanceProfile,
+}
+
+#[derive(Clone, Debug)]
 struct LinuxProviderAccess {
     hub: ProviderHub,
     grant_path: PathBuf,
     allow_development_wildcard: bool,
-    active_revision: Arc<Mutex<String>>,
+    active_revisions: Arc<Mutex<BTreeSet<String>>>,
 }
 
 impl LinuxProviderAccess {
@@ -106,14 +119,26 @@ impl LinuxProviderAccess {
     }
 
     fn activate(&self, revision_id: &str) {
-        *self.active_revision.lock().expect("provider revision lock") = revision_id.into();
+        *self
+            .active_revisions
+            .lock()
+            .expect("provider revision lock") = BTreeSet::from([revision_id.into()]);
     }
 
-    fn active_revision(&self) -> String {
-        self.active_revision
+    fn activate_graph(&self, revisions: impl IntoIterator<Item = String>) {
+        *self
+            .active_revisions
+            .lock()
+            .expect("provider revision lock") = revisions.into_iter().collect();
+    }
+
+    fn active_revisions(&self) -> Vec<String> {
+        self.active_revisions
             .lock()
             .expect("provider revision lock")
-            .clone()
+            .iter()
+            .cloned()
+            .collect()
     }
 }
 
@@ -132,6 +157,38 @@ struct LoadedRevision {
     state: JsonValue,
     schema_version: u64,
     assets: Vec<RevisionAssetInput>,
+}
+
+#[derive(Clone, Debug)]
+struct LoadedGraphRevision {
+    revision: LoadedRevision,
+    package: PackageMetadata,
+}
+
+#[derive(Clone, Debug)]
+struct LoadedGraph {
+    graph_id: String,
+    graph: ResolvedGraph,
+    revisions: std::collections::BTreeMap<RevisionId, LoadedGraphRevision>,
+}
+
+struct ActiveGraph {
+    graph_id: String,
+    worker: GraphRuntimeWorker,
+    snapshot: GraphRuntimeSnapshot,
+    revisions: BTreeMap<RevisionId, LoadedGraphRevision>,
+}
+
+struct PreparedGraph {
+    graph_id: String,
+    graph: ActiveGraph,
+    root_revision: LoadedRevision,
+}
+
+struct GraphPrepareResult {
+    request_id: u64,
+    graph_id: String,
+    result: std::result::Result<PreparedGraph, String>,
 }
 
 #[derive(Clone, Debug)]
@@ -160,6 +217,7 @@ struct PendingCommit {
 struct PendingPresentation {
     request_id: u64,
     revision_id: String,
+    graph: bool,
 }
 
 #[derive(Debug)]
@@ -173,6 +231,21 @@ struct ActionCommitResult {
 #[derive(Debug)]
 struct ActionCommitOutcome {
     authoritative: StateResource,
+    agent_prompt: Option<String>,
+    shell_controls: Vec<(String, WindowControlAction)>,
+}
+
+#[derive(Debug)]
+struct GraphActionCommitResult {
+    request_id: u64,
+    previous: GraphRuntimeSnapshot,
+    outcome: runtime_luau::GraphActionOutcome,
+    result: std::result::Result<GraphActionCommitOutcome, String>,
+}
+
+#[derive(Debug)]
+struct GraphActionCommitOutcome {
+    authoritative: BTreeMap<ExperienceId, StateResource>,
     agent_prompt: Option<String>,
     shell_controls: Vec<(String, WindowControlAction)>,
 }
@@ -198,6 +271,8 @@ struct RevisionManifest {
     experience_api_version: u32,
     source: FileIdentity,
     state: FileIdentity,
+    #[serde(default)]
+    package: Option<FileIdentity>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -220,35 +295,86 @@ pub fn run() -> Result<()> {
     let accessibility =
         linux_accessibility::start_from_environment().map_err(|error| anyhow::anyhow!(error))?;
     let (first_request, reader) = read_first_request()?;
-    let HostRequest::Boot {
-        request_id,
-        revision_id,
-        revision_path,
-        experience_api_version,
-    } = first_request
-    else {
-        bail!("the first host request must be boot");
+    let (request_id, revision, loaded_graph, presentation_id) = match first_request {
+        HostRequest::Boot {
+            request_id,
+            revision_id,
+            revision_path,
+            experience_api_version,
+        } => {
+            let revision = load_revision(&revision_id, &revision_path, experience_api_version)?;
+            (request_id, revision, None, revision_id)
+        }
+        HostRequest::BootGraph {
+            request_id,
+            graph_id,
+            graph_path,
+            revision_root,
+        } => {
+            let graph = load_graph(&graph_id, &graph_path, &revision_root)?;
+            let root = graph
+                .graph
+                .nodes
+                .get(&graph.graph.root)
+                .context("resolved graph root is missing")?;
+            let revision = graph
+                .revisions
+                .get(&root.revision_id)
+                .context("resolved graph root revision is missing")?
+                .revision
+                .clone();
+            (request_id, revision, Some(graph), graph_id)
+        }
+        _ => bail!("the first host request must be boot or boot_graph"),
     };
-    let revision = load_revision(&revision_id, &revision_path, experience_api_version)?;
     let compositor_fence = CompositorFence::from_environment()?;
     if let Some(fence) = &compositor_fence {
         fence
-            .quiesce_input(request_id, &revision.revision_id)
+            .quiesce_input(request_id, &presentation_id)
             .context("quiesce input for compositor boot presentation")?;
         let after_commit_sequence = fence
-            .arm(request_id, &revision.revision_id)
+            .arm(request_id, &presentation_id)
             .context("arm boot presentation with SOS compositor")?;
         eprintln!(
-            "sos_compositor_armed request_id={request_id} revision_id={} after_commit_sequence={after_commit_sequence}",
-            revision.revision_id
+            "sos_compositor_armed request_id={request_id} revision_id={presentation_id} after_commit_sequence={after_commit_sequence}"
         );
     }
     let (mut model, provider_updates, provider_access) =
         start_provider_updates(&revision.revision_id)?;
+    let (appearance, appearance_updates) =
+        start_appearance_updates(options.service_socket.as_deref());
+    model.appearance = appearance;
     model.agent.available = options
         .agent_socket
         .as_ref()
         .is_some_and(|socket| socket.exists());
+    let active_graph = loaded_graph
+        .map(|graph| {
+            let inputs = graph_runtime_inputs(
+                &graph,
+                &model,
+                provider_access.as_ref(),
+                options.service_socket.as_deref(),
+            )?;
+            let (worker, snapshot) = GraphRuntimeWorker::start(graph.graph, inputs)
+                .map_err(|error| anyhow::anyhow!("initialize experience graph: {error}"))?;
+            Ok::<_, anyhow::Error>(ActiveGraph {
+                graph_id: graph.graph_id,
+                worker,
+                snapshot,
+                revisions: graph.revisions,
+            })
+        })
+        .transpose()?;
+    if let (Some(access), Some(graph)) = (&provider_access, &active_graph) {
+        access.activate_graph(
+            graph
+                .snapshot
+                .instances
+                .values()
+                .map(|instance| instance.revision_id.to_string()),
+        );
+    }
     let (worker, ready) = RuntimeWorker::start_with_assets(
         revision.source.clone(),
         model.clone(),
@@ -304,12 +430,14 @@ pub fn run() -> Result<()> {
                             protocol_rx,
                             results,
                             provider_updates,
+                            appearance_updates,
                             provider_access,
                             options.agent_socket,
                             accessibility,
                             options.service_socket,
                             compositor_fence,
                             touch_wakes,
+                            active_graph,
                             cx,
                         )
                     });
@@ -468,6 +596,9 @@ impl Render for ShellOverlayView {
                     &node,
                     SharedString::from("shell-overlay"),
                     RenderTarget::Overlay,
+                    host.active_graph
+                        .as_ref()
+                        .map(|graph| graph.snapshot.root.clone()),
                     window,
                     host_cx,
                 )
@@ -505,6 +636,9 @@ impl Render for ApplicationSurfaceView {
                     &node,
                     SharedString::from("application-surface"),
                     RenderTarget::Application,
+                    host.active_graph
+                        .as_ref()
+                        .map(|graph| graph.snapshot.root.clone()),
                     window,
                     host_cx,
                 )
@@ -533,6 +667,8 @@ pub(super) struct LinuxExperienceHost {
     pending_shell_overlay_anchor: Option<(i32, i32)>,
     preparing: Option<PreparingRevision>,
     prepared: Option<PreparedRevision>,
+    preparing_graph: Option<(u64, String)>,
+    prepared_graph: Option<PreparedGraph>,
     pending_commit: Option<PendingCommit>,
     pending_presentation: Option<PendingPresentation>,
     last_presented_revision: Option<String>,
@@ -544,6 +680,8 @@ pub(super) struct LinuxExperienceHost {
     active_input_id: Option<String>,
     pending_focus_restore: Option<String>,
     action_commits: async_channel::Sender<ActionCommitResult>,
+    graph_action_commits: async_channel::Sender<GraphActionCommitResult>,
+    graph_preparations: async_channel::Sender<GraphPrepareResult>,
     next_action_request_id: u64,
     surface_gestures: HashMap<String, GestureSession>,
     surface_taps: HashMap<String, (String, Instant)>,
@@ -557,6 +695,9 @@ pub(super) struct LinuxExperienceHost {
     accessibility: Option<linux_accessibility::Service>,
     accessibility_actions: VecDeque<AccessibilityAction>,
     semantic_focus: Option<String>,
+    active_graph: Option<ActiveGraph>,
+    rollback_graph: Option<ActiveGraph>,
+    node_owners: HashMap<String, GraphNodeId>,
 }
 
 impl LinuxExperienceHost {
@@ -570,37 +711,75 @@ impl LinuxExperienceHost {
         protocol: async_channel::Receiver<ProtocolInput>,
         results: async_channel::Receiver<WorkerResult>,
         provider_updates: async_channel::Receiver<ProviderUpdate>,
+        appearance_updates: async_channel::Receiver<AppearanceUpdate>,
         provider_access: Option<LinuxProviderAccess>,
         agent_socket: Option<PathBuf>,
         accessibility: Option<linux_accessibility::Service>,
         service_socket: Option<PathBuf>,
         compositor_fence: Option<CompositorFence>,
         touch_wakes: async_channel::Receiver<()>,
+        active_graph: Option<ActiveGraph>,
         cx: &mut Context<Self>,
     ) -> Self {
         let (action_commits, action_results) = async_channel::unbounded();
+        let (graph_action_commits, graph_action_results) = async_channel::unbounded();
+        let (graph_preparations, graph_preparation_results) = async_channel::unbounded();
         let (agent_updates, agent_results) = async_channel::unbounded();
         Self::attach_protocol(protocol, cx);
         Self::attach_worker_results(results, cx);
         Self::attach_provider_updates(provider_updates, cx);
+        Self::attach_appearance_updates(appearance_updates, cx);
         Self::attach_action_results(action_results, cx);
+        Self::attach_graph_action_results(graph_action_results, cx);
+        Self::attach_graph_preparation_results(graph_preparation_results, cx);
         Self::attach_agent_updates(agent_results, cx);
         Self::attach_touch_wakes(touch_wakes, cx);
+        if let Some(graph) = &active_graph {
+            Self::attach_graph_results(graph.worker.results(), cx);
+        }
         if let Some(accessibility) = &accessibility {
             Self::attach_accessibility_actions(accessibility.actions(), cx);
         }
         if let Some(fence) = &compositor_fence {
             Self::attach_compositor_events(fence.events(), cx);
         }
+        assets::install(&ready.assets);
+        if let Some(graph) = &active_graph {
+            assets::install_graph(
+                graph
+                    .snapshot
+                    .instances
+                    .values()
+                    .map(|instance| instance.assets.as_slice()),
+            );
+        }
+        let graph_scene = active_graph.as_ref().and_then(|graph| {
+            graph
+                .snapshot
+                .instances
+                .get(&graph.snapshot.root)
+                .and_then(|instance| instance.scene.clone())
+        });
+        let graph_state = active_graph.as_ref().and_then(|graph| {
+            graph
+                .snapshot
+                .instances
+                .get(&graph.snapshot.root)
+                .map(|instance| instance.state.clone())
+        });
+        let presentation_identity = active_graph.as_ref().map_or_else(
+            || revision.revision_id.clone(),
+            |graph| graph.graph_id.clone(),
+        );
+        let graph_presentation = active_graph.is_some();
         let boot_quiesced_revision = compositor_fence
             .as_ref()
-            .map(|_| revision.revision_id.clone());
-        assets::install(&ready.assets);
+            .map(|_| presentation_identity.clone());
         Self {
             model,
             worker,
-            scene: ready.scene,
-            state: ready.state,
+            scene: graph_scene.unwrap_or(ready.scene),
+            state: graph_state.unwrap_or(ready.state),
             state_schema_version: ready.state_schema_version,
             active_revision_id: revision.revision_id.clone(),
             active_source_sha256: revision.source_sha256,
@@ -612,10 +791,13 @@ impl LinuxExperienceHost {
             pending_shell_overlay_anchor: None,
             preparing: None,
             prepared: None,
+            preparing_graph: None,
+            prepared_graph: None,
             pending_commit: None,
             pending_presentation: Some(PendingPresentation {
                 request_id: boot_request_id,
-                revision_id: revision.revision_id,
+                revision_id: presentation_identity,
+                graph: graph_presentation,
             }),
             last_presented_revision: None,
             input_quiesced_revision: boot_quiesced_revision,
@@ -626,6 +808,8 @@ impl LinuxExperienceHost {
             active_input_id: None,
             pending_focus_restore: None,
             action_commits,
+            graph_action_commits,
+            graph_preparations,
             next_action_request_id: 1,
             surface_gestures: HashMap::new(),
             surface_taps: HashMap::new(),
@@ -639,6 +823,9 @@ impl LinuxExperienceHost {
             accessibility,
             accessibility_actions: VecDeque::new(),
             semantic_focus: None,
+            active_graph,
+            rollback_graph: None,
+            node_owners: HashMap::new(),
         }
     }
 
@@ -678,6 +865,163 @@ impl LinuxExperienceHost {
         .detach();
     }
 
+    fn attach_graph_results(
+        results: async_channel::Receiver<GraphWorkerResult>,
+        cx: &mut Context<Self>,
+    ) {
+        cx.spawn(async move |this, cx| {
+            while let Ok(result) = results.recv().await {
+                if this
+                    .update(cx, |this, cx| {
+                        this.handle_graph_result(result, cx);
+                        cx.notify();
+                    })
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        })
+        .detach();
+    }
+
+    fn attach_graph_preparation_results(
+        results: async_channel::Receiver<GraphPrepareResult>,
+        cx: &mut Context<Self>,
+    ) {
+        cx.spawn(async move |this, cx| {
+            while let Ok(result) = results.recv().await {
+                if this
+                    .update(cx, |this, cx| {
+                        if this.preparing_graph.as_ref()
+                            != Some(&(result.request_id, result.graph_id.clone()))
+                        {
+                            return;
+                        }
+                        this.preparing_graph = None;
+                        match result.result {
+                            Ok(prepared) => {
+                                this.prepared_graph = Some(prepared);
+                                this.status = Some((
+                                    "Graph prepared; accepted graph remains active".into(),
+                                    true,
+                                ));
+                                emit(&HostEvent::GraphPrepared {
+                                    request_id: result.request_id,
+                                    graph_id: result.graph_id,
+                                });
+                            }
+                            Err(error) => {
+                                this.status =
+                                    Some((format!("Graph preparation failed: {error}"), false));
+                                reject_graph(result.request_id, result.graph_id, error);
+                            }
+                        }
+                        cx.notify();
+                    })
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        })
+        .detach();
+    }
+
+    fn handle_graph_result(&mut self, result: GraphWorkerResult, cx: &mut Context<Self>) {
+        match result {
+            GraphWorkerResult::ActionCompleted {
+                request_id,
+                outcome,
+            } => {
+                let Some(graph) = &self.active_graph else {
+                    self.action_in_flight = false;
+                    self.status = Some((
+                        "Graph action completed without an active graph".into(),
+                        false,
+                    ));
+                    return;
+                };
+                let previous = graph.snapshot.clone();
+                let revisions = graph.revisions.clone();
+                let Some(service_socket) = self.service_socket.clone() else {
+                    self.action_in_flight = false;
+                    if outcome.effects.is_empty() {
+                        self.install_graph_snapshot(outcome.snapshot);
+                        self.status = None;
+                    } else {
+                        if let Some(graph) = &self.active_graph {
+                            graph.worker.restore(request_id, previous.clone()).ok();
+                        }
+                        self.install_graph_snapshot(previous);
+                        self.status = Some((
+                            "Graph provider effects require --service-socket".into(),
+                            false,
+                        ));
+                    }
+                    self.dispatch_pending_input_event(cx);
+                    return;
+                };
+                self.status = Some(("Committing graph state and provider effects…".into(), true));
+                let provider_access = self.provider_access.clone();
+                let sender = self.graph_action_commits.clone();
+                thread::Builder::new()
+                    .name("sos-graph-action-commit".into())
+                    .spawn(move || {
+                        let result = commit_graph_action(
+                            &service_socket,
+                            request_id,
+                            &previous,
+                            &outcome,
+                            &revisions,
+                            provider_access.as_ref(),
+                        );
+                        let _ = sender.send_blocking(GraphActionCommitResult {
+                            request_id,
+                            previous,
+                            outcome,
+                            result,
+                        });
+                    })
+                    .expect("graph action commit thread must start");
+            }
+            GraphWorkerResult::Refreshed {
+                request_id,
+                snapshot,
+            } => {
+                self.install_graph_snapshot(snapshot);
+                self.status = None;
+                eprintln!("sos_graph_refreshed request_id={request_id}");
+            }
+            GraphWorkerResult::Rejected { request_id, error } => {
+                self.action_in_flight = false;
+                self.status = Some((format!("Graph operation rejected: {error}"), false));
+                eprintln!("sos_graph_operation_rejected request_id={request_id} error={error}");
+                self.dispatch_pending_input_event(cx);
+            }
+        }
+    }
+
+    fn install_graph_snapshot(&mut self, snapshot: GraphRuntimeSnapshot) {
+        assets::install_graph(
+            snapshot
+                .instances
+                .values()
+                .map(|instance| instance.assets.as_slice()),
+        );
+        if let Some(root) = snapshot.instances.get(&snapshot.root) {
+            if let Some(scene) = &root.scene {
+                self.scene = scene.clone();
+            }
+            self.state = root.state.clone();
+        }
+        reconcile_graph_input_state_shadow(&mut self.input_state_shadow, &snapshot);
+        self.node_owners.clear();
+        if let Some(graph) = &mut self.active_graph {
+            graph.snapshot = snapshot;
+        }
+    }
+
     fn attach_provider_updates(
         updates: async_channel::Receiver<ProviderUpdate>,
         cx: &mut Context<Self>,
@@ -686,7 +1030,17 @@ impl LinuxExperienceHost {
             while let Ok(update) = updates.recv().await {
                 if this
                     .update(cx, |this, cx| {
-                        if update.revision_id != this.active_revision_id {
+                        let graph_node = this.active_graph.as_ref().and_then(|graph| {
+                            graph
+                                .snapshot
+                                .instances
+                                .iter()
+                                .find(|(_, instance)| {
+                                    instance.revision_id.as_str() == update.revision_id
+                                })
+                                .map(|(node_id, _)| node_id.clone())
+                        });
+                        if update.revision_id != this.active_revision_id && graph_node.is_none() {
                             eprintln!(
                                 "sos_provider_event_dropped event_revision={} active_revision={}",
                                 update.revision_id, this.active_revision_id
@@ -697,10 +1051,83 @@ impl LinuxExperienceHost {
                             "sos_provider_event generation={} revision_id={}",
                             update.generation, this.active_revision_id
                         );
-                        assets::install_provider_frames(&update.frames);
+                        if this.active_graph.is_some() {
+                            assets::install_provider_frames_scoped(
+                                &update.revision_id,
+                                &update.frames,
+                            );
+                        } else {
+                            assets::install_provider_frames(&update.frames);
+                        }
+                        let graph_root = graph_node.as_ref().is_some_and(|node_id| {
+                            this.active_graph
+                                .as_ref()
+                                .is_some_and(|graph| node_id == &graph.snapshot.root)
+                        });
                         let mut model = update.model;
-                        model.agent = this.model.agent.clone();
-                        model.shell = this.model.shell.clone();
+                        if graph_node.is_none() || graph_root {
+                            model.agent = this.model.agent.clone();
+                            model.shell = this.model.shell.clone();
+                        } else {
+                            model.shell = ShellModel::default();
+                        }
+                        model.appearance = this.model.appearance.clone();
+                        if let (Some(graph), Some(node_id)) = (&this.active_graph, graph_node) {
+                            let request_id = this.next_provider_request_id;
+                            this.next_provider_request_id =
+                                this.next_provider_request_id.wrapping_add(1).max(1);
+                            if let Err(error) =
+                                graph.worker.refresh_model(request_id, node_id, model)
+                            {
+                                this.status = Some((
+                                    format!("Provider refresh could not start: {error}"),
+                                    false,
+                                ));
+                            }
+                        } else {
+                            this.request_model_refresh(model, cx);
+                        }
+                    })
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        })
+        .detach();
+    }
+
+    fn attach_appearance_updates(
+        updates: async_channel::Receiver<AppearanceUpdate>,
+        cx: &mut Context<Self>,
+    ) {
+        cx.spawn(async move |this, cx| {
+            while let Ok(update) = updates.recv().await {
+                if this
+                    .update(cx, |this, cx| {
+                        if update.profile.generation <= this.model.appearance.generation {
+                            return;
+                        }
+                        eprintln!(
+                            "sos_appearance_event generation={}",
+                            update.profile.generation
+                        );
+                        if let Some(graph) = &this.active_graph {
+                            let request_id = this.next_provider_request_id;
+                            this.next_provider_request_id =
+                                this.next_provider_request_id.wrapping_add(1).max(1);
+                            if let Err(error) =
+                                graph.worker.apply_appearance(request_id, update.profile)
+                            {
+                                this.status = Some((
+                                    format!("Appearance refresh could not start: {error}"),
+                                    false,
+                                ));
+                            }
+                            return;
+                        }
+                        let mut model = this.model.clone();
+                        model.appearance = update.profile;
                         this.request_model_refresh(model, cx);
                     })
                     .is_err()
@@ -725,6 +1152,17 @@ impl LinuxExperienceHost {
         }
         let request_id = self.next_provider_request_id;
         self.next_provider_request_id = self.next_provider_request_id.wrapping_add(1).max(1);
+        if let Some(graph) = &self.active_graph {
+            if let Err(error) =
+                graph
+                    .worker
+                    .refresh_model(request_id, graph.snapshot.root.clone(), model.clone())
+            {
+                self.status = Some((format!("Provider refresh could not start: {error}"), false));
+                cx.notify();
+            }
+            return;
+        }
         match self
             .worker
             .refresh_model(request_id, model.clone(), self.state.clone())
@@ -752,6 +1190,26 @@ impl LinuxExperienceHost {
                 if this
                     .update(cx, |this, cx| {
                         this.handle_action_commit(result, cx);
+                        cx.notify();
+                    })
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        })
+        .detach();
+    }
+
+    fn attach_graph_action_results(
+        results: async_channel::Receiver<GraphActionCommitResult>,
+        cx: &mut Context<Self>,
+    ) {
+        cx.spawn(async move |this, cx| {
+            while let Ok(result) = results.recv().await {
+                if this
+                    .update(cx, |this, cx| {
+                        this.handle_graph_action_commit(result, cx);
                         cx.notify();
                     })
                     .is_err()
@@ -915,10 +1373,17 @@ impl LinuxExperienceHost {
                     presented.commit_sequence,
                     presented.submit_sequence
                 );
-                emit(&HostEvent::Presented {
-                    request_id: presented.request_id,
-                    revision_id: presented.revision_id,
-                });
+                if pending.graph {
+                    emit(&HostEvent::GraphPresented {
+                        request_id: presented.request_id,
+                        graph_id: presented.revision_id,
+                    });
+                } else {
+                    emit(&HostEvent::Presented {
+                        request_id: presented.request_id,
+                        revision_id: presented.revision_id,
+                    });
+                }
                 self.dispatch_pending_input_event(cx);
                 self.dispatch_queued_provider_model(cx);
             }
@@ -1014,6 +1479,11 @@ impl LinuxExperienceHost {
                 revision_id,
                 ..
             } => reject(request_id, revision_id, "host is already booted"),
+            HostRequest::BootGraph {
+                request_id,
+                graph_id,
+                ..
+            } => reject_graph(request_id, graph_id, "host is already booted"),
             HostRequest::Prepare {
                 request_id,
                 revision_id,
@@ -1022,6 +1492,7 @@ impl LinuxExperienceHost {
             } => {
                 if self.preparing.is_some()
                     || self.prepared.is_some()
+                    || self.preparing_graph.is_some()
                     || self.pending_commit.is_some()
                     || self.pending_presentation.is_some()
                     || self.action_in_flight
@@ -1072,6 +1543,68 @@ impl LinuxExperienceHost {
                     provider_frames,
                 });
                 self.status = Some(("Preparing Luau revision…".into(), true));
+                cx.notify();
+            }
+            HostRequest::PrepareGraph {
+                request_id,
+                graph_id,
+                graph_path,
+                revision_root,
+            } => {
+                if self.preparing.is_some()
+                    || self.prepared.is_some()
+                    || self.preparing_graph.is_some()
+                    || self.prepared_graph.is_some()
+                    || self.pending_commit.is_some()
+                    || self.pending_presentation.is_some()
+                    || self.action_in_flight
+                {
+                    reject_graph(request_id, graph_id, "another graph operation is active");
+                    return;
+                }
+                self.preparing_graph = Some((request_id, graph_id.clone()));
+                self.status = Some(("Preparing experience graph…".into(), true));
+                let model = self.model.clone();
+                let provider_access = self.provider_access.clone();
+                let service_socket = self.service_socket.clone();
+                let sender = self.graph_preparations.clone();
+                thread::Builder::new()
+                    .name("sos-graph-prepare".into())
+                    .spawn(move || {
+                        let result = (|| -> Result<PreparedGraph> {
+                            let loaded = load_graph(&graph_id, &graph_path, &revision_root)?;
+                            let root_node = &loaded.graph.nodes[&loaded.graph.root];
+                            let root_revision =
+                                loaded.revisions[&root_node.revision_id].revision.clone();
+                            let inputs = graph_runtime_inputs(
+                                &loaded,
+                                &model,
+                                provider_access.as_ref(),
+                                service_socket.as_deref(),
+                            )?;
+                            let (worker, snapshot) =
+                                GraphRuntimeWorker::start(loaded.graph, inputs).map_err(
+                                    |error| anyhow::anyhow!("initialize experience graph: {error}"),
+                                )?;
+                            Ok(PreparedGraph {
+                                graph_id: graph_id.clone(),
+                                graph: ActiveGraph {
+                                    graph_id: graph_id.clone(),
+                                    worker,
+                                    snapshot,
+                                    revisions: loaded.revisions,
+                                },
+                                root_revision,
+                            })
+                        })()
+                        .map_err(|error| error.to_string());
+                        let _ = sender.send_blocking(GraphPrepareResult {
+                            request_id,
+                            graph_id,
+                            result,
+                        });
+                    })
+                    .expect("graph preparation thread must start");
                 cx.notify();
             }
             HostRequest::QuiesceInput {
@@ -1127,6 +1660,39 @@ impl LinuxExperienceHost {
                     revision_id,
                 });
             }
+            HostRequest::QuiesceGraphInput {
+                request_id,
+                graph_id,
+            } => {
+                if self
+                    .prepared_graph
+                    .as_ref()
+                    .map(|prepared| &prepared.graph_id)
+                    != Some(&graph_id)
+                {
+                    reject_graph(request_id, graph_id, "prepared graph does not match");
+                    return;
+                }
+                if self.input_quiesced_revision.as_deref() != Some(&graph_id) {
+                    if self.input_quiesced_revision.is_some() {
+                        reject_graph(request_id, graph_id, "input is quiesced for another graph");
+                        return;
+                    }
+                    if let Some(fence) = &self.compositor_fence {
+                        if let Err(error) = fence.quiesce_input(request_id, &graph_id) {
+                            reject_graph(request_id, graph_id, error.to_string());
+                            return;
+                        }
+                    }
+                    self.pending_input_events.clear();
+                    self.surface_gestures.clear();
+                    self.input_quiesced_revision = Some(graph_id.clone());
+                }
+                emit(&HostEvent::GraphInputQuiesced {
+                    request_id,
+                    graph_id,
+                });
+            }
             HostRequest::Present {
                 request_id,
                 revision_id,
@@ -1160,6 +1726,52 @@ impl LinuxExperienceHost {
                 });
                 self.status = Some(("Committing prepared Luau VM…".into(), true));
             }
+            HostRequest::PresentGraph {
+                request_id,
+                graph_id,
+            } => {
+                let Some(prepared) = self.prepared_graph.take() else {
+                    reject_graph(request_id, graph_id, "no prepared graph");
+                    return;
+                };
+                if prepared.graph_id != graph_id
+                    || self.input_quiesced_revision.as_deref() != Some(&graph_id)
+                {
+                    self.prepared_graph = Some(prepared);
+                    reject_graph(request_id, graph_id, "graph was not prepared and quiesced");
+                    return;
+                }
+                if let Some(fence) = &self.compositor_fence {
+                    if let Err(error) = fence.arm(request_id, &graph_id) {
+                        self.prepared_graph = Some(prepared);
+                        reject_graph(request_id, graph_id, error.to_string());
+                        return;
+                    }
+                }
+                Self::attach_graph_results(prepared.graph.worker.results(), cx);
+                self.active_revision_id = prepared.root_revision.revision_id.clone();
+                self.active_source_sha256 = prepared.root_revision.source_sha256;
+                self.state_schema_version = prepared.root_revision.schema_version;
+                let candidate_snapshot = prepared.graph.snapshot.clone();
+                self.rollback_graph = self.active_graph.replace(prepared.graph);
+                self.install_graph_snapshot(candidate_snapshot);
+                if let (Some(access), Some(graph)) = (&self.provider_access, &self.active_graph) {
+                    access.activate_graph(
+                        graph
+                            .snapshot
+                            .instances
+                            .values()
+                            .map(|instance| instance.revision_id.to_string()),
+                    );
+                }
+                self.pending_presentation = Some(PendingPresentation {
+                    request_id,
+                    revision_id: graph_id,
+                    graph: true,
+                });
+                self.status = Some(("Graph switched; waiting for presented frame".into(), true));
+                cx.notify();
+            }
             HostRequest::Confirm {
                 request_id,
                 revision_id,
@@ -1172,6 +1784,42 @@ impl LinuxExperienceHost {
                 } else {
                     reject(request_id, revision_id, "revision has not been presented");
                 }
+            }
+            HostRequest::ConfirmGraph {
+                request_id,
+                graph_id,
+            } => {
+                if self.last_presented_revision.as_deref() == Some(&graph_id) {
+                    emit(&HostEvent::GraphConfirmed {
+                        request_id,
+                        graph_id,
+                    });
+                } else {
+                    reject_graph(request_id, graph_id, "graph has not been presented");
+                }
+            }
+            HostRequest::FinalizeGraph {
+                request_id,
+                graph_id,
+            } => {
+                if self.active_graph.as_ref().map(|graph| &graph.graph_id) != Some(&graph_id) {
+                    reject_graph(request_id, graph_id, "active graph does not match");
+                    return;
+                }
+                if self.input_quiesced_revision.as_deref() == Some(&graph_id) {
+                    if let Some(fence) = &self.compositor_fence {
+                        if let Err(error) = fence.resume_input(request_id, &graph_id) {
+                            reject_graph(request_id, graph_id, error.to_string());
+                            return;
+                        }
+                    }
+                    self.input_quiesced_revision = None;
+                }
+                self.rollback_graph = None;
+                emit(&HostEvent::GraphFinalized {
+                    request_id,
+                    graph_id,
+                });
             }
             HostRequest::Discard {
                 request_id,
@@ -1210,6 +1858,80 @@ impl LinuxExperienceHost {
                         reject(request_id, revision_id, error);
                     }
                 }
+                cx.notify();
+            }
+            HostRequest::DiscardGraph {
+                request_id,
+                graph_id,
+            } => {
+                if let Some(prepared) = self.prepared_graph.take() {
+                    if prepared.graph_id != graph_id {
+                        self.prepared_graph = Some(prepared);
+                        reject_graph(request_id, graph_id, "prepared graph does not match");
+                        return;
+                    }
+                    if self.input_quiesced_revision.as_deref() == Some(&graph_id) {
+                        if let Some(fence) = &self.compositor_fence {
+                            if let Err(error) = fence.resume_input(request_id, &graph_id) {
+                                self.prepared_graph = Some(prepared);
+                                reject_graph(request_id, graph_id, error.to_string());
+                                return;
+                            }
+                        }
+                        self.input_quiesced_revision = None;
+                    }
+                    drop(prepared);
+                } else if self.active_graph.as_ref().map(|graph| &graph.graph_id) == Some(&graph_id)
+                    && self.rollback_graph.is_some()
+                {
+                    let candidate = self.active_graph.take();
+                    let restored = self
+                        .rollback_graph
+                        .take()
+                        .expect("rollback graph was checked");
+                    let restored_snapshot = restored.snapshot.clone();
+                    let restored_revision =
+                        &restored_snapshot.instances[&restored_snapshot.root].revision_id;
+                    let restored_root = &restored.revisions[restored_revision].revision;
+                    self.active_revision_id = restored_revision.to_string();
+                    self.active_source_sha256 = restored_root.source_sha256.clone();
+                    self.state_schema_version = restored_root.schema_version;
+                    self.active_graph = Some(restored);
+                    self.install_graph_snapshot(restored_snapshot);
+                    if let (Some(access), Some(graph)) = (&self.provider_access, &self.active_graph)
+                    {
+                        access.activate_graph(
+                            graph
+                                .snapshot
+                                .instances
+                                .values()
+                                .map(|instance| instance.revision_id.to_string()),
+                        );
+                    }
+                    if self.input_quiesced_revision.as_deref() == Some(&graph_id) {
+                        if let Some(fence) = &self.compositor_fence {
+                            if let Err(error) = fence.resume_input(request_id, &graph_id) {
+                                reject_graph(request_id, graph_id, error.to_string());
+                                return;
+                            }
+                        }
+                        self.input_quiesced_revision = None;
+                    }
+                    self.pending_presentation = None;
+                    self.last_presented_revision = self
+                        .active_graph
+                        .as_ref()
+                        .map(|graph| graph.graph_id.clone());
+                    drop(candidate);
+                } else {
+                    reject_graph(request_id, graph_id, "no prepared or rollback graph");
+                    return;
+                }
+                self.status = None;
+                emit(&HostEvent::GraphDiscarded {
+                    request_id,
+                    graph_id,
+                });
                 cx.notify();
             }
             HostRequest::Shutdown { request_id } => {
@@ -1324,6 +2046,7 @@ impl LinuxExperienceHost {
                 self.pending_presentation = Some(PendingPresentation {
                     request_id: commit.present_request_id,
                     revision_id: self.active_revision_id.clone(),
+                    graph: false,
                 });
                 self.status = Some((
                     if self.compositor_fence.is_some() {
@@ -1510,6 +2233,82 @@ impl LinuxExperienceHost {
         self.dispatch_queued_provider_model(cx);
     }
 
+    fn handle_graph_action_commit(
+        &mut self,
+        result: GraphActionCommitResult,
+        cx: &mut Context<Self>,
+    ) {
+        self.action_in_flight = false;
+        match result.result {
+            Ok(committed) => {
+                let state_mismatch =
+                    committed
+                        .authoritative
+                        .iter()
+                        .any(|(experience_id, state)| {
+                            result
+                                .outcome
+                                .snapshot
+                                .instances
+                                .values()
+                                .find(|instance| &instance.experience_id == experience_id)
+                                .is_none_or(|instance| instance.state != state.state)
+                        });
+                if state_mismatch {
+                    if let Some(graph) = &self.active_graph {
+                        graph
+                            .worker
+                            .restore(result.request_id, result.previous.clone())
+                            .ok();
+                    }
+                    self.install_graph_snapshot(result.previous);
+                    self.status = Some((
+                        "Authority returned unexpected graph interaction state".into(),
+                        false,
+                    ));
+                } else {
+                    self.install_graph_snapshot(result.outcome.snapshot);
+                    self.status = None;
+                    eprintln!(
+                        "sos_graph_action_committed request_id={} experiences={}",
+                        result.request_id,
+                        committed.authoritative.len()
+                    );
+                    if let Some(prompt) = committed.agent_prompt {
+                        self.start_agent_prompt(prompt, cx);
+                    }
+                    for (window_id, operation) in committed.shell_controls {
+                        let control = self
+                            .compositor_fence
+                            .as_ref()
+                            .ok_or_else(|| anyhow::anyhow!("compositor control is unavailable"))
+                            .and_then(|fence| fence.control_window(window_id, operation));
+                        if let Err(error) = control {
+                            self.status =
+                                Some((format!("Window action could not start: {error}"), false));
+                        }
+                    }
+                }
+            }
+            Err(error) => {
+                if let Some(graph) = &self.active_graph {
+                    graph
+                        .worker
+                        .restore(result.request_id, result.previous.clone())
+                        .ok();
+                }
+                self.install_graph_snapshot(result.previous);
+                self.status = Some((format!("Graph state/effect commit failed: {error}"), false));
+                eprintln!(
+                    "sos_graph_action_commit_rejected request_id={} error={error}",
+                    result.request_id
+                );
+            }
+        }
+        self.dispatch_pending_input_event(cx);
+        self.dispatch_queued_provider_model(cx);
+    }
+
     fn start_agent_prompt(&mut self, prompt: String, cx: &mut Context<Self>) {
         if self.model.agent.busy {
             self.status = Some(("The agent is already handling a request".into(), false));
@@ -1531,16 +2330,6 @@ impl LinuxExperienceHost {
         agent_bridge::spawn_prompt(socket, prompt, self.agent_updates.clone());
     }
 
-    fn dispatch(&mut self, action: String, cx: &mut Context<Self>) {
-        self.dispatch_event(
-            SceneEvent {
-                action,
-                ..Default::default()
-            },
-            cx,
-        );
-    }
-
     pub(super) fn native_input_changed(
         &mut self,
         node_id: String,
@@ -1548,11 +2337,13 @@ impl LinuxExperienceHost {
         value: String,
         cx: &mut Context<Self>,
     ) {
-        if !self.state.is_object() {
-            self.state = serde_json::json!({});
-        }
-        if let Some(object) = self.state.as_object_mut() {
-            object.insert(state_key.clone(), JsonValue::String(value.clone()));
+        if self.active_graph.is_none() {
+            if !self.state.is_object() {
+                self.state = serde_json::json!({});
+            }
+            if let Some(object) = self.state.as_object_mut() {
+                object.insert(state_key.clone(), JsonValue::String(value.clone()));
+            }
         }
         self.input_state_shadow.insert(state_key, value.clone());
         eprintln!(
@@ -1619,7 +2410,7 @@ impl LinuxExperienceHost {
         );
     }
 
-    fn dispatch_event(&mut self, event: SceneEvent, cx: &mut Context<Self>) {
+    fn dispatch_event(&mut self, mut event: SceneEvent, cx: &mut Context<Self>) {
         if self.action_in_flight
             || self.preparing.is_some()
             || self.prepared.is_some()
@@ -1631,6 +2422,40 @@ impl LinuxExperienceHost {
         let request_id = self.next_action_request_id;
         self.next_action_request_id = self.next_action_request_id.wrapping_add(1).max(1);
         self.action_in_flight = true;
+        if let Some(graph) = &self.active_graph {
+            let owner = event
+                .target
+                .as_ref()
+                .and_then(|target| self.node_owners.get(target))
+                .cloned()
+                .unwrap_or_else(|| graph.snapshot.root.clone());
+            if let Some(target) = &mut event.target {
+                let prefix = format!("{}::", owner.as_str());
+                if let Some(local) = target.strip_prefix(&prefix) {
+                    *target = local.to_owned();
+                }
+            }
+            eprintln!(
+                "sos_graph_action_dispatched request_id={request_id} node_id={owner} action={} target={}",
+                event.action,
+                event.target.as_deref().unwrap_or("none")
+            );
+            let event = match serde_json::to_value(event) {
+                Ok(event) => event,
+                Err(error) => {
+                    self.action_in_flight = false;
+                    self.status = Some((format!("Action could not encode: {error}"), false));
+                    cx.notify();
+                    return;
+                }
+            };
+            if let Err(error) = graph.worker.action(request_id, owner, event) {
+                self.action_in_flight = false;
+                self.status = Some((format!("Action could not start: {error}"), false));
+                cx.notify();
+            }
+            return;
+        }
         merge_input_state_shadow(&mut self.state, &self.input_state_shadow);
         eprintln!(
             "sos_action_dispatched request_id={request_id} action={} target={}",
@@ -1701,9 +2526,14 @@ impl LinuxExperienceHost {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let semantic_scene = self
+            .active_graph
+            .as_ref()
+            .map(|graph| composed_graph_scene(&graph.snapshot))
+            .unwrap_or_else(|| self.scene.clone());
         match action.kind.as_str() {
             "next" | "previous" => {
-                let ids = semantic_ids(&self.scene);
+                let ids = semantic_ids(&semantic_scene);
                 if ids.is_empty() {
                     return;
                 }
@@ -1730,7 +2560,7 @@ impl LinuxExperienceHost {
                 }
             }
             "activate" => {
-                if let Some(scene_action) = node_by_id(&self.scene.root, &action.target)
+                if let Some(scene_action) = node_by_id(&semantic_scene.root, &action.target)
                     .and_then(|node| node.interaction.tap_action.clone())
                 {
                     self.queue_input_event(
@@ -2087,6 +2917,7 @@ impl LinuxExperienceHost {
         node: &SceneNode,
         path: SharedString,
         target: RenderTarget,
+        owner: Option<GraphNodeId>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -2098,7 +2929,14 @@ impl LinuxExperienceHost {
         {
             return div().into_any_element();
         }
-        let element_id = node.id.clone().unwrap_or_else(|| path.to_string());
+        let local_id = node.id.clone().unwrap_or_else(|| path.to_string());
+        let element_id = owner.as_ref().map_or_else(
+            || local_id.clone(),
+            |owner| format!("{}::{local_id}", owner.as_str()),
+        );
+        if let Some(owner) = &owner {
+            self.node_owners.insert(element_id.clone(), owner.clone());
+        }
         let mut element = div();
         match node.layout.flow {
             Flow::Overlay => {}
@@ -2198,9 +3036,13 @@ impl LinuxExperienceHost {
                 .child(SharedString::from(text.value.clone()));
         }
         if let Some(Content::TextSession(input)) = &node.content {
+            let state_key = owner.as_ref().map_or_else(
+                || input.state_key.clone(),
+                |owner| format!("{}::{}", owner.as_str(), input.state_key),
+            );
             let displayed_value = self
                 .input_state_shadow
-                .get(&input.state_key)
+                .get(&state_key)
                 .cloned()
                 .unwrap_or_else(|| input.value.clone());
             let created = !self.inputs.contains_key(&element_id);
@@ -2211,7 +3053,7 @@ impl LinuxExperienceHost {
                 let native = cx.new(|input_cx| {
                     NativeTextInput::new(
                         element_id.clone(),
-                        input.state_key.clone(),
+                        state_key.clone(),
                         input.value.clone(),
                         input.placeholder.clone(),
                         input.submit_action.clone(),
@@ -2227,7 +3069,7 @@ impl LinuxExperienceHost {
                 || self.pending_focus_restore.as_deref() == Some(element_id.as_str());
             native.update(cx, |native, native_cx| {
                 native.sync(
-                    &input.state_key,
+                    &state_key,
                     &displayed_value,
                     &input.placeholder,
                     input.submit_action.as_deref(),
@@ -2281,6 +3123,47 @@ impl LinuxExperienceHost {
                 );
             }
         }
+        if let Some(Content::ExperienceMount(mount)) = &node.content {
+            element = element.overflow_hidden();
+            let mounted = self.active_graph.as_ref().and_then(|graph| {
+                let parent = owner.as_ref().unwrap_or(&graph.snapshot.root);
+                graph
+                    .snapshot
+                    .instances
+                    .iter()
+                    .find(|(_, instance)| {
+                        instance.parent.as_ref() == Some(parent)
+                            && instance.dependency.as_ref().map(|alias| alias.as_str())
+                                == Some(mount.dependency.as_str())
+                    })
+                    .map(|(node_id, instance)| {
+                        (
+                            node_id.clone(),
+                            instance.scene.clone(),
+                            instance.status.clone(),
+                        )
+                    })
+            });
+            match mounted {
+                Some((child_id, Some(scene), RuntimeInstanceStatus::Ready)) => {
+                    element = element.child(self.render_node(
+                        &scene.root,
+                        SharedString::from(format!("mount-{child_id}")),
+                        target,
+                        Some(child_id),
+                        window,
+                        cx,
+                    ));
+                }
+                Some((_, _, RuntimeInstanceStatus::Failed(error))) => {
+                    element =
+                        element.child(mount_fallback(&format!("Experience unavailable: {error}")));
+                }
+                _ => {
+                    element = element.child(mount_fallback("Experience unavailable"));
+                }
+            }
+        }
         if let Some(Content::WindowSpace(space)) = &node.content {
             element = element.relative();
             if !space.fallback.is_empty() {
@@ -2325,7 +3208,14 @@ impl LinuxExperienceHost {
         }
         for (index, child) in node.children.iter().enumerate() {
             let child_path = SharedString::from(format!("{path}-{index}"));
-            element = element.child(self.render_node(child, child_path, target, window, cx));
+            element = element.child(self.render_node(
+                child,
+                child_path,
+                target,
+                owner.clone(),
+                window,
+                cx,
+            ));
         }
         let surface_owns_tap = uses_surface && node.interaction.tap_action.is_some();
         let mut rendered = if node.interaction.surface_drag {
@@ -2344,11 +3234,21 @@ impl LinuxExperienceHost {
             .filter(|_| !surface_owns_tap)
         {
             let action = action.clone();
+            let event_target = element_id.clone();
             element
                 .id(SharedString::from(element_id.clone()))
                 .on_mouse_down(
                     MouseButton::Left,
-                    cx.listener(move |this, _, _, cx| this.dispatch(action.clone(), cx)),
+                    cx.listener(move |this, _, _, cx| {
+                        this.queue_input_event(
+                            SceneEvent {
+                                action: action.clone(),
+                                target: Some(event_target.clone()),
+                                ..Default::default()
+                            },
+                            cx,
+                        )
+                    }),
                 )
                 .into_any_element()
         } else if node.layout.scroll_y {
@@ -2535,8 +3435,13 @@ impl Render for LinuxExperienceHost {
             while let Some(action) = self.accessibility_actions.pop_front() {
                 self.handle_accessibility_action(action, window, cx);
             }
+            let semantic_scene = self
+                .active_graph
+                .as_ref()
+                .map(|graph| composed_graph_scene(&graph.snapshot))
+                .unwrap_or_else(|| self.scene.clone());
             accessibility.publish(
-                &self.scene,
+                &semantic_scene,
                 self.semantic_focus.clone(),
                 self.status.as_ref().map(|status| status.0.clone()),
             );
@@ -2570,6 +3475,9 @@ impl Render for LinuxExperienceHost {
             &scene.root,
             SharedString::from("root"),
             RenderTarget::Base,
+            self.active_graph
+                .as_ref()
+                .map(|graph| graph.snapshot.root.clone()),
             window,
             cx,
         );
@@ -2603,10 +3511,17 @@ impl Render for LinuxExperienceHost {
                         "sos_revision_frame revision_id={} evidence=gpui_next_frame",
                         presentation.revision_id
                     );
-                    emit(&HostEvent::Presented {
-                        request_id: presentation.request_id,
-                        revision_id: presentation.revision_id,
-                    });
+                    if presentation.graph {
+                        emit(&HostEvent::GraphPresented {
+                            request_id: presentation.request_id,
+                            graph_id: presentation.revision_id,
+                        });
+                    } else {
+                        emit(&HostEvent::Presented {
+                            request_id: presentation.request_id,
+                            revision_id: presentation.revision_id,
+                        });
+                    }
                     this.dispatch_queued_provider_model(cx);
                     cx.notify();
                 });
@@ -2621,6 +3536,62 @@ fn node_by_id<'a>(node: &'a SceneNode, id: &str) -> Option<&'a SceneNode> {
         return Some(node);
     }
     node.children.iter().find_map(|child| node_by_id(child, id))
+}
+
+fn mount_fallback(message: &str) -> AnyElement {
+    div()
+        .size_full()
+        .flex()
+        .items_center()
+        .justify_center()
+        .overflow_hidden()
+        .bg(rgb(0x20252B))
+        .text_color(rgb(0xD5D9E0))
+        .text_size(px(13.))
+        .child(SharedString::from(message.to_owned()))
+        .into_any_element()
+}
+
+fn composed_graph_scene(snapshot: &GraphRuntimeSnapshot) -> Scene {
+    fn compose(
+        snapshot: &GraphRuntimeSnapshot,
+        owner: &GraphNodeId,
+        node: &SceneNode,
+    ) -> SceneNode {
+        let mut composed = node.clone();
+        composed.id = node
+            .id
+            .as_ref()
+            .map(|id| format!("{}::{id}", owner.as_str()));
+        composed.children = node
+            .children
+            .iter()
+            .map(|child| compose(snapshot, owner, child))
+            .collect();
+        if let Some(Content::ExperienceMount(mount)) = &node.content {
+            composed.content = None;
+            if let Some((child_id, child)) = snapshot.instances.iter().find(|(_, instance)| {
+                instance.parent.as_ref() == Some(owner)
+                    && instance.dependency.as_ref().map(|alias| alias.as_str())
+                        == Some(mount.dependency.as_str())
+            }) {
+                if let Some(scene) = &child.scene {
+                    composed
+                        .children
+                        .push(compose(snapshot, child_id, &scene.root));
+                }
+            }
+        }
+        composed
+    }
+
+    let root = snapshot
+        .instances
+        .get(&snapshot.root)
+        .and_then(|instance| instance.scene.as_ref())
+        .map(|scene| compose(snapshot, &snapshot.root, &scene.root))
+        .unwrap_or_default();
+    Scene { root }
 }
 
 fn shell_overlay_node(node: &SceneNode) -> Option<&SceneNode> {
@@ -2651,6 +3622,26 @@ fn merge_input_state_shadow(state: &mut JsonValue, shadow: &HashMap<String, Stri
 fn reconcile_input_state_shadow(shadow: &mut HashMap<String, String>, authoritative: &JsonValue) {
     shadow.retain(|key, value| {
         authoritative.get(key).and_then(JsonValue::as_str) != Some(value.as_str())
+    });
+}
+
+fn reconcile_graph_input_state_shadow(
+    shadow: &mut HashMap<String, String>,
+    snapshot: &GraphRuntimeSnapshot,
+) {
+    shadow.retain(|scoped_key, value| {
+        let Some((node_id, state_key)) = scoped_key.split_once("::") else {
+            return true;
+        };
+        let Ok(node_id) = GraphNodeId::parse(node_id) else {
+            return true;
+        };
+        snapshot
+            .instances
+            .get(&node_id)
+            .and_then(|instance| instance.state.get(state_key))
+            .and_then(JsonValue::as_str)
+            != Some(value.as_str())
     });
 }
 
@@ -2704,7 +3695,7 @@ fn start_provider_updates(
         grant_path,
         allow_development_wildcard: std::env::var_os("SOS_PROVIDER_DEVELOPMENT_GRANTS").as_deref()
             == Some(std::ffi::OsStr::new("1")),
-        active_revision: Arc::new(Mutex::new(revision_id.into())),
+        active_revisions: Arc::new(Mutex::new(BTreeSet::from([revision_id.into()]))),
     };
     // Fingerprint before taking the initial snapshot. Providers such as PipeWire
     // can become ready while the first model is being collected; recording the
@@ -2720,44 +3711,106 @@ fn start_provider_updates(
         .name("sos-provider-events".into())
         .spawn(move || {
             let mut generation = generation;
-            let mut revision_id = watcher_access.active_revision();
+            let mut revisions = watcher_access.active_revisions();
             while !sender.is_closed() {
                 thread::sleep(Duration::from_secs(1));
-                let next_revision_id = watcher_access.active_revision();
+                let next_revisions = watcher_access.active_revisions();
                 let next = match hub.generation() {
-                    Ok(next) if next != generation || next_revision_id != revision_id => next,
+                    Ok(next) if next != generation || next_revisions != revisions => next,
                     Ok(_) => continue,
                     Err(error) => {
                         eprintln!(
-                            "sos_provider_unavailable revision_id={next_revision_id} error={error}"
+                            "sos_provider_unavailable revisions={} error={error}",
+                            next_revisions.join(",")
                         );
                         continue;
                     }
                 };
-                match watcher_access.snapshot(&next_revision_id) {
-                    Ok(snapshot) => {
-                        generation = next.clone();
-                        revision_id = next_revision_id.clone();
-                        if sender
-                            .send_blocking(ProviderUpdate {
-                                generation: format!("{revision_id}:{next}"),
-                                revision_id: revision_id.clone(),
-                                model: snapshot.model,
-                                frames: snapshot.frames,
-                            })
-                            .is_err()
-                        {
-                            break;
+                let mut complete = true;
+                for revision_id in &next_revisions {
+                    match watcher_access.snapshot(revision_id) {
+                        Ok(snapshot) => {
+                            if sender
+                                .send_blocking(ProviderUpdate {
+                                    generation: format!("{revision_id}:{next}"),
+                                    revision_id: revision_id.clone(),
+                                    model: snapshot.model,
+                                    frames: snapshot.frames,
+                                })
+                                .is_err()
+                            {
+                                return;
+                            }
+                        }
+                        Err(error) => {
+                            complete = false;
+                            eprintln!(
+                                "sos_provider_unavailable revision_id={revision_id} error={error}"
+                            );
                         }
                     }
-                    Err(error) => eprintln!(
-                        "sos_provider_unavailable revision_id={next_revision_id} error={error}"
-                    ),
+                }
+                if complete {
+                    generation = next;
+                    revisions = next_revisions;
                 }
             }
         })
         .context("start Linux provider subscription thread")?;
     Ok((model, receiver, Some(access)))
+}
+
+fn start_appearance_updates(
+    service_socket: Option<&Path>,
+) -> (AppearanceProfile, async_channel::Receiver<AppearanceUpdate>) {
+    let (sender, receiver) = async_channel::bounded(1);
+    let Some(socket) = service_socket.map(Path::to_path_buf) else {
+        drop(sender);
+        return (AppearanceProfile::default(), receiver);
+    };
+    let initial = read_service_appearance(&socket).unwrap_or_else(|error| {
+        eprintln!("sos_appearance_unavailable error={error}");
+        AppearanceProfile::default()
+    });
+    let initial_generation = initial.generation;
+    if let Err(error) = thread::Builder::new()
+        .name("sos-appearance-events".into())
+        .spawn(move || {
+            let mut generation = initial_generation;
+            while !sender.is_closed() {
+                thread::sleep(Duration::from_millis(500));
+                match read_service_appearance(&socket) {
+                    Ok(profile) if profile.generation > generation => {
+                        generation = profile.generation;
+                        if sender.send_blocking(AppearanceUpdate { profile }).is_err() {
+                            break;
+                        }
+                    }
+                    Ok(_) => {}
+                    Err(error) => eprintln!("sos_appearance_unavailable error={error}"),
+                }
+            }
+        })
+    {
+        eprintln!("sos_appearance_watcher_failed error={error}");
+    }
+    (initial, receiver)
+}
+
+fn read_service_appearance(socket: &Path) -> std::result::Result<AppearanceProfile, String> {
+    let client = ServiceClient::new(socket, Duration::from_secs(2));
+    match call_service(
+        &client,
+        &ServiceRequest::GetResource {
+            request_id: 1,
+            query: ResourceQuery::Appearance,
+        },
+    )? {
+        ResponsePayload::Resource {
+            value: ResourceValue::Appearance(resource),
+        } => Ok(resource.profile),
+        _ => Err("provider service returned the wrong appearance payload".into()),
+    }
 }
 
 fn parse_options(args: impl Iterator<Item = String>) -> Result<Options> {
@@ -2828,7 +3881,10 @@ fn load_revision(
     directory: &Path,
     requested_api_version: u32,
 ) -> Result<LoadedRevision> {
-    if requested_api_version != EXPERIENCE_API_VERSION {
+    if !matches!(
+        requested_api_version,
+        EXPERIENCE_API_VERSION | EXPERIENCE_API_VERSION_V4
+    ) {
         bail!("unsupported experience API version {requested_api_version}");
     }
     let manifest: RevisionManifest = serde_json::from_slice(
@@ -2838,7 +3894,7 @@ fn load_revision(
     if manifest.revision_id != expected_revision_id {
         bail!("revision manifest identity does not match request");
     }
-    if manifest.format_version != 3 {
+    if !matches!(manifest.format_version, 3 | 4) {
         bail!(
             "unsupported revision manifest format {}",
             manifest.format_version
@@ -2867,6 +3923,165 @@ fn load_revision(
         schema_version: state.schema_version,
         assets,
     })
+}
+
+fn load_graph(graph_id: &str, graph_path: &Path, revision_root: &Path) -> Result<LoadedGraph> {
+    if graph_path.file_name().and_then(|value| value.to_str())
+        != Some(format!("{graph_id}.json").as_str())
+    {
+        bail!("graph path does not match its identity");
+    }
+    let bytes = fs::read(graph_path).context("read resolved experience graph")?;
+    if bytes.len() > 1024 * 1024 || hex_sha256(&bytes) != graph_id {
+        bail!("resolved experience graph identity mismatch");
+    }
+    let graph: ResolvedGraph =
+        serde_json::from_slice(&bytes).context("decode resolved experience graph")?;
+    graph
+        .validate()
+        .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+    if graph
+        .id()
+        .map_err(|error| anyhow::anyhow!(error.to_string()))?
+        != graph_id
+        || canonical_json(&graph).map_err(|error| anyhow::anyhow!(error.to_string()))? != bytes
+    {
+        bail!("resolved experience graph is not canonical");
+    }
+    let mut revisions = std::collections::BTreeMap::new();
+    for node in graph.nodes.values() {
+        if revisions.contains_key(&node.revision_id) {
+            continue;
+        }
+        let directory = revision_root
+            .join("revisions")
+            .join(node.revision_id.as_str());
+        let revision = load_revision(
+            node.revision_id.as_str(),
+            &directory,
+            EXPERIENCE_API_VERSION_V4,
+        )?;
+        let manifest: RevisionManifest = serde_json::from_slice(
+            &fs::read(directory.join("manifest.json")).context("read graph revision manifest")?,
+        )
+        .context("decode graph revision manifest")?;
+        let package_identity = manifest
+            .package
+            .as_ref()
+            .context("graph revision lacks package metadata")?;
+        let package_bytes = read_verified_file(&directory, package_identity)?;
+        let package: PackageMetadata =
+            serde_json::from_slice(&package_bytes).context("decode graph revision package")?;
+        package
+            .validate()
+            .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+        if canonical_json(&package).map_err(|error| anyhow::anyhow!(error.to_string()))?
+            != package_bytes
+        {
+            bail!("graph revision package is not canonical");
+        }
+        revisions.insert(
+            node.revision_id.clone(),
+            LoadedGraphRevision { revision, package },
+        );
+    }
+    for node in graph.nodes.values() {
+        let loaded = &revisions[&node.revision_id];
+        if loaded.package.experience_id != node.experience_id
+            || !loaded
+                .package
+                .contract
+                .exports
+                .contains_key(&node.export_id)
+        {
+            bail!("resolved graph node does not match its revision package");
+        }
+    }
+    Ok(LoadedGraph {
+        graph_id: graph_id.into(),
+        graph,
+        revisions,
+    })
+}
+
+fn graph_runtime_inputs(
+    graph: &LoadedGraph,
+    root_model: &ExperienceModel,
+    provider_access: Option<&LinuxProviderAccess>,
+    service_socket: Option<&Path>,
+) -> Result<std::collections::BTreeMap<RevisionId, GraphRevisionInput>> {
+    let root_revision = &graph.graph.nodes[&graph.graph.root].revision_id;
+    let mut inputs = std::collections::BTreeMap::new();
+    if provider_access.is_some() {
+        assets::clear_provider_frames();
+    }
+    for (revision_id, loaded) in &graph.revisions {
+        let provider_snapshot = provider_access
+            .map(|access| access.snapshot(revision_id.as_str()))
+            .transpose()?;
+        if let Some(snapshot) = &provider_snapshot {
+            assets::install_provider_frames_scoped(revision_id.as_str(), &snapshot.frames);
+        }
+        let mut model = if revision_id == root_revision {
+            root_model.clone()
+        } else if let Some(snapshot) = provider_snapshot {
+            snapshot.model
+        } else {
+            providers_fake::snapshot()
+        };
+        model.appearance = root_model.appearance.clone();
+        if loaded.package.role != experience_package::ExperienceRole::Shell {
+            model.shell = ShellModel::default();
+        }
+        let state = service_socket
+            .and_then(|socket| {
+                read_experience_state(socket, &loaded.package.experience_id, revision_id.as_str())
+                    .map_err(|error| {
+                        eprintln!(
+                            "sos_experience_state_unavailable experience_id={} error={error}",
+                            loaded.package.experience_id
+                        );
+                    })
+                    .ok()
+            })
+            .filter(|state| state.revision_id == revision_id.as_str())
+            .map_or_else(|| loaded.revision.state.clone(), |state| state.state);
+        inputs.insert(
+            revision_id.clone(),
+            GraphRevisionInput {
+                source: loaded.revision.source.clone(),
+                sidecars: loaded.revision.assets.clone(),
+                model,
+                state,
+                state_schema_version: loaded.revision.schema_version,
+                package: loaded.package.clone(),
+            },
+        );
+    }
+    Ok(inputs)
+}
+
+fn read_experience_state(
+    socket: &Path,
+    experience_id: &ExperienceId,
+    revision_id: &str,
+) -> std::result::Result<StateResource, String> {
+    let client = ServiceClient::new(socket, Duration::from_secs(2));
+    match call_service(
+        &client,
+        &ServiceRequest::GetResource {
+            request_id: 1,
+            query: ResourceQuery::ExperienceStateAt {
+                experience_id: experience_id.clone(),
+                revision_id: revision_id.into(),
+            },
+        },
+    )? {
+        ResponsePayload::Resource {
+            value: ResourceValue::ExperienceStateAt(state),
+        } => Ok(state.resource),
+        _ => Err("provider service returned the wrong experience state payload".into()),
+    }
 }
 
 fn read_verified_file(directory: &Path, identity: &FileIdentity) -> Result<Vec<u8>> {
@@ -3016,6 +4231,243 @@ fn commit_action(
         agent_prompt,
         shell_controls,
     })
+}
+
+fn commit_graph_action(
+    socket: &Path,
+    request_id: u64,
+    previous: &GraphRuntimeSnapshot,
+    outcome: &runtime_luau::GraphActionOutcome,
+    revisions: &BTreeMap<RevisionId, LoadedGraphRevision>,
+    provider_access: Option<&LinuxProviderAccess>,
+) -> std::result::Result<GraphActionCommitOutcome, String> {
+    let client = ServiceClient::new(socket, Duration::from_secs(2));
+    let mut affected = BTreeSet::new();
+    for (node_id, instance) in &outcome.snapshot.instances {
+        let prior = previous
+            .instances
+            .get(node_id)
+            .ok_or_else(|| format!("graph result introduced unknown node `{node_id}`"))?;
+        if prior.experience_id != instance.experience_id
+            || prior.revision_id != instance.revision_id
+        {
+            return Err(format!(
+                "graph result changed identity for node `{node_id}`"
+            ));
+        }
+        if prior.state != instance.state {
+            affected.insert(instance.experience_id.clone());
+        }
+    }
+    for effect in &outcome.effects {
+        let instance = outcome
+            .snapshot
+            .instances
+            .get(&effect.node_id)
+            .ok_or_else(|| format!("graph effect has unknown node `{}`", effect.node_id))?;
+        if effect.revision_id != instance.revision_id {
+            return Err("graph effect revision does not match its instance".into());
+        }
+        affected.insert(instance.experience_id.clone());
+    }
+
+    let mut actions = BTreeMap::<ExperienceId, Vec<ProviderAction>>::new();
+    let mut linux_effects = BTreeMap::<RevisionId, Vec<experience_ir::ProviderEffect>>::new();
+    let mut agent_prompt = None;
+    let mut shell_controls = Vec::new();
+    for graph_effect in &outcome.effects {
+        let instance = &outcome.snapshot.instances[&graph_effect.node_id];
+        let package = &revisions
+            .get(&graph_effect.revision_id)
+            .ok_or_else(|| "graph effect revision metadata is missing".to_owned())?
+            .package;
+        let effect = &graph_effect.effect;
+        if effect.provider == "agent" && effect.action == "prompt" {
+            if agent_prompt.is_some() {
+                return Err("one graph interaction may emit only one agent.prompt effect".into());
+            }
+            let prompt = effect
+                .payload
+                .get("prompt")
+                .and_then(JsonValue::as_str)
+                .map(str::trim)
+                .filter(|prompt| !prompt.is_empty())
+                .ok_or_else(|| "agent.prompt omitted a non-empty prompt".to_owned())?;
+            if prompt.len() > MAX_AGENT_MESSAGE_BYTES {
+                return Err(format!(
+                    "agent.prompt exceeds the {MAX_AGENT_MESSAGE_BYTES}-byte limit"
+                ));
+            }
+            agent_prompt = Some(prompt.to_owned());
+            continue;
+        }
+        if effect.provider == "shell" {
+            if package.role != experience_package::ExperienceRole::Shell {
+                return Err(format!(
+                    "ordinary experience `{}` cannot issue shell effects",
+                    package.experience_id
+                ));
+            }
+            let operation = match effect.action.as_str() {
+                "focus_window" => WindowControlAction::Focus,
+                "close_window" => WindowControlAction::Close,
+                _ => return Err(format!("unsupported shell effect: {}", effect.action)),
+            };
+            let window_id = effect
+                .payload
+                .get("window_id")
+                .and_then(JsonValue::as_str)
+                .filter(|window_id| !window_id.is_empty() && window_id.len() <= 128)
+                .ok_or_else(|| "shell window effect omitted a bounded window_id".to_owned())?;
+            shell_controls.push((window_id.to_owned(), operation));
+            continue;
+        }
+        match provider_action(effect)? {
+            Some(action) => actions
+                .entry(instance.experience_id.clone())
+                .or_default()
+                .push(action),
+            None => linux_effects
+                .entry(graph_effect.revision_id.clone())
+                .or_default()
+                .push(effect.clone()),
+        }
+    }
+    if !linux_effects.is_empty() && provider_access.is_none() {
+        return Err("Linux graph provider effect requires configured provider access".into());
+    }
+
+    let transaction_id = format!("graph-host-{}-{request_id}", std::process::id());
+    let mut promotions = Vec::with_capacity(affected.len());
+    let mut affected_revisions = BTreeMap::new();
+    for experience_id in &affected {
+        let instances = outcome
+            .snapshot
+            .instances
+            .values()
+            .filter(|instance| &instance.experience_id == experience_id)
+            .collect::<Vec<_>>();
+        let instance = *instances
+            .first()
+            .ok_or_else(|| format!("affected experience `{experience_id}` has no instance"))?;
+        if instances.iter().any(|candidate| {
+            candidate.revision_id != instance.revision_id || candidate.state != instance.state
+        }) {
+            return Err(format!(
+                "multiple instances of experience `{experience_id}` produced divergent state"
+            ));
+        }
+        let loaded = revisions.get(&instance.revision_id).ok_or_else(|| {
+            format!(
+                "revision metadata is missing for `{}`",
+                instance.revision_id
+            )
+        })?;
+        let current = read_experience_state(socket, experience_id, instance.revision_id.as_str())?;
+        if !current.revision_id.is_empty()
+            && (current.revision_id != instance.revision_id.as_str()
+                || current.source_sha256 != loaded.revision.source_sha256
+                || current.schema_version != loaded.revision.schema_version)
+        {
+            return Err(format!(
+                "authority does not match active revision for experience `{experience_id}`"
+            ));
+        }
+        promotions.push(GraphExperiencePromotion {
+            experience_id: experience_id.clone(),
+            expected_revision: current.revision,
+            revision_id: instance.revision_id.to_string(),
+            schema_version: loaded.revision.schema_version,
+            source_sha256: loaded.revision.source_sha256.clone(),
+            state: instance.state.clone(),
+            migration: None,
+            actions: actions.remove(experience_id).unwrap_or_default(),
+        });
+        affected_revisions.insert(experience_id.clone(), instance.revision_id.clone());
+    }
+
+    if !promotions.is_empty() {
+        expect_graph_transaction(call_service(
+            &client,
+            &ServiceRequest::StageGraphPromotion {
+                request_id: 2,
+                draft: GraphPromotionDraft {
+                    transaction_id: transaction_id.clone(),
+                    promotions,
+                },
+            },
+        )?)?;
+        if let Some(access) = provider_access {
+            for (revision_id, effects) in &linux_effects {
+                if let Err(error) = access.execute_effects(revision_id.as_str(), effects) {
+                    let _ = call_service(
+                        &client,
+                        &ServiceRequest::AbortGraph {
+                            request_id: 6,
+                            transaction_id: transaction_id.clone(),
+                        },
+                    );
+                    return Err(format!(
+                        "Linux graph provider effect failed before promotion: {error}"
+                    ));
+                }
+            }
+        }
+        let promoted = call_service(
+            &client,
+            &ServiceRequest::PromoteGraph {
+                request_id: 3,
+                transaction_id: transaction_id.clone(),
+            },
+        )
+        .and_then(expect_graph_transaction);
+        if let Err(promote_error) = promoted {
+            let record = call_service(
+                &client,
+                &ServiceRequest::GetGraphTransaction {
+                    request_id: 4,
+                    transaction_id: transaction_id.clone(),
+                },
+            )
+            .and_then(expect_graph_transaction)
+            .map_err(|reconcile_error| {
+                format!(
+                    "graph promotion failed ({promote_error}); reconciliation failed ({reconcile_error})"
+                )
+            })?;
+            if record.status != TransactionStatus::Committed {
+                return Err(format!(
+                    "graph promotion was not committed after ambiguous response: {:?}",
+                    record.status
+                ));
+            }
+        }
+    } else if !linux_effects.is_empty() {
+        return Err("graph effects were not bound to an affected experience".into());
+    }
+
+    let authoritative = affected
+        .into_iter()
+        .map(|experience_id| {
+            let revision_id = &affected_revisions[&experience_id];
+            read_experience_state(socket, &experience_id, revision_id.as_str())
+                .map(|state| (experience_id, state))
+        })
+        .collect::<std::result::Result<BTreeMap<_, _>, _>>()?;
+    Ok(GraphActionCommitOutcome {
+        authoritative,
+        agent_prompt,
+        shell_controls,
+    })
+}
+
+fn expect_graph_transaction(
+    response: ResponsePayload,
+) -> std::result::Result<GraphTransactionRecord, String> {
+    match response {
+        ResponsePayload::GraphTransaction { record } => Ok(record),
+        _ => Err("provider service returned the wrong graph transaction payload".into()),
+    }
 }
 
 fn shell_model(snapshot: ShellStateSnapshot) -> ShellModel {
@@ -3230,6 +4682,14 @@ fn reject(request_id: u64, revision_id: String, error: impl Into<String>) {
     });
 }
 
+fn reject_graph(request_id: u64, graph_id: String, error: impl Into<String>) {
+    emit(&HostEvent::GraphRejected {
+        request_id,
+        graph_id,
+        error: error.into(),
+    });
+}
+
 fn emit(event: &HostEvent) {
     let mut output = io::stdout().lock();
     if serde_json::to_writer(&mut output, event)
@@ -3411,6 +4871,92 @@ mod tests {
     }
 
     #[test]
+    fn composed_accessibility_scene_and_text_state_keep_graph_namespaces() {
+        let root = GraphNodeId::parse("root").unwrap();
+        let child = GraphNodeId::parse("agenda-child").unwrap();
+        let root_revision = RevisionId::parse("a".repeat(64)).unwrap();
+        let child_revision = RevisionId::parse("b".repeat(64)).unwrap();
+        let snapshot = GraphRuntimeSnapshot {
+            graph_id: "c".repeat(64),
+            root: root.clone(),
+            instances: BTreeMap::from([
+                (
+                    root.clone(),
+                    runtime_luau::RuntimeInstanceSnapshot {
+                        experience_id: ExperienceId::parse("dashboard").unwrap(),
+                        revision_id: root_revision,
+                        export_id: experience_package::ExportId::parse("main").unwrap(),
+                        parent: None,
+                        dependency: None,
+                        state: serde_json::json!({}),
+                        scene: Some(Scene {
+                            root: SceneNode {
+                                id: Some("dashboard".into()),
+                                children: vec![SceneNode {
+                                    id: Some("slot".into()),
+                                    content: Some(Content::ExperienceMount(
+                                        experience_ir::ExperienceMountContent {
+                                            dependency: "agenda".into(),
+                                            properties: serde_json::json!({}),
+                                            container_appearance: None,
+                                        },
+                                    )),
+                                    ..Default::default()
+                                }],
+                                ..Default::default()
+                            },
+                        }),
+                        status: RuntimeInstanceStatus::Ready,
+                        assets: vec![],
+                    },
+                ),
+                (
+                    child.clone(),
+                    runtime_luau::RuntimeInstanceSnapshot {
+                        experience_id: ExperienceId::parse("agenda").unwrap(),
+                        revision_id: child_revision,
+                        export_id: experience_package::ExportId::parse("summary").unwrap(),
+                        parent: Some(root.clone()),
+                        dependency: Some(
+                            experience_package::DependencyAlias::parse("agenda").unwrap(),
+                        ),
+                        state: serde_json::json!({"draft": "authoritative"}),
+                        scene: Some(Scene {
+                            root: SceneNode {
+                                id: Some("editor".into()),
+                                content: Some(Content::TextSession(experience_ir::TextSession {
+                                    state_key: "draft".into(),
+                                    value: "authoritative".into(),
+                                    placeholder: String::new(),
+                                    submit_action: None,
+                                    autofocus: false,
+                                })),
+                                ..Default::default()
+                            },
+                        }),
+                        status: RuntimeInstanceStatus::Ready,
+                        assets: vec![],
+                    },
+                ),
+            ]),
+        };
+        let composed = composed_graph_scene(&snapshot);
+        assert_eq!(composed.root.id.as_deref(), Some("root::dashboard"));
+        let slot = &composed.root.children[0];
+        assert_eq!(slot.id.as_deref(), Some("root::slot"));
+        assert!(slot.content.is_none());
+        assert_eq!(slot.children[0].id.as_deref(), Some("agenda-child::editor"));
+
+        let mut shadow = HashMap::from([
+            ("agenda-child::draft".into(), "authoritative".into()),
+            ("root::draft".into(), "local".into()),
+        ]);
+        reconcile_graph_input_state_shadow(&mut shadow, &snapshot);
+        assert!(!shadow.contains_key("agenda-child::draft"));
+        assert_eq!(shadow.get("root::draft").map(String::as_str), Some("local"));
+    }
+
+    #[test]
     fn provider_effects_remain_typed_at_the_linux_boundary() {
         let effect = experience_ir::ProviderEffect {
             provider: "notes".into(),
@@ -3579,7 +5125,7 @@ mod tests {
             hub: ProviderHub::open(temporary.path().join("linux-providers")).unwrap(),
             grant_path,
             allow_development_wildcard: false,
-            active_revision: Arc::new(Mutex::new(revision_id.clone())),
+            active_revisions: Arc::new(Mutex::new(BTreeSet::from([revision_id.clone()]))),
         };
         let mut authority = provider_state_service::Authority::open(&state_file).unwrap();
         authority

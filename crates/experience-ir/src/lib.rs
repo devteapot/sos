@@ -3,6 +3,8 @@ use std::collections::HashSet;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+pub use experience_package::{AppearanceProfile, ContainerAppearance};
+
 pub const EXPERIENCE_API_VERSION: u32 = 3;
 pub const MAX_SCENE_DEPTH: usize = 32;
 pub const MAX_SCENE_NODES: usize = 2_048;
@@ -25,6 +27,8 @@ pub const SYSTEM_PROVIDER_ABI_VERSION: u32 = 1;
 pub const SHELL_MODEL_ABI_VERSION: u32 = 1;
 pub const MAX_SHELL_OUTPUTS: usize = 16;
 pub const MAX_SHELL_WINDOWS: usize = 64;
+pub const MAX_EXPERIENCE_MOUNTS: usize = 16;
+pub const EXPERIENCE_API_VERSION_V4: u32 = 4;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct ExperienceModel {
@@ -52,6 +56,10 @@ pub struct ExperienceModel {
     /// into revision code.
     #[serde(default)]
     pub shell: ShellModel,
+    /// Authority-owned accessibility preferences and semantic design tokens.
+    /// Revision-local code decides how to turn these values into Scene nodes.
+    #[serde(default)]
+    pub appearance: AppearanceProfile,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
@@ -474,6 +482,49 @@ pub struct SceneEvent {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct ExperienceViewport {
+    pub width: u32,
+    pub height: u32,
+    pub scale_milli: u16,
+}
+
+impl Default for ExperienceViewport {
+    fn default() -> Self {
+        Self {
+            width: 1024,
+            height: 768,
+            scale_milli: 1000,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+pub struct ExperienceContext {
+    pub export_id: String,
+    #[serde(default)]
+    pub viewport: ExperienceViewport,
+    #[serde(default)]
+    pub properties: serde_json::Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub container_appearance: Option<serde_json::Value>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct ExperienceEvent {
+    pub dependency: String,
+    pub event: String,
+    #[serde(default)]
+    pub payload: serde_json::Value,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct ExperienceOutputEvent {
+    pub event: String,
+    #[serde(default)]
+    pub payload: serde_json::Value,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct ProviderEffect {
     pub provider: String,
     pub action: String,
@@ -639,6 +690,8 @@ pub enum Content {
     TextSession(TextSession),
     Image(ImageContent),
     ProviderSurface(ProviderSurfaceContent),
+    /// Host-owned boundary to a declared export of another experience.
+    ExperienceMount(ExperienceMountContent),
     /// A compositor-owned application surface region placed by the shell.
     /// The host reports the final logical bounds to the compositor; no native
     /// surface identity or authority crosses into the revision.
@@ -676,6 +729,13 @@ pub struct ImageContent {
 #[derive(Clone, Debug, PartialEq)]
 pub struct ProviderSurfaceContent {
     pub surface: String,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct ExperienceMountContent {
+    pub dependency: String,
+    pub properties: serde_json::Value,
+    pub container_appearance: Option<ContainerAppearance>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -961,6 +1021,12 @@ pub enum ValidationError {
     DuplicateApplicationSurface,
     #[error("application surface title must contain 1 through 256 bytes")]
     InvalidApplicationSurfaceTitle,
+    #[error("experience mount requires a stable id")]
+    MissingExperienceMountId,
+    #[error("scene contains more than {MAX_EXPERIENCE_MOUNTS} experience mounts")]
+    TooManyExperienceMounts,
+    #[error("experience mount dependency or properties are invalid")]
+    InvalidExperienceMount,
 }
 
 #[derive(Debug, Error, PartialEq)]
@@ -994,6 +1060,7 @@ pub fn validate_scene_detailed(scene: &Scene) -> Result<usize, ValidationFailure
         window_spaces: &mut usize,
         shell_overlays: &mut usize,
         application_surfaces: &mut usize,
+        experience_mounts: &mut usize,
     ) -> Result<(), ValidationFailure> {
         macro_rules! reject {
             ($error:expr) => {
@@ -1038,6 +1105,25 @@ pub fn validate_scene_detailed(scene: &Scene) -> Result<usize, ValidationFailure
                     }) =>
             {
                 reject!(ValidationError::InvalidDimension("provider surface id"));
+            }
+            Some(Content::ExperienceMount(mount)) => {
+                if node.id.is_none() {
+                    reject!(ValidationError::MissingExperienceMountId);
+                }
+                *experience_mounts += 1;
+                if *experience_mounts > MAX_EXPERIENCE_MOUNTS {
+                    reject!(ValidationError::TooManyExperienceMounts);
+                }
+                if !valid_identifier(&mount.dependency, 64)
+                    || serde_json::to_vec(&mount.properties)
+                        .map_or(true, |bytes| bytes.len() > MAX_EFFECT_PAYLOAD_BYTES)
+                    || mount
+                        .container_appearance
+                        .as_ref()
+                        .is_some_and(|appearance| appearance.validate().is_err())
+                {
+                    reject!(ValidationError::InvalidExperienceMount);
+                }
             }
             Some(Content::WindowSpace(space)) => {
                 if node.id.is_none() {
@@ -1174,6 +1260,7 @@ pub fn validate_scene_detailed(scene: &Scene) -> Result<usize, ValidationFailure
                 window_spaces,
                 shell_overlays,
                 application_surfaces,
+                experience_mounts,
             )?;
         }
         if let Some(animation) = &node.animation {
@@ -1230,6 +1317,7 @@ pub fn validate_scene_detailed(scene: &Scene) -> Result<usize, ValidationFailure
     let mut window_spaces = 0;
     let mut shell_overlays = 0;
     let mut application_surfaces = 0;
+    let mut experience_mounts = 0;
     visit(
         &scene.root,
         scene
@@ -1244,8 +1332,21 @@ pub fn validate_scene_detailed(scene: &Scene) -> Result<usize, ValidationFailure
         &mut window_spaces,
         &mut shell_overlays,
         &mut application_surfaces,
+        &mut experience_mounts,
     )?;
     Ok(count)
+}
+
+fn valid_identifier(value: &str, max_bytes: usize) -> bool {
+    !value.is_empty()
+        && value.len() <= max_bytes
+        && value
+            .bytes()
+            .next()
+            .is_some_and(|byte| byte.is_ascii_lowercase())
+        && value.bytes().all(|byte| {
+            byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'.' | b'_' | b'-')
+        })
 }
 
 fn validate_paint(

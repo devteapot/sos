@@ -10,8 +10,9 @@ use std::{
 
 use provider_state_service::ServiceClient;
 use revision_supervisor::{
-    CoordinatedSupervisor, HostCommand, RevisionAssetInput, RevisionInput, RevisionStore,
-    RevisionSupervisor, SupervisorEvent,
+    install_reference_composition, CoordinatedSupervisor, ExperienceGraphSupervisor,
+    ExperienceRegistry, GraphResolver, GraphStore, HostCommand, RevisionAssetInput, RevisionInput,
+    RevisionPackageInput, RevisionStore, RevisionSupervisor, SupervisorEvent,
 };
 use serde::{Deserialize, Serialize};
 
@@ -23,6 +24,10 @@ enum ControlRequest {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         transaction_id: Option<String>,
     },
+    ActivateGraph {
+        graph_id: String,
+    },
+    RefreshTracked,
     Status,
     Restart,
     Shutdown,
@@ -32,6 +37,7 @@ enum ControlRequest {
 struct ControlResponse {
     ok: bool,
     active_revision: Option<String>,
+    active_graph: Option<String>,
     host_pid: Option<u32>,
     event: Option<String>,
     error: Option<String>,
@@ -48,8 +54,17 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut args = env::args().skip(1);
     match args.next().as_deref() {
         Some("install") => install(parse_options(args.collect())?),
+        Some("install-package") => install_package(parse_options(args.collect())?),
+        Some("install-composition-demo") => {
+            install_composition_demo(parse_options(args.collect())?)
+        }
         Some("bootstrap") => bootstrap(parse_options(args.collect())?),
+        Some("bootstrap-graph") => bootstrap_graph(parse_options(args.collect())?),
         Some("activate") => control_command(parse_options(args.collect())?, "activate"),
+        Some("activate-graph") => control_command(parse_options(args.collect())?, "activate-graph"),
+        Some("refresh-tracked") => {
+            control_command(parse_options(args.collect())?, "refresh-tracked")
+        }
         Some("daemon-status") => control_command(parse_options(args.collect())?, "status"),
         Some("restart") => control_command(parse_options(args.collect())?, "restart"),
         Some("shutdown") => control_command(parse_options(args.collect())?, "shutdown"),
@@ -57,6 +72,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         Some("status") => status(parse_options(args.collect())?),
         _ => Err(usage().into()),
     }
+}
+
+fn install_composition_demo(options: Options) -> Result<(), Box<dyn std::error::Error>> {
+    let store = RevisionStore::open(options.required("--root")?)?;
+    let installed = install_reference_composition(&store)?;
+    println!("{}", serde_json::to_string(&installed)?);
+    Ok(())
 }
 
 fn bootstrap(options: Options) -> Result<(), Box<dyn std::error::Error>> {
@@ -77,6 +99,10 @@ fn control_command(options: Options, action: &str) -> Result<(), Box<dyn std::er
             revision_id: options.required("--revision")?,
             transaction_id: options.optional("--transaction"),
         },
+        "activate-graph" => ControlRequest::ActivateGraph {
+            graph_id: options.required("--graph")?,
+        },
+        "refresh-tracked" => ControlRequest::RefreshTracked,
         "status" => ControlRequest::Status,
         "restart" => ControlRequest::Restart,
         "shutdown" => ControlRequest::Shutdown,
@@ -94,13 +120,81 @@ fn control_command(options: Options, action: &str) -> Result<(), Box<dyn std::er
     }
 }
 
+fn install_package(options: Options) -> Result<(), Box<dyn std::error::Error>> {
+    let root = options.required("--root")?;
+    let source = fs::read(options.required("--source")?)?;
+    let state = serde_json::from_slice(&fs::read(options.required("--state")?)?)?;
+    let package = serde_json::from_slice(&fs::read(options.required("--package")?)?)?;
+    let schema_version = options.required("--schema")?.parse()?;
+    let assets = read_assets(&options)?;
+    let store = RevisionStore::open(&root)?;
+    let revision = store.install_package(RevisionPackageInput {
+        revision: RevisionInput {
+            source,
+            state,
+            schema_version,
+            experience_api_version: 4,
+            assets,
+        },
+        package,
+    })?;
+    println!("{}", revision.manifest.revision_id);
+    Ok(())
+}
+
+fn bootstrap_graph(options: Options) -> Result<(), Box<dyn std::error::Error>> {
+    let root = options.required("--root")?;
+    let experience_id = experience_package::ExperienceId::parse(options.required("--experience")?)?;
+    let revision_id = options.required("--revision")?;
+    let export_id = experience_package::ExportId::parse(
+        options
+            .optional("--export")
+            .unwrap_or_else(|| "main".into()),
+    )?;
+    let store = RevisionStore::open(&root)?;
+    let revision = store.verify(&revision_id)?;
+    let package = revision
+        .package
+        .as_ref()
+        .ok_or("graph bootstrap requires a package v4 revision")?;
+    if package.experience_id != experience_id {
+        return Err("graph bootstrap experience does not match the revision package".into());
+    }
+    let registry = ExperienceRegistry::open(store.clone())?;
+    if registry.get(&experience_id)?.is_none() {
+        registry.create(&experience_id, package.role, &revision_id)?;
+    } else {
+        registry.set_current(&experience_id, &revision_id)?;
+    }
+    let graph = GraphResolver::new(store).resolve(&revision_id, &export_id)?;
+    let graphs = GraphStore::open(root)?;
+    let graph_id = graphs.install(&graph)?;
+    graphs.set_current(&experience_id, &graph_id)?;
+    println!("{graph_id}");
+    Ok(())
+}
+
 fn install(options: Options) -> Result<(), Box<dyn std::error::Error>> {
     let root = options.required("--root")?;
     let source = fs::read(options.required("--source")?)?;
     let state = serde_json::from_slice(&fs::read(options.required("--state")?)?)?;
     let schema_version = options.required("--schema")?.parse()?;
     let experience_api_version = options.required("--api")?.parse()?;
-    let assets = options
+    let assets = read_assets(&options)?;
+    let store = RevisionStore::open(root)?;
+    let revision = store.install(RevisionInput {
+        source,
+        state,
+        schema_version,
+        experience_api_version,
+        assets,
+    })?;
+    println!("{}", revision.manifest.revision_id);
+    Ok(())
+}
+
+fn read_assets(options: &Options) -> Result<Vec<RevisionAssetInput>, Box<dyn std::error::Error>> {
+    options
         .values("--asset")
         .into_iter()
         .map(
@@ -122,17 +216,7 @@ fn install(options: Options) -> Result<(), Box<dyn std::error::Error>> {
                 })
             },
         )
-        .collect::<Result<Vec<_>, _>>()?;
-    let store = RevisionStore::open(root)?;
-    let revision = store.install(RevisionInput {
-        source,
-        state,
-        schema_version,
-        experience_api_version,
-        assets,
-    })?;
-    println!("{}", revision.manifest.revision_id);
-    Ok(())
+        .collect::<Result<Vec<_>, _>>()
 }
 
 fn status(options: Options) -> Result<(), Box<dyn std::error::Error>> {
@@ -176,8 +260,27 @@ fn serve(options: Options) -> Result<(), Box<dyn std::error::Error>> {
         options.required("--host-executable")?,
         options.values("--host-arg"),
     );
-    let supervisor = RevisionSupervisor::new(store.clone(), host_command, timeout);
-    let mut runtime = if let Some(service_socket) = options.optional("--service-socket") {
+    let mut runtime = if let Some(root_experience) = options.optional("--root-experience") {
+        let root_experience = experience_package::ExperienceId::parse(root_experience)?;
+        let registry = ExperienceRegistry::open(store.clone())?;
+        let graphs = GraphStore::open(store.root())?;
+        let mut graph = ExperienceGraphSupervisor::new(
+            store.clone(),
+            registry.clone(),
+            graphs.clone(),
+            host_command,
+            timeout,
+        );
+        graph.boot(&root_experience)?;
+        Runtime::Graph {
+            supervisor: graph,
+            root: root_experience,
+            store,
+            registry,
+            graphs,
+        }
+    } else if let Some(service_socket) = options.optional("--service-socket") {
+        let supervisor = RevisionSupervisor::new(store.clone(), host_command, timeout);
         let service_timeout = Duration::from_millis(
             options
                 .optional("--service-timeout-ms")
@@ -194,6 +297,7 @@ fn serve(options: Options) -> Result<(), Box<dyn std::error::Error>> {
         }
         Runtime::Coordinated(coordinated)
     } else {
+        let supervisor = RevisionSupervisor::new(store.clone(), host_command, timeout);
         let mut standalone = supervisor;
         if let Some(event) = standalone.boot()? {
             log_event(&event);
@@ -237,6 +341,16 @@ fn serve_loop(
                         }
                         Err(error) => (failure(runtime, error.to_string()), false),
                     },
+                    Ok(ControlRequest::ActivateGraph { graph_id }) => {
+                        match runtime.activate_graph(&graph_id) {
+                            Ok(event) => (success(runtime, Some(event)), false),
+                            Err(error) => (failure(runtime, error.to_string()), false),
+                        }
+                    }
+                    Ok(ControlRequest::RefreshTracked) => match runtime.refresh_tracked() {
+                        Ok(event) => (success(runtime, Some(event)), false),
+                        Err(error) => (failure(runtime, error.to_string()), false),
+                    },
                     Ok(ControlRequest::Status) => (success(runtime, None), false),
                     Ok(ControlRequest::Restart) => match runtime.restart_host() {
                         Ok(event) => (success(runtime, Some(event)), false),
@@ -263,6 +377,13 @@ fn serve_loop(
 enum Runtime {
     Standalone(RevisionSupervisor),
     Coordinated(CoordinatedSupervisor),
+    Graph {
+        supervisor: ExperienceGraphSupervisor,
+        root: experience_package::ExperienceId,
+        store: RevisionStore,
+        registry: ExperienceRegistry,
+        graphs: GraphStore,
+    },
 }
 
 impl Runtime {
@@ -286,7 +407,52 @@ impl Runtime {
                     supervisor.activate(transaction_id, revision_id)?
                 ))
             }
+            Self::Graph { .. } => Err("graph supervisor requires activate_graph".into()),
         }
+    }
+
+    fn activate_graph(&mut self, graph_id: &str) -> Result<String, Box<dyn std::error::Error>> {
+        let Self::Graph {
+            supervisor, root, ..
+        } = self
+        else {
+            return Err("revision supervisor is not running in graph mode".into());
+        };
+        let prepared = supervisor.prepare(root, graph_id)?;
+        let pid = supervisor.commit(prepared)?;
+        Ok(format!(
+            "graph_activated graph_id={graph_id} host_pid={pid}"
+        ))
+    }
+
+    fn refresh_tracked(&mut self) -> Result<String, Box<dyn std::error::Error>> {
+        let Self::Graph {
+            supervisor,
+            root,
+            store,
+            registry,
+            graphs,
+        } = self
+        else {
+            return Err("revision supervisor is not running in graph mode".into());
+        };
+        let root_revision = registry
+            .current(root)?
+            .ok_or("root experience has no active revision")?;
+        let graph = GraphResolver::new(store.clone()).resolve_tracked(
+            &root_revision.manifest.revision_id,
+            &experience_package::ExportId::parse("main")?,
+            registry,
+        )?;
+        let graph_id = graphs.install(&graph)?;
+        if supervisor.active_graph() == Some(&graph_id) {
+            return Ok(format!("graph_unchanged graph_id={graph_id}"));
+        }
+        let prepared = supervisor.prepare(root, &graph_id)?;
+        let pid = supervisor.commit(prepared)?;
+        Ok(format!(
+            "graph_refreshed graph_id={graph_id} host_pid={pid}"
+        ))
     }
 
     fn poll(&mut self) -> Result<Option<String>, Box<dyn std::error::Error>> {
@@ -297,13 +463,30 @@ impl Runtime {
             Self::Coordinated(supervisor) => {
                 Ok(supervisor.poll()?.map(|event| format!("{event:?}")))
             }
+            Self::Graph { supervisor, .. } => Ok(supervisor
+                .poll()?
+                .map(|(graph, failed, current)| format!(
+                    "GraphHostRestarted {{ graph_id: {graph}, failed_host_pid: {failed}, host_pid: {current} }}"
+                ))),
         }
     }
 
-    fn active_revision(&self) -> Option<&str> {
+    fn active_revision(&self) -> Option<String> {
         match self {
-            Self::Standalone(supervisor) => supervisor.active_revision(),
-            Self::Coordinated(supervisor) => supervisor.active_revision(),
+            Self::Standalone(supervisor) => supervisor.active_revision().map(str::to_owned),
+            Self::Coordinated(supervisor) => supervisor.active_revision().map(str::to_owned),
+            Self::Graph { root, registry, .. } => registry
+                .current(root)
+                .ok()
+                .flatten()
+                .map(|revision| revision.manifest.revision_id),
+        }
+    }
+
+    fn active_graph(&self) -> Option<&str> {
+        match self {
+            Self::Graph { supervisor, .. } => supervisor.active_graph(),
+            _ => None,
         }
     }
 
@@ -311,6 +494,7 @@ impl Runtime {
         match self {
             Self::Standalone(supervisor) => supervisor.host_pid(),
             Self::Coordinated(supervisor) => supervisor.host_pid(),
+            Self::Graph { supervisor, .. } => supervisor.host_pid(),
         }
     }
 
@@ -318,6 +502,7 @@ impl Runtime {
         match self {
             Self::Standalone(supervisor) => supervisor.shutdown()?,
             Self::Coordinated(supervisor) => supervisor.shutdown()?,
+            Self::Graph { supervisor, .. } => supervisor.shutdown()?,
         }
         Ok(())
     }
@@ -326,6 +511,7 @@ impl Runtime {
         match self {
             Self::Standalone(supervisor) => Ok(format!("{:?}", supervisor.restart_host()?)),
             Self::Coordinated(supervisor) => Ok(format!("{:?}", supervisor.restart_host()?)),
+            Self::Graph { .. } => Err("graph host restart is automatic".into()),
         }
     }
 }
@@ -333,7 +519,8 @@ impl Runtime {
 fn success(runtime: &Runtime, event: Option<String>) -> ControlResponse {
     ControlResponse {
         ok: true,
-        active_revision: runtime.active_revision().map(str::to_owned),
+        active_revision: runtime.active_revision(),
+        active_graph: runtime.active_graph().map(str::to_owned),
         host_pid: runtime.host_pid(),
         event,
         error: None,
@@ -343,7 +530,8 @@ fn success(runtime: &Runtime, event: Option<String>) -> ControlResponse {
 fn failure(runtime: &Runtime, error: String) -> ControlResponse {
     ControlResponse {
         ok: false,
-        active_revision: runtime.active_revision().map(str::to_owned),
+        active_revision: runtime.active_revision(),
+        active_graph: runtime.active_graph().map(str::to_owned),
         host_pid: runtime.host_pid(),
         event: None,
         error: Some(error),
@@ -394,7 +582,7 @@ fn parse_options(arguments: Vec<String>) -> Result<Options, String> {
 }
 
 fn usage() -> &'static str {
-    "usage:\n  sos-revision-supervisor install --root DIR --source FILE --state FILE --schema N --api N [--asset ID:KIND:FILE ...]\n  sos-revision-supervisor bootstrap --root DIR --revision ID\n  sos-revision-supervisor serve --root DIR --host-executable FILE [--host-arg VALUE ...] [--timeout-ms N] [--service-socket PATH --service-timeout-ms N]\n  sos-revision-supervisor activate --root DIR --revision ID [--transaction ID]\n  sos-revision-supervisor daemon-status --root DIR\n  sos-revision-supervisor shutdown --root DIR\n  sos-revision-supervisor status --root DIR"
+    "usage:\n  sos-revision-supervisor install --root DIR --source FILE --state FILE --schema N --api N [--asset ID:KIND:FILE ...]\n  sos-revision-supervisor install-package --root DIR --source FILE --state FILE --schema N --package FILE [--asset ID:KIND:FILE ...]\n  sos-revision-supervisor install-composition-demo --root DIR\n  sos-revision-supervisor bootstrap --root DIR --revision ID\n  sos-revision-supervisor bootstrap-graph --root DIR --experience ID --revision ID [--export ID]\n  sos-revision-supervisor serve --root DIR --host-executable FILE [--host-arg VALUE ...] [--root-experience ID] [--timeout-ms N] [--service-socket PATH --service-timeout-ms N]\n  sos-revision-supervisor activate --root DIR --revision ID [--transaction ID]\n  sos-revision-supervisor activate-graph --root DIR --graph ID\n  sos-revision-supervisor refresh-tracked --root DIR\n  sos-revision-supervisor daemon-status --root DIR\n  sos-revision-supervisor shutdown --root DIR\n  sos-revision-supervisor status --root DIR"
 }
 
 fn send_control(

@@ -1,0 +1,466 @@
+use std::{
+    fs::{self, File, OpenOptions},
+    io::Write,
+    path::{Path, PathBuf},
+    process::ExitStatus,
+    sync::atomic::{AtomicU64, Ordering},
+    time::Duration,
+};
+
+use experience_package::{ExperienceId, ResolvedGraph};
+use serde::{Deserialize, Serialize};
+
+use crate::{
+    Error, ExperienceHost, ExperienceRegistry, GraphStore, HostCommand, Result, RevisionStore,
+};
+
+const GRAPH_ACTIVATION_JOURNAL_VERSION: u32 = 1;
+static JOURNAL_SEQUENCE: AtomicU64 = AtomicU64::new(1);
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum GraphActivationPhase {
+    Intent,
+    Presented,
+    RegistryCommitted,
+    GraphCommitted,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct GraphActivationJournal {
+    pub format_version: u32,
+    pub root_experience_id: ExperienceId,
+    pub previous_graph_id: String,
+    pub previous_root_revision: String,
+    pub candidate_graph_id: String,
+    pub candidate_root_revision: String,
+    pub phase: GraphActivationPhase,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GraphActivationFaultPoint {
+    AfterIntent,
+    AfterPresented,
+    AfterRegistryCommit,
+    AfterGraphCommit,
+}
+
+pub struct ExperienceGraphSupervisor {
+    revisions: RevisionStore,
+    registry: ExperienceRegistry,
+    graphs: GraphStore,
+    host_command: HostCommand,
+    host_timeout: Duration,
+    host: Option<ExperienceHost>,
+    active_root: Option<ExperienceId>,
+    active_graph: Option<String>,
+    journal_file: PathBuf,
+    fault: Option<GraphActivationFaultPoint>,
+}
+
+pub struct PreparedGraphActivation {
+    root_experience_id: ExperienceId,
+    graph_id: String,
+    previous_graph_id: String,
+    previous_root_revision: String,
+    graph: ResolvedGraph,
+    input_quiesced: bool,
+}
+
+impl PreparedGraphActivation {
+    pub fn graph_id(&self) -> &str {
+        &self.graph_id
+    }
+
+    pub fn previous_graph_id(&self) -> &str {
+        &self.previous_graph_id
+    }
+}
+
+impl ExperienceGraphSupervisor {
+    pub fn new(
+        revisions: RevisionStore,
+        registry: ExperienceRegistry,
+        graphs: GraphStore,
+        host_command: HostCommand,
+        host_timeout: Duration,
+    ) -> Self {
+        Self {
+            journal_file: revisions.root().join("graph-activation-journal.json"),
+            revisions,
+            registry,
+            graphs,
+            host_command,
+            host_timeout,
+            host: None,
+            active_root: None,
+            active_graph: None,
+            fault: None,
+        }
+    }
+
+    pub fn boot(&mut self, root_experience_id: &ExperienceId) -> Result<Option<u32>> {
+        self.recover()?;
+        let Some((graph_id, graph)) = self.graphs.current(root_experience_id)? else {
+            return Ok(None);
+        };
+        self.validate_root(root_experience_id, &graph)?;
+        let mut host = ExperienceHost::launch(self.host_command.clone(), self.host_timeout)?;
+        host.boot_graph(
+            &graph_id,
+            self.graphs.snapshot_path(&graph_id)?,
+            self.revisions.root().to_path_buf(),
+        )?;
+        let pid = host.id();
+        self.host = Some(host);
+        self.active_root = Some(root_experience_id.clone());
+        self.active_graph = Some(graph_id);
+        Ok(Some(pid))
+    }
+
+    pub fn prepare(
+        &mut self,
+        root_experience_id: &ExperienceId,
+        graph_id: &str,
+    ) -> Result<PreparedGraphActivation> {
+        let graph = self.graphs.verify(graph_id)?;
+        self.validate_root(root_experience_id, &graph)?;
+        let previous_graph_id = self
+            .active_graph
+            .clone()
+            .or_else(|| {
+                self.graphs
+                    .current(root_experience_id)
+                    .ok()
+                    .flatten()
+                    .map(|(graph_id, _)| graph_id)
+            })
+            .ok_or(Error::NoCurrentRevision)?;
+        let previous_graph = self.graphs.verify(&previous_graph_id)?;
+        self.validate_root(root_experience_id, &previous_graph)?;
+        let previous_root_revision = previous_graph.nodes[&previous_graph.root]
+            .revision_id
+            .to_string();
+        let registry_revision = self
+            .registry
+            .current(root_experience_id)?
+            .ok_or(Error::NoCurrentRevision)?
+            .manifest
+            .revision_id;
+        if registry_revision != previous_root_revision {
+            return Err(Error::InvalidGraph(
+                "experience registry and active graph root disagree".into(),
+            ));
+        }
+        self.host
+            .as_mut()
+            .ok_or(Error::NoActiveHost)?
+            .prepare_graph(
+                graph_id,
+                self.graphs.snapshot_path(graph_id)?,
+                self.revisions.root().to_path_buf(),
+            )?;
+        Ok(PreparedGraphActivation {
+            root_experience_id: root_experience_id.clone(),
+            graph_id: graph_id.into(),
+            previous_graph_id,
+            previous_root_revision,
+            graph,
+            input_quiesced: false,
+        })
+    }
+
+    pub fn quiesce(&mut self, prepared: &mut PreparedGraphActivation) -> Result<()> {
+        if prepared.input_quiesced {
+            return Ok(());
+        }
+        self.host
+            .as_mut()
+            .ok_or(Error::NoActiveHost)?
+            .quiesce_graph_input(&prepared.graph_id)?;
+        prepared.input_quiesced = true;
+        Ok(())
+    }
+
+    pub fn commit(&mut self, mut prepared: PreparedGraphActivation) -> Result<u32> {
+        let candidate_root_revision = prepared.graph.nodes[&prepared.graph.root]
+            .revision_id
+            .to_string();
+        let mut journal = GraphActivationJournal {
+            format_version: GRAPH_ACTIVATION_JOURNAL_VERSION,
+            root_experience_id: prepared.root_experience_id.clone(),
+            previous_graph_id: prepared.previous_graph_id.clone(),
+            previous_root_revision: prepared.previous_root_revision.clone(),
+            candidate_graph_id: prepared.graph_id.clone(),
+            candidate_root_revision: candidate_root_revision.clone(),
+            phase: GraphActivationPhase::Intent,
+        };
+        if let Err(error) = self.quiesce(&mut prepared) {
+            let _ = self
+                .host
+                .as_mut()
+                .and_then(|host| host.discard_graph(&prepared.graph_id).ok());
+            return Err(error);
+        }
+        if let Err(error) = self.write_journal(&journal) {
+            return self.fail_activation(&journal, error);
+        }
+        self.inject(GraphActivationFaultPoint::AfterIntent)?;
+        if let Err(error) = self
+            .host
+            .as_mut()
+            .ok_or(Error::NoActiveHost)?
+            .present_graph(&prepared.graph_id)
+        {
+            return self.fail_activation(&journal, error);
+        }
+        journal.phase = GraphActivationPhase::Presented;
+        if let Err(error) = self.write_journal(&journal) {
+            return self.fail_activation(&journal, error);
+        }
+        self.inject(GraphActivationFaultPoint::AfterPresented)?;
+        if let Err(error) = self
+            .registry
+            .set_current(&prepared.root_experience_id, &candidate_root_revision)
+        {
+            return self.fail_activation(&journal, error);
+        }
+        journal.phase = GraphActivationPhase::RegistryCommitted;
+        if let Err(error) = self.write_journal(&journal) {
+            return self.fail_activation(&journal, error);
+        }
+        self.inject(GraphActivationFaultPoint::AfterRegistryCommit)?;
+        if let Err(error) = self
+            .graphs
+            .set_current(&prepared.root_experience_id, &prepared.graph_id)
+        {
+            return self.fail_activation(&journal, error);
+        }
+        journal.phase = GraphActivationPhase::GraphCommitted;
+        self.write_journal(&journal)?;
+        self.inject(GraphActivationFaultPoint::AfterGraphCommit)?;
+        self.host
+            .as_mut()
+            .ok_or(Error::NoActiveHost)?
+            .finalize_graph(&prepared.graph_id)?;
+        self.active_root = Some(prepared.root_experience_id);
+        self.active_graph = Some(prepared.graph_id);
+        self.clear_journal()?;
+        Ok(self.host.as_ref().expect("active host exists").id())
+    }
+
+    pub fn configure_fault(&mut self, point: Option<GraphActivationFaultPoint>) {
+        self.fault = point;
+    }
+
+    pub fn journal(&self) -> Result<Option<GraphActivationJournal>> {
+        self.load_journal()
+    }
+
+    pub fn recover(&mut self) -> Result<Option<String>> {
+        let Some(journal) = self.load_journal()? else {
+            return Ok(None);
+        };
+        self.validate_journal(&journal)?;
+        match journal.phase {
+            GraphActivationPhase::Intent | GraphActivationPhase::Presented => {
+                self.registry
+                    .set_current(&journal.root_experience_id, &journal.previous_root_revision)?;
+                self.graphs
+                    .set_current(&journal.root_experience_id, &journal.previous_graph_id)?;
+            }
+            GraphActivationPhase::RegistryCommitted | GraphActivationPhase::GraphCommitted => {
+                self.registry.set_current(
+                    &journal.root_experience_id,
+                    &journal.candidate_root_revision,
+                )?;
+                self.graphs
+                    .set_current(&journal.root_experience_id, &journal.candidate_graph_id)?;
+            }
+        }
+        self.clear_journal()?;
+        Ok(Some(match journal.phase {
+            GraphActivationPhase::Intent | GraphActivationPhase::Presented => {
+                journal.previous_graph_id
+            }
+            GraphActivationPhase::RegistryCommitted | GraphActivationPhase::GraphCommitted => {
+                journal.candidate_graph_id
+            }
+        }))
+    }
+
+    pub fn discard(&mut self, prepared: PreparedGraphActivation) -> Result<()> {
+        self.host
+            .as_mut()
+            .ok_or(Error::NoActiveHost)?
+            .discard_graph(&prepared.graph_id)
+    }
+
+    pub fn poll(&mut self) -> Result<Option<(String, u32, u32)>> {
+        let Some(host) = self.host.as_mut() else {
+            return Ok(None);
+        };
+        let Some(status) = host.try_wait()? else {
+            return Ok(None);
+        };
+        let failed_pid = host.id();
+        self.restart_after_exit(status, failed_pid).map(Some)
+    }
+
+    pub fn active_graph(&self) -> Option<&str> {
+        self.active_graph.as_deref()
+    }
+
+    pub fn host_pid(&self) -> Option<u32> {
+        self.host.as_ref().map(ExperienceHost::id)
+    }
+
+    pub fn shutdown(&mut self) -> Result<()> {
+        if let Some(host) = self.host.take() {
+            host.terminate()?;
+        }
+        self.active_graph = None;
+        self.active_root = None;
+        Ok(())
+    }
+
+    fn restart_after_exit(
+        &mut self,
+        _status: ExitStatus,
+        failed_pid: u32,
+    ) -> Result<(String, u32, u32)> {
+        self.host.take();
+        let root = self.active_root.clone().ok_or(Error::NoCurrentRevision)?;
+        let (graph_id, graph) = self
+            .graphs
+            .current(&root)?
+            .ok_or(Error::NoCurrentRevision)?;
+        self.validate_root(&root, &graph)?;
+        let mut host = ExperienceHost::launch(self.host_command.clone(), self.host_timeout)?;
+        host.boot_graph(
+            &graph_id,
+            self.graphs.snapshot_path(&graph_id)?,
+            self.revisions.root().to_path_buf(),
+        )?;
+        let pid = host.id();
+        self.host = Some(host);
+        self.active_graph = Some(graph_id.clone());
+        Ok((graph_id, failed_pid, pid))
+    }
+
+    fn validate_root(&self, root: &ExperienceId, graph: &ResolvedGraph) -> Result<()> {
+        let node = graph
+            .nodes
+            .get(&graph.root)
+            .ok_or_else(|| Error::InvalidGraph("graph root is missing".into()))?;
+        if &node.experience_id != root {
+            return Err(Error::InvalidGraph(
+                "graph root does not match the activated experience".into(),
+            ));
+        }
+        self.revisions.verify(node.revision_id.as_str())?;
+        Ok(())
+    }
+
+    fn inject(&mut self, point: GraphActivationFaultPoint) -> Result<()> {
+        if self.fault == Some(point) {
+            self.fault = None;
+            Err(Error::InjectedGraphActivationFault(format!("{point:?}")))
+        } else {
+            Ok(())
+        }
+    }
+
+    fn fail_activation<T>(&mut self, journal: &GraphActivationJournal, error: Error) -> Result<T> {
+        match self.rollback_activation(journal) {
+            Ok(()) => Err(error),
+            Err(rollback) => Err(Error::InvalidGraph(format!(
+                "graph activation failed ({error}); rollback also failed ({rollback})"
+            ))),
+        }
+    }
+
+    fn rollback_activation(&mut self, journal: &GraphActivationJournal) -> Result<()> {
+        self.host
+            .as_mut()
+            .ok_or(Error::NoActiveHost)?
+            .discard_graph(&journal.candidate_graph_id)?;
+        self.registry
+            .set_current(&journal.root_experience_id, &journal.previous_root_revision)?;
+        self.graphs
+            .set_current(&journal.root_experience_id, &journal.previous_graph_id)?;
+        self.active_root = Some(journal.root_experience_id.clone());
+        self.active_graph = Some(journal.previous_graph_id.clone());
+        self.clear_journal()
+    }
+
+    fn validate_journal(&self, journal: &GraphActivationJournal) -> Result<()> {
+        if journal.format_version != GRAPH_ACTIVATION_JOURNAL_VERSION {
+            return Err(Error::InvalidGraph(
+                "invalid graph activation journal version".into(),
+            ));
+        }
+        let previous = self.graphs.verify(&journal.previous_graph_id)?;
+        let candidate = self.graphs.verify(&journal.candidate_graph_id)?;
+        self.validate_root(&journal.root_experience_id, &previous)?;
+        self.validate_root(&journal.root_experience_id, &candidate)?;
+        if previous.nodes[&previous.root].revision_id.as_str() != journal.previous_root_revision
+            || candidate.nodes[&candidate.root].revision_id.as_str()
+                != journal.candidate_root_revision
+        {
+            return Err(Error::InvalidGraph(
+                "graph activation journal root binding mismatch".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn load_journal(&self) -> Result<Option<GraphActivationJournal>> {
+        match fs::read(&self.journal_file) {
+            Ok(bytes) => Ok(Some(serde_json::from_slice(&bytes)?)),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    fn write_journal(&self, journal: &GraphActivationJournal) -> Result<()> {
+        let temporary = self.revisions.root().join(format!(
+            ".graph-activation-journal-{}-{}.tmp",
+            std::process::id(),
+            JOURNAL_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+        ));
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary)?;
+        let result = (|| -> Result<()> {
+            file.write_all(&serde_json::to_vec_pretty(journal)?)?;
+            file.sync_all()?;
+            fs::rename(&temporary, &self.journal_file)?;
+            sync_directory(self.revisions.root())
+        })();
+        if result.is_err() {
+            fs::remove_file(&temporary).ok();
+        }
+        result
+    }
+
+    fn clear_journal(&self) -> Result<()> {
+        match fs::remove_file(&self.journal_file) {
+            Ok(()) => sync_directory(self.revisions.root()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(error.into()),
+        }
+    }
+}
+
+fn sync_directory(path: &Path) -> Result<()> {
+    File::open(path)?.sync_all()?;
+    Ok(())
+}
+
+impl Drop for ExperienceGraphSupervisor {
+    fn drop(&mut self) {
+        self.shutdown().ok();
+    }
+}

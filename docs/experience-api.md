@@ -7,9 +7,11 @@ assets, but never a native executable.
 
 The prototype deliberately broke the original `UiNode` catalog. API version 3
 uses orthogonal scene facets so an agent can combine layout, content, paint,
-interaction, animation, and semantics on the same retained node. There is no
-compatibility decoder for the catalog ABI or Scene ABI v2. Host upgrades remain
-separate system updates while the contract is intentionally fluid.
+interaction, animation, and semantics on the same retained node. API version 4
+keeps those facets and adds named exports, export context, declared child
+events, and host-owned live mounts. There is no compatibility decoder for the
+catalog ABI or Scene ABI v2. Host upgrades remain separate system updates while
+the contract is intentionally fluid.
 
 ## Module contract
 
@@ -57,6 +59,66 @@ empty list removes them. Local validation accepts repeatable module arguments:
 ./tools/sosctl validate experiences/default.luau \
   --module stock.theme=experiences/modules/stock-theme.luau --json
 ```
+
+## Experience composition status
+
+Package format v4 and Experience API v4 implement named exports and live
+mounts. API v3 remains the legacy single-experience contract and must not emit
+`experience_mount`.
+
+An API v4 module returns an exact export table:
+
+```luau
+return {
+    api_version = 4,
+    state_version = 1,
+    exports = {
+        summary = {
+            render = function(model, state, properties, context): SceneNode
+                return { id = "summary", children = {} }
+            end,
+            update = function(model, state, event, properties, context): UpdateOutcome
+                return { state = state, effects = {}, events = {} }
+            end,
+        },
+    },
+}
+```
+
+The v4 package contract declares each export's closed property and event
+schemas, bounded viewport, appearance ABI, and whether it accepts a typed
+container appearance. The parent refers only to a declared dependency alias:
+
+```luau
+{
+    id = "agenda-slot",
+    layout = { width = 440, height = 180, clip_bounds = true },
+    content = {
+        kind = "experience_mount",
+        dependency = "agenda",
+        properties = { title = "Today" },
+        container_appearance = { radii = { surface = 14 } },
+    },
+}
+```
+
+The host measures and clips the slot, runs the child export in its own VM and
+state namespace, and delivers declared child output as
+`{ dependency, event, payload }` to the parent update function. Properties and
+events must fit both the export schema and the dependency's explicit boundary
+grant. The parent never receives the child scene, state, provider handles, or
+grants.
+
+`model.appearance` is an authority-owned ABI v1 snapshot. It includes scheme,
+contrast, text scale, reduced-motion preference, and semantic color, spacing,
+radius, and typography tokens. It updates live without revision activation.
+An export may ignore optional design tokens, but not host accessibility or
+trusted-ceremony policy. Styles and assets remain revision-local.
+
+[`experience-composition.md`](experience-composition.md) defines exact
+identity, package, resolver, state, authority, activation, authoring, and
+acceptance rules. The checked-in examples are under
+[`experiences/composition`](../experiences/composition).
 
 `model` retains the prototype `greeting`, `date`, `weather`, `calendar`,
 `notes`, `music`, `system`, `surfaces`, `network`, and `agent` values for Linux
