@@ -1,6 +1,6 @@
 use std::{
-    cell::Cell,
-    collections::HashMap,
+    cell::{Cell, RefCell},
+    collections::{HashMap, HashSet},
     fs,
     path::{Component, Path},
     rc::Rc,
@@ -9,12 +9,12 @@ use std::{
 };
 
 use experience_ir::{
-    validate_scene, Align, Animation, AnimationKind, ApplicationSurfaceContent, ClipRect, Content,
-    ExperienceModel, Flow, GlyphRun, HitRegion, ImageContent, Interaction, Justify, Layout,
-    LayoutPosition, LayoutProgram, PaintOp, PaintPoint, PointerCapture, ProviderEffect,
-    ProviderSurfaceContent, Scene, SceneEvent, SceneNode, SemanticRole, Semantics,
-    ShellOverlayContent, TextContent, TextSession, Transform2D, WindowLayoutMode,
-    WindowSpaceContent, EXPERIENCE_API_VERSION, MAX_CHILDREN, MAX_EFFECTS,
+    validate_scene_detailed, Align, Animation, AnimationKind, ApplicationSurfaceContent, ClipRect,
+    Content, EdgePlacement, ExperienceModel, Flow, GlyphRun, HitRegion, ImageContent, Interaction,
+    Justify, Layout, LayoutPosition, LayoutProgram, PaintOp, PaintPoint, PointerCapture,
+    ProviderEffect, ProviderSurfaceContent, Scene, SceneEvent, SceneNode, SemanticRole, Semantics,
+    ShellOverlayContent, ShellOverlayPlacement, TextContent, TextSession, Transform2D,
+    WindowLayoutMode, WindowSpaceContent, EXPERIENCE_API_VERSION, MAX_CHILDREN, MAX_EFFECTS,
     MAX_EFFECT_PAYLOAD_BYTES, MAX_GLYPH_RUNS, MAX_HIT_REGIONS, MAX_PAINT_DEPTH, MAX_PAINT_OPS,
     MAX_PAINT_POINTS, MAX_REVISION_ASSETS, MAX_REVISION_ASSET_BYTES,
     MAX_REVISION_ASSET_TOTAL_BYTES, MAX_SCENE_DEPTH, MAX_SCENE_NODES, MAX_STATE_BYTES,
@@ -24,7 +24,7 @@ use mlua::{
     chunk::{ChunkMode, Compiler},
     Error as LuaError, Function, Lua, LuaSerdeExt, RegistryKey, Table, Value, VmState,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as JsonValue};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
@@ -34,6 +34,7 @@ pub const MEMORY_LIMIT_BYTES: usize = 16 * 1024 * 1024;
 pub const RENDER_BUDGET: Duration = Duration::from_millis(20);
 pub const UPDATE_BUDGET: Duration = Duration::from_millis(5);
 pub const MIGRATION_BUDGET: Duration = Duration::from_millis(20);
+pub const MAX_VALIDATION_SCENARIOS: usize = 32;
 
 #[derive(Debug, Error)]
 pub enum RuntimeError {
@@ -43,6 +44,24 @@ pub enum RuntimeError {
     Lua(#[from] LuaError),
     #[error("invalid experience: {0}")]
     Invalid(String),
+    #[error("invalid experience at {path}: {message}")]
+    InvalidAt { path: String, message: String },
+}
+
+impl RuntimeError {
+    pub fn path(&self) -> Option<&str> {
+        match self {
+            Self::InvalidAt { path, .. } => Some(path),
+            _ => None,
+        }
+    }
+
+    pub fn message(&self) -> String {
+        match self {
+            Self::InvalidAt { message, .. } | Self::Invalid(message) => message.clone(),
+            other => other.to_string(),
+        }
+    }
 }
 
 pub struct LuauRuntime {
@@ -68,6 +87,43 @@ pub struct RevisionAssetInput {
     pub id: String,
     pub kind: String,
     pub bytes: Vec<u8>,
+}
+
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+pub struct ValidationReport {
+    pub valid: bool,
+    pub scenarios: Vec<ScenarioReport>,
+}
+
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+pub struct ScenarioReport {
+    pub name: String,
+    pub valid: bool,
+    pub statistics: Option<SceneStatistics>,
+    pub diagnostic: Option<ValidationDiagnostic>,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
+pub struct SceneStatistics {
+    pub nodes: usize,
+    pub text_sessions: usize,
+    pub images: usize,
+    pub paint_nodes: usize,
+    pub animations: usize,
+    pub semantics: usize,
+}
+
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+pub struct ValidationDiagnostic {
+    pub stage: &'static str,
+    pub path: Option<String>,
+    pub message: String,
+}
+
+#[derive(Clone, Debug)]
+struct ValidationScenario {
+    name: String,
+    state: JsonValue,
 }
 
 #[derive(Deserialize)]
@@ -316,6 +372,7 @@ impl RuntimeWorker {
                     LuauRuntime::compile_with_assets(&source, sidecars).and_then(|runtime| {
                         let state = runtime.migrate_state(state_schema_version, &state)?;
                         let state_schema_version = runtime.state_schema_version()?;
+                        require_valid_report(runtime.validate_all(&model, &state)?)?;
                         let scene = runtime.render(&model, &state)?;
                         Ok((runtime, scene, state, state_schema_version))
                     });
@@ -439,6 +496,42 @@ impl RuntimeWorker {
                                 }
                             };
                             let render_started = Instant::now();
+                            let report = match candidate_runtime.validate_all(&model, &state) {
+                                Ok(report) => report,
+                                Err(error) => {
+                                    let timings = CandidateTimings {
+                                        submitted_at,
+                                        queue_us,
+                                        compile_us,
+                                        render_us: micros(render_started.elapsed()),
+                                        worker_total_us: micros(worker_started.elapsed()),
+                                    };
+                                    let _ =
+                                        results_tx.send_blocking(WorkerResult::CandidateRejected {
+                                            request_id,
+                                            source,
+                                            error: error.to_string(),
+                                            timings,
+                                        });
+                                    continue;
+                                }
+                            };
+                            if let Err(error) = require_valid_report(report) {
+                                let timings = CandidateTimings {
+                                    submitted_at,
+                                    queue_us,
+                                    compile_us,
+                                    render_us: micros(render_started.elapsed()),
+                                    worker_total_us: micros(worker_started.elapsed()),
+                                };
+                                let _ = results_tx.send_blocking(WorkerResult::CandidateRejected {
+                                    request_id,
+                                    source,
+                                    error: error.to_string(),
+                                    timings,
+                                });
+                                continue;
+                            }
                             let scene = match candidate_runtime.render(&model, &state) {
                                 Ok(scene) => scene,
                                 Err(error) => {
@@ -752,6 +845,9 @@ impl LuauRuntime {
             Ok(VmState::Continue)
         });
 
+        let (module_sidecars, asset_sidecars) = partition_revision_sidecars(sidecars)?;
+        install_revision_module_loader(&lua, module_sidecars)?;
+
         let (module, mut assets, mut asset_paths) = {
             let result = run_bounded(&deadline, RENDER_BUDGET, || {
                 lua.load(source)
@@ -774,7 +870,7 @@ impl LuauRuntime {
                 decode_revision_assets(result.get::<Option<Table>>("assets")?)?;
             (lua.create_registry_value(result)?, assets, asset_paths)
         };
-        merge_revision_assets(&mut assets, &mut asset_paths, sidecars)?;
+        merge_revision_assets(&mut assets, &mut asset_paths, asset_sidecars)?;
         let shader_paths = assets
             .iter()
             .filter(|asset| asset.kind == "shader")
@@ -808,6 +904,101 @@ impl LuauRuntime {
             ));
         }
         Ok(version)
+    }
+
+    /// Renders the default state plus every author-declared state scenario.
+    /// A report retains all failures so a large experience can fix one pass
+    /// instead of discovering hidden branches one activation at a time.
+    pub fn validate_all(
+        &self,
+        model: &ExperienceModel,
+        base_state: &JsonValue,
+    ) -> Result<ValidationReport, RuntimeError> {
+        let scenarios = self.validation_scenarios()?;
+        let mut reports = Vec::with_capacity(scenarios.len() + 1);
+        reports.push(self.validate_scenario("default", model, base_state));
+        for scenario in scenarios {
+            let state = merge_validation_state(base_state, &scenario.state)?;
+            reports.push(self.validate_scenario(&scenario.name, model, &state));
+        }
+        Ok(ValidationReport {
+            valid: reports.iter().all(|report| report.valid),
+            scenarios: reports,
+        })
+    }
+
+    fn validation_scenarios(&self) -> Result<Vec<ValidationScenario>, RuntimeError> {
+        let module: Table = self.lua.registry_value(&self.module)?;
+        let Some(table) = module.get::<Option<Table>>("validation_scenarios")? else {
+            return Ok(Vec::new());
+        };
+        let mut scenarios = Vec::new();
+        let mut names = std::collections::HashSet::new();
+        for value in table.sequence_values::<Table>() {
+            if scenarios.len() >= MAX_VALIDATION_SCENARIOS {
+                return Err(RuntimeError::Invalid(format!(
+                    "validation_scenarios exceeds {MAX_VALIDATION_SCENARIOS} entries"
+                )));
+            }
+            let value = value?;
+            reject_unknown_keys(&value, &["name", "state"])?;
+            let name = required_bounded_string(&value, "name", 128)?;
+            if name.is_empty() || !names.insert(name.clone()) {
+                return Err(RuntimeError::Invalid(format!(
+                    "validation scenario name is empty or duplicated: {name}"
+                )));
+            }
+            let state = value
+                .get::<Option<Value>>("state")?
+                .map(|state| self.lua.from_value(state))
+                .transpose()?
+                .unwrap_or_else(|| json!({}));
+            if !state.is_object() {
+                return Err(RuntimeError::Invalid(format!(
+                    "validation scenario `{name}` state must be an object"
+                )));
+            }
+            if serde_json::to_vec(&state)
+                .map_err(|error| RuntimeError::Invalid(error.to_string()))?
+                .len()
+                > MAX_STATE_BYTES
+            {
+                return Err(RuntimeError::Invalid(format!(
+                    "validation scenario `{name}` state is too large"
+                )));
+            }
+            scenarios.push(ValidationScenario { name, state });
+        }
+        Ok(scenarios)
+    }
+
+    fn validate_scenario(
+        &self,
+        name: &str,
+        model: &ExperienceModel,
+        state: &JsonValue,
+    ) -> ScenarioReport {
+        match self.render(model, state) {
+            Ok(scene) => ScenarioReport {
+                name: name.to_owned(),
+                valid: true,
+                statistics: Some(scene_statistics(&scene)),
+                diagnostic: None,
+            },
+            Err(error) => ScenarioReport {
+                name: name.to_owned(),
+                valid: false,
+                statistics: None,
+                diagnostic: Some(ValidationDiagnostic {
+                    stage: match &error {
+                        RuntimeError::Lua(_) => "render",
+                        _ => "validation",
+                    },
+                    path: error.path().map(str::to_owned),
+                    message: error.message(),
+                }),
+            },
+        }
     }
 
     pub fn migrate_state(
@@ -864,9 +1055,12 @@ impl LuauRuntime {
                 asset_paths: &self.asset_paths,
                 shader_paths: &self.shader_paths,
             }
-            .node(value, 1)?,
+            .node(value, 1, "root")?,
         };
-        validate_scene(&scene).map_err(|error| RuntimeError::Invalid(error.to_string()))?;
+        validate_scene_detailed(&scene).map_err(|failure| RuntimeError::InvalidAt {
+            path: failure.path,
+            message: failure.error.to_string(),
+        })?;
         Ok(scene)
     }
 
@@ -912,6 +1106,107 @@ impl LuauRuntime {
             effects: Vec::new(),
         })
     }
+}
+
+fn partition_revision_sidecars(
+    sidecars: Vec<RevisionAssetInput>,
+) -> Result<(Vec<RevisionAssetInput>, Vec<RevisionAssetInput>), RuntimeError> {
+    let mut modules = Vec::new();
+    let mut assets = Vec::new();
+    for sidecar in sidecars {
+        if sidecar.kind == "luau" {
+            validate_module_id(&sidecar.id)?;
+            if sidecar.bytes.is_empty() || sidecar.bytes.len() > MAX_SOURCE_BYTES {
+                return Err(RuntimeError::Invalid(format!(
+                    "revision module `{}` must contain 1 through {MAX_SOURCE_BYTES} bytes",
+                    sidecar.id
+                )));
+            }
+            std::str::from_utf8(&sidecar.bytes).map_err(|_| {
+                RuntimeError::Invalid(format!(
+                    "revision module `{}` is not valid UTF-8",
+                    sidecar.id
+                ))
+            })?;
+            modules.push(sidecar);
+        } else {
+            assets.push(sidecar);
+        }
+    }
+    modules.sort_by(|left, right| left.id.cmp(&right.id));
+    if modules.windows(2).any(|pair| pair[0].id == pair[1].id) {
+        return Err(RuntimeError::Invalid(
+            "revision module ids must be unique".into(),
+        ));
+    }
+    Ok((modules, assets))
+}
+
+fn validate_module_id(id: &str) -> Result<(), RuntimeError> {
+    let valid = !id.is_empty()
+        && id.len() <= 128
+        && !id.starts_with("sos.")
+        && id.split('.').count() >= 2
+        && id.split('.').all(|segment| {
+            !segment.is_empty()
+                && segment
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+        });
+    if !valid {
+        return Err(RuntimeError::Invalid(format!(
+            "invalid revision module id `{id}`; use a namespaced id such as `my_experience.theme`"
+        )));
+    }
+    Ok(())
+}
+
+fn install_revision_module_loader(
+    lua: &Lua,
+    modules: Vec<RevisionAssetInput>,
+) -> Result<(), RuntimeError> {
+    let sources = modules
+        .into_iter()
+        .map(|module| {
+            let source = String::from_utf8(module.bytes)
+                .expect("revision module UTF-8 was validated before loader installation");
+            (module.id, source)
+        })
+        .collect::<HashMap<_, _>>();
+    let sources = Rc::new(sources);
+    let loading = Rc::new(RefCell::new(HashSet::<String>::new()));
+    let cache = Rc::new(RefCell::new(HashMap::<String, RegistryKey>::new()));
+    let require = lua.create_function(move |lua, id: String| {
+        validate_module_id(&id).map_err(|error| LuaError::RuntimeError(error.to_string()))?;
+        if let Some(key) = cache.borrow().get(&id) {
+            return lua.registry_value::<Value>(key);
+        }
+        let source = sources.get(&id).ok_or_else(|| {
+            LuaError::RuntimeError(format!("revision module is not declared: {id}"))
+        })?;
+        if !loading.borrow_mut().insert(id.clone()) {
+            return Err(LuaError::RuntimeError(format!(
+                "revision module dependency cycle at {id}"
+            )));
+        }
+        let result = lua
+            .load(source)
+            .set_name(format!("module:{id}"))
+            .set_mode(ChunkMode::Text)
+            .eval::<Value>();
+        loading.borrow_mut().remove(&id);
+        let value = result?;
+        if matches!(value, Value::Nil) {
+            return Err(LuaError::RuntimeError(format!(
+                "revision module `{id}` returned nil"
+            )));
+        }
+        let key = lua.create_registry_value(value.clone())?;
+        cache.borrow_mut().insert(id, key);
+        Ok(value)
+    })?;
+    lua.globals().set("require", require)?;
+    Ok(())
 }
 
 fn decode_revision_assets(
@@ -1024,6 +1319,7 @@ fn revision_asset_extension(kind: &str) -> Option<&'static str> {
         "webp" => Some("webp"),
         "font" => Some("font"),
         "shader" => Some("wgsl"),
+        "luau" => Some("luau"),
         _ => None,
     }
 }
@@ -1049,6 +1345,7 @@ fn validate_revision_asset_bytes(kind: &str, bytes: &[u8]) -> Result<(), Runtime
         "shader" => std::str::from_utf8(bytes)
             .ok()
             .is_some_and(validate_shader_asset),
+        "luau" => bytes.len() <= MAX_SOURCE_BYTES && std::str::from_utf8(bytes).is_ok(),
         _ => false,
     };
     if !valid {
@@ -1157,6 +1454,8 @@ fn decode_effects(table: Option<Table>, lua: &Lua) -> Result<Vec<ProviderEffect>
                 | ("network", "disconnect")
                 | ("apps", "launch")
                 | ("attention", "acknowledge")
+                | ("shell", "focus_window")
+                | ("shell", "close_window")
         ) {
             return Err(RuntimeError::Invalid(format!(
                 "provider action is not allowed: {provider}.{action}"
@@ -1195,6 +1494,91 @@ fn run_bounded<T>(
     result.map_err(RuntimeError::from)
 }
 
+fn merge_validation_state(
+    base: &JsonValue,
+    overrides: &JsonValue,
+) -> Result<JsonValue, RuntimeError> {
+    let mut merged = base.clone();
+    if !merged.is_object() {
+        merged = json!({});
+    }
+    let target = merged
+        .as_object_mut()
+        .expect("validation state was normalized to an object");
+    for (key, value) in overrides
+        .as_object()
+        .expect("validation scenario state was checked")
+    {
+        if value.is_null() {
+            target.remove(key);
+        } else {
+            target.insert(key.clone(), value.clone());
+        }
+    }
+    if serde_json::to_vec(&merged)
+        .map_err(|error| RuntimeError::Invalid(error.to_string()))?
+        .len()
+        > MAX_STATE_BYTES
+    {
+        return Err(RuntimeError::Invalid(
+            "merged validation scenario state is too large".into(),
+        ));
+    }
+    Ok(merged)
+}
+
+fn require_valid_report(report: ValidationReport) -> Result<(), RuntimeError> {
+    if report.valid {
+        return Ok(());
+    }
+    let failures = report
+        .scenarios
+        .into_iter()
+        .filter_map(|scenario| {
+            scenario.diagnostic.map(|diagnostic| {
+                format!(
+                    "{} at {}: {}",
+                    scenario.name,
+                    diagnostic.path.as_deref().unwrap_or("module"),
+                    diagnostic.message
+                )
+            })
+        })
+        .collect::<Vec<_>>()
+        .join("; ");
+    Err(RuntimeError::Invalid(format!(
+        "declared validation scenarios failed: {failures}"
+    )))
+}
+
+pub fn scene_statistics(scene: &Scene) -> SceneStatistics {
+    fn visit(node: &SceneNode, totals: &mut SceneStatistics) {
+        totals.nodes += 1;
+        totals.text_sessions += usize::from(matches!(node.content, Some(Content::TextSession(_))));
+        totals.images += usize::from(matches!(node.content, Some(Content::Image(_))));
+        totals.paint_nodes += usize::from(
+            node.paint
+                .iter()
+                .any(|operation| !matches!(operation, PaintOp::FillBounds { .. })),
+        );
+        totals.animations += usize::from(node.animation.is_some());
+        totals.semantics += usize::from(node.semantics.is_some());
+        for child in &node.children {
+            visit(child, totals);
+        }
+    }
+    let mut totals = SceneStatistics {
+        nodes: 0,
+        text_sessions: 0,
+        images: 0,
+        paint_nodes: 0,
+        animations: 0,
+        semantics: 0,
+    };
+    visit(&scene.root, &mut totals);
+    totals
+}
+
 struct Decoder<'a> {
     nodes: usize,
     asset_paths: &'a HashMap<String, String>,
@@ -1202,45 +1586,117 @@ struct Decoder<'a> {
 }
 
 impl Decoder<'_> {
-    fn node(&mut self, value: Value, depth: usize) -> Result<SceneNode, RuntimeError> {
+    fn node(&mut self, value: Value, depth: usize, path: &str) -> Result<SceneNode, RuntimeError> {
         if depth > MAX_SCENE_DEPTH {
-            return Err(RuntimeError::Invalid("scene is too deep".into()));
+            return Err(invalid_at(path, "scene is too deep"));
         }
         self.nodes += 1;
         if self.nodes > MAX_SCENE_NODES {
-            return Err(RuntimeError::Invalid("scene has too many nodes".into()));
+            return Err(invalid_at(path, "scene has too many nodes"));
         }
 
         let table = value
             .as_table()
-            .ok_or_else(|| RuntimeError::Invalid("each scene node must be a table".into()))?;
+            .ok_or_else(|| invalid_at(path, "each scene node must be a table"))?;
+        reject_unknown_keys(
+            table,
+            &[
+                "id",
+                "layout",
+                "content",
+                "paint",
+                "interaction",
+                "animation",
+                "semantics",
+                "children",
+            ],
+        )
+        .map_err(|error| contextualize(error, path))?;
         let mut children = Vec::new();
         if let Some(child_table) = table.get::<Option<Table>>("children")? {
             for child in child_table.sequence_values::<Value>() {
                 if children.len() >= MAX_CHILDREN {
-                    return Err(RuntimeError::Invalid("node has too many children".into()));
+                    return Err(invalid_at(path, "node has too many children"));
                 }
-                children.push(self.node(child?, depth + 1)?);
+                let child_path = format!("{path}.children[{}]", children.len());
+                children.push(self.node(child?, depth + 1, &child_path)?);
             }
         }
 
-        Ok(SceneNode {
-            id: bounded_optional_string(table, "id", 256)?,
-            layout: decode_layout(table.get::<Option<Table>>("layout")?)?,
-            content: decode_content(table.get::<Option<Table>>("content")?, self.asset_paths)?,
-            paint: decode_paint(table.get::<Option<Table>>("paint")?, self.shader_paths)?,
-            interaction: decode_interaction(table.get::<Option<Table>>("interaction")?)?,
-            animation: decode_animation(table.get::<Option<Table>>("animation")?)?,
-            semantics: decode_semantics(table.get::<Option<Table>>("semantics")?)?,
-            children,
-        })
+        let decoded: Result<SceneNode, RuntimeError> = (|| {
+            Ok(SceneNode {
+                id: bounded_optional_string(table, "id", 256)?,
+                layout: decode_layout(table.get::<Option<Table>>("layout")?)?,
+                content: decode_content(table.get::<Option<Table>>("content")?, self.asset_paths)?,
+                paint: decode_paint(table.get::<Option<Table>>("paint")?, self.shader_paths)?,
+                interaction: decode_interaction(table.get::<Option<Table>>("interaction")?)?,
+                animation: decode_animation(table.get::<Option<Table>>("animation")?)?,
+                semantics: decode_semantics(table.get::<Option<Table>>("semantics")?)?,
+                children,
+            })
+        })();
+        decoded.map_err(|error| contextualize(error, path))
     }
+}
+
+fn invalid_at(path: impl Into<String>, message: impl Into<String>) -> RuntimeError {
+    RuntimeError::InvalidAt {
+        path: path.into(),
+        message: message.into(),
+    }
+}
+
+fn contextualize(error: RuntimeError, path: &str) -> RuntimeError {
+    match error {
+        RuntimeError::Invalid(message) => invalid_at(path, message),
+        other => other,
+    }
+}
+
+fn reject_unknown_keys(table: &Table, allowed: &[&str]) -> Result<(), RuntimeError> {
+    for pair in table.clone().pairs::<Value, Value>() {
+        let (key, _) = pair?;
+        let Value::String(key) = key else {
+            return Err(RuntimeError::Invalid("object keys must be strings".into()));
+        };
+        let key = key.to_str()?;
+        if !allowed.contains(&key.as_ref()) {
+            return Err(RuntimeError::Invalid(format!(
+                "unknown key `{key}`; expected one of {}",
+                allowed.join(", ")
+            )));
+        }
+    }
+    Ok(())
 }
 
 fn decode_layout(table: Option<Table>) -> Result<Layout, RuntimeError> {
     let Some(table) = table else {
         return Ok(Layout::default());
     };
+    reject_unknown_keys(
+        &table,
+        &[
+            "flow",
+            "wrap",
+            "scroll_y",
+            "padding",
+            "gap",
+            "width",
+            "height",
+            "min_width",
+            "min_height",
+            "max_width",
+            "max_height",
+            "aspect_ratio",
+            "position",
+            "program",
+            "clip_bounds",
+            "grow",
+            "align",
+            "justify",
+        ],
+    )?;
     Ok(Layout {
         flow: match table.get::<Option<String>>("flow")?.as_deref() {
             None | Some("overlay") => Flow::Overlay,
@@ -1262,6 +1718,7 @@ fn decode_layout(table: Option<Table>) -> Result<Layout, RuntimeError> {
         position: table
             .get::<Option<Table>>("position")?
             .map(|position| -> Result<LayoutPosition, RuntimeError> {
+                reject_unknown_keys(&position, &["x", "y"])?;
                 Ok(LayoutPosition {
                     x: scene_number(&position, "x")?,
                     y: scene_number(&position, "y")?,
@@ -1271,6 +1728,10 @@ fn decode_layout(table: Option<Table>) -> Result<Layout, RuntimeError> {
         program: table
             .get::<Option<Table>>("program")?
             .map(|program| -> Result<LayoutProgram, RuntimeError> {
+                reject_unknown_keys(
+                    &program,
+                    &["measure_width", "measure_height", "arrange_x", "arrange_y"],
+                )?;
                 Ok(LayoutProgram {
                     measure_width: layout_fraction(&program, "measure_width")?,
                     measure_height: layout_fraction(&program, "measure_height")?,
@@ -1307,6 +1768,24 @@ fn decode_content(
         return Ok(None);
     };
     let kind = required_bounded_string(&table, "kind", 32)?;
+    let allowed: &[&str] = match kind.as_str() {
+        "text" => &["kind", "value", "size", "color"],
+        "text_session" => &[
+            "kind",
+            "state_key",
+            "value",
+            "placeholder",
+            "submit_action",
+            "autofocus",
+        ],
+        "image" => &["kind", "asset"],
+        "provider_surface" => &["kind", "surface"],
+        "window_space" => &["kind", "layout", "gap", "fallback"],
+        "shell_overlay" => &["kind", "x", "y", "width", "height", "placement", "anchor"],
+        "application_surface" => &["kind", "title"],
+        _ => &["kind"],
+    };
+    reject_unknown_keys(&table, allowed)?;
     let content = match kind.as_str() {
         "text" => Content::Text(TextContent {
             value: required_bounded_string(&table, "value", MAX_TEXT_BYTES)?,
@@ -1353,10 +1832,32 @@ fn decode_content(
                 .unwrap_or_default(),
         }),
         "shell_overlay" => {
+            let placement = table
+                .get::<Option<Table>>("placement")?
+                .map(|placement| -> Result<ShellOverlayPlacement, RuntimeError> {
+                    reject_unknown_keys(&placement, &["horizontal", "vertical", "margin"])?;
+                    let edge = |key| -> Result<EdgePlacement, RuntimeError> {
+                        match placement.get::<Option<String>>(key)?.as_deref() {
+                            None | Some("start") => Ok(EdgePlacement::Start),
+                            Some("center") => Ok(EdgePlacement::Center),
+                            Some("end") => Ok(EdgePlacement::End),
+                            Some(value) => Err(RuntimeError::Invalid(format!(
+                                "invalid overlay {key} placement: {value}"
+                            ))),
+                        }
+                    };
+                    Ok(ShellOverlayPlacement {
+                        horizontal: edge("horizontal")?,
+                        vertical: edge("vertical")?,
+                        margin: finite_dimension(&placement, "margin")?.unwrap_or(0.0),
+                    })
+                })
+                .transpose()?;
             let anchor = table
                 .get::<Option<Table>>("anchor")?
                 .map(
                     |anchor| -> Result<experience_ir::ShellOverlayAnchor, RuntimeError> {
+                        reject_unknown_keys(&anchor, &["x", "y", "width", "height", "above"])?;
                         Ok(experience_ir::ShellOverlayAnchor {
                             x: scene_number(&anchor, "x")?,
                             y: scene_number(&anchor, "y")?,
@@ -1368,10 +1869,11 @@ fn decode_content(
                 )
                 .transpose()?;
             Content::ShellOverlay(ShellOverlayContent {
-                x: scene_number(&table, "x")?,
-                y: scene_number(&table, "y")?,
+                x: optional_scene_number(&table, "x")?.unwrap_or(0.0),
+                y: optional_scene_number(&table, "y")?.unwrap_or(0.0),
                 width: required_dimension(&table, "width")?,
                 height: required_dimension(&table, "height")?,
+                placement,
                 anchor,
             })
         }
@@ -1430,6 +1932,16 @@ impl PaintDecoder<'_> {
 
     fn operation(&mut self, operation: Table, depth: usize) -> Result<PaintOp, RuntimeError> {
         let kind = required_bounded_string(&operation, "kind", 32)?;
+        let allowed: &[&str] = match kind.as_str() {
+            "fill_bounds" => &["kind", "color", "radius"],
+            "path" => &["kind", "points", "color", "width", "closed"],
+            "quad" => &["kind", "x", "y", "width", "height", "radius", "color"],
+            "glyphs" => &["kind", "x", "y", "size", "line_height", "max_width", "runs"],
+            "shader" => &["kind", "asset", "x", "y", "width", "height"],
+            "layer" => &["kind", "clip", "transform", "opacity", "paint"],
+            _ => &["kind"],
+        };
+        reject_unknown_keys(&operation, allowed)?;
         Ok(match kind.as_str() {
             "fill_bounds" => PaintOp::FillBounds {
                 color: operation.get("color")?,
@@ -1446,6 +1958,7 @@ impl PaintDecoder<'_> {
                         ));
                     }
                     let point = point?;
+                    reject_unknown_keys(&point, &["x", "y"])?;
                     points.push(PaintPoint {
                         x: scene_number(&point, "x")?,
                         y: scene_number(&point, "y")?,
@@ -1477,6 +1990,10 @@ impl PaintDecoder<'_> {
                         ));
                     }
                     let run = run?;
+                    reject_unknown_keys(
+                        &run,
+                        &["text", "color", "font_family", "weight", "italic"],
+                    )?;
                     runs.push(GlyphRun {
                         text: required_bounded_string(&run, "text", MAX_TEXT_BYTES)?,
                         color: run.get("color")?,
@@ -1518,6 +2035,7 @@ impl PaintDecoder<'_> {
                 let clip = operation
                     .get::<Option<Table>>("clip")?
                     .map(|clip| -> Result<ClipRect, RuntimeError> {
+                        reject_unknown_keys(&clip, &["x", "y", "width", "height"])?;
                         Ok(ClipRect {
                             x: scene_number(&clip, "x")?,
                             y: scene_number(&clip, "y")?,
@@ -1543,6 +2061,16 @@ impl PaintDecoder<'_> {
 }
 
 fn decode_transform(table: &Table) -> Result<Transform2D, RuntimeError> {
+    reject_unknown_keys(
+        table,
+        &[
+            "translate_x",
+            "translate_y",
+            "scale_x",
+            "scale_y",
+            "rotation_degrees",
+        ],
+    )?;
     Ok(Transform2D {
         translate_x: optional_scene_number(table, "translate_x")?.unwrap_or(0.0),
         translate_y: optional_scene_number(table, "translate_y")?.unwrap_or(0.0),
@@ -1556,6 +2084,21 @@ fn decode_interaction(table: Option<Table>) -> Result<Interaction, RuntimeError>
     let Some(table) = table else {
         return Ok(Interaction::default());
     };
+    reject_unknown_keys(
+        &table,
+        &[
+            "tap_action",
+            "hover_action",
+            "surface_drag",
+            "double_tap_action",
+            "long_press_action",
+            "swipe_action",
+            "pointer_action",
+            "multi_pointer_action",
+            "capture",
+            "hit_regions",
+        ],
+    )?;
     let mut hit_regions = Vec::new();
     if let Some(region_table) = table.get::<Option<Table>>("hit_regions")? {
         for region in region_table.sequence_values::<Table>() {
@@ -1565,6 +2108,23 @@ fn decode_interaction(table: Option<Table>) -> Result<Interaction, RuntimeError>
                 ));
             }
             let region = region?;
+            reject_unknown_keys(
+                &region,
+                &[
+                    "id",
+                    "x",
+                    "y",
+                    "width",
+                    "height",
+                    "press_action",
+                    "drag_action",
+                    "drop_action",
+                    "tap_action",
+                    "double_tap_action",
+                    "long_press_action",
+                    "swipe_action",
+                ],
+            )?;
             hit_regions.push(HitRegion {
                 id: required_bounded_string(&region, "id", 256)?,
                 x: scene_number(&region, "x")?,
@@ -1624,6 +2184,7 @@ fn decode_animation(table: Option<Table>) -> Result<Option<Animation>, RuntimeEr
     let Some(table) = table else {
         return Ok(None);
     };
+    reject_unknown_keys(&table, &["kind", "duration_ms", "loop"])?;
     let kind = match required_bounded_string(&table, "kind", 32)?.as_str() {
         "pulse" => AnimationKind::Pulse,
         "fade_in" => AnimationKind::FadeIn,
@@ -1648,6 +2209,7 @@ fn decode_semantics(table: Option<Table>) -> Result<Option<Semantics>, RuntimeEr
     let Some(table) = table else {
         return Ok(None);
     };
+    reject_unknown_keys(&table, &["role", "label", "value", "hint"])?;
     let role = match required_bounded_string(&table, "role", 32)?.as_str() {
         "button" => SemanticRole::Button,
         "image" => SemanticRole::Image,
@@ -2500,6 +3062,57 @@ mod tests {
     }
 
     #[test]
+    fn revision_local_modules_are_namespaced_cached_and_sandboxed() {
+        let runtime = LuauRuntime::compile_with_assets(
+            r#"
+                local theme = require("example.theme")
+                local same_theme = require("example.theme")
+                assert(theme == same_theme)
+                return {
+                    api_version = 3,
+                    render = function()
+                        return {
+                            id = "root",
+                            content = {
+                                kind = "text",
+                                value = theme.label,
+                                size = 14,
+                                color = theme.ink,
+                            },
+                        }
+                    end,
+                }
+            "#,
+            vec![RevisionAssetInput {
+                id: "example.theme".into(),
+                kind: "luau".into(),
+                bytes: br#"return { label = "Typed theme", ink = 0x17211B }"#.to_vec(),
+            }],
+        )
+        .unwrap();
+        let scene = runtime
+            .render(&providers_fake_for_test(), &json!({}))
+            .unwrap();
+        assert!(matches!(
+            scene.root.content,
+            Some(Content::Text(TextContent { ref value, .. })) if value == "Typed theme"
+        ));
+
+        let error = match LuauRuntime::compile_with_assets(
+            "local _ = require('theme'); return { api_version = 3, render = function() return {} end }",
+            vec![RevisionAssetInput {
+                id: "theme".into(),
+                kind: "luau".into(),
+                bytes: b"return {}".to_vec(),
+            }],
+        ) {
+            Ok(_) => panic!("un-namespaced module should be rejected"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("namespaced id"));
+    }
+
+    #[test]
     fn worker_shuts_down_and_recreates_cleanly() {
         let model = providers_fake_for_test();
         for _ in 0..25 {
@@ -2508,6 +3121,90 @@ mod tests {
             assert_eq!(ready.scene.root.children.len(), 2);
             worker.shutdown().unwrap();
         }
+    }
+
+    #[test]
+    fn validation_scenarios_report_every_hidden_branch_with_paths() {
+        let runtime = LuauRuntime::compile(
+            r#"
+                return {
+                    api_version = 3,
+                    validation_scenarios = {
+                        { name = "good", state = { branch = "good" } },
+                        { name = "missing_id", state = { branch = "bad" } },
+                    },
+                    render = function(_, state)
+                        if state.branch == "bad" then
+                            return {
+                                id = "root",
+                                children = {{ interaction = { tap_action = "open" } }},
+                            }
+                        end
+                        return { id = "root" }
+                    end,
+                }
+            "#,
+        )
+        .unwrap();
+        let report = runtime
+            .validate_all(&providers_fake_for_test(), &json!({}))
+            .unwrap();
+        assert!(!report.valid);
+        assert_eq!(report.scenarios.len(), 3);
+        let failure = report
+            .scenarios
+            .iter()
+            .find(|scenario| scenario.name == "missing_id")
+            .unwrap()
+            .diagnostic
+            .as_ref()
+            .unwrap();
+        assert_eq!(failure.path.as_deref(), Some("root#root.children[0]"));
+        assert!(failure.message.contains("stable id"));
+    }
+
+    #[test]
+    fn decoder_rejects_unknown_keys_at_the_consuming_node() {
+        let runtime = LuauRuntime::compile(
+            r#"
+                return {
+                    api_version = 3,
+                    render = function()
+                        return {
+                            id = "root",
+                            children = {{ id = "card", layout = { widht = 20 } }},
+                        }
+                    end,
+                }
+            "#,
+        )
+        .unwrap();
+        let error = runtime
+            .render(&providers_fake_for_test(), &json!({}))
+            .unwrap_err();
+        assert_eq!(error.path(), Some("root.children[0]"));
+        assert!(error.message().contains("unknown key `widht`"));
+
+        let runtime = LuauRuntime::compile(
+            r#"
+                return {
+                    api_version = 3,
+                    render = function()
+                        return {
+                            id = "root",
+                            paint = {{ kind = "quad", x = 0, y = 0, width = 10,
+                                height = 10, color = 0, raduis = 2 }},
+                        }
+                    end,
+                }
+            "#,
+        )
+        .unwrap();
+        let error = runtime
+            .render(&providers_fake_for_test(), &json!({}))
+            .unwrap_err();
+        assert_eq!(error.path(), Some("root"));
+        assert!(error.message().contains("unknown key `raduis`"));
     }
 
     fn providers_fake_for_test() -> ExperienceModel {
@@ -2532,6 +3229,7 @@ mod tests {
             agent: Default::default(),
             network: Default::default(),
             providers: Default::default(),
+            shell: Default::default(),
         }
     }
 }

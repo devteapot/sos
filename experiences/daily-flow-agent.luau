@@ -8,7 +8,16 @@ local dim = 0x9DA5B4
 local violet = 0xA58BFA
 local gold = 0xF5BB55
 
-local function text(value, size, color, semantics, id)
+type GroupOptions = {
+    id: string?,
+    background: number?,
+    radius: number?,
+    tap_action: string?,
+    animation: Animation?,
+    semantics: Semantics?,
+}
+
+local function text(value: any, size: number, color: number?, semantics: Semantics?, id: string?): SceneNode
     return {
         id = id,
         content = { kind = "text", value = tostring(value), size = size, color = color or cream },
@@ -16,30 +25,45 @@ local function text(value, size, color, semantics, id)
     }
 end
 
-local function group(flow, layout, children, options)
-    options = options or {}
-    layout = layout or {}
-    layout.flow = flow
+local function group(
+    flow: "overlay" | "column" | "row",
+    layout: Layout?,
+    children: {SceneNode}?,
+    options: GroupOptions?
+): SceneNode
+    local resolved_options: GroupOptions = options or {}
+    local resolved_layout: Layout = layout or {}
+    resolved_layout.flow = flow
+    local paint: {PaintOp}? = nil
+    if resolved_options.background ~= nil then
+        paint = ({{
+            kind = "fill_bounds",
+            color = resolved_options.background,
+            radius = resolved_options.radius or 0,
+        }} :: {PaintOp})
+    end
+    local interaction: Interaction? = nil
+    if resolved_options.tap_action ~= nil then
+        interaction = ({ tap_action = resolved_options.tap_action } :: Interaction)
+    end
     return {
-        id = options.id,
-        layout = layout,
-        paint = options.background and {{
-            kind = "fill_bounds", color = options.background, radius = options.radius or 0,
-        }} or nil,
-        interaction = options.tap_action and { tap_action = options.tap_action } or nil,
-        animation = options.animation,
-        semantics = options.semantics,
+        id = resolved_options.id,
+        layout = resolved_layout,
+        paint = paint,
+        interaction = interaction,
+        animation = resolved_options.animation,
+        semantics = resolved_options.semantics,
         children = children,
     }
 end
 
-local function render(model, state)
+local function render(model: ExperienceModel, state: ExperienceState): SceneNode
     local draft = state.draft
     if draft == nil then draft = "Caffè ☕️ – 明日のデザイン" end
     local playing = state.playing
     if playing == nil then playing = model.music.playing end
 
-    local timeline = {}
+    local timeline: {SceneNode} = {}
     for index, event in ipairs(model.calendar) do
         table.insert(timeline, group("row", { gap = 13, align = "center" }, {
             group("overlay", { width = index * 7 + 8, height = 2 }, nil, {
@@ -114,7 +138,7 @@ local function render(model, state)
     }, { id = "daily-orbit-root", background = night })
 end
 
-local function update(model, state, event)
+local function update(model: ExperienceModel, state: ExperienceState, event: SceneEvent): ExperienceState
     if event.action == "text_changed" and event.target == "note-draft" then
         state.draft = event.value
     elseif event.action == "save_note" then

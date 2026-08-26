@@ -22,10 +22,40 @@ return {
     assets = { -- optional immutable, revision-scoped assets
         mark = { kind = "svg", data = "<svg ...>...</svg>" },
     },
+    validation_scenarios = { -- optional hidden states rendered before activation
+        { name = "command_panel", state = { shell_panel = "command" } },
+        { name = "agent_overlay", state = { shell_panel = "agent" } },
+    },
     render = function(model, state): SceneNode ... end,
     update = function(model, state, event): state | UpdateEnvelope ... end, -- optional
     migrate = function(from_version, state): state ... end, -- required for a state-version change
 }
+```
+
+The canonical authoring types are in
+[`types/sos-experience-api.luau`](../types/sos-experience-api.luau). Checked-in
+experiences annotate `ExperienceModel`, `ExperienceState`, `SceneNode`,
+`SceneEvent`, `UpdateOutcome`, the scene facets, provider values, and shell
+values directly. `./tools/sosctl typecheck <file>` prepends that type prelude
+and runs the official Luau analyzer pinned at tag `0.728`, commit
+`ddcea05e1cc6f534e5eaac33325690c12f1ed274`. The first invocation builds the
+pinned analyzer in the ignored `.cache` directory. Static types shorten the
+authoring feedback loop; the Rust decoder remains the runtime authority.
+
+Large revisions may package sandboxed revision-local Luau modules as manifest
+sidecars with `kind = "luau"`. Module IDs are namespaced, for example
+`stock.theme`, and the entry source loads one with `require("stock.theme")`.
+The loader has no filesystem, package search path, network, or host-module
+fallback. It caches one evaluation per VM and rejects missing modules, cycles,
+non-UTF-8/empty/oversized source, `nil` results, reserved `sos.*` names, and
+un-namespaced IDs. The resident authoring tools accept and bind an optional
+`modules = {{ id, source }}` package to the exact source that validated;
+omitting `modules` preserves the active revision's modules, while an explicit
+empty list removes them. Local validation accepts repeatable module arguments:
+
+```sh
+./tools/sosctl validate experiences/default.luau \
+  --module stock.theme=experiences/modules/stock-theme.luau --json
 ```
 
 `model` retains the prototype `greeting`, `date`, `weather`, `calendar`,
@@ -132,6 +162,34 @@ change its resident provider.
 The resident-agent validation path requires each submitted revision to retain
 at least one Luau `text_session` with `submit_action = "agent_submit"`.
 
+On the authenticated Linux shell, `model.shell` is the typed, bounded
+observation/control model. It is separate from provider resources because the
+compositor owns these facts and actions:
+
+```luau
+model.shell = {
+    abi_version = 1,
+    canvas = { width = 1920, height = 1200, mirrored = false },
+    outputs = {{
+        id = "output-…", x = 0, y = 0, width = 1920, height = 1200,
+        scale = 1.0, primary = true,
+    }},
+    windows = {{
+        id = "window-…", title = "Calculator", kind = "native",
+        active = true, capabilities = { "focus", "close" },
+    }},
+    capabilities = { "window_focus", "window_close" },
+}
+```
+
+Output and window IDs are opaque selections valid only while the compositor
+continues to report them. The document is capped at 16 outputs and 64 windows.
+It contains logical geometry, scale, a bounded display title, native versus
+compatibility kind, activity, and closed capabilities—never connector names,
+Wayland/X11 handles, application IDs, PIDs, commands, or desktop files. A stale
+selection is rejected. Map, unmap, title, focus, output-layout, and resize
+changes push a fresh model into the accepted revision without activation.
+
 ## Stock Shell is a replaceable revision
 
 The default [`experiences/default.luau`](../experiences/default.luau) exercises
@@ -198,6 +256,9 @@ The existing Linux/development effect allowlist is:
   the system browser, without embedding a WebView;
 - `agent.use_fake` selects the deterministic offline provider and
   `agent.clear_credential` removes every encrypted agent credential;
+- `shell.focus_window(window_id)` and `shell.close_window(window_id)` ask the
+  authenticated compositor to act on one currently reported opaque window;
+  the compositor re-resolves ownership and capability before acting;
 - `network.refresh`, legacy `network.connect(ssid, security)`, and
   `network.disconnect` expose only the trusted Android Wi-Fi selection
   boundary in the APK laboratory. Android system products use the opaque v1
@@ -318,7 +379,9 @@ content = {
 
 content = {
     kind = "shell_overlay",
-    x = 1440, y = 860, width = 430, height = 146,
+    width = 430, height = 146,
+    placement = { horizontal = "end", vertical = "end", margin = 18 },
+    -- After an interactive move, persist the compositor-reported action anchor:
     anchor = {
         x = 1838, y = 990, width = 64, height = 64, above = true,
     },
@@ -343,6 +406,9 @@ resource-free `vs_main`/`fs_main` entry points into a host-capped (maximum
 validation rejects bindings, compute entry points, malformed modules, and
 missing entry points at install and activation. Old revision assets are removed
 from the active registry. Arbitrary paths and URLs remain rejected.
+The same manifest may package namespaced `luau` sidecars described above;
+executable modules stay inside the same sandbox and are not exposed as asset
+paths.
 
 `provider_surface` resolves only a surface declared in the current provider
 snapshot. On Linux, a `ready` video/camera surface maps a provider-owned,
@@ -361,9 +427,10 @@ authenticated, bounded compositor configuration. The region must be at least
 160 by 120 logical pixels, must remain inside the active output, and has a gap
 bounded to 128. The compositor deterministically places at most eight ordinary
 Wayland/XWayland application windows within it. `floating` cascades bounded
-windows and retains click-to-raise focus; `tiling` uses a bounded grid;
-`scrolling` currently presents overlapping horizontal cards and reserves true
-scroll-position/focused-window controls for a later ABI addition. Children of
+windows and retains click-to-raise focus; `tiling` uses balanced recursive
+longest-edge splits with spatial identity stable across focus raises and
+relayout; `scrolling` currently presents overlapping horizontal cards and
+reserves true scroll-position/focused-window controls for a later ABI addition. Children of
 the node are normal Luau content painted in the shell below those independent
 application surfaces, which supplies home/empty content without pretending
 that a client window is a GPUI child.
@@ -391,6 +458,13 @@ not jump. `above` selects whether the extra height grows above or below the
 action. Without `anchor`, `x` and `y` retain their legacy surface-origin
 meaning.
 
+When no persisted `anchor` exists, `placement` is the responsive initial
+position. Each axis accepts `start`, `center`, or `end`, and the finite
+non-negative margin is resolved against the current logical output before
+clamping. This avoids baking one monitor's pixel dimensions into a revision.
+After an interactive move, `anchor` deliberately takes precedence so the
+user's chosen action position persists.
+
 A descendant with `interaction.surface_drag = true` starts a move only from
 that exact node; sibling controls and text fields retain ordinary input. A
 stationary press/release produces the fixed `shell_overlay_activated` Scene
@@ -409,6 +483,9 @@ clients. The base shell does not paint that subtree beneath the application.
 This first cut is still hosted by the shell revision's permanent process;
 independent native-app revision processes and lifecycle supervision remain a
 separate application-runtime layer. Android renders an unavailable placeholder.
+External application windows are observed and controlled through
+`model.shell.windows`; `application_surface` still means the one source-owned
+GPUI application subtree, not an arbitrary external window.
 
 ### Paint and interaction
 
@@ -548,9 +625,23 @@ Before presentation the host enforces, among other checks:
   text-session nodes;
 - at most one keyed `window_space`, `shell_overlay`, and
   `application_surface`, with their primitive-specific geometry/title bounds;
-- a 16 MiB VM limit and fixed render/update time budgets.
+- a 16 MiB VM limit and fixed render/update time budgets;
 - at most 64 revision assets, 4 MiB each and 16 MiB total, with checks repeated
   by the supervisor and runtime.
+
+Object keys are closed at the decoder boundary, including nested layout
+positions/programs, content, paint operations/points/glyph runs/layers,
+interactions/hit regions, animations, and semantics. A typo such as `widht` or
+`raduis` is rejected instead of being silently ignored, and the diagnostic
+includes the consuming scene path such as `root.children[2]`.
+
+Validation always renders the default state plus up to 32 declared
+`validation_scenarios`. A scenario shallow-merges its JSON-like state over the
+candidate state; `null` removes a key. The validator does not stop at the first
+hidden branch: its text and JSON reports contain every scenario's name,
+PASS/FAIL, node/input/image/paint/animation/semantics counts, error stage, scene
+path, and message. `validate_experience` returns that same structured report
+before a resident agent may submit the exact source-and-module package.
 
 Luau receives model/state values and emits scene/effect values. It never
 receives a GPUI context, raw pointer, filesystem, network socket, provider

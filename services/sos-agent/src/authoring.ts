@@ -2,12 +2,14 @@ import net from "node:net";
 import { Type } from "@earendil-works/pi-ai";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 
-const MAX_RESPONSE_BYTES = 1024 * 1024;
+const MAX_RESPONSE_BYTES = 8 * 1024 * 1024;
+
+type AuthoringModule = { id: string; source: string };
 
 type AuthoringAction =
   | { action: "get_experience_context" }
-  | { action: "validate_experience"; source: string }
-  | { action: "submit_experience"; source: string };
+  | { action: "validate_experience"; source: string; modules?: AuthoringModule[] }
+  | { action: "submit_experience"; source: string; modules?: AuthoringModule[] };
 
 interface AuthoringResponse {
   ok: boolean;
@@ -68,7 +70,19 @@ function toolResult(result: unknown) {
 
 export function createAuthoringTools(backend: AuthoringBackend): AgentTool[] {
   let phase: "context" | "validate" | "submit" = "context";
-  let validatedSource: string | undefined;
+  let validatedPackage: string | undefined;
+  const moduleParameters = Type.Optional(
+    Type.Array(
+      Type.Object(
+        {
+          id: Type.String({ minLength: 3, maxLength: 128 }),
+          source: Type.String({ minLength: 1, maxLength: 262_144 }),
+        },
+        { additionalProperties: false },
+      ),
+      { maxItems: 16 },
+    ),
+  );
   return [
     {
       name: "get_experience_context",
@@ -80,7 +94,7 @@ export function createAuthoringTools(backend: AuthoringBackend): AgentTool[] {
       async execute(_id, _parameters, signal) {
         const result = await backend.request({ action: "get_experience_context" }, signal);
         phase = "validate";
-        validatedSource = undefined;
+        validatedPackage = undefined;
         return toolResult(result);
       },
     },
@@ -88,9 +102,12 @@ export function createAuthoringTools(backend: AuthoringBackend): AgentTool[] {
       name: "validate_experience",
       label: "Validate candidate experience",
       description:
-        "Request validation of a complete candidate Luau experience. This stages validation only and never proves activation.",
+        "Request validation of a complete candidate Luau experience package. Optional revision-local modules use namespaced ids such as theme.stock and are loaded with require(id). This stages validation only and never proves activation.",
       parameters: Type.Object(
-        { source: Type.String({ minLength: 1, maxLength: 262_144 }) },
+        {
+          source: Type.String({ minLength: 1, maxLength: 262_144 }),
+          modules: moduleParameters,
+        },
         { additionalProperties: false },
       ),
       executionMode: "sequential",
@@ -98,10 +115,26 @@ export function createAuthoringTools(backend: AuthoringBackend): AgentTool[] {
         if (phase !== "validate") {
           throw new Error("validate_experience must follow get_experience_context");
         }
-        const source = (parameters as { source: string }).source;
-        const result = await backend.request({ action: "validate_experience", source }, signal);
+        const { source, modules } = parameters as {
+          source: string;
+          modules?: AuthoringModule[];
+        };
+        const result = await backend.request(
+          { action: "validate_experience", source, ...(modules ? { modules } : {}) },
+          signal,
+        );
+        if (
+          typeof result === "object" &&
+          result !== null &&
+          "valid" in result &&
+          (result as { valid?: unknown }).valid === false
+        ) {
+          phase = "validate";
+          validatedPackage = undefined;
+          return toolResult(result);
+        }
         phase = "submit";
-        validatedSource = source;
+        validatedPackage = JSON.stringify({ source, modules: modules ?? null });
         return toolResult(result);
       },
     },
@@ -109,20 +142,32 @@ export function createAuthoringTools(backend: AuthoringBackend): AgentTool[] {
       name: "submit_experience",
       label: "Submit candidate experience",
       description:
-        "Submit the exact complete source accepted by validate_experience to the trusted host. The trusted host alone may compile, render, and activate it.",
+        "Submit the exact complete source and modules accepted by validate_experience to the trusted host. The trusted host alone may compile, render, and activate them.",
       parameters: Type.Object(
-        { source: Type.String({ minLength: 1, maxLength: 262_144 }) },
+        {
+          source: Type.String({ minLength: 1, maxLength: 262_144 }),
+          modules: moduleParameters,
+        },
         { additionalProperties: false },
       ),
       executionMode: "sequential",
       async execute(_id, parameters, signal) {
-        const source = (parameters as { source: string }).source;
-        if (phase !== "submit" || source !== validatedSource) {
-          throw new Error("submit_experience source must exactly match the validated candidate");
+        const { source, modules } = parameters as {
+          source: string;
+          modules?: AuthoringModule[];
+        };
+        const candidatePackage = JSON.stringify({ source, modules: modules ?? null });
+        if (phase !== "submit" || candidatePackage !== validatedPackage) {
+          throw new Error(
+            "submit_experience source and modules must exactly match the validated candidate",
+          );
         }
-        const result = await backend.request({ action: "submit_experience", source }, signal);
+        const result = await backend.request(
+          { action: "submit_experience", source, ...(modules ? { modules } : {}) },
+          signal,
+        );
         phase = "context";
-        validatedSource = undefined;
+        validatedPackage = undefined;
         return toolResult(result);
       },
     },

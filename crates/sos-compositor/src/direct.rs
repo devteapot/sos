@@ -830,6 +830,7 @@ fn update_output_layout(state: &mut SosCompositor, layout: OutputLayout) {
     state.output_layout_mirrored = layout == OutputLayout::Mirror;
     state.output_size = canvas;
     state.reconfigure_for_output_layout();
+    state.publish_shell_state();
 }
 
 fn render_all(data: &mut CompositorData) {

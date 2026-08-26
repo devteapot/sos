@@ -381,6 +381,7 @@ fn compatibility_model(providers: SystemProviders) -> ExperienceModel {
             error: None,
         },
         providers,
+        shell: Default::default(),
     }
 }
 

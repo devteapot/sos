@@ -344,6 +344,14 @@ impl XdgShellHandler for SosCompositor {
     fn unfullscreen_request(&mut self, surface: ToplevelSurface) {
         self.apply_toplevel_state_policy(&surface, "unfullscreen");
     }
+
+    fn title_changed(&mut self, _surface: ToplevelSurface) {
+        self.publish_shell_state();
+    }
+
+    fn app_id_changed(&mut self, _surface: ToplevelSurface) {
+        self.publish_shell_state();
+    }
 }
 
 delegate_xdg_shell!(SosCompositor);
@@ -492,6 +500,7 @@ impl SosCompositor {
             self.reconfigure_application_windows();
         }
         tracing::info!(?role, "mapped compositor-managed XDG toplevel buffer");
+        self.publish_shell_state();
     }
 
     fn unmap_xdg_window(&mut self, window: Window) {
@@ -515,6 +524,7 @@ impl SosCompositor {
             self.reconfigure_application_windows();
         }
         tracing::info!(?role, "unmapped compositor-managed XDG toplevel buffer");
+        self.publish_shell_state();
     }
 
     pub(crate) fn reconfigure_for_output_layout(&mut self) {

@@ -69,6 +69,7 @@ pub fn init_winit(
                 let state = &mut data.state;
                 state.output_size = size.into();
                 state.reconfigure_for_output_layout();
+                state.publish_shell_state();
                 output.change_current_state(
                     Some(Mode {
                         size,

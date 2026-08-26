@@ -5,17 +5,37 @@
 -- Credentials, lock, permission, emergency, confirmation, and Recovery remain
 -- fixed native surfaces below the revision boundary.
 
-local ink = 0x17211B
-local muted = 0x637069
-local paper = 0xF3F1E8
-local white = 0xFEFDF8
-local moss = 0x3E6B52
-local mint = 0xDCE8D8
-local amber = 0xE9A23B
-local alert = 0x8C3A36
-local rose = 0xF2DDD7
-local sand = 0xE8E4D7
-local panel = 0xECE9DC
+-- The bootstrap remains a single immutable file, but uses the same token
+-- shape available to revision-local theme modules (`stock.theme`).
+local theme = {
+    color = {
+        ink = 0x17211B,
+        muted = 0x637069,
+        paper = 0xF3F1E8,
+        white = 0xFEFDF8,
+        moss = 0x3E6B52,
+        mint = 0xDCE8D8,
+        amber = 0xE9A23B,
+        alert = 0x8C3A36,
+        rose = 0xF2DDD7,
+        sand = 0xE8E4D7,
+        panel = 0xECE9DC,
+    },
+    space = { xs = 4, sm = 8, md = 12, lg = 16, xl = 24 },
+    radius = { control = 12, card = 18, panel = 22 },
+}
+
+local ink = theme.color.ink
+local muted = theme.color.muted
+local paper = theme.color.paper
+local white = theme.color.white
+local moss = theme.color.moss
+local mint = theme.color.mint
+local amber = theme.color.amber
+local alert = theme.color.alert
+local rose = theme.color.rose
+local sand = theme.color.sand
+local panel = theme.color.panel
 
 local assets = {
     stock_mark = {
@@ -35,7 +55,22 @@ local workspace_order = {
     { id = "agent", label = "AGENT" },
 }
 
-local function text(value, size, color, semantics, id)
+-- Candidate validation renders these hidden branches in addition to the
+-- default state. Keep this list aligned with state-driven navigation and
+-- overlays so a generated revision fails before activation, not on first use.
+local validation_scenarios = {
+    { name = "workspace_agenda", state = { active_workspace = "agenda" } },
+    { name = "workspace_notes", state = { active_workspace = "notes" } },
+    { name = "workspace_media", state = { active_workspace = "media" } },
+    { name = "workspace_attention", state = { active_workspace = "attention" } },
+    { name = "workspace_system", state = { active_workspace = "system" } },
+    { name = "workspace_apps", state = { active_workspace = "apps" } },
+    { name = "workspace_agent", state = { active_workspace = "agent" } },
+    { name = "command_panel", state = { shell_panel = "command" } },
+    { name = "agent_overlay", state = { shell_panel = "agent" } },
+}
+
+local function text(value: any, size: number, color: number?, semantics: Semantics?, id: string?): SceneNode
     return {
         id = id,
         content = { kind = "text", value = tostring(value), size = size, color = color or ink },
@@ -43,34 +78,53 @@ local function text(value, size, color, semantics, id)
     }
 end
 
-local function group(flow, layout, children, background, radius, id, tap_action, tap_label)
-    layout = layout or {}
-    layout.flow = flow
+local function group(
+    flow: "overlay" | "column" | "row",
+    layout: Layout?,
+    children: {SceneNode},
+    background: number?,
+    radius: number?,
+    id: string?,
+    tap_action: string?,
+    tap_label: string?
+): SceneNode
+    local resolved_layout: Layout = layout or {}
+    resolved_layout.flow = flow
+    local paint: {PaintOp}? = nil
+    local interaction: Interaction? = nil
+    local node_semantics: Semantics? = nil
+    if background ~= nil then
+        paint = ({{ kind = "fill_bounds", color = background, radius = radius or 0 }} :: {PaintOp})
+    end
+    if tap_action ~= nil then
+        interaction = ({ tap_action = tap_action } :: Interaction)
+        node_semantics = ({ role = "button", label = tap_label or tap_action } :: Semantics)
+    end
     return {
         id = id,
-        layout = layout,
-        paint = background and {{ kind = "fill_bounds", color = background, radius = radius or 0 }} or nil,
-        interaction = tap_action and { tap_action = tap_action } or nil,
-        semantics = tap_action and { role = "button", label = tap_label or tap_action } or nil,
+        layout = resolved_layout,
+        paint = paint,
+        interaction = interaction,
+        semantics = node_semantics,
         children = children,
     }
 end
 
-local function button(label, action, tone, id, active)
+local function button(label: string, action: string, tone: number?, id: string?, active: boolean?): SceneNode
     return group("row", { padding = 10, justify = "center", align = "center" }, {
         text(label, 11, active and white or (tone or moss)),
     }, active and moss or white, 12, id or action, action, label)
 end
 
-local function card(id, children, layout, background)
-    layout = layout or {}
-    layout.padding = layout.padding or 16
-    layout.gap = layout.gap or 8
-    return group("column", layout, children, background or white, 18, id)
+local function card(id: string, children: {SceneNode}, layout: Layout?, background: number?): SceneNode
+    local resolved_layout: Layout = layout or {}
+    resolved_layout.padding = resolved_layout.padding or 16
+    resolved_layout.gap = resolved_layout.gap or 8
+    return group("column", resolved_layout, children, background or white, 18, id)
 end
 
-local function heading(title, subtitle, id)
-    local children = {
+local function heading(title: string, subtitle: string?, id: string?): SceneNode
+    local children: {SceneNode} = {
         text(title, 26, ink, { role = "header", label = title }, id),
     }
     if subtitle and subtitle ~= "" then
@@ -79,25 +133,32 @@ local function heading(title, subtitle, id)
     return group("column", { gap = 4 }, children)
 end
 
-local function empty_state(id, title, detail)
+local function empty_state(id: string, title: string, detail: string): SceneNode
     return card(id, {
         text(title, 15, ink, { role = "status", label = title }, id .. "-status"),
         text(detail, 12, muted),
     }, { padding = 18, gap = 4 }, panel)
 end
 
-local function has_capability(providers, expected)
-    for _, capability in ipairs(providers.capabilities or {}) do
+local function has_capability(providers: SystemProviders, expected: string): boolean
+    for _, capability in ipairs(providers.capabilities) do
         if capability == expected then return true end
     end
     return false
 end
 
-local function providers_available(providers)
+local function providers_available(providers: SystemProviders): boolean
     return (providers.abi_version or 0) > 0
 end
 
-local function active_workspace(state)
+local function window_has_capability(window: ShellWindow, expected: string): boolean
+    for _, capability in ipairs(window.capabilities) do
+        if capability == expected then return true end
+    end
+    return false
+end
+
+local function active_workspace(state: ExperienceState): string
     local requested = state.active_workspace or "home"
     for _, workspace in ipairs(workspace_order) do
         if workspace.id == requested then return requested end
@@ -105,9 +166,9 @@ local function active_workspace(state)
     return "home"
 end
 
-local function stock_header(providers)
-    local clock = providers.clock or {}
-    local mark = {
+local function _stock_header(providers: SystemProviders): SceneNode
+    local clock = providers.clock
+    local mark: SceneNode = {
         id = "stock-mark",
         layout = { width = 34, height = 34 },
         content = { kind = "image", asset = "stock_mark" },
@@ -131,9 +192,9 @@ local function stock_header(providers)
     }, nil, 0, "stock-header")
 end
 
-local function workspace_navigation(state)
+local function workspace_navigation(state: ExperienceState): SceneNode
     local active = active_workspace(state)
-    local children = {}
+    local children: {SceneNode} = {}
     for _, workspace in ipairs(workspace_order) do
         table.insert(children, button(workspace.label, "navigate_" .. workspace.id, moss,
             "workspace-nav-" .. workspace.id, active == workspace.id))
@@ -141,8 +202,8 @@ local function workspace_navigation(state)
     return group("row", { wrap = true, gap = 7 }, children, nil, 0, "workspace-navigation")
 end
 
-local function power_summary(providers)
-    local power = providers.power or {}
+local function power_summary(providers: SystemProviders): string
+    local power = providers.power
     if not providers_available(providers) or power.battery_percent == nil then
         return "Power unavailable"
     end
@@ -150,17 +211,17 @@ local function power_summary(providers)
     return tostring(power.battery_percent) .. "%" .. suffix
 end
 
-local function network_summary(providers)
+local function network_summary(providers: SystemProviders): string
     if not providers_available(providers) then return "Connectivity unavailable" end
-    local connectivity = providers.connectivity or {}
+    local connectivity = providers.connectivity
     if not connectivity.connected then return "Offline" end
     local state = connectivity.validated and "Online" or "Connected"
     if connectivity.network_label ~= "" then state = state .. " · " .. connectivity.network_label end
     return state
 end
 
-local function audio_summary(providers)
-    local audio = providers.audio or {}
+local function audio_summary(providers: SystemProviders): string
+    local audio = providers.audio
     if not providers_available(providers) or audio.volume_percent == nil then
         return "Audio unavailable"
     end
@@ -168,14 +229,14 @@ local function audio_summary(providers)
     return tostring(audio.volume_percent) .. "%" .. suffix
 end
 
-local function status_plane(providers)
-    local clock = providers.clock or {}
+local function status_plane(providers: SystemProviders): SceneNode
+    local clock = providers.clock
     local facts = {
         { id = "stock-power", label = "POWER", value = power_summary(providers) },
         { id = "stock-network", label = "NETWORK", value = network_summary(providers) },
         { id = "stock-audio", label = "AUDIO", value = audio_summary(providers) },
     }
-    local cards = {}
+    local cards: {SceneNode} = {}
     for _, fact in ipairs(facts) do
         table.insert(cards, card(fact.id .. "-card", {
             text(fact.label, 10, moss),
@@ -196,9 +257,9 @@ local function status_plane(providers)
     }, mint, 22, "status-plane")
 end
 
-local function agenda_preview(model)
-    local events = model.calendar or {}
-    local children = {
+local function agenda_preview(model: ExperienceModel): SceneNode
+    local events = model.calendar
+    local children: {SceneNode} = {
         group("row", { justify = "between", align = "center" }, {
             text("NEXT UP", 11, moss),
             text(tostring(#events) .. " events", 10, muted),
@@ -216,9 +277,9 @@ local function agenda_preview(model)
     return card("home-agenda", children, { width = 760 })
 end
 
-local function notes_preview(model)
-    local notes = model.notes or {}
-    local children = {
+local function notes_preview(model: ExperienceModel): SceneNode
+    local notes = model.notes
+    local children: {SceneNode} = {
         group("row", { justify = "between", align = "center" }, {
             text("NOTES & DOCUMENTS", 11, moss),
             text(tostring(#notes) .. " items", 10, muted),
@@ -234,21 +295,24 @@ local function notes_preview(model)
     return card("home-notes", children, { width = 760 })
 end
 
-local function current_media(model, providers)
-    local media = ((providers.audio or {}).media or {})
+local function current_media(
+    model: ExperienceModel,
+    providers: SystemProviders
+): (string?, string?, boolean)
+    local media = providers.audio.media
     if providers_available(providers) and media.active then
         return media.title ~= "" and media.title or "Active media", media.artist or "", media.playing
     end
-    local legacy = model.music or {}
+    local legacy = model.music
     if legacy.title and legacy.title ~= "" then
         return legacy.title, legacy.artist or "", legacy.playing
     end
     return nil, nil, false
 end
 
-local function media_preview(model, providers)
+local function media_preview(model: ExperienceModel, providers: SystemProviders): SceneNode
     local title, artist, playing = current_media(model, providers)
-    local children = { text("NOW PLAYING", 11, moss) }
+    local children: {SceneNode} = { text("NOW PLAYING", 11, moss) }
     if title == nil then
         table.insert(children, text("No media session is available.", 13, muted))
     else
@@ -260,10 +324,10 @@ local function media_preview(model, providers)
     return card("home-media", children, { width = 760 })
 end
 
-local function attention_preview(providers)
-    local attention = providers.attention or {}
-    local items = attention.items or {}
-    local children = {
+local function attention_preview(providers: SystemProviders): SceneNode
+    local attention = providers.attention
+    local items = attention.items
+    local children: {SceneNode} = {
         group("row", { justify = "between", align = "center" }, {
             text("ATTENTION", 11, moss),
             text(tostring(attention.urgent_count or 0) .. " urgent", 10,
@@ -283,7 +347,7 @@ local function attention_preview(providers)
     return card("home-attention", children, { width = 760 })
 end
 
-local function home_workspace(model, state, providers)
+local function home_workspace(model: ExperienceModel, state: ExperienceState, providers: SystemProviders): SceneNode
     return group("column", { gap = 16 }, {
         status_plane(providers),
         heading("Home", "A responsive workspace assembled entirely by this Luau revision.",
@@ -300,8 +364,8 @@ local function home_workspace(model, state, providers)
     }, nil, 0, "workspace-home")
 end
 
-local function agenda_workspace(model, state)
-    local rows = {
+local function agenda_workspace(model: ExperienceModel, state: ExperienceState): SceneNode
+    local rows: {SceneNode} = {
         heading("Agenda", "Calendar content stays behind a provider; the layout stays replaceable.",
             "agenda-heading"),
         {
@@ -321,7 +385,7 @@ local function agenda_workspace(model, state)
         text(state.agenda_error or "Use HH:MM followed by a title.", 10,
             state.agenda_error and alert or muted, nil, "agenda-composer-status"),
     }
-    local events = model.calendar or {}
+    local events = model.calendar
     if #events == 0 then
         table.insert(rows, empty_state("agenda-empty", "No events yet",
             "Your calendar is empty or its provider has no readable items."))
@@ -340,9 +404,9 @@ local function agenda_workspace(model, state)
     return group("column", { gap = 10 }, rows, nil, 0, "workspace-agenda")
 end
 
-local function notes_workspace(model, state)
+local function notes_workspace(model: ExperienceModel, state: ExperienceState): SceneNode
     local note_status = state.note_status or "The first line becomes the note title."
-    local rows = {
+    local rows: {SceneNode} = {
         heading("Notes & documents", "Quick capture backed by the notes provider.", "notes-heading"),
         {
             id = "note-composer",
@@ -360,12 +424,12 @@ local function notes_workspace(model, state)
         text(note_status, 10, state.note_error and alert or muted,
             { role = "status", label = note_status }, "note-composer-status"),
     }
-    local notes = model.notes or {}
+    local notes = model.notes
     if #notes == 0 then
         table.insert(rows, empty_state("notes-empty", "No notes yet",
             "Capture a thought above, or connect a notes provider."))
     end
-    local cards = {}
+    local cards: {SceneNode} = {}
     for index, note in ipairs(notes) do
         if index > 32 then break end
         table.insert(cards, card("note-" .. tostring(index), {
@@ -382,11 +446,11 @@ local function notes_workspace(model, state)
     return group("column", { gap = 10 }, rows, nil, 0, "workspace-notes")
 end
 
-local function media_controls(model, providers)
-    local media = ((providers.audio or {}).media or {})
+local function media_controls(model: ExperienceModel, providers: SystemProviders): {SceneNode}
+    local media = providers.audio.media
     local canonical = providers_available(providers) and media.active
-    local legacy = (model.music or {}).title ~= ""
-    local controls = {}
+    local legacy = model.music.title ~= ""
+    local controls: {SceneNode} = {}
     if canonical then
         if has_capability(providers, "media_previous") then
             table.insert(controls, button("PREVIOUS", "media_previous", moss))
@@ -399,16 +463,16 @@ local function media_controls(model, providers)
         end
     elseif legacy then
         table.insert(controls, button("PREVIOUS", "media_previous", moss))
-        table.insert(controls, button((model.music or {}).playing and "PAUSE" or "PLAY",
+        table.insert(controls, button(model.music.playing and "PAUSE" or "PLAY",
             "media_play_pause", moss))
         table.insert(controls, button("NEXT", "media_next", moss))
     end
     return controls
 end
 
-local function media_workspace(model, providers)
+local function media_workspace(model: ExperienceModel, providers: SystemProviders): SceneNode
     local title, artist, playing = current_media(model, providers)
-    local children = {
+    local children: {SceneNode} = {
         heading("Media", "MPRIS and platform media sessions stay behind one typed contract.",
             "media-heading"),
     }
@@ -433,13 +497,13 @@ local function media_workspace(model, providers)
     return group("column", { gap = 12 }, children, nil, 0, "workspace-media")
 end
 
-local function attention_workspace(providers)
-    local attention = providers.attention or {}
-    local rows = {
+local function attention_workspace(providers: SystemProviders): SceneNode
+    local attention = providers.attention
+    local rows: {SceneNode} = {
         heading("Attention center", "Notifications, alarms, calls, and background work in one place.",
             "attention-heading"),
     }
-    local items = attention.items or {}
+    local items = attention.items
     if not providers_available(providers) then
         table.insert(rows, empty_state("attention-unavailable", "Attention provider unavailable",
             "This system has not exposed the attention contract."))
@@ -451,7 +515,7 @@ local function attention_workspace(providers)
         if index > 32 then break end
         local title = item.title ~= "" and item.title or item.kind
         local can_acknowledge = has_capability(providers, "attention_acknowledge")
-        local children = {
+        local children: {SceneNode} = {
             group("row", { justify = "between", gap = 10 }, {
                 text(item.source, 10, item.urgent and alert or moss),
                 text(item.urgent and "URGENT" or string.upper(item.kind), 10,
@@ -472,8 +536,8 @@ local function attention_workspace(providers)
     return group("column", { gap = 10 }, rows, nil, 0, "workspace-attention")
 end
 
-local function system_workspace(providers)
-    local rows = {
+local function system_workspace(providers: SystemProviders): SceneNode
+    local rows: {SceneNode} = {
         heading("System controls", "Connectivity, power, audio, and media through provider effects.",
             "system-heading"),
     }
@@ -483,7 +547,7 @@ local function system_workspace(providers)
         return group("column", { gap = 10 }, rows, nil, 0, "workspace-system")
     end
 
-    local power = providers.power or {}
+    local power = providers.power
     table.insert(rows, card("system-power", {
         text("POWER", 10, moss),
         text(power_summary(providers), 20, ink),
@@ -493,11 +557,11 @@ local function system_workspace(providers)
             or "Charging source unavailable", 11, muted),
     }))
 
-    local audio = providers.audio or {}
-    local audio_children = {
+    local audio = providers.audio
+    local audio_children: {SceneNode} = {
         text("AUDIO", 10, moss), text(audio_summary(providers), 20, ink),
     }
-    local audio_buttons = {}
+    local audio_buttons: {SceneNode} = {}
     if has_capability(providers, "audio_set_volume") then
         table.insert(audio_buttons, button("VOLUME −", "audio_volume_down", moss))
         table.insert(audio_buttons, button("VOLUME +", "audio_volume_up", moss))
@@ -513,14 +577,14 @@ local function system_workspace(providers)
     end
     table.insert(rows, card("system-audio", audio_children))
 
-    local connectivity = providers.connectivity or {}
-    local network_children = {
+    local connectivity = providers.connectivity
+    local network_children: {SceneNode} = {
         text("CONNECTIVITY", 10, moss), text(network_summary(providers), 20, ink),
     }
     if connectivity.connected and has_capability(providers, "wifi_disconnect") then
         table.insert(network_children, button("DISCONNECT WI-FI", "wifi_disconnect", alert))
     end
-    local networks = connectivity.wifi_networks or {}
+    local networks = connectivity.wifi_networks
     if #networks == 0 then
         table.insert(network_children, text(connectivity.wifi_enabled and "No saved networks found"
             or "Wi-Fi is unavailable", 11, muted))
@@ -545,12 +609,12 @@ local function system_workspace(providers)
     return group("column", { gap = 10 }, rows, nil, 0, "workspace-system")
 end
 
-local function apps_workspace(providers)
-    local rows = {
+local function apps_workspace(providers: SystemProviders): SceneNode
+    local rows: {SceneNode} = {
         heading("Applications", "Only provider-approved, compatible launch targets appear here.",
             "apps-heading"),
     }
-    local applications = ((providers.apps or {}).compatible or {})
+    local applications = providers.apps.compatible
     if not providers_available(providers) then
         table.insert(rows, empty_state("apps-unavailable", "Application provider unavailable",
             "Launching is disabled, but the rest of Stock Base remains usable."))
@@ -558,7 +622,7 @@ local function apps_workspace(providers)
         table.insert(rows, empty_state("apps-empty", "No compatible applications",
             "Eligible applications will appear when the provider discovers them."))
     end
-    local cards = {}
+    local cards: {SceneNode} = {}
     for index, application in ipairs(applications) do
         if index > 48 then break end
         local can_launch = has_capability(providers, "app_launch")
@@ -580,21 +644,20 @@ local function apps_workspace(providers)
     return group("column", { gap = 10 }, rows, nil, 0, "workspace-apps")
 end
 
-local function has_agent_configuration_action(agent, action)
-    for _, supported in ipairs(agent.configuration_actions or {}) do
+local function has_agent_configuration_action(agent: AgentConversation, action: string): boolean
+    for _, supported in ipairs(agent.configuration_actions) do
         if supported == action then return true end
     end
     return false
 end
 
-local function agent_workspace(model, state, scope)
-    scope = scope or "workspace"
-    local function agent_id(id)
+local function agent_workspace(model: ExperienceModel, state: ExperienceState, scope: string): SceneNode
+    local function agent_id(id: string): string
         if scope == "workspace" then return id end
         return scope .. "-" .. id
     end
-    local agent = model.agent or {}
-    local children = {
+    local agent = model.agent
+    local children: {SceneNode} = {
         heading("Agent", "Conversation is part of the revision, while credentials stay native.",
             agent_id("agent-heading")),
         group("row", { justify = "between", align = "center" }, {
@@ -603,8 +666,8 @@ local function agent_workspace(model, state, scope)
                 or (agent.available and "Ready" or "Unavailable"), 10, muted),
         }),
     }
-    local messages = {}
-    for index, message in ipairs(agent.messages or {}) do
+    local messages: {SceneNode} = {}
+    for index, message in ipairs(agent.messages) do
         if index > 24 then break end
         table.insert(messages, card(agent_id("agent-message-" .. tostring(index)), {
             text(message.role == "user" and "YOU" or "SOS", 10, moss),
@@ -618,7 +681,7 @@ local function agent_workspace(model, state, scope)
     table.insert(children, group("column", { gap = 7 }, messages, nil, 0,
         agent_id("agent-messages")))
     local draft = state.agent_draft or ""
-    table.insert(children, {
+    table.insert(children, ({
         id = agent_id("agent-prompt"),
         layout = { height = 50, padding = 10 },
         content = {
@@ -631,8 +694,8 @@ local function agent_workspace(model, state, scope)
             role = "text_field", label = "Ask SOS to change this experience", value = draft,
             hint = "Type a request and press enter",
         },
-    })
-    local controls = {}
+    } :: SceneNode))
+    local controls: {SceneNode} = {}
     local configurations = {
         { capability = "configure_openai", label = "OPENAI", action = "agent_configure_openai" },
         { capability = "configure_openrouter", label = "OPENROUTER", action = "agent_configure_openrouter" },
@@ -658,7 +721,7 @@ local function agent_workspace(model, state, scope)
         agent_id("workspace-agent"))
 end
 
-local function render_workspace(model, state, providers)
+local function render_workspace(model: ExperienceModel, state: ExperienceState, providers: SystemProviders): SceneNode
     local active = active_workspace(state)
     if active == "agenda" then return agenda_workspace(model, state) end
     if active == "notes" then return notes_workspace(model, state) end
@@ -670,9 +733,9 @@ local function render_workspace(model, state, providers)
     return home_workspace(model, state, providers)
 end
 
-local function app_status_widgets(providers)
-    local children = {}
-    local widgets = ((providers.apps or {}).status_widgets or {})
+local function app_status_widgets(providers: SystemProviders): {SceneNode}
+    local children: {SceneNode} = {}
+    local widgets: {ApplicationStatusWidget} = providers.apps.status_widgets or {}
     for index, widget in ipairs(widgets) do
         if index > 4 then break end
         local label = widget.label or "APP"
@@ -690,9 +753,9 @@ local function app_status_widgets(providers)
     return children
 end
 
-local function shell_top_bar(model, state, providers)
-    local clock = providers.clock or {}
-    local attention = providers.attention or {}
+local function shell_top_bar(model: ExperienceModel, state: ExperienceState, providers: SystemProviders): SceneNode
+    local clock = providers.clock
+    local attention = providers.attention
     local active = string.upper(active_workspace(state))
     local widgets = app_status_widgets(providers)
     table.insert(widgets, button(audio_summary(providers),
@@ -731,9 +794,13 @@ local function shell_top_bar(model, state, providers)
     }, white, 0, "shell-top-bar")
 end
 
-local function command_center(providers, state)
-    local applications = ((providers.apps or {}).compatible or {})
-    local rows = {
+local function command_center(
+    model: ExperienceModel,
+    providers: SystemProviders,
+    state: ExperienceState
+): SceneNode
+    local applications = providers.apps.compatible
+    local rows: {SceneNode} = {
         group("row", { justify = "between", align = "center" }, {
             text("COMMAND CENTER", 12, moss,
                 { role = "header", label = "Command center" }, "command-center-title"),
@@ -750,8 +817,36 @@ local function command_center(providers, state)
             button("SCROLL", "window_layout_scrolling", moss, "window-layout-scrolling",
                 state.window_layout == "scrolling"),
         }),
+        text("OPEN WINDOWS", 9, muted),
         text("APPLICATIONS", 9, muted),
     }
+    if model.shell.abi_version == 0 then
+        table.insert(rows, text("Window observations unavailable", 10, muted))
+    elseif #model.shell.windows == 0 then
+        table.insert(rows, text("No application windows are open", 10, muted))
+    end
+    for index, window in ipairs(model.shell.windows) do
+        if index > 32 then break end
+        local controls: {SceneNode} = {}
+        if window_has_capability(window, "focus") then
+            table.insert(controls, button(window.active and "ACTIVE" or "FOCUS",
+                "shell_window_focus_" .. tostring(index), moss,
+                "shell-window-focus-" .. tostring(index), window.active))
+        end
+        if window_has_capability(window, "close") then
+            table.insert(controls, button("CLOSE", "shell_window_close_" .. tostring(index),
+                alert, "shell-window-close-" .. tostring(index)))
+        end
+        table.insert(rows, group("row", {
+            padding = 10, gap = 8, align = "center", justify = "between",
+        }, {
+            group("column", { gap = 2, grow = true }, {
+                text(window.title, 12, ink),
+                text(string.upper(window.kind), 9, muted),
+            }),
+            group("row", { gap = 5 }, controls),
+        }, white, 12, "shell-window-" .. tostring(index)))
+    end
     if not providers_available(providers) then
         table.insert(rows, empty_state("command-apps-unavailable", "Applications unavailable",
             "The application provider is not connected."))
@@ -775,11 +870,11 @@ local function command_center(providers, state)
         panel, 0, "shell-command-center")
 end
 
-local function shell_rail(model, state, providers)
+local function shell_rail(model: ExperienceModel, state: ExperienceState, providers: SystemProviders): SceneNode
     local panel_name = state.shell_panel
     if panel_name == "command" then
         return group("column", { width = 390, program = { measure_height = 1 } }, {
-            command_center(providers, state),
+            command_center(model, providers, state),
         }, panel, 0, "shell-rail-command")
     elseif panel_name == "agent" then
         return group("column", {
@@ -807,10 +902,12 @@ local function shell_rail(model, state, providers)
     }, white, 0, "shell-rail")
 end
 
-local function agent_overlay(model, state)
+local function agent_overlay(model: ExperienceModel, state: ExperienceState): SceneNode
     local hovered = state.agent_overlay_hovered == true
-    local bubble_x = state.agent_overlay_x or 1838
-    local bubble_y = state.agent_overlay_y or 990
+    local positioned = type(state.agent_overlay_x) == "number"
+        and type(state.agent_overlay_y) == "number"
+    local bubble_x: number = positioned and (state.agent_overlay_x :: number) or 0
+    local bubble_y: number = positioned and (state.agent_overlay_y :: number) or 0
     local above = bubble_y >= 96
     local width = hovered and 430 or 64
     local height = hovered and 146 or 64
@@ -818,18 +915,18 @@ local function agent_overlay(model, state)
     local y = hovered and (above and (bubble_y - (height - 64)) or bubble_y) or bubble_y
     local bubble = group("row", {
         width = 64, height = 64, justify = "center", align = "center",
-    }, { text((model.agent or {}).busy and "…" or "✦", 24, white) }, moss, 32,
+    }, { text(model.agent.busy and "…" or "✦", 24, white) }, moss, 32,
         "agent-overlay-bubble", "toggle_agent_panel", "Open the SOS agent")
-    bubble.interaction.surface_drag = true
+    if bubble.interaction ~= nil then bubble.interaction.surface_drag = true end
     local composer = group("column", { width = 430, height = 82, padding = 8, gap = 5 }, {
-        text((model.agent or {}).busy and "SOS IS WORKING" or "ASK SOS", 9, moss),
+        text(model.agent.busy and "SOS IS WORKING" or "ASK SOS", 9, moss),
         {
             id = "overlay-agent-prompt",
             layout = { height = 48, padding = 8 },
             content = {
                 kind = "text_session", state_key = "agent_draft",
                 value = state.agent_draft or "",
-                placeholder = (model.agent or {}).busy and "Working…" or "Change this experience…",
+                placeholder = model.agent.busy and "Working…" or "Change this experience…",
                 submit_action = "agent_submit",
             },
             paint = {{ kind = "fill_bounds", color = white, radius = 13 }},
@@ -839,29 +936,32 @@ local function agent_overlay(model, state)
             },
         },
     }, panel, 16, "agent-overlay-composer")
-    local children
-    local flow = "column"
+    local children: {SceneNode}
     if not hovered then
         children = { bubble }
     elseif above then
-        flow = "overlay"
-        composer.layout.position = { x = 0, y = 0 }
-        bubble.layout.position = { x = (width - 64) / 2, y = height - 64 }
+        if composer.layout ~= nil then composer.layout.position = { x = 0, y = 0 } end
+        if bubble.layout ~= nil then bubble.layout.position = { x = (width - 64) / 2, y = height - 64 } end
         children = { composer, bubble }
     else
-        flow = "overlay"
-        bubble.layout.position = { x = (width - 64) / 2, y = 0 }
-        composer.layout.position = { x = 0, y = 64 }
+        if bubble.layout ~= nil then bubble.layout.position = { x = (width - 64) / 2, y = 0 } end
+        if composer.layout ~= nil then composer.layout.position = { x = 0, y = 64 } end
         children = { bubble, composer }
+    end
+    local placement: ShellOverlayPlacement? = nil
+    local anchor: ShellOverlayAnchor? = nil
+    if positioned then
+        anchor = ({ x = bubble_x, y = bubble_y, width = 64, height = 64, above = above } :: ShellOverlayAnchor)
+    else
+        placement = ({ horizontal = "end", vertical = "end", margin = 18 } :: ShellOverlayPlacement)
     end
     return {
         id = "agent-overlay",
-        layout = { width = width, height = height, flow = flow },
+        layout = { width = width, height = height, flow = "overlay" },
         content = {
             kind = "shell_overlay", x = x, y = y, width = width, height = height,
-            anchor = {
-                x = bubble_x, y = bubble_y, width = 64, height = 64, above = above,
-            },
+            placement = placement,
+            anchor = anchor,
         },
         interaction = { hover_action = "agent_overlay_hover" },
         semantics = { role = "status", label = "SOS agent overlay" },
@@ -869,7 +969,7 @@ local function agent_overlay(model, state)
     }
 end
 
-local function shell_window_space(model, state, providers)
+local function shell_window_space(model: ExperienceModel, state: ExperienceState, providers: SystemProviders): SceneNode
     return {
         id = "shell-window-space",
         layout = { grow = true, min_width = 320, min_height = 240, clip_bounds = true },
@@ -882,7 +982,7 @@ local function shell_window_space(model, state, providers)
     }
 end
 
-local function stock_application(model, state, providers)
+local function stock_application(model: ExperienceModel, state: ExperienceState, providers: SystemProviders): SceneNode
     local workspace = active_workspace(state)
     local chrome = group("row", { justify = "between", align = "center", gap = 12 }, {
         text("SOS NATIVE EXPERIENCE", 9, moss),
@@ -911,8 +1011,8 @@ local function stock_application(model, state, providers)
     }
 end
 
-local function render(model, state)
-    local providers = model.providers or {}
+local function render(model: ExperienceModel, state: ExperienceState): SceneNode
+    local providers = model.providers
     return group("column", { program = { measure_width = 1, measure_height = 1 } }, {
         shell_top_bar(model, state, providers),
         group("row", { grow = true, program = { measure_width = 1 } }, {
@@ -924,21 +1024,38 @@ local function render(model, state)
     }, paper, 0, "stock-experience-root")
 end
 
-local function provider_effect(provider, action, payload, state)
+local function provider_effect(
+    provider: string,
+    action: string,
+    payload: JsonValue?,
+    state: ExperienceState
+): UpdateOutcome
     return { state = state, effects = {{ provider = provider, action = action, payload = payload }} }
 end
 
-local function update(model, state, event)
-    local providers = model.providers or {}
-    local audio = providers.audio or {}
-    local connectivity = providers.connectivity or {}
+local function update(
+    model: ExperienceModel,
+    state: ExperienceState,
+    event: SceneEvent
+): ExperienceState | UpdateOutcome
+    local providers = model.providers
+    local audio = providers.audio
+    local connectivity = providers.connectivity
     local action = event.action or ""
 
     if action == "toggle_command_center" then
-        state.shell_panel = state.shell_panel == "command" and nil or "command"
+        if state.shell_panel == "command" then
+            state.shell_panel = nil
+        else
+            state.shell_panel = "command"
+        end
         return state
     elseif action == "toggle_agent_panel" or action == "shell_overlay_activated" then
-        state.shell_panel = state.shell_panel == "agent" and nil or "agent"
+        if state.shell_panel == "agent" then
+            state.shell_panel = nil
+        else
+            state.shell_panel = "agent"
+        end
         return state
     elseif action == "close_shell_panel" then
         state.shell_panel = nil
@@ -979,7 +1096,7 @@ local function update(model, state, event)
     elseif action == "audio_toggle_mute" then
         return provider_effect("audio", "set_muted", { muted = not (audio.muted == true) }, state)
     elseif action == "media_play_pause" or action == "media_next" or action == "media_previous" then
-        local media = audio.media or {}
+        local media = audio.media
         if providers_available(providers) and media.active then
             local canonical = action == "media_play_pause" and "play_pause"
                 or (action == "media_next" and "next" or "previous")
@@ -1014,7 +1131,7 @@ local function update(model, state, event)
         state.agenda_draft = ""
         state.agenda_error = nil
         state.agenda_sequence = (state.agenda_sequence or 0) + 1
-        local stamp = tostring(((providers.clock or {}).unix_time_ms or 0))
+        local stamp = tostring(providers.clock.unix_time_ms or 0)
         return provider_effect("calendar", "append", {
             name = "stock-event-" .. stamp .. "-" .. tostring(state.agenda_sequence),
             time = time, title = title, detail = "Created from SOS Stock Base",
@@ -1033,12 +1150,12 @@ local function update(model, state, event)
         state.note_error = nil
         state.note_status = "Saved “" .. title .. "”."
         state.note_sequence = (state.note_sequence or 0) + 1
-        local stamp = tostring(((providers.clock or {}).unix_time_ms or 0))
+        local stamp = tostring(providers.clock.unix_time_ms or 0)
         return provider_effect("notes", "write", {
             name = "stock-note-" .. stamp .. "-" .. tostring(state.note_sequence),
             content = "# " .. title .. "\n\n" .. draft,
         }, state)
-    elseif action == "agent_submit" and not ((model.agent or {}).busy) then
+    elseif action == "agent_submit" and not model.agent.busy then
         local prompt = event.value or state.agent_draft or ""
         if prompt ~= "" then
             state.agent_draft = ""
@@ -1056,26 +1173,37 @@ local function update(model, state, event)
         return provider_effect("agent", "clear_credential", nil, state)
     end
 
-    local network_index = string.match(action, "^wifi_connect_(%d+)$")
-    local network = network_index and (connectivity.wifi_networks or {})[tonumber(network_index)] or nil
+    local network_index = tonumber(string.match(action, "^wifi_connect_(%d+)$"))
+    local network = network_index and connectivity.wifi_networks[network_index] or nil
     if network then
         return provider_effect("network", "connect", { network_id = network.id }, state)
     end
-    local app_index = string.match(action, "^app_launch_(%d+)$")
-    local application = app_index and (((providers.apps or {}).compatible or {})[tonumber(app_index)]) or nil
+    local app_index = tonumber(string.match(action, "^app_launch_(%d+)$"))
+    local application = app_index and providers.apps.compatible[app_index] or nil
     if application then
         return provider_effect("apps", "launch", { app_id = application.id }, state)
     end
-    local widget_index = string.match(action, "^shell_app_widget_(%d+)$")
+    local status_widgets: {ApplicationStatusWidget} = providers.apps.status_widgets or {}
+    local widget_index = tonumber(string.match(action, "^shell_app_widget_(%d+)$"))
     local widget = widget_index
-        and (((providers.apps or {}).status_widgets or {})[tonumber(widget_index)]) or nil
+        and status_widgets[widget_index] or nil
     if widget and widget.application_id and has_capability(providers, "app_launch") then
         return provider_effect("apps", "launch", { app_id = widget.application_id }, state)
     end
-    local attention_index = string.match(action, "^attention_ack_(%d+)$")
-    local item = attention_index and (((providers.attention or {}).items or {})[tonumber(attention_index)]) or nil
+    local attention_index = tonumber(string.match(action, "^attention_ack_(%d+)$"))
+    local item = attention_index and providers.attention.items[attention_index] or nil
     if item then
         return provider_effect("attention", "acknowledge", { attention_id = item.id }, state)
+    end
+    local focus_index = tonumber(string.match(action, "^shell_window_focus_(%d+)$"))
+    local focus_window = focus_index and model.shell.windows[focus_index] or nil
+    if focus_window and window_has_capability(focus_window, "focus") then
+        return provider_effect("shell", "focus_window", { window_id = focus_window.id }, state)
+    end
+    local close_index = tonumber(string.match(action, "^shell_window_close_(%d+)$"))
+    local close_window = close_index and model.shell.windows[close_index] or nil
+    if close_window and window_has_capability(close_window, "close") then
+        return provider_effect("shell", "close_window", { window_id = close_window.id }, state)
     end
     return state
 end
@@ -1084,6 +1212,7 @@ return {
     api_version = 3,
     state_version = 1,
     assets = assets,
+    validation_scenarios = validation_scenarios,
     render = render,
     update = update,
 }

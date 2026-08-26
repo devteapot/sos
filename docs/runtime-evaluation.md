@@ -93,8 +93,14 @@ rare permanent-host updates, not the conversational experience loop.
 - Retain the prior accepted source and state envelope for immediate rollback.
 
 Luau's strict annotations help authoring but are not a runtime security
-boundary. Static analysis belongs in workstation/CI tooling; the Rust decoder
-and transactional swap remain authoritative on-device.
+boundary. Workstation/CI tooling now prepends the canonical API v3 type prelude
+and runs the official Luau analyzer pinned at tag `0.728`, commit
+`ddcea05e1cc6f534e5eaac33325690c12f1ed274`. Every checked-in experience passes
+that analyzer. Local and resident-agent validation then render the default plus
+every declared hidden-state scenario and return per-scenario statistics and
+path-specific diagnostics. The Rust decoder, bounded VM, and transactional
+swap remain authoritative on-device; they also reject unknown keys rather than
+letting a type or field typo degrade silently.
 
 ## Vertical-slice gates
 

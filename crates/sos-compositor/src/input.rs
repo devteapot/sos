@@ -570,6 +570,7 @@ impl SosCompositor {
                             }
                         });
                         keyboard.set_focus(self, Some(surface), serial);
+                        self.publish_shell_state();
                     } else {
                         self.space.elements().for_each(|window| {
                             window.set_activated(false);
@@ -578,6 +579,7 @@ impl SosCompositor {
                             }
                         });
                         keyboard.set_focus(self, Option::<WlSurface>::None, serial);
+                        self.publish_shell_state();
                     }
                 }
                 pointer.button(

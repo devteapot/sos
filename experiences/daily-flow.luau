@@ -8,7 +8,16 @@ local muted = 0x666B73
 local coral = 0xE76F51
 local white = 0xFFFFFF
 
-local function text(value, size, color, semantics, id)
+type GroupOptions = {
+    id: string?,
+    background: number?,
+    radius: number?,
+    tap_action: string?,
+    animation: Animation?,
+    semantics: Semantics?,
+}
+
+local function text(value: any, size: number, color: number?, semantics: Semantics?, id: string?): SceneNode
     return {
         id = id,
         content = { kind = "text", value = tostring(value), size = size, color = color or ink },
@@ -16,34 +25,49 @@ local function text(value, size, color, semantics, id)
     }
 end
 
-local function group(flow, layout, children, options)
-    options = options or {}
-    layout = layout or {}
-    layout.flow = flow
+local function group(
+    flow: "overlay" | "column" | "row",
+    layout: Layout?,
+    children: {SceneNode}?,
+    options: GroupOptions?
+): SceneNode
+    local resolved_options: GroupOptions = options or {}
+    local resolved_layout: Layout = layout or {}
+    resolved_layout.flow = flow
+    local paint: {PaintOp}? = nil
+    if resolved_options.background ~= nil then
+        paint = ({{
+            kind = "fill_bounds",
+            color = resolved_options.background,
+            radius = resolved_options.radius or 0,
+        }} :: {PaintOp})
+    end
+    local interaction: Interaction? = nil
+    if resolved_options.tap_action ~= nil then
+        interaction = ({ tap_action = resolved_options.tap_action } :: Interaction)
+    end
     return {
-        id = options.id,
-        layout = layout,
-        paint = options.background and {{
-            kind = "fill_bounds", color = options.background, radius = options.radius or 0,
-        }} or nil,
-        interaction = options.tap_action and { tap_action = options.tap_action } or nil,
-        animation = options.animation,
-        semantics = options.semantics,
+        id = resolved_options.id,
+        layout = resolved_layout,
+        paint = paint,
+        interaction = interaction,
+        animation = resolved_options.animation,
+        semantics = resolved_options.semantics,
         children = children,
     }
 end
 
-local function has_agent_configuration_action(agent, action)
-    for _, supported in ipairs(agent.configuration_actions or {}) do
+local function has_agent_configuration_action(agent: AgentConversation, action: string): boolean
+    for _, supported in ipairs(agent.configuration_actions) do
         if supported == action then return true end
     end
     return false
 end
 
-local function agent_panel(model, state)
-    local agent = model.agent or {}
-    local messages = {}
-    for index, message in ipairs(agent.messages or {}) do
+local function agent_panel(model: ExperienceModel, state: ExperienceState): SceneNode
+    local agent = model.agent
+    local messages: {SceneNode} = {}
+    for index, message in ipairs(agent.messages) do
         table.insert(messages, group("column", { gap = 3, padding = 11 }, {
             text(message.role == "user" and "YOU" or "SOS", 10, coral),
             text(message.text, 13, ink, {
@@ -56,22 +80,22 @@ local function agent_panel(model, state)
         table.insert(messages, text("Describe a different rhythm, layout, or behavior.", 13, muted))
     end
     if agent.error then table.insert(messages, text(agent.error, 12, 0x9A3D36)) end
-    local draft = state.agent_draft or ""
-    table.insert(messages, {
+    local draft: string = state.agent_draft or ""
+    table.insert(messages, ({
         id = "agent-prompt",
         layout = { height = 44, padding = 9 },
-        content = {
+        content = ({
             kind = "text_session", state_key = "agent_draft", value = draft,
             placeholder = agent.busy and "SOS is working…" or "Change this experience…",
             submit_action = "agent_submit",
-        },
-        paint = {{ kind = "fill_bounds", color = 0xF0ECE4, radius = 12 }},
-        semantics = {
+        } :: TextSessionContent),
+        paint = ({{ kind = "fill_bounds", color = 0xF0ECE4, radius = 12 }} :: {PaintOp}),
+        semantics = ({
             role = "text_field", label = "Ask SOS to change this experience", value = draft,
             hint = "Type a request and press enter",
-        },
-    })
-    local children = {
+        } :: Semantics),
+    } :: SceneNode))
+    local children: {SceneNode} = {
         group("row", { justify = "between" }, {
             text("MAKE IT YOURS", 12, coral),
             text(agent.activity or (agent.available and "Ready" or "Agent unavailable"), 11, muted, {
@@ -80,7 +104,7 @@ local function agent_panel(model, state)
             }, "agent-status"),
         }),
     }
-    local primary_controls = {}
+    local primary_controls: {SceneNode} = {}
     if has_agent_configuration_action(agent, "configure_openai") then
         table.insert(primary_controls,
             group("row", { padding = 8 }, { text("OPENAI", 10, coral) }, {
@@ -102,7 +126,7 @@ local function agent_panel(model, state)
                 tap_action = "agent_configure_codex",
             }))
     end
-    local secondary_controls = {}
+    local secondary_controls: {SceneNode} = {}
     if has_agent_configuration_action(agent, "use_fake") then
         table.insert(secondary_controls,
             group("row", { padding = 8 }, { text("FAKE", 10, coral) }, {
@@ -131,8 +155,8 @@ local function agent_panel(model, state)
         { id = "agent-conversation", background = white, radius = 20 })
 end
 
-local function network_panel(model)
-    local network = model.network or {}
+local function network_panel(model: ExperienceModel): SceneNode
+    local network = model.network
     local status = "Wi-Fi off"
     if network.connected then
         status = (network.validated and "Online · " or "Connected · ")
@@ -140,7 +164,7 @@ local function network_panel(model)
     elseif network.wifi_enabled then
         status = network.activity ~= "" and network.activity or "Choose a network"
     end
-    local rows = {
+    local rows: {SceneNode} = {
         group("row", { justify = "between", align = "center" }, {
             group("column", { gap = 3, grow = true }, {
                 text("NETWORK", 11, coral),
@@ -155,7 +179,7 @@ local function network_panel(model)
         }),
     }
     if network.error then table.insert(rows, text(network.error, 12, 0x9A3D36)) end
-    for index, item in ipairs(network.networks or {}) do
+    for index, item in ipairs(network.networks) do
         if index > 6 then break end
         local suffix = item.saved and " · saved" or ""
         local security = item.security == "open" and "Open" or
@@ -184,13 +208,13 @@ local function network_panel(model)
     })
 end
 
-local function render(model, state)
+local function render(model: ExperienceModel, state: ExperienceState): SceneNode
     local draft = state.draft
     if draft == nil then draft = "Caffè ☕️ – 明日のデザイン" end
     local playing = state.playing
     if playing == nil then playing = model.music.playing end
 
-    local agenda = {}
+    local agenda: {SceneNode} = {}
     for _, event in ipairs(model.calendar) do
         table.insert(agenda, group("row", { gap = 14, padding = 12 }, {
             text(event.time, 13, coral),
@@ -200,8 +224,8 @@ local function render(model, state)
         }))
     end
 
-    local provider_surfaces = {}
-    for _, surface in ipairs(model.surfaces or {}) do
+    local provider_surfaces: {SceneNode} = {}
+    for _, surface in ipairs(model.surfaces) do
         table.insert(provider_surfaces, group("column", { gap = 6, width = 220 }, {
             {
                 id = "provider-surface-" .. surface.id,
@@ -216,7 +240,7 @@ local function render(model, state)
             text(surface.kind .. " · " .. surface.status, 11, muted),
         }))
     end
-    local system = model.system or {}
+    local system: {[string]: any} = model.system
     local audio = system.audio_volume_percent
     local system_summary = tostring(#(system.online_interfaces or {})) .. " network · "
         .. tostring(#(system.connected_displays or {})) .. " display · "
@@ -290,7 +314,11 @@ local function render(model, state)
     }, { id = "daily-flow-root", background = paper })
 end
 
-local function update(model, state, event)
+local function update(
+    model: ExperienceModel,
+    state: ExperienceState,
+    event: SceneEvent
+): ExperienceState | UpdateOutcome
     if event.action == "text_changed" and event.target == "note-draft" then
         state.draft = event.value
     elseif event.action == "text_changed" and event.target == "agent-prompt" then
@@ -327,8 +355,8 @@ local function update(model, state, event)
     elseif event.action == "wifi_disconnect" then
         return { state = state, effects = {{ provider = "network", action = "disconnect" }} }
     else
-        local index = string.match(event.action or "", "^wifi_connect_(%d+)$")
-        local selected = index and model.network and model.network.networks[tonumber(index)] or nil
+        local index = string.match(event.action, "^wifi_connect_(%d+)$")
+        local selected = index and model.network.networks[tonumber(index) or 0] or nil
         if selected then
             return { state = state, effects = {{
                 provider = "network", action = "connect",

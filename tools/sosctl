@@ -11,6 +11,11 @@ M0_ANDROID_PACKAGE="dev.gpui.mobile.example"
 M1_ANDROID_PACKAGE="dev.sos.experience"
 ANDROID_ACTIVITY="dev.gpui.mobile.GpuiActivity"
 CACHE_ROOT="$SOS_ROOT/.cache"
+LUAU_ANALYZER_TAG="0.728"
+LUAU_ANALYZER_COMMIT="ddcea05e1cc6f534e5eaac33325690c12f1ed274"
+LUAU_ANALYZER_ROOT="$CACHE_ROOT/luau-$LUAU_ANALYZER_TAG"
+LUAU_ANALYZER="$LUAU_ANALYZER_ROOT/build/luau-analyze"
+LUAU_TYPE_PRELUDE="$SOS_ROOT/types/sos-experience-api.luau"
 UPSTREAM_DIR="$CACHE_ROOT/gpui-mobile-$GPUI_SHORT_COMMIT"
 ARTIFACT_DIR="$SOS_ROOT/artifacts"
 M0_APK_PATH="$ARTIFACT_DIR/gpui-mobile-m0-$GPUI_SHORT_COMMIT.apk"
@@ -739,12 +744,131 @@ install_script() {
 
 validate_script() {
   local source_path="${1:-}"
-  [[ -n "$source_path" ]] || fail "usage: ./tools/sosctl validate <experience.luau>"
+  shift || true
+  [[ -n "$source_path" ]] || \
+    fail "usage: ./tools/sosctl validate <experience.luau> [--module ID=FILE]... [--json]"
   [[ -f "$source_path" ]] || fail "script not found: $source_path"
+  local json_output=false argument
+  for argument in "$@"; do
+    [[ "$argument" == "--json" ]] && json_output=true
+  done
+  if [[ "$json_output" == true ]]; then
+    typecheck_script "$source_path" >&2
+  else
+    typecheck_script "$source_path"
+  fi
+  local -a runtime_arguments=()
+  local specification module_path
+  while [[ "$#" -gt 0 ]]; do
+    case "$1" in
+      --json)
+        runtime_arguments+=("--json")
+        shift
+        ;;
+      --module)
+        [[ "$#" -ge 2 ]] || \
+          fail "usage: ./tools/sosctl validate <experience.luau> [--module ID=FILE]... [--json]"
+        specification="$2"
+        shift 2
+        ;;
+      --module=*)
+        specification="${1#--module=}"
+        shift
+        ;;
+      *)
+        fail "usage: ./tools/sosctl validate <experience.luau> [--module ID=FILE]... [--json]"
+        ;;
+    esac
+    if [[ -n "${specification:-}" ]]; then
+      [[ "$specification" == *=* ]] || fail "module must be ID=FILE: $specification"
+      module_path="${specification#*=}"
+      [[ -f "$module_path" ]] || fail "module script not found: $module_path"
+      if [[ "$json_output" == true ]]; then
+        typecheck_script "$module_path" >&2
+      else
+        typecheck_script "$module_path"
+      fi
+      runtime_arguments+=("--module" "$specification")
+      specification=""
+    fi
+  done
   (
     cd "$SOS_ROOT"
-    cargo run --quiet --locked -p runtime-luau --example validate -- "$source_path"
+    cargo run --quiet --locked -p runtime-luau --example validate -- \
+      "$source_path" "${runtime_arguments[@]}"
   )
+}
+
+setup_luau_analyzer() {
+  require_command git
+  require_command cmake
+  if [[ ! -d "$LUAU_ANALYZER_ROOT/.git" ]]; then
+    [[ ! -e "$LUAU_ANALYZER_ROOT" ]] || \
+      fail "Luau analyzer cache exists but is not a Git checkout: $LUAU_ANALYZER_ROOT"
+    info "fetching pinned Luau analyzer $LUAU_ANALYZER_TAG"
+    git clone --quiet --depth 1 --branch "$LUAU_ANALYZER_TAG" \
+      https://github.com/luau-lang/luau.git "$LUAU_ANALYZER_ROOT"
+  fi
+  local actual_commit
+  actual_commit="$(git -C "$LUAU_ANALYZER_ROOT" rev-parse HEAD)"
+  [[ "$actual_commit" == "$LUAU_ANALYZER_COMMIT" ]] || \
+    fail "Luau analyzer cache is not pinned commit $LUAU_ANALYZER_COMMIT (found $actual_commit)"
+  if [[ ! -x "$LUAU_ANALYZER" ]]; then
+    info "building pinned Luau analyzer"
+    cmake -S "$LUAU_ANALYZER_ROOT" -B "$LUAU_ANALYZER_ROOT/build" \
+      -DCMAKE_BUILD_TYPE=Release -DLUAU_BUILD_CLI=ON \
+      -DLUAU_BUILD_TESTS=OFF -DLUAU_BUILD_WEB=OFF >/dev/null
+    cmake --build "$LUAU_ANALYZER_ROOT/build" --target Luau.Analyze.CLI \
+      --parallel "${SOS_BUILD_JOBS:-2}" >/dev/null
+  fi
+}
+
+typecheck_script() {
+  local source_path="${1:-}"
+  [[ -f "$source_path" ]] || fail "script not found: $source_path"
+  [[ -f "$LUAU_TYPE_PRELUDE" ]] || fail "Luau type prelude not found: $LUAU_TYPE_PRELUDE"
+  setup_luau_analyzer
+
+  local source_absolute source_directory temporary prelude_lines offset output status
+  source_absolute="$(cd "$(dirname "$source_path")" && pwd)/$(basename "$source_path")"
+  source_directory="$(dirname "$source_absolute")"
+  temporary="$(mktemp "$source_directory/.sos-typecheck.XXXXXX.luau")"
+  prelude_lines="$(wc -l < "$LUAU_TYPE_PRELUDE")"
+  offset=$((prelude_lines - 1))
+  cp "$LUAU_TYPE_PRELUDE" "$temporary"
+  sed '1d' "$source_absolute" >> "$temporary"
+  if output="$("$LUAU_ANALYZER" --mode=strict --formatter=gnu "$temporary" 2>&1)"; then
+    status=0
+  else
+    status=$?
+  fi
+  rm -f "$temporary"
+
+  local line remainder line_number source_line start_tail start_column end_tail end_line end_source_line
+  while IFS= read -r line; do
+    if [[ "$line" == "$temporary:"* ]]; then
+      remainder="${line#"$temporary:"}"
+      line_number="${remainder%%.*}"
+      if [[ "$line_number" =~ ^[0-9]+$ ]]; then
+        source_line=$((line_number - offset))
+        start_tail="${remainder#*.}"
+        start_column="${start_tail%%-*}"
+        end_tail="${start_tail#*-}"
+        end_line="${end_tail%%.*}"
+        if [[ "$start_column" =~ ^[0-9]+$ && "$end_line" =~ ^[0-9]+$ ]]; then
+          end_source_line=$((end_line - offset))
+          printf '%s:%s.%s-%s.%s\n' "$source_absolute" "$source_line" "$start_column" \
+            "$end_source_line" "${end_tail#*.}"
+        else
+          printf '%s:%s.%s\n' "$source_absolute" "$source_line" "$start_tail"
+        fi
+        continue
+      fi
+    fi
+    printf '%s\n' "$line"
+  done <<< "$output"
+  [[ "$status" -eq 0 ]] || return "$status"
+  info "Luau types passed: $source_path"
 }
 
 agent_generate_script() {
@@ -1193,7 +1317,9 @@ Commands:
                       Build, start provider authority, install, launch, and follow logs.
   m1-stop             Stop SOS, its managed provider, and the ADB reverse mapping.
   script <file>       Transactionally load Luau source; no APK or restart.
-  validate <file>     Compile, evaluate, decode, and validate Luau locally.
+  validate <file> [--module ID=FILE]... [--json]
+                      Typecheck and validate every declared Luau scenario.
+  typecheck <file>    Check a Luau source against the API v3 type prelude.
   agent-apply <file>  Validate, install, await frame, and capture screenshot.
   agent-generate <request>
                       One-shot headless Codex generation (Luna, medium).
@@ -1260,8 +1386,18 @@ case "$command_name" in
     install_script "${1:-}"
     ;;
   validate)
-    [[ "$#" -eq 1 ]] || fail "usage: ./tools/sosctl validate <experience.luau>"
-    validate_script "$1"
+    [[ "$#" -ge 1 ]] || \
+      fail "usage: ./tools/sosctl validate <experience.luau> [--module ID=FILE]... [--json]"
+    validate_script "$@"
+    ;;
+  typecheck)
+    [[ "$#" -eq 1 ]] || fail "usage: ./tools/sosctl typecheck <experience.luau>"
+    typecheck_script "$1"
+    ;;
+  setup-luau-analyzer)
+    [[ "$#" -eq 0 ]] || fail "usage: ./tools/sosctl setup-luau-analyzer"
+    setup_luau_analyzer
+    info "Luau analyzer ready: $LUAU_ANALYZER"
     ;;
   agent-apply)
     [[ "$#" -eq 1 ]] || fail "usage: ./tools/sosctl agent-apply <experience.luau>"

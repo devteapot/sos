@@ -11713,3 +11713,97 @@ coordinates, stationary-pointer press synchronization, one-click Files close,
 and no-remap rail relayout on the Framework 12. The next window-management gate
 remains explicit minimize/maximize/fullscreen policy, compositor-owned keyboard
 close/focus/move commands, true scrolling navigation, and XWayland parity.
+
+## 2026-08-26 — Close the large-experience authoring API gaps
+
+**Goal:** Turn the friction observed while Codex built the large Stock
+experience into explicit API support: actionable multi-state validation,
+canonical Luau types, typo-safe decoding, responsive output placement,
+bounded application-window observation/control, and revision-local modules.
+Keep compositor and host authority closed and do not broaden the uncertain
+provider-normalization item without a concrete failing use case.
+
+**Changed:** Added a structured validation report that renders the default
+state plus up to 32 declared `validation_scenarios`, gathers every failure, and
+reports per-state node/input/image/paint/animation/semantics counts with the
+runtime stage, consuming scene path, and message. The decoder now rejects
+unknown keys through nested layout, content, paint/layer, interaction,
+animation, and semantics tables. The local validator supports text or clean
+JSON output.
+
+Added the canonical API v3 Luau type prelude and pinned the official Luau
+analyzer at tag `0.728`, commit
+`ddcea05e1cc6f534e5eaac33325690c12f1ed274`. `sosctl typecheck` and `validate`
+use it, and every checked-in experience now carries useful model/state/node/
+event/effect annotations. Stock declares nine hidden states in addition to its
+default state. Its first overlay position is output-relative end/end placement
+with a logical margin; a persisted compositor anchor still wins after a move.
+
+Revision manifest v3 now admits bounded namespaced `luau` sidecars. A sandboxed
+cached `require` resolves only the current revision's package and rejects host
+loading, cycles, reserved or un-namespaced IDs, invalid source, and `nil`
+results. `sosctl validate` accepts repeatable `--module ID=FILE` inputs. The
+Linux authoring broker and resident Pi tools exchange an exact optional module
+package, preserve unexposed non-Luau assets, return the structured validation
+report, and bind submission to the exact source and module bytes that passed.
+The typed `stock.theme` module demonstrates the reusable token shape while the
+cross-platform bootstrap retains an in-file fallback.
+
+Added shell-model ABI 1 with a bounded logical canvas, at most 16 opaque
+outputs, and at most 64 opaque native/compatibility windows. The compositor
+publishes map/unmap/title/focus/output/resize changes without exposing
+connectors, handles, application IDs, PIDs, or commands. Stock lists current
+windows and emits only advertised `shell.focus_window` or
+`shell.close_window` selections. The authenticated compositor re-resolves each
+opaque ID, rejects stale/non-owned windows, and remains the focus/lifecycle
+authority. This is deliberately distinct from the one revision-owned
+`application_surface`; independent application revision supervision remains
+future work.
+
+**Evidence:**
+
+- `cargo test --locked -p experience-ir -p runtime-luau
+  -p revision-supervisor -p compositor-control-protocol -p sos-compositor
+  -p sos-experience -p sos-linux-session` passed 117 tests across the selected
+  unit, integration, and protocol targets. The no-feature compositor build
+  retains its pre-existing cfg-dependent unused-`output` warning.
+- `npm --prefix services/sos-agent test` rebuilt the packaged runner and passed
+  14/14 tests, including exact module-package binding and invalid-report phase
+  retention.
+- `./tools/sosctl validate` passed all five top-level checked-in experiences.
+  Stock passed the official analyzer and 10/10 runtime scenarios at 55,702
+  source bytes. The repeatable-module JSON run reported `module_count = 1`,
+  `valid = true`, and 10 scenarios for `stock.theme`.
+- `cargo check` passed the seven changed Rust packages, and the explicit
+  `cargo check --locked -p sos-compositor --features direct-backend --bin
+  sos-compositor` passed. TypeScript `tsc --noEmit`, `bash -n tools/sosctl`,
+  `cargo fmt --all`, and `git diff --check` passed. ShellCheck was not installed
+  on this host, so no ShellCheck result is claimed.
+
+**Failures and rejected approaches:** The first analyzer sweep found that only
+the newly annotated Stock source passed; four older `--!strict` experiences
+still depended on inference-heavy open tables. They were migrated instead of
+adding a legacy checker bypass. The first module authoring fixture used stale
+`text_session.text` syntax and omitted `state_key`; the strict decoder rejected
+both at the exact child path, and the fixture was corrected. Initial `--json`
+validation mixed human type-check status into stdout; status now goes to
+stderr so stdout remains parseable JSON. A broad generic shell/process API was
+rejected: the implemented window actions remain opaque, capability-advertised,
+and compositor-owned. No provider API normalization was added because this
+iteration produced no concrete ambiguity that justified another authority
+surface.
+
+**Decision:** Adopt the report, type, module, responsive placement, and shell
+model additions as API v3 authoring support. Keep Rust decoding and
+compositor/provider re-resolution authoritative even when static analysis
+passes. This entry records host tests only and makes no new physical acceptance
+or latency claim.
+
+**Open risks / next gate:** Run the explicit SOS Linux stable-host acceptance
+campaign with several real native and XWayland windows, exercise source-driven
+focus and close, title/focus/map refresh, mirrored and independent output
+layouts, and stale-ID rejection. Then exercise an actual resident-agent
+multi-module revision through context → validation report → submission. True
+scrolling navigation, minimize/maximize/fullscreen policy, independent
+application revisions/lifecycle, per-output shell surfaces, and the physical
+portrait/tablet responsive gate remain open.

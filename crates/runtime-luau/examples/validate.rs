@@ -1,13 +1,29 @@
 use std::{env, fs, process};
 
-use experience_ir::{Content, PaintOp, Scene, SceneNode};
-use runtime_luau::LuauRuntime;
+use runtime_luau::{LuauRuntime, RevisionAssetInput, ValidationReport};
 use serde_json::json;
 
 fn main() {
-    let Some(path) = env::args().nth(1) else {
-        eprintln!("usage: cargo run -p runtime-luau --example validate -- <experience.luau>");
-        process::exit(2);
+    let mut path = None;
+    let mut json_output = false;
+    let mut modules = Vec::new();
+    let mut arguments = env::args().skip(1);
+    while let Some(argument) = arguments.next() {
+        if argument == "--json" {
+            json_output = true;
+        } else if argument == "--module" {
+            let Some(specification) = arguments.next() else {
+                usage();
+            };
+            modules.push(read_module(&specification));
+        } else if let Some(specification) = argument.strip_prefix("--module=") {
+            modules.push(read_module(specification));
+        } else if path.replace(argument).is_some() {
+            usage();
+        }
+    }
+    let Some(path) = path else {
+        usage();
     };
     let source = match fs::read_to_string(&path) {
         Ok(source) => source,
@@ -16,27 +32,34 @@ fn main() {
             process::exit(2);
         }
     };
-    let result = LuauRuntime::compile(&source).and_then(|runtime| {
-        runtime.render(
+    let module_count = modules.len();
+    let report = LuauRuntime::compile_with_assets(&source, modules).and_then(|runtime| {
+        runtime.validate_all(
             &providers_fake::snapshot(),
             &json!({
                 "draft": "Caffè ☕️ – 明日のデザイン",
             }),
         )
     });
-    match result {
-        Ok(scene) => {
-            let (nodes, inputs, images, paint_nodes, animations, semantics) = statistics(&scene);
-            println!(
-                "valid source_bytes={} nodes={} inputs={} images={} paint_nodes={} animations={} semantics={}",
-                source.len(),
-                nodes,
-                inputs,
-                images,
-                paint_nodes,
-                animations,
-                semantics
-            );
+    match report {
+        Ok(report) => {
+            if json_output {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&json!({
+                        "source": path,
+                        "source_bytes": source.len(),
+                        "module_count": module_count,
+                        "report": report,
+                    }))
+                    .expect("validation report is serializable")
+                );
+            } else {
+                print_report(&path, source.len(), module_count, &report);
+            }
+            if !report.valid {
+                process::exit(1);
+            }
         }
         Err(error) => {
             eprintln!("candidate rejected: {error}");
@@ -45,23 +68,63 @@ fn main() {
     }
 }
 
-fn statistics(scene: &Scene) -> (usize, usize, usize, usize, usize, usize) {
-    fn visit(node: &SceneNode, totals: &mut (usize, usize, usize, usize, usize, usize)) {
-        totals.0 += 1;
-        totals.1 += usize::from(matches!(node.content, Some(Content::TextSession(_))));
-        totals.2 += usize::from(matches!(node.content, Some(Content::Image(_))));
-        totals.3 += usize::from(
-            node.paint
-                .iter()
-                .any(|op| !matches!(op, PaintOp::FillBounds { .. })),
-        );
-        totals.4 += usize::from(node.animation.is_some());
-        totals.5 += usize::from(node.semantics.is_some());
-        for child in &node.children {
-            visit(child, totals);
+fn usage() -> ! {
+    eprintln!(
+        "usage: cargo run -p runtime-luau --example validate -- <experience.luau> [--module ID=FILE]... [--json]"
+    );
+    process::exit(2);
+}
+
+fn read_module(specification: &str) -> RevisionAssetInput {
+    let Some((id, path)) = specification.split_once('=') else {
+        usage();
+    };
+    if id.is_empty() || path.is_empty() {
+        usage();
+    }
+    let bytes = match fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            eprintln!("could not read module {id} from {path}: {error}");
+            process::exit(2);
+        }
+    };
+    RevisionAssetInput {
+        id: id.into(),
+        kind: "luau".into(),
+        bytes,
+    }
+}
+
+fn print_report(path: &str, source_bytes: usize, module_count: usize, report: &ValidationReport) {
+    println!(
+        "validation {} source={} source_bytes={} modules={} scenarios={}",
+        if report.valid { "passed" } else { "failed" },
+        path,
+        source_bytes,
+        module_count,
+        report.scenarios.len()
+    );
+    for scenario in &report.scenarios {
+        if let Some(statistics) = scenario.statistics {
+            println!(
+                "  PASS scenario={} nodes={} inputs={} images={} paint_nodes={} animations={} semantics={}",
+                scenario.name,
+                statistics.nodes,
+                statistics.text_sessions,
+                statistics.images,
+                statistics.paint_nodes,
+                statistics.animations,
+                statistics.semantics,
+            );
+        } else if let Some(diagnostic) = &scenario.diagnostic {
+            println!(
+                "  FAIL scenario={} stage={} path={} message={}",
+                scenario.name,
+                diagnostic.stage,
+                diagnostic.path.as_deref().unwrap_or("module"),
+                diagnostic.message,
+            );
         }
     }
-    let mut totals = (0, 0, 0, 0, 0, 0);
-    visit(&scene.root, &mut totals);
-    totals
 }

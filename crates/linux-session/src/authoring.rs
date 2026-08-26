@@ -1,4 +1,5 @@
 use std::{
+    collections::HashSet,
     fs,
     io::{BufRead as _, BufReader, Read as _, Write as _},
     os::unix::{
@@ -16,15 +17,23 @@ use nix::{
     unistd::Uid,
 };
 use provider_state_service::ServiceClient;
-use revision_supervisor::{DurableState, RevisionInput, RevisionStore};
-use runtime_luau::{LuauRuntime, MAX_SOURCE_BYTES};
+use revision_supervisor::{
+    DurableState, RevisionAssetInput as StoreAssetInput, RevisionInput, RevisionStore,
+};
+use runtime_luau::{
+    load_revision_assets, LuauRuntime, RevisionAssetInput as RuntimeAssetInput, ValidationReport,
+    MAX_SOURCE_BYTES,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use service_protocol::StateResource;
 
 use crate::stage_revision;
 
-const MAX_REQUEST_BYTES: u64 = (MAX_SOURCE_BYTES as u64) + 16 * 1024;
+const MAX_AUTHORING_MODULES: usize = 16;
+const MAX_AUTHORING_MODULE_BYTES: usize = 1024 * 1024;
+const MAX_REQUEST_BYTES: u64 =
+    ((MAX_SOURCE_BYTES + MAX_AUTHORING_MODULE_BYTES) as u64 * 8) + 64 * 1024;
 const EXPERIENCE_API_VERSION: u32 = 3;
 
 #[derive(Clone, Debug)]
@@ -41,8 +50,22 @@ pub struct AuthoringBrokerOptions {
 #[serde(tag = "action", rename_all = "snake_case")]
 enum AuthoringRequest {
     GetExperienceContext,
-    ValidateExperience { source: String },
-    SubmitExperience { source: String },
+    ValidateExperience {
+        source: String,
+        #[serde(default)]
+        modules: Option<Vec<AuthoringModule>>,
+    },
+    SubmitExperience {
+        source: String,
+        #[serde(default)]
+        modules: Option<Vec<AuthoringModule>>,
+    },
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct AuthoringModule {
+    id: String,
+    source: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -74,6 +97,8 @@ struct ValidatedCandidate {
     source: Vec<u8>,
     state: Value,
     schema_version: u64,
+    assets: Vec<StoreAssetInput>,
+    validation: ValidationReport,
 }
 
 pub fn run_authoring_broker(options: AuthoringBrokerOptions) -> Result<()> {
@@ -187,38 +212,54 @@ fn handle(options: &AuthoringBrokerOptions, request: AuthoringRequest) -> Result
             let source = fs::read_to_string(current.directory.join(&current.manifest.source.path))?;
             let durable =
                 load_durable_state(&current.directory.join(&current.manifest.state.path))?;
+            let modules = load_revision_assets(&current.directory)
+                .map_err(|error| anyhow::anyhow!(error.to_string()))?
+                .into_iter()
+                .filter(|asset| asset.kind == "luau")
+                .map(|asset| {
+                    Ok(AuthoringModule {
+                        id: asset.id,
+                        source: String::from_utf8(asset.bytes)
+                            .context("active revision contains a non-UTF-8 Luau module")?,
+                    })
+                })
+                .collect::<Result<Vec<_>>>()?;
             Ok(json!({
                 "revision_id": current.manifest.revision_id,
                 "source": source,
+                "modules": modules,
                 "schema_version": durable.schema_version,
                 "experience_api_version": current.manifest.experience_api_version,
                 "assets_supported": false,
+                "modules_supported": true,
             }))
         }
-        AuthoringRequest::ValidateExperience { source } => {
+        AuthoringRequest::ValidateExperience { source, modules } => {
             let authority = crate::get_state(&ServiceClient::new(
                 &options.service_socket,
                 options.timeout,
             ))?;
-            let candidate = validate_candidate(&store, &authority, source)?;
+            let candidate = evaluate_candidate(&store, &authority, source, modules, false)?;
             Ok(json!({
-                "valid": true,
+                "valid": candidate.validation.valid,
                 "source_bytes": candidate.source.len(),
+                "module_count": candidate.assets.iter().filter(|asset| asset.kind == "luau").count(),
                 "schema_version": candidate.schema_version,
+                "report": candidate.validation,
             }))
         }
-        AuthoringRequest::SubmitExperience { source } => {
+        AuthoringRequest::SubmitExperience { source, modules } => {
             let authority = crate::get_state(&ServiceClient::new(
                 &options.service_socket,
                 options.timeout,
             ))?;
-            let candidate = validate_candidate(&store, &authority, source)?;
+            let candidate = validate_candidate(&store, &authority, source, modules)?;
             let revision = store.install(RevisionInput {
                 source: candidate.source,
                 state: candidate.state,
                 schema_version: candidate.schema_version,
                 experience_api_version: EXPERIENCE_API_VERSION,
-                assets: Vec::new(),
+                assets: candidate.assets,
             })?;
             let current_id = store.current()?.map(|current| current.manifest.revision_id);
             if current_id.as_deref() == Some(&revision.manifest.revision_id) {
@@ -256,6 +297,17 @@ fn validate_candidate(
     store: &RevisionStore,
     authority: &StateResource,
     source: String,
+    modules: Option<Vec<AuthoringModule>>,
+) -> Result<ValidatedCandidate> {
+    evaluate_candidate(store, authority, source, modules, true)
+}
+
+fn evaluate_candidate(
+    store: &RevisionStore,
+    authority: &StateResource,
+    source: String,
+    modules: Option<Vec<AuthoringModule>>,
+    require_valid: bool,
 ) -> Result<ValidatedCandidate> {
     if source.len() > MAX_SOURCE_BYTES {
         bail!("experience source is larger than {MAX_SOURCE_BYTES} bytes");
@@ -270,7 +322,16 @@ fn validate_candidate(
     {
         bail!("provider authority does not match the active experience binding");
     }
-    let runtime = LuauRuntime::compile(&source)
+    let assets = candidate_assets(&current.directory, modules)?;
+    let runtime_assets = assets
+        .iter()
+        .map(|asset| RuntimeAssetInput {
+            id: asset.id.clone(),
+            kind: asset.kind.clone(),
+            bytes: asset.bytes.clone(),
+        })
+        .collect();
+    let runtime = LuauRuntime::compile_with_assets(&source, runtime_assets)
         .map_err(|error| anyhow::anyhow!("compile candidate experience: {error}"))?;
     let state = runtime
         .migrate_state(authority.schema_version, &authority.state)
@@ -278,19 +339,94 @@ fn validate_candidate(
     let schema_version = runtime
         .state_schema_version()
         .map_err(|error| anyhow::anyhow!(error.to_string()))?;
-    let scene = runtime
-        .render(&providers_fake::snapshot(), &state)
-        .map_err(|error| {
-            anyhow::anyhow!("render candidate with the deterministic provider snapshot: {error}")
-        })?;
-    if !has_agent_composer(&scene.root) {
-        bail!("candidate must retain a Luau text_session whose submit_action is agent_submit");
+    let report = runtime
+        .validate_all(&providers_fake::snapshot(), &state)
+        .map_err(|error| anyhow::anyhow!("validate candidate scenarios: {error}"))?;
+    if require_valid && !report.valid {
+        let failures = report
+            .scenarios
+            .iter()
+            .filter_map(|scenario| {
+                scenario.diagnostic.as_ref().map(|diagnostic| {
+                    format!(
+                        "{} at {}: {}",
+                        scenario.name,
+                        diagnostic.path.as_deref().unwrap_or("module"),
+                        diagnostic.message
+                    )
+                })
+            })
+            .collect::<Vec<_>>()
+            .join("; ");
+        bail!("candidate validation scenarios failed: {failures}");
+    }
+    if report.valid {
+        let scene = runtime
+            .render(&providers_fake::snapshot(), &state)
+            .map_err(|error| {
+                anyhow::anyhow!(
+                    "render candidate with the deterministic provider snapshot: {error}"
+                )
+            })?;
+        if !has_agent_composer(&scene.root) {
+            bail!("candidate must retain a Luau text_session whose submit_action is agent_submit");
+        }
     }
     Ok(ValidatedCandidate {
         source: source.into_bytes(),
         state,
         schema_version,
+        assets,
+        validation: report,
     })
+}
+
+fn candidate_assets(
+    current_directory: &Path,
+    modules: Option<Vec<AuthoringModule>>,
+) -> Result<Vec<StoreAssetInput>> {
+    let current = load_revision_assets(current_directory)
+        .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+    let mut assets = current
+        .into_iter()
+        .filter(|asset| modules.is_none() || asset.kind != "luau")
+        .map(|asset| StoreAssetInput {
+            id: asset.id,
+            kind: asset.kind,
+            bytes: asset.bytes,
+        })
+        .collect::<Vec<_>>();
+    let Some(modules) = modules else {
+        return Ok(assets);
+    };
+    if modules.len() > MAX_AUTHORING_MODULES {
+        bail!("candidate has more than {MAX_AUTHORING_MODULES} Luau modules");
+    }
+    let total = modules
+        .iter()
+        .map(|module| module.source.len())
+        .sum::<usize>();
+    if total > MAX_AUTHORING_MODULE_BYTES {
+        bail!("candidate Luau modules are larger than {MAX_AUTHORING_MODULE_BYTES} bytes");
+    }
+    let mut ids = assets
+        .iter()
+        .map(|asset| asset.id.clone())
+        .collect::<HashSet<_>>();
+    for module in modules {
+        if module.source.is_empty() {
+            bail!("candidate Luau module {} is empty", module.id);
+        }
+        if !ids.insert(module.id.clone()) {
+            bail!("candidate has duplicate Luau module id: {}", module.id);
+        }
+        assets.push(StoreAssetInput {
+            id: module.id,
+            kind: "luau".into(),
+            bytes: module.source.into_bytes(),
+        });
+    }
+    Ok(assets)
 }
 
 fn has_agent_composer(node: &SceneNode) -> bool {
@@ -385,6 +521,7 @@ mod tests {
             &store,
             &authority(&store),
             include_str!("../../../experiences/daily-flow.luau").into(),
+            None,
         )
         .unwrap();
         assert_eq!(candidate.schema_version, 1);
@@ -398,9 +535,37 @@ mod tests {
             &store,
             &authority(&store),
             "return { api_version = 3, render = function() return 5 end }".into(),
+            None,
         )
         .unwrap_err();
-        assert!(error.to_string().contains("render candidate"));
+        assert!(error
+            .to_string()
+            .contains("candidate validation scenarios failed"));
+    }
+
+    #[test]
+    fn validation_returns_the_structured_report_before_submission_rejects() {
+        let (_temporary, store) = initialized_store();
+        let source = r#"return {
+            api_version = 3,
+            render = function()
+                return { id = "root", children = {{ interaction = { tap_action = "open" } }} }
+            end,
+        }"#;
+        let evaluated =
+            evaluate_candidate(&store, &authority(&store), source.into(), None, false).unwrap();
+        assert!(!evaluated.validation.valid);
+        let diagnostic = evaluated.validation.scenarios[0]
+            .diagnostic
+            .as_ref()
+            .unwrap();
+        assert_eq!(diagnostic.path.as_deref(), Some("root#root.children[0]"));
+
+        let error =
+            validate_candidate(&store, &authority(&store), source.into(), None).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("candidate validation scenarios failed"));
     }
 
     #[test]
@@ -414,8 +579,45 @@ mod tests {
                 render = function() return { id = "root" } end,
             }"#
             .into(),
+            None,
         )
         .unwrap_err();
         assert!(error.to_string().contains("retain a Luau text_session"));
+    }
+
+    #[test]
+    fn validates_revision_local_modules_as_one_candidate_package() {
+        let (_temporary, store) = initialized_store();
+        let source = r#"
+            local composer = require("test.composer")
+            return {
+                api_version = 3,
+                render = function()
+                    return { id = "root", children = { composer } }
+                end,
+            }
+        "#;
+        let candidate = validate_candidate(
+            &store,
+            &authority(&store),
+            source.into(),
+            Some(vec![AuthoringModule {
+                id: "test.composer".into(),
+                source: r#"return {
+                    id = "agent",
+                    content = {
+                        kind = "text_session",
+                        state_key = "draft",
+                        value = "",
+                        submit_action = "agent_submit",
+                    },
+                }"#
+                .into(),
+            }]),
+        )
+        .unwrap();
+        assert!(candidate.validation.valid);
+        assert_eq!(candidate.assets.len(), 1);
+        assert_eq!(candidate.assets[0].id, "test.composer");
     }
 }

@@ -18,10 +18,20 @@ cannot strand the user without a way to request the next one.
 
 The model receives exactly three tools on every platform:
 
-1. `get_experience_context` reads the active revision and complete Luau source.
-2. `validate_experience` stages a complete candidate for validation.
-3. `submit_experience` submits only the exact source accepted by the preceding
-   validation call.
+1. `get_experience_context` reads the active revision, complete Luau entry
+   source, and namespaced revision-local modules.
+2. `validate_experience` stages a complete source-and-module package and
+   returns every declared scenario's scene statistics or path-specific
+   diagnostic.
+3. `submit_experience` submits only the exact source and module bytes accepted
+   by the preceding validation call.
+
+Modules are optional bounded `{ id, source }` values loaded only by the
+sandboxed revision-local `require`. Omitting the field preserves active modules;
+an explicit empty list removes them. The broker preserves non-Luau sidecar
+assets that the authoring model cannot inspect. Source or module drift between
+validation and submission is rejected before the trusted host installs a
+revision.
 
 There is deliberately no shell, process, arbitrary filesystem, or general
 network tool. On Linux the Pi process runs as `sos-agent`; a separate broker

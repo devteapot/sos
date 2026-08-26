@@ -17,6 +17,7 @@ const FORMAT_VERSION: u32 = 3;
 pub const MAX_REVISION_ASSETS: usize = 64;
 pub const MAX_REVISION_ASSET_BYTES: usize = 4 * 1024 * 1024;
 pub const MAX_REVISION_ASSET_TOTAL_BYTES: usize = 16 * 1024 * 1024;
+pub const MAX_REVISION_MODULE_BYTES: usize = 256 * 1024;
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone, Debug)]
@@ -449,7 +450,11 @@ fn prepare_assets(mut inputs: Vec<RevisionAssetInput>) -> Result<Vec<PreparedAss
     inputs
         .into_iter()
         .map(|asset| {
-            validate_asset_id(&asset.id)?;
+            if asset.kind == "luau" {
+                validate_module_id(&asset.id)?;
+            } else {
+                validate_asset_id(&asset.id)?;
+            }
             if !ids.insert(asset.id.clone()) {
                 return Err(Error::InvalidRevision(format!(
                     "duplicate revision asset id: {}",
@@ -482,7 +487,11 @@ fn validate_asset_identities(assets: &[AssetIdentity]) -> Result<()> {
     let mut previous = None;
     let mut total = 0usize;
     for asset in assets {
-        validate_asset_id(&asset.id)?;
+        if asset.kind == "luau" {
+            validate_module_id(&asset.id)?;
+        } else {
+            validate_asset_id(&asset.id)?;
+        }
         if !ids.insert(asset.id.clone())
             || previous.is_some_and(|value: &str| value > asset.id.as_str())
         {
@@ -534,6 +543,25 @@ fn validate_asset_id(id: &str) -> Result<()> {
     Ok(())
 }
 
+fn validate_module_id(id: &str) -> Result<()> {
+    let valid = !id.is_empty()
+        && id.len() <= 128
+        && !id.starts_with("sos.")
+        && id.split('.').count() >= 2
+        && id.split('.').all(|segment| {
+            !segment.is_empty()
+                && segment
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+        });
+    if !valid {
+        return Err(Error::InvalidRevision(format!(
+            "invalid revision module id `{id}`; use a namespaced id such as `my_experience.theme`"
+        )));
+    }
+    Ok(())
+}
+
 fn asset_extension(kind: &str) -> Option<&'static str> {
     match kind {
         "svg" => Some("svg"),
@@ -542,6 +570,7 @@ fn asset_extension(kind: &str) -> Option<&'static str> {
         "webp" => Some("webp"),
         "font" => Some("font"),
         "shader" => Some("wgsl"),
+        "luau" => Some("luau"),
         _ => None,
     }
 }
@@ -582,6 +611,7 @@ fn validate_asset_bytes(kind: &str, bytes: &[u8]) -> Result<()> {
         "shader" => std::str::from_utf8(bytes)
             .ok()
             .is_some_and(validate_shader_asset),
+        "luau" => bytes.len() <= MAX_REVISION_MODULE_BYTES && std::str::from_utf8(bytes).is_ok(),
         _ => false,
     };
     if !valid {

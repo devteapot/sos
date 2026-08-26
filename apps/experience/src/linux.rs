@@ -12,15 +12,16 @@ use std::{
 
 use anyhow::{bail, Context as _, Result};
 use compositor_control_protocol::{
-    ShellOverlayConfiguration, WindowLayoutMode as CompositorWindowLayoutMode,
-    WindowSpaceConfiguration, WindowSpaceGeometry,
+    ShellOverlayConfiguration, ShellStateSnapshot, WindowControlAction,
+    WindowLayoutMode as CompositorWindowLayoutMode, WindowSpaceConfiguration, WindowSpaceGeometry,
 };
 use experience_host_protocol::{HostEvent, HostRequest};
 use experience_ir::{
-    AgentMessage, AgentMessageRole, Align, AnimationKind, Content, ExperienceModel, Flow,
-    HitRegion, Interaction, Justify, PaintOp, Scene, SceneEvent, SceneNode, ShellOverlayContent,
-    WindowLayoutMode, WindowSpaceContent, EXPERIENCE_API_VERSION, MAX_AGENT_MESSAGES,
-    MAX_AGENT_MESSAGE_BYTES,
+    AgentMessage, AgentMessageRole, Align, AnimationKind, Content, EdgePlacement, ExperienceModel,
+    Flow, HitRegion, Interaction, Justify, PaintOp, Scene, SceneEvent, SceneNode, ShellCanvas,
+    ShellCapability, ShellModel, ShellOutput, ShellOverlayContent, ShellWindow,
+    ShellWindowCapability, ShellWindowKind, WindowLayoutMode, WindowSpaceContent,
+    EXPERIENCE_API_VERSION, MAX_AGENT_MESSAGES, MAX_AGENT_MESSAGE_BYTES, SHELL_MODEL_ABI_VERSION,
 };
 use gpui::{
     div, img, point, prelude::*, px, relative, rgb, size, Animation as GpuiAnimation,
@@ -173,6 +174,7 @@ struct ActionCommitResult {
 struct ActionCommitOutcome {
     authoritative: StateResource,
     agent_prompt: Option<String>,
+    shell_controls: Vec<(String, WindowControlAction)>,
 }
 
 #[derive(Clone, Debug)]
@@ -395,10 +397,24 @@ fn resolve_shell_overlay(overlay: ShellOverlayContent, output: (i32, i32)) -> Re
     let max_x = (output.0 - width_i32).max(0);
     let max_y = (output.1 - height_i32).max(0);
     let Some(anchor) = overlay.anchor else {
+        let (x, y) = overlay.placement.map_or_else(
+            || (overlay.x.round() as i32, overlay.y.round() as i32),
+            |placement| {
+                let axis = |edge, available: i32| match edge {
+                    EdgePlacement::Start => placement.margin.round() as i32,
+                    EdgePlacement::Center => available / 2,
+                    EdgePlacement::End => available - placement.margin.round() as i32,
+                };
+                (
+                    axis(placement.horizontal, max_x),
+                    axis(placement.vertical, max_y),
+                )
+            },
+        );
         return ResolvedShellOverlay {
             configuration: ShellOverlayConfiguration {
-                x: (overlay.x.round() as i32).clamp(0, max_x),
-                y: (overlay.y.round() as i32).clamp(0, max_y),
+                x: x.clamp(0, max_x),
+                y: y.clamp(0, max_y),
                 width,
                 height,
             },
@@ -684,6 +700,7 @@ impl LinuxExperienceHost {
                         assets::install_provider_frames(&update.frames);
                         let mut model = update.model;
                         model.agent = this.model.agent.clone();
+                        model.shell = this.model.shell.clone();
                         this.request_model_refresh(model, cx);
                     })
                     .is_err()
@@ -961,6 +978,14 @@ impl LinuxExperienceHost {
             FenceEvent::ShellOverlayRejected(error) => {
                 eprintln!("sos_shell_overlay_rejected error={error}");
             }
+            FenceEvent::ShellStateChanged(state) => {
+                self.model.shell = shell_model(state);
+                self.request_model_refresh(self.model.clone(), cx);
+            }
+            FenceEvent::WindowControlRejected(error) => {
+                self.status = Some((format!("Window action rejected: {error}"), false));
+                eprintln!("sos_window_control_rejected error={error}");
+            }
             FenceEvent::Failed(error) => {
                 eprintln!("sos_compositor_fence_failed error={error}");
                 cx.quit();
@@ -1027,6 +1052,7 @@ impl LinuxExperienceHost {
                     None => (self.model.clone(), Vec::new()),
                 };
                 candidate_model.agent = self.model.agent.clone();
+                candidate_model.shell = self.model.shell.clone();
                 if let Err(error) = self.worker.prepare_candidate_with_assets(
                     request_id,
                     revision.source.clone(),
@@ -1458,6 +1484,17 @@ impl LinuxExperienceHost {
                     );
                     if let Some(prompt) = outcome.agent_prompt {
                         self.start_agent_prompt(prompt, cx);
+                    }
+                    for (window_id, operation) in outcome.shell_controls {
+                        let result = self
+                            .compositor_fence
+                            .as_ref()
+                            .ok_or_else(|| anyhow::anyhow!("compositor control is unavailable"))
+                            .and_then(|fence| fence.control_window(window_id, operation));
+                        if let Err(error) = result {
+                            self.status =
+                                Some((format!("Window action could not start: {error}"), false));
+                        }
                     }
                 }
             }
@@ -2869,6 +2906,7 @@ fn commit_action(
     let mut actions = Vec::new();
     let mut linux_effects = Vec::new();
     let mut agent_prompt = None;
+    let mut shell_controls = Vec::new();
     for effect in effects {
         if effect.provider == "agent" && effect.action == "prompt" {
             if agent_prompt.is_some() {
@@ -2887,6 +2925,21 @@ fn commit_action(
                 ));
             }
             agent_prompt = Some(prompt.to_owned());
+            continue;
+        }
+        if effect.provider == "shell" {
+            let operation = match effect.action.as_str() {
+                "focus_window" => WindowControlAction::Focus,
+                "close_window" => WindowControlAction::Close,
+                _ => return Err(format!("unsupported shell effect: {}", effect.action)),
+            };
+            let window_id = effect
+                .payload
+                .get("window_id")
+                .and_then(JsonValue::as_str)
+                .filter(|window_id| !window_id.is_empty() && window_id.len() <= 128)
+                .ok_or_else(|| "shell window effect omitted a bounded window_id".to_owned())?;
+            shell_controls.push((window_id.to_owned(), operation));
             continue;
         }
         match provider_action(effect)? {
@@ -2961,7 +3014,55 @@ fn commit_action(
     Ok(ActionCommitOutcome {
         authoritative: get_service_state(&client, 5)?,
         agent_prompt,
+        shell_controls,
     })
+}
+
+fn shell_model(snapshot: ShellStateSnapshot) -> ShellModel {
+    ShellModel {
+        abi_version: SHELL_MODEL_ABI_VERSION,
+        canvas: ShellCanvas {
+            width: snapshot.canvas_width,
+            height: snapshot.canvas_height,
+            mirrored: snapshot.mirrored,
+        },
+        outputs: snapshot
+            .outputs
+            .into_iter()
+            .map(|output| ShellOutput {
+                id: output.id,
+                x: output.x,
+                y: output.y,
+                width: output.width,
+                height: output.height,
+                scale: output.scale_milli as f32 / 1000.0,
+                primary: output.primary,
+            })
+            .collect(),
+        windows: snapshot
+            .windows
+            .into_iter()
+            .map(|window| ShellWindow {
+                id: window.id,
+                title: window.title,
+                kind: match window.kind {
+                    compositor_control_protocol::ShellWindowKind::Native => ShellWindowKind::Native,
+                    compositor_control_protocol::ShellWindowKind::Compatibility => {
+                        ShellWindowKind::Compatibility
+                    }
+                },
+                active: window.active,
+                capabilities: [
+                    window.can_focus.then_some(ShellWindowCapability::Focus),
+                    window.can_close.then_some(ShellWindowCapability::Close),
+                ]
+                .into_iter()
+                .flatten()
+                .collect(),
+            })
+            .collect(),
+        capabilities: vec![ShellCapability::WindowFocus, ShellCapability::WindowClose],
+    }
 }
 
 fn truncate_agent_text(mut text: String) -> String {
@@ -3148,12 +3249,31 @@ mod tests {
 
     #[test]
     fn anchored_shell_overlay_centers_and_clamps_without_moving_action() {
+        let responsive = resolve_shell_overlay(
+            ShellOverlayContent {
+                x: 0.0,
+                y: 0.0,
+                width: 430.0,
+                height: 146.0,
+                placement: Some(experience_ir::ShellOverlayPlacement {
+                    horizontal: experience_ir::EdgePlacement::End,
+                    vertical: experience_ir::EdgePlacement::End,
+                    margin: 18.0,
+                }),
+                anchor: None,
+            },
+            (1920, 1200),
+        );
+        assert_eq!(responsive.configuration.x, 1472);
+        assert_eq!(responsive.configuration.y, 1036);
+
         let centered = resolve_shell_overlay(
             ShellOverlayContent {
                 x: 0.0,
                 y: 0.0,
                 width: 430.0,
                 height: 146.0,
+                placement: None,
                 anchor: Some(experience_ir::ShellOverlayAnchor {
                     x: 900.0,
                     y: 900.0,
@@ -3182,6 +3302,7 @@ mod tests {
                     y: 0.0,
                     width: 430.0,
                     height: 146.0,
+                    placement: None,
                     anchor: None,
                 }
             },
@@ -3191,6 +3312,45 @@ mod tests {
         assert_eq!(left_edge.configuration.y, 40);
         assert_eq!(left_edge.anchor, Some((8, 40)));
         assert_eq!(left_edge.anchor_local, Some((8, 0)));
+    }
+
+    #[test]
+    fn compositor_snapshot_becomes_a_bounded_typed_shell_model() {
+        let model = shell_model(ShellStateSnapshot {
+            canvas_width: 2560,
+            canvas_height: 1440,
+            mirrored: true,
+            outputs: vec![compositor_control_protocol::ShellOutputSnapshot {
+                id: "output-a".into(),
+                x: 0,
+                y: 0,
+                width: 2560,
+                height: 1440,
+                scale_milli: 1_250,
+                primary: true,
+            }],
+            windows: vec![compositor_control_protocol::ShellWindowSnapshot {
+                id: "window-a".into(),
+                title: "Terminal".into(),
+                kind: compositor_control_protocol::ShellWindowKind::Compatibility,
+                active: false,
+                can_focus: true,
+                can_close: false,
+            }],
+        });
+        assert_eq!(model.abi_version, SHELL_MODEL_ABI_VERSION);
+        assert_eq!(model.canvas.width, 2560);
+        assert!(model.canvas.mirrored);
+        assert_eq!(model.outputs[0].scale, 1.25);
+        assert_eq!(model.windows[0].kind, ShellWindowKind::Compatibility);
+        assert_eq!(
+            model.windows[0].capabilities,
+            vec![ShellWindowCapability::Focus]
+        );
+        assert_eq!(
+            model.capabilities,
+            vec![ShellCapability::WindowFocus, ShellCapability::WindowClose]
+        );
     }
 
     fn start_service(
@@ -3468,6 +3628,11 @@ mod tests {
                     action: "prompt".into(),
                     payload: serde_json::json!({"prompt": "Make the day quieter"}),
                 },
+                experience_ir::ProviderEffect {
+                    provider: "shell".into(),
+                    action: "focus_window".into(),
+                    payload: serde_json::json!({"window_id": "window-a"}),
+                },
             ],
             Some(&provider_access),
         )
@@ -3477,6 +3642,10 @@ mod tests {
         assert_eq!(
             committed.agent_prompt.as_deref(),
             Some("Make the day quieter")
+        );
+        assert_eq!(
+            committed.shell_controls,
+            vec![("window-a".into(), WindowControlAction::Focus)]
         );
         assert!(temporary
             .path()

@@ -4,6 +4,7 @@
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
     ffi::OsString,
+    hash::{DefaultHasher, Hash as _, Hasher as _},
     io,
     os::unix::net::UnixDatagram,
     path::{Path, PathBuf},
@@ -14,7 +15,9 @@ use std::{
 use std::{cell::RefCell, rc::Rc};
 
 use compositor_control_protocol::{
-    CompositorEvent, PresentationEvidence, ShellOverlayConfiguration, WindowSpaceConfiguration,
+    CompositorEvent, PresentationEvidence, ShellOutputSnapshot, ShellOverlayConfiguration,
+    ShellStateSnapshot, ShellWindowKind, ShellWindowSnapshot, WindowControlAction,
+    WindowSpaceConfiguration, MAX_SHELL_OUTPUTS, MAX_SHELL_WINDOWS,
 };
 use nix::sys::socket::{getsockopt, sockopt::PeerCredentials};
 use smithay::{
@@ -29,7 +32,7 @@ use smithay::{
             Display, DisplayHandle, Resource as _,
         },
     },
-    utils::{Clock, Logical, Monotonic, Point},
+    utils::{Clock, Logical, Monotonic, Point, SERIAL_COUNTER},
     wayland::{
         compositor::{with_states, CompositorClientState, CompositorState},
         input_method::{InputMethodManagerState, PopupSurface as InputMethodPopupSurface},
@@ -37,7 +40,7 @@ use smithay::{
         presentation::PresentationState,
         seat::WaylandFocus as _,
         selection::data_device::DataDeviceState,
-        shell::xdg::XdgShellState,
+        shell::xdg::{XdgShellState, XdgToplevelSurfaceData},
         shm::ShmState,
         socket::ListeningSocketSource,
         tablet_manager::TabletManagerState,
@@ -129,6 +132,40 @@ pub struct SosCompositor {
     pub dmabuf_active_devices: HashSet<DrmNode>,
     #[cfg(feature = "direct-backend")]
     pub dmabuf_primary: Option<DrmNode>,
+}
+
+fn opaque_window_id(window: &Window) -> String {
+    if let Some(surface) = window.x11_surface() {
+        opaque_id("window", &surface.window_id())
+    } else if let Some(surface) = window.wl_surface() {
+        opaque_id("window", &surface.id())
+    } else {
+        opaque_id("window", &format!("{:?}", window.geometry()))
+    }
+}
+
+fn opaque_id(value_kind: &str, value: &impl std::hash::Hash) -> String {
+    let mut hasher = DefaultHasher::new();
+    value_kind.hash(&mut hasher);
+    value.hash(&mut hasher);
+    format!("{value_kind}-{:016x}", hasher.finish())
+}
+
+fn bounded_title(title: &str) -> String {
+    let title = title.trim();
+    let title = if title.is_empty() {
+        "Application"
+    } else {
+        title
+    };
+    if title.len() <= 256 {
+        return title.to_owned();
+    }
+    let mut boundary = 256;
+    while !title.is_char_boundary(boundary) {
+        boundary -= 1;
+    }
+    title[..boundary].to_owned()
 }
 
 impl SosCompositor {
@@ -313,6 +350,7 @@ impl SosCompositor {
                     self.shell_events = Some((pid, events));
                 }
                 let _ = reply.send(result);
+                self.publish_shell_state();
             }
             ControlCommand::Arm {
                 pid,
@@ -480,6 +518,30 @@ impl SosCompositor {
                     }
                 }
             }
+            ControlCommand::ControlWindow {
+                pid,
+                request_id,
+                window_id,
+                operation,
+                reply,
+            } => {
+                let result = if !self.policy.is_shell_owner(pid) {
+                    Err("window control is not owned by the registered shell".into())
+                } else {
+                    self.control_window(&window_id, operation)
+                };
+                if result.is_ok() {
+                    tracing::info!(
+                        pid,
+                        request_id,
+                        window_id,
+                        ?operation,
+                        "controlled application window"
+                    );
+                    self.publish_shell_state();
+                }
+                let _ = reply.send(result);
+            }
             ControlCommand::Disconnected { pid } => {
                 let was_quiesced = self.policy.input_quiesced();
                 self.policy.unregister_shell(pid);
@@ -492,6 +554,142 @@ impl SosCompositor {
                 tracing::info!(pid, "shell control connection closed");
             }
         }
+    }
+
+    pub(crate) fn publish_shell_state(&self) {
+        if let Some((_, events)) = &self.shell_events {
+            let _ = events.send(CompositorEvent::ShellStateChanged {
+                request_id: 0,
+                state: self.shell_state_snapshot(),
+            });
+        }
+    }
+
+    fn shell_state_snapshot(&self) -> ShellStateSnapshot {
+        let mut outputs = self.space.outputs().cloned().collect::<Vec<_>>();
+        outputs.sort_by_key(|output| output.name());
+        let outputs = outputs
+            .into_iter()
+            .take(MAX_SHELL_OUTPUTS)
+            .filter_map(|output| {
+                let geometry = self.space.output_geometry(&output)?;
+                Some(ShellOutputSnapshot {
+                    id: opaque_id("output", &output.name()),
+                    x: geometry.loc.x,
+                    y: geometry.loc.y,
+                    width: u32::try_from(geometry.size.w.max(0)).unwrap_or_default(),
+                    height: u32::try_from(geometry.size.h.max(0)).unwrap_or_default(),
+                    scale_milli: (output.current_scale().fractional_scale() * 1000.0)
+                        .round()
+                        .clamp(1.0, f64::from(u32::MAX)) as u32,
+                    primary: false,
+                })
+            })
+            .collect::<Vec<_>>();
+        let mut outputs = outputs;
+        if let Some(primary) = outputs.first_mut() {
+            primary.primary = true;
+        }
+        let focused = self
+            .seat
+            .get_keyboard()
+            .and_then(|keyboard| keyboard.current_focus());
+        let windows = self
+            .space
+            .elements()
+            .filter(|window| self.is_application_window(window))
+            .take(MAX_SHELL_WINDOWS)
+            .map(|window| {
+                let (title, kind) = if let Some(surface) = window.x11_surface() {
+                    (surface.title(), ShellWindowKind::Compatibility)
+                } else {
+                    let title = window
+                        .wl_surface()
+                        .and_then(|surface| {
+                            with_states(surface.as_ref(), |states| {
+                                states
+                                    .data_map
+                                    .get::<XdgToplevelSurfaceData>()
+                                    .and_then(|state| state.lock().ok()?.title.clone())
+                            })
+                        })
+                        .unwrap_or_else(|| "Application".into());
+                    let kind = window
+                        .wl_surface()
+                        .and_then(|surface| Self::client_role(&surface))
+                        .map_or(ShellWindowKind::Compatibility, |role| match role {
+                            ClientRole::NativeApplication => ShellWindowKind::Native,
+                            _ => ShellWindowKind::Compatibility,
+                        });
+                    (title, kind)
+                };
+                let active = window.wl_surface().is_some_and(|surface| {
+                    focused
+                        .as_ref()
+                        .is_some_and(|focused| focused == surface.as_ref())
+                });
+                ShellWindowSnapshot {
+                    id: opaque_window_id(window),
+                    title: bounded_title(&title),
+                    kind,
+                    active,
+                    can_focus: window.wl_surface().is_some(),
+                    can_close: window.toplevel().is_some() || window.x11_surface().is_some(),
+                }
+            })
+            .collect();
+        ShellStateSnapshot {
+            canvas_width: u32::try_from(self.output_size.0.max(0)).unwrap_or_default(),
+            canvas_height: u32::try_from(self.output_size.1.max(0)).unwrap_or_default(),
+            mirrored: self.output_layout_mirrored,
+            outputs,
+            windows,
+        }
+    }
+
+    fn control_window(
+        &mut self,
+        window_id: &str,
+        operation: WindowControlAction,
+    ) -> std::result::Result<(), String> {
+        let window = self
+            .space
+            .elements()
+            .find(|window| {
+                self.is_application_window(window) && opaque_window_id(window) == window_id
+            })
+            .cloned()
+            .ok_or_else(|| "opaque window selection is stale or unknown".to_owned())?;
+        match operation {
+            WindowControlAction::Focus => {
+                let surface = window
+                    .wl_surface()
+                    .map(|surface| surface.into_owned())
+                    .ok_or_else(|| "window cannot receive keyboard focus".to_owned())?;
+                self.space.raise_element(&window, false);
+                self.space.elements().for_each(|candidate| {
+                    candidate.set_activated(candidate == &window);
+                    if let Some(toplevel) = candidate.toplevel() {
+                        toplevel.send_pending_configure();
+                    }
+                });
+                let keyboard = self
+                    .seat
+                    .get_keyboard()
+                    .ok_or_else(|| "compositor keyboard is unavailable".to_owned())?;
+                keyboard.set_focus(self, Some(surface), SERIAL_COUNTER.next_serial());
+            }
+            WindowControlAction::Close => {
+                if let Some(toplevel) = window.toplevel() {
+                    toplevel.send_close();
+                } else if let Some(surface) = window.x11_surface() {
+                    surface.close().map_err(|error| error.to_string())?;
+                } else {
+                    return Err("window cannot be closed".into());
+                }
+            }
+        }
+        Ok(())
     }
 
     pub fn shell_rendered(&self, states: &RenderElementStates) -> bool {
@@ -871,7 +1069,10 @@ impl ClientData for ClientState {
 mod tests {
     use smithay::utils::{Logical, Point};
 
-    use super::{application_layout_order_key, notify_session_owner, window_render_location};
+    use super::{
+        application_layout_order_key, bounded_title, notify_session_owner, opaque_id,
+        window_render_location,
+    };
     use std::os::unix::net::UnixDatagram;
 
     #[test]
@@ -910,5 +1111,20 @@ mod tests {
         let geometry = Point::<i32, Logical>::from((20, 20));
 
         assert_eq!(window_render_location(mapped, geometry), (751, 615).into());
+    }
+
+    #[test]
+    fn shell_observation_strings_are_bounded_and_opaque() {
+        assert_eq!(bounded_title("  "), "Application");
+        let title = "界".repeat(100);
+        let bounded = bounded_title(&title);
+        assert!(bounded.len() <= 256);
+        assert!(bounded.is_char_boundary(bounded.len()));
+
+        let first = opaque_id("window", &42_u64);
+        let second = opaque_id("window", &42_u64);
+        assert_eq!(first, second);
+        assert!(first.starts_with("window-"));
+        assert!(!first.contains("42"));
     }
 }

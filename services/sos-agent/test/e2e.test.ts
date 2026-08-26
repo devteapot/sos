@@ -62,6 +62,58 @@ test("the shared tools reject a source that differs from the validated candidate
   assert.deepEqual(actions, ["get_experience_context", "validate_experience"]);
 });
 
+test("the shared tools bind revision-local modules to the validated package", async () => {
+  const requests: unknown[] = [];
+  const backend: AuthoringBackend = {
+    async request(request) {
+      requests.push(request);
+      return { ok: true };
+    },
+  };
+  const tools = createAuthoringTools(backend);
+  const signal = new AbortController().signal;
+  const modules = [{ id: "stock.theme", source: "return { color = {} }" }];
+  await tools[0]!.execute("context", {}, signal);
+  await tools[1]!.execute("validate", { source: "validated", modules }, signal);
+  await assert.rejects(
+    tools[2]!.execute("submit", {
+      source: "validated",
+      modules: [{ ...modules[0], source: "return {}" }],
+    }, signal),
+    /exactly match the validated candidate/,
+  );
+  assert.equal(requests.length, 2);
+  assert.deepEqual(requests[1], { action: "validate_experience", source: "validated", modules });
+});
+
+test("a structured invalid report keeps the tools in validation phase", async () => {
+  const actions: string[] = [];
+  const backend: AuthoringBackend = {
+    async request(request) {
+      actions.push(request.action);
+      if (request.action === "validate_experience") {
+        return { valid: false, report: { valid: false, scenarios: [] } };
+      }
+      return { ok: true };
+    },
+  };
+  const tools = createAuthoringTools(backend);
+  const signal = new AbortController().signal;
+  await tools[0]!.execute("context", {}, signal);
+  const result = await tools[1]!.execute("validate", { source: "invalid" }, signal);
+  assert.match(JSON.stringify(result), /\"valid\":false/);
+  await assert.rejects(
+    tools[2]!.execute("submit", { source: "invalid" }, signal),
+    /exactly match the validated candidate/,
+  );
+  await tools[1]!.execute("validate-again", { source: "still-invalid" }, signal);
+  assert.deepEqual(actions, [
+    "get_experience_context",
+    "validate_experience",
+    "validate_experience",
+  ]);
+});
+
 function exchange(socketPath: string, request: unknown): Promise<Record<string, unknown>[]> {
   return new Promise((resolve, reject) => {
     const events: Record<string, unknown>[] = [];

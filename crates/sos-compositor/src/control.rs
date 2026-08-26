@@ -11,7 +11,7 @@ use std::{
 use anyhow::{bail, Context as _, Result};
 use compositor_control_protocol::{
     valid_shell_token, CompositorEvent, CompositorRequest, ShellOverlayConfiguration,
-    WindowSpaceConfiguration, MAX_CONTROL_LINE_BYTES, MAX_SHELL_TOKEN_BYTES,
+    WindowControlAction, WindowSpaceConfiguration, MAX_CONTROL_LINE_BYTES, MAX_SHELL_TOKEN_BYTES,
 };
 use nix::sys::socket::{getsockopt, sockopt::PeerCredentials};
 use smithay::reexports::calloop::{
@@ -59,6 +59,13 @@ pub enum ControlCommand {
         request_id: u64,
         configuration: ShellOverlayConfiguration,
         reply: mpsc::Sender<std::result::Result<ShellOverlayConfiguration, String>>,
+    },
+    ControlWindow {
+        pid: u32,
+        request_id: u64,
+        window_id: String,
+        operation: WindowControlAction,
+        reply: mpsc::Sender<std::result::Result<(), String>>,
     },
     Disconnected {
         pid: u32,
@@ -289,6 +296,29 @@ fn serve_shell_connection(
                     Ok(configuration) => CompositorEvent::ShellOverlayConfigured {
                         request_id,
                         configuration,
+                    },
+                    Err(error) => CompositorEvent::Rejected { request_id, error },
+                };
+                write_event(&mut stream, &event)?;
+            }
+            Ok(Some(CompositorRequest::ControlWindow {
+                request_id,
+                window_id,
+                operation,
+            })) => {
+                let (reply, reply_rx) = mpsc::channel();
+                commands.send(ControlCommand::ControlWindow {
+                    pid,
+                    request_id,
+                    window_id: window_id.clone(),
+                    operation,
+                    reply,
+                })?;
+                let event = match reply_rx.recv_timeout(CONTROL_TIMEOUT)? {
+                    Ok(()) => CompositorEvent::WindowControlled {
+                        request_id,
+                        window_id,
+                        operation,
                     },
                     Err(error) => CompositorEvent::Rejected { request_id, error },
                 };

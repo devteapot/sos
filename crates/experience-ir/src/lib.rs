@@ -22,6 +22,9 @@ pub const MAX_STATE_BYTES: usize = 1024 * 1024;
 pub const MAX_AGENT_MESSAGES: usize = 24;
 pub const MAX_AGENT_MESSAGE_BYTES: usize = 32 * 1024;
 pub const SYSTEM_PROVIDER_ABI_VERSION: u32 = 1;
+pub const SHELL_MODEL_ABI_VERSION: u32 = 1;
+pub const MAX_SHELL_OUTPUTS: usize = 16;
+pub const MAX_SHELL_WINDOWS: usize = 64;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct ExperienceModel {
@@ -44,6 +47,75 @@ pub struct ExperienceModel {
     /// cross this boundary.
     #[serde(default)]
     pub providers: SystemProviders,
+    /// Bounded compositor observations. Window and output identifiers are
+    /// opaque, session-local selections; native protocol objects never cross
+    /// into revision code.
+    #[serde(default)]
+    pub shell: ShellModel,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+pub struct ShellModel {
+    pub abi_version: u32,
+    #[serde(default)]
+    pub canvas: ShellCanvas,
+    #[serde(default)]
+    pub outputs: Vec<ShellOutput>,
+    #[serde(default)]
+    pub windows: Vec<ShellWindow>,
+    #[serde(default)]
+    pub capabilities: Vec<ShellCapability>,
+}
+
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ShellCanvas {
+    pub width: u32,
+    pub height: u32,
+    pub mirrored: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct ShellOutput {
+    /// Opaque selection stable for the connected output's lifetime.
+    pub id: String,
+    pub x: i32,
+    pub y: i32,
+    pub width: u32,
+    pub height: u32,
+    pub scale: f32,
+    pub primary: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ShellWindow {
+    /// Opaque selection stable for the mapped window's lifetime.
+    pub id: String,
+    pub title: String,
+    pub kind: ShellWindowKind,
+    pub active: bool,
+    #[serde(default)]
+    pub capabilities: Vec<ShellWindowCapability>,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ShellWindowKind {
+    Native,
+    Compatibility,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ShellWindowCapability {
+    Focus,
+    Close,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ShellCapability {
+    WindowFocus,
+    WindowClose,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -615,16 +687,34 @@ pub struct WindowSpaceContent {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ShellOverlayContent {
-    /// Legacy absolute surface origin. Used directly when `anchor` is absent.
+    /// Legacy absolute surface origin. Used directly when neither `anchor`
+    /// nor declarative `placement` is present.
     pub x: f32,
     pub y: f32,
     pub width: f32,
     pub height: f32,
+    /// Output-relative placement for responsive experiences. An explicit
+    /// anchor takes precedence after the user moves the surface.
+    pub placement: Option<ShellOverlayPlacement>,
     /// Optional stable action bounds. The host centers the overlay surface on
     /// this anchor, clamps the surface to the output, and keeps the anchor at
     /// the requested screen position. This lets expanded overlays reflow at
     /// an edge without moving their floating action.
     pub anchor: Option<ShellOverlayAnchor>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ShellOverlayPlacement {
+    pub horizontal: EdgePlacement,
+    pub vertical: EdgePlacement,
+    pub margin: f32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EdgePlacement {
+    Start,
+    Center,
+    End,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -873,44 +963,71 @@ pub enum ValidationError {
     InvalidApplicationSurfaceTitle,
 }
 
+#[derive(Debug, Error, PartialEq)]
+#[error("{path}: {error}")]
+pub struct ValidationFailure {
+    pub path: String,
+    #[source]
+    pub error: ValidationError,
+}
+
+impl ValidationFailure {
+    fn at(path: &str, error: ValidationError) -> Self {
+        Self {
+            path: path.to_owned(),
+            error,
+        }
+    }
+}
+
 pub fn validate_scene(scene: &Scene) -> Result<usize, ValidationError> {
+    validate_scene_detailed(scene).map_err(|failure| failure.error)
+}
+
+pub fn validate_scene_detailed(scene: &Scene) -> Result<usize, ValidationFailure> {
     fn visit(
         node: &SceneNode,
+        path: &str,
         depth: usize,
         count: &mut usize,
         ids: &mut HashSet<String>,
         window_spaces: &mut usize,
         shell_overlays: &mut usize,
         application_surfaces: &mut usize,
-    ) -> Result<(), ValidationError> {
+    ) -> Result<(), ValidationFailure> {
+        macro_rules! reject {
+            ($error:expr) => {
+                return Err(ValidationFailure::at(path, $error))
+            };
+        }
         if depth > MAX_SCENE_DEPTH {
-            return Err(ValidationError::TooDeep);
+            reject!(ValidationError::TooDeep);
         }
         *count += 1;
         if *count > MAX_SCENE_NODES {
-            return Err(ValidationError::TooManyNodes);
+            reject!(ValidationError::TooManyNodes);
         }
         if node.children.len() > MAX_CHILDREN {
-            return Err(ValidationError::TooManyChildren);
+            reject!(ValidationError::TooManyChildren);
         }
         match &node.content {
             Some(Content::Text(text)) => {
                 if text.value.len() > MAX_TEXT_BYTES {
-                    return Err(ValidationError::TextTooLong);
+                    reject!(ValidationError::TextTooLong);
                 }
                 if !valid_dimension(text.size) || text.size <= 0.0 {
-                    return Err(ValidationError::InvalidDimension("text size"));
+                    reject!(ValidationError::InvalidDimension("text size"));
                 }
             }
             Some(Content::TextSession(input)) => {
                 if node.id.is_none() {
-                    return Err(ValidationError::MissingInteractiveId);
+                    reject!(ValidationError::MissingInteractiveId);
                 }
                 if input.state_key.len() > 256
                     || input.value.len() > MAX_TEXT_BYTES
                     || input.placeholder.len() > MAX_TEXT_BYTES
                 {
-                    return Err(ValidationError::SemanticTextTooLong);
+                    reject!(ValidationError::SemanticTextTooLong);
                 }
             }
             Some(Content::ProviderSurface(surface))
@@ -920,30 +1037,30 @@ pub fn validate_scene(scene: &Scene) -> Result<usize, ValidationError> {
                         byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.')
                     }) =>
             {
-                return Err(ValidationError::InvalidDimension("provider surface id"));
+                reject!(ValidationError::InvalidDimension("provider surface id"));
             }
             Some(Content::WindowSpace(space)) => {
                 if node.id.is_none() {
-                    return Err(ValidationError::MissingWindowSpaceId);
+                    reject!(ValidationError::MissingWindowSpaceId);
                 }
                 *window_spaces += 1;
                 if *window_spaces > 1 {
-                    return Err(ValidationError::DuplicateWindowSpace);
+                    reject!(ValidationError::DuplicateWindowSpace);
                 }
                 if !valid_dimension(space.gap)
                     || space.gap > 128.0
                     || space.fallback.len() > MAX_TEXT_BYTES
                 {
-                    return Err(ValidationError::InvalidDimension("window space"));
+                    reject!(ValidationError::InvalidDimension("window space"));
                 }
             }
             Some(Content::ShellOverlay(overlay)) => {
                 if node.id.is_none() {
-                    return Err(ValidationError::MissingShellOverlayId);
+                    reject!(ValidationError::MissingShellOverlayId);
                 }
                 *shell_overlays += 1;
                 if *shell_overlays > 1 {
-                    return Err(ValidationError::DuplicateShellOverlay);
+                    reject!(ValidationError::DuplicateShellOverlay);
                 }
                 if !valid_scene_number(overlay.x)
                     || !valid_scene_number(overlay.y)
@@ -952,7 +1069,12 @@ pub fn validate_scene(scene: &Scene) -> Result<usize, ValidationError> {
                     || !(48.0..=720.0).contains(&overlay.width)
                     || !(48.0..=360.0).contains(&overlay.height)
                 {
-                    return Err(ValidationError::InvalidDimension("shell overlay"));
+                    reject!(ValidationError::InvalidDimension("shell overlay"));
+                }
+                if overlay.placement.is_some_and(|placement| {
+                    !valid_dimension(placement.margin) || placement.margin > 256.0
+                }) {
+                    reject!(ValidationError::InvalidDimension("shell overlay placement"));
                 }
                 if overlay.anchor.is_some_and(|anchor| {
                     !valid_scene_number(anchor.x)
@@ -962,19 +1084,19 @@ pub fn validate_scene(scene: &Scene) -> Result<usize, ValidationError> {
                         || anchor.width > overlay.width
                         || anchor.height > overlay.height
                 }) {
-                    return Err(ValidationError::InvalidDimension("shell overlay anchor"));
+                    reject!(ValidationError::InvalidDimension("shell overlay anchor"));
                 }
             }
             Some(Content::ApplicationSurface(application)) => {
                 if node.id.is_none() {
-                    return Err(ValidationError::MissingApplicationSurfaceId);
+                    reject!(ValidationError::MissingApplicationSurfaceId);
                 }
                 *application_surfaces += 1;
                 if *application_surfaces > 1 {
-                    return Err(ValidationError::DuplicateApplicationSurface);
+                    reject!(ValidationError::DuplicateApplicationSurface);
                 }
                 if application.title.is_empty() || application.title.len() > 256 {
-                    return Err(ValidationError::InvalidApplicationSurfaceTitle);
+                    reject!(ValidationError::InvalidApplicationSurfaceTitle);
                 }
             }
             _ => {}
@@ -992,11 +1114,11 @@ pub fn validate_scene(scene: &Scene) -> Result<usize, ValidationError> {
             || node.animation.is_some())
             && node.id.is_none()
         {
-            return Err(ValidationError::MissingInteractiveId);
+            reject!(ValidationError::MissingInteractiveId);
         }
         if let Some(id) = &node.id {
             if !ids.insert(id.clone()) {
-                return Err(ValidationError::DuplicateId(id.clone()));
+                reject!(ValidationError::DuplicateId(id.clone()));
             }
         }
         for (name, value) in [
@@ -1010,7 +1132,7 @@ pub fn validate_scene(scene: &Scene) -> Result<usize, ValidationError> {
             ("max height", node.layout.max_height),
         ] {
             if value.is_some_and(|value| !valid_dimension(value)) {
-                return Err(ValidationError::InvalidDimension(name));
+                reject!(ValidationError::InvalidDimension(name));
             }
         }
         if node
@@ -1018,11 +1140,11 @@ pub fn validate_scene(scene: &Scene) -> Result<usize, ValidationError> {
             .aspect_ratio
             .is_some_and(|value| !valid_dimension(value) || value <= 0.0)
         {
-            return Err(ValidationError::InvalidDimension("aspect ratio"));
+            reject!(ValidationError::InvalidDimension("aspect ratio"));
         }
         if let Some(position) = node.layout.position {
             if !valid_scene_number(position.x) || !valid_scene_number(position.y) {
-                return Err(ValidationError::InvalidDimension("layout position"));
+                reject!(ValidationError::InvalidDimension("layout position"));
             }
         }
         if node.layout.program.is_some_and(|program| {
@@ -1036,11 +1158,16 @@ pub fn validate_scene(scene: &Scene) -> Result<usize, ValidationError> {
             .flatten()
             .any(|value| !value.is_finite() || !(-4.0..=4.0).contains(&value))
         }) {
-            return Err(ValidationError::InvalidLayoutProgram);
+            reject!(ValidationError::InvalidLayoutProgram);
         }
-        for child in &node.children {
+        for (index, child) in node.children.iter().enumerate() {
+            let child_path = match child.id.as_deref() {
+                Some(id) => format!("{path}.children[{index}]#{id}"),
+                None => format!("{path}.children[{index}]"),
+            };
             visit(
                 child,
+                &child_path,
                 depth + 1,
                 count,
                 ids,
@@ -1051,11 +1178,11 @@ pub fn validate_scene(scene: &Scene) -> Result<usize, ValidationError> {
         }
         if let Some(animation) = &node.animation {
             if !(16..=60_000).contains(&animation.duration_ms) {
-                return Err(ValidationError::InvalidAnimationDuration);
+                reject!(ValidationError::InvalidAnimationDuration);
             }
         }
         if node.interaction.hit_regions.len() > MAX_HIT_REGIONS {
-            return Err(ValidationError::TooManyHitRegions);
+            reject!(ValidationError::TooManyHitRegions);
         }
         let mut paint_operations = 0;
         let mut paint_points = 0;
@@ -1066,7 +1193,8 @@ pub fn validate_scene(scene: &Scene) -> Result<usize, ValidationError> {
             &mut paint_operations,
             &mut paint_points,
             &mut glyph_runs,
-        )?;
+        )
+        .map_err(|error| ValidationFailure::at(path, error))?;
         for region in &node.interaction.hit_regions {
             if region.id.is_empty()
                 || [region.x, region.y, region.width, region.height]
@@ -1075,12 +1203,12 @@ pub fn validate_scene(scene: &Scene) -> Result<usize, ValidationError> {
                 || region.width <= 0.0
                 || region.height <= 0.0
             {
-                return Err(ValidationError::InvalidDimension("hit region"));
+                reject!(ValidationError::InvalidDimension("hit region"));
             }
         }
         if let Some(semantics) = &node.semantics {
             if node.id.is_none() {
-                return Err(ValidationError::MissingInteractiveId);
+                reject!(ValidationError::MissingInteractiveId);
             }
             if semantics.label.len() > MAX_TEXT_BYTES
                 || semantics
@@ -1092,7 +1220,7 @@ pub fn validate_scene(scene: &Scene) -> Result<usize, ValidationError> {
                     .as_ref()
                     .is_some_and(|hint| hint.len() > MAX_TEXT_BYTES)
             {
-                return Err(ValidationError::SemanticTextTooLong);
+                reject!(ValidationError::SemanticTextTooLong);
             }
         }
         Ok(())
@@ -1104,6 +1232,12 @@ pub fn validate_scene(scene: &Scene) -> Result<usize, ValidationError> {
     let mut application_surfaces = 0;
     visit(
         &scene.root,
+        scene
+            .root
+            .id
+            .as_deref()
+            .map_or("root".to_owned(), |id| format!("root#{id}"))
+            .as_str(),
         1,
         &mut count,
         &mut HashSet::new(),
@@ -1385,6 +1519,7 @@ mod tests {
                 y: 30.0,
                 width: 64.0,
                 height: 64.0,
+                placement: None,
                 anchor: None,
             })),
             interaction: Interaction {
@@ -1437,6 +1572,26 @@ mod tests {
             }),
             Err(ValidationError::DuplicateApplicationSurface)
         );
+    }
+
+    #[test]
+    fn detailed_validation_identifies_the_hidden_node_path() {
+        let scene = Scene {
+            root: SceneNode {
+                id: Some("root".into()),
+                children: vec![SceneNode {
+                    interaction: Interaction {
+                        tap_action: Some("open".into()),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+        };
+        let failure = validate_scene_detailed(&scene).unwrap_err();
+        assert_eq!(failure.path, "root#root.children[0]");
+        assert_eq!(failure.error, ValidationError::MissingInteractiveId);
     }
 
     #[test]

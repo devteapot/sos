@@ -17,7 +17,7 @@ use smithay::{
     wayland::seat::WaylandFocus as _,
     wayland::xwayland_shell::{XWaylandShellHandler, XWaylandShellState},
     xwayland::{
-        xwm::{Reorder, ResizeEdge, XwmId},
+        xwm::{Reorder, ResizeEdge, WmWindowProperty, XwmId},
         X11Surface, X11Wm, XWayland, XWaylandEvent, XwmHandler,
     },
 };
@@ -135,6 +135,7 @@ impl SosCompositor {
             override_redirect,
             "mapped bounded XWayland window"
         );
+        self.publish_shell_state();
     }
 
     fn unmap_x11(&mut self, surface: &X11Surface) {
@@ -150,6 +151,7 @@ impl SosCompositor {
         if let Some(window) = window {
             self.space.unmap_elem(&window);
             self.reconfigure_application_windows();
+            self.publish_shell_state();
         }
     }
 
@@ -237,6 +239,15 @@ macro_rules! impl_xwm_handler {
 
             fn destroyed_window(&mut self, _xwm: XwmId, window: X11Surface) {
                 self.sos_state().unmap_x11(&window);
+            }
+
+            fn property_notify(
+                &mut self,
+                _xwm: XwmId,
+                _window: X11Surface,
+                _property: WmWindowProperty,
+            ) {
+                self.sos_state().publish_shell_state();
             }
 
             fn configure_request(

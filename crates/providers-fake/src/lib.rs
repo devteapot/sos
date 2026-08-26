@@ -79,6 +79,7 @@ pub fn snapshot() -> ExperienceModel {
             error: None,
         },
         providers: Default::default(),
+        shell: Default::default(),
     }
 }
 

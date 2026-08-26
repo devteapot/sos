@@ -37,7 +37,9 @@ The initial stock revision is a complete source-defined shell with:
   source-defined composer centered over the action and above or below it on
   hover, clamps the composer without moving the action at an output edge, and
   opens the full agent rail only from a stationary action click;
-- a command center for workspaces, application launch and window policy; and
+- a command center for workspaces, application launch, window policy, and the
+  current bounded `model.shell.windows` list. Each row renders only the
+  compositor-advertised focus/close controls for its opaque window ID; and
 - one source-defined native application surface, managed in the same window
   space as compatibility clients, whose current revision exposes eight
   workspaces:
@@ -55,8 +57,8 @@ The initial stock revision is a complete source-defined shell with:
 - Agent, with the resident conversation, composer, activity/error states, and
   only platform-advertised configuration ceremonies.
 
-Every workspace and contribution slot renders an explicit empty or unavailable state when its
-provider, capability, or resource is absent. Provider object paths, desktop
+Every workspace and contribution slot renders an explicit empty or unavailable
+state when its provider, capability, or resource is absent. Provider object paths, desktop
 files, process arguments, credentials, and platform handles never enter the
 source. Stock emits the same typed provider-effect envelopes as any generated
 revision.
@@ -77,6 +79,11 @@ declared window space. Source-native SOS content uses `application_surface` to
 open a separate GPUI/XDG toplevel that the compositor classifies as
 `NativeApplication`, so it tiles, focuses, clips, unmaps, and reflows beside
 ordinary applications instead of being embedded in the shell window.
+Stock observes those independent toplevels through the typed shell model. The
+model distinguishes native and compatibility windows, marks current focus, and
+contains no application ID, process identity, executable, or protocol handle.
+Its actions are closed `shell.focus_window` and `shell.close_window` effects;
+the compositor re-resolves an opaque ID and rejects stale selections.
 
 This is the first composition boundary, not the final application supervisor:
 the stock shell and its one active native application surface still come from
@@ -95,6 +102,12 @@ the same revision asset set and validation limits as agent content. Sidecar
 images, fonts, and shaders can be added through the normal revision manifest;
 there is no stock-only asset path.
 
+[`experiences/modules/stock-theme.luau`](../experiences/modules/stock-theme.luau)
+demonstrates the typed token shape used by the bootstrap. Larger installed
+revisions can submit it as the namespaced `stock.theme` Luau sidecar and load it
+through the sandboxed revision-local `require`; the immutable cross-platform
+bootstrap keeps an in-file copy so Android can still start without sidecars.
+
 ## Responsive contract
 
 The root and shell body measure against the complete logical output. The top
@@ -108,6 +121,19 @@ navigation, cards, controls, notes and applications use retained flex wrapping;
 the application region enforces a 320-by-240 minimum and publishes bounds only
 once it is at least 160-by-120. This provides one clamshell/tablet source
 without branching on a device name or calling back into Luau during layout.
+
+Before the user has moved it, the overlay uses declarative end/end placement
+with an 18-pixel logical margin, resolved against the current output rather
+than hard-coded 1,920-by-1,080 coordinates. A compositor-reported persisted
+anchor takes precedence after movement. The shell model also supplies the
+logical canvas, output rectangles, scale, primary flag, and mirrored state, so
+future source revisions can make output-aware layout decisions without seeing
+connector or backend identities.
+
+Stock declares nine hidden validation states covering every workspace, the
+command panel, and the agent overlay. Together with the default state, local
+and resident-agent validation reports ten scenarios with scene statistics and
+path-specific failures before activation.
 
 The compositor-backed shell is physically accepted on the Framework's native
 1,920-by-1,200 panel and fitted as a complete undistorted canvas on the

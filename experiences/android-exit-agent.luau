@@ -20,6 +20,16 @@ local EVENT_H = 58
 local NOTE_W = 142
 local NOTE_H = 62
 
+type GroupOptions = {
+    id: string?,
+    background: number?,
+    radius: number?,
+    tap_action: string?,
+    semantics: Semantics?,
+}
+type Geometry = { x: number, y: number, center_x: number, center_y: number }
+type Rect = { x: number, y: number, width: number, height: number }
+
 local assets = {
     ["thread-mark"] = {
         kind = "svg",
@@ -31,7 +41,7 @@ local assets = {
     },
 }
 
-local function text(value, size, color, semantics, id)
+local function text(value: any, size: number, color: number?, semantics: Semantics?, id: string?): SceneNode
     return {
         id = id,
         content = { kind = "text", value = tostring(value), size = size, color = color or mist },
@@ -39,33 +49,48 @@ local function text(value, size, color, semantics, id)
     }
 end
 
-local function group(flow, layout, children, options)
-    options = options or {}
-    layout = layout or {}
-    layout.flow = flow
+local function group(
+    flow: "overlay" | "column" | "row",
+    layout: Layout?,
+    children: {SceneNode}?,
+    options: GroupOptions?
+): SceneNode
+    local resolved_options: GroupOptions = options or {}
+    local resolved_layout: Layout = layout or {}
+    resolved_layout.flow = flow
+    local paint: {PaintOp}? = nil
+    if resolved_options.background ~= nil then
+        paint = ({{
+            kind = "fill_bounds",
+            color = resolved_options.background,
+            radius = resolved_options.radius or 0,
+        }} :: {PaintOp})
+    end
+    local interaction: Interaction? = nil
+    if resolved_options.tap_action ~= nil then
+        interaction = ({ tap_action = resolved_options.tap_action } :: Interaction)
+    end
     return {
-        id = options.id,
-        layout = layout,
-        paint = options.background and {{
-            kind = "fill_bounds", color = options.background, radius = options.radius or 0,
-        }} or nil,
-        interaction = options.tap_action and { tap_action = options.tap_action } or nil,
-        semantics = options.semantics,
+        id = resolved_options.id,
+        layout = resolved_layout,
+        paint = paint,
+        interaction = interaction,
+        semantics = resolved_options.semantics,
         children = children,
     }
 end
 
-local function clamp(value, low, high)
+local function clamp(value: number, low: number, high: number): number
     return math.max(low, math.min(high, value))
 end
 
 -- Travel is intentionally part of the generated geometry, rather than a
 -- decoration. Later appointments pull the axis farther sideways.
-local function travel_for(index)
+local function travel_for(index: number): number
     return (index - 1) * 34
 end
 
-local function event_geometry(index)
+local function event_geometry(index: number): Geometry
     local progress = (index - 1) / 2
     local y = 110 + progress * 190
     local bend = travel_for(index)
@@ -73,7 +98,7 @@ local function event_geometry(index)
     return { x = x - EVENT_W / 2, y = y, center_x = x, center_y = y + EVENT_H / 2 }
 end
 
-local function note_geometry(state)
+local function note_geometry(state: ExperienceState): { x: number, y: number }
     local first = state.note_x
     if first == nil then first = 22 end
     local top = state.note_y
@@ -85,12 +110,12 @@ local function note_geometry(state)
     }
 end
 
-local function inside(x, y, rect)
+local function inside(x: number, y: number, rect: Rect): boolean
     return x >= rect.x and x <= rect.x + rect.width
         and y >= rect.y and y <= rect.y + rect.height
 end
 
-local function target_rect(model)
+local function target_rect(model: ExperienceModel): Rect
     for index, calendar_event in ipairs(model.calendar) do
         if calendar_event.title == "Design review" then
             local geometry = event_geometry(index)
@@ -101,57 +126,57 @@ local function target_rect(model)
     return { x = 0, y = 0, width = 0, height = 0 }
 end
 
-local function draw_spine(model, state)
-    local commands = {
+local function draw_spine(model: ExperienceModel, state: ExperienceState): ({PaintOp}, {HitRegion})
+    local commands: {PaintOp} = {
         { kind = "path", color = rail, width = 3, closed = false, points = {
             { x = SPINE_X, y = 28 },
             { x = SPINE_X - 22, y = 94 },
         } },
     }
 
-    local previous = { x = SPINE_X - 22, y = 94 }
+    local previous: PaintPoint = { x = SPINE_X - 22, y = 94 }
     for index, calendar_event in ipairs(model.calendar) do
         local geometry = event_geometry(index)
         local travel = travel_for(index)
-        table.insert(commands, {
+        table.insert(commands, ({
             kind = "path", color = index == 1 and coral or violet, width = 3,
             closed = false, points = {
                 previous,
                 { x = geometry.center_x - travel * 0.35, y = geometry.center_y - 28 },
                 { x = geometry.center_x, y = geometry.center_y },
             },
-        })
-        table.insert(commands, {
+        } :: PaintOp))
+        table.insert(commands, ({
             kind = "quad", x = geometry.x, y = geometry.y,
             width = EVENT_W, height = EVENT_H, radius = 18,
             color = index == 1 and 0x3E2D35 or 0x273342,
-        })
-        table.insert(commands, {
+        } :: PaintOp))
+        table.insert(commands, ({
             kind = "glyphs", x = geometry.x + 14, y = geometry.y + 15,
             size = 12, line_height = 16, max_width = EVENT_W - 28,
             runs = {
                 { text = calendar_event.time .. "  ", color = index == 1 and coral or violet, weight = 650 },
                 { text = calendar_event.title, color = mist, weight = 500 },
             },
-        })
+        } :: PaintOp))
         previous = { x = geometry.center_x, y = geometry.center_y }
     end
 
     local note = note_geometry(state)
-    table.insert(commands, {
+    table.insert(commands, ({
         kind = "path", color = state.dragging and cyan or 0x536975,
         width = 2, closed = false, points = {
             { x = note.x + NOTE_W / 2, y = note.y + NOTE_H / 2 },
             { x = SPINE_X - 20, y = 405 },
             { x = SPINE_X, y = 350 },
         },
-    })
-    table.insert(commands, {
+    } :: PaintOp))
+    table.insert(commands, ({
         kind = "quad", x = note.x, y = note.y, width = NOTE_W, height = NOTE_H,
         radius = 20, color = state.attached and 0x24564F or 0x2B3B4B,
-    })
+    } :: PaintOp))
 
-    local regions = {
+    local regions: {HitRegion} = {
         {
             id = "note-1", x = note.x - 6, y = note.y - 6,
             width = NOTE_W + 12, height = NOTE_H + 12,
@@ -172,16 +197,15 @@ local function draw_spine(model, state)
     return commands, regions
 end
 
-local function render(model, state)
+local function render(model: ExperienceModel, state: ExperienceState): SceneNode
     local playing = state.playing
     if playing == nil then playing = model.music.playing end
     local commands, regions = draw_spine(model, state)
-    local design = target_rect(model)
     local attached_label = state.attached and "Attached to Design review" or "Drag the first note onto Design review"
     if state.last_gesture ~= nil then attached_label = state.last_gesture end
 
-    table.insert(commands, 1, { kind = "fill_bounds", color = paper, radius = 0 })
-    table.insert(commands, {
+    table.insert(commands, 1, ({ kind = "fill_bounds", color = paper, radius = 0 } :: PaintOp))
+    table.insert(commands, ({
         kind = "layer",
         clip = { x = 12, y = 12, width = CANVAS_WIDTH - 24, height = 66 },
         transform = {
@@ -189,14 +213,14 @@ local function render(model, state)
             rotation_degrees = -1.5,
         },
         opacity = 0.92,
-        paint = {
+        paint = ({
             { kind = "quad", x = 16, y = 18, width = 160, height = 44, radius = 18, color = 0x22343F },
             { kind = "glyphs", x = 30, y = 31, size = 12, line_height = 16, max_width = 130, runs = {
                 { text = "LIVE SCENE ABI", color = cyan, weight = 700 },
             } },
-        },
-    })
-    local flow = {
+        } :: {PaintOp}),
+    } :: PaintOp))
+    local flow: SceneNode = {
         id = "bent-time-field",
         layout = {
             width = CANVAS_WIDTH, height = CANVAS_HEIGHT,
@@ -236,7 +260,7 @@ local function render(model, state)
         },
     }
 
-    local children = {
+    local children: {SceneNode} = {
         group("column", { padding = 22, gap = 5 }, {
             text("WHAT IS NEXT", 11, cyan),
             text(model.calendar[1] and model.calendar[1].title or "Open time", 31, mist, {
@@ -302,7 +326,11 @@ local function render(model, state)
     })
 end
 
-local function update(model, state, event)
+local function update(
+    model: ExperienceModel,
+    state: ExperienceState,
+    event: SceneEvent
+): ExperienceState | UpdateOutcome
     if event.action == "toggle_music" then
         if state.playing == nil then state.playing = false else state.playing = not state.playing end
     elseif event.action == "note_press" then

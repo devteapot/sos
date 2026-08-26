@@ -6,8 +6,10 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 
-pub const MAX_CONTROL_LINE_BYTES: usize = 8 * 1024;
+pub const MAX_CONTROL_LINE_BYTES: usize = 64 * 1024;
 pub const MAX_SHELL_TOKEN_BYTES: usize = 256;
+pub const MAX_SHELL_OUTPUTS: usize = 16;
+pub const MAX_SHELL_WINDOWS: usize = 64;
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -42,6 +44,52 @@ pub struct ShellOverlayConfiguration {
     pub y: i32,
     pub width: u32,
     pub height: u32,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct ShellStateSnapshot {
+    pub canvas_width: u32,
+    pub canvas_height: u32,
+    pub mirrored: bool,
+    pub outputs: Vec<ShellOutputSnapshot>,
+    pub windows: Vec<ShellWindowSnapshot>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct ShellOutputSnapshot {
+    /// Opaque to revision code; currently stable for the compositor output's
+    /// connected lifetime.
+    pub id: String,
+    pub x: i32,
+    pub y: i32,
+    pub width: u32,
+    pub height: u32,
+    pub scale_milli: u32,
+    pub primary: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct ShellWindowSnapshot {
+    pub id: String,
+    pub title: String,
+    pub kind: ShellWindowKind,
+    pub active: bool,
+    pub can_focus: bool,
+    pub can_close: bool,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ShellWindowKind {
+    Native,
+    Compatibility,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WindowControlAction {
+    Focus,
+    Close,
 }
 
 pub fn valid_shell_token(token: &str) -> bool {
@@ -104,6 +152,11 @@ pub enum CompositorRequest {
         request_id: u64,
         configuration: ShellOverlayConfiguration,
     },
+    ControlWindow {
+        request_id: u64,
+        window_id: String,
+        operation: WindowControlAction,
+    },
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -142,7 +195,8 @@ impl CompositorRequest {
             | Self::ResumeInput { request_id, .. }
             | Self::ArmPresentation { request_id, .. }
             | Self::ConfigureWindowSpace { request_id, .. }
-            | Self::ConfigureShellOverlay { request_id, .. } => *request_id,
+            | Self::ConfigureShellOverlay { request_id, .. }
+            | Self::ControlWindow { request_id, .. } => *request_id,
         }
     }
 }
@@ -190,6 +244,17 @@ pub enum CompositorEvent {
         request_id: u64,
         hovered: bool,
     },
+    /// Unsolicited bounded observation update. Native handles, process ids,
+    /// application ids, and connector names are deliberately absent.
+    ShellStateChanged {
+        request_id: u64,
+        state: ShellStateSnapshot,
+    },
+    WindowControlled {
+        request_id: u64,
+        window_id: String,
+        operation: WindowControlAction,
+    },
     Presented {
         request_id: u64,
         revision_id: String,
@@ -215,6 +280,8 @@ impl CompositorEvent {
             | Self::ShellOverlayMoved { request_id, .. }
             | Self::ShellOverlayActivated { request_id }
             | Self::ShellOverlayHoverChanged { request_id, .. }
+            | Self::ShellStateChanged { request_id, .. }
+            | Self::WindowControlled { request_id, .. }
             | Self::Presented { request_id, .. }
             | Self::Rejected { request_id, .. } => *request_id,
         }
@@ -329,6 +396,49 @@ mod tests {
             serde_json::from_str::<CompositorEvent>(&serde_json::to_string(&configured).unwrap())
                 .unwrap(),
             configured
+        );
+
+        let control = CompositorRequest::ControlWindow {
+            request_id: 12,
+            window_id: "window-f00d".into(),
+            operation: WindowControlAction::Focus,
+        };
+        assert_eq!(
+            serde_json::from_str::<CompositorRequest>(&serde_json::to_string(&control).unwrap())
+                .unwrap(),
+            control
+        );
+
+        let state = CompositorEvent::ShellStateChanged {
+            request_id: 0,
+            state: ShellStateSnapshot {
+                canvas_width: 1920,
+                canvas_height: 1080,
+                mirrored: false,
+                outputs: vec![ShellOutputSnapshot {
+                    id: "output-cafe".into(),
+                    x: 0,
+                    y: 0,
+                    width: 1920,
+                    height: 1080,
+                    scale_milli: 1_000,
+                    primary: true,
+                }],
+                windows: vec![ShellWindowSnapshot {
+                    id: "window-f00d".into(),
+                    title: "Notes".into(),
+                    kind: ShellWindowKind::Native,
+                    active: true,
+                    can_focus: true,
+                    can_close: true,
+                }],
+            },
+        };
+        let wire = serde_json::to_string(&state).unwrap();
+        assert!(wire.len() < MAX_CONTROL_LINE_BYTES);
+        assert_eq!(
+            serde_json::from_str::<CompositorEvent>(&wire).unwrap(),
+            state
         );
     }
 

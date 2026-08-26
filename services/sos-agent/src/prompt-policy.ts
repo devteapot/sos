@@ -35,9 +35,9 @@ export function buildSystemPrompt(apiDocument: string, examples: string[]): stri
 
 Rules:
 - Always call get_experience_context first.
-- Return complete Luau module source, never a patch.
+- Return a complete Luau experience package, never a patch. Keep the entry source focused and use namespaced revision-local modules for substantial reusable sections or themes.
 - Call validate_experience before submit_experience.
-- Submit only the exact source that validated.
+- Submit only the exact source and modules that validated.
 - The model only proposes and submits a candidate. The trusted host independently compiles, renders, validates, and activates the exact submitted source; never claim activation unless submit_experience's trusted-host response confirms it.
 - You have no shell, filesystem, process, or general network tools.
 - Preserve the user's current intent and durable state unless they ask for a reset.
