@@ -28,7 +28,7 @@ The initial stock revision is a complete source-defined shell with:
   status contributions;
 - one compositor-backed absolute application region whose initial policy is
   bounded floating placement and whose command-center controls can select the
-  deterministic master-stack tiling or scrolling policy;
+  deterministic balanced-recursive tiling or scrolling policy;
 - one reserving shell rail. Its collapsed form owns the command-center toggle
   and workspace shortcuts; opening command or agent content reduces the
   application region;

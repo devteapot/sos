@@ -11451,3 +11451,101 @@ Framework 12. The next window-management gate is explicit maximize/minimize and
 fullscreen policy, keyboard focus/move, true scrolling navigation, XWayland
 parity, and stationary-pointer focus synchronization after compositor-driven
 surface geometry changes.
+
+## 2026-08-26 — Balanced recursive tiling and CSD-accurate close input
+
+**Goal / diagnosis:** Replace the fixed master-stack policy with balanced
+recursive tiling and explain why GNOME Files still ignored some visible close
+clicks after Calculator and other compatibility applications had become
+reliable. The untouched Framework state retained one visible Files window. A
+PiKVM click on its visible close control produced no null buffer, XDG unmap, or
+destroy, while earlier windows had emitted real destroys. Nautilus remaining as
+a `--gapplication-service` process was therefore rejected as a lifecycle
+oracle; the visible toplevel had not closed.
+
+Refreshing Smithay's cached pointer target immediately before a press was a
+useful stationary-pointer hardening but did not fix Files by itself. The first
+development deployment proved both failed clicks were routed at canonical
+`(1495.546875, 657.71484375)` to the live Nautilus compatibility PID, and an
+ordinary Files folder selection worked at the same protocol boundary. A
+focused `WAYLAND_DEBUG=client` launch then captured the earliest discrepancy:
+Nautilus declared `xdg_surface.set_window_geometry(20, 20, 747, 553)`, but the
+visible close click arrived as `wl_pointer.enter(..., 724.546875,
+22.71484375)`. SOS rendered from the buffer origin (`mapped location -
+window_geometry.loc`) while its custom prioritized hit test subtracted only the
+mapped geometry origin. Input was consequently shifted 20 logical pixels up
+and left into the GTK client-side-decoration margin. This explains the resize
+cursor/gesture reports and why controls with larger hit regions appeared
+intermittent. Activation-configure ordering was considered and rejected: a
+second traced click emitted no configure between press and release and still
+missed before the origin fix.
+
+**Changed:** `window_under` now converts every mapped window geometry location
+to the same surface render origin used by the renderer before calling
+`surface_under`; a focused test covers the observed `(771, 635)` mapping and
+`(20, 20)` client-side-decoration inset. Every ungrabbed pointer press also
+re-evaluates its target at the current coordinates before dispatch, preventing
+a compositor map, unmap, or relayout beneath a stationary pointer from leaving
+stale focus. The minimal INFO trace records only logical coordinates, client
+role, and PID.
+
+Tiling now recursively splits each leaf along its longest edge. Branch length
+is proportional to branch window count, so areas remain balanced: three
+windows use three near-equal leaves appropriate to the current aspect ratio,
+four form a 2x2 quad, and later windows continue subdividing instead of joining
+an ever-longer right-hand stack. Returned rectangles are row-major so the
+existing spatial identity rule remains stable across focus raises, close, and
+relayout. Effective horizontal and vertical gaps are reduced only when needed
+to keep all eight bounded leaves positive and inside the declared window
+space. The compositor and Stock architecture documents now name this policy
+and the render-origin input contract.
+
+**Host evidence:** `cargo test -p sos-compositor --lib` passed all 25 tests,
+including exact three-window splits, the four-window quad, maximum-count bounds
+under an impossible gap, geometry-order stability, and CSD render-origin hit
+testing. `cargo clippy --locked -p sos-compositor --features direct-backend
+--bin sos-compositor -- -D warnings`, `cargo fmt --all -- --check`, and
+`git diff --check` passed. The no-feature test build retains its existing
+cfg-dependent unused-`output` warning; the exercised direct build is
+warning-free. No model provider ran, so model and model-weighted cost were
+zero.
+
+**Physical evidence:** The final compositor-only dirty development deployment
+`20260826T165827Z-6bf6dd9f741d-2216553` completed in 74,829,112,221 ns. Its
+root-owned mode-0755 compositor is 5,854,592 bytes with SHA-256
+`382888751be10c08b2981d7d0a9f476370f52907f06b4926b125ff4ab327fd5b`,
+matching the target and deployment manifest. Source metadata records parent
+`6bf6dd9f741d1ecba5cd2c5c07429ab41f656461` with the component code dirty; the
+deployed binary contains the compositor diff now committed, while this evidence
+ledger was finalized afterward. The development deployment itself remains
+promotion-ineligible. The Framework remained on `LiveOS_rootfs` from the
+complete 3,056,205,824-byte
+read-only, non-writable `sos-development-live-28cf8fffee8e.iso`; both internal
+`nvme0n1` partitions remained unmounted and no installer or block writer ran.
+
+On those bytes, Stock plus Calculator and Calendar formed three balanced
+recursive leaves, then Files opened as the fourth leaf of a visible 2x2 quad.
+One click on Files produced
+`destroyed compositor-managed XDG toplevel role=Compatibility was_mapped=true`
+49.937 ms after the compositor's press-routing record; Nautilus then
+disconnected. The remaining three leaves immediately rebalanced. Closing the
+command rail expanded them to three aspect-appropriate columns, and reopening
+it restored the earlier recursive geometry without any Files map or visible
+return. This is the first clean downstream replay after the focused protocol
+fix; repeated pre-fix full attempts were stopped at the runtime-debug circuit
+breaker.
+
+The 55 finalized files are indexed by
+`artifacts/linux-window-manager-framework12-20260826/followup-balanced-close/MANIFEST.sha256`
+(5,313 bytes, SHA-256
+`789f5965c975c49be7caebcee0a6df07b20eba7945fadf791e84a7b61562e169`);
+independent verification passed. Key evidence is the pre-fix Nautilus protocol
+trace, the final four-window quad, the one-click Files close, both rail states,
+the compositor lifecycle log, the storage/binary audit, and the exact
+deployment metadata.
+
+**Decision / next gate:** Accept balanced recursive Tiling, CSD-accurate pointer
+coordinates, stationary-pointer press synchronization, one-click Files close,
+and no-remap rail relayout on the Framework 12. The next window-management gate
+remains explicit minimize/maximize/fullscreen policy, compositor-owned keyboard
+close/focus/move commands, true scrolling navigation, and XWayland parity.

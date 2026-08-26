@@ -58,15 +58,19 @@ Floating mode uses bounded cascade placement and click-to-raise focus. A normal
 `xdg_toplevel.move` from a compatibility client, or a trusted source-native
 chrome gesture, moves the selected window and clamps it to the declared
 window-space. Repeating a Floating configuration preserves those positions;
-switching layout resets placement. Tiling uses a deterministic bounded layout;
-its first window is a full-height master and later windows share an equal
-right-hand stack (two windows remain equal halves). Focus changes only stacking
-order and never reassign managed geometry or clipping rectangles. The initial
+switching layout resets placement. Tiling recursively bisects the longest edge,
+allocates each branch in proportion to its window count, and produces a
+balanced quad for four windows instead of a fixed master and unbounded stack.
+Focus changes only stacking order and never reassign managed geometry or
+clipping rectangles. The initial
 scrolling mode uses overlapping horizontal cards while
 focus/scroll-position control remains a later protocol addition. Configure
 requests are constrained to the declared region, and each application's
 rendered surface tree and pointer hit test are clipped to its assigned
-rectangle. This remains true when an XDG client advertises a minimum size
+rectangle. Hit testing uses the same buffer render origin as drawing—managed
+window location minus the client's `xdg_window_geometry` inset—and refreshes a
+stationary pointer target at an ungrabbed press boundary. This remains true
+when an XDG client advertises a minimum size
 larger than a tile. Popups are clipped with their owning application; layer
 shell and arbitrary client placement remain outside this gate. A null XDG
 buffer unmaps a role without destroying it; compositor application counts,

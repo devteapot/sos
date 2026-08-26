@@ -388,62 +388,113 @@ fn tiled_rectangles(
     gap: i32,
     count: usize,
 ) -> Vec<WindowRectangle> {
-    if count == 1 {
-        let horizontal_gap = gap.min((width.saturating_sub(1) / 2).max(0));
-        let vertical_gap = gap.min((height.saturating_sub(1) / 2).max(0));
-        return vec![WindowRectangle {
-            x: x + horizontal_gap,
-            y: y + vertical_gap,
-            width: (width - horizontal_gap.saturating_mul(2)).max(1),
-            height: (height - vertical_gap.saturating_mul(2)).max(1),
-        }];
-    }
-
-    // Use the conventional master-stack arrangement: one stable master tile
-    // owns the left half and every later window shares the right-hand stack.
-    // For three windows this gives the master the full height beside two
-    // half-height tiles instead of leaving the fourth cell of a 2x2 grid empty.
-    let stack_count = count - 1;
-    let stack_count_i32 = i32::try_from(stack_count).unwrap_or(i32::MAX);
-    let horizontal_gap = gap.min((width.saturating_sub(2) / 3).max(0));
-    let vertical_gap = gap
-        .min((height.saturating_sub(stack_count_i32) / stack_count_i32.saturating_add(1)).max(0));
+    let split_depth = usize::BITS - count.saturating_sub(1).leading_zeros();
+    let gap_divisor = i32::try_from(split_depth)
+        .unwrap_or(i32::MAX)
+        .saturating_add(2);
+    // Reserve two outer insets plus enough space for every recursive split on
+    // a path. This keeps even an impossible requested gap bounded while every
+    // leaf retains at least one logical pixel.
+    let horizontal_gap = gap.min((width.saturating_sub(1) / gap_divisor).max(0));
+    let vertical_gap = gap.min((height.saturating_sub(1) / gap_divisor).max(0));
     let inner_x = x + horizontal_gap;
     let inner_y = y + vertical_gap;
     let inner_width = (width - horizontal_gap.saturating_mul(2)).max(1);
     let inner_height = (height - vertical_gap.saturating_mul(2)).max(1);
-    let available_width = (inner_width - horizontal_gap).max(2);
-    let master_width = (available_width / 2).max(1);
-    let stack_width = (available_width - master_width).max(1);
-    let stack_x = inner_x + master_width + horizontal_gap;
-    let stack_available_height = (inner_height
-        - vertical_gap.saturating_mul(stack_count_i32.saturating_sub(1)))
-    .max(stack_count_i32);
-    let stack_height = (stack_available_height / stack_count_i32).max(1);
-
     let mut rectangles = Vec::with_capacity(count);
-    rectangles.push(WindowRectangle {
-        x: inner_x,
-        y: inner_y,
-        width: master_width,
-        height: inner_height,
-    });
-    for index in 0..stack_count {
-        let index_i32 = i32::try_from(index).unwrap_or(i32::MAX);
-        let stack_y = inner_y + index_i32.saturating_mul(stack_height.saturating_add(vertical_gap));
-        let bottom = inner_y + inner_height;
-        rectangles.push(WindowRectangle {
-            x: stack_x,
-            y: stack_y,
-            width: stack_width,
-            height: if index + 1 == stack_count {
-                (bottom - stack_y).max(1)
-            } else {
-                stack_height
-            },
-        });
-    }
+    split_balanced_tile(
+        WindowRectangle {
+            x: inner_x,
+            y: inner_y,
+            width: inner_width,
+            height: inner_height,
+        },
+        count,
+        horizontal_gap,
+        vertical_gap,
+        &mut rectangles,
+    );
+    // Geometry order is also managed-window identity. Keep it row-major so a
+    // focus raise cannot reassign windows when the next relayout occurs.
+    rectangles.sort_by_key(|rectangle| (rectangle.y, rectangle.x));
     rectangles
+}
+
+fn split_balanced_tile(
+    rectangle: WindowRectangle,
+    count: usize,
+    horizontal_gap: i32,
+    vertical_gap: i32,
+    rectangles: &mut Vec<WindowRectangle>,
+) {
+    if count == 1 {
+        rectangles.push(rectangle);
+        return;
+    }
+
+    let first_count = count.div_ceil(2);
+    let second_count = count / 2;
+    if rectangle.width >= rectangle.height {
+        let available = (rectangle.width - horizontal_gap).max(2);
+        let first_width = i32::try_from(
+            i64::from(available) * i64::try_from(first_count).unwrap_or(i64::MAX)
+                / i64::try_from(count).unwrap_or(i64::MAX),
+        )
+        .unwrap_or(i32::MAX)
+        .clamp(1, available - 1);
+        let second_width = available - first_width;
+        split_balanced_tile(
+            WindowRectangle {
+                width: first_width,
+                ..rectangle
+            },
+            first_count,
+            horizontal_gap,
+            vertical_gap,
+            rectangles,
+        );
+        split_balanced_tile(
+            WindowRectangle {
+                x: rectangle.x + first_width + horizontal_gap,
+                width: second_width,
+                ..rectangle
+            },
+            second_count,
+            horizontal_gap,
+            vertical_gap,
+            rectangles,
+        );
+    } else {
+        let available = (rectangle.height - vertical_gap).max(2);
+        let first_height = i32::try_from(
+            i64::from(available) * i64::try_from(first_count).unwrap_or(i64::MAX)
+                / i64::try_from(count).unwrap_or(i64::MAX),
+        )
+        .unwrap_or(i32::MAX)
+        .clamp(1, available - 1);
+        let second_height = available - first_height;
+        split_balanced_tile(
+            WindowRectangle {
+                height: first_height,
+                ..rectangle
+            },
+            first_count,
+            horizontal_gap,
+            vertical_gap,
+            rectangles,
+        );
+        split_balanced_tile(
+            WindowRectangle {
+                y: rectangle.y + first_height + vertical_gap,
+                height: second_height,
+                ..rectangle
+            },
+            second_count,
+            horizontal_gap,
+            vertical_gap,
+            rectangles,
+        );
+    }
 }
 
 fn scrolling_rectangles(
@@ -594,7 +645,7 @@ mod tests {
     }
 
     #[test]
-    fn three_tiled_windows_use_a_master_and_two_window_stack() {
+    fn three_tiled_windows_use_balanced_recursive_splits() {
         let configuration = WindowSpaceConfiguration {
             geometry: WindowSpaceGeometry {
                 x: 0,
@@ -614,27 +665,74 @@ mod tests {
             WindowRectangle {
                 x: 10,
                 y: 10,
-                width: 485,
-                height: 680,
+                width: 646,
+                height: 335,
             }
         );
         assert_eq!(
             rectangles[1],
             WindowRectangle {
-                x: 505,
+                x: 666,
                 y: 10,
-                width: 485,
-                height: 335,
+                width: 324,
+                height: 680,
             }
         );
         assert_eq!(
             rectangles[2],
             WindowRectangle {
-                x: 505,
+                x: 10,
                 y: 355,
-                width: 485,
+                width: 646,
                 height: 335,
             }
+        );
+    }
+
+    #[test]
+    fn four_tiled_windows_form_a_balanced_quad() {
+        let configuration = WindowSpaceConfiguration {
+            geometry: WindowSpaceGeometry {
+                x: 0,
+                y: 0,
+                width: 1000,
+                height: 700,
+                gap: 10,
+            },
+            layout: WindowLayoutMode::Tiling,
+        };
+
+        let rectangles = window_rectangles(configuration, 4);
+
+        assert_eq!(rectangles.len(), 4);
+        assert_eq!(
+            rectangles,
+            vec![
+                WindowRectangle {
+                    x: 10,
+                    y: 10,
+                    width: 485,
+                    height: 335,
+                },
+                WindowRectangle {
+                    x: 505,
+                    y: 10,
+                    width: 485,
+                    height: 335,
+                },
+                WindowRectangle {
+                    x: 10,
+                    y: 355,
+                    width: 485,
+                    height: 335,
+                },
+                WindowRectangle {
+                    x: 505,
+                    y: 355,
+                    width: 485,
+                    height: 335,
+                },
+            ]
         );
     }
 
