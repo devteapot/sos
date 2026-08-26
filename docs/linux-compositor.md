@@ -58,8 +58,11 @@ Floating mode uses bounded cascade placement and click-to-raise focus. A normal
 `xdg_toplevel.move` from a compatibility client, or a trusted source-native
 chrome gesture, moves the selected window and clamps it to the declared
 window-space. Repeating a Floating configuration preserves those positions;
-switching layout resets placement. Tiling uses a deterministic bounded grid;
-the initial scrolling mode uses overlapping horizontal cards while
+switching layout resets placement. Tiling uses a deterministic bounded layout;
+its first window is a full-height master and later windows share an equal
+right-hand stack (two windows remain equal halves). Focus changes only stacking
+order and never reassign managed geometry or clipping rectangles. The initial
+scrolling mode uses overlapping horizontal cards while
 focus/scroll-position control remains a later protocol addition. Configure
 requests are constrained to the declared region, and each application's
 rendered surface tree and pointer hit test are clipped to its assigned
@@ -71,6 +74,12 @@ focus candidates, and layout are recomputed immediately. Attaching a later
 buffer maps the same still-live role again. Destroy and unmap therefore cannot
 double-decrement policy state, and an unrelated shell action cannot resurrect
 an unmapped client.
+
+Client maximize, unmaximize, and fullscreen requests are currently denied for
+application roles by recomputing the complete selected layout. This prevents a
+client title-bar double-click from applying the one-window size to one tile in
+place and overflowing its assigned rectangle. Distinct maximize and fullscreen
+semantics remain future shell policy.
 
 Ordinary shell content cannot overlap an application surface. Stock therefore
 reserves its top bar and command or agent rail outside `window_space`; opening

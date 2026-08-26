@@ -693,12 +693,7 @@ impl SosCompositor {
     }
 
     pub(crate) fn application_window_rectangles(&self) -> Vec<(Window, WindowRectangle)> {
-        let windows = self
-            .space
-            .elements()
-            .filter(|window| self.is_application_window(window))
-            .cloned()
-            .collect::<Vec<_>>();
+        let windows = self.application_windows_in_layout_order();
         window_rectangles(self.window_space, windows.len())
             .into_iter()
             .zip(windows)
@@ -714,6 +709,26 @@ impl SosCompositor {
                 (window, rectangle)
             })
             .collect()
+    }
+
+    pub(crate) fn application_windows_in_layout_order(&self) -> Vec<Window> {
+        let mut windows = self
+            .space
+            .elements()
+            .filter(|window| self.is_application_window(window))
+            .cloned()
+            .collect::<Vec<_>>();
+        if self.window_space.layout != compositor_control_protocol::WindowLayoutMode::Floating {
+            // Space order is stacking order and changes whenever a window is
+            // focused. Managed geometry must instead retain its spatial order;
+            // otherwise raising a tile reassigns clipping rectangles before a
+            // relayout and makes mapped clients appear to vanish until the next
+            // shell configuration.
+            windows.sort_by_key(|window| {
+                application_layout_order_key(self.space.element_location(window))
+            });
+        }
+        windows
     }
 
     pub(crate) fn window_under(
@@ -798,6 +813,12 @@ impl SosCompositor {
     }
 }
 
+fn application_layout_order_key(location: Option<Point<i32, Logical>>) -> (bool, i32, i32) {
+    location
+        .map(|location| (false, location.y, location.x))
+        .unwrap_or((true, 0, 0))
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct SurfaceRoleData(pub ClientRole);
 
@@ -835,7 +856,9 @@ impl ClientData for ClientState {
 
 #[cfg(test)]
 mod tests {
-    use super::notify_session_owner;
+    use smithay::utils::{Logical, Point};
+
+    use super::{application_layout_order_key, notify_session_owner};
     use std::os::unix::net::UnixDatagram;
 
     #[test]
@@ -849,5 +872,22 @@ mod tests {
         let mut buffer = [0_u8; 16];
         let size = receiver.recv(&mut buffer).unwrap();
         assert_eq!(&buffer[..size], b"logout\n");
+    }
+
+    #[test]
+    fn managed_application_order_follows_geometry_not_stacking_order() {
+        let mut locations = [
+            ("raised", Some(Point::<i32, Logical>::from((500, 60)))),
+            ("master", Some(Point::<i32, Logical>::from((20, 60)))),
+            ("lower", Some(Point::<i32, Logical>::from((500, 400)))),
+            ("unmapped", None),
+        ];
+
+        locations.sort_by_key(|(_, location)| application_layout_order_key(*location));
+
+        assert_eq!(
+            locations.map(|(name, _)| name),
+            ["master", "raised", "lower", "unmapped"]
+        );
     }
 }
