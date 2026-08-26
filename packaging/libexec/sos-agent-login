@@ -20,7 +20,7 @@ sos_agent_login_config="$sos_agent_login_state_dir/config.env"
 sos_agent_login_main="${SOS_AGENT_MAIN:-/usr/local/libexec/sos-agent/dist/agent-runner.cjs}"
 sos_agent_login_provider="${SOS_AGENT_PROVIDER:-openai-codex}"
 sos_agent_login_model="${SOS_AGENT_MODEL:-gpt-5.6-sol}"
-sos_agent_login_fake_source="${SOS_AGENT_FAKE_SOURCE:-/usr/share/sos/experiences/daily-flow.luau}"
+sos_agent_login_fake_source="${SOS_AGENT_FAKE_SOURCE:-/usr/share/sos/experiences/default.luau}"
 
 [[ "$sos_agent_login_state_home" == /* && "$sos_agent_login_main" == /* ]] || \
   sos_agent_login_fail "agent state and program paths must be absolute"
