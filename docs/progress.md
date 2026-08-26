@@ -11354,3 +11354,100 @@ Framework 12. The next window-management gate remains real interactive resize,
 maximize/minimize, keyboard focus/move, scrolling navigation, and XWayland
 parity; those should build on this XDG state contract rather than reintroducing
 client-side ambiguity in managed layouts.
+
+## 2026-08-26 — Stable managed-window identity and master-stack tiling
+
+**Goal / diagnosis:** Reproduce the remaining report that legacy windows appear
+to close but return when the Stock command rail opens, stop title-bar
+double-click from overflowing a tile, and replace the sparse three-window grid
+with conventional master-stack tiling. The untouched Framework state reproduced
+the exact lifecycle symptom: one click made both Firefox and Files disappear,
+but the compositor logged no null-buffer, unmap, or XDG destroy. Opening the
+command rail made both mapped clients visible again.
+
+The root cause was geometry identity being derived from stacking order.
+`application_window_rectangles` zipped policy rectangles to
+`Space::elements()`, while a pointer press raises the focused application and
+therefore changes that order. The mapped locations did not move, but rendering
+and hit testing immediately clipped each application against another window's
+rectangle. A later rail resize performed a complete relayout, realigned those
+two orders, and exposed the clients again. This was neither an application
+restart nor a valid close followed by remap.
+
+**Changed:** Managed Tiling and Scrolling now sort applications by their current
+spatial position before assigning policy rectangles. Click-to-raise can still
+change z-order, but it cannot change a window's geometry identity, clipping, or
+hit region. Floating retains stacking order and its independently preserved
+origins. A focused test proves the spatial order remains master, upper stack,
+lower stack even when the upper stack item is presented first as the raised
+window.
+
+Tiling is now deterministic master-stack: the first application occupies the
+full-height left half, and all later applications share equal rows in the
+right-hand half. Two applications remain equal halves; with three, the master
+is approximately twice the area of either stacked client. The calculation
+absorbs integer remainder in the final stack tile and reduces an impossible
+configured gap rather than placing any of the eight bounded windows outside
+the declared window space. Exact three-window and maximum-count/oversized-gap
+tests cover both policies.
+
+Application maximize, unmaximize, fullscreen, and unfullscreen requests are
+now denied by recomputing the complete active layout. Previously a title-bar
+double-click used the one-window rectangle as the selected tile's new size
+without moving its origin, which visibly overflowed the window space. Distinct
+maximize/fullscreen semantics remain unimplemented; the current behavior is an
+explicit no-op that preserves every assigned tile.
+
+**Bubble decision / diagnostic:** No source or compositor behavior changed for
+the agent bubble. Its composer intentionally collapses only while an XDG move
+is active so changing overlay bounds cannot feed back into its drag origin. On
+the final binary, PiKVM captured the 64-pixel action during the held drag and
+the centered composer expanded again at the new anchor after release. One
+initial absolute-pointer probe did not start a drag until a second small motion
+established focus after the hover expansion; physical pointer motion naturally
+provides that transition, but explicit focus synchronization for a stationary
+pointer beneath newly configured surface geometry remains a follow-up.
+
+**Host evidence:** `git diff --check`, `cargo fmt --all -- --check`, all 23
+`sos-compositor` unit tests, and direct-backend
+`cargo clippy --locked -p sos-compositor --features direct-backend --bin
+sos-compositor -- -D warnings` passed. The no-feature test build retains its
+existing cfg-dependent unused-`output` warning; the exercised direct build is
+warning-free. No model request ran, so model and model-weighted cost were zero.
+
+**Physical evidence:** The final compositor-only dirty development deployment
+`20260826T161919Z-ddbe5b579a3b-2211914` took 71,982,020,066 ns. Its root-owned
+mode-0755 compositor is 5,845,464 bytes with SHA-256
+`6127583436eada53324ab602e40503b61c6bca6a3ba55f7ce70b8117771a37de`,
+matching the target deployment manifest. The Framework remained on
+`LiveOS_rootfs` supplied by the read-only `sr0` development ISO; both internal
+`nvme0n1` partitions remained unmounted. No ISO rebuild, installer, internal
+mount, or internal-disk write occurred.
+
+On those exact bytes, Stock plus Calculator and Calendar visibly formed one
+full-height master and two equal stacked tiles. Closing Calendar emitted
+`destroyed compositor-managed XDG toplevel role=Compatibility was_mapped=true`;
+Calculator immediately expanded into the remaining half. The Calendar
+GApplication service was still resident, demonstrating again why a process is
+not a mapping oracle. Closing and reopening the command rail configured the
+window space from 1,530 to 1,844 and back to 1,530 logical pixels without any
+Calendar map, and the final frame contained only Stock plus Calculator. A
+Calculator title-bar double-click left it bounded in the same tile.
+
+The 18 finalized files are indexed by
+`artifacts/linux-window-manager-framework12-20260826/MANIFEST.sha256`
+(1,780 bytes, SHA-256
+`ede6f9e3f97b9f4a8519e98bd51b31694510e11116e6582f5c80bc2fd0782571`);
+independent verification passed. Key frames are the pre-fix focus/raise hide
+(`08839f58...`), pre-fix rail-triggered return (`201b2d32...`), final
+master-stack (`7ecf92e2...`), final no-remap rail replay (`300af871...`),
+contained double-click (`2dfc9985...`), active-drag collapse (`141e5070...`),
+and post-release expansion (`15f0318a...`).
+
+**Decision / next gate:** Accept stable managed geometry across focus raises,
+ordinary close followed by rail reconfiguration, master-stack Tiling, bounded
+state-request denial, and the temporary bubble-collapse drag policy on the
+Framework 12. The next window-management gate is explicit maximize/minimize and
+fullscreen policy, keyboard focus/move, true scrolling navigation, XWayland
+parity, and stationary-pointer focus synchronization after compositor-driven
+surface geometry changes.

@@ -326,11 +326,11 @@ impl XdgShellHandler for SosCompositor {
     fn grab(&mut self, _surface: PopupSurface, _seat: wl_seat::WlSeat, _serial: Serial) {}
 
     fn maximize_request(&mut self, surface: ToplevelSurface) {
-        self.apply_fixed_size(&surface);
+        self.apply_toplevel_state_policy(&surface, "maximize");
     }
 
     fn unmaximize_request(&mut self, surface: ToplevelSurface) {
-        self.apply_fixed_size(&surface);
+        self.apply_toplevel_state_policy(&surface, "unmaximize");
     }
 
     fn fullscreen_request(
@@ -338,11 +338,11 @@ impl XdgShellHandler for SosCompositor {
         surface: ToplevelSurface,
         _output: Option<smithay::reexports::wayland_server::protocol::wl_output::WlOutput>,
     ) {
-        self.apply_fixed_size(&surface);
+        self.apply_toplevel_state_policy(&surface, "fullscreen");
     }
 
     fn unfullscreen_request(&mut self, surface: ToplevelSurface) {
-        self.apply_fixed_size(&surface);
+        self.apply_toplevel_state_policy(&surface, "unfullscreen");
     }
 }
 
@@ -530,23 +530,7 @@ impl SosCompositor {
     }
 
     pub(crate) fn reconfigure_application_windows(&mut self) {
-        let windows = self
-            .space
-            .elements()
-            .filter(|window| {
-                window.is_x11()
-                    || window
-                        .wl_surface()
-                        .and_then(|surface| Self::client_role(&surface))
-                        .is_some_and(|role| {
-                            matches!(
-                                role,
-                                ClientRole::NativeApplication | ClientRole::Compatibility
-                            )
-                        })
-            })
-            .cloned()
-            .collect::<Vec<_>>();
+        let windows = self.application_windows_in_layout_order();
         let mut rectangles = window_rectangles(self.window_space, windows.len());
         if self.window_space.layout == compositor_control_protocol::WindowLayoutMode::Floating {
             for (window, rectangle) in windows.iter().zip(&mut rectangles) {
@@ -576,12 +560,7 @@ impl SosCompositor {
 
     pub(crate) fn reset_application_window_layout(&mut self) {
         self.application_window_drag = None;
-        let windows = self
-            .space
-            .elements()
-            .filter(|window| self.is_application_window(window))
-            .cloned()
-            .collect::<Vec<_>>();
+        let windows = self.application_windows_in_layout_order();
         let rectangles = window_rectangles(self.window_space, windows.len());
         for (window, rectangle) in windows.into_iter().zip(rectangles) {
             self.configure_application_window(window, rectangle);
@@ -617,6 +596,26 @@ impl SosCompositor {
         });
         if let Some(shell) = shell {
             self.apply_fixed_size(&shell);
+        }
+    }
+
+    fn apply_toplevel_state_policy(&mut self, surface: &ToplevelSurface, request: &'static str) {
+        let role = Self::client_role(surface.wl_surface()).unwrap_or(ClientRole::Compatibility);
+        if matches!(
+            role,
+            ClientRole::NativeApplication | ClientRole::Compatibility
+        ) {
+            // Maximize/fullscreen are not distinct states in the current
+            // shell contract. Deny them by restoring the complete layout, not
+            // by applying the single-window rectangle to one tile in place.
+            self.reconfigure_application_windows();
+            tracing::debug!(
+                ?role,
+                request,
+                "ignored unsupported application state request"
+            );
+        } else {
+            self.apply_fixed_size(surface);
         }
     }
 
@@ -658,13 +657,7 @@ impl SosCompositor {
                 i32::try_from(self.shell_overlay.height).unwrap_or(i32::MAX),
             )
                 .into(),
-            ClientRole::NativeApplication | ClientRole::Compatibility => {
-                let rectangle = window_rectangles(self.window_space, 1)
-                    .into_iter()
-                    .next()
-                    .expect("window-space layout returns one rectangle");
-                (rectangle.width, rectangle.height).into()
-            }
+            ClientRole::NativeApplication | ClientRole::Compatibility => return,
         };
         surface.with_pending_state(|state| {
             state.size = Some(size);
