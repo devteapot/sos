@@ -11141,3 +11141,129 @@ revisions, namespaced state and lifecycle, multiple native application
 surfaces, app-owned bounded status contributions, and command-center launch /
 close/focus integration. Overlay follow-up should add a keyboard toggle and
 exercise below-anchor placement and portrait/tablet geometry on hardware.
+
+## 2026-08-26 — Stable agent anchoring, floating moves, lifecycle reflow, and full-panel mirroring
+
+**Goal / diagnosis:** Resolve the next manual Framework findings without
+moving shell policy back into native special-case UI: keep the inline agent
+composer centered on its floating action except where the output edge requires
+clamping; let its field receive focus independently of action activation;
+remove hover/drag geometry flicker; support source-native and compatibility
+window movement in Floating mode; confirm normal title-bar close/unmap/reflow;
+and use the complete 1,920-by-1,200 laptop panel instead of the former
+1,920-by-1,080 shared canvas with 60-pixel bands.
+
+The composer focus bug was caused by the Linux host wrapping every
+`surface_drag` node in a full-size GPUI element. That implicit wrapper captured
+the complete overlay, including the text field. The visible bubble is now the
+exact move handle. The flashing came from two independent geometry loops: the
+expanded surface constrained movement, then a stale Scene notification could
+reapply its old origin while the moved state commit was in flight. The first
+edge probe confirmed a second consequence: a 430-pixel expanded surface could
+stop at `x=1490`, so its centered 64-pixel action could not reach the physical
+edge. The accepted interaction collapses the overlay to its action rectangle
+for the duration of the compositor move, rebases the gesture when that bounded
+configuration arrives, suppresses hover reconfiguration during the move, and
+re-expands after release. The host holds the compositor's pending anchor until
+the matching source state returns, eliminating the stale snap-back.
+
+**Changed:** Scene ABI v3 `shell_overlay` gained an optional bounded
+`anchor(x,y,width,height,above)`. The Linux host centers the surface on that
+stable action rectangle, clamps the surface to the output, and repositions the
+action locally when centering is impossible. Moved events report anchor rather
+than expanded-surface coordinates. Runtime decoding, IR validation, tests,
+Stock source, and API documentation changed together. The Stock bubble remains
+the only overlay drag node; its sibling composer keeps normal text focus and
+shares the existing `agent_draft` state.
+
+The compositor now accepts `xdg_toplevel.move` for both `Compatibility` and
+`NativeApplication` roles only while Floating and only with the primary button
+held. It raises the selected window, tracks the pointer in logical coordinates,
+and clamps the retained origin to `window_space`. Repeated Floating
+configuration preserves moved positions; changing to Tiling or Scrolling
+resets deterministic layout. Stock marks only its native application chrome as
+`surface_drag`. Unmap and destroy also cancel an active move. Existing
+first-buffer/null-buffer lifecycle handling remains authoritative, so an XDG
+close immediately removes the surface and recomputes the remaining layout.
+
+Mirror mode now selects an internal `eDP` connector as the canonical canvas,
+falling back to the largest connected mode. Base render elements are projected
+per output: identity on the Framework's 1,920-by-1,200 panel and a uniform 0.9
+fit plus 96-pixel horizontal inset on the 1,920-by-1,080 PiKVM output. Absolute
+PiKVM coordinates apply the inverse projection before hit testing, while the
+internal touchscreen remains identity-mapped. Filling two different aspect
+ratios simultaneously without crop, distortion, or unused pixels is
+impossible; preserving the full laptop panel and the complete remote frame is
+the chosen tradeoff, so the remote capture has side pillars instead of the
+laptop having top/bottom bands.
+
+**Failures / rejected paths:** Treating the expanded overlay origin as the
+persisted action made the action visibly jump and constrained its range. A
+full-overlay drag wrapper fixed neither focus nor composition and was removed.
+Allowing Scene geometry to reconfigure immediately after a move recreated the
+old-position flash and was replaced by pending-anchor suppression. During the
+PiKVM gate, numeric mouse-button states returned API success but did not emit
+clicks; literal JSON booleans are required. The first GNOME Calculator drag
+probe hit its invisible upper resize margin and correctly emitted
+`xdg_toplevel.resize(edge=top)`, not move; moving the probe lower into the
+header emitted `xdg_toplevel.move` and exercised the new path. A process still
+running as a GApplication service is not evidence that its window remains
+mapped. Boxes also exposed two independent XDG toplevels (main window and
+tutorial), so closing one can reveal the other without any lifecycle
+resurrection.
+
+**Host evidence:** Final `cargo fmt --all -- --check`, `git diff --check`, and
+strict clippy for `experience-ir`, `runtime-luau`, `sos-experience`, and
+direct-feature `sos-compositor` passed. Unit tests passed 2 compositor-control,
+7 IR, 24 Luau-runtime, 25 direct-feature compositor, and 16 Linux experience
+library cases. New checks cover anchor decoding/validation, centered and
+edge-clamped resolution, canonical eDP mirror selection, and the exact 0.9 / 96
+PiKVM projection. No model request ran, so model and model-weighted cost were
+zero.
+
+**Physical evidence:** The read-only development ISO remained mounted from
+`sr0`; `/` remained `LiveOS_rootfs`, and both internal `nvme0n1` partitions
+remained unmounted. Deployment
+`20260826T133703Z-710d04d63585-2172861` installed compositor, experience host,
+and Stock source in 131,024,294,235 ns. Final compositor deployment
+`20260826T135507Z-710d04d63585-2179458` took 77,636,366,845 ns. The target
+compositor is 5,836,424 bytes, SHA-256
+`3013305f59675f7d2a7c7c37530fd69e462152ea824958e05148be9fdbe0a95d`;
+the host is 17,447,864 bytes, SHA-256
+`2be09044fdab6aa332872fb5db81a15ba2c886c191a917a60e85385de136c83d`;
+and Stock source is 48,701 bytes, SHA-256
+`b121999d2630574c3c38f90f8610f6ae505af71bcc8e55e183fad4fa9e25bb37`.
+Normal transactional authoring activated revision
+`a3c2acc91aad69b507f07faaa9d495d8cc04dd917ad14ab4f519c33128f678ba`.
+
+The final session logged `eDP-1` at `(0,0)` / 1,920-by-1,200 and `DP-1` at
+`(0,0)` / 1,920-by-1,080, then presented nonempty frames on both. PiKVM showed
+the complete 16:10 scene with the expected side fit. Typing `abc` focused the
+inline composer without opening the agent rail. A drag collapsed the action,
+reached anchor `(0,523)`, emitted one moved action, and reconfigured the
+expanded overlay at `(0,441)` / 430-by-146; the capture shows the composer
+clamped left while the action remains at logical `x=0`. A normal Files
+title-bar X removed the mapped client and the remaining native surface filled
+the layout. Subsequent shell interaction did not restore it. In Floating mode,
+the source-native surface moved to `(604,480)` and a traced GNOME Calculator
+move finished at `(767,480)`, both bounded by the declared application region.
+
+The finalized 16-file campaign manifest is
+`artifacts/linux-shell-interactions-framework12-20260826/evidence-manifest.tsv`
+(1,788 bytes, SHA-256
+`0307ed05ab29c159b44fef786703b1f6f1270f41ca8f6819521972a839bf2b22`);
+independent verification passed. Key captures are
+`composer-focused-and-typed.jpeg` (`16f0b7da...`),
+`edge-drag-after-clamped.jpeg` (`b3769dbb...`),
+`titlebar-close-reflow.jpeg` (`850e1b74...`), the native move pair
+(`b6782392...` / `929a7bbe...`), and the compatibility move pair
+(`001dd9a0...` / `ba811660...`).
+
+**Decision / next gate:** Accept anchored composer placement and focus,
+flicker-free edge movement, XDG close/reflow, native and compatibility Floating
+movement, inverse PiKVM input, and the full Framework panel as the current
+physical development baseline. Remaining window-management work is resize,
+maximize/minimize, keyboard move/focus, true scrolling navigation, XWayland
+move parity, and independent native-application supervision. The next display
+gate is physical portrait/tablet geometry and an explicit policy for whether a
+remote mirror should fit, crop, or use an independently composed surface.

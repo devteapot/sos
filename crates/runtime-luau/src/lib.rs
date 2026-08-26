@@ -1352,12 +1352,29 @@ fn decode_content(
             fallback: bounded_optional_string(&table, "fallback", MAX_TEXT_BYTES)?
                 .unwrap_or_default(),
         }),
-        "shell_overlay" => Content::ShellOverlay(ShellOverlayContent {
-            x: scene_number(&table, "x")?,
-            y: scene_number(&table, "y")?,
-            width: required_dimension(&table, "width")?,
-            height: required_dimension(&table, "height")?,
-        }),
+        "shell_overlay" => {
+            let anchor = table
+                .get::<Option<Table>>("anchor")?
+                .map(
+                    |anchor| -> Result<experience_ir::ShellOverlayAnchor, RuntimeError> {
+                        Ok(experience_ir::ShellOverlayAnchor {
+                            x: scene_number(&anchor, "x")?,
+                            y: scene_number(&anchor, "y")?,
+                            width: required_dimension(&anchor, "width")?,
+                            height: required_dimension(&anchor, "height")?,
+                            above: anchor.get::<Option<bool>>("above")?.unwrap_or(false),
+                        })
+                    },
+                )
+                .transpose()?;
+            Content::ShellOverlay(ShellOverlayContent {
+                x: scene_number(&table, "x")?,
+                y: scene_number(&table, "y")?,
+                width: required_dimension(&table, "width")?,
+                height: required_dimension(&table, "height")?,
+                anchor,
+            })
+        }
         "application_surface" => Content::ApplicationSurface(ApplicationSurfaceContent {
             title: required_bounded_string(&table, "title", 256)?,
         }),
@@ -1834,6 +1851,10 @@ mod tests {
                                 content = {
                                     kind = "shell_overlay", x = 20, y = 30,
                                     width = 64, height = 64,
+                                    anchor = {
+                                        x = 20, y = 30, width = 64, height = 64,
+                                        above = true,
+                                    },
                                 },
                                 interaction = { hover_action = "hover" },
                                 children = {{
@@ -1857,6 +1878,11 @@ mod tests {
         let overlay = &scene.root.children[0];
         assert_eq!(overlay.interaction.hover_action.as_deref(), Some("hover"));
         assert!(overlay.children[0].interaction.surface_drag);
+        let Some(Content::ShellOverlay(overlay_content)) = &overlay.content else {
+            panic!("expected shell overlay content");
+        };
+        assert_eq!(overlay_content.anchor.unwrap().x, 20.0);
+        assert!(overlay_content.anchor.unwrap().above);
         assert_eq!(
             scene.root.children[1].content,
             Some(Content::ApplicationSurface(ApplicationSurfaceContent {

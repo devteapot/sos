@@ -88,6 +88,7 @@ pub struct SosCompositor {
     pub window_space: WindowSpaceConfiguration,
     pub shell_overlay: ShellOverlayConfiguration,
     pub shell_overlay_drag: Option<ShellOverlayDrag>,
+    pub application_window_drag: Option<ApplicationWindowDrag>,
     pub shell_overlay_hovered: bool,
     pub output_layout_mirrored: bool,
     pub recovery_ui: RecoveryUi,
@@ -191,6 +192,7 @@ impl SosCompositor {
             window_space: default_window_space((1280, 800)),
             shell_overlay: default_shell_overlay((1280, 800)),
             shell_overlay_drag: None,
+            application_window_drag: None,
             shell_overlay_hovered: false,
             output_layout_mirrored: false,
             recovery_ui: RecoveryUi::from_environment(),
@@ -407,8 +409,13 @@ impl SosCompositor {
                 };
                 match result {
                     Ok(configuration) => {
+                        let layout_changed = self.window_space.layout != configuration.layout;
                         self.window_space = configuration;
-                        self.reconfigure_application_windows();
+                        if layout_changed {
+                            self.reset_application_window_layout();
+                        } else {
+                            self.reconfigure_application_windows();
+                        }
                         tracing::info!(
                             pid,
                             request_id,
@@ -442,6 +449,14 @@ impl SosCompositor {
                 match result {
                     Ok(configuration) => {
                         self.shell_overlay = configuration;
+                        if let Some(drag) = &mut self.shell_overlay_drag {
+                            drag.origin = (configuration.x, configuration.y);
+                            drag.pointer = self
+                                .seat
+                                .get_pointer()
+                                .expect("seat has a pointer")
+                                .current_location();
+                        }
                         self.apply_shell_overlay_configuration();
                         let pointer = self
                             .seat
@@ -571,6 +586,61 @@ impl SosCompositor {
             moved,
             "completed trusted shell overlay move"
         );
+        let pointer = self
+            .seat
+            .get_pointer()
+            .expect("seat has a pointer")
+            .current_location();
+        self.synchronize_shell_overlay_hover(pointer, false);
+    }
+
+    pub(crate) fn update_application_window_drag(&mut self, pointer: Point<f64, Logical>) {
+        let Some(drag) = self.application_window_drag.as_ref() else {
+            return;
+        };
+        if self.window_space.layout != compositor_control_protocol::WindowLayoutMode::Floating {
+            self.application_window_drag = None;
+            return;
+        }
+        let window = drag.window.clone();
+        let origin = drag.origin;
+        let pointer_origin = drag.pointer;
+        let Some(rectangle) = self
+            .application_window_rectangles()
+            .into_iter()
+            .find_map(|(candidate, rectangle)| (candidate == window).then_some(rectangle))
+        else {
+            self.application_window_drag = None;
+            return;
+        };
+        let geometry = self.window_space.geometry;
+        let right = geometry
+            .x
+            .saturating_add(i32::try_from(geometry.width).unwrap_or(i32::MAX));
+        let bottom = geometry
+            .y
+            .saturating_add(i32::try_from(geometry.height).unwrap_or(i32::MAX));
+        let max_x = right.saturating_sub(rectangle.width).max(geometry.x);
+        let max_y = bottom.saturating_sub(rectangle.height).max(geometry.y);
+        let x = (origin.x + (pointer.x - pointer_origin.x).round() as i32).clamp(geometry.x, max_x);
+        let y = (origin.y + (pointer.y - pointer_origin.y).round() as i32).clamp(geometry.y, max_y);
+        self.space.map_element(window, (x, y), false);
+    }
+
+    pub(crate) fn finish_application_window_drag(&mut self) {
+        let Some(drag) = self.application_window_drag.take() else {
+            return;
+        };
+        let location = self
+            .space
+            .element_location(&drag.window)
+            .unwrap_or(drag.origin);
+        tracing::info!(
+            x = location.x,
+            y = location.y,
+            moved = location != drag.origin,
+            "completed compositor-managed application move"
+        );
     }
 
     pub(crate) fn update_shell_overlay_hover(&mut self, pointer: Point<f64, Logical>) {
@@ -582,6 +652,9 @@ impl SosCompositor {
         pointer: Point<f64, Logical>,
         force: bool,
     ) {
+        if self.shell_overlay_drag.is_some() && !force {
+            return;
+        }
         let mapped = self.space.elements().any(|window| {
             window
                 .wl_surface()
@@ -629,7 +702,17 @@ impl SosCompositor {
         window_rectangles(self.window_space, windows.len())
             .into_iter()
             .zip(windows)
-            .map(|(rectangle, window)| (window, rectangle))
+            .map(|(mut rectangle, window)| {
+                if self.window_space.layout
+                    == compositor_control_protocol::WindowLayoutMode::Floating
+                {
+                    if let Some(location) = self.space.element_location(&window) {
+                        rectangle.x = location.x;
+                        rectangle.y = location.y;
+                    }
+                }
+                (window, rectangle)
+            })
             .collect()
     }
 
@@ -734,6 +817,12 @@ pub struct ClientState {
 pub struct ShellOverlayDrag {
     pub pointer: Point<f64, Logical>,
     pub origin: (i32, i32),
+}
+
+pub struct ApplicationWindowDrag {
+    pub window: Window,
+    pub pointer: Point<f64, Logical>,
+    pub origin: Point<i32, Logical>,
 }
 
 impl ClientData for ClientState {

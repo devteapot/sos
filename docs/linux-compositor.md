@@ -54,15 +54,19 @@ application windows across SOS-native Wayland, ordinary Wayland, and the
 explicitly enabled rootless XWayland path.
 Application surfaces stay above the shell and within the active window-space
 rectangle. They are not embedded into GPUI or exposed as generated nodes.
-Floating mode uses bounded cascade placement and click-to-raise focus; tiling
-uses a deterministic bounded grid; the initial scrolling mode uses overlapping
-horizontal cards while focus/scroll-position control remains a later protocol
-addition. Configure requests are constrained to the declared region, and each
-application's rendered surface tree and pointer hit test are clipped to its
-assigned rectangle. This remains true when an XDG client advertises a minimum
-size larger than a tile. Popups are clipped with their owning application;
-layer shell and arbitrary client placement remain outside this gate. A null
-XDG buffer unmaps a role without destroying it; compositor application counts,
+Floating mode uses bounded cascade placement and click-to-raise focus. A normal
+`xdg_toplevel.move` from a compatibility client, or a trusted source-native
+chrome gesture, moves the selected window and clamps it to the declared
+window-space. Repeating a Floating configuration preserves those positions;
+switching layout resets placement. Tiling uses a deterministic bounded grid;
+the initial scrolling mode uses overlapping horizontal cards while
+focus/scroll-position control remains a later protocol addition. Configure
+requests are constrained to the declared region, and each application's
+rendered surface tree and pointer hit test are clipped to its assigned
+rectangle. This remains true when an XDG client advertises a minimum size
+larger than a tile. Popups are clipped with their owning application; layer
+shell and arbitrary client placement remain outside this gate. A null XDG
+buffer unmaps a role without destroying it; compositor application counts,
 focus candidates, and layout are recomputed immediately. Attaching a later
 buffer maps the same still-live role again. Destroy and unmap therefore cannot
 double-decrement policy state, and an unrelated shell action cannot resurrect
@@ -73,10 +77,14 @@ reserves its top bar and command or agent rail outside `window_space`; opening
 a rail reduces the application rectangle. The dedicated shell overlay is the
 narrow exception: it stays above all applications, is clamped to the output,
 and can be moved only through the compositor-owned XDG move path. Hover is
-hit-tested by the compositor. A stationary trusted move gesture is reported as
-activation; a geometry-changing gesture reports only its final bounded
-geometry. This lets Luau define the bubble and composer without gaining
-surface handles or global placement authority.
+hit-tested by the compositor. An expanded overlay collapses to its stable
+action rectangle for the duration of a move, so the action can reach every
+output edge without stale expanded geometry constraining it. A stationary
+trusted move gesture is reported as activation; a geometry-changing gesture
+reports only its final bounded anchor. The host suppresses stale scene geometry
+until that anchor commit returns, preventing a dragged overlay from flashing
+back to its previous position. This lets Luau define the bubble and composer
+without gaining surface handles or global placement authority.
 
 ## Activation fence
 
@@ -224,13 +232,16 @@ both before boot and between the killed/restarted hosts, and the separate
 compatibility client mapped at `(280, 140)`.
 
 The direct backend remains intentionally one seat, but accepts multiple DRM
-devices and simultaneous connected outputs. Its default mirror policy computes
-the largest logical canvas that fits every connected output, centers that one
-canvas on each physical mode, and resizes the shell once. This lets the
-Framework's 1920x1200 panel show the same 1920x1080 scene as PiKVM with 60
-logical pixels of compositor background above and below. `"layout": "extend"`
-retains the connector-sorted horizontal desktop when independent output space
-is wanted. Both policies survive connector and whole-device removal/addition.
+devices and simultaneous connected outputs. Its default mirror policy prefers
+the internal `eDP` connector as the canonical logical canvas, falling back to
+the connected output with the largest pixel area. It renders that full canvas
+unchanged on the canonical output and fits it uniformly, without crop or
+distortion, on every other output. On Framework 12 this gives the laptop its
+native 1920x1200 canvas with no top/bottom bands; the 1920x1080 PiKVM capture
+receives the complete 16:10 scene at 0.9 scale with 96-pixel side pillars.
+`"layout": "extend"` retains the connector-sorted horizontal desktop when
+independent output space is wanted. Both policies survive connector and
+whole-device removal/addition.
 `SOS_OUTPUT_MODE`, `SOS_OUTPUT_SCALE`, and `SOS_OUTPUT_ROTATION` set boot
 configuration. A bounded JSON file selected by `SOS_OUTPUT_CONFIG_FILE` can
 change those values and `layout` on a DRM udev event; the backend recreates
@@ -240,6 +251,9 @@ That file can also associate an exact libinput device name with a connector in
 connector's logical geometry regardless of connector discovery order. They
 remain automatic on a single output, but fail closed when multiple outputs make
 an unconfigured route ambiguous or when the configured connector is absent.
+In mirror mode, absolute input on a fitted secondary output is transformed
+through the inverse scale and offset into canonical coordinates; an internal
+touchscreen remains identity-mapped to the panel.
 Relative pointers stay inside the shared mirror canvas. In extended mode they
 traverse the complete connected-output layout and clamp only to the nearest
 valid output rectangle, including across gaps between outputs.
