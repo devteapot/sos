@@ -173,6 +173,7 @@ impl SystemAdapter {
                     label: application.label.clone(),
                 })
                 .collect(),
+            status_widgets: Vec::new(),
         };
 
         Ok(SystemProviders {

@@ -62,7 +62,13 @@ model.providers = {
         volume_percent = 50, muted = false,
         media = { active = true, playing = true, title = "…", artist = "…" },
     },
-    apps = { compatible = {{ id = "app-…", label = "Calculator" }} },
+    apps = {
+        compatible = {{ id = "app-…", label = "Calculator" }},
+        status_widgets = {{
+            id = "timer", label = "TIMER", value = "04:20",
+            application_id = "app-…", -- optional bounded launch selection
+        }},
+    },
     attention = {
         urgent_count = 0,
         items = {{
@@ -126,15 +132,18 @@ change its resident provider.
 The resident-agent validation path requires each submitted revision to retain
 at least one Luau `text_session` with `submit_action = "agent_submit"`.
 
-## Stock Base is an ordinary revision
+## Stock Shell is a replaceable revision
 
 The default [`experiences/default.luau`](../experiences/default.luau) exercises
-this contract as the product integration target. Its Home, Agenda, Notes,
-Media, Attention, System, Apps, and Agent workspaces; navigation; provider
-actions; unavailable states; responsive wrapping; and inline SVG mark are all
-declared in Luau. None is a host special case. A user or agent can replace the
-complete source, state schema, and revision assets while the provider and
-trusted-ceremony boundary remains fixed. See
+this contract as the product integration target. Its top bar, status
+contributions, command center, application-region policy, agent FAB/rail,
+Home, Agenda, Notes, Media, Attention, System, Apps and Agent workspaces,
+unavailable states, responsive layout and inline SVG mark are declared in
+Luau. A user or agent can replace the complete source, state schema and
+revision assets while compositor mechanism, providers and trusted ceremonies
+remain fixed. The one structural exception is the native-backed
+`window_space` content primitive described below: Luau places and configures it
+but never owns its application surfaces. See
 [`stock-experience.md`](stock-experience.md) for its surface and recovery
 status.
 
@@ -275,6 +284,11 @@ layout pass; combined with child `min_width` and `grow`, one source can form a
 multi-column clamshell layout and collapse to one column in a narrow or portrait
 tablet layout.
 
+`grow` means that the node owns flexible remaining space and may shrink below
+the intrinsic size of its descendants. The host applies zero automatic minimum
+width and height to growing nodes, so a long list inside `scroll_y` stays
+bounded by its viewport instead of enlarging a shell row or window space.
+
 ### Content
 
 Each node currently carries at most one content payload:
@@ -294,6 +308,13 @@ content = {
 }
 
 content = { kind = "provider_surface", surface = "camera-preview" }
+
+content = {
+    kind = "window_space",
+    layout = "floating", -- or "tiling" / "scrolling"
+    gap = 12,
+    fallback = "No application windows are open",
+}
 ```
 
 `text_session` is a host-owned editing session and requires a stable node ID.
@@ -322,6 +343,30 @@ also requires its explicit grant but reports `protected_unavailable` and never
 maps bytes because the prototype does not claim a secure scanout path. The
 Android host renders an explicit unavailable placeholder for this Linux
 integration primitive.
+
+`window_space` is the shell/compositor composition point on Linux. It requires
+a stable node ID, and validation admits at most one per scene. During GPUI
+prepaint the host converts the node's actual logical bounds into an
+authenticated, bounded compositor configuration. The region must be at least
+160 by 120 logical pixels, must remain inside the active output, and has a gap
+bounded to 128. The compositor deterministically places at most eight ordinary
+Wayland/XWayland application windows within it. `floating` cascades bounded
+windows and retains click-to-raise focus; `tiling` uses a bounded grid;
+`scrolling` currently presents overlapping horizontal cards and reserves true
+scroll-position/focused-window controls for a later ABI addition. Children of
+the node are normal Luau content painted in the shell below those independent
+application surfaces, which supplies home/empty content without pretending
+that a client window is a GPUI child.
+
+The compositor treats each assigned application rectangle as a paint and input
+boundary, not merely an XDG size hint. A client whose toolkit enforces a larger
+minimum buffer is clipped and cannot paint or receive pointer focus over a
+sibling tile, status bar, command center or agent rail.
+
+The control message contains only integer geometry and the closed layout enum.
+Luau never receives a Wayland handle, window PID, client command line, native
+input object or arbitrary placement operation. Android renders the fallback
+string because it has no Linux compositor window space.
 
 ### Paint and interaction
 

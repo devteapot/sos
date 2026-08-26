@@ -9,6 +9,29 @@ use serde::{Deserialize, Serialize};
 pub const MAX_CONTROL_LINE_BYTES: usize = 8 * 1024;
 pub const MAX_SHELL_TOKEN_BYTES: usize = 256;
 
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WindowLayoutMode {
+    Floating,
+    Tiling,
+    Scrolling,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct WindowSpaceGeometry {
+    pub x: i32,
+    pub y: i32,
+    pub width: u32,
+    pub height: u32,
+    pub gap: u32,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct WindowSpaceConfiguration {
+    pub geometry: WindowSpaceGeometry,
+    pub layout: WindowLayoutMode,
+}
+
 pub fn valid_shell_token(token: &str) -> bool {
     !token.is_empty()
         && token.len() <= MAX_SHELL_TOKEN_BYTES
@@ -61,6 +84,10 @@ pub enum CompositorRequest {
         request_id: u64,
         revision_id: String,
     },
+    ConfigureWindowSpace {
+        request_id: u64,
+        configuration: WindowSpaceConfiguration,
+    },
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -97,7 +124,8 @@ impl CompositorRequest {
             Self::RegisterShell { request_id, .. }
             | Self::QuiesceInput { request_id, .. }
             | Self::ResumeInput { request_id, .. }
-            | Self::ArmPresentation { request_id, .. } => *request_id,
+            | Self::ArmPresentation { request_id, .. }
+            | Self::ConfigureWindowSpace { request_id, .. } => *request_id,
         }
     }
 }
@@ -122,6 +150,10 @@ pub enum CompositorEvent {
         request_id: u64,
         revision_id: String,
     },
+    WindowSpaceConfigured {
+        request_id: u64,
+        configuration: WindowSpaceConfiguration,
+    },
     Presented {
         request_id: u64,
         revision_id: String,
@@ -142,6 +174,7 @@ impl CompositorEvent {
             | Self::Armed { request_id, .. }
             | Self::InputQuiesced { request_id, .. }
             | Self::InputResumed { request_id, .. }
+            | Self::WindowSpaceConfigured { request_id, .. }
             | Self::Presented { request_id, .. }
             | Self::Rejected { request_id, .. } => *request_id,
         }
@@ -203,6 +236,35 @@ mod tests {
             event
         );
         assert_eq!(event.request_id(), 9);
+
+        let configuration = WindowSpaceConfiguration {
+            geometry: WindowSpaceGeometry {
+                x: 24,
+                y: 72,
+                width: 1000,
+                height: 680,
+                gap: 12,
+            },
+            layout: WindowLayoutMode::Floating,
+        };
+        let request = CompositorRequest::ConfigureWindowSpace {
+            request_id: 10,
+            configuration,
+        };
+        assert_eq!(
+            serde_json::from_str::<CompositorRequest>(&serde_json::to_string(&request).unwrap())
+                .unwrap(),
+            request
+        );
+        let configured = CompositorEvent::WindowSpaceConfigured {
+            request_id: 10,
+            configuration,
+        };
+        assert_eq!(
+            serde_json::from_str::<CompositorEvent>(&serde_json::to_string(&configured).unwrap())
+                .unwrap(),
+            configured
+        );
     }
 
     #[test]

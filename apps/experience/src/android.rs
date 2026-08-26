@@ -2529,6 +2529,20 @@ impl ExperienceHost {
                     .child("Provider surface unavailable on this host"),
             );
         }
+        if let Some(Content::WindowSpace(space)) = &node.content {
+            element = element.child(
+                div()
+                    .size_full()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(if space.fallback.is_empty() {
+                        "Application windows are unavailable on this host".into()
+                    } else {
+                        space.fallback.clone()
+                    }),
+            );
+        }
         if let Some(Content::TextSession(input)) = &node.content {
             self.input_state_shadow
                 .entry(input.state_key.clone())

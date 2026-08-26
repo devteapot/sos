@@ -11071,3 +11071,128 @@ that Stock interaction gate is not implied by the greeter result. The finalized
 (8,167 bytes, SHA-256
 `9e227218d7b7db5def47b87b04044501076b89bc6161714d656405f43b21f09d`),
 and every listed size and digest was independently rechecked after generation.
+
+## 2026-08-26 — Accept the replaceable Stock Shell on Framework 12
+
+**Goal / architecture:** Convert the substantial default revision into the
+actual product shell without moving application ownership or platform
+authority into Luau. Scene ABI v3 now has one additive, keyed `window_space`
+content facet with a bounded gap, fallback and closed `floating`, `tiling` and
+`scrolling` policies. GPUI measures its retained bounds and the permanent host
+sends only integer geometry plus policy over the authenticated compositor
+connection. Validation admits one such node per scene. Luau never receives a
+surface identity, PID, Wayland object, socket, executable path or arbitrary
+placement operation; Android renders the same primitive as unavailable.
+
+The compositor admits at most eight application windows across native Wayland
+and opt-in rootless XWayland, reflows them on configuration, map/unmap and output
+changes, and constrains both rendering and hit testing to each assigned
+rectangle. This hard clipping is required because an XDG client such as GNOME
+Calendar may enforce a buffer minimum wider than its tile. Floating uses a
+bounded cascade and click-to-raise; tiling uses a deterministic grid; the first
+scrolling policy is an overlapping horizontal card stack rather than a claim of
+Niri-style navigation. Existing applications remain opaque freedesktop launch
+selections handled by the typed `gio launch` adapter and independent compositor
+clients; none were rewritten or wrapped in generated shell commands.
+
+[`experiences/default.luau`](../experiences/default.luau) now owns the top
+status bar, bounded application container, collapsed command/agent rail, agent
+FAB, reserving command center, application launcher, selectable window policy
+and eight provider-backed workspaces. Bounded application status contributions
+carry only ID, visible label/value and an optional opaque compatible-app
+selection; Linux/Core publish none until the registration broker exists. The
+host's `grow` mapping now permits flexible nodes to shrink below intrinsic
+content, so a scroll list cannot enlarge the shell beyond its viewport. The
+agent workspace is safely reusable in the main canvas and FAB rail through
+scope-prefixed stable IDs. Top and side shell UI remains reserved outside the
+application rectangle because a true transient overlay shell surface is not
+yet implemented.
+
+**Failures and fixes:** The first physical candidate
+`988196dcf3c4b4122df51d9127f41951497db9f176795d4edb92166a7b212684`
+placed its absolute canvas at an inherited flow offset and sent geometry beyond
+the 1,920-by-1,080 canvas. The compositor rejected it correctly, but the host
+treated that policy rejection as fatal and the coordinator recovered the
+previous revision. Pinning the canvas at top-left, making the containing node
+relative and policy rejections non-fatal restored rollback-safe operation.
+Opening the command center then exposed the flex intrinsic-size bug: Luau sent
+height 1,553, so the compositor retained Floating despite the selected Tiling
+state. Zero automatic minimums for `grow` produced and acknowledged the correct
+1,530-by-1,022 region. GNOME Calendar next demonstrated that an XDG size request
+is not an enforcement boundary; per-window render/input clipping kept its
+minimum-size buffer out of the Luau rail. Finally, the FAB initially produced
+`interactive node requires a stable id`; the unnamed agent scroll region and
+reused IDs were fixed and covered by the embedded-experience test. Forcefully
+terminating repeated GDM sessions eventually reached GDM's display-failure
+limit; restarting GDM recovered it, and clean `Ctrl+Alt+Backspace` session exit
+remains the correct development gate path.
+
+**Host evidence:** Final runs passed 2 compositor-control-protocol, 6
+experience-IR, 23 Luau-runtime, 22 direct-feature compositor, 29 Linux-host
+experience, 17 Linux-provider, 11 Android-authority library and 5 Android
+authority binary tests. `tests/linux-login-session-test.sh` and
+`tests/linux-live-image-test.sh` passed; strict clippy passed for compositor and
+Linux experience host; format, shell syntax and `git diff --check` passed. The
+nested compositor gate is `SKIP`, not PASS: `weston` is absent on this host.
+No model request ran, so model and model-weighted cost were zero.
+
+**Physical evidence:** The unchanged 3,056,205,824-byte development ISO
+(`28cf8fffee8e2492fc4f2b69fcfe27db3baf7b36`) remained attached read-only.
+Boot `9b1818f2-c6c3-4829-8109-c9b3320a02a3` used `LiveOS_rootfs` with an overlay
+upper directory; the internal `nvme0n1` partitions remained unmounted. Wi-Fi
+was connected to `Lino WiFi`, battery read 81%, and PiKVM captured the mirrored
+1,920-by-1,080 canvas. Three exact hot deployments passed:
+
+- experience host `20260826T092123Z-91b99efddca3-2015524`,
+  108,048,939,075 ns;
+- compositor `20260826T093317Z-91b99efddca3-2041459`, 75,573,250,184 ns; and
+- Stock source `20260826T094053Z-91b99efddca3-2044852`, 9,379,079,456 ns.
+
+The target experience host is 17,393,592 bytes, SHA-256
+`36e766980614ef51032e3d5064515b366e97f2cd23265b2f54f91b529588ae8e`;
+the compositor is 5,782,032 bytes, SHA-256
+`c70de8ddb5bbd664c41d5f8b7c7a983f8e48bc42c2d237785b059e810b794c45`;
+the login wrapper is 13,020 bytes, SHA-256
+`fb0df2b872a3998c5f75cb1d980b9148625d39cc934d82769ca9cbf706e44ec3`;
+and Stock source is 45,044 bytes, SHA-256
+`6c5ccd60992cf64081237ebd8fdda1e37c8d784fecc89eacbd4de0813feddb2b`.
+Normal install/stage/activate committed revision
+`327459a9fb595be7db4183e4be31c671616842912bd75ed69e626980426e3eb8`
+with transaction `linux-activate-103-327459a9fb595be7db4183e4be31c671616842912bd75ed69e626980426e3eb8`.
+The compositor presented it from DRM page flip at commit 11,608 / submit 95,
+then acknowledged the agent rail's 1,490-by-1,022 Tiling region.
+
+PiKVM evidence
+`artifacts/linux-stock-shell-framework12-20260826/pikvm/final-clipped-two-apps-tiling.jpg`
+(SHA-256
+`8c7d7438613908f61fa5fe3a23357842c7463f132f00021a0b3e622b9b70c333`)
+shows Calculator and Calendar clipped side by side while the command panel is
+visible. `final-clipped-panel-close.jpg` (SHA-256
+`9daa3831dd760b5ce5629bc9636638eef8e3378740bc51ccb4e49bd2016cf98a`)
+proves the Luau close action remained clickable outside native buffers, and
+`final-agent-fab-panel-verified.jpg` (SHA-256
+`b2f699682cfc97915c9a00868e4584cd5abcb6058a726b7848239916f83348b9`)
+shows the independent agent rail and composer. The active login holds a block
+inhibitor for `sleep:idle:handle-lid-switch`; the process tree confirms it wraps
+the complete `sos-linux-session run-user` lifetime. With no PiKVM HID event
+after the FAB action at 09:48:42, `final-idle-five-minutes.jpg` remained visibly
+rendered more than five minutes later (76,689 bytes, SHA-256
+`2fd6af21780fc15540c6f40dc7be6800daf4fdfa44848317a73d66a0e96c34eb`);
+at 09:54:20 the same revision was active, the inhibitor remained held and
+NetworkManager still reported `Lino WiFi` connected. The finalized 53-file
+campaign manifest is
+`artifacts/linux-stock-shell-framework12-20260826/evidence-manifest.tsv`
+(5,626 bytes, SHA-256
+`fcb0fbacd773e5ed930c6de7025c4a73f89be27e4b48f3a7673f9929c00c0cdc`);
+independent verification passed after all evidence files were finalized.
+
+**Decision / next gate:** The replaceable Stock Shell, authenticated window
+space, provider launch path, PiKVM input, reserving command/agent rails, native
+two-window tiling and active-session always-awake policy are accepted on the
+Framework development target. Remaining product work is a real scrolling
+navigation/focus model, app contribution broker, title/window list, keyboard
+command-center/FAB shortcut, compositor overlay surface, physical portrait
+tablet gate and immutable asymmetrically signed Linux stock-recovery pointer.
+The session inhibitor is intentionally released at logout; if the always-on
+development requirement also includes the logged-out GDM greeter, its separate
+idle policy still needs an explicit image default.

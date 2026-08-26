@@ -36,6 +36,8 @@ mod pointer_input;
 mod scene_surface;
 #[cfg(all(target_os = "linux", feature = "linux-host"))]
 mod shader_paint;
+#[cfg(all(target_os = "linux", feature = "linux-host"))]
+mod window_space;
 
 #[cfg(all(target_os = "linux", feature = "linux-host"))]
 pub use linux::run as run_linux_host;
@@ -131,28 +133,67 @@ mod tests {
         fn contains_wrapping_layout(node: &experience_ir::SceneNode) -> bool {
             node.layout.wrap || node.children.iter().any(contains_wrapping_layout)
         }
+        fn window_space(
+            node: &experience_ir::SceneNode,
+        ) -> Option<&experience_ir::WindowSpaceContent> {
+            if let Some(experience_ir::Content::WindowSpace(space)) = &node.content {
+                return Some(space);
+            }
+            node.children.iter().find_map(window_space)
+        }
         let mut stock_model = providers_fake::snapshot();
         stock_model.providers.abi_version = experience_ir::SYSTEM_PROVIDER_ABI_VERSION;
         stock_model.providers.audio.volume_percent = Some(50);
-        stock_model.providers.capabilities = vec![experience_ir::SystemCapability::AudioSetVolume];
+        stock_model
+            .providers
+            .apps
+            .compatible
+            .push(experience_ir::SystemApplication {
+                id: "app-timer".into(),
+                label: "Timer".into(),
+            });
+        stock_model.providers.apps.status_widgets = vec![experience_ir::ApplicationStatusWidget {
+            id: "widget-timer".into(),
+            label: "TIMER".into(),
+            value: "04:20".into(),
+            application_id: Some("app-timer".into()),
+        }];
+        stock_model.providers.capabilities = vec![
+            experience_ir::SystemCapability::AudioSetVolume,
+            experience_ir::SystemCapability::AppLaunch,
+        ];
         assert_eq!(runtime.assets().len(), 1);
         let stock_scene = runtime
             .render(&stock_model, &runtime.initial_state())
             .unwrap();
         assert!(contains_id(&stock_scene.root, "workspace-home"));
+        assert!(contains_id(&stock_scene.root, "shell-top-bar"));
+        assert!(contains_id(&stock_scene.root, "shell-rail"));
+        assert!(contains_action(&stock_scene.root, "toggle_command_center"));
+        assert!(contains_action(&stock_scene.root, "toggle_agent_panel"));
+        assert!(contains_id(&stock_scene.root, "shell-app-widget-1"));
+        assert!(contains_action(&stock_scene.root, "shell_app_widget_1"));
+        assert_eq!(
+            window_space(&stock_scene.root).map(|space| space.layout),
+            Some(experience_ir::WindowLayoutMode::Floating)
+        );
         assert!(contains_wrapping_layout(&stock_scene.root));
         let home_grid = node_by_id(&stock_scene.root, "home-responsive-grid").unwrap();
         assert!(home_grid.layout.wrap);
         let content_frame = node_by_id(&stock_scene.root, "stock-content-frame").unwrap();
-        assert_eq!(content_frame.layout.max_width, Some(1876.0));
-        assert_eq!(
-            content_frame
-                .layout
-                .program
-                .as_ref()
-                .and_then(|program| program.measure_width),
-            Some(1.0)
-        );
+        assert!(content_frame.layout.scroll_y);
+        let command_state = runtime
+            .update(
+                &stock_model,
+                &runtime.initial_state(),
+                &experience_ir::SceneEvent {
+                    action: "toggle_command_center".into(),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let command_scene = runtime.render(&stock_model, &command_state).unwrap();
+        assert!(contains_id(&command_scene.root, "shell-command-center"));
         for workspace in [
             "home",
             "agenda",
@@ -164,7 +205,7 @@ mod tests {
             "agent",
         ] {
             assert!(contains_action(
-                &stock_scene.root,
+                &command_scene.root,
                 &format!("navigate_{workspace}")
             ));
             let state = runtime
@@ -180,6 +221,21 @@ mod tests {
             let scene = runtime.render(&stock_model, &state).unwrap();
             assert!(contains_id(&scene.root, &format!("workspace-{workspace}")));
         }
+        let tiled_state = runtime
+            .update(
+                &stock_model,
+                &runtime.initial_state(),
+                &experience_ir::SceneEvent {
+                    action: "window_layout_tiling".into(),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let tiled_scene = runtime.render(&stock_model, &tiled_state).unwrap();
+        assert_eq!(
+            window_space(&tiled_scene.root).map(|space| space.layout),
+            Some(experience_ir::WindowLayoutMode::Tiling)
+        );
         let system_state = runtime
             .update(
                 &stock_model,
@@ -204,6 +260,20 @@ mod tests {
             .unwrap();
         let agent_scene = runtime.render(&stock_model, &agent_state).unwrap();
         assert!(contains_agent_composer(&agent_scene.root));
+        let agent_panel_state = runtime
+            .update(
+                &stock_model,
+                &agent_state,
+                &experience_ir::SceneEvent {
+                    action: "toggle_agent_panel".into(),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let agent_panel_scene = runtime.render(&stock_model, &agent_panel_state).unwrap();
+        assert!(contains_id(&agent_panel_scene.root, "shell-rail-agent"));
+        assert!(contains_id(&agent_panel_scene.root, "panel-agent-prompt"));
+        assert!(experience_ir::validate_scene(&agent_panel_scene).is_ok());
         for source in [
             super::DEFAULT_EXPERIENCE,
             super::TIMEFLOW_EXPERIENCE,

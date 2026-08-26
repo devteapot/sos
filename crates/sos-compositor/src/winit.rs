@@ -8,11 +8,7 @@ use smithay::{
     backend::{
         renderer::{
             damage::OutputDamageTracker,
-            element::{
-                surface::{render_elements_from_surface_tree, WaylandSurfaceRenderElement},
-                Kind,
-            },
-            gles::GlesRenderer,
+            element::{surface::render_elements_from_surface_tree, Kind},
         },
         winit::{self, WinitEvent},
     },
@@ -27,7 +23,12 @@ use smithay::{
     wayland::presentation::Refresh,
 };
 
-use crate::{mark_backend_ready, state::SosCompositor, CompositorData};
+use crate::{
+    mark_backend_ready,
+    render::{window_render_elements, SosWindowRenderElement},
+    state::SosCompositor,
+    CompositorData,
+};
 
 pub fn init_winit(
     event_loop: &mut EventLoop<CompositorData>,
@@ -40,6 +41,7 @@ pub fn init_winit(
         refresh: 60_000,
     };
     data.state.output_size = mode.size.into();
+    data.state.reconfigure_for_output_layout();
     let output = Output::new(
         "sos-nested".into(),
         PhysicalProperties {
@@ -66,6 +68,7 @@ pub fn init_winit(
             WinitEvent::Resized { size, .. } => {
                 let state = &mut data.state;
                 state.output_size = size.into();
+                state.reconfigure_for_output_layout();
                 output.change_current_state(
                     Some(Mode {
                         size,
@@ -90,7 +93,7 @@ pub fn init_winit(
                         let (renderer, mut framebuffer) = backend
                             .bind()
                             .map_err(|error| format!("bind nested framebuffer: {error}"))?;
-                        let input_method_elements = state
+                        let mut elements = state
                             .input_method_popups
                             .iter()
                             .filter(|popup| popup.alive())
@@ -109,15 +112,20 @@ pub fn init_winit(
                                     Kind::Unspecified,
                                 )
                             })
-                            .collect::<Vec<WaylandSurfaceRenderElement<GlesRenderer>>>();
-                        render_output::<_, WaylandSurfaceRenderElement<GlesRenderer>, _, _>(
+                            .map(SosWindowRenderElement::Surface)
+                            .collect::<Vec<_>>();
+                        elements.extend(
+                            window_render_elements(renderer, state, &output)
+                                .map_err(|error| error.to_string())?,
+                        );
+                        render_output::<_, SosWindowRenderElement, _, _>(
                             &output,
                             renderer,
                             &mut framebuffer,
                             1.0,
                             0,
-                            [&state.space],
-                            &input_method_elements,
+                            std::iter::empty::<&Space<Window>>(),
+                            &elements,
                             &mut damage_tracker,
                             [0.025, 0.03, 0.035, 1.0],
                         )

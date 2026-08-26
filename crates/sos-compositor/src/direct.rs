@@ -43,10 +43,7 @@ use smithay::{
         session::{libseat::LibSeatSession, Event as SessionEvent, Session},
         udev::{UdevBackend, UdevEvent},
     },
-    desktop::{
-        space::{space_render_elements, SpaceRenderElements},
-        utils::OutputPresentationFeedback,
-    },
+    desktop::utils::OutputPresentationFeedback,
     output::{Mode, Output, PhysicalProperties, Scale, Subpixel},
     reexports::{
         calloop::{
@@ -68,7 +65,13 @@ use smithay::{
 };
 use smithay_drm_extras::drm_scanner::{DrmScanEvent, DrmScanner};
 
-use crate::{mark_backend_ready, policy::QueuedRevision, state::SosCompositor, CompositorData};
+use crate::{
+    mark_backend_ready,
+    policy::QueuedRevision,
+    render::{window_render_elements, SosWindowRenderElement},
+    state::SosCompositor,
+    CompositorData,
+};
 
 const FRAME_INTERVAL: Duration = Duration::from_millis(8);
 const CLEAR_COLOR: [f32; 4] = [0.025, 0.03, 0.035, 1.0];
@@ -78,7 +81,7 @@ const CURSOR_HEIGHT: i32 = 24;
 
 smithay::backend::renderer::element::render_elements! {
     DirectRenderElement<=GlesRenderer>;
-    Space=SpaceRenderElements<GlesRenderer, WaylandSurfaceRenderElement<GlesRenderer>>,
+    Window=SosWindowRenderElement,
     CursorSurface=WaylandSurfaceRenderElement<GlesRenderer>,
     Cursor=MemoryRenderBufferRenderElement<GlesRenderer>,
 }
@@ -900,9 +903,9 @@ fn render_output(data: &mut CompositorData, node: DrmNode, crtc: crtc::Handle) -
             &output_data.output,
         ));
         elements.extend(
-            space_render_elements(&mut *renderer, [&state.space], &output_data.output, 1.0)?
+            window_render_elements(&mut renderer, state, &output_data.output)?
                 .into_iter()
-                .map(DirectRenderElement::Space),
+                .map(DirectRenderElement::Window),
         );
     } else if let Some(element) = recovery_render_element(&mut renderer, state, &output_data.output)
     {

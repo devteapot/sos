@@ -150,6 +150,11 @@ pub struct MediaProviderState {
 pub struct AppsProviderState {
     #[serde(default)]
     pub compatible: Vec<SystemApplication>,
+    /// Bounded, declarative status contributions from SOS-native
+    /// applications. Existing desktop applications do not gain this surface
+    /// implicitly; a trusted application provider must publish it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub status_widgets: Vec<ApplicationStatusWidget>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -158,6 +163,18 @@ pub struct SystemApplication {
     /// inside the framework bridge.
     pub id: String,
     pub label: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ApplicationStatusWidget {
+    pub id: String,
+    pub label: String,
+    #[serde(default)]
+    pub value: String,
+    /// When present, tapping the contribution requests the existing bounded
+    /// application-launch effect for this opaque application selection.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub application_id: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -550,6 +567,10 @@ pub enum Content {
     TextSession(TextSession),
     Image(ImageContent),
     ProviderSurface(ProviderSurfaceContent),
+    /// A compositor-owned application surface region placed by the shell.
+    /// The host reports the final logical bounds to the compositor; no native
+    /// surface identity or authority crosses into the revision.
+    WindowSpace(WindowSpaceContent),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -576,6 +597,21 @@ pub struct ImageContent {
 #[derive(Clone, Debug, PartialEq)]
 pub struct ProviderSurfaceContent {
     pub surface: String,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct WindowSpaceContent {
+    pub layout: WindowLayoutMode,
+    pub gap: f32,
+    pub fallback: String,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum WindowLayoutMode {
+    #[default]
+    Floating,
+    Tiling,
+    Scrolling,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -781,6 +817,10 @@ pub enum ValidationError {
     TooManyHitRegions,
     #[error("layout program contains an invalid relative fraction")]
     InvalidLayoutProgram,
+    #[error("window space requires a stable id")]
+    MissingWindowSpaceId,
+    #[error("scene contains more than one window space")]
+    DuplicateWindowSpace,
 }
 
 pub fn validate_scene(scene: &Scene) -> Result<usize, ValidationError> {
@@ -789,6 +829,7 @@ pub fn validate_scene(scene: &Scene) -> Result<usize, ValidationError> {
         depth: usize,
         count: &mut usize,
         ids: &mut HashSet<String>,
+        window_spaces: &mut usize,
     ) -> Result<(), ValidationError> {
         if depth > MAX_SCENE_DEPTH {
             return Err(ValidationError::TooDeep);
@@ -828,6 +869,21 @@ pub fn validate_scene(scene: &Scene) -> Result<usize, ValidationError> {
                     }) =>
             {
                 return Err(ValidationError::InvalidDimension("provider surface id"));
+            }
+            Some(Content::WindowSpace(space)) => {
+                if node.id.is_none() {
+                    return Err(ValidationError::MissingWindowSpaceId);
+                }
+                *window_spaces += 1;
+                if *window_spaces > 1 {
+                    return Err(ValidationError::DuplicateWindowSpace);
+                }
+                if !valid_dimension(space.gap)
+                    || space.gap > 128.0
+                    || space.fallback.len() > MAX_TEXT_BYTES
+                {
+                    return Err(ValidationError::InvalidDimension("window space"));
+                }
             }
             _ => {}
         }
@@ -889,7 +945,7 @@ pub fn validate_scene(scene: &Scene) -> Result<usize, ValidationError> {
             return Err(ValidationError::InvalidLayoutProgram);
         }
         for child in &node.children {
-            visit(child, depth + 1, count, ids)?;
+            visit(child, depth + 1, count, ids, window_spaces)?;
         }
         if let Some(animation) = &node.animation {
             if !(16..=60_000).contains(&animation.duration_ms) {
@@ -941,7 +997,14 @@ pub fn validate_scene(scene: &Scene) -> Result<usize, ValidationError> {
     }
 
     let mut count = 0;
-    visit(&scene.root, 1, &mut count, &mut HashSet::new())?;
+    let mut window_spaces = 0;
+    visit(
+        &scene.root,
+        1,
+        &mut count,
+        &mut HashSet::new(),
+        &mut window_spaces,
+    )?;
     Ok(count)
 }
 
@@ -1164,6 +1227,46 @@ mod tests {
         assert_eq!(
             validate_scene(&scene),
             Err(ValidationError::MissingInteractiveId)
+        );
+    }
+
+    #[test]
+    fn window_space_is_single_bounded_and_keyed() {
+        let window_space = || SceneNode {
+            id: Some("applications".into()),
+            content: Some(Content::WindowSpace(WindowSpaceContent {
+                layout: WindowLayoutMode::Floating,
+                gap: 12.0,
+                fallback: "No applications are open".into(),
+            })),
+            ..Default::default()
+        };
+        assert_eq!(
+            validate_scene(&Scene {
+                root: window_space()
+            }),
+            Ok(1)
+        );
+
+        let mut unkeyed = window_space();
+        unkeyed.id = None;
+        assert_eq!(
+            validate_scene(&Scene { root: unkeyed }),
+            Err(ValidationError::MissingWindowSpaceId)
+        );
+
+        let second = SceneNode {
+            id: Some("applications-two".into()),
+            ..window_space()
+        };
+        assert_eq!(
+            validate_scene(&Scene {
+                root: SceneNode {
+                    children: vec![window_space(), second],
+                    ..Default::default()
+                }
+            }),
+            Err(ValidationError::DuplicateWindowSpace)
         );
     }
 

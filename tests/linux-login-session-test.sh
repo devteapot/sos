@@ -25,6 +25,7 @@ for test_binary in \
   sos-revision-supervisor \
   sos-linux-session \
   sos-agent-authoring \
+  systemd-inhibit \
   systemctl \
   node; do
   ln -s "$test_mock_source" "$test_bin/$test_binary"
@@ -47,6 +48,7 @@ SOS_DEFAULT_EXPERIENCE="$test_repo_root/experiences/default.luau" \
 SOS_TEST_AGENT_ARGS_FILE="$test_root/agent-arguments.txt" \
 SOS_TEST_SESSION_ENV_FILE="$test_root/session-environment.txt" \
 SOS_TEST_SYSTEMCTL_ARGS_FILE="$test_root/systemctl-arguments.txt" \
+SOS_TEST_INHIBIT_ARGS_FILE="$test_root/inhibit-arguments.txt" \
 SOS_PROVIDER_DEVELOPMENT_GRANTS=1 \
   "$test_session" >"$test_root/offline-session.txt" 2>&1
 
@@ -73,6 +75,10 @@ grep -Fx -- '--user start sos-session.target' \
   "$test_root/systemctl-arguments.txt" >/dev/null
 grep -Fx -- '--user start sos-session-shutdown.target' \
   "$test_root/systemctl-arguments.txt" >/dev/null
+grep -Fx -- '--what=idle:sleep:handle-lid-switch' \
+  "$test_root/inhibit-arguments.txt" >/dev/null
+grep -Fx -- '--mode=block' "$test_root/inhibit-arguments.txt" >/dev/null
+grep -Fx -- "$test_bin/sos-linux-session" "$test_root/inhibit-arguments.txt" >/dev/null
 [[ "$(stat -c %a "$test_state/sos/provider-grants.json")" == 600 ]]
 grep -F '"application_launch"' "$test_state/sos/provider-grants.json" >/dev/null
 grep -F '"network_control"' "$test_state/sos/provider-grants.json" >/dev/null

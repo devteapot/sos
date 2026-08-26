@@ -763,6 +763,7 @@ mod tests {
                     id: "app-1".into(),
                     label: "Calculator".into(),
                 }],
+                status_widgets: Vec::new(),
             },
             attention: AttentionProviderState::default(),
             capabilities: vec![SystemCapability::AudioSetVolume],

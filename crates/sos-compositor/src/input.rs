@@ -500,8 +500,7 @@ impl SosCompositor {
                 let serial = SERIAL_COUNTER.next_serial();
                 if event.state() == ButtonState::Pressed && !pointer.is_grabbed() {
                     let focused = self
-                        .space
-                        .element_under(pointer.current_location())
+                        .window_under(pointer.current_location())
                         .map(|(window, _)| window.clone());
                     if let Some(window) = focused {
                         let Some(surface) = window.wl_surface().map(|surface| surface.into_owned())

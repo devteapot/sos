@@ -6,6 +6,7 @@ use std::{
 };
 
 use anyhow::{Context as _, Result};
+use compositor_control_protocol::WindowLayoutMode;
 use smithay::{
     desktop::Window,
     reexports::{
@@ -13,6 +14,7 @@ use smithay::{
         wayland_server::{protocol::wl_surface::WlSurface, Resource as _},
     },
     utils::{Logical, Rectangle},
+    wayland::seat::WaylandFocus as _,
     wayland::xwayland_shell::{XWaylandShellHandler, XWaylandShellState},
     xwayland::{
         xwm::{Reorder, ResizeEdge, XwmId},
@@ -20,10 +22,11 @@ use smithay::{
     },
 };
 
-use crate::{policy::compatibility_location, state::SosCompositor, CompositorData};
-
-const LEGACY_SIZE: (i32, i32) = (720, 520);
-const MAX_LEGACY_WINDOWS: usize = 8;
+use crate::{
+    policy::{window_rectangles, MAX_COMPATIBILITY_TOPLEVELS},
+    state::SosCompositor,
+    CompositorData,
+};
 
 pub(crate) fn start(
     event_loop: &mut EventLoop<'static, CompositorData>,
@@ -93,16 +96,24 @@ impl SosCompositor {
         let count = self
             .space
             .elements()
-            .filter(|window| window.is_x11())
+            .filter(|window| {
+                window.is_x11()
+                    || window
+                        .wl_surface()
+                        .and_then(|surface| Self::client_role(&surface))
+                        == Some(crate::policy::ClientRole::Compatibility)
+            })
             .count();
-        if count >= MAX_LEGACY_WINDOWS {
+        if count >= MAX_COMPATIBILITY_TOPLEVELS {
             tracing::warn!(window = surface.window_id(), "rejected excess X11 window");
             return;
         }
-        let base = compatibility_location(self.output_size, LEGACY_SIZE);
-        let offset = i32::try_from(count).unwrap_or_default() * 24;
-        let location = (base.0 + offset, base.1 + offset);
-        let geometry = Rectangle::new(location.into(), LEGACY_SIZE.into());
+        let rectangle = window_rectangles(self.window_space, count + 1)
+            .last()
+            .copied()
+            .expect("new X11 window has a layout rectangle");
+        let location = (rectangle.x, rectangle.y);
+        let geometry = Rectangle::new(location.into(), (rectangle.width, rectangle.height).into());
         if !override_redirect {
             if let Err(error) = surface.configure(geometry) {
                 tracing::warn!(%error, window = surface.window_id(), "could not configure X11 window");
@@ -115,6 +126,7 @@ impl SosCompositor {
         }
         self.space
             .map_element(Window::new_x11_window(surface.clone()), location, true);
+        self.reconfigure_application_windows();
         tracing::info!(
             window = surface.window_id(),
             title = surface.title(),
@@ -137,18 +149,32 @@ impl SosCompositor {
             .cloned();
         if let Some(window) = window {
             self.space.unmap_elem(&window);
+            self.reconfigure_application_windows();
         }
     }
 
-    fn configure_x11(&mut self, surface: &X11Surface, geometry: Rectangle<i32, Logical>) {
-        let width = geometry.size.w.clamp(64, self.output_size.0.max(64));
-        let height = geometry.size.h.clamp(64, self.output_size.1.max(64));
-        let max_x = (self.output_size.0 - width).max(0);
-        let max_y = (self.output_size.1 - height).max(0);
+    pub(crate) fn configure_x11(
+        &mut self,
+        surface: &X11Surface,
+        geometry: Rectangle<i32, Logical>,
+    ) {
+        let space = self.window_space.geometry;
+        let space_width = i32::try_from(space.width).unwrap_or(i32::MAX);
+        let space_height = i32::try_from(space.height).unwrap_or(i32::MAX);
+        let width = geometry
+            .size
+            .w
+            .clamp(64.min(space_width), space_width.max(1));
+        let height = geometry
+            .size
+            .h
+            .clamp(64.min(space_height), space_height.max(1));
+        let max_x = space.x.saturating_add(space_width.saturating_sub(width));
+        let max_y = space.y.saturating_add(space_height.saturating_sub(height));
         let bounded = Rectangle::new(
             (
-                geometry.loc.x.clamp(0, max_x),
-                geometry.loc.y.clamp(0, max_y),
+                geometry.loc.x.clamp(space.x, max_x),
+                geometry.loc.y.clamp(space.y, max_y),
             )
                 .into(),
             (width, height).into(),
@@ -236,7 +262,11 @@ macro_rules! impl_xwm_handler {
                 if let Some(height) = height {
                     geometry.size.h = i32::try_from(height).unwrap_or(i32::MAX);
                 }
-                self.sos_state().configure_x11(&window, geometry);
+                if self.sos_state().window_space.layout == WindowLayoutMode::Floating {
+                    self.sos_state().configure_x11(&window, geometry);
+                } else {
+                    self.sos_state().reconfigure_application_windows();
+                }
             }
 
             fn configure_notify(
@@ -246,7 +276,11 @@ macro_rules! impl_xwm_handler {
                 geometry: Rectangle<i32, Logical>,
                 _above: Option<u32>,
             ) {
-                self.sos_state().configure_x11(&window, geometry);
+                if self.sos_state().window_space.layout == WindowLayoutMode::Floating {
+                    self.sos_state().configure_x11(&window, geometry);
+                } else {
+                    self.sos_state().reconfigure_application_windows();
+                }
             }
 
             fn resize_request(
