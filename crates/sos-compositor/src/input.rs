@@ -509,6 +509,40 @@ impl SosCompositor {
                 }
                 let pointer = self.seat.get_pointer().expect("seat has a pointer");
                 let keyboard = self.seat.get_keyboard().expect("seat has a keyboard");
+                if event.state() == ButtonState::Pressed && !pointer.is_grabbed() {
+                    // A compositor-driven map, unmap, or relayout can change the
+                    // surface beneath a stationary pointer without producing a
+                    // libinput motion event. Re-evaluate the pointer target at
+                    // the press boundary so the button cannot be delivered to
+                    // the surface that occupied this position before relayout.
+                    let location = pointer.current_location();
+                    let target = self.surface_under(location);
+                    if event.button_code() == 0x110 {
+                        let target_pid = target
+                            .as_ref()
+                            .and_then(|(surface, _)| Self::client_pid(surface));
+                        let target_role = target
+                            .as_ref()
+                            .and_then(|(surface, _)| Self::client_role(surface));
+                        tracing::info!(
+                            x = location.x,
+                            y = location.y,
+                            ?target_pid,
+                            ?target_role,
+                            "refreshed pointer focus before primary press"
+                        );
+                    }
+                    pointer.motion(
+                        self,
+                        target,
+                        &MotionEvent {
+                            location,
+                            serial: SERIAL_COUNTER.next_serial(),
+                            time: event.time_msec(),
+                        },
+                    );
+                    pointer.frame(self);
+                }
                 let serial = SERIAL_COUNTER.next_serial();
                 if event.state() == ButtonState::Pressed && !pointer.is_grabbed() {
                     let focused = self

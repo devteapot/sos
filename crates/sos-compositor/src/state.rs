@@ -770,7 +770,13 @@ impl SosCompositor {
                     return None;
                 }
             }
-            let location = self.space.element_location(window)?;
+            let mapped_location = self.space.element_location(window)?;
+            // Space locations describe the client's xdg_window_geometry,
+            // while surface trees and rendering start at the buffer origin.
+            // Client-side decorations commonly inset window geometry (GTK
+            // currently uses 20 logical pixels), so use the same render origin
+            // for input that the renderer uses for pixels.
+            let location = window_render_location(mapped_location, window.geometry().loc);
             window
                 .surface_under(position - location.to_f64(), WindowSurfaceType::ALL)
                 .is_some()
@@ -819,6 +825,13 @@ fn application_layout_order_key(location: Option<Point<i32, Logical>>) -> (bool,
         .unwrap_or((true, 0, 0))
 }
 
+fn window_render_location(
+    mapped_location: Point<i32, Logical>,
+    geometry_location: Point<i32, Logical>,
+) -> Point<i32, Logical> {
+    mapped_location - geometry_location
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct SurfaceRoleData(pub ClientRole);
 
@@ -858,7 +871,7 @@ impl ClientData for ClientState {
 mod tests {
     use smithay::utils::{Logical, Point};
 
-    use super::{application_layout_order_key, notify_session_owner};
+    use super::{application_layout_order_key, notify_session_owner, window_render_location};
     use std::os::unix::net::UnixDatagram;
 
     #[test]
@@ -889,5 +902,13 @@ mod tests {
             locations.map(|(name, _)| name),
             ["master", "raised", "lower", "unmapped"]
         );
+    }
+
+    #[test]
+    fn client_side_decoration_hit_testing_uses_the_render_origin() {
+        let mapped = Point::<i32, Logical>::from((771, 635));
+        let geometry = Point::<i32, Logical>::from((20, 20));
+
+        assert_eq!(window_render_location(mapped, geometry), (751, 615).into());
     }
 }
