@@ -41,6 +41,8 @@ for sos_login_executable in \
 done
 [[ -r "$sos_login_default_source" ]] || \
   sos_login_fail "missing default experience: $sos_login_default_source"
+command -v systemd-inhibit >/dev/null 2>&1 || \
+  sos_login_fail "systemd-inhibit is required to keep the SOS session awake"
 
 umask 077
 sos_login_state_dir="$sos_login_state_home/sos"
@@ -175,7 +177,12 @@ export SOS_ACCESSIBILITY_SOCKET="$sos_login_accessibility_socket"
 export WAYLAND_DISPLAY="$sos_login_runtime/wayland-sos"
 unset DISPLAY
 
-"$sos_login_session_bin" run-user \
+systemd-inhibit \
+  --what=idle:sleep:handle-lid-switch \
+  --who="SOS graphical session" \
+  --why="Keep the interactive SOS shell and remote development link available" \
+  --mode=block \
+  -- "$sos_login_session_bin" run-user \
   --root "$sos_login_revision_root" \
   --runtime-dir "$sos_login_runtime" \
   --authority-file "$sos_login_authority_file" \

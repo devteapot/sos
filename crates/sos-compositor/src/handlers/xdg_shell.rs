@@ -11,7 +11,7 @@ use smithay::{
             Resource as _,
         },
     },
-    utils::{Logical, Serial, Size},
+    utils::{Logical, Rectangle, Serial, Size},
     wayland::{
         compositor::with_states,
         seat::WaylandFocus as _,
@@ -23,11 +23,12 @@ use smithay::{
 };
 
 use crate::{
-    policy::{compatibility_location, ClientRole},
+    policy::{
+        default_window_space, validate_window_space, window_rectangles, ClientRole,
+        WindowRectangle, MAX_COMPATIBILITY_TOPLEVELS,
+    },
     state::SosCompositor,
 };
-
-const COMPATIBILITY_SIZE: (i32, i32) = (720, 520);
 
 impl XdgShellHandler for SosCompositor {
     fn xdg_shell_state(&mut self) -> &mut XdgShellState {
@@ -57,6 +58,30 @@ impl XdgShellHandler for SosCompositor {
                 self.policy.unmap(ClientRole::Shell);
                 tracing::info!("replaced stale SOS shell surface");
             }
+        } else {
+            let application_count = self
+                .space
+                .elements()
+                .filter(|window| {
+                    window.is_x11()
+                        || window
+                            .wl_surface()
+                            .and_then(|surface| Self::client_role(&surface))
+                            == Some(ClientRole::Compatibility)
+                })
+                .count();
+            if application_count >= MAX_COMPATIBILITY_TOPLEVELS {
+                tracing::warn!(
+                    limit = MAX_COMPATIBILITY_TOPLEVELS,
+                    "rejected excess compatibility toplevel"
+                );
+                if let Some(client) = wl_surface.client() {
+                    self.display_handle
+                        .backend_handle()
+                        .kill_client(client.id(), DisconnectReason::ConnectionClosed);
+                }
+                return;
+            }
         }
         if let Err(error) = self.policy.map(role) {
             tracing::warn!(?role, error = %error, "rejected toplevel by SOS surface policy");
@@ -80,9 +105,24 @@ impl XdgShellHandler for SosCompositor {
                 (0, 0)
             }
             ClientRole::Compatibility => {
-                let size: Size<i32, Logical> = COMPATIBILITY_SIZE.into();
+                let count = self
+                    .space
+                    .elements()
+                    .filter(|window| {
+                        window
+                            .wl_surface()
+                            .and_then(|surface| Self::client_role(&surface))
+                            == Some(ClientRole::Compatibility)
+                    })
+                    .count()
+                    + 1;
+                let rectangle = window_rectangles(self.window_space, count)
+                    .last()
+                    .copied()
+                    .expect("new compatibility window has a layout rectangle");
+                let size: Size<i32, Logical> = (rectangle.width, rectangle.height).into();
                 surface.with_pending_state(|state| state.size = Some(size));
-                compatibility_location(self.output_size, COMPATIBILITY_SIZE)
+                (rectangle.x, rectangle.y)
             }
         };
 
@@ -112,12 +152,13 @@ impl XdgShellHandler for SosCompositor {
             }
         } else {
             self.space.map_element(window, location, false);
+            self.reconfigure_application_windows();
         }
         tracing::info!(
             ?role,
             x = location.0,
             y = location.1,
-            "mapped fixed-policy XDG toplevel"
+            "mapped compositor-managed XDG toplevel"
         );
     }
 
@@ -142,6 +183,9 @@ impl XdgShellHandler for SosCompositor {
             self.shell_surface = None;
         }
         self.policy.unmap(role);
+        if role == ClientRole::Compatibility {
+            self.reconfigure_application_windows();
+        }
         tracing::info!(?role, "unmapped XDG toplevel");
     }
 
@@ -221,23 +265,59 @@ pub fn handle_commit(popups: &mut PopupManager, space: &Space<Window>, surface: 
 }
 
 impl SosCompositor {
-    #[cfg(feature = "direct-backend")]
     pub(crate) fn reconfigure_for_output_layout(&mut self) {
-        let windows = self.space.elements().cloned().collect::<Vec<_>>();
-        for window in windows {
-            let Some(toplevel) = window.toplevel().cloned() else {
-                continue;
-            };
-            let role =
-                Self::client_role(toplevel.wl_surface()).unwrap_or(ClientRole::Compatibility);
-            self.apply_fixed_size(&toplevel);
-            if role == ClientRole::Compatibility {
-                self.space.map_element(
-                    window,
-                    compatibility_location(self.output_size, COMPATIBILITY_SIZE),
-                    false,
-                );
-            }
+        if validate_window_space(self.window_space, self.output_size).is_err() {
+            self.window_space = default_window_space(self.output_size);
+        }
+        self.apply_shell_size();
+        self.reconfigure_application_windows();
+    }
+
+    pub(crate) fn reconfigure_application_windows(&mut self) {
+        let windows = self
+            .space
+            .elements()
+            .filter(|window| {
+                window.is_x11()
+                    || window
+                        .wl_surface()
+                        .and_then(|surface| Self::client_role(&surface))
+                        == Some(ClientRole::Compatibility)
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        let rectangles = window_rectangles(self.window_space, windows.len());
+        for (window, rectangle) in windows.into_iter().zip(rectangles) {
+            self.configure_application_window(window, rectangle);
+        }
+    }
+
+    fn configure_application_window(&mut self, window: Window, rectangle: WindowRectangle) {
+        if let Some(toplevel) = window.toplevel().cloned() {
+            let size: Size<i32, Logical> = (rectangle.width, rectangle.height).into();
+            toplevel.with_pending_state(|state| state.size = Some(size));
+            toplevel.send_pending_configure();
+            self.space
+                .map_element(window, (rectangle.x, rectangle.y), false);
+        } else if let Some(surface) = window.x11_surface().cloned() {
+            self.configure_x11(
+                &surface,
+                Rectangle::new(
+                    (rectangle.x, rectangle.y).into(),
+                    (rectangle.width, rectangle.height).into(),
+                ),
+            );
+        }
+    }
+
+    fn apply_shell_size(&mut self) {
+        let shell = self.space.elements().find_map(|window| {
+            let toplevel = window.toplevel()?.clone();
+            (Self::client_role(toplevel.wl_surface()) == Some(ClientRole::Shell))
+                .then_some(toplevel)
+        });
+        if let Some(shell) = shell {
+            self.apply_fixed_size(&shell);
         }
     }
 
@@ -245,7 +325,13 @@ impl SosCompositor {
         let role = Self::client_role(surface.wl_surface()).unwrap_or(ClientRole::Compatibility);
         let size: Size<i32, Logical> = match role {
             ClientRole::Shell => self.output_size.into(),
-            ClientRole::Compatibility => COMPATIBILITY_SIZE.into(),
+            ClientRole::Compatibility => {
+                let rectangle = window_rectangles(self.window_space, 1)
+                    .into_iter()
+                    .next()
+                    .expect("window-space layout returns one rectangle");
+                (rectangle.width, rectangle.height).into()
+            }
         };
         surface.with_pending_state(|state| {
             state.size = Some(size);

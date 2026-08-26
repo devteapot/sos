@@ -81,6 +81,15 @@ if name == "systemctl":
             output.write(" ".join(sys.argv[1:]) + "\n")
     raise SystemExit(0)
 
+if name == "systemd-inhibit":
+    arguments_file = os.environ.get("SOS_TEST_INHIBIT_ARGS_FILE")
+    if arguments_file:
+        with open(arguments_file, "w", encoding="utf-8") as output:
+            output.write("\n".join(sys.argv[1:]) + "\n")
+    separator = sys.argv.index("--")
+    command = sys.argv[separator + 1 :]
+    os.execv(command[0], command)
+
 if name == "node":
     arguments_file = os.environ["SOS_TEST_AGENT_ARGS_FILE"]
     with open(arguments_file, "w", encoding="utf-8") as output:

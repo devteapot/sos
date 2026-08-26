@@ -1,6 +1,7 @@
 --!strict
--- SOS Stock Base. This is an ordinary editable Scene ABI v3 revision. It uses
--- only the provider and interaction contracts available to generated Luau.
+-- SOS Stock Shell. This is a privileged, replaceable Scene ABI v3 revision.
+-- Its window-space node is a bounded compositor primitive; every surrounding
+-- bar, panel, control, workspace, and policy choice remains ordinary Luau.
 -- Credentials, lock, permission, emergency, confirmation, and Recovery remain
 -- fixed native surfaces below the revision boundary.
 
@@ -586,11 +587,16 @@ local function has_agent_configuration_action(agent, action)
     return false
 end
 
-local function agent_workspace(model, state)
+local function agent_workspace(model, state, scope)
+    scope = scope or "workspace"
+    local function agent_id(id)
+        if scope == "workspace" then return id end
+        return scope .. "-" .. id
+    end
     local agent = model.agent or {}
     local children = {
         heading("Agent", "Conversation is part of the revision, while credentials stay native.",
-            "agent-heading"),
+            agent_id("agent-heading")),
         group("row", { justify = "between", align = "center" }, {
             text("CONVERSATION", 11, moss),
             text(agent.activity ~= "" and agent.activity
@@ -600,19 +606,20 @@ local function agent_workspace(model, state)
     local messages = {}
     for index, message in ipairs(agent.messages or {}) do
         if index > 24 then break end
-        table.insert(messages, card("agent-message-" .. tostring(index), {
+        table.insert(messages, card(agent_id("agent-message-" .. tostring(index)), {
             text(message.role == "user" and "YOU" or "SOS", 10, moss),
             text(message.text, 13, ink),
         }, { padding = 12, gap = 3 }, message.role == "user" and sand or mint))
     end
     if #messages == 0 then
-        table.insert(messages, empty_state("agent-empty", "Make Stock Base yours",
+        table.insert(messages, empty_state(agent_id("agent-empty"), "Make Stock Base yours",
             "Ask the agent to replace navigation, data composition, visuals, or the whole source."))
     end
-    table.insert(children, group("column", { gap = 7 }, messages, nil, 0, "agent-messages"))
+    table.insert(children, group("column", { gap = 7 }, messages, nil, 0,
+        agent_id("agent-messages")))
     local draft = state.agent_draft or ""
     table.insert(children, {
-        id = "agent-prompt",
+        id = agent_id("agent-prompt"),
         layout = { height = 50, padding = 10 },
         content = {
             kind = "text_session", state_key = "agent_draft", value = draft,
@@ -636,17 +643,19 @@ local function agent_workspace(model, state)
     for _, configuration in ipairs(configurations) do
         if has_agent_configuration_action(agent, configuration.capability) then
             table.insert(controls, button(configuration.label, configuration.action,
-                configuration.capability == "clear_credential" and alert or moss))
+                configuration.capability == "clear_credential" and alert or moss,
+                agent_id(configuration.action)))
         end
     end
     if #controls > 0 then
         table.insert(children, group("row", { wrap = true, gap = 7 }, controls,
-            nil, 0, "agent-provider-controls"))
+            nil, 0, agent_id("agent-provider-controls")))
     else
         table.insert(children, text("Provider changes are managed before login.", 10, muted))
     end
     if agent.error then table.insert(children, text(agent.error, 11, alert)) end
-    return group("column", { gap = 10 }, children, nil, 0, "workspace-agent")
+    return group("column", { gap = 10 }, children, nil, 0,
+        agent_id("workspace-agent"))
 end
 
 local function render_workspace(model, state, providers)
@@ -657,25 +666,184 @@ local function render_workspace(model, state, providers)
     if active == "attention" then return attention_workspace(providers) end
     if active == "system" then return system_workspace(providers) end
     if active == "apps" then return apps_workspace(providers) end
-    if active == "agent" then return agent_workspace(model, state) end
+    if active == "agent" then return agent_workspace(model, state, "workspace") end
     return home_workspace(model, state, providers)
+end
+
+local function app_status_widgets(providers)
+    local children = {}
+    local widgets = ((providers.apps or {}).status_widgets or {})
+    for index, widget in ipairs(widgets) do
+        if index > 4 then break end
+        local label = widget.label or "APP"
+        local value = widget.value or ""
+        table.insert(children, group("row", {
+            padding = 8, gap = 5, align = "center",
+        }, {
+            text(label, 9, moss),
+            text(value, 11, ink),
+        }, panel, 11, "shell-app-widget-" .. tostring(index),
+            widget.application_id and has_capability(providers, "app_launch")
+                and "shell_app_widget_" .. tostring(index) or nil,
+            widget.application_id and ("Open " .. label) or nil))
+    end
+    return children
+end
+
+local function shell_top_bar(model, state, providers)
+    local clock = providers.clock or {}
+    local attention = providers.attention or {}
+    local active = string.upper(active_workspace(state))
+    local widgets = app_status_widgets(providers)
+    table.insert(widgets, button(audio_summary(providers),
+        has_capability(providers, "audio_set_muted") and "audio_toggle_mute" or "navigate_system",
+        moss, "shell-audio-control"))
+    table.insert(widgets, button(network_summary(providers), "navigate_system", moss,
+        "shell-network-control"))
+    if (attention.urgent_count or 0) > 0 then
+        table.insert(widgets, button(tostring(attention.urgent_count) .. " URGENT",
+            "navigate_attention", alert, "shell-attention-control"))
+    end
+    table.insert(widgets, group("column", { align = "end", gap = 0 }, {
+        text(clock.time_label ~= "" and clock.time_label or "--:--", 18, ink,
+            { role = "status", label = "Current time", value = clock.time_label or "" },
+            "shell-time"),
+        text(clock.date_label ~= "" and clock.date_label or "Date unavailable", 9, muted),
+    }))
+
+    return group("row", {
+        height = 58, padding = 10, gap = 12, align = "center", justify = "between",
+        program = { measure_width = 1 },
+    }, {
+        group("row", { align = "center", gap = 9 }, {
+            {
+                id = "shell-mark", layout = { width = 34, height = 34 },
+                content = { kind = "image", asset = "stock_mark" },
+                semantics = { role = "image", label = "SOS" },
+            },
+            group("column", { gap = 0 }, {
+                text("SOS", 16, ink, { role = "header", label = "SOS shell" }, "shell-title"),
+                text(active .. " WORKSPACE", 9, moss),
+            }),
+        }),
+        group("row", { align = "center", justify = "end", gap = 7 }, widgets,
+            nil, 0, "shell-status-widgets"),
+    }, white, 0, "shell-top-bar")
+end
+
+local function command_center(providers, state)
+    local applications = ((providers.apps or {}).compatible or {})
+    local rows = {
+        group("row", { justify = "between", align = "center" }, {
+            text("COMMAND CENTER", 12, moss,
+                { role = "header", label = "Command center" }, "command-center-title"),
+            button("CLOSE", "close_shell_panel", muted, "command-center-close"),
+        }),
+        text("WORKSPACES", 9, muted),
+        workspace_navigation(state),
+        text("WINDOW LAYOUT", 9, muted),
+        group("row", { wrap = true, gap = 6 }, {
+            button("FLOAT", "window_layout_floating", moss, "window-layout-floating",
+                (state.window_layout or "floating") == "floating"),
+            button("TILE", "window_layout_tiling", moss, "window-layout-tiling",
+                state.window_layout == "tiling"),
+            button("SCROLL", "window_layout_scrolling", moss, "window-layout-scrolling",
+                state.window_layout == "scrolling"),
+        }),
+        text("APPLICATIONS", 9, muted),
+    }
+    if not providers_available(providers) then
+        table.insert(rows, empty_state("command-apps-unavailable", "Applications unavailable",
+            "The application provider is not connected."))
+    elseif #applications == 0 then
+        table.insert(rows, empty_state("command-apps-empty", "No applications",
+            "Compatible launch targets will appear here."))
+    end
+    for index, application in ipairs(applications) do
+        if index > 24 then break end
+        local can_launch = has_capability(providers, "app_launch")
+        table.insert(rows, group("row", {
+            padding = 11, justify = "between", align = "center", gap = 8,
+        }, {
+            text(application.label, 13, ink),
+            text(can_launch and "OPEN" or "UNAVAILABLE", 9, can_launch and moss or muted),
+        }, white, 12, "command-application-" .. tostring(index),
+            can_launch and "app_launch_" .. tostring(index) or nil,
+            can_launch and "Open " .. application.label or nil))
+    end
+    return group("column", { scroll_y = true, padding = 14, gap = 10, grow = true }, rows,
+        panel, 0, "shell-command-center")
+end
+
+local function shell_rail(model, state, providers)
+    local panel_name = state.shell_panel
+    if panel_name == "command" then
+        return group("column", { width = 390, program = { measure_height = 1 } }, {
+            command_center(providers, state),
+        }, panel, 0, "shell-rail-command")
+    elseif panel_name == "agent" then
+        return group("column", {
+            width = 430, padding = 14, gap = 10, program = { measure_height = 1 },
+        }, {
+            group("row", { justify = "between", align = "center" }, {
+                text("AGENT", 12, moss, { role = "header", label = "Agent panel" },
+                    "agent-panel-title"),
+                button("CLOSE", "close_shell_panel", muted, "agent-panel-close"),
+            }),
+            group("column", { scroll_y = true, grow = true }, {
+                agent_workspace(model, state, "panel"),
+            }, nil, 0, "agent-panel-scroll"),
+        }, panel, 0, "shell-rail-agent")
+    end
+    return group("column", {
+        width = 76, padding = 9, gap = 10, align = "center", justify = "between",
+        program = { measure_height = 1 },
+    }, {
+        group("column", { gap = 9, align = "center" }, {
+            button("⌘", "toggle_command_center", moss, "command-center-toggle"),
+            button("HOME", "navigate_home", moss, "shell-home-shortcut"),
+            button("APPS", "navigate_apps", moss, "shell-apps-shortcut"),
+        }),
+        group("column", { gap = 7, align = "center" }, {
+            text((model.agent or {}).busy and "WORKING" or "AGENT", 8, muted),
+            group("row", {
+                width = 54, height = 54, justify = "center", align = "center",
+            }, { text("✦", 22, white) }, moss, 27, "agent-fab", "toggle_agent_panel",
+                "Open the SOS agent"),
+        }),
+    }, white, 0, "shell-rail")
+end
+
+local function shell_window_space(model, state, providers)
+    return {
+        id = "shell-window-space",
+        layout = { grow = true, min_width = 320, min_height = 240, clip_bounds = true },
+        content = {
+            kind = "window_space", layout = state.window_layout or "floating", gap = 12,
+            fallback = "No application windows are open",
+        },
+        paint = {{ kind = "fill_bounds", color = paper, radius = 0 }},
+        semantics = { role = "scroll_area", label = "Application window space" },
+        children = {
+            group("column", { scroll_y = true, padding = 18, gap = 14, grow = true }, {
+                render_workspace(model, state, providers),
+                group("row", { justify = "between", gap = 12 }, {
+                    text("STOCK SHELL · EDITABLE LUAU REVISION", 9, muted),
+                    text("SYSTEM PROVIDERS ABI " .. tostring(providers.abi_version or 0), 9, muted),
+                }),
+            }, nil, 0, "stock-content-frame"),
+        },
+    }
 end
 
 local function render(model, state)
     local providers = model.providers or {}
-    return group("column", { scroll_y = true }, {
-        group("column", {
-            padding = 22, gap = 16, max_width = 1876,
-            program = { measure_width = 1 },
-        }, {
-            stock_header(providers),
-            workspace_navigation(state),
-            render_workspace(model, state, providers),
-            group("row", { justify = "between", gap = 12 }, {
-                text("STOCK BASE · EDITABLE LUAU REVISION", 9, muted),
-                text("SYSTEM PROVIDERS ABI " .. tostring(providers.abi_version or 0), 9, muted),
-            }),
-        }, nil, 0, "stock-content-frame"),
+    return group("column", { program = { measure_width = 1, measure_height = 1 } }, {
+        shell_top_bar(model, state, providers),
+        group("row", { grow = true, program = { measure_width = 1 } }, {
+            shell_window_space(model, state, providers),
+            shell_rail(model, state, providers),
+        }, nil, 0, "shell-body"),
     }, paper, 0, "stock-experience-root")
 end
 
@@ -689,11 +857,32 @@ local function update(model, state, event)
     local connectivity = providers.connectivity or {}
     local action = event.action or ""
 
+    if action == "toggle_command_center" then
+        state.shell_panel = state.shell_panel == "command" and nil or "command"
+        return state
+    elseif action == "toggle_agent_panel" then
+        state.shell_panel = state.shell_panel == "agent" and nil or "agent"
+        return state
+    elseif action == "close_shell_panel" then
+        state.shell_panel = nil
+        return state
+    elseif action == "window_layout_floating" then
+        state.window_layout = "floating"
+        return state
+    elseif action == "window_layout_tiling" then
+        state.window_layout = "tiling"
+        return state
+    elseif action == "window_layout_scrolling" then
+        state.window_layout = "scrolling"
+        return state
+    end
+
     local destination = string.match(action, "^navigate_([a-z]+)$")
     if destination then
         for _, workspace in ipairs(workspace_order) do
             if workspace.id == destination then
                 state.active_workspace = destination
+                state.shell_panel = nil
                 return state
             end
         end
@@ -717,7 +906,8 @@ local function update(model, state, event)
         return provider_effect("music", "command", { command = legacy }, state)
     elseif action == "wifi_disconnect" then
         return provider_effect("network", "disconnect", nil, state)
-    elseif action == "text_changed" and event.target == "agent-prompt" then
+    elseif action == "text_changed"
+        and (event.target == "agent-prompt" or event.target == "panel-agent-prompt") then
         state.agent_draft = event.value or ""
         return state
     elseif action == "text_changed" and event.target == "agenda-composer" then
@@ -790,6 +980,12 @@ local function update(model, state, event)
     local application = app_index and (((providers.apps or {}).compatible or {})[tonumber(app_index)]) or nil
     if application then
         return provider_effect("apps", "launch", { app_id = application.id }, state)
+    end
+    local widget_index = string.match(action, "^shell_app_widget_(%d+)$")
+    local widget = widget_index
+        and (((providers.apps or {}).status_widgets or {})[tonumber(widget_index)]) or nil
+    if widget and widget.application_id and has_capability(providers, "app_launch") then
+        return provider_effect("apps", "launch", { app_id = widget.application_id }, state)
     end
     local attention_index = string.match(action, "^attention_ack_(%d+)$")
     local item = attention_index and (((providers.attention or {}).items or {})[tonumber(attention_index)]) or nil

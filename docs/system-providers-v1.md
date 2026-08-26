@@ -1,4 +1,4 @@
-# System Providers v1 + Stock Base v0
+# System Providers v1 + Stock Shell
 
 ## Scope
 
@@ -60,6 +60,16 @@ surfaces under the SOS compositor. A portal or service integration that needs
 compositor-specific protocol support can therefore fail independently without
 granting Luau direct access to that service.
 
+The applications document also reserves `status_widgets` for SOS-native
+applications: a bounded contribution ID, visible label/value and an optional
+opaque compatible-application selection. Stock may render up to four in its
+top bar. A tap uses the existing capability-checked `apps.launch` action; the
+application cannot inject code, a callback, a command line or a Wayland object
+into the shell. Linux and Core currently publish an empty list because the
+native-application registration broker is not implemented. Ordinary
+freedesktop applications remain managed windows and do not receive a synthetic
+status contribution.
+
 Only bounded scalar values, visible labels, and opaque selection IDs cross the
 socket. Binder objects, Intents, package/Activity names, notification keys,
 credentials, and permission tokens do not. The Rust authority rejects an
@@ -100,7 +110,7 @@ acceptance evidence; it has no action mode.
 
 ## Stock trust and fallback
 
-[`default.luau`](../experiences/default.luau) is the substantial Stock Base
+[`default.luau`](../experiences/default.luau) is the substantial Stock Shell
 revision described in [`stock-experience.md`](stock-experience.md). Android
 stages that exact source at `/system_ext/etc/sos/default.luau`; AVB and the
 signed OTA protect it as system content. At every authority start, its

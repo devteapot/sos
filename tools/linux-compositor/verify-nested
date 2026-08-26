@@ -531,8 +531,8 @@ XDG_RUNTIME_DIR="$gate_runtime_dir" WAYLAND_DISPLAY=wayland-sos \
   weston-simple-shm >"$gate_run_dir/compatibility.log" 2>&1 &
 gate_compatibility_pid=$!
 for _ in {1..500}; do
-  if grep -q 'mapped fixed-policy XDG toplevel role=Compatibility x=280 y=140' \
-    "$gate_run_dir/compositor.log"; then
+  if grep -Eq 'mapped compositor-managed XDG toplevel role=Compatibility x=[0-9]+ y=[0-9]+' \
+      "$gate_run_dir/compositor.log"; then
     break
   fi
   kill -0 "$gate_compatibility_pid" 2>/dev/null || {
@@ -566,7 +566,8 @@ grep -q "accepted Wayland client pid=$gate_restarted_pid role=Shell" \
 [[ "$(grep -c 'presented armed shell revision' "$gate_run_dir/compositor.log")" -eq 3 ]]
 grep -q 'HostRestarted' "$gate_run_dir/session.log"
 grep -q 'accepted Wayland client.*role=Compatibility' "$gate_run_dir/compositor.log"
-grep -q 'mapped fixed-policy XDG toplevel role=Compatibility x=280 y=140' \
+grep -q 'configured shell window space' "$gate_run_dir/compositor.log"
+grep -Eq 'mapped compositor-managed XDG toplevel role=Compatibility x=[0-9]+ y=[0-9]+' \
   "$gate_run_dir/compositor.log"
 grep -q 'mapped bounded XWayland window' "$gate_run_dir/compositor.log"
 

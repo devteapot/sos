@@ -17,7 +17,7 @@ revision supervisor
     v
 permanent sos-experience-host PID
     | authenticated bounded control protocol
-    | register_shell / quiesce_input / arm_presentation <- compositor evidence
+    | register / quiesce / arm / configure_window_space <- compositor evidence
     |
     | Luau -> Scene ABI v3 -> retained GPUI
     v
@@ -30,10 +30,13 @@ sos-compositor (Smithay 0.7.0)
     `-- libseat + udev + DRM/GBM + libinput -> KMS output
 ```
 
-Luau still sees only the versioned Scene and provider capabilities. It never
-receives a Wayland object, socket, file descriptor, placement primitive, or
-compositor capability. `compositor-control-protocol` is a separate bounded
-newline-JSON ABI between the trusted permanent host and compositor.
+Luau still sees only the versioned Scene and provider capabilities. Its one
+native-backed `window_space` node selects a closed layout mode and is measured
+by GPUI; only the trusted host converts the final bounds into compositor
+geometry. Luau never receives a Wayland object, socket, file descriptor,
+surface identity, PID or arbitrary placement operation.
+`compositor-control-protocol` is a separate bounded newline-JSON ABI between
+the trusted permanent host and compositor.
 
 The compositor creates a mode-0600 control socket in a caller-owned mode-0700
 runtime directory. A client must present the launch token and a PID equal to
@@ -43,12 +46,24 @@ compatibility clients. This is a development-session authenticator. A
 production session must also isolate service users/credentials so another
 same-UID process cannot inspect launch credentials.
 
-The policy admits one fullscreen shell, one fixed-policy native Wayland
-compatibility toplevel, and—only when explicitly enabled—up to eight bounded
-rootless XWayland windows. Compatibility surfaces stay above the shell. They
-are not embedded into GPUI or exposed as raw generated nodes. Popups and X11
-configure requests are constrained to the aggregate output layout; layer shell
-and arbitrary placement remain outside this gate.
+The policy admits one fullscreen shell and at most eight application windows
+across native Wayland and the explicitly enabled rootless XWayland path.
+Application surfaces stay above the shell and within the active window-space
+rectangle. They are not embedded into GPUI or exposed as generated nodes.
+Floating mode uses bounded cascade placement and click-to-raise focus; tiling
+uses a deterministic bounded grid; the initial scrolling mode uses overlapping
+horizontal cards while focus/scroll-position control remains a later protocol
+addition. Configure requests are constrained to the declared region, and each
+application's rendered surface tree and pointer hit test are clipped to its
+assigned rectangle. This remains true when an XDG client advertises a minimum
+size larger than a tile. Popups are clipped with their owning application;
+layer shell and arbitrary client placement remain outside this gate.
+
+This ordering means Luau panels cannot overlap an application surface in the
+initial implementation. Stock therefore reserves its top bar and command or
+agent rail outside `window_space`; opening a rail reduces the application
+rectangle. A future compositor overlay shell surface may enable transient
+panels above apps without weakening surface ownership.
 
 ## Activation fence
 
@@ -136,7 +151,8 @@ recovery, and maps `weston-simple-shm` as the compatibility client. It requires:
 - at least one compositor-owned backend event suppressed while activation is
   quiesced;
 - a new authenticated PID after forced host failure;
-- shell/native-compatibility role classification and fixed placement;
+- shell/native-compatibility role classification, authenticated window-space
+  configuration and bounded placement;
 - an opt-in real `Xwayland` process and bounded rootless `xmessage` window.
 
 Expected leading output:

@@ -13,7 +13,9 @@ use std::{
 #[cfg(feature = "direct-backend")]
 use std::{cell::RefCell, rc::Rc};
 
-use compositor_control_protocol::{CompositorEvent, PresentationEvidence};
+use compositor_control_protocol::{
+    CompositorEvent, PresentationEvidence, WindowSpaceConfiguration,
+};
 use nix::sys::socket::{getsockopt, sockopt::PeerCredentials};
 use smithay::{
     backend::renderer::element::RenderElementStates,
@@ -33,6 +35,7 @@ use smithay::{
         input_method::{InputMethodManagerState, PopupSurface as InputMethodPopupSurface},
         output::OutputManagerState,
         presentation::PresentationState,
+        seat::WaylandFocus as _,
         selection::data_device::DataDeviceState,
         shell::xdg::XdgShellState,
         shm::ShmState,
@@ -52,7 +55,10 @@ use smithay::{
 use crate::{
     control::ControlCommand,
     input::TouchLifecycle,
-    policy::{ClientRole, SurfacePolicy},
+    policy::{
+        default_window_space, validate_window_space, window_rectangles, ClientRole, SurfacePolicy,
+        WindowRectangle,
+    },
     recovery::RecoveryUi,
     CompositorData,
 };
@@ -77,6 +83,7 @@ pub struct SosCompositor {
     pub surface_roles: HashMap<ObjectId, ClientRole>,
     pub shell_events: Option<(u32, std::sync::mpsc::Sender<CompositorEvent>)>,
     pub output_size: (i32, i32),
+    pub window_space: WindowSpaceConfiguration,
     pub output_layout_mirrored: bool,
     pub recovery_ui: RecoveryUi,
     pub recovery_button_pressed: bool,
@@ -174,6 +181,7 @@ impl SosCompositor {
             surface_roles: HashMap::new(),
             shell_events: None,
             output_size: (1280, 800),
+            window_space: default_window_space((1280, 800)),
             output_layout_mirrored: false,
             recovery_ui: RecoveryUi::from_environment(),
             recovery_button_pressed: false,
@@ -375,6 +383,40 @@ impl SosCompositor {
                     }
                 }
             }
+            ControlCommand::ConfigureWindowSpace {
+                pid,
+                request_id,
+                configuration,
+                reply,
+            } => {
+                let result = if !self.policy.is_shell_owner(pid) {
+                    Err("window space is not owned by the registered shell".into())
+                } else {
+                    validate_window_space(configuration, self.output_size)
+                        .map_err(|error| error.to_string())
+                };
+                match result {
+                    Ok(configuration) => {
+                        self.window_space = configuration;
+                        self.reconfigure_application_windows();
+                        tracing::info!(
+                            pid,
+                            request_id,
+                            x = configuration.geometry.x,
+                            y = configuration.geometry.y,
+                            width = configuration.geometry.width,
+                            height = configuration.geometry.height,
+                            gap = configuration.geometry.gap,
+                            layout = ?configuration.layout,
+                            "configured shell window space"
+                        );
+                        let _ = reply.send(Ok(configuration));
+                    }
+                    Err(error) => {
+                        let _ = reply.send(Err(error));
+                    }
+                }
+            }
             ControlCommand::Disconnected { pid } => {
                 let was_quiesced = self.policy.input_quiesced();
                 self.policy.unregister_shell(pid);
@@ -433,13 +475,66 @@ impl SosCompositor {
         &self,
         position: Point<f64, Logical>,
     ) -> Option<(WlSurface, Point<f64, Logical>)> {
-        self.space
-            .element_under(position)
-            .and_then(|(window, location)| {
-                window
-                    .surface_under(position - location.to_f64(), WindowSurfaceType::ALL)
-                    .map(|(surface, offset)| (surface, (offset + location).to_f64()))
-            })
+        self.window_under(position).and_then(|(window, location)| {
+            window
+                .surface_under(position - location.to_f64(), WindowSurfaceType::ALL)
+                .map(|(surface, offset)| (surface, (offset + location).to_f64()))
+        })
+    }
+
+    pub(crate) fn application_window_rectangles(&self) -> Vec<(Window, WindowRectangle)> {
+        let windows = self
+            .space
+            .elements()
+            .filter(|window| self.is_application_window(window))
+            .cloned()
+            .collect::<Vec<_>>();
+        window_rectangles(self.window_space, windows.len())
+            .into_iter()
+            .zip(windows)
+            .map(|(rectangle, window)| (window, rectangle))
+            .collect()
+    }
+
+    pub(crate) fn window_under(
+        &self,
+        position: Point<f64, Logical>,
+    ) -> Option<(&Window, Point<i32, Logical>)> {
+        let application_rectangles = self.application_window_rectangles();
+        self.space.elements().rev().find_map(|window| {
+            if self.is_application_window(window) {
+                let rectangle =
+                    application_rectangles
+                        .iter()
+                        .find_map(|(candidate, rectangle)| {
+                            (candidate == window).then_some(rectangle)
+                        })?;
+                let left = f64::from(rectangle.x);
+                let top = f64::from(rectangle.y);
+                let right = left + f64::from(rectangle.width);
+                let bottom = top + f64::from(rectangle.height);
+                if position.x < left
+                    || position.y < top
+                    || position.x >= right
+                    || position.y >= bottom
+                {
+                    return None;
+                }
+            }
+            let location = self.space.element_location(window)?;
+            window
+                .surface_under(position - location.to_f64(), WindowSurfaceType::ALL)
+                .is_some()
+                .then_some((window, location))
+        })
+    }
+
+    pub(crate) fn is_application_window(&self, window: &Window) -> bool {
+        window.is_x11()
+            || window
+                .wl_surface()
+                .and_then(|surface| Self::client_role(&surface))
+                == Some(ClientRole::Compatibility)
     }
 
     pub fn client_role(surface: &WlSurface) -> Option<ClientRole> {

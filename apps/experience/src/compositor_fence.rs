@@ -3,7 +3,10 @@ use std::{
     io::{self, BufRead, BufReader, Read as _, Write},
     os::unix::net::UnixStream,
     path::Path,
-    sync::mpsc,
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        mpsc,
+    },
     thread,
     time::Duration,
 };
@@ -11,7 +14,7 @@ use std::{
 use anyhow::{bail, Context as _, Result};
 use compositor_control_protocol::{
     read_shell_token_file, valid_shell_token, CompositorEvent, CompositorRequest,
-    PresentationEvidence, MAX_CONTROL_LINE_BYTES,
+    PresentationEvidence, WindowSpaceConfiguration, MAX_CONTROL_LINE_BYTES,
 };
 
 const CONTROL_SOCKET_ENV: &str = "SOS_COMPOSITOR_CONTROL";
@@ -32,6 +35,7 @@ pub struct Presented {
 #[derive(Clone, Debug)]
 pub enum FenceEvent {
     Presented(Presented),
+    WindowSpaceRejected(String),
     Failed(String),
 }
 
@@ -51,11 +55,16 @@ enum FenceCommand {
         revision_id: String,
         reply: mpsc::Sender<std::result::Result<u64, String>>,
     },
+    ConfigureWindowSpace {
+        request_id: u64,
+        configuration: WindowSpaceConfiguration,
+    },
 }
 
 pub struct CompositorFence {
     commands: mpsc::Sender<FenceCommand>,
     events: async_channel::Receiver<FenceEvent>,
+    next_window_space_request_id: AtomicU64,
 }
 
 impl CompositorFence {
@@ -141,6 +150,7 @@ impl CompositorFence {
         Ok(Self {
             commands: commands_tx,
             events: events_rx,
+            next_window_space_request_id: AtomicU64::new(1_u64 << 63),
         })
     }
 
@@ -191,6 +201,18 @@ impl CompositorFence {
 
     pub fn events(&self) -> async_channel::Receiver<FenceEvent> {
         self.events.clone()
+    }
+
+    pub fn configure_window_space(&self, configuration: WindowSpaceConfiguration) -> Result<()> {
+        let request_id = self
+            .next_window_space_request_id
+            .fetch_add(1, Ordering::Relaxed);
+        self.commands
+            .send(FenceCommand::ConfigureWindowSpace {
+                request_id,
+                configuration,
+            })
+            .context("compositor fence thread is unavailable")
     }
 }
 
@@ -267,6 +289,28 @@ fn run_io(
                         });
                     let _ = reply.send(result);
                 }
+                FenceCommand::ConfigureWindowSpace {
+                    request_id,
+                    configuration,
+                } => {
+                    write_request(
+                        &mut stream,
+                        &CompositorRequest::ConfigureWindowSpace {
+                            request_id,
+                            configuration,
+                        },
+                    )?;
+                    match wait_for_window_space_ack(&mut reader, events, request_id, configuration)
+                    {
+                        Ok(()) => {}
+                        Err(WindowSpaceAckError::Rejected(error)) => {
+                            events.send_blocking(FenceEvent::WindowSpaceRejected(error))?
+                        }
+                        Err(WindowSpaceAckError::Fatal(error)) => {
+                            return Err(anyhow::Error::msg(error));
+                        }
+                    }
+                }
             }
             stream.set_read_timeout(Some(EVENT_POLL_INTERVAL))?;
         }
@@ -340,13 +384,69 @@ fn wait_for_ack(
     }
 }
 
+fn wait_for_window_space_ack(
+    reader: &mut BufReader<UnixStream>,
+    events: &async_channel::Sender<FenceEvent>,
+    request_id: u64,
+    expected: WindowSpaceConfiguration,
+) -> std::result::Result<(), WindowSpaceAckError> {
+    loop {
+        let event = read_event(reader)
+            .map_err(|error| WindowSpaceAckError::Fatal(error.to_string()))?
+            .ok_or_else(|| {
+                WindowSpaceAckError::Fatal(
+                    "compositor closed while configuring window space".to_owned(),
+                )
+            })?;
+        match event {
+            CompositorEvent::Rejected {
+                request_id: received,
+                error,
+            } if received == request_id => {
+                return Err(WindowSpaceAckError::Rejected(error));
+            }
+            CompositorEvent::Presented {
+                request_id,
+                revision_id,
+                commit_sequence,
+                submit_sequence,
+                evidence,
+            } => events
+                .send_blocking(FenceEvent::Presented(Presented {
+                    request_id,
+                    revision_id,
+                    commit_sequence,
+                    submit_sequence,
+                    evidence,
+                }))
+                .map_err(|error| WindowSpaceAckError::Fatal(error.to_string()))?,
+            CompositorEvent::WindowSpaceConfigured {
+                request_id: received,
+                configuration,
+            } if received == request_id && configuration == expected => return Ok(()),
+            event => {
+                return Err(WindowSpaceAckError::Fatal(format!(
+                    "unexpected compositor control event: {event:?}"
+                )));
+            }
+        }
+    }
+}
+
+enum WindowSpaceAckError {
+    Rejected(String),
+    Fatal(String),
+}
+
 fn event_revision(event: &CompositorEvent) -> Option<&str> {
     match event {
         CompositorEvent::Armed { revision_id, .. }
         | CompositorEvent::InputQuiesced { revision_id, .. }
         | CompositorEvent::InputResumed { revision_id, .. }
         | CompositorEvent::Presented { revision_id, .. } => Some(revision_id),
-        CompositorEvent::Registered { .. } | CompositorEvent::Rejected { .. } => None,
+        CompositorEvent::Registered { .. }
+        | CompositorEvent::WindowSpaceConfigured { .. }
+        | CompositorEvent::Rejected { .. } => None,
     }
 }
 
@@ -378,6 +478,9 @@ fn write_request(stream: &mut UnixStream, request: &CompositorRequest) -> io::Re
 #[cfg(test)]
 mod tests {
     use super::*;
+    use compositor_control_protocol::{
+        WindowLayoutMode, WindowSpaceConfiguration, WindowSpaceGeometry,
+    };
     use std::os::unix::net::UnixListener;
 
     #[test]
@@ -443,6 +546,36 @@ mod tests {
                     evidence: PresentationEvidence::NestedBackendSubmit,
                 },
             );
+            let configure = read_request_for_test(&mut reader);
+            let CompositorRequest::ConfigureWindowSpace {
+                request_id,
+                configuration: _,
+            } = configure
+            else {
+                panic!("expected window-space configuration")
+            };
+            write_event_for_test(
+                &mut stream,
+                &CompositorEvent::Rejected {
+                    request_id,
+                    error: "outside output".into(),
+                },
+            );
+            let configure = read_request_for_test(&mut reader);
+            let CompositorRequest::ConfigureWindowSpace {
+                request_id,
+                configuration,
+            } = configure
+            else {
+                panic!("expected corrected window-space configuration")
+            };
+            write_event_for_test(
+                &mut stream,
+                &CompositorEvent::WindowSpaceConfigured {
+                    request_id,
+                    configuration,
+                },
+            );
         });
 
         let fence = CompositorFence::connect(&socket, "secret".into()).unwrap();
@@ -459,6 +592,38 @@ mod tests {
         assert_eq!(presented.commit_sequence, 6);
         assert_eq!(presented.submit_sequence, 9);
         assert_eq!(presented.evidence.name(), "nested_backend_submit");
+        fence
+            .configure_window_space(WindowSpaceConfiguration {
+                geometry: WindowSpaceGeometry {
+                    x: 20,
+                    y: 72,
+                    width: 1000,
+                    height: 680,
+                    gap: 12,
+                },
+                layout: WindowLayoutMode::Floating,
+            })
+            .unwrap();
+        let FenceEvent::WindowSpaceRejected(error) = fence
+            .events()
+            .recv_blocking()
+            .expect("window-space rejection")
+        else {
+            panic!("expected non-fatal window-space rejection")
+        };
+        assert_eq!(error, "outside output");
+        fence
+            .configure_window_space(WindowSpaceConfiguration {
+                geometry: WindowSpaceGeometry {
+                    x: 24,
+                    y: 72,
+                    width: 960,
+                    height: 640,
+                    gap: 8,
+                },
+                layout: WindowLayoutMode::Tiling,
+            })
+            .unwrap();
         server.join().unwrap();
     }
 

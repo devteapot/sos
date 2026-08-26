@@ -1,4 +1,17 @@
 use anyhow::{bail, Result};
+use compositor_control_protocol::{
+    WindowLayoutMode, WindowSpaceConfiguration, WindowSpaceGeometry,
+};
+
+pub const MAX_COMPATIBILITY_TOPLEVELS: usize = 8;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WindowRectangle {
+    pub x: i32,
+    pub y: i32,
+    pub width: i32,
+    pub height: i32,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ClientRole {
@@ -65,6 +78,10 @@ impl SurfacePolicy {
         }
     }
 
+    pub fn is_shell_owner(&self, pid: u32) -> bool {
+        self.shell_pid == Some(pid)
+    }
+
     pub fn map(&mut self, role: ClientRole) -> Result<()> {
         match role {
             ClientRole::Shell if self.shell_mapped => bail!("shell surface is already mapped"),
@@ -72,8 +89,10 @@ impl SurfacePolicy {
             ClientRole::Compatibility if !self.shell_mapped => {
                 bail!("compatibility surface requires a mapped shell")
             }
-            ClientRole::Compatibility if self.compatibility_mapped >= 1 => {
-                bail!("only one compatibility toplevel is allowed")
+            ClientRole::Compatibility
+                if self.compatibility_mapped >= MAX_COMPATIBILITY_TOPLEVELS =>
+            {
+                bail!("at most {MAX_COMPATIBILITY_TOPLEVELS} compatibility toplevels are allowed")
             }
             ClientRole::Compatibility => self.compatibility_mapped += 1,
         }
@@ -233,6 +252,152 @@ pub fn compatibility_location(output: (i32, i32), window: (i32, i32)) -> (i32, i
     )
 }
 
+pub fn default_window_space(output: (i32, i32)) -> WindowSpaceConfiguration {
+    WindowSpaceConfiguration {
+        geometry: WindowSpaceGeometry {
+            x: 24,
+            y: 72,
+            width: u32::try_from((output.0 - 48).max(1)).unwrap_or(1),
+            height: u32::try_from((output.1 - 96).max(1)).unwrap_or(1),
+            gap: 12,
+        },
+        layout: WindowLayoutMode::Floating,
+    }
+}
+
+pub fn validate_window_space(
+    configuration: WindowSpaceConfiguration,
+    output: (i32, i32),
+) -> Result<WindowSpaceConfiguration> {
+    let geometry = configuration.geometry;
+    if geometry.x < 0 || geometry.y < 0 || geometry.width < 160 || geometry.height < 120 {
+        bail!("window space must have positive origin and be at least 160x120 logical pixels");
+    }
+    if geometry.gap > 128 {
+        bail!("window space gap exceeds 128 logical pixels");
+    }
+    let right = i64::from(geometry.x) + i64::from(geometry.width);
+    let bottom = i64::from(geometry.y) + i64::from(geometry.height);
+    if right > i64::from(output.0) || bottom > i64::from(output.1) {
+        bail!("window space exceeds the active output");
+    }
+    Ok(configuration)
+}
+
+pub fn window_rectangles(
+    configuration: WindowSpaceConfiguration,
+    count: usize,
+) -> Vec<WindowRectangle> {
+    let count = count.min(MAX_COMPATIBILITY_TOPLEVELS);
+    if count == 0 {
+        return Vec::new();
+    }
+    let geometry = configuration.geometry;
+    let x = geometry.x;
+    let y = geometry.y;
+    let width = i32::try_from(geometry.width).unwrap_or(i32::MAX);
+    let height = i32::try_from(geometry.height).unwrap_or(i32::MAX);
+    let gap = i32::try_from(geometry.gap).unwrap_or(128);
+    match configuration.layout {
+        WindowLayoutMode::Floating => floating_rectangles(x, y, width, height, gap, count),
+        WindowLayoutMode::Tiling => tiled_rectangles(x, y, width, height, gap, count),
+        WindowLayoutMode::Scrolling => scrolling_rectangles(x, y, width, height, gap, count),
+    }
+}
+
+fn floating_rectangles(
+    x: i32,
+    y: i32,
+    width: i32,
+    height: i32,
+    gap: i32,
+    count: usize,
+) -> Vec<WindowRectangle> {
+    let inset_width = (width - gap.saturating_mul(2)).max(1);
+    let inset_height = (height - gap.saturating_mul(2)).max(1);
+    let window_width = (inset_width * 4 / 5).clamp(1, 960.min(inset_width));
+    let window_height = (inset_height * 4 / 5).clamp(1, 720.min(inset_height));
+    let x_room = (inset_width - window_width).max(0);
+    let y_room = (inset_height - window_height).max(0);
+    let divisor = i32::try_from(count.saturating_sub(1)).unwrap_or(1).max(1);
+    let x_step = (x_room / divisor).min(28);
+    let y_step = (y_room / divisor).min(28);
+    let x_start = x + gap + (x_room - x_step * (count as i32 - 1)) / 2;
+    let y_start = y + gap + (y_room - y_step * (count as i32 - 1)) / 2;
+    (0..count)
+        .map(|index| WindowRectangle {
+            x: x_start + x_step * index as i32,
+            y: y_start + y_step * index as i32,
+            width: window_width,
+            height: window_height,
+        })
+        .collect()
+}
+
+fn tiled_rectangles(
+    x: i32,
+    y: i32,
+    width: i32,
+    height: i32,
+    gap: i32,
+    count: usize,
+) -> Vec<WindowRectangle> {
+    let columns = match count {
+        1 => 1,
+        2..=4 => 2,
+        _ => 3,
+    };
+    let rows = count.div_ceil(columns);
+    let columns_i32 = columns as i32;
+    let rows_i32 = rows as i32;
+    let cell_width = ((width - gap * (columns_i32 + 1)) / columns_i32).max(1);
+    let cell_height = ((height - gap * (rows_i32 + 1)) / rows_i32).max(1);
+    (0..count)
+        .map(|index| {
+            let column = (index % columns) as i32;
+            let row = (index / columns) as i32;
+            WindowRectangle {
+                x: x + gap + column * (cell_width + gap),
+                y: y + gap + row * (cell_height + gap),
+                width: if column == columns_i32 - 1 {
+                    (x + width - gap) - (x + gap + column * (cell_width + gap))
+                } else {
+                    cell_width
+                },
+                height: if row == rows_i32 - 1 {
+                    (y + height - gap) - (y + gap + row * (cell_height + gap))
+                } else {
+                    cell_height
+                },
+            }
+        })
+        .collect()
+}
+
+fn scrolling_rectangles(
+    x: i32,
+    y: i32,
+    width: i32,
+    height: i32,
+    gap: i32,
+    count: usize,
+) -> Vec<WindowRectangle> {
+    let inset_width = (width - gap.saturating_mul(2)).max(1);
+    let window_width = (inset_width * 3 / 4).max(1);
+    let room = (inset_width - window_width).max(0);
+    let divisor = i32::try_from(count.saturating_sub(1)).unwrap_or(1).max(1);
+    let step = (room / divisor).min(96);
+    let start = x + gap + (room - step * (count as i32 - 1)) / 2;
+    (0..count)
+        .map(|index| WindowRectangle {
+            x: start + step * index as i32,
+            y: y + gap,
+            width: window_width,
+            height: (height - gap.saturating_mul(2)).max(1),
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -306,10 +471,52 @@ mod tests {
         let mut policy = SurfacePolicy::default();
         policy.map(ClientRole::Shell).unwrap();
         assert!(policy.map(ClientRole::Shell).is_err());
-        policy.map(ClientRole::Compatibility).unwrap();
+        for _ in 0..MAX_COMPATIBILITY_TOPLEVELS {
+            policy.map(ClientRole::Compatibility).unwrap();
+        }
         assert!(policy.map(ClientRole::Compatibility).is_err());
         policy.unmap(ClientRole::Compatibility);
         policy.map(ClientRole::Compatibility).unwrap();
         assert_eq!(compatibility_location((1280, 800), (720, 520)), (280, 140));
+    }
+
+    #[test]
+    fn shell_window_layouts_stay_inside_the_declared_space() {
+        let mut configuration = WindowSpaceConfiguration {
+            geometry: WindowSpaceGeometry {
+                x: 20,
+                y: 60,
+                width: 1000,
+                height: 700,
+                gap: 12,
+            },
+            layout: WindowLayoutMode::Floating,
+        };
+        assert!(validate_window_space(configuration, (1280, 800)).is_ok());
+        for layout in [
+            WindowLayoutMode::Floating,
+            WindowLayoutMode::Tiling,
+            WindowLayoutMode::Scrolling,
+        ] {
+            configuration.layout = layout;
+            let rectangles = window_rectangles(configuration, 8);
+            assert_eq!(rectangles.len(), 8);
+            for rectangle in rectangles {
+                assert!(rectangle.x >= configuration.geometry.x);
+                assert!(rectangle.y >= configuration.geometry.y);
+                assert!(rectangle.width > 0 && rectangle.height > 0);
+                assert!(
+                    rectangle.x + rectangle.width
+                        <= configuration.geometry.x + configuration.geometry.width as i32
+                );
+                assert!(
+                    rectangle.y + rectangle.height
+                        <= configuration.geometry.y + configuration.geometry.height as i32
+                );
+            }
+        }
+
+        configuration.geometry.width = 159;
+        assert!(validate_window_space(configuration, (1280, 800)).is_err());
     }
 }

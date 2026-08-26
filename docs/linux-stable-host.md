@@ -163,6 +163,16 @@ the standard GNOME and GTK portal backends to participate, although a portal
 operation that specifically requires a Mutter-only protocol remains unavailable
 under the SOS compositor.
 
+For an active SOS login, the launcher holds a logind block inhibitor for
+`idle`, `sleep`, and `handle-lid-switch` around the complete
+`sos-linux-session run-user` lifetime. The direct compositor has no independent
+screensaver, so the stock development behavior is an always-present shell that
+keeps its network link available and does not suspend when the lid changes.
+The inhibitor is released automatically on SOS logout and does not change the
+GNOME session's stored preferences. A future trusted suspend action must first
+release this session-owned inhibitor as part of its fixed native ceremony;
+generated Luau cannot remove or bypass it.
+
 For a credential- and network-independent first hardware gate, install with
 `./tools/install-linux-login-session install --offline`. This configures the
 same resident runner with the checked-in deterministic `daily-flow.luau`

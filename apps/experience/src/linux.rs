@@ -9,11 +9,14 @@ use std::{
 };
 
 use anyhow::{bail, Context as _, Result};
+use compositor_control_protocol::{
+    WindowLayoutMode as CompositorWindowLayoutMode, WindowSpaceConfiguration, WindowSpaceGeometry,
+};
 use experience_host_protocol::{HostEvent, HostRequest};
 use experience_ir::{
     AgentMessage, AgentMessageRole, Align, AnimationKind, Content, ExperienceModel, Flow,
-    HitRegion, Interaction, Justify, PaintOp, Scene, SceneEvent, SceneNode, EXPERIENCE_API_VERSION,
-    MAX_AGENT_MESSAGES, MAX_AGENT_MESSAGE_BYTES,
+    HitRegion, Interaction, Justify, PaintOp, Scene, SceneEvent, SceneNode, WindowLayoutMode,
+    WindowSpaceContent, EXPERIENCE_API_VERSION, MAX_AGENT_MESSAGES, MAX_AGENT_MESSAGE_BYTES,
 };
 use gpui::{
     div, img, point, prelude::*, px, relative, rgb, size, Animation as GpuiAnimation,
@@ -40,6 +43,7 @@ use crate::linux_accessibility::{self, Action as AccessibilityAction};
 use crate::linux_input::{self, NativeTextInput};
 use crate::pointer_input;
 use crate::scene_surface;
+use crate::window_space;
 
 #[derive(Clone, Debug)]
 struct Options {
@@ -324,6 +328,7 @@ pub(super) struct LinuxExperienceHost {
     active_source_sha256: String,
     service_socket: Option<PathBuf>,
     compositor_fence: Option<CompositorFence>,
+    last_window_space: Option<WindowSpaceConfiguration>,
     preparing: Option<PreparingRevision>,
     prepared: Option<PreparedRevision>,
     pending_commit: Option<PendingCommit>,
@@ -399,6 +404,7 @@ impl LinuxExperienceHost {
             active_source_sha256: revision.source_sha256,
             service_socket,
             compositor_fence,
+            last_window_space: None,
             preparing: None,
             prepared: None,
             pending_commit: None,
@@ -708,6 +714,9 @@ impl LinuxExperienceHost {
                     revision_id: presented.revision_id,
                 });
                 self.dispatch_queued_provider_model(cx);
+            }
+            FenceEvent::WindowSpaceRejected(error) => {
+                eprintln!("sos_window_space_rejected error={error}");
             }
             FenceEvent::Failed(error) => {
                 eprintln!("sos_compositor_fence_failed error={error}");
@@ -1343,6 +1352,11 @@ impl LinuxExperienceHost {
         self.next_action_request_id = self.next_action_request_id.wrapping_add(1).max(1);
         self.action_in_flight = true;
         merge_input_state_shadow(&mut self.state, &self.input_state_shadow);
+        eprintln!(
+            "sos_action_dispatched request_id={request_id} action={} target={}",
+            event.action,
+            event.target.as_deref().unwrap_or("none")
+        );
         if let Err(error) =
             self.worker
                 .action(request_id, self.model.clone(), self.state.clone(), event)
@@ -1831,7 +1845,10 @@ impl LinuxExperienceHost {
             element = element.overflow_hidden();
         }
         if node.layout.grow {
-            element = element.flex_1();
+            // A growing scene node represents the flexible remainder of its
+            // parent. Let it shrink below its contents' intrinsic size so a
+            // scrollable child cannot expand the shell past the viewport.
+            element = element.flex_1().min_w_0().min_h_0();
         }
         element = match node.layout.align {
             Some(Align::Start) => element.items_start(),
@@ -1936,6 +1953,29 @@ impl LinuxExperienceHost {
                 );
             }
         }
+        if let Some(Content::WindowSpace(space)) = &node.content {
+            element = element.relative();
+            if !space.fallback.is_empty() {
+                element = element.child(
+                    div()
+                        .absolute()
+                        .top_0()
+                        .left_0()
+                        .size_full()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .text_color(rgb(0x737A75))
+                        .text_size(px(14.))
+                        .child(SharedString::from(space.fallback.clone())),
+                );
+            }
+            element = element.child(window_space::render(
+                element_id.clone(),
+                space.clone(),
+                cx.weak_entity(),
+            ));
+        }
         let uses_surface = node
             .paint
             .iter()
@@ -2005,6 +2045,73 @@ impl LinuxExperienceHost {
                 .into_any_element();
         }
         rendered
+    }
+}
+
+impl window_space::WindowSpaceHost for LinuxExperienceHost {
+    fn record_window_space(
+        &mut self,
+        node_id: String,
+        bounds: Bounds<gpui::Pixels>,
+        specification: WindowSpaceContent,
+        _cx: &mut Context<Self>,
+    ) {
+        let x = f32::from(bounds.origin.x);
+        let y = f32::from(bounds.origin.y);
+        let width = f32::from(bounds.size.width);
+        let height = f32::from(bounds.size.height);
+        if [x, y, width, height]
+            .into_iter()
+            .any(|value| !value.is_finite())
+            || width < 160.0
+            || height < 120.0
+        {
+            return;
+        }
+        let left = x.ceil().max(0.0);
+        let top = y.ceil().max(0.0);
+        let right = (x + width).floor().max(left);
+        let bottom = (y + height).floor().max(top);
+        let configuration = WindowSpaceConfiguration {
+            geometry: WindowSpaceGeometry {
+                x: left as i32,
+                y: top as i32,
+                width: (right - left) as u32,
+                height: (bottom - top) as u32,
+                gap: specification.gap.round().clamp(0.0, 128.0) as u32,
+            },
+            layout: match specification.layout {
+                WindowLayoutMode::Floating => CompositorWindowLayoutMode::Floating,
+                WindowLayoutMode::Tiling => CompositorWindowLayoutMode::Tiling,
+                WindowLayoutMode::Scrolling => CompositorWindowLayoutMode::Scrolling,
+            },
+        };
+        if configuration.geometry.width < 160 || configuration.geometry.height < 120 {
+            return;
+        }
+        if self.last_window_space == Some(configuration) {
+            return;
+        }
+        let Some(fence) = &self.compositor_fence else {
+            return;
+        };
+        match fence.configure_window_space(configuration) {
+            Ok(()) => {
+                self.last_window_space = Some(configuration);
+                eprintln!(
+                    "sos_window_space node_id={node_id} x={} y={} width={} height={} gap={} layout={:?}",
+                    configuration.geometry.x,
+                    configuration.geometry.y,
+                    configuration.geometry.width,
+                    configuration.geometry.height,
+                    configuration.geometry.gap,
+                    configuration.layout
+                );
+            }
+            Err(error) => {
+                eprintln!("sos_window_space_failed node_id={node_id} error={error}");
+            }
+        }
     }
 }
 

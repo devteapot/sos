@@ -5,6 +5,7 @@ mod handlers;
 mod input;
 pub mod policy;
 mod recovery;
+mod render;
 mod state;
 #[cfg(feature = "nested-backend")]
 mod winit;

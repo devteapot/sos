@@ -12,11 +12,12 @@ use experience_ir::{
     validate_scene, Align, Animation, AnimationKind, ClipRect, Content, ExperienceModel, Flow,
     GlyphRun, HitRegion, ImageContent, Interaction, Justify, Layout, LayoutPosition, LayoutProgram,
     PaintOp, PaintPoint, PointerCapture, ProviderEffect, ProviderSurfaceContent, Scene, SceneEvent,
-    SceneNode, SemanticRole, Semantics, TextContent, TextSession, Transform2D,
-    EXPERIENCE_API_VERSION, MAX_CHILDREN, MAX_EFFECTS, MAX_EFFECT_PAYLOAD_BYTES, MAX_GLYPH_RUNS,
-    MAX_HIT_REGIONS, MAX_PAINT_DEPTH, MAX_PAINT_OPS, MAX_PAINT_POINTS, MAX_REVISION_ASSETS,
-    MAX_REVISION_ASSET_BYTES, MAX_REVISION_ASSET_TOTAL_BYTES, MAX_SCENE_DEPTH, MAX_SCENE_NODES,
-    MAX_STATE_BYTES, MAX_TEXT_BYTES,
+    SceneNode, SemanticRole, Semantics, TextContent, TextSession, Transform2D, WindowLayoutMode,
+    WindowSpaceContent, EXPERIENCE_API_VERSION, MAX_CHILDREN, MAX_EFFECTS,
+    MAX_EFFECT_PAYLOAD_BYTES, MAX_GLYPH_RUNS, MAX_HIT_REGIONS, MAX_PAINT_DEPTH, MAX_PAINT_OPS,
+    MAX_PAINT_POINTS, MAX_REVISION_ASSETS, MAX_REVISION_ASSET_BYTES,
+    MAX_REVISION_ASSET_TOTAL_BYTES, MAX_SCENE_DEPTH, MAX_SCENE_NODES, MAX_STATE_BYTES,
+    MAX_TEXT_BYTES,
 };
 use mlua::{
     chunk::{ChunkMode, Compiler},
@@ -1335,6 +1336,21 @@ fn decode_content(
         "provider_surface" => Content::ProviderSurface(ProviderSurfaceContent {
             surface: required_bounded_string(&table, "surface", 128)?,
         }),
+        "window_space" => Content::WindowSpace(WindowSpaceContent {
+            layout: match table.get::<Option<String>>("layout")?.as_deref() {
+                None | Some("floating") => WindowLayoutMode::Floating,
+                Some("tiling") => WindowLayoutMode::Tiling,
+                Some("scrolling") => WindowLayoutMode::Scrolling,
+                Some(value) => {
+                    return Err(RuntimeError::Invalid(format!(
+                        "invalid window-space layout: {value}"
+                    )))
+                }
+            },
+            gap: finite_dimension(&table, "gap")?.unwrap_or(12.0),
+            fallback: bounded_optional_string(&table, "fallback", MAX_TEXT_BYTES)?
+                .unwrap_or_default(),
+        }),
         other => {
             return Err(RuntimeError::Invalid(format!(
                 "unknown content kind: {other}"
@@ -1757,6 +1773,40 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("unknown content kind"));
+    }
+
+    #[test]
+    fn decodes_the_bounded_window_space_contract() {
+        let runtime = LuauRuntime::compile(
+            r#"
+                return {
+                    api_version = 3,
+                    render = function()
+                        return {
+                            id = "applications",
+                            content = {
+                                kind = "window_space",
+                                layout = "tiling",
+                                gap = 16,
+                                fallback = "No applications are open",
+                            },
+                        }
+                    end,
+                }
+            "#,
+        )
+        .unwrap();
+        let scene = runtime
+            .render(&providers_fake_for_test(), &runtime.initial_state())
+            .unwrap();
+        assert_eq!(
+            scene.root.content,
+            Some(Content::WindowSpace(WindowSpaceContent {
+                layout: WindowLayoutMode::Tiling,
+                gap: 16.0,
+                fallback: "No applications are open".into(),
+            }))
+        );
     }
 
     #[test]

@@ -42,6 +42,9 @@ build/operator machine.
   configuration, so remote access cannot start with Fedora's temporary
   passwordless live accounts
 - `/usr/local/libexec/sos/linux-hardware-gate` for same-boot diagnostics
+- an SOS-session-scoped logind inhibitor for idle blanking, automatic sleep and
+  lid-switch suspend; it exists only while the selectable SOS session runs and
+  is released on logout
 - matching rootfs and ISO-level `image-identity.env` records with the embedded
   EROFS payload size and SHA-256
 

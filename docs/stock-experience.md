@@ -2,16 +2,39 @@
 
 Date: 2026-08-26
 
-Stock Base is the product's substantial default experience and the integration
-target for the System Providers ABI. It is not a privileged host view or a
-catalog of native widgets. The shipped implementation is the ordinary Scene
-ABI v3 module in [`experiences/default.luau`](../experiences/default.luau), and
-the permanent host compiles, validates, installs, and activates it through the
-same content-addressed revision path used by agent-authored experiences.
+Stock Shell is the product's substantial default experience and the
+integration target for the System Providers ABI. It is a privileged but
+replaceable Scene ABI v3 module in
+[`experiences/default.luau`](../experiences/default.luau), not a fixed Rust UI
+or catalog of native widgets. The permanent host compiles, validates, installs,
+and activates it through the same content-addressed revision path used by
+agent-authored experiences.
+
+Privilege is narrow and structural. One source node may declare a
+`window_space`; the Linux host reports that node's final logical GPUI bounds
+and selected `floating`, `tiling`, or `scrolling` policy over its authenticated
+compositor connection. The compositor—not Luau—continues to own application
+surface identity, mapping, focus, activation, stacking, input and lifecycle.
+No Wayland object, socket, PID, desktop-file path or geometry authority crosses
+into the revision. Android renders the same node as an explicit unavailable
+surface.
 
 ## Product surface
 
-The initial stock revision contains eight source-defined workspaces:
+The initial stock revision is a complete source-defined shell with:
+
+- one permanent top status bar, including provider-backed connectivity, audio,
+  attention and clock controls plus up to four bounded native-application
+  status contributions;
+- one compositor-backed absolute application region whose initial policy is
+  bounded floating placement and whose command-center controls can select the
+  deterministic tiling or scrolling policy;
+- one reserving shell rail. Its collapsed form owns the command-center toggle,
+  workspace shortcuts and agent FAB; opening command or agent content reduces
+  the application region instead of attempting to paint Luau above independent
+  application surfaces;
+- a command center for workspaces, application launch and window policy; and
+- eight shell-owned workspaces beneath the application layer:
 
 - Home, with workspace navigation, provider status, agenda, notes, media,
   attention, system-control, application, and agent entry points;
@@ -26,7 +49,7 @@ The initial stock revision contains eight source-defined workspaces:
 - Agent, with the resident conversation, composer, activity/error states, and
   only platform-advertised configuration ceremonies.
 
-Every workspace renders an explicit empty or unavailable state when its
+Every workspace and contribution slot renders an explicit empty or unavailable state when its
 provider, capability, or resource is absent. Provider object paths, desktop
 files, process arguments, credentials, and platform handles never enter the
 source. Stock emits the same typed provider-effect envelopes as any generated
@@ -40,6 +63,18 @@ remove every stock workspace, change navigation and information architecture,
 or introduce a different visual system. It remains constrained by the Scene
 ABI, the provider grants, the sandboxed runtime, and native trusted ceremonies.
 
+Existing desktop applications are not rewritten or wrapped in CLI calls. The
+Linux applications provider discovers eligible freedesktop entries and
+launches their normal Wayland/XWayland processes through a strict `gio launch`
+argument vector. Those surfaces are compositor clients placed within the
+declared window space. SOS-native applications may additionally publish a
+bounded `status_widgets` contribution through the trusted applications
+provider: an ID, visible label/value and optional opaque compatible-application
+selection. The optional tap reuses the existing typed `apps.launch` authority;
+arbitrary callbacks or app-supplied Luau do not enter the bar. The current
+Linux provider publishes an empty contribution set until the native-app
+registration broker exists.
+
 The mark is currently an inline immutable SVG declaration and therefore enters
 the same revision asset set and validation limits as agent content. Sidecar
 images, fonts, and shaders can be added through the normal revision manifest;
@@ -47,19 +82,22 @@ there is no stock-only asset path.
 
 ## Responsive contract
 
-Rows that contain navigation, cards, controls, notes, applications, or agent
-actions opt into retained flex wrapping. The readable content frame is bounded
-to 1,876 logical pixels while measuring relative to its parent, so the current
-Framework development compositor does not stretch one experience across its
-side-by-side PiKVM and internal-panel output space. Fixed card widths provide
-natural clamshell and tablet reflow without branching on a device name or
-calling back into Luau during host layout.
+The root and shell body measure against the complete logical output. The top
+bar remains fixed, the application region grows, and opening the 390-pixel
+command panel or 430-pixel agent panel reserves that width. Rows containing
+navigation, cards, controls, notes and applications use retained flex wrapping;
+the application region enforces a 320-by-240 minimum and publishes bounds only
+once it is at least 160-by-120. This provides one clamshell/tablet source
+without branching on a device name or calling back into Luau during layout.
 
-This closes the retained-layout implementation and physical 1,920-by-1,080
-clamshell gate. It does not close a physical portrait/tablet gate. The current
-direct compositor still exposes multiple outputs as one global scene rather
-than one workspace per output; per-output surfaces or a single-output nested
-portrait campaign remain separate host acceptance work.
+The compositor-backed shell is physically accepted at 1,920 by 1,080 on the
+Framework development target: PiKVM clicks opened both reserving rails,
+selected tiling and launched Calculator and Calendar through the applications
+provider. Their native XDG surfaces reflowed into two clipped tiles while the
+Luau command panel remained visible and clickable. A physical portrait/tablet
+gate remains open. The direct compositor mirrors one logical canvas across the
+Framework panel and PiKVM by default; independent per-output shell surfaces
+remain separate work.
 
 ## Stock trust and recovery
 
