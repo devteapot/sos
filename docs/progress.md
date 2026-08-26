@@ -10770,3 +10770,304 @@ single-login Framework campaign with physical touchpad motion, touchscreen,
 suspend/resume, portal dialogs needed by stock applications, and no historical
 process failures. Keep power confirmation, credentials, permissions,
 emergency, and Recovery surfaces fixed native UI.
+
+## 2026-08-26 — Make Stock Base the editable Linux integration target
+
+**Goal / architecture:** Replace the small provider demonstration with a
+substantial default experience while preserving the rule that stock has no
+special native UI authority. `experiences/default.luau` is now a 35,843-byte
+Scene ABI v3 revision with eight source-defined workspaces: Home, Agenda,
+Notes, Media, Attention, System, Apps, and Agent. Navigation, agenda and note
+composers, media controls, notification acknowledgement, connectivity/power/
+audio controls, compatible-application launch rows, the resident-agent
+conversation/composer, explicit unavailable/empty states, and the inline SVG
+mark all use the same retained nodes, revision assets, typed provider effects,
+and capability checks available to generated content. Its SHA-256 is
+`02d7438ef81720eeb0640b376e503e43ecd70cacdee54cd7c5d9a3e200280428`.
+
+Scene layout now has an explicit bounded `wrap` facet decoded by the Luau
+runtime and implemented by both Linux and Android GPUI renderers. Stock opts
+its navigation, cards, controls, notes, applications, and agent actions into
+wrapping. The readable inner frame measures relative to its parent and is
+bounded to 1,876 logical pixels; fixed card widths then reflow without a
+device-name branch or render-time Luau callback. Tests identify the responsive
+home grid and content frame by stable IDs and require wrapping, the maximum
+width, relative measurement, all eight navigable workspaces, the agent
+composer, typed audio/calendar/notes effects, one revision-scoped asset, and a
+system-provider unavailable state. The final note transaction also exposes its
+`Saved` result as an accessible status. The API and focused
+`stock-experience.md` documentation define source-level replacement—not themes
+or widget rearrangement—as the customization boundary.
+
+**Host verification:** `cargo check -p sos-experience --features linux-host
+--bin sos-experience-host`; `cargo test -p experience-ir -p runtime-luau -p
+sos-experience --all-targets`; `cargo test -p revision-supervisor
+--all-targets`; `bash tests/linux-login-session-test.sh`; formatting; and
+`git diff --check` passed. The focused suites reported 5 experience-IR, 22
+Luau-runtime, 16 experience, 1 revision-store signing, 10 coordinator, and 15
+supervisor tests. No model request ran, so model and model-weighted cost were
+zero.
+
+**Framework 12 physical evidence:** The mutable development-live image at
+base revision `28cf8fffee8e2492fc4f2b69fcfe27db3baf7b36` remained on the same
+boot ID `9b1818f2-c6c3-4829-8109-c9b3320a02a3`, with overlay root and every
+internal-NVMe partition unmounted. The final root-owned `/usr/share` source and
+activated revision source had the same 35,843-byte SHA-256 above. Coordinated
+activation committed revision
+`40c4ec85c7577938d9e4a323f65e6c61e21f9197b7577e0a82eece8f3b99c76d`
+while retaining stable host PID 62841. After logout, the exact-source
+`stock-base` development overlay
+`20260825T223150Z-5e7d3d2bda31-1923240` completed in 8,752,359,761 ns; its
+111-byte deployment manifest has SHA-256
+`9547249eebf5ca0d9292e52da4853eac929c49f5bf89db7c5f7eba7babcd66cb`.
+
+The semantic interface navigated all eight workspaces. Agenda creation wrote
+`09:30 Framework stock gate` through `calendar.append`; note creation wrote
+through `notes.write`; and the final note test cleared the composer, published
+an accessible `Saved` status, and found the provider-created file. Its
+2,743-byte semantic snapshot has SHA-256
+`1552885f53e2fdf4eb42a7d88e58b4c2dac553776cd6595943809589632a5b6c`.
+The canonical audio action moved the live PipeWire sink from 40% to 50% and
+back to 40%. PiKVM visually confirmed Home, Agenda, Notes, System, Apps, and
+Agent; `pikvm/stock-home-bounded.jpg` is 79,074 bytes with SHA-256
+`3a0dc32f05f1ca454f8a2878db320fb99e34a8fc72994903de9a5c3f67322094`,
+and the final visible plus semantic note result is
+`pikvm/stock-note-final-accessible.jpg` (70,811 bytes, SHA-256
+`0df751168fa1fac57caa22ba9041d08063b926ec47cd9df7435eef74c7932092`).
+
+**Failures / rejected evidence:** The direct compositor exposes PiKVM DP-1 and
+the internal eDP-1 side by side as a 3,840-pixel global layout. The first Stock
+revision stretched across that space; intrinsic growth and wrapping alone did
+not constrain it. The retained maximum-width content frame fixed the visible
+PiKVM output, while per-output workspaces remain host work. The first note UI
+reported `Saving` after a committed effect and did not expose the status
+semantically; transactionally committed state now reports `Saved` and has a
+semantic regression test. One exploratory audio assertion looked for a
+nonexistent system semantic value and is retained only as rejected evidence;
+the saved `wpctl` 40/50/40 measurements are the acceptance record.
+
+The clean lifecycle request stopped every SOS process and all three graphical
+user targets, with GDM greeter session `c3` present. The sink reappeared at
+100% after the graphical logout, so it was explicitly restored to the original
+40% before finalization. The target then transiently withdrew its address and
+PiKVM streamer; two screenshot requests returned HTTP 503. It returned at the
+same address without power or HID input and accepted the final overlay, but the
+PiKVM streamer remained unavailable, so there is no post-logout GDM frame.
+HID, ATX, and read-only virtual-media state were byte-identical before/after;
+the exact 3,056,205,824-byte development ISO stayed complete, connected,
+CD-ROM, non-writable, and `rw=false`.
+
+**Trust decision / next gates:** Android already loads this stock source from
+AVB/OTA-protected `/system_ext`, pins the resulting revision separately from
+the mutable current pointer, and falls back to it transactionally. Linux
+development-live has content addressing and a read-only system source, but no
+system-owned pinned stock revision or provisioned release-verification key.
+The revision store's optional symmetric manifest HMAC is now documented
+accurately and is not counted as an asymmetric signed-recovery boundary. A
+Linux release still needs an immutable stock pointer plus asymmetric release
+signature verification and a fixed recovery request.
+
+This accepts Stock Base as the substantial editable integration target on a
+physical clamshell, not as a release or physical tablet result. Run a
+single-output nested portrait/tablet campaign, then add per-output host
+surfaces for the dual-display topology. Exercise real MPRIS and attention
+resources and an application launch/return under this final source. Continue
+normalizing the remaining provider domains without moving credentials,
+permissions, trusted power confirmation, emergency, lock, or Recovery above
+the native boundary. The complete 75-file physical campaign manifest is
+`artifacts/linux-stock-base-framework12-20260825/evidence-manifest.tsv`
+(7,871 bytes, SHA-256
+`5b60e5be27fa6e389d36f73a0d79f9923867fdd743dfa43f59164e8a5b93e059`),
+independently verified after every evidence file was finalized.
+
+## 2026-08-26 — Diagnose PiKVM pointer loss on the dual-output Stock session
+
+**Goal / evidence:** Explain why Stock Base accepts touch and touchpad input on
+the Framework but clicks from the PiKVM web console do not reach the visible
+DP-1 surface. A same-boot, read-only SSH audit found the compositor initializing
+eDP-1 first at 1,920x1,200, then positioning DP-1 at x=0 and eDP-1 at x=1,920
+after DP-1 appeared. Libinput registered the PiKVM composite keyboard and two
+mouse interfaces; sysfs reports its absolute mouse interface with ABS_X/ABS_Y
+and the separate relative interface with relative axes. The integrated
+touchscreen and touchpad remain distinct device groups.
+
+**Cause / decision:** The direct compositor currently discards the device from
+`PointerMotionAbsolute` and maps every absolute pointer through
+`space.outputs().next()`. Touch uses the same first-output rule, and relative
+pointer motion is clamped to that output. Because eDP-1 was inserted first on
+this boot, PiKVM absolute coordinates target the internal panel even though
+PiKVM video displays DP-1. This is an output-association bug below the Luau
+revision, not missing Stock interaction handlers. No HID, power, media, disk,
+session, or revision mutation was made during diagnosis.
+
+**Next gate:** Preserve input-device identity through routing. Map configured
+absolute devices to one named output (PiKVM to DP-1 and the integrated
+touchscreen to eDP-1), let relative pointers traverse the complete output
+layout, and fail safely when a configured connector is absent. Add deterministic
+tests with reversed connector discovery order, deploy the compositor through
+the development overlay, then prove the same visible Stock control from PiKVM
+and the integrated panel before accepting multi-output interaction.
+
+## 2026-08-26 — Route absolute input to explicit direct outputs
+
+**Goal / change:** Remove connector discovery order from direct-session input
+routing. The compositor now preserves each libinput device identity and resolves
+absolute pointer, touchscreen, and tablet coordinates against a bounded
+`input_outputs` map in the existing private `output.json`. An exact device name
+selects one connector, a single connected output remains automatic, and an
+unmapped multi-output device or absent configured connector fails closed with a
+one-time diagnostic. Relative pointer motion now uses the complete logical
+output layout and clamps to the nearest valid output rectangle rather than the
+first inserted output. The mapping is reapplied with the existing direct-output
+configuration refresh; generated Luau content receives no DRM, libinput, or
+connector capability.
+
+The Framework deployment configuration maps `PiKVM PiKVM Composite Device` to
+DP-1 and all three observed `ILIT2901:00 222A:5539` touchscreen/stylus/mouse
+device names to eDP-1. It also selects the new `mirror` layout: the direct
+backend defaults to one logical canvas sized to the minimum connected-output
+extent and centers that canvas on every physical mode. For the Framework this
+keeps DP-1 at `(0,0)` on a 1,920x1,080 canvas and places the 1,920x1,200 eDP-1
+at `(0,-60)`, yielding equal content with compositor-owned bars instead of a
+second workspace. `extend` remains an explicit, connector-sorted horizontal
+policy. The 221-byte configuration is
+`artifacts/linux-multi-output-input-framework12-20260826/framework12-output.json`
+with SHA-256
+`9131a704962daf72ae15c9c9d0cc719552b17f0d84a158897712847d4396c0b8`.
+Documentation now defines this mapping as direct-compositor policy and records
+the safe ambiguous/unavailable behavior.
+
+**Host evidence:** Deterministic tests reverse eDP-1/DP-1 discovery order and
+still route PiKVM to DP-1 and the integrated panel to eDP-1. They also cover no
+output, single-output automatic routing, ambiguous multi-output routing,
+missing configured connectors, relative crossing into the second output, and
+gap/outer-edge clamping. Mirror geometry tests require the 1,920x1,080 shared
+canvas and centered panel placement independent of connector order; the
+extended-policy regression still requires a 3,840x1,200 aggregate. Relative
+input is separately bounded to the mirror canvas. `cargo test -p
+sos-compositor --features direct-backend --all-targets` passed 21 tests; the
+no-feature compositor suite passed 15; `cargo clippy -p sos-compositor
+--features direct-backend
+--all-targets -- -D warnings`, the 10-test `sos-linux-session` suite,
+`tests/linux-login-session-test.sh`, formatting, and `git diff --check` passed.
+The exact logs are under
+`artifacts/linux-multi-output-input-framework12-20260826/host/`. The nested
+verifier remains unavailable on this development host because `weston` is not
+installed; its saved probe fails immediately with `error: required command not
+found: weston`, so no nested-runtime claim is made.
+
+The combined release compositor built in 33.98 seconds with maximum RSS
+772,488 KiB. It is 5,745,112 bytes with SHA-256
+`c1ee04496782b9db853c10d621843127b8ca4242fea882a2623566f4287b354d`.
+No model request ran, so model and model-weighted cost were zero.
+
+**Physical deployment / open gate:** The Framework first withdrew its known
+address while PiKVM had no active streamer; the screenshot endpoint returned
+HTTP 503 and no mutation was sent while target state was unknowable. It later
+returned at 192.168.1.132 on the same boot ID
+`9b1818f2-c6c3-4829-8109-c9b3320a02a3`. The audited root remained the live
+overlay, the internal 1-TB NVMe and both partitions were unmounted, no installer
+or block writer was present, and GDM was at its greeter with no SOS process.
+
+`linux-live-deploy` then installed only the compositor in 20,538,381,724 ns as
+deployment `20260826T055729Z-5e7d3d2bda31-1947278`; the target's root-owned
+5,745,112-byte binary has the exact release SHA-256 above. The private 221-byte
+mirror/input configuration was installed mode 0600 for `liveuser` and verified
+against its local SHA-256. Deployment evidence is under
+`artifacts/linux-multi-output-input-framework12-20260826/deploy/`.
+
+The post-deployment session gate remains open. PiKVM again reported an online
+1,920x1,080, 60-fps capture source, and both DP-1 and eDP-1 were connected, but
+every captured frame stayed black while logind described the GDM Wayland
+greeter as active and non-idle. GNOME logged repeated stage-view allocation,
+EGL damage-region, and atomic cursor failures. One reset plus one harmless
+keyboard wake and one absolute-mouse move were accepted by PiKVM without a
+visible transition; both helpers were retired for this boot and no click,
+credential entry, power action, or speculative input followed. A local login
+is now required. After Stock starts, acceptance still requires the compositor
+diagnostic to show mirror placement and PiKVM-to-DP-1 routing, one harmless
+PiKVM click to change visible Stock state, and an integrated-panel/touchpad
+regression check. The code is host-verified and physically deployed, but the
+mirrored interaction claim is not yet accepted.
+
+## 2026-08-26 — Default the Framework/PiKVM GDM pair to a cloned display
+
+**Goal / cause:** Opening the Framework lid still appeared to extend the
+desktop after the direct compositor had been changed to mirror. A same-boot
+audit established that no SOS process was running: session `c3` was the active
+GDM Wayland greeter. Mutter's `gdctl show --modes --properties` reported DP-1
+as the primary 1,920x1,080 logical monitor at `(0,0)` and eDP-1 as a separate
+1,920x1,200 logical monitor at `(1920,0)` with scale 1.3333. The observed
+extension was therefore GDM policy below the login chooser, not a failure of
+the new SOS direct-backend layout.
+
+A verified and then applied `gdctl` clone briefly placed the PiKVM capture
+monitor and built-in panel into one logical monitor, but no user
+`monitors.xml` was written for the ephemeral `gdm-greeter` account. A later
+readback after the lid event showed the original two-monitor extension again.
+That runtime-only `gdctl --persistent` attempt is rejected as a boot/hotplug
+default.
+
+**Change / host evidence:**
+`packaging/xdg/framework12-pikvm-monitors.xml` is now the explicit fallback for
+the observed HJW `HDMI TO USB` DP-1 EDID and BOE `NV122WUM-N42` eDP-1 panel. It
+uses Mutter's version-2 monitor schema and puts both monitors in one primary
+logical monitor at `(0,0)`, scale 1, using their shared 1,920x1,080 modes. It
+does not declare a system-only store policy, so a user's own monitor
+configuration can still override the default. The SOS compositor remains
+separately controlled by `output.json`.
+
+The live-image baker now installs the 911-byte file root-owned at
+`/etc/xdg/monitors.xml`, and `check-rootfs` rejects a missing or divergent
+copy. `linux-live-deploy` exposes the same file as the `display-defaults`
+component so this disposable overlay can be updated without rebaking the ISO.
+The regression test parses the XML, requires one logical monitor containing
+DP-1 and eDP-1 at 1,920x1,080, requires the absence of a locked system policy,
+and verifies both hot-deployment and baked-rootfs identity. XML validation,
+shell parsing, `git diff --check`, and `tests/linux-live-image-test.sh` passed;
+the final complete live-image test took 1.43 seconds with maximum RSS 30,440
+KiB. The packaged file SHA-256 is
+`e194c48097e6c26039a572e11642075f54dee3d8530aa8d9bac7e57f4dd7c38a`.
+
+**Physical evidence / decision:** `linux-live-deploy` first installed only
+`display-defaults` as deployment
+`20260826T062416Z-5e7d3d2bda31-1949972` in 8,559,035,868 ns. Before
+finalization, the compositor and display default were deployed together as
+`20260826T063120Z-5e7d3d2bda31-1951918` in 31,322,176,090 ns so the target's
+current development manifest accounts for both patched artifacts rather than
+superseding the compositor record. It names the 5,745,112-byte compositor SHA
+`c1ee04496782b9db853c10d621843127b8ca4242fea882a2623566f4287b354d`
+and the display default. The remote XML is root-owned, mode 0644, 911 bytes,
+and has the exact packaged SHA-256. GDM was restarted without rebooting: the
+unit returned in 1,212,987,561 ns and a new active greeter `c4` was ready in
+1,755,857,538 ns on the unchanged boot ID
+`9b1818f2-c6c3-4829-8109-c9b3320a02a3`. Fresh `gdctl` readback reports DP-1
+at `1920x1080@60.000` and eDP-1 at `1920x1080@59.934` inside the same sole
+logical monitor at `(0,0)`, primary, scale 1. PiKVM simultaneously recovered a
+visible 1,920x1,080 GDM frame at 60 captured fps; the 49,316-byte JPEG SHA-256
+is `9dcf87928b8007ac507c5ab37576a6491c2a58f980f497c7db657cd68d81b0ef`.
+A later final snapshot was black again even though the active, non-idle greeter
+still reported the same one-logical-monitor clone and no new stage-view, EGL,
+cursor, or GNOME Shell crash was logged. The durable layout result therefore
+does not close the separate intermittent PiKVM/GDM frame-blanking issue.
+
+The root remained the writable live overlay, the internal NVMe had no mounted
+partition, GDM remained active, and no SOS process ran during this greeter
+change. The old GNOME Shell process logged a Mutter Cogl segmentation fault as
+the greeter restarted; the replacement greeter is active and produced the
+visible evidence frame, but that shutdown-path fault remains a diagnostic risk
+rather than being hidden. No PiKVM HID, ATX, virtual-media, disk, or power
+mutation was used for this fix. No model request ran, so model and
+model-weighted cost were zero.
+
+This accepts the Framework/PiKVM GDM mirror default for the currently connected
+pair and future development-live bakes. It is intentionally hardware-specific:
+different EDIDs or connector names fall back to Mutter discovery. The next
+physical gate remains logging into SOS and proving its independently deployed
+mirror geometry plus PiKVM absolute-click routing and integrated-panel input;
+that Stock interaction gate is not implied by the greeter result. The finalized
+75-file campaign manifest is
+`artifacts/linux-multi-output-input-framework12-20260826/evidence-manifest.tsv`
+(8,167 bytes, SHA-256
+`9e227218d7b7db5def47b87b04044501076b89bc6161714d656405f43b21f09d`),
+and every listed size and digest was independently rechecked after generation.

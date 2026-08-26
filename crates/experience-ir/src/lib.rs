@@ -500,6 +500,7 @@ pub struct SceneNode {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Layout {
     pub flow: Flow,
+    pub wrap: bool,
     pub scroll_y: bool,
     pub padding: Option<f32>,
     pub gap: Option<f32>,

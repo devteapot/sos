@@ -3,7 +3,14 @@
 // SOS policy independent from KMS and releases an activation fence only from the
 // VBlank event corresponding to the queued shell buffer.
 
-use std::{cell::RefCell, collections::HashMap, fs, path::Path, rc::Rc, time::Duration};
+use std::{
+    cell::RefCell,
+    collections::{BTreeMap, HashMap},
+    fs,
+    path::Path,
+    rc::Rc,
+    time::Duration,
+};
 
 use anyhow::{bail, Context as _, Result};
 use compositor_control_protocol::{PresentationClock, PresentationEvidence};
@@ -113,6 +120,16 @@ struct OutputConfig {
     requested_size: Option<(i32, i32)>,
     rotation: u16,
     scale: f64,
+    layout: OutputLayout,
+    input_outputs: BTreeMap<String, String>,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+enum OutputLayout {
+    #[default]
+    Mirror,
+    Extend,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -121,6 +138,8 @@ struct OutputConfigFile {
     mode: Option<String>,
     rotation: Option<u16>,
     scale: Option<f64>,
+    layout: Option<OutputLayout>,
+    input_outputs: BTreeMap<String, String>,
 }
 
 pub struct DirectBackend {
@@ -211,6 +230,8 @@ pub fn init_direct(
 
     let loop_handle = event_loop.handle();
     let output_config = load_output_config()?;
+    data.state
+        .set_input_output_mappings(output_config.input_outputs.clone());
     data.direct = Some(DirectBackend {
         session,
         devices: HashMap::new(),
@@ -457,7 +478,8 @@ fn remove_device(
         tracing::error!(%error, ?node, "could not update dmabuf feedback after device removal");
     }
     loop_handle.remove(device.event_token);
-    update_output_layout(&mut data.state);
+    let layout = device_output_layout(data);
+    update_output_layout(&mut data.state, layout);
 }
 
 fn scan_connectors(data: &mut CompositorData, node: DrmNode) -> Result<()> {
@@ -510,6 +532,9 @@ fn refresh_output_config(data: &mut CompositorData) -> Result<bool> {
         return Ok(false);
     }
     tracing::info!(?next, "applying changed direct output configuration");
+    data.state
+        .set_input_output_mappings(next.input_outputs.clone());
+    let layout = next.layout;
     direct.output_config = next;
     let nodes = direct.devices.keys().copied().collect::<Vec<_>>();
     for device in direct.devices.values_mut() {
@@ -518,7 +543,7 @@ fn refresh_output_config(data: &mut CompositorData) -> Result<bool> {
         }
         device.scanner = DrmScanner::new();
     }
-    update_output_layout(&mut data.state);
+    update_output_layout(&mut data.state, layout);
     for node in nodes {
         scan_connectors(data, node)?;
     }
@@ -534,7 +559,8 @@ fn disconnect_output(data: &mut CompositorData, node: DrmNode, crtc: crtc::Handl
         .map(|output| output.output);
     if let Some(output) = output {
         data.state.space.unmap_output(&output);
-        update_output_layout(&mut data.state);
+        let layout = device_output_layout(data);
+        update_output_layout(&mut data.state, layout);
     }
 }
 
@@ -635,7 +661,7 @@ fn connect_output(
             needs_initial_damage: true,
         },
     );
-    update_output_layout(&mut data.state);
+    update_output_layout(&mut data.state, config.layout);
     tracing::info!(
         output = name,
         width = mode.size.w,
@@ -677,10 +703,25 @@ fn load_output_config() -> Result<OutputConfig> {
     if !scale.is_finite() || !(1.0..=4.0).contains(&scale) {
         bail!("output scale must be finite and between 1.0 and 4.0");
     }
+    if file.input_outputs.len() > 32 {
+        bail!("input_outputs exceeds 32 device mappings");
+    }
+    for (device, output) in &file.input_outputs {
+        for (label, value) in [("input device", device), ("output", output)] {
+            if value.is_empty()
+                || value.len() > 128
+                || value.chars().any(|character| character.is_control())
+            {
+                bail!("{label} mapping names must be 1..128 printable bytes");
+            }
+        }
+    }
     Ok(OutputConfig {
         requested_size,
         rotation,
         scale,
+        layout: file.layout.unwrap_or_default(),
+        input_outputs: file.input_outputs,
     })
 }
 
@@ -698,26 +739,90 @@ fn parse_output_mode(value: &str) -> Result<(i32, i32)> {
     Ok(size)
 }
 
-fn update_output_layout(state: &mut SosCompositor) {
+fn device_output_layout(data: &CompositorData) -> OutputLayout {
+    data.direct
+        .as_ref()
+        .map(|direct| direct.output_config.layout)
+        .unwrap_or_default()
+}
+
+fn compute_output_layout(
+    layout: OutputLayout,
+    mut outputs: Vec<(String, (i32, i32))>,
+) -> ((i32, i32), BTreeMap<String, (i32, i32)>) {
+    outputs.sort_by(|left, right| left.0.cmp(&right.0));
+    match layout {
+        OutputLayout::Mirror => {
+            let canvas = outputs
+                .iter()
+                .fold(None::<(i32, i32)>, |canvas, (_, size)| {
+                    Some(match canvas {
+                        Some((width, height)) => (width.min(size.0), height.min(size.1)),
+                        None => *size,
+                    })
+                });
+            let Some(canvas) = canvas else {
+                return ((0, 0), BTreeMap::new());
+            };
+            let placements = outputs
+                .into_iter()
+                .map(|(name, size)| {
+                    let location = ((canvas.0 - size.0) / 2, (canvas.1 - size.1) / 2);
+                    (name, location)
+                })
+                .collect();
+            (canvas, placements)
+        }
+        OutputLayout::Extend => {
+            let mut width = 0i32;
+            let mut height = 0i32;
+            let placements = outputs
+                .into_iter()
+                .map(|(name, size)| {
+                    let location = (width, 0);
+                    width = width.saturating_add(size.0);
+                    height = height.max(size.1);
+                    (name, location)
+                })
+                .collect();
+            ((width, height), placements)
+        }
+    }
+}
+
+fn update_output_layout(state: &mut SosCompositor, layout: OutputLayout) {
     let mut outputs = state.space.outputs().cloned().collect::<Vec<_>>();
     outputs.sort_by_key(Output::name);
-    let mut x = 0;
-    let mut height = 0;
+    let geometry = outputs
+        .iter()
+        .filter_map(|output| {
+            state.space.output_geometry(output).map(|geometry| {
+                (
+                    output.name(),
+                    (geometry.size.w.max(0), geometry.size.h.max(0)),
+                )
+            })
+        })
+        .collect();
+    let (canvas, placements) = compute_output_layout(layout, geometry);
     for output in outputs {
-        state.space.map_output(&output, (x, 0));
+        let location = placements.get(&output.name()).copied().unwrap_or_default();
+        output.change_current_state(None, None, None, Some(location.into()));
+        state.space.map_output(&output, location);
         if let Some(geometry) = state.space.output_geometry(&output) {
             tracing::info!(
                 output = output.name(),
-                x,
+                ?layout,
+                x = location.0,
+                y = location.1,
                 width = geometry.size.w,
                 height = geometry.size.h,
                 "positioned direct output"
             );
-            x += geometry.size.w;
-            height = height.max(geometry.size.h);
         }
     }
-    state.output_size = (x, height);
+    state.output_layout_mirrored = layout == OutputLayout::Mirror;
+    state.output_size = canvas;
     state.reconfigure_for_output_layout();
 }
 
@@ -1126,7 +1231,70 @@ fn take_presentation_feedback(
 mod tests {
     use smithay::backend::allocator::{format::FormatSet, Format, Fourcc, Modifier};
 
-    use super::{common_dmabuf_formats, default_cursor_pixels, CURSOR_HEIGHT, CURSOR_WIDTH};
+    use super::{
+        common_dmabuf_formats, compute_output_layout, default_cursor_pixels, OutputConfigFile,
+        OutputLayout, CURSOR_HEIGHT, CURSOR_WIDTH,
+    };
+
+    #[test]
+    fn empty_output_config_preserves_safe_defaults() {
+        let config: OutputConfigFile = serde_json::from_str("{}").unwrap();
+
+        assert_eq!(config.layout.unwrap_or_default(), OutputLayout::Mirror);
+        assert!(config.input_outputs.is_empty());
+    }
+
+    #[test]
+    fn output_config_decodes_absolute_device_routes() {
+        let config: OutputConfigFile = serde_json::from_str(
+            r#"{
+                "layout": "extend",
+                "input_outputs": {
+                    "PiKVM PiKVM Composite Device": "DP-1",
+                    "Integrated Touchscreen": "eDP-1"
+                }
+            }"#,
+        )
+        .unwrap();
+
+        assert_eq!(config.input_outputs["PiKVM PiKVM Composite Device"], "DP-1");
+        assert_eq!(config.input_outputs["Integrated Touchscreen"], "eDP-1");
+        assert_eq!(config.layout, Some(OutputLayout::Extend));
+    }
+
+    #[test]
+    fn mirror_layout_centers_outputs_on_the_smallest_shared_canvas() {
+        let (canvas, placements) = compute_output_layout(
+            OutputLayout::Mirror,
+            vec![
+                ("eDP-1".into(), (1920, 1200)),
+                ("DP-1".into(), (1920, 1080)),
+            ],
+        );
+
+        assert_eq!(canvas, (1920, 1080));
+        assert_eq!(placements["DP-1"], (0, 0));
+        assert_eq!(placements["eDP-1"], (0, -60));
+    }
+
+    #[test]
+    fn extended_layout_remains_available_and_connector_order_independent() {
+        for outputs in [
+            vec![
+                ("eDP-1".into(), (1920, 1200)),
+                ("DP-1".into(), (1920, 1080)),
+            ],
+            vec![
+                ("DP-1".into(), (1920, 1080)),
+                ("eDP-1".into(), (1920, 1200)),
+            ],
+        ] {
+            let (canvas, placements) = compute_output_layout(OutputLayout::Extend, outputs);
+            assert_eq!(canvas, (3840, 1200));
+            assert_eq!(placements["DP-1"], (0, 0));
+            assert_eq!(placements["eDP-1"], (1920, 0));
+        }
+    }
 
     #[test]
     fn fallback_cursor_has_a_stable_nonempty_extent() {

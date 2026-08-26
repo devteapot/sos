@@ -1,7 +1,7 @@
 // Input forwarding is adapted from Smithay's MIT-licensed `smallvil` example
 // at tag v0.7.0, with SOS focus ordering and activation quiescing.
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 
 use smithay::{
     backend::input::{
@@ -32,6 +32,62 @@ type TabletTarget = (
     TabletHandle,
     TabletToolHandle,
 );
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct OutputBounds {
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+enum AbsoluteOutputRoute {
+    Output(String),
+    NoOutputs,
+    Ambiguous,
+    ConfiguredOutputMissing(String),
+}
+
+fn resolve_absolute_output(
+    device_name: &str,
+    mappings: &BTreeMap<String, String>,
+    output_names: &[String],
+) -> AbsoluteOutputRoute {
+    if output_names.is_empty() {
+        return AbsoluteOutputRoute::NoOutputs;
+    }
+    if let Some(configured) = mappings.get(device_name) {
+        return if output_names.iter().any(|output| output == configured) {
+            AbsoluteOutputRoute::Output(configured.clone())
+        } else {
+            AbsoluteOutputRoute::ConfiguredOutputMissing(configured.clone())
+        };
+    }
+    if output_names.len() == 1 {
+        AbsoluteOutputRoute::Output(output_names[0].clone())
+    } else {
+        AbsoluteOutputRoute::Ambiguous
+    }
+}
+
+fn clamp_to_output_layout(position: (f64, f64), outputs: &[OutputBounds]) -> Option<(f64, f64)> {
+    outputs
+        .iter()
+        .filter(|output| output.width > 0.0 && output.height > 0.0)
+        .map(|output| {
+            let maximum_x = output.x + output.width - 1.0;
+            let maximum_y = output.y + output.height - 1.0;
+            let candidate = (
+                position.0.clamp(output.x, maximum_x),
+                position.1.clamp(output.y, maximum_y),
+            );
+            let distance = (candidate.0 - position.0).powi(2) + (candidate.1 - position.1).powi(2);
+            (candidate, distance)
+        })
+        .min_by(|left, right| left.1.total_cmp(&right.1))
+        .map(|(candidate, _)| candidate)
+}
 
 fn is_session_exit_shortcut(
     enabled: bool,
@@ -95,6 +151,12 @@ impl TouchLifecycle {
 }
 
 impl SosCompositor {
+    #[cfg_attr(not(feature = "direct-backend"), allow(dead_code))]
+    pub fn set_input_output_mappings(&mut self, mappings: BTreeMap<String, String>) {
+        self.input_output_mappings = mappings;
+        self.observed_input_routes.clear();
+    }
+
     pub fn begin_input_quiesce(&mut self) {
         self.quiesced_input_events = 0;
         let keyboard = self.seat.get_keyboard().expect("seat has a keyboard");
@@ -332,22 +394,33 @@ impl SosCompositor {
                 }
             }
             InputEvent::PointerMotion { event, .. } => {
-                let Some(output) = self.space.outputs().next() else {
-                    return;
-                };
-                let Some(output_geometry) = self.space.output_geometry(output) else {
-                    return;
-                };
                 let pointer = self.seat.get_pointer().expect("seat has a pointer");
                 let current = pointer.current_location();
-                let minimum = output_geometry.loc.to_f64();
-                let maximum = (output_geometry.loc + output_geometry.size).to_f64();
-                let location = current + event.delta();
-                let location = (
-                    location.x.clamp(minimum.x, maximum.x - 1.0),
-                    location.y.clamp(minimum.y, maximum.y - 1.0),
-                )
-                    .into();
+                let candidate = current + event.delta();
+                let outputs = if self.output_layout_mirrored {
+                    vec![OutputBounds {
+                        x: 0.0,
+                        y: 0.0,
+                        width: f64::from(self.output_size.0),
+                        height: f64::from(self.output_size.1),
+                    }]
+                } else {
+                    self.space
+                        .outputs()
+                        .filter_map(|output| self.space.output_geometry(output))
+                        .map(|geometry| OutputBounds {
+                            x: f64::from(geometry.loc.x),
+                            y: f64::from(geometry.loc.y),
+                            width: f64::from(geometry.size.w),
+                            height: f64::from(geometry.size.h),
+                        })
+                        .collect::<Vec<_>>()
+                };
+                let Some(location) =
+                    clamp_to_output_layout((candidate.x, candidate.y), &outputs).map(Into::into)
+                else {
+                    return;
+                };
                 let focus = self.surface_under(location);
                 pointer.motion(
                     self,
@@ -370,10 +443,7 @@ impl SosCompositor {
                 pointer.frame(self);
             }
             InputEvent::PointerMotionAbsolute { event, .. } => {
-                let Some(output) = self.space.outputs().next() else {
-                    return;
-                };
-                let Some(output_geometry) = self.space.output_geometry(output) else {
+                let Some(output_geometry) = self.absolute_output_geometry(&event.device()) else {
                     return;
                 };
                 let position =
@@ -688,30 +758,186 @@ impl SosCompositor {
     }
 
     fn touch_position<I, E>(
-        &self,
+        &mut self,
         event: &E,
     ) -> Option<smithay::utils::Point<f64, smithay::utils::Logical>>
     where
         I: InputBackend,
         E: AbsolutePositionEvent<I>,
     {
-        let output = self.space.outputs().next()?;
-        let geometry = self.space.output_geometry(output)?;
+        let geometry = self.absolute_output_geometry(&event.device())?;
         Some(event.position_transformed(geometry.size) + geometry.loc.to_f64())
+    }
+
+    fn absolute_output_geometry<D>(
+        &mut self,
+        device: &D,
+    ) -> Option<smithay::utils::Rectangle<i32, smithay::utils::Logical>>
+    where
+        D: smithay::backend::input::Device,
+    {
+        let outputs = self.space.outputs().cloned().collect::<Vec<_>>();
+        let output_names = outputs
+            .iter()
+            .map(|output| output.name())
+            .collect::<Vec<_>>();
+        let device_name = device.name();
+        let route =
+            resolve_absolute_output(&device_name, &self.input_output_mappings, &output_names);
+        let route_key = format!("{device_name}:{route:?}");
+        let first_observation = self.observed_input_routes.insert(route_key);
+        match route {
+            AbsoluteOutputRoute::Output(selected) => {
+                if first_observation {
+                    tracing::info!(
+                        device_name,
+                        output = selected,
+                        "routed absolute input device to output"
+                    );
+                }
+                outputs
+                    .iter()
+                    .find(|output| output.name() == selected)
+                    .and_then(|output| self.space.output_geometry(output))
+            }
+            AbsoluteOutputRoute::NoOutputs => {
+                if first_observation {
+                    tracing::warn!(device_name, "ignored absolute input without an output");
+                }
+                None
+            }
+            AbsoluteOutputRoute::Ambiguous => {
+                if first_observation {
+                    tracing::warn!(
+                        device_name,
+                        ?output_names,
+                        "ignored ambiguous absolute input; configure input_outputs"
+                    );
+                }
+                None
+            }
+            AbsoluteOutputRoute::ConfiguredOutputMissing(configured) => {
+                if first_observation {
+                    tracing::warn!(
+                        device_name,
+                        output = configured,
+                        ?output_names,
+                        "ignored absolute input because its configured output is absent"
+                    );
+                }
+                None
+            }
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
     use smithay::{
         backend::input::{KeyState, TouchSlot},
         input::keyboard::{Keysym, ModifiersState},
     };
 
-    use super::{is_session_exit_shortcut, TouchLifecycle};
+    use super::{
+        clamp_to_output_layout, is_session_exit_shortcut, resolve_absolute_output,
+        AbsoluteOutputRoute, OutputBounds, TouchLifecycle,
+    };
 
     fn slot(id: u32) -> TouchSlot {
         Some(id).into()
+    }
+
+    #[test]
+    fn configured_absolute_device_ignores_connector_discovery_order() {
+        let mappings = BTreeMap::from([
+            ("PiKVM PiKVM Composite Device".into(), "DP-1".into()),
+            ("Integrated Touchscreen".into(), "eDP-1".into()),
+        ]);
+        for outputs in [
+            vec!["eDP-1".into(), "DP-1".into()],
+            vec!["DP-1".into(), "eDP-1".into()],
+        ] {
+            assert_eq!(
+                resolve_absolute_output("PiKVM PiKVM Composite Device", &mappings, &outputs),
+                AbsoluteOutputRoute::Output("DP-1".into())
+            );
+            assert_eq!(
+                resolve_absolute_output("Integrated Touchscreen", &mappings, &outputs),
+                AbsoluteOutputRoute::Output("eDP-1".into())
+            );
+        }
+    }
+
+    #[test]
+    fn ambiguous_absolute_device_fails_closed_but_single_output_is_automatic() {
+        let mappings = BTreeMap::from([("Mapped tablet".into(), "DP-1".into())]);
+        assert_eq!(
+            resolve_absolute_output("Tablet", &mappings, &[]),
+            AbsoluteOutputRoute::NoOutputs
+        );
+        assert_eq!(
+            resolve_absolute_output("Tablet", &mappings, &["eDP-1".into()]),
+            AbsoluteOutputRoute::Output("eDP-1".into())
+        );
+        assert_eq!(
+            resolve_absolute_output("Tablet", &mappings, &["DP-1".into(), "eDP-1".into()]),
+            AbsoluteOutputRoute::Ambiguous
+        );
+        assert_eq!(
+            resolve_absolute_output("Mapped tablet", &mappings, &["eDP-1".into()]),
+            AbsoluteOutputRoute::ConfiguredOutputMissing("DP-1".into())
+        );
+    }
+
+    #[test]
+    fn relative_pointer_traverses_outputs_and_avoids_layout_gaps() {
+        let outputs = [
+            OutputBounds {
+                x: 0.0,
+                y: 0.0,
+                width: 1920.0,
+                height: 1080.0,
+            },
+            OutputBounds {
+                x: 1920.0,
+                y: 0.0,
+                width: 1920.0,
+                height: 1200.0,
+            },
+        ];
+        assert_eq!(
+            clamp_to_output_layout((1929.0, 400.0), &outputs),
+            Some((1929.0, 400.0))
+        );
+        assert_eq!(
+            clamp_to_output_layout((100.0, 1150.0), &outputs),
+            Some((100.0, 1079.0))
+        );
+        assert_eq!(
+            clamp_to_output_layout((9000.0, 9000.0), &outputs),
+            Some((3839.0, 1199.0))
+        );
+    }
+
+    #[test]
+    fn relative_pointer_stays_inside_the_mirrored_canvas() {
+        let canvas = [OutputBounds {
+            x: 0.0,
+            y: 0.0,
+            width: 1920.0,
+            height: 1080.0,
+        }];
+
+        assert_eq!(
+            clamp_to_output_layout((100.0, -60.0), &canvas),
+            Some((100.0, 0.0))
+        );
+        assert_eq!(
+            clamp_to_output_layout((100.0, 1139.0), &canvas),
+            Some((100.0, 1079.0))
+        );
     }
 
     #[test]

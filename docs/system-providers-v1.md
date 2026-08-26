@@ -100,7 +100,8 @@ acceptance evidence; it has no action mode.
 
 ## Stock trust and fallback
 
-[`default.luau`](../experiences/default.luau) is Stock Base v0. The product
+[`default.luau`](../experiences/default.luau) is the substantial Stock Base
+revision described in [`stock-experience.md`](stock-experience.md). Android
 stages that exact source at `/system_ext/etc/sos/default.luau`; AVB and the
 signed OTA protect it as system content. At every authority start, its
 content-addressed revision is installed and pinned independently from the
@@ -114,6 +115,13 @@ state, journals the state/pointer transition, restores the pinned stock
 revision, and then lets the supervisor restart the host. A failure of the stock
 revision itself is not recursively retried; it escalates to the fixed native
 Recovery path.
+
+Linux currently installs the same source read-only and content-addresses the
+activated user revision, but the development-live session does not provision a
+system-owned stock pin or release verification key. Its optional manifest HMAC
+mode is not equivalent to the Android release-signing boundary. A signed,
+immutable Linux stock recovery revision therefore remains an explicit release
+gate rather than an inferred property of this development overlay.
 
 ## Verification status and remaining gates
 

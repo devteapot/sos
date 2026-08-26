@@ -1,6 +1,6 @@
 # Stable-host revision supervisor
 
-Date: 2026-08-08
+Date: 2026-08-08 (updated 2026-08-26)
 
 This is the Linux prototype of SOS revision activation after removing native
 experience binaries from the experience contract. Generated revisions are Luau
@@ -29,6 +29,7 @@ ROOT/
   current -> revisions/<revision-id>
   revisions/<revision-id>/
     manifest.json
+    manifest.hmac-sha256  # optional development integrity mode
     source.luau
     state.json
     assets/
@@ -43,6 +44,14 @@ state, and sorted asset ID/kind/file identities. Installation writes and `fsync`
 directory, changes its files to read-only, renames it into `revisions/`, and
 `fsync`s the parent. `current` is replaced with an atomic relative-symlink
 rename followed by a directory `fsync`.
+
+When `SOS_REVISION_SIGNING_KEY_FILE` is provisioned, installation writes a
+detached HMAC-SHA-256 over the exact manifest bytes. When
+`SOS_REVISION_VERIFY_KEY_FILE` is provisioned, every verification requires that
+file and checks it in constant time before parsing the manifest. This is a
+useful keyed-integrity mode for controlled deployments, but it is optional and
+symmetric. It is not an asymmetric release signature or a system-owned stock
+recovery pin.
 
 Scene ABI v3 revisions may retain small SVG declarations inside `source.luau`
 or use individually hashed `svg`, `png`, `jpeg`, `webp`, `font`, and WGSL
@@ -129,15 +138,19 @@ still needs to join that real GPUI host to this external supervisor protocol.
 
 - The Android GPUI shell still needs to implement this external transport; its
   confirmed stable-host lifecycle is currently in-process.
-- The manifest and journal remain unsigned.
+- The activation journal remains unsigned. Revision manifests are only
+  conditionally HMAC-authenticated; production Linux still needs mandatory
+  asymmetric verification rooted outside mutable user state.
 - The Android harness consumes the same runtime asset set, but the AOSP adapter
   must still carry the supervisor-provided revision directory through its
   production IPC instead of the current in-process activation harness.
 - Host process descendants are not yet in a cgroup or capability sandbox.
 - An actual compositor-present fence must replace the prototype host's
   `presented` assertion.
-- The recovery interface and A/B permanent-host update mechanism remain to be
-  built.
+- Android has an AVB/OTA-protected, authority-pinned stock fallback. Linux still
+  needs the equivalent immutable stock pointer and fixed recovery request;
+  HMAC-enabled ordinary revisions do not supply that provenance boundary.
+- The A/B permanent-host update mechanism remains to be built.
 - Real-data isolation requires moving the Luau VM behind a constrained worker
   process or equivalently strong boundary; the current in-process Android VM is
   not a production trust boundary.

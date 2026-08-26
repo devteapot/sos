@@ -174,9 +174,28 @@ subscription-backed mode.
 Each install writes `/usr/share/doc/sos/install-metadata.env` and
 `install-manifest.tsv` with the source revision, dirty state, toolchain, mode,
 and installed artifact sizes and SHA-256 values. The session reads bounded
-mode/scale/rotation overrides from the user's private
+mode/scale/rotation overrides and absolute-input output associations from the
+user's private
 `${XDG_STATE_HOME:-$HOME/.local/state}/sos/output.json`; `{}` retains preferred
-mode, scale 1.0, and rotation 0.
+mode, scale 1.0, rotation 0, and the mirrored output layout. Mirror mode uses
+the largest logical canvas that fits every connected output, centers it on each
+physical mode, and keeps one workspace when a lid or external output appears.
+Set `"layout": "extend"` for a connector-sorted horizontal desktop. On a
+multi-output system, every touchscreen, tablet, or absolute mouse must name its
+output; ambiguous or unavailable mappings fail closed. Relative pointers stay
+inside the mirrored canvas or traverse the complete extended layout.
+
+```json
+{
+  "layout": "mirror",
+  "input_outputs": {
+    "PiKVM PiKVM Composite Device": "DP-1",
+    "ILIT2901:00 222A:5539": "eDP-1",
+    "ILIT2901:00 222A:5539 Stylus": "eDP-1",
+    "ILIT2901:00 222A:5539 Mouse": "eDP-1"
+  }
+}
+```
 
 ```text
 GDM authentication (login user owns the active logind seat)

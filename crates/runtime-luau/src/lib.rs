@@ -1246,6 +1246,7 @@ fn decode_layout(table: Option<Table>) -> Result<Layout, RuntimeError> {
             Some("row") => Flow::Row,
             Some(value) => return Err(RuntimeError::Invalid(format!("invalid flow: {value}"))),
         },
+        wrap: table.get::<Option<bool>>("wrap")?.unwrap_or(false),
         scroll_y: table.get::<Option<bool>>("scroll_y")?.unwrap_or(false),
         padding: finite_dimension(&table, "padding")?,
         gap: finite_dimension(&table, "gap")?,
@@ -1834,7 +1835,7 @@ mod tests {
                             id = "surface",
                             layout = {
                                 width = 320, height = 480, min_width = 280, max_width = 360,
-                                aspect_ratio = 0.6666667, clip_bounds = true,
+                                aspect_ratio = 0.6666667, clip_bounds = true, wrap = true,
                                 position = { x = 4, y = 8 },
                                 program = { measure_width = 0.75, arrange_x = 0.125 },
                             },
@@ -1867,6 +1868,7 @@ mod tests {
             .unwrap();
         assert_eq!(scene.root.layout.position.unwrap().x, 4.0);
         assert_eq!(scene.root.layout.program.unwrap().measure_width, Some(0.75));
+        assert!(scene.root.layout.wrap);
         assert!(scene.root.layout.clip_bounds);
         assert!(matches!(scene.root.paint[0], PaintOp::Layer { .. }));
         assert_eq!(

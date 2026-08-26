@@ -1768,6 +1768,9 @@ impl LinuxExperienceHost {
             Flow::Column => element = element.flex().flex_col(),
             Flow::Row => element = element.flex().flex_row(),
         }
+        if node.layout.wrap {
+            element = element.flex_wrap();
+        }
         if node.layout.scroll_y {
             element = element.size_full();
         }
