@@ -9,10 +9,11 @@ use std::{
 };
 
 use experience_ir::{
-    validate_scene, Align, Animation, AnimationKind, ClipRect, Content, ExperienceModel, Flow,
-    GlyphRun, HitRegion, ImageContent, Interaction, Justify, Layout, LayoutPosition, LayoutProgram,
-    PaintOp, PaintPoint, PointerCapture, ProviderEffect, ProviderSurfaceContent, Scene, SceneEvent,
-    SceneNode, SemanticRole, Semantics, TextContent, TextSession, Transform2D, WindowLayoutMode,
+    validate_scene, Align, Animation, AnimationKind, ApplicationSurfaceContent, ClipRect, Content,
+    ExperienceModel, Flow, GlyphRun, HitRegion, ImageContent, Interaction, Justify, Layout,
+    LayoutPosition, LayoutProgram, PaintOp, PaintPoint, PointerCapture, ProviderEffect,
+    ProviderSurfaceContent, Scene, SceneEvent, SceneNode, SemanticRole, Semantics,
+    ShellOverlayContent, TextContent, TextSession, Transform2D, WindowLayoutMode,
     WindowSpaceContent, EXPERIENCE_API_VERSION, MAX_CHILDREN, MAX_EFFECTS,
     MAX_EFFECT_PAYLOAD_BYTES, MAX_GLYPH_RUNS, MAX_HIT_REGIONS, MAX_PAINT_DEPTH, MAX_PAINT_OPS,
     MAX_PAINT_POINTS, MAX_REVISION_ASSETS, MAX_REVISION_ASSET_BYTES,
@@ -1351,6 +1352,15 @@ fn decode_content(
             fallback: bounded_optional_string(&table, "fallback", MAX_TEXT_BYTES)?
                 .unwrap_or_default(),
         }),
+        "shell_overlay" => Content::ShellOverlay(ShellOverlayContent {
+            x: scene_number(&table, "x")?,
+            y: scene_number(&table, "y")?,
+            width: required_dimension(&table, "width")?,
+            height: required_dimension(&table, "height")?,
+        }),
+        "application_surface" => Content::ApplicationSurface(ApplicationSurfaceContent {
+            title: required_bounded_string(&table, "title", 256)?,
+        }),
         other => {
             return Err(RuntimeError::Invalid(format!(
                 "unknown content kind: {other}"
@@ -1556,6 +1566,8 @@ fn decode_interaction(table: Option<Table>) -> Result<Interaction, RuntimeError>
     }
     Ok(Interaction {
         tap_action: bounded_optional_string(&table, "tap_action", 256)?,
+        hover_action: bounded_optional_string(&table, "hover_action", 256)?,
+        surface_drag: table.get::<Option<bool>>("surface_drag")?.unwrap_or(false),
         double_tap_action: bounded_optional_string(&table, "double_tap_action", 256)?,
         long_press_action: bounded_optional_string(&table, "long_press_action", 256)?,
         swipe_action: bounded_optional_string(&table, "swipe_action", 256)?,
@@ -1805,6 +1817,50 @@ mod tests {
                 layout: WindowLayoutMode::Tiling,
                 gap: 16.0,
                 fallback: "No applications are open".into(),
+            }))
+        );
+    }
+
+    #[test]
+    fn decodes_shell_overlay_application_surface_and_drag_handle() {
+        let runtime = LuauRuntime::compile(
+            r#"
+                return {
+                    api_version = 3,
+                    render = function()
+                        return { children = {
+                            {
+                                id = "overlay",
+                                content = {
+                                    kind = "shell_overlay", x = 20, y = 30,
+                                    width = 64, height = 64,
+                                },
+                                interaction = { hover_action = "hover" },
+                                children = {{
+                                    id = "bubble",
+                                    interaction = { tap_action = "open", surface_drag = true },
+                                }},
+                            },
+                            {
+                                id = "notes",
+                                content = { kind = "application_surface", title = "Notes" },
+                            },
+                        }}
+                    end,
+                }
+            "#,
+        )
+        .unwrap();
+        let scene = runtime
+            .render(&providers_fake_for_test(), &runtime.initial_state())
+            .unwrap();
+        let overlay = &scene.root.children[0];
+        assert_eq!(overlay.interaction.hover_action.as_deref(), Some("hover"));
+        assert!(overlay.children[0].interaction.surface_drag);
+        assert_eq!(
+            scene.root.children[1].content,
+            Some(Content::ApplicationSurface(ApplicationSurfaceContent {
+                title: "Notes".into(),
             }))
         );
     }

@@ -1,8 +1,7 @@
 use smithay::{
+    backend::renderer::utils::with_renderer_surface_state,
     delegate_xdg_shell,
-    desktop::{
-        find_popup_root_surface, get_popup_toplevel_coords, PopupKind, PopupManager, Space, Window,
-    },
+    desktop::{find_popup_root_surface, get_popup_toplevel_coords, PopupKind, Window},
     reexports::{
         wayland_protocols::xdg::shell::server::xdg_toplevel,
         wayland_server::{
@@ -24,10 +23,10 @@ use smithay::{
 
 use crate::{
     policy::{
-        default_window_space, validate_window_space, window_rectangles, ClientRole,
-        WindowRectangle, MAX_COMPATIBILITY_TOPLEVELS,
+        default_shell_overlay, default_window_space, validate_shell_overlay, validate_window_space,
+        window_rectangles, ClientRole, WindowRectangle, MAX_COMPATIBILITY_TOPLEVELS,
     },
-    state::SosCompositor,
+    state::{ShellOverlayDrag, SosCompositor, SurfaceRoleData},
 };
 
 impl XdgShellHandler for SosCompositor {
@@ -37,7 +36,19 @@ impl XdgShellHandler for SosCompositor {
 
     fn new_toplevel(&mut self, surface: ToplevelSurface) {
         let wl_surface = surface.wl_surface().clone();
-        let role = Self::client_role(&wl_surface).unwrap_or(ClientRole::Compatibility);
+        let client_role = Self::client_role(&wl_surface).unwrap_or(ClientRole::Compatibility);
+        let incoming_pid = Self::client_pid(&wl_surface);
+        let existing_shell_pid = self.shell_surface.as_ref().and_then(Self::client_pid);
+        let role = if client_role == ClientRole::Shell {
+            match (existing_shell_pid, incoming_pid) {
+                (None, _) => ClientRole::Shell,
+                (Some(existing), Some(incoming)) if existing != incoming => ClientRole::Shell,
+                _ if self.shell_overlay_surface.is_none() => ClientRole::ShellOverlay,
+                _ => ClientRole::NativeApplication,
+            }
+        } else {
+            ClientRole::Compatibility
+        };
         if role == ClientRole::Shell {
             let stale_shell = self
                 .shell_surface
@@ -52,13 +63,32 @@ impl XdgShellHandler for SosCompositor {
                     .cloned();
                 if let Some(stale_window) = stale_window {
                     self.space.unmap_elem(&stale_window);
+                    self.policy.unmap(ClientRole::Shell);
                 }
                 self.surface_roles.remove(&stale_shell.id());
+                self.xdg_windows.remove(&stale_shell.id());
                 self.shell_surface = None;
-                self.policy.unmap(ClientRole::Shell);
                 tracing::info!("replaced stale SOS shell surface");
             }
-        } else {
+            let stale_overlay = self.shell_overlay_surface.take();
+            if let Some(stale_overlay) = stale_overlay {
+                if let Some(stale_window) = self.xdg_windows.remove(&stale_overlay.id()) {
+                    if self
+                        .space
+                        .elements()
+                        .any(|candidate| candidate == &stale_window)
+                    {
+                        self.space.unmap_elem(&stale_window);
+                        self.policy.unmap(ClientRole::ShellOverlay);
+                    }
+                }
+                self.surface_roles.remove(&stale_overlay.id());
+                tracing::info!("removed stale SOS shell overlay surface");
+            }
+        } else if matches!(
+            role,
+            ClientRole::NativeApplication | ClientRole::Compatibility
+        ) {
             let application_count = self
                 .space
                 .elements()
@@ -67,7 +97,12 @@ impl XdgShellHandler for SosCompositor {
                         || window
                             .wl_surface()
                             .and_then(|surface| Self::client_role(&surface))
-                            == Some(ClientRole::Compatibility)
+                            .is_some_and(|role| {
+                                matches!(
+                                    role,
+                                    ClientRole::NativeApplication | ClientRole::Compatibility
+                                )
+                            })
                 })
                 .count();
             if application_count >= MAX_COMPATIBILITY_TOPLEVELS {
@@ -83,16 +118,12 @@ impl XdgShellHandler for SosCompositor {
                 return;
             }
         }
-        if let Err(error) = self.policy.map(role) {
-            tracing::warn!(?role, error = %error, "rejected toplevel by SOS surface policy");
-            if let Some(client) = wl_surface.client() {
-                self.display_handle
-                    .backend_handle()
-                    .kill_client(client.id(), DisconnectReason::ConnectionClosed);
-            }
-            return;
-        }
         self.surface_roles.insert(wl_surface.id(), role);
+        with_states(&wl_surface, |states| {
+            states
+                .data_map
+                .insert_if_missing_threadsafe(|| SurfaceRoleData(role));
+        });
 
         let output_size: Size<i32, Logical> = self.output_size.into();
         let location = match role {
@@ -104,7 +135,18 @@ impl XdgShellHandler for SosCompositor {
                 self.shell_surface = Some(wl_surface.clone());
                 (0, 0)
             }
-            ClientRole::Compatibility => {
+            ClientRole::ShellOverlay => {
+                let configuration = self.shell_overlay;
+                let size: Size<i32, Logical> = (
+                    i32::try_from(configuration.width).unwrap_or(i32::MAX),
+                    i32::try_from(configuration.height).unwrap_or(i32::MAX),
+                )
+                    .into();
+                surface.with_pending_state(|state| state.size = Some(size));
+                self.shell_overlay_surface = Some(wl_surface.clone());
+                (configuration.x, configuration.y)
+            }
+            ClientRole::NativeApplication | ClientRole::Compatibility => {
                 let count = self
                     .space
                     .elements()
@@ -112,7 +154,12 @@ impl XdgShellHandler for SosCompositor {
                         window
                             .wl_surface()
                             .and_then(|surface| Self::client_role(&surface))
-                            == Some(ClientRole::Compatibility)
+                            .is_some_and(|role| {
+                                matches!(
+                                    role,
+                                    ClientRole::NativeApplication | ClientRole::Compatibility
+                                )
+                            })
                     })
                     .count()
                     + 1;
@@ -126,39 +173,13 @@ impl XdgShellHandler for SosCompositor {
             }
         };
 
-        let window = Window::new_wayland_window(surface);
-        if role == ClientRole::Shell {
-            let compatibility = self
-                .space
-                .elements()
-                .filter(|window| {
-                    window
-                        .wl_surface()
-                        .and_then(|surface| Self::client_role(&surface))
-                        == Some(ClientRole::Compatibility)
-                })
-                .filter_map(|window| {
-                    self.space
-                        .element_location(window)
-                        .map(|location| (window.clone(), location))
-                })
-                .collect::<Vec<_>>();
-            for (compatibility, _) in &compatibility {
-                self.space.unmap_elem(compatibility);
-            }
-            self.space.map_element(window, location, false);
-            for (compatibility, location) in compatibility {
-                self.space.map_element(compatibility, location, false);
-            }
-        } else {
-            self.space.map_element(window, location, false);
-            self.reconfigure_application_windows();
-        }
+        self.xdg_windows
+            .insert(wl_surface.id(), Window::new_wayland_window(surface));
         tracing::info!(
             ?role,
             x = location.0,
             y = location.1,
-            "mapped compositor-managed XDG toplevel"
+            "registered compositor-managed XDG toplevel"
         );
     }
 
@@ -167,31 +188,56 @@ impl XdgShellHandler for SosCompositor {
             tracing::debug!("ignored destruction of an unmapped XDG toplevel");
             return;
         };
-        let window = self
-            .space
-            .elements()
-            .find(|window| {
-                window
-                    .toplevel()
-                    .is_some_and(|toplevel| toplevel == &surface)
-            })
-            .cloned();
-        if let Some(window) = window {
+        let window = self.xdg_windows.remove(&surface.wl_surface().id());
+        let was_mapped = window
+            .as_ref()
+            .is_some_and(|window| self.space.elements().any(|candidate| candidate == window));
+        if let Some(window) = window.filter(|_| was_mapped) {
             self.space.unmap_elem(&window);
         }
         if role == ClientRole::Shell && self.shell_surface.as_ref() == Some(surface.wl_surface()) {
             self.shell_surface = None;
         }
-        self.policy.unmap(role);
-        if role == ClientRole::Compatibility {
+        if role == ClientRole::ShellOverlay
+            && self.shell_overlay_surface.as_ref() == Some(surface.wl_surface())
+        {
+            self.shell_overlay_surface = None;
+        }
+        if was_mapped {
+            self.policy.unmap(role);
+        }
+        if was_mapped
+            && matches!(
+                role,
+                ClientRole::NativeApplication | ClientRole::Compatibility
+            )
+        {
             self.reconfigure_application_windows();
         }
-        tracing::info!(?role, "unmapped XDG toplevel");
+        tracing::info!(
+            ?role,
+            was_mapped,
+            "destroyed compositor-managed XDG toplevel"
+        );
     }
 
     fn new_popup(&mut self, surface: PopupSurface, _positioner: PositionerState) {
         self.unconstrain_popup(&surface);
         let _ = self.popups.track_popup(PopupKind::Xdg(surface));
+    }
+
+    fn move_request(&mut self, surface: ToplevelSurface, _seat: wl_seat::WlSeat, _serial: Serial) {
+        if Self::client_role(surface.wl_surface()) != Some(ClientRole::ShellOverlay)
+            || !self.pressed_pointer_buttons.contains(&0x110)
+        {
+            return;
+        }
+        let pointer = self.seat.get_pointer().expect("seat has a pointer");
+        self.shell_overlay_drag = Some(ShellOverlayDrag {
+            pointer: pointer.current_location(),
+            origin: (self.shell_overlay.x, self.shell_overlay.y),
+        });
+        tracing::info!("began trusted shell overlay move");
     }
 
     fn reposition_request(
@@ -233,43 +279,148 @@ impl XdgShellHandler for SosCompositor {
 
 delegate_xdg_shell!(SosCompositor);
 
-pub fn handle_commit(popups: &mut PopupManager, space: &Space<Window>, surface: &WlSurface) {
-    if let Some(window) = space.elements().find(|window| {
-        window
-            .toplevel()
-            .is_some_and(|top| top.wl_surface() == surface)
-    }) {
-        let initial_configure_sent = with_states(surface, |states| {
-            states
-                .data_map
-                .get::<XdgToplevelSurfaceData>()
-                .expect("XDG toplevel state exists")
-                .lock()
-                .expect("XDG toplevel state is not poisoned")
-                .initial_configure_sent
-        });
-        if !initial_configure_sent {
-            window
-                .toplevel()
-                .expect("mapped window is XDG")
-                .send_configure();
-        }
-    }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum XdgMappingTransition {
+    Map,
+    Unmap,
+    Unchanged,
+}
 
-    popups.commit(surface);
-    if let Some(PopupKind::Xdg(popup)) = popups.find_popup(surface) {
-        if !popup.is_initial_configure_sent() {
-            let _ = popup.send_configure();
-        }
+fn xdg_mapping_transition(has_buffer: bool, is_mapped: bool) -> XdgMappingTransition {
+    match (has_buffer, is_mapped) {
+        (true, false) => XdgMappingTransition::Map,
+        (false, true) => XdgMappingTransition::Unmap,
+        _ => XdgMappingTransition::Unchanged,
     }
 }
 
 impl SosCompositor {
+    pub(crate) fn handle_xdg_commit(&mut self, surface: &WlSurface) {
+        let mut root = surface.clone();
+        while let Some(parent) = smithay::wayland::compositor::get_parent(&root) {
+            root = parent;
+        }
+
+        if let Some(window) = self.xdg_windows.get(&root.id()).cloned() {
+            let initial_configure_sent = with_states(&root, |states| {
+                states
+                    .data_map
+                    .get::<XdgToplevelSurfaceData>()
+                    .expect("XDG toplevel state exists")
+                    .lock()
+                    .expect("XDG toplevel state is not poisoned")
+                    .initial_configure_sent
+            });
+            if !initial_configure_sent {
+                window
+                    .toplevel()
+                    .expect("registered window is XDG")
+                    .send_configure();
+            }
+
+            let has_buffer = with_renderer_surface_state(&root, |state| state.buffer().is_some())
+                .unwrap_or(false);
+            let is_mapped = self.space.elements().any(|candidate| candidate == &window);
+            match xdg_mapping_transition(has_buffer, is_mapped) {
+                XdgMappingTransition::Map => self.map_xdg_window(window),
+                XdgMappingTransition::Unmap => self.unmap_xdg_window(window),
+                XdgMappingTransition::Unchanged => {}
+            }
+        }
+
+        self.popups.commit(surface);
+        if let Some(PopupKind::Xdg(popup)) = self.popups.find_popup(surface) {
+            if !popup.is_initial_configure_sent() {
+                let _ = popup.send_configure();
+            }
+        }
+    }
+
+    fn map_xdg_window(&mut self, window: Window) {
+        let wl_surface = window
+            .wl_surface()
+            .expect("registered XDG window has a Wayland surface");
+        let role = Self::client_role(&wl_surface).unwrap_or(ClientRole::Compatibility);
+        if let Err(error) = self.policy.map(role) {
+            tracing::warn!(?role, error = %error, "rejected XDG buffer map by SOS surface policy");
+            if let Some(client) = wl_surface.client() {
+                self.display_handle
+                    .backend_handle()
+                    .kill_client(client.id(), DisconnectReason::ConnectionClosed);
+            }
+            return;
+        }
+
+        if role == ClientRole::Shell {
+            let compatibility = self
+                .space
+                .elements()
+                .filter(|window| {
+                    window
+                        .wl_surface()
+                        .and_then(|surface| Self::client_role(&surface))
+                        .is_some_and(|role| {
+                            matches!(
+                                role,
+                                ClientRole::NativeApplication | ClientRole::Compatibility
+                            )
+                        })
+                })
+                .filter_map(|window| {
+                    self.space
+                        .element_location(window)
+                        .map(|location| (window.clone(), location))
+                })
+                .collect::<Vec<_>>();
+            for (compatibility, _) in &compatibility {
+                self.space.unmap_elem(compatibility);
+            }
+            self.space.map_element(window, (0, 0), false);
+            for (compatibility, location) in compatibility {
+                self.space.map_element(compatibility, location, false);
+            }
+        } else if role == ClientRole::ShellOverlay {
+            let configuration = self.shell_overlay;
+            self.space
+                .map_element(window, (configuration.x, configuration.y), false);
+            let pointer = self
+                .seat
+                .get_pointer()
+                .expect("seat has a pointer")
+                .current_location();
+            self.synchronize_shell_overlay_hover(pointer, true);
+        } else {
+            self.space.map_element(window, (0, 0), false);
+            self.reconfigure_application_windows();
+        }
+        tracing::info!(?role, "mapped compositor-managed XDG toplevel buffer");
+    }
+
+    fn unmap_xdg_window(&mut self, window: Window) {
+        let role = window
+            .wl_surface()
+            .and_then(|surface| Self::client_role(&surface))
+            .unwrap_or(ClientRole::Compatibility);
+        self.space.unmap_elem(&window);
+        self.policy.unmap(role);
+        if matches!(
+            role,
+            ClientRole::NativeApplication | ClientRole::Compatibility
+        ) {
+            self.reconfigure_application_windows();
+        }
+        tracing::info!(?role, "unmapped compositor-managed XDG toplevel buffer");
+    }
+
     pub(crate) fn reconfigure_for_output_layout(&mut self) {
         if validate_window_space(self.window_space, self.output_size).is_err() {
             self.window_space = default_window_space(self.output_size);
         }
+        if validate_shell_overlay(self.shell_overlay, self.output_size).is_err() {
+            self.shell_overlay = default_shell_overlay(self.output_size);
+        }
         self.apply_shell_size();
+        self.apply_shell_overlay_configuration();
         self.reconfigure_application_windows();
     }
 
@@ -282,7 +433,12 @@ impl SosCompositor {
                     || window
                         .wl_surface()
                         .and_then(|surface| Self::client_role(&surface))
-                        == Some(ClientRole::Compatibility)
+                        .is_some_and(|role| {
+                            matches!(
+                                role,
+                                ClientRole::NativeApplication | ClientRole::Compatibility
+                            )
+                        })
             })
             .cloned()
             .collect::<Vec<_>>();
@@ -321,11 +477,45 @@ impl SosCompositor {
         }
     }
 
+    pub(crate) fn apply_shell_overlay_configuration(&mut self) {
+        let Some(window) = self
+            .space
+            .elements()
+            .find(|window| {
+                window
+                    .wl_surface()
+                    .and_then(|surface| Self::client_role(&surface))
+                    == Some(ClientRole::ShellOverlay)
+            })
+            .cloned()
+        else {
+            return;
+        };
+        let Some(toplevel) = window.toplevel().cloned() else {
+            return;
+        };
+        let configuration = self.shell_overlay;
+        let size: Size<i32, Logical> = (
+            i32::try_from(configuration.width).unwrap_or(i32::MAX),
+            i32::try_from(configuration.height).unwrap_or(i32::MAX),
+        )
+            .into();
+        toplevel.with_pending_state(|state| state.size = Some(size));
+        toplevel.send_pending_configure();
+        self.space
+            .map_element(window, (configuration.x, configuration.y), false);
+    }
+
     fn apply_fixed_size(&mut self, surface: &ToplevelSurface) {
         let role = Self::client_role(surface.wl_surface()).unwrap_or(ClientRole::Compatibility);
         let size: Size<i32, Logical> = match role {
             ClientRole::Shell => self.output_size.into(),
-            ClientRole::Compatibility => {
+            ClientRole::ShellOverlay => (
+                i32::try_from(self.shell_overlay.width).unwrap_or(i32::MAX),
+                i32::try_from(self.shell_overlay.height).unwrap_or(i32::MAX),
+            )
+                .into(),
+            ClientRole::NativeApplication | ClientRole::Compatibility => {
                 let rectangle = window_rectangles(self.window_space, 1)
                     .into_iter()
                     .next()
@@ -367,5 +557,34 @@ impl SosCompositor {
         popup.with_pending_state(|state| {
             state.geometry = state.positioner.get_unconstrained_geometry(target);
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{xdg_mapping_transition, XdgMappingTransition};
+
+    #[test]
+    fn maps_only_when_a_buffer_first_appears() {
+        assert_eq!(
+            xdg_mapping_transition(true, false),
+            XdgMappingTransition::Map
+        );
+        assert_eq!(
+            xdg_mapping_transition(true, true),
+            XdgMappingTransition::Unchanged
+        );
+    }
+
+    #[test]
+    fn null_buffer_unmaps_without_destroying_the_role() {
+        assert_eq!(
+            xdg_mapping_transition(false, true),
+            XdgMappingTransition::Unmap
+        );
+        assert_eq!(
+            xdg_mapping_transition(false, false),
+            XdgMappingTransition::Unchanged
+        );
     }
 }

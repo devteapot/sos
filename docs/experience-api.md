@@ -315,6 +315,13 @@ content = {
     gap = 12,
     fallback = "No application windows are open",
 }
+
+content = {
+    kind = "shell_overlay",
+    x = 1440, y = 860, width = 430, height = 146,
+}
+
+content = { kind = "application_surface", title = "SOS Home" }
 ```
 
 `text_session` is a host-owned editing session and requires a stable node ID.
@@ -368,6 +375,29 @@ Luau never receives a Wayland handle, window PID, client command line, native
 input object or arbitrary placement operation. Android renders the fallback
 string because it has no Linux compositor window space.
 
+`shell_overlay` declares the one source-defined surface that may remain above
+the shell and application windows. It requires a stable ID; validation admits
+at most one, bounds width to 48..720 and height to 48..360 logical pixels, and
+the compositor clamps its origin to the logical output. The trusted host opens
+it as a transparent GPUI/XDG surface, while the compositor owns placement,
+hover hit testing, and interactive movement. A descendant with
+`interaction.surface_drag = true` starts that move. A stationary press/release
+produces the fixed `shell_overlay_activated` Scene action; a completed move
+produces `shell_overlay_moved` with the final surface `x` and `y`. Luau can
+persist an internal anchor or change the overlay's source-defined layout, but
+cannot address or reposition another surface. Android renders an unavailable
+placeholder.
+
+`application_surface` moves its complete subtree out of the shell window and
+into a separate normal GPUI/XDG toplevel. It requires a stable ID and a bounded
+non-empty title, and validation currently admits at most one. The compositor
+classifies the toplevel as `NativeApplication` and applies the same window-space
+placement, clipping, focus, unmap, and reflow policy used for compatibility
+clients. The base shell does not paint that subtree beneath the application.
+This first cut is still hosted by the shell revision's permanent process;
+independent native-app revision processes and lifecycle supervision remain a
+separate application-runtime layer. Android renders an unavailable placeholder.
+
 ### Paint and interaction
 
 Paint and hit testing are facets of any node, not a `canvas` escape-hatch type:
@@ -400,6 +430,8 @@ Paint and hit testing are facets of any node, not a `canvas` escape-hatch type:
     },
     interaction = {
         tap_action = "select_flow", -- optional whole-node action
+        hover_action = "hover_changed", -- event.focused carries enter/leave
+        surface_drag = true, -- Linux shell-overlay descendants only
         pointer_action = "pointer_sample",
         multi_pointer_action = "transform_gesture",
         capture = "none" | "pointer" | "surface",
@@ -429,6 +461,12 @@ host-derived centroid, scale, and rotation for the first two captured pointers.
 `pointer` capture follows one pointer outside the node; `surface` also assigns
 subsequent pointers to that surface. The revision owns geometry and gesture
 meaning while the host owns bounded routing and capture lifetime.
+
+`hover_action` emits only when hover state changes and supplies
+`event.focused`. `surface_drag` is a structural Linux integration flag rather
+than a general-purpose drag callback: on a node rendered inside
+`shell_overlay`, it transfers the pointer gesture to the compositor. It is
+ignored as a surface-management authority elsewhere.
 
 For the SM-A336B audit, keep a low-level paint node's complete initial draggable
 region at local `y <= 400`. This is a measured viewport constraint, not a
@@ -492,6 +530,8 @@ Before presentation the host enforces, among other checks:
   and effect payloads;
 - unique IDs and stable IDs for interactive, animated, semantic, and
   text-session nodes;
+- at most one keyed `window_space`, `shell_overlay`, and
+  `application_surface`, with their primitive-specific geometry/title bounds;
 - a 16 MiB VM limit and fixed render/update time budgets.
 - at most 64 revision assets, 4 MiB each and 16 MiB total, with checks repeated
   by the supervisor and runtime.

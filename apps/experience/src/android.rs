@@ -2543,6 +2543,16 @@ impl ExperienceHost {
                     }),
             );
         }
+        if matches!(&node.content, Some(Content::ApplicationSurface(_))) {
+            element = element.child(
+                div()
+                    .size_full()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child("Application surfaces are unavailable on this host"),
+            );
+        }
         if let Some(Content::TextSession(input)) = &node.content {
             self.input_state_shadow
                 .entry(input.state_key.clone())

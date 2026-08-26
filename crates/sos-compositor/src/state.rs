@@ -14,7 +14,7 @@ use std::{
 use std::{cell::RefCell, rc::Rc};
 
 use compositor_control_protocol::{
-    CompositorEvent, PresentationEvidence, WindowSpaceConfiguration,
+    CompositorEvent, PresentationEvidence, ShellOverlayConfiguration, WindowSpaceConfiguration,
 };
 use nix::sys::socket::{getsockopt, sockopt::PeerCredentials};
 use smithay::{
@@ -31,7 +31,7 @@ use smithay::{
     },
     utils::{Clock, Logical, Monotonic, Point},
     wayland::{
-        compositor::{CompositorClientState, CompositorState},
+        compositor::{with_states, CompositorClientState, CompositorState},
         input_method::{InputMethodManagerState, PopupSurface as InputMethodPopupSurface},
         output::OutputManagerState,
         presentation::PresentationState,
@@ -56,8 +56,8 @@ use crate::{
     control::ControlCommand,
     input::TouchLifecycle,
     policy::{
-        default_window_space, validate_window_space, window_rectangles, ClientRole, SurfacePolicy,
-        WindowRectangle,
+        default_shell_overlay, default_window_space, validate_shell_overlay, validate_window_space,
+        window_rectangles, ClientRole, SurfacePolicy, WindowRectangle,
     },
     recovery::RecoveryUi,
     CompositorData,
@@ -70,6 +70,7 @@ pub struct SosCompositor {
     pub space: Space<Window>,
     pub policy: SurfacePolicy,
     pub shell_surface: Option<WlSurface>,
+    pub shell_overlay_surface: Option<WlSurface>,
     pub quiesced_keyboard_focus: Option<WlSurface>,
     pub suppressed_keyboard_keys: HashSet<Keycode>,
     pub pressed_pointer_buttons: HashSet<u32>,
@@ -81,9 +82,13 @@ pub struct SosCompositor {
     pub observed_input_routes: HashSet<String>,
     pub cursor_image: CursorImageStatus,
     pub surface_roles: HashMap<ObjectId, ClientRole>,
+    pub xdg_windows: HashMap<ObjectId, Window>,
     pub shell_events: Option<(u32, std::sync::mpsc::Sender<CompositorEvent>)>,
     pub output_size: (i32, i32),
     pub window_space: WindowSpaceConfiguration,
+    pub shell_overlay: ShellOverlayConfiguration,
+    pub shell_overlay_drag: Option<ShellOverlayDrag>,
+    pub shell_overlay_hovered: bool,
     pub output_layout_mirrored: bool,
     pub recovery_ui: RecoveryUi,
     pub recovery_button_pressed: bool,
@@ -168,6 +173,7 @@ impl SosCompositor {
             space: Space::default(),
             policy: SurfacePolicy::default(),
             shell_surface: None,
+            shell_overlay_surface: None,
             quiesced_keyboard_focus: None,
             suppressed_keyboard_keys: HashSet::new(),
             pressed_pointer_buttons: HashSet::new(),
@@ -179,9 +185,13 @@ impl SosCompositor {
             observed_input_routes: HashSet::new(),
             cursor_image: CursorImageStatus::default_named(),
             surface_roles: HashMap::new(),
+            xdg_windows: HashMap::new(),
             shell_events: None,
             output_size: (1280, 800),
             window_space: default_window_space((1280, 800)),
+            shell_overlay: default_shell_overlay((1280, 800)),
+            shell_overlay_drag: None,
+            shell_overlay_hovered: false,
             output_layout_mirrored: false,
             recovery_ui: RecoveryUi::from_environment(),
             recovery_button_pressed: false,
@@ -417,6 +427,44 @@ impl SosCompositor {
                     }
                 }
             }
+            ControlCommand::ConfigureShellOverlay {
+                pid,
+                request_id,
+                configuration,
+                reply,
+            } => {
+                let result = if !self.policy.is_shell_owner(pid) {
+                    Err("shell overlay is not owned by the registered shell".into())
+                } else {
+                    validate_shell_overlay(configuration, self.output_size)
+                        .map_err(|error| error.to_string())
+                };
+                match result {
+                    Ok(configuration) => {
+                        self.shell_overlay = configuration;
+                        self.apply_shell_overlay_configuration();
+                        let pointer = self
+                            .seat
+                            .get_pointer()
+                            .expect("seat has a pointer")
+                            .current_location();
+                        self.synchronize_shell_overlay_hover(pointer, false);
+                        tracing::info!(
+                            pid,
+                            request_id,
+                            x = configuration.x,
+                            y = configuration.y,
+                            width = configuration.width,
+                            height = configuration.height,
+                            "configured trusted shell overlay"
+                        );
+                        let _ = reply.send(Ok(configuration));
+                    }
+                    Err(error) => {
+                        let _ = reply.send(Err(error));
+                    }
+                }
+            }
             ControlCommand::Disconnected { pid } => {
                 let was_quiesced = self.policy.input_quiesced();
                 self.policy.unregister_shell(pid);
@@ -471,6 +519,95 @@ impl SosCompositor {
         }
     }
 
+    pub(crate) fn update_shell_overlay_drag(&mut self, pointer: Point<f64, Logical>) {
+        let Some(drag) = self.shell_overlay_drag else {
+            return;
+        };
+        let max_x = (self.output_size.0
+            - i32::try_from(self.shell_overlay.width).unwrap_or(i32::MAX))
+        .max(0);
+        let max_y = (self.output_size.1
+            - i32::try_from(self.shell_overlay.height).unwrap_or(i32::MAX))
+        .max(0);
+        self.shell_overlay.x =
+            (drag.origin.0 + (pointer.x - drag.pointer.x).round() as i32).clamp(0, max_x);
+        self.shell_overlay.y =
+            (drag.origin.1 + (pointer.y - drag.pointer.y).round() as i32).clamp(0, max_y);
+        let window = self
+            .space
+            .elements()
+            .find(|window| {
+                window
+                    .wl_surface()
+                    .and_then(|surface| Self::client_role(&surface))
+                    == Some(ClientRole::ShellOverlay)
+            })
+            .cloned();
+        if let Some(window) = window {
+            self.space
+                .map_element(window, (self.shell_overlay.x, self.shell_overlay.y), false);
+        }
+    }
+
+    pub(crate) fn finish_shell_overlay_drag(&mut self) {
+        let Some(drag) = self.shell_overlay_drag.take() else {
+            return;
+        };
+        let moved = (self.shell_overlay.x, self.shell_overlay.y) != drag.origin;
+        if let Some((_, events)) = &self.shell_events {
+            let event = if moved {
+                CompositorEvent::ShellOverlayMoved {
+                    request_id: 0,
+                    configuration: self.shell_overlay,
+                }
+            } else {
+                CompositorEvent::ShellOverlayActivated { request_id: 0 }
+            };
+            let _ = events.send(event);
+        }
+        tracing::info!(
+            x = self.shell_overlay.x,
+            y = self.shell_overlay.y,
+            moved,
+            "completed trusted shell overlay move"
+        );
+    }
+
+    pub(crate) fn update_shell_overlay_hover(&mut self, pointer: Point<f64, Logical>) {
+        self.synchronize_shell_overlay_hover(pointer, false);
+    }
+
+    pub(crate) fn synchronize_shell_overlay_hover(
+        &mut self,
+        pointer: Point<f64, Logical>,
+        force: bool,
+    ) {
+        let mapped = self.space.elements().any(|window| {
+            window
+                .wl_surface()
+                .and_then(|surface| Self::client_role(&surface))
+                == Some(ClientRole::ShellOverlay)
+        });
+        let right = f64::from(self.shell_overlay.x) + f64::from(self.shell_overlay.width);
+        let bottom = f64::from(self.shell_overlay.y) + f64::from(self.shell_overlay.height);
+        let hovered = mapped
+            && pointer.x >= f64::from(self.shell_overlay.x)
+            && pointer.y >= f64::from(self.shell_overlay.y)
+            && pointer.x < right
+            && pointer.y < bottom;
+        if !force && hovered == self.shell_overlay_hovered {
+            return;
+        }
+        self.shell_overlay_hovered = hovered;
+        if let Some((_, events)) = &self.shell_events {
+            let _ = events.send(CompositorEvent::ShellOverlayHoverChanged {
+                request_id: 0,
+                hovered,
+            });
+        }
+        tracing::info!(hovered, "changed trusted shell overlay hover state");
+    }
+
     pub fn surface_under(
         &self,
         position: Point<f64, Logical>,
@@ -501,7 +638,21 @@ impl SosCompositor {
         position: Point<f64, Logical>,
     ) -> Option<(&Window, Point<i32, Logical>)> {
         let application_rectangles = self.application_window_rectangles();
-        self.space.elements().rev().find_map(|window| {
+        let mut windows = self.space.elements().rev().collect::<Vec<_>>();
+        windows.sort_by_key(|window| {
+            match window
+                .wl_surface()
+                .and_then(|surface| Self::client_role(&surface))
+            {
+                Some(ClientRole::ShellOverlay) => 0,
+                Some(ClientRole::NativeApplication) => 1,
+                Some(ClientRole::Compatibility) => 1,
+                Some(ClientRole::Shell) => 2,
+                None if window.is_x11() => 1,
+                None => 2,
+            }
+        });
+        windows.into_iter().find_map(|window| {
             if self.is_application_window(window) {
                 let rectangle =
                     application_rectangles
@@ -534,15 +685,38 @@ impl SosCompositor {
             || window
                 .wl_surface()
                 .and_then(|surface| Self::client_role(&surface))
-                == Some(ClientRole::Compatibility)
+                .is_some_and(|role| {
+                    matches!(
+                        role,
+                        ClientRole::NativeApplication | ClientRole::Compatibility
+                    )
+                })
     }
 
     pub fn client_role(surface: &WlSurface) -> Option<ClientRole> {
+        with_states(surface, |states| {
+            states
+                .data_map
+                .get::<SurfaceRoleData>()
+                .copied()
+                .map(|role| role.0)
+        })
+        .or_else(|| {
+            surface
+                .client()
+                .and_then(|client| client.get_data::<ClientState>().map(|data| data.role))
+        })
+    }
+
+    pub fn client_pid(surface: &WlSurface) -> Option<u32> {
         surface
             .client()
-            .and_then(|client| client.get_data::<ClientState>().map(|data| data.role))
+            .and_then(|client| client.get_data::<ClientState>().map(|data| data.pid))
     }
 }
+
+#[derive(Clone, Copy, Debug)]
+pub struct SurfaceRoleData(pub ClientRole);
 
 fn notify_session_owner(path: &Path) -> io::Result<()> {
     let socket = UnixDatagram::unbound()?;
@@ -554,6 +728,12 @@ pub struct ClientState {
     pub compositor_state: CompositorClientState,
     pub pid: u32,
     pub role: ClientRole,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct ShellOverlayDrag {
+    pub pointer: Point<f64, Logical>,
+    pub origin: (i32, i32),
 }
 
 impl ClientData for ClientState {

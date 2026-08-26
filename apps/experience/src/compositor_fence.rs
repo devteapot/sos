@@ -14,7 +14,8 @@ use std::{
 use anyhow::{bail, Context as _, Result};
 use compositor_control_protocol::{
     read_shell_token_file, valid_shell_token, CompositorEvent, CompositorRequest,
-    PresentationEvidence, WindowSpaceConfiguration, MAX_CONTROL_LINE_BYTES,
+    PresentationEvidence, ShellOverlayConfiguration, WindowSpaceConfiguration,
+    MAX_CONTROL_LINE_BYTES,
 };
 
 const CONTROL_SOCKET_ENV: &str = "SOS_COMPOSITOR_CONTROL";
@@ -35,7 +36,11 @@ pub struct Presented {
 #[derive(Clone, Debug)]
 pub enum FenceEvent {
     Presented(Presented),
+    ShellOverlayMoved(ShellOverlayConfiguration),
+    ShellOverlayActivated,
+    ShellOverlayHoverChanged(bool),
     WindowSpaceRejected(String),
+    ShellOverlayRejected(String),
     Failed(String),
 }
 
@@ -58,6 +63,10 @@ enum FenceCommand {
     ConfigureWindowSpace {
         request_id: u64,
         configuration: WindowSpaceConfiguration,
+    },
+    ConfigureShellOverlay {
+        request_id: u64,
+        configuration: ShellOverlayConfiguration,
     },
 }
 
@@ -214,6 +223,18 @@ impl CompositorFence {
             })
             .context("compositor fence thread is unavailable")
     }
+
+    pub fn configure_shell_overlay(&self, configuration: ShellOverlayConfiguration) -> Result<()> {
+        let request_id = self
+            .next_window_space_request_id
+            .fetch_add(1, Ordering::Relaxed);
+        self.commands
+            .send(FenceCommand::ConfigureShellOverlay {
+                request_id,
+                configuration,
+            })
+            .context("compositor fence thread is unavailable")
+    }
 }
 
 fn run_io(
@@ -311,6 +332,28 @@ fn run_io(
                         }
                     }
                 }
+                FenceCommand::ConfigureShellOverlay {
+                    request_id,
+                    configuration,
+                } => {
+                    write_request(
+                        &mut stream,
+                        &CompositorRequest::ConfigureShellOverlay {
+                            request_id,
+                            configuration,
+                        },
+                    )?;
+                    match wait_for_shell_overlay_ack(&mut reader, events, request_id, configuration)
+                    {
+                        Ok(()) => {}
+                        Err(WindowSpaceAckError::Rejected(error)) => {
+                            events.send_blocking(FenceEvent::ShellOverlayRejected(error))?
+                        }
+                        Err(WindowSpaceAckError::Fatal(error)) => {
+                            return Err(anyhow::Error::msg(error));
+                        }
+                    }
+                }
             }
             stream.set_read_timeout(Some(EVENT_POLL_INTERVAL))?;
         }
@@ -329,6 +372,15 @@ fn run_io(
                 submit_sequence,
                 evidence,
             }))?,
+            Ok(Some(CompositorEvent::ShellOverlayMoved { configuration, .. })) => {
+                events.send_blocking(FenceEvent::ShellOverlayMoved(configuration))?
+            }
+            Ok(Some(CompositorEvent::ShellOverlayActivated { .. })) => {
+                events.send_blocking(FenceEvent::ShellOverlayActivated)?
+            }
+            Ok(Some(CompositorEvent::ShellOverlayHoverChanged { hovered, .. })) => {
+                events.send_blocking(FenceEvent::ShellOverlayHoverChanged(hovered))?
+            }
             Ok(Some(event)) => bail!("unexpected asynchronous compositor event: {event:?}"),
             Ok(None) => bail!("compositor control connection closed"),
             Err(error)
@@ -371,6 +423,15 @@ fn wait_for_ack(
                     submit_sequence,
                     evidence,
                 }))
+                .map_err(|error| error.to_string())?,
+            CompositorEvent::ShellOverlayMoved { configuration, .. } => events
+                .send_blocking(FenceEvent::ShellOverlayMoved(configuration))
+                .map_err(|error| error.to_string())?,
+            CompositorEvent::ShellOverlayActivated { .. } => events
+                .send_blocking(FenceEvent::ShellOverlayActivated)
+                .map_err(|error| error.to_string())?,
+            CompositorEvent::ShellOverlayHoverChanged { hovered, .. } => events
+                .send_blocking(FenceEvent::ShellOverlayHoverChanged(hovered))
                 .map_err(|error| error.to_string())?,
             event
                 if event.request_id() == request_id
@@ -420,7 +481,74 @@ fn wait_for_window_space_ack(
                     evidence,
                 }))
                 .map_err(|error| WindowSpaceAckError::Fatal(error.to_string()))?,
+            CompositorEvent::ShellOverlayMoved { configuration, .. } => events
+                .send_blocking(FenceEvent::ShellOverlayMoved(configuration))
+                .map_err(|error| WindowSpaceAckError::Fatal(error.to_string()))?,
+            CompositorEvent::ShellOverlayActivated { .. } => events
+                .send_blocking(FenceEvent::ShellOverlayActivated)
+                .map_err(|error| WindowSpaceAckError::Fatal(error.to_string()))?,
+            CompositorEvent::ShellOverlayHoverChanged { hovered, .. } => events
+                .send_blocking(FenceEvent::ShellOverlayHoverChanged(hovered))
+                .map_err(|error| WindowSpaceAckError::Fatal(error.to_string()))?,
             CompositorEvent::WindowSpaceConfigured {
+                request_id: received,
+                configuration,
+            } if received == request_id && configuration == expected => return Ok(()),
+            event => {
+                return Err(WindowSpaceAckError::Fatal(format!(
+                    "unexpected compositor control event: {event:?}"
+                )));
+            }
+        }
+    }
+}
+
+fn wait_for_shell_overlay_ack(
+    reader: &mut BufReader<UnixStream>,
+    events: &async_channel::Sender<FenceEvent>,
+    request_id: u64,
+    expected: ShellOverlayConfiguration,
+) -> std::result::Result<(), WindowSpaceAckError> {
+    loop {
+        let event = read_event(reader)
+            .map_err(|error| WindowSpaceAckError::Fatal(error.to_string()))?
+            .ok_or_else(|| {
+                WindowSpaceAckError::Fatal(
+                    "compositor closed while configuring the shell overlay".to_owned(),
+                )
+            })?;
+        match event {
+            CompositorEvent::Rejected {
+                request_id: received,
+                error,
+            } if received == request_id => {
+                return Err(WindowSpaceAckError::Rejected(error));
+            }
+            CompositorEvent::Presented {
+                request_id,
+                revision_id,
+                commit_sequence,
+                submit_sequence,
+                evidence,
+            } => events
+                .send_blocking(FenceEvent::Presented(Presented {
+                    request_id,
+                    revision_id,
+                    commit_sequence,
+                    submit_sequence,
+                    evidence,
+                }))
+                .map_err(|error| WindowSpaceAckError::Fatal(error.to_string()))?,
+            CompositorEvent::ShellOverlayMoved { configuration, .. } => events
+                .send_blocking(FenceEvent::ShellOverlayMoved(configuration))
+                .map_err(|error| WindowSpaceAckError::Fatal(error.to_string()))?,
+            CompositorEvent::ShellOverlayActivated { .. } => events
+                .send_blocking(FenceEvent::ShellOverlayActivated)
+                .map_err(|error| WindowSpaceAckError::Fatal(error.to_string()))?,
+            CompositorEvent::ShellOverlayHoverChanged { hovered, .. } => events
+                .send_blocking(FenceEvent::ShellOverlayHoverChanged(hovered))
+                .map_err(|error| WindowSpaceAckError::Fatal(error.to_string()))?,
+            CompositorEvent::ShellOverlayConfigured {
                 request_id: received,
                 configuration,
             } if received == request_id && configuration == expected => return Ok(()),
@@ -446,6 +574,10 @@ fn event_revision(event: &CompositorEvent) -> Option<&str> {
         | CompositorEvent::Presented { revision_id, .. } => Some(revision_id),
         CompositorEvent::Registered { .. }
         | CompositorEvent::WindowSpaceConfigured { .. }
+        | CompositorEvent::ShellOverlayConfigured { .. }
+        | CompositorEvent::ShellOverlayMoved { .. }
+        | CompositorEvent::ShellOverlayActivated { .. }
+        | CompositorEvent::ShellOverlayHoverChanged { .. }
         | CompositorEvent::Rejected { .. } => None,
     }
 }
