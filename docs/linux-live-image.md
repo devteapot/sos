@@ -149,7 +149,8 @@ checkout, deploy only the changed native components:
 
 With no `--component`, the tool builds and deploys all six native session
 components, the read-only `provider-probe`, `login-session`, the two per-user
-graphical-session targets, `hardware-gate`, `stock-base`, and `api-doc`. It opens one
+graphical-session targets, `hardware-gate`, `stock-base`, `api-doc`, and the
+Framework/PiKVM `display-defaults`. It opens one
 multiplexed SSH connection, verifies the target's
 `development-live`/non-promotable identity, refuses deployment while SOS is
 running, builds locally, stages files under a private target directory, and
@@ -162,6 +163,13 @@ SHA-256 and writes:
 
 Dirty source deployments are allowed and explicitly recorded. Rebooting drops
 all deployed changes and returns to the baked base.
+
+`display-defaults` installs `/etc/xdg/monitors.xml` as a system fallback for
+the known Framework 12 panel and PiKVM capture monitor. It clones both at
+1,920x1,080 for the GDM greeter and other Mutter sessions. The file deliberately
+does not set a system-only stores policy, so a user's own `monitors.xml` can
+override the default. The SOS direct compositor continues to use its separate
+`output.json` contract.
 
 ## Run and collect a diagnostic campaign
 

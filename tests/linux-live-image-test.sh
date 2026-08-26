@@ -25,10 +25,28 @@ trap test_cleanup EXIT
 bash -n "$test_image"
 bash -n "$test_deploy"
 bash -n "$test_install"
+python3 - "$test_repo_root/packaging/xdg/framework12-pikvm-monitors.xml" <<'PY'
+import sys
+import xml.etree.ElementTree as ET
+
+root = ET.parse(sys.argv[1]).getroot()
+assert root.tag == "monitors" and root.attrib == {"version": "2"}
+assert root.find("policy") is None
+logical_monitors = root.findall("./configuration/logicalmonitor")
+assert len(logical_monitors) == 1
+monitors = logical_monitors[0].findall("./monitor")
+assert [monitor.findtext("./monitorspec/connector") for monitor in monitors] == [
+    "DP-1",
+    "eDP-1",
+]
+assert all(monitor.findtext("./mode/width") == "1920" for monitor in monitors)
+assert all(monitor.findtext("./mode/height") == "1080" for monitor in monitors)
+PY
 "$test_deploy" components >"$test_root/deploy-components.txt"
 for test_component in \
   compositor experience-host provider supervisor session authoring provider-probe \
-  login-session session-target session-shutdown-target hardware-gate stock-base api-doc; do
+  login-session session-target session-shutdown-target hardware-gate stock-base api-doc \
+  display-defaults; do
   grep -E "^${test_component}[[:space:]]+/" \
     "$test_root/deploy-components.txt" >/dev/null
 done
@@ -83,13 +101,14 @@ printf '%s\n' \
   '    ;;' \
   '  "set -euo pipefail;"*)' \
   '    stage="$(cat "$TEST_DEPLOY_STATE")"' \
-  '    mkdir -p "$TEST_DEPLOY_REMOTE/usr/local/libexec/sos" "$TEST_DEPLOY_REMOTE/usr/local/lib/systemd/user" "$TEST_DEPLOY_REMOTE/usr/share/doc/sos" "$TEST_DEPLOY_REMOTE/usr/share/sos/experiences"' \
+  '    mkdir -p "$TEST_DEPLOY_REMOTE/usr/local/libexec/sos" "$TEST_DEPLOY_REMOTE/usr/local/lib/systemd/user" "$TEST_DEPLOY_REMOTE/usr/share/doc/sos" "$TEST_DEPLOY_REMOTE/usr/share/sos/experiences" "$TEST_DEPLOY_REMOTE/etc/xdg"' \
   '    for source in "$stage"/sos-*; do cp -- "$source" "$TEST_DEPLOY_REMOTE/usr/local/libexec/sos/$(basename "$source")"; done' \
   '    [[ ! -f "$stage/linux-hardware-gate" ]] || cp -- "$stage/linux-hardware-gate" "$TEST_DEPLOY_REMOTE/usr/local/libexec/sos/"' \
   '    [[ ! -f "$stage/sos-session.target" ]] || cp -- "$stage/sos-session.target" "$TEST_DEPLOY_REMOTE/usr/local/lib/systemd/user/"' \
   '    [[ ! -f "$stage/sos-session-shutdown.target" ]] || cp -- "$stage/sos-session-shutdown.target" "$TEST_DEPLOY_REMOTE/usr/local/lib/systemd/user/"' \
   '    [[ ! -f "$stage/default.luau" ]] || cp -- "$stage/default.luau" "$TEST_DEPLOY_REMOTE/usr/share/sos/experiences/"' \
   '    [[ ! -f "$stage/experience-api.md" ]] || cp -- "$stage/experience-api.md" "$TEST_DEPLOY_REMOTE/usr/share/doc/sos/"' \
+  '    [[ ! -f "$stage/monitors.xml" ]] || cp -- "$stage/monitors.xml" "$TEST_DEPLOY_REMOTE/etc/xdg/"' \
   '    cp -- "$stage/development-deployment.env" "$TEST_DEPLOY_REMOTE/usr/share/doc/sos/"' \
   '    cp -- "$stage/development-deployment-manifest.tsv" "$TEST_DEPLOY_REMOTE/usr/share/doc/sos/"' \
   '    rm -r -- "$stage"' \
@@ -133,6 +152,7 @@ SOS_DEVELOPMENT_DEPLOY_ARTIFACTS_DIR="$test_root/deploy-artifacts" \
     --component hardware-gate \
     --component stock-base \
     --component api-doc \
+    --component display-defaults \
     >"$test_root/deploy-pass.txt"
 grep -F 'linux_development_live_deployed=PASS' "$test_root/deploy-pass.txt" >/dev/null
 grep -F 'promotion_eligible=false' "$test_root/deploy-pass.txt" >/dev/null
@@ -142,13 +162,16 @@ for test_binary in \
 done
 [[ -f "$test_deploy_remote/usr/share/sos/experiences/default.luau" ]]
 [[ -f "$test_deploy_remote/usr/share/doc/sos/experience-api.md" ]]
+cmp -s \
+  "$test_repo_root/packaging/xdg/framework12-pikvm-monitors.xml" \
+  "$test_deploy_remote/etc/xdg/monitors.xml"
 [[ -f "$test_deploy_remote/usr/local/lib/systemd/user/sos-session.target" ]]
 [[ -f "$test_deploy_remote/usr/local/lib/systemd/user/sos-session-shutdown.target" ]]
 test_deployment_metadata="$test_deploy_remote/usr/share/doc/sos/development-deployment.env"
 test_deployment_manifest="$test_deploy_remote/usr/share/doc/sos/development-deployment-manifest.tsv"
 grep -Fx 'image_kind=development-live' "$test_deployment_metadata" >/dev/null
 grep -Fx 'promotion_eligible=false' "$test_deployment_metadata" >/dev/null
-[[ "$(wc -l <"$test_deployment_manifest")" -eq 9 ]]
+[[ "$(wc -l <"$test_deployment_manifest")" -eq 10 ]]
 while IFS=$'\t' read -r test_path test_bytes test_sha; do
   [[ "$(stat -c %s "$test_deploy_remote$test_path")" == "$test_bytes" ]]
   [[ "$(sha256sum "$test_deploy_remote$test_path" | cut -d ' ' -f 1)" == "$test_sha" ]]
@@ -474,6 +497,7 @@ mkdir -p \
   "$test_rootfs/usr/lib/firewalld" \
   "$test_rootfs/etc/skel" \
   "$test_rootfs/etc/gdm" \
+  "$test_rootfs/etc/xdg" \
   "$test_rootfs/etc/ssh" \
   "$test_rootfs/etc/firewalld" \
   "$test_rootfs/home/liveuser"
@@ -483,6 +507,8 @@ mkdir -p \
 : >"$test_rootfs/usr/local/libexec/sos-agent/dist/agent-runner.cjs"
 : >"$test_rootfs/usr/share/wayland-sessions/sos.desktop"
 : >"$test_rootfs/usr/share/sos/experiences/daily-flow.luau"
+cp -- "$test_repo_root/packaging/xdg/framework12-pikvm-monitors.xml" \
+  "$test_rootfs/etc/xdg/monitors.xml"
 : >"$test_rootfs/usr/lib/systemd/system/gdm.service"
 : >"$test_rootfs/usr/lib/systemd/system/sshd.service"
 : >"$test_rootfs/usr/lib/systemd/system/NetworkManager.service"

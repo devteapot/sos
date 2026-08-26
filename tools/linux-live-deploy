@@ -36,7 +36,8 @@ development_deploy_components() {
     'session-shutdown-target /usr/local/lib/systemd/user/sos-session-shutdown.target' \
     'hardware-gate       /usr/local/libexec/sos/linux-hardware-gate' \
     'stock-base          /usr/share/sos/experiences/default.luau' \
-    'api-doc             /usr/share/doc/sos/experience-api.md'
+    'api-doc             /usr/share/doc/sos/experience-api.md' \
+    'display-defaults    /etc/xdg/monitors.xml'
 }
 
 development_deploy_metadata_value() {
@@ -59,6 +60,7 @@ development_deploy_binary_name() {
     hardware-gate) printf 'linux-hardware-gate\n' ;;
     stock-base) printf 'default.luau\n' ;;
     api-doc) printf 'experience-api.md\n' ;;
+    display-defaults) printf 'monitors.xml\n' ;;
     *) development_deploy_fail "unknown component: $1" ;;
   esac
 }
@@ -75,6 +77,7 @@ development_deploy_source_path() {
     hardware-gate) printf '%s/tools/linux-hardware-gate\n' "$development_deploy_root" ;;
     stock-base) printf '%s/experiences/default.luau\n' "$development_deploy_root" ;;
     api-doc) printf '%s/docs/experience-api.md\n' "$development_deploy_root" ;;
+    display-defaults) printf '%s/packaging/xdg/framework12-pikvm-monitors.xml\n' "$development_deploy_root" ;;
     *) development_deploy_fail "unknown component: $1" ;;
   esac
 }
@@ -88,6 +91,7 @@ development_deploy_destination() {
     session-shutdown-target) printf '/usr/local/lib/systemd/user/sos-session-shutdown.target\n' ;;
     stock-base) printf '/usr/share/sos/experiences/default.luau\n' ;;
     api-doc) printf '/usr/share/doc/sos/experience-api.md\n' ;;
+    display-defaults) printf '/etc/xdg/monitors.xml\n' ;;
     *) development_deploy_fail "unknown component: $1" ;;
   esac
 }
@@ -95,7 +99,7 @@ development_deploy_destination() {
 development_deploy_mode() {
   case "$1" in
     compositor|experience-host|provider|supervisor|session|authoring|provider-probe|login-session|hardware-gate) printf '0755\n' ;;
-    session-target|session-shutdown-target|stock-base|api-doc) printf '0644\n' ;;
+    session-target|session-shutdown-target|stock-base|api-doc|display-defaults) printf '0644\n' ;;
     *) development_deploy_fail "unknown component: $1" ;;
   esac
 }
@@ -131,7 +135,7 @@ development_deploy_build_component() {
       cargo build --locked --release \
         -p providers-linux --bin sos-linux-provider-probe
       ;;
-    login-session|session-target|session-shutdown-target|hardware-gate|stock-base|api-doc) ;;
+    login-session|session-target|session-shutdown-target|hardware-gate|stock-base|api-doc|display-defaults) ;;
     *) development_deploy_fail "unknown component: $component" ;;
   esac
 }
@@ -160,6 +164,7 @@ development_deploy_run() {
     requested_components=(
       compositor experience-host provider supervisor session authoring provider-probe
       login-session session-target session-shutdown-target hardware-gate stock-base api-doc
+      display-defaults
     )
   fi
 

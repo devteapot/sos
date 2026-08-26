@@ -11,6 +11,7 @@ live_image_development_access=/usr/share/doc/sos/development-access.env
 live_image_ssh_config=/etc/ssh/sshd_config.d/60-sos-development-live.conf
 live_image_livesys_hook=/var/lib/livesys/livesys-session-extra
 live_image_networkmanager_profile=/etc/NetworkManager/system-connections/60-sos-development-live.nmconnection
+live_image_display_defaults=/etc/xdg/monitors.xml
 
 live_image_fail() {
   printf 'error: %s\n' "$*" >&2
@@ -558,6 +559,7 @@ live_image_check_rootfs() {
     "$live_image_development_access" \
     "$live_image_ssh_config" \
     "$live_image_livesys_hook" \
+    "$live_image_display_defaults" \
     /usr/lib/systemd/system/sshd.service \
     /usr/bin/systemctl \
     "$live_image_identity_path"; do
@@ -568,6 +570,10 @@ live_image_check_rootfs() {
     || -e "$(live_image_target /usr/sbin/gdm)" \
     || -e "$(live_image_target /usr/bin/gdm)" ]] || \
     live_image_fail "baked live rootfs does not contain GDM"
+  cmp -s \
+    "$live_image_root/packaging/xdg/framework12-pikvm-monitors.xml" \
+    "$(live_image_target "$live_image_display_defaults")" || \
+    live_image_fail "baked live rootfs does not contain the Framework/PiKVM mirror default"
   local default_target display_manager
   default_target="$(live_image_symlink_basename "$(live_image_target /etc/systemd/system/default.target)")"
   if [[ -z "$default_target" ]]; then
@@ -914,6 +920,11 @@ live_image_stage_sos() {
   sudo install -o root -g root -m 0644 \
     "$live_image_root/docs/linux-live-image.md" \
     "$(live_image_target /usr/share/doc/sos/linux-live-image.md)"
+  sudo install -d -o root -g root -m 0755 \
+    "$(live_image_target /etc/xdg)"
+  sudo install -o root -g root -m 0644 \
+    "$live_image_root/packaging/xdg/framework12-pikvm-monitors.xml" \
+    "$(live_image_target "$live_image_display_defaults")"
   sudo mkdir -p -- "$(live_image_target /etc/skel)"
   local skel_tmp
   skel_tmp="$(mktemp -d -t sos-live-skel.XXXXXX)"

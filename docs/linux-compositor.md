@@ -195,12 +195,25 @@ both before boot and between the killed/restarted hosts, and the separate
 compatibility client mapped at `(280, 140)`.
 
 The direct backend remains intentionally one seat, but accepts multiple DRM
-devices and simultaneous connected outputs. It lays sorted outputs out
-horizontally, resizes the shell to their aggregate logical geometry, and
-survives connector and whole-device removal/addition. `SOS_OUTPUT_MODE`,
-`SOS_OUTPUT_SCALE`, and `SOS_OUTPUT_ROTATION` set boot configuration. A bounded
-JSON file selected by `SOS_OUTPUT_CONFIG_FILE` can change those values on a DRM
-udev event; the backend recreates outputs without restarting the compositor.
+devices and simultaneous connected outputs. Its default mirror policy computes
+the largest logical canvas that fits every connected output, centers that one
+canvas on each physical mode, and resizes the shell once. This lets the
+Framework's 1920x1200 panel show the same 1920x1080 scene as PiKVM with 60
+logical pixels of compositor background above and below. `"layout": "extend"`
+retains the connector-sorted horizontal desktop when independent output space
+is wanted. Both policies survive connector and whole-device removal/addition.
+`SOS_OUTPUT_MODE`, `SOS_OUTPUT_SCALE`, and `SOS_OUTPUT_ROTATION` set boot
+configuration. A bounded JSON file selected by `SOS_OUTPUT_CONFIG_FILE` can
+change those values and `layout` on a DRM udev event; the backend recreates
+outputs without restarting the compositor.
+That file can also associate an exact libinput device name with a connector in
+`input_outputs`. Absolute mice, touchscreens, and tablets use the configured
+connector's logical geometry regardless of connector discovery order. They
+remain automatic on a single output, but fail closed when multiple outputs make
+an unconfigured route ambiguous or when the configured connector is absent.
+Relative pointers stay inside the shared mirror canvas. In extended mode they
+traverse the complete connected-output layout and clamp only to the nearest
+valid output rectangle, including across gaps between outputs.
 The direct VM gate changes Virtual-1 to 1024x768, 1.25 scale, and 180-degree
 rotation, then hot-adds Virtual-2 and requires a nonempty first frame and page
 flip on that second CRTC. The render graph composites either a live client

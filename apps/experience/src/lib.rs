@@ -68,12 +68,39 @@ pub fn validate_embedded_experience() -> Result<usize, String> {
 mod tests {
     #[test]
     fn embedded_experience_is_valid() {
-        assert!(super::validate_embedded_experience().unwrap() > 20);
-
         let runtime = runtime_luau::LuauRuntime::compile(super::DEFAULT_EXPERIENCE).unwrap();
-        let _scene = runtime
+        let initial_scene = runtime
             .render(&providers_fake::snapshot(), &runtime.initial_state())
             .unwrap();
+        fn unstable_interactive_nodes(
+            node: &experience_ir::SceneNode,
+            path: &str,
+            output: &mut Vec<String>,
+        ) {
+            let interactive = node.layout.scroll_y
+                || node.interaction.tap_action.is_some()
+                || node.interaction.double_tap_action.is_some()
+                || node.interaction.long_press_action.is_some()
+                || node.interaction.swipe_action.is_some()
+                || node.interaction.pointer_action.is_some()
+                || node.interaction.multi_pointer_action.is_some()
+                || !node.interaction.hit_regions.is_empty()
+                || node.animation.is_some()
+                || matches!(node.content, Some(experience_ir::Content::TextSession(_)));
+            if interactive && node.id.is_none() {
+                output.push(path.to_owned());
+            }
+            for (index, child) in node.children.iter().enumerate() {
+                unstable_interactive_nodes(child, &format!("{path}/{index}"), output);
+            }
+        }
+        let mut unstable = Vec::new();
+        unstable_interactive_nodes(&initial_scene.root, "root", &mut unstable);
+        assert!(
+            unstable.is_empty(),
+            "interactive nodes without IDs: {unstable:?}"
+        );
+        assert!(experience_ir::validate_scene(&initial_scene).unwrap() > 20);
         fn contains_action(node: &experience_ir::SceneNode, action: &str) -> bool {
             node.interaction.tap_action.as_deref() == Some(action)
                 || node
@@ -88,15 +115,95 @@ mod tests {
                     if session.submit_action.as_deref() == Some("agent_submit")
             ) || node.children.iter().any(contains_agent_composer)
         }
+        fn contains_id(node: &experience_ir::SceneNode, id: &str) -> bool {
+            node.id.as_deref() == Some(id)
+                || node.children.iter().any(|child| contains_id(child, id))
+        }
+        fn node_by_id<'a>(
+            node: &'a experience_ir::SceneNode,
+            id: &str,
+        ) -> Option<&'a experience_ir::SceneNode> {
+            if node.id.as_deref() == Some(id) {
+                return Some(node);
+            }
+            node.children.iter().find_map(|child| node_by_id(child, id))
+        }
+        fn contains_wrapping_layout(node: &experience_ir::SceneNode) -> bool {
+            node.layout.wrap || node.children.iter().any(contains_wrapping_layout)
+        }
         let mut stock_model = providers_fake::snapshot();
         stock_model.providers.abi_version = experience_ir::SYSTEM_PROVIDER_ABI_VERSION;
         stock_model.providers.audio.volume_percent = Some(50);
         stock_model.providers.capabilities = vec![experience_ir::SystemCapability::AudioSetVolume];
+        assert_eq!(runtime.assets().len(), 1);
         let stock_scene = runtime
             .render(&stock_model, &runtime.initial_state())
             .unwrap();
-        assert!(contains_action(&stock_scene.root, "audio_volume_up"));
-        assert!(contains_agent_composer(&stock_scene.root));
+        assert!(contains_id(&stock_scene.root, "workspace-home"));
+        assert!(contains_wrapping_layout(&stock_scene.root));
+        let home_grid = node_by_id(&stock_scene.root, "home-responsive-grid").unwrap();
+        assert!(home_grid.layout.wrap);
+        let content_frame = node_by_id(&stock_scene.root, "stock-content-frame").unwrap();
+        assert_eq!(content_frame.layout.max_width, Some(1876.0));
+        assert_eq!(
+            content_frame
+                .layout
+                .program
+                .as_ref()
+                .and_then(|program| program.measure_width),
+            Some(1.0)
+        );
+        for workspace in [
+            "home",
+            "agenda",
+            "notes",
+            "media",
+            "attention",
+            "system",
+            "apps",
+            "agent",
+        ] {
+            assert!(contains_action(
+                &stock_scene.root,
+                &format!("navigate_{workspace}")
+            ));
+            let state = runtime
+                .update(
+                    &stock_model,
+                    &runtime.initial_state(),
+                    &experience_ir::SceneEvent {
+                        action: format!("navigate_{workspace}"),
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+            let scene = runtime.render(&stock_model, &state).unwrap();
+            assert!(contains_id(&scene.root, &format!("workspace-{workspace}")));
+        }
+        let system_state = runtime
+            .update(
+                &stock_model,
+                &runtime.initial_state(),
+                &experience_ir::SceneEvent {
+                    action: "navigate_system".into(),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let system_scene = runtime.render(&stock_model, &system_state).unwrap();
+        assert!(contains_action(&system_scene.root, "audio_volume_up"));
+        let agent_state = runtime
+            .update(
+                &stock_model,
+                &runtime.initial_state(),
+                &experience_ir::SceneEvent {
+                    action: "navigate_agent".into(),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let agent_scene = runtime.render(&stock_model, &agent_state).unwrap();
+        assert!(contains_agent_composer(&agent_scene.root));
         for source in [
             super::DEFAULT_EXPERIENCE,
             super::TIMEFLOW_EXPERIENCE,
@@ -104,7 +211,21 @@ mod tests {
         ] {
             let runtime = runtime_luau::LuauRuntime::compile(source).unwrap();
             let model = providers_fake::snapshot();
-            let scene = runtime.render(&model, &runtime.initial_state()).unwrap();
+            let state = if source == super::DEFAULT_EXPERIENCE {
+                runtime
+                    .update(
+                        &model,
+                        &runtime.initial_state(),
+                        &experience_ir::SceneEvent {
+                            action: "navigate_agent".into(),
+                            ..Default::default()
+                        },
+                    )
+                    .unwrap()
+            } else {
+                runtime.initial_state()
+            };
+            let scene = runtime.render(&model, &state).unwrap();
             for action in [
                 "agent_configure_openai",
                 "agent_configure_openrouter",
@@ -120,9 +241,7 @@ mod tests {
                 experience_ir::AgentConfigurationAction::ConfigureCodex,
                 experience_ir::AgentConfigurationAction::UseFake,
             ];
-            let scene = runtime
-                .render(&configurable, &runtime.initial_state())
-                .unwrap();
+            let scene = runtime.render(&configurable, &state).unwrap();
             assert!(contains_action(&scene.root, "agent_configure_codex"));
             assert!(contains_action(&scene.root, "agent_use_fake"));
             assert!(!contains_action(&scene.root, "agent_configure_openai"));
@@ -141,6 +260,80 @@ mod tests {
         assert_eq!(outcome.effects[0].provider, "audio");
         assert_eq!(outcome.effects[0].action, "adjust_volume");
         assert_eq!(outcome.effects[0].payload["delta"], 10);
+
+        let note = runtime
+            .update_with_effects(
+                &stock_model,
+                &runtime.initial_state(),
+                &experience_ir::SceneEvent {
+                    action: "note_submit".into(),
+                    target: Some("note-composer".into()),
+                    value: Some("Provider architecture\nKeep applications replaceable.".into()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(note.effects[0].provider, "notes");
+        assert_eq!(note.effects[0].action, "write");
+        assert!(note.effects[0].payload["content"]
+            .as_str()
+            .unwrap()
+            .starts_with("# Provider architecture"));
+        let note_state = runtime
+            .update(
+                &stock_model,
+                &note.state,
+                &experience_ir::SceneEvent {
+                    action: "navigate_notes".into(),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let note_scene = runtime.render(&stock_model, &note_state).unwrap();
+        let note_status = node_by_id(&note_scene.root, "note-composer-status").unwrap();
+        assert_eq!(
+            note_status.semantics.as_ref().unwrap().role,
+            experience_ir::SemanticRole::Status
+        );
+        assert_eq!(
+            note_status.semantics.as_ref().unwrap().label,
+            "Saved “Provider architecture”."
+        );
+
+        let agenda = runtime
+            .update_with_effects(
+                &stock_model,
+                &runtime.initial_state(),
+                &experience_ir::SceneEvent {
+                    action: "agenda_submit".into(),
+                    target: Some("agenda-composer".into()),
+                    value: Some("09:30 Provider review".into()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(agenda.effects[0].provider, "calendar");
+        assert_eq!(agenda.effects[0].action, "append");
+        assert_eq!(agenda.effects[0].payload["time"], "09:30");
+
+        let mut unavailable = providers_fake::snapshot();
+        unavailable.providers = Default::default();
+        let unavailable_state = runtime
+            .update(
+                &unavailable,
+                &runtime.initial_state(),
+                &experience_ir::SceneEvent {
+                    action: "navigate_system".into(),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let unavailable_scene = runtime.render(&unavailable, &unavailable_state).unwrap();
+        assert!(contains_id(
+            &unavailable_scene.root,
+            "system-providers-unavailable"
+        ));
+        assert!(!contains_action(&unavailable_scene.root, "audio_volume_up"));
 
         let timeflow = runtime_luau::LuauRuntime::compile(super::TIMEFLOW_EXPERIENCE).unwrap();
         let timeflow_scene = timeflow

@@ -126,6 +126,18 @@ change its resident provider.
 The resident-agent validation path requires each submitted revision to retain
 at least one Luau `text_session` with `submit_action = "agent_submit"`.
 
+## Stock Base is an ordinary revision
+
+The default [`experiences/default.luau`](../experiences/default.luau) exercises
+this contract as the product integration target. Its Home, Agenda, Notes,
+Media, Attention, System, Apps, and Agent workspaces; navigation; provider
+actions; unavailable states; responsive wrapping; and inline SVG mark are all
+declared in Luau. None is a host special case. A user or agent can replace the
+complete source, state schema, and revision assets while the provider and
+trusted-ceremony boundary remains fixed. See
+[`stock-experience.md`](stock-experience.md) for its surface and recovery
+status.
+
 `render` returns the root scene node. `update` may mutate and return state, or
 return a typed effect envelope:
 
@@ -227,6 +239,7 @@ those helpers are not permanent host components.
 ```luau
 layout = {
     flow = "overlay" | "column" | "row", -- defaults to overlay
+    wrap = true, -- wrap flow children when the containing block becomes narrow
     scroll_y = true,
     padding = 16,
     gap = 8,
@@ -257,7 +270,10 @@ removes a node from its parent's flow while preserving a host-owned retained
 element. `program` is a bounded responsive measure/arrange program: finite
 fractions in `[-4, 4]` are retained and evaluated by GPUI/Taffy against the
 current containing block. It composes with min/max and aspect constraints
-without a high-frequency Luau callback.
+without a high-frequency Luau callback. `wrap` uses the same retained host
+layout pass; combined with child `min_width` and `grow`, one source can form a
+multi-column clamshell layout and collapse to one column in a narrow or portrait
+tablet layout.
 
 ### Content
 
