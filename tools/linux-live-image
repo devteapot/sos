@@ -5,7 +5,7 @@ umask 077
 
 live_image_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 live_image_identity_path=/usr/share/doc/sos/image-identity.env
-live_image_offline_source=/usr/share/sos/experiences/daily-flow.luau
+live_image_offline_source=/usr/share/sos/experiences/default.luau
 live_image_harness=/usr/local/libexec/sos/linux-hardware-gate
 live_image_development_access=/usr/share/doc/sos/development-access.env
 live_image_ssh_config=/etc/ssh/sshd_config.d/60-sos-development-live.conf
@@ -630,13 +630,13 @@ live_image_check_rootfs() {
   live_image_require_exact_line "$skel_config" \
     "SOS_AGENT_FAKE_SOURCE=$live_image_offline_source" \
     "offline live skel agent config is missing" \
-    "offline live skel does not pin the baked daily-flow source"
+    "offline live skel does not pin the stock shell source"
   if [[ -d "$(live_image_target /home/liveuser)" ]]; then
     liveuser_config="$(live_image_target /home/liveuser/.local/state/sos/agent/config.env)"
     live_image_require_exact_line "$liveuser_config" \
       "SOS_AGENT_FAKE_SOURCE=$live_image_offline_source" \
       "existing liveuser is missing offline agent config" \
-      "existing liveuser does not pin the baked daily-flow source"
+      "existing liveuser does not pin the stock shell source"
   fi
   live_image_require_exact_line "$(live_image_target "$live_image_ssh_config")" \
     'PasswordAuthentication yes' \

@@ -15,8 +15,8 @@ use smithay::{
         compositor::with_states,
         seat::WaylandFocus as _,
         shell::xdg::{
-            PopupSurface, PositionerState, ToplevelSurface, XdgShellHandler, XdgShellState,
-            XdgToplevelSurfaceData,
+            PopupSurface, PositionerState, ToplevelStateSet, ToplevelSurface, XdgShellHandler,
+            XdgShellState, XdgToplevelSurfaceData,
         },
     },
 };
@@ -168,7 +168,13 @@ impl XdgShellHandler for SosCompositor {
                     .copied()
                     .expect("new compatibility window has a layout rectangle");
                 let size: Size<i32, Logical> = (rectangle.width, rectangle.height).into();
-                surface.with_pending_state(|state| state.size = Some(size));
+                surface.with_pending_state(|state| {
+                    state.size = Some(size);
+                    configure_application_toplevel_states(
+                        &mut state.states,
+                        self.window_space.layout,
+                    );
+                });
                 (rectangle.x, rectangle.y)
             }
         };
@@ -281,6 +287,28 @@ impl XdgShellHandler for SosCompositor {
         }
     }
 
+    fn resize_request(
+        &mut self,
+        surface: ToplevelSurface,
+        _seat: wl_seat::WlSeat,
+        _serial: Serial,
+        edges: xdg_toplevel::ResizeEdge,
+    ) {
+        if matches!(
+            Self::client_role(surface.wl_surface()),
+            Some(ClientRole::NativeApplication | ClientRole::Compatibility)
+        ) {
+            if self.window_space.layout != compositor_control_protocol::WindowLayoutMode::Floating {
+                self.reconfigure_application_windows();
+            }
+            tracing::debug!(
+                ?edges,
+                ?self.window_space.layout,
+                "ignored unsupported application resize request"
+            );
+        }
+    }
+
     fn reposition_request(
         &mut self,
         surface: PopupSurface,
@@ -332,6 +360,25 @@ fn xdg_mapping_transition(has_buffer: bool, is_mapped: bool) -> XdgMappingTransi
         (true, false) => XdgMappingTransition::Map,
         (false, true) => XdgMappingTransition::Unmap,
         _ => XdgMappingTransition::Unchanged,
+    }
+}
+
+fn configure_application_toplevel_states(
+    states: &mut ToplevelStateSet,
+    layout: compositor_control_protocol::WindowLayoutMode,
+) {
+    let compositor_managed = layout != compositor_control_protocol::WindowLayoutMode::Floating;
+    for edge in [
+        xdg_toplevel::State::TiledTop,
+        xdg_toplevel::State::TiledRight,
+        xdg_toplevel::State::TiledBottom,
+        xdg_toplevel::State::TiledLeft,
+    ] {
+        if compositor_managed {
+            states.set(edge);
+        } else {
+            states.unset(edge);
+        }
     }
 }
 
@@ -544,7 +591,10 @@ impl SosCompositor {
     fn configure_application_window(&mut self, window: Window, rectangle: WindowRectangle) {
         if let Some(toplevel) = window.toplevel().cloned() {
             let size: Size<i32, Logical> = (rectangle.width, rectangle.height).into();
-            toplevel.with_pending_state(|state| state.size = Some(size));
+            toplevel.with_pending_state(|state| {
+                state.size = Some(size);
+                configure_application_toplevel_states(&mut state.states, self.window_space.layout);
+            });
             toplevel.send_pending_configure();
             self.space
                 .map_element(window, (rectangle.x, rectangle.y), false);
@@ -620,6 +670,11 @@ impl SosCompositor {
             state.size = Some(size);
             if role == ClientRole::Shell {
                 state.states.set(xdg_toplevel::State::Fullscreen);
+            } else if matches!(
+                role,
+                ClientRole::NativeApplication | ClientRole::Compatibility
+            ) {
+                configure_application_toplevel_states(&mut state.states, self.window_space.layout);
             }
         });
         surface.send_pending_configure();
@@ -655,7 +710,14 @@ impl SosCompositor {
 
 #[cfg(test)]
 mod tests {
-    use super::{xdg_mapping_transition, XdgMappingTransition};
+    use smithay::{
+        reexports::wayland_protocols::xdg::shell::server::xdg_toplevel,
+        wayland::shell::xdg::ToplevelStateSet,
+    };
+
+    use super::{
+        configure_application_toplevel_states, xdg_mapping_transition, XdgMappingTransition,
+    };
 
     #[test]
     fn maps_only_when_a_buffer_first_appears() {
@@ -679,5 +741,55 @@ mod tests {
             xdg_mapping_transition(false, false),
             XdgMappingTransition::Unchanged
         );
+    }
+
+    #[test]
+    fn managed_layouts_advertise_every_tiled_edge() {
+        for layout in [
+            compositor_control_protocol::WindowLayoutMode::Tiling,
+            compositor_control_protocol::WindowLayoutMode::Scrolling,
+        ] {
+            let mut states = ToplevelStateSet::default();
+            states.set(xdg_toplevel::State::Activated);
+            configure_application_toplevel_states(&mut states, layout);
+            assert!(states.contains(xdg_toplevel::State::Activated));
+            for edge in [
+                xdg_toplevel::State::TiledTop,
+                xdg_toplevel::State::TiledRight,
+                xdg_toplevel::State::TiledBottom,
+                xdg_toplevel::State::TiledLeft,
+            ] {
+                assert!(states.contains(edge));
+            }
+        }
+    }
+
+    #[test]
+    fn floating_layout_clears_tiled_edges_without_losing_focus() {
+        let mut states = ToplevelStateSet::default();
+        states.set(xdg_toplevel::State::Activated);
+        for edge in [
+            xdg_toplevel::State::TiledTop,
+            xdg_toplevel::State::TiledRight,
+            xdg_toplevel::State::TiledBottom,
+            xdg_toplevel::State::TiledLeft,
+        ] {
+            states.set(edge);
+        }
+
+        configure_application_toplevel_states(
+            &mut states,
+            compositor_control_protocol::WindowLayoutMode::Floating,
+        );
+
+        assert!(states.contains(xdg_toplevel::State::Activated));
+        for edge in [
+            xdg_toplevel::State::TiledTop,
+            xdg_toplevel::State::TiledRight,
+            xdg_toplevel::State::TiledBottom,
+            xdg_toplevel::State::TiledLeft,
+        ] {
+            assert!(!states.contains(edge));
+        }
     }
 }

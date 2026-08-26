@@ -265,7 +265,7 @@ sudo install -o root -g root -m 0644 \
 
 if [[ -z "$sos_install_destdir" ]]; then
   if [[ "$sos_install_agent_mode" == offline ]]; then
-    SOS_AGENT_FAKE_SOURCE=/usr/share/sos/experiences/daily-flow.luau \
+    SOS_AGENT_FAKE_SOURCE=/usr/share/sos/experiences/default.luau \
       "$sos_install_bin_dir/sos-agent-login" --offline
   else
     sos_install_existing_agent_config="${XDG_STATE_HOME:-$HOME/.local/state}/sos/agent/config.env"

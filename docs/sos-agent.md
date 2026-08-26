@@ -197,8 +197,11 @@ their real-provider calls are still an explicit future gate.
 `tools/install-linux-login-session install` builds and installs the pinned Node
 agent plus `sos-agent-authoring`, then runs per-user device-code authentication
 when credentials are missing. `install --offline` instead records the checked-in
-`daily-flow.luau` source as an explicit faux provider for the first hardware
-gate; it performs no login and does not require a credential or network request.
+stock `default.luau` shell as an explicit faux provider; it performs no login
+and does not require a credential or network request. A prompt therefore runs
+the complete context/validate/submit path but resolves as `already_active`
+instead of replacing the shell with a demo experience. Developers can still
+pass another source explicitly to `linux-agent-run --fake` for activation tests.
 Both modes use the same resident server, authoring broker, validation, submission,
 transactional activation, and monitored lifecycle. In the SOS GDM session,
 `sos-login-session` waits for that user's provider and revision-supervisor

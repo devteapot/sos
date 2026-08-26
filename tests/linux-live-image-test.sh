@@ -467,7 +467,7 @@ grep -F 'EROFS payload is not a flat Fedora root filesystem' \
 "$test_image" write-offline-user-state --home-root "$test_root/skel" \
   >"$test_root/skel.txt"
 grep -Fx 'SOS_AGENT_MODEL=faux' "$test_root/skel/.local/state/sos/agent/config.env" >/dev/null
-grep -Fx 'SOS_AGENT_FAKE_SOURCE=/usr/share/sos/experiences/daily-flow.luau' \
+grep -Fx 'SOS_AGENT_FAKE_SOURCE=/usr/share/sos/experiences/default.luau' \
   "$test_root/skel/.local/state/sos/agent/config.env" >/dev/null
 grep -Fx '{}' "$test_root/skel/.local/state/sos/output.json" >/dev/null
 [[ "$(stat -c %a "$test_root/skel/.local/state/sos/agent/config.env")" == 600 ]]
@@ -506,6 +506,7 @@ mkdir -p \
 : >"$test_rootfs/usr/local/libexec/sos/linux-hardware-gate"
 : >"$test_rootfs/usr/local/libexec/sos-agent/dist/agent-runner.cjs"
 : >"$test_rootfs/usr/share/wayland-sessions/sos.desktop"
+: >"$test_rootfs/usr/share/sos/experiences/default.luau"
 : >"$test_rootfs/usr/share/sos/experiences/daily-flow.luau"
 cp -- "$test_repo_root/packaging/xdg/framework12-pikvm-monitors.xml" \
   "$test_rootfs/etc/xdg/monitors.xml"
@@ -731,7 +732,7 @@ grep -F 'linux_live_image_rootfs_checked=PASS' \
   "$test_root/check-privileged-config.txt" >/dev/null
 grep -Fx "test -f $test_locked_config" "$test_sudo_log" >/dev/null
 grep -Fx \
-  "grep -Fx SOS_AGENT_FAKE_SOURCE=/usr/share/sos/experiences/daily-flow.luau $test_locked_config" \
+  "grep -Fx SOS_AGENT_FAKE_SOURCE=/usr/share/sos/experiences/default.luau $test_locked_config" \
   "$test_sudo_log" >/dev/null
 
 # When subordinate-ID user namespaces and a setuid-capable workspace are

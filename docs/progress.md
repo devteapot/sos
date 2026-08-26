@@ -11267,3 +11267,90 @@ maximize/minimize, keyboard move/focus, true scrolling navigation, XWayland
 move parity, and independent native-application supervision. The next display
 gate is physical portrait/tablet geometry and an explicit policy for whether a
 remote mirror should fit, crop, or use an independently composed surface.
+
+## 2026-08-26 — Tiled XDG close hit-testing and stock-preserving faux prompts
+
+**Goal / diagnosis:** Reproduce and remove the remaining legacy-application
+“close, then reappear” behavior reported from the Stock shell, and stop the
+offline programmatic agent stub from replacing Stock with the older Daily Flow
+demo. PiKVM reproduced the window bug directly: with Calculator in Tiling, the
+pointer became GTK's north-edge resize cursor while centered on the visible X.
+The compositor assigned sizes but never advertised XDG tiled-edge states, so
+GTK retained its invisible client-side resize margin above the close control.
+Those clicks requested `xdg_toplevel.resize` rather than closing the window;
+the still-live mapped surface naturally appeared again after later shell
+composition. This was a hit-testing/state-contract failure, not resurrection of
+a correctly destroyed toplevel.
+
+**Changed:** Application XDG toplevels now receive all four `tiled_*` states in
+Tiling and Scrolling, both in their initial configure and every later relayout.
+Floating clears those states without disturbing activation. Resize requests are
+explicitly unsupported: managed layouts are restored from compositor policy,
+while Floating keeps its existing geometry until interactive resize is
+implemented. Tests prove managed layouts set every tiled edge, Floating clears
+them, and unrelated activation state survives both transitions.
+
+The default offline source is now the stock `default.luau` shell in
+`sos-agent-login`, the selectable-session installer, and development-live image
+state. A faux prompt still executes context, validation, and submission, but
+submission becomes the existing `already_active` no-op instead of activating
+Daily Flow. `daily-flow.luau` remains installed only as an explicit developer
+fixture for mutation/activation tests; it is no longer selected by default.
+The current live user's mutable configuration was changed to the same Stock
+source without rebuilding the ISO.
+
+**Failures / rejected paths:** The first resize handler resent the one-window
+fixed size, which could distort a multi-window managed layout if a stale or
+malicious client still requested resize. The accepted handler recomputes the
+complete managed layout instead. Process presence was rejected as the mapping
+oracle: GApplication processes may legitimately outlive a window, while the
+decisive evidence is XDG destroy/null-buffer plus compositor unmap/destroy.
+During the final direct-client trace, the first click followed a window mapping
+under a stationary pointer and therefore retained the old pointer focus. Moving
+away and back produced a real client `enter`/`motion`; the calibrated close
+then emitted the expected protocol sequence. This diagnostic artifact was not
+classified as an application lifecycle failure.
+
+**Host evidence:** `git diff --check`, `cargo fmt --all`, the four focused
+`sos-compositor` XDG tests, and direct-backend `cargo clippy ... -- -D warnings`
+passed. `tests/linux-login-session-test.sh`,
+`tests/linux-live-image-test.sh`, and
+`tests/linux-hardware-gate-test.sh` all reported `PASS`; final `bash -n`
+covered the changed packaging and image scripts. No model request ran, so model
+and model-weighted cost were zero.
+
+**Physical evidence:** The Framework 12 remained on the read-only development
+ISO: `/` was `LiveOS_rootfs`, `sr0` supplied the live payload, and all internal
+`nvme0n1` mountpoints were empty. No ISO rebuild or internal-disk write was
+performed. Final dirty-development deployment
+`20260826T153052Z-6fdd3b0a0db1-2205136` installed only the compositor in
+47,145,816,366 ns. The root-owned target binary is 5,838,768 bytes with SHA-256
+`4854c1f06a51c1993dffacc34ff271275332814899e0af87af7ff1984c6241d9`;
+the target manifest matches it.
+
+On that final binary, Calculator's close hover showed a normal arrow. The traced
+client then received pointer motion at local `(891.31,30.08)` and primary-button
+press/release, sent `xdg_toplevel.destroy` followed by `wl_surface.attach(nil)`,
+and exited. The compositor logged `destroyed ... role=Compatibility
+was_mapped=true`; the process was absent, and switching from Attention to Home
+did not remap a surface. A final faux prompt executed
+`get_experience_context`, `validate_experience`, and `submit_experience`; the
+active revision stayed
+`e2af4edc186d576187e8c205fdee6439bc8f9b5424a46538ff4b7640904e01a8`
+before and after, and PiKVM still showed Stock Home.
+
+The nine finalized artifacts are indexed by
+`artifacts/linux-window-lifecycle-framework12-20260826/MANIFEST.sha256`
+(860 bytes, SHA-256
+`809c6b5dcc925ac01d0f0271c43f58b7cbee1b67e039cf7d33a8e43cd647bf4a`);
+independent verification passed. Key captures are the pre-fix resize cursor
+(`ccc1ee28...`), post-fix arrow (`724b9519...`), closed application
+(`a17225b2...`), Home with no remap (`da78ab39...`), and Stock retained after
+the faux prompt (`da78ab39...`).
+
+**Decision / next gate:** Accept tiled/scrolling close hit-testing, ordinary GTK
+destroy lifecycle, no-remap navigation, and Stock-preserving offline prompts on
+Framework 12. The next window-management gate remains real interactive resize,
+maximize/minimize, keyboard focus/move, scrolling navigation, and XWayland
+parity; those should build on this XDG state contract rather than reintroducing
+client-side ambiguity in managed layouts.
