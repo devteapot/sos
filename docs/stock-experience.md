@@ -10,14 +10,14 @@ or catalog of native widgets. The permanent host compiles, validates, installs,
 and activates it through the same content-addressed revision path used by
 agent-authored experiences.
 
-Privilege is narrow and structural. One source node may declare a
-`window_space`; the Linux host reports that node's final logical GPUI bounds
-and selected `floating`, `tiling`, or `scrolling` policy over its authenticated
-compositor connection. The compositor—not Luau—continues to own application
-surface identity, mapping, focus, activation, stacking, input and lifecycle.
-No Wayland object, socket, PID, desktop-file path or geometry authority crosses
-into the revision. Android renders the same node as an explicit unavailable
-surface.
+Privilege is narrow and structural. One source node may declare each of
+`window_space`, `shell_overlay`, and `application_surface`. The Linux host
+reports only bounded geometry and a closed policy over its authenticated
+compositor connection. The compositor—not Luau—continues to own surface
+identity, mapping, focus, activation, stacking, input, movement, and lifecycle.
+No Wayland object, socket, PID, desktop-file path, or arbitrary geometry
+authority crosses into the revision. Android renders these Linux integration
+primitives as explicit unavailable surfaces.
 
 ## Product surface
 
@@ -29,12 +29,17 @@ The initial stock revision is a complete source-defined shell with:
 - one compositor-backed absolute application region whose initial policy is
   bounded floating placement and whose command-center controls can select the
   deterministic tiling or scrolling policy;
-- one reserving shell rail. Its collapsed form owns the command-center toggle,
-  workspace shortcuts and agent FAB; opening command or agent content reduces
-  the application region instead of attempting to paint Luau above independent
-  application surfaces;
+- one reserving shell rail. Its collapsed form owns the command-center toggle
+  and workspace shortcuts; opening command or agent content reduces the
+  application region;
+- one compositor-owned agent overlay above shell and application surfaces. Its
+  bubble can be dragged anywhere inside the logical output, expands an inline
+  source-defined composer above or below its anchor on hover, and opens the
+  full agent rail on a stationary click;
 - a command center for workspaces, application launch and window policy; and
-- eight shell-owned workspaces beneath the application layer:
+- one source-defined native application surface, managed in the same window
+  space as compatibility clients, whose current revision exposes eight
+  workspaces:
 
 - Home, with workspace navigation, provider status, agenda, notes, media,
   attention, system-control, application, and agent entry points;
@@ -67,7 +72,16 @@ Existing desktop applications are not rewritten or wrapped in CLI calls. The
 Linux applications provider discovers eligible freedesktop entries and
 launches their normal Wayland/XWayland processes through a strict `gio launch`
 argument vector. Those surfaces are compositor clients placed within the
-declared window space. SOS-native applications may additionally publish a
+declared window space. Source-native SOS content uses `application_surface` to
+open a separate GPUI/XDG toplevel that the compositor classifies as
+`NativeApplication`, so it tiles, focuses, clips, unmaps, and reflows beside
+ordinary applications instead of being embedded in the shell window.
+
+This is the first composition boundary, not the final application supervisor:
+the stock shell and its one active native application surface still come from
+the same revision and host process. Independent application revisions,
+namespaced state, lifecycle supervision, and an application registration
+broker are the next layer. SOS-native applications may additionally publish a
 bounded `status_widgets` contribution through the trusted applications
 provider: an ID, visible label/value and optional opaque compatible-application
 selection. The optional tap reuses the existing typed `apps.launch` authority;
@@ -84,20 +98,26 @@ there is no stock-only asset path.
 
 The root and shell body measure against the complete logical output. The top
 bar remains fixed, the application region grows, and opening the 390-pixel
-command panel or 430-pixel agent panel reserves that width. Rows containing
+command panel or 430-pixel agent panel reserves that width. The agent overlay
+does not reserve shell space and clamps its compositor-owned surface to the
+logical output. Rows containing
 navigation, cards, controls, notes and applications use retained flex wrapping;
 the application region enforces a 320-by-240 minimum and publishes bounds only
 once it is at least 160-by-120. This provides one clamshell/tablet source
 without branching on a device name or calling back into Luau during layout.
 
 The compositor-backed shell is physically accepted at 1,920 by 1,080 on the
-Framework development target: PiKVM clicks opened both reserving rails,
-selected tiling and launched Calculator and Calendar through the applications
-provider. Their native XDG surfaces reflowed into two clipped tiles while the
-Luau command panel remained visible and clickable. A physical portrait/tablet
-gate remains open. The direct compositor mirrors one logical canvas across the
-Framework panel and PiKVM by default; independent per-output shell surfaces
-remain separate work.
+Framework development target. PiKVM clicks opened both reserving rails,
+selected tiling, and launched Calculator and Calendar through the applications
+provider. Closing Calendar unmapped it and immediately expanded Calculator;
+opening the agent pane did not restore the closed client. The source-native
+application surface was registered independently as `NativeApplication`.
+Stationary bubble input opened the agent rail exactly once, while a drag moved
+the overlay across the output and persisted its new anchor without opening the
+rail. Hover exposed a working inline composer above the moved anchor. A
+physical portrait/tablet gate remains open. The direct compositor mirrors one
+logical canvas across the Framework panel and PiKVM by default; independent
+per-output shell surfaces remain separate work.
 
 ## Stock trust and recovery
 

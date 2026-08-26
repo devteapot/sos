@@ -11196,3 +11196,112 @@ tablet gate and immutable asymmetrically signed Linux stock-recovery pointer.
 The session inhibitor is intentionally released at logout; if the always-on
 development requirement also includes the logged-out GDM greeter, its separate
 idle policy still needs an explicit image default.
+
+## 2026-08-26 — Separate shell, native applications, and the movable agent overlay
+
+**Goal / diagnosis:** Correct three boundaries exposed by manual Stock use on
+Framework 12: closing an XDG application had to remove it from layout without a
+later shell action restoring it; SOS-native content had to become a compositor-
+managed application rather than shell-owned workspace paint; and the agent FAB
+had to become a draggable surface above every application with an inline hover
+composer and click-through to the full agent rail.
+
+The lifecycle bug came from treating XDG role construction as mapping. The
+compositor now registers a role and retained `Window` before the first buffer,
+then maps or unmaps it from actual buffer presence on commit. Policy counts
+change only on those transitions. Null-buffer unmap, later remap, destroy-after-
+unmap, focus selection, and application reflow therefore share one state. The
+same application count now includes `NativeApplication` and `Compatibility`
+roles.
+
+**Changed:** Scene ABI v3 gained three bounded facets: keyed
+`shell_overlay(x,y,width,height)`, keyed `application_surface(title)`, and the
+`hover_action` / `surface_drag` interaction fields. The runtime decoder,
+validation, Android unavailable adapters, Linux GPUI host, control protocol,
+Smithay policy, rendering, input clipping, and tests were extended together.
+The trusted host now opens separate shell, transparent overlay, and native-
+application XDG toplevels from one revision. The compositor classifies those
+surfaces from the registered host PID, keeps the overlay above all other
+content, and tiles/focuses/reflows the native application beside freedesktop
+clients. The shell no longer paints the active Stock workspace inside itself;
+that subtree is rendered only in the separate application surface.
+
+The source-defined overlay expands from 64-by-64 to 430-by-146 on compositor
+hover. Its composer is placed above or below the persisted bubble anchor based
+on available vertical space and shares the keyed `agent_draft` session with the
+full Agent workspace. Pointer press starts the trusted XDG move immediately.
+Release with unchanged geometry emits `shell_overlay_activated`; changed
+geometry emits only bounded `shell_overlay_moved`. Luau decides what those
+events mean but never receives a surface handle or move authority.
+
+**Failures / rejected paths:** An initial compatibility implementation mapped
+toplevels before buffers and could not represent the normal null-buffer XDG
+lifecycle. The first overlay made the complete 430-by-146 surface a drag
+handle, which prevented focusing its composer; drag ownership was narrowed to
+the bubble. A flex row then visually placed the expanded bubble at the wrong
+edge, so composer and bubble now use explicit retained local positions. A
+client-side move triggered only after pointer motion lost the gesture when a
+large absolute step left the 64-pixel node; beginning the compositor move on
+press and distinguishing stationary completion is the accepted path. One
+intermediate handler dispatched on both press and release and toggled the pane
+twice; the final compositor-owned activation emits exactly once. During PiKVM
+acceptance, numeric mouse-button states returned HTTP success without producing
+input; the API requires literal boolean `true` / `false`, and all final clicks
+and drags used that form.
+
+**Host evidence:** `cargo fmt --all -- --check`, `git diff --check`, strict
+`cargo clippy ... -- -D warnings`, and
+`cargo test -p experience-ir -p runtime-luau
+-p compositor-control-protocol -p sos-compositor -p sos-experience --features
+sos-experience/linux-host` passed: 7 IR, 24 Luau-runtime, 2 control-protocol,
+18 compositor, and 29 Linux-host tests (80 total). New regressions cover keyed
+primitive cardinality and decoding, native plus compatibility application
+counts, first-buffer mapping, and null-buffer unmap without role destruction.
+No model request ran, so model and model-weighted cost were zero.
+
+**Physical evidence:** The same read-only development ISO and boot
+`9b1818f2-c6c3-4829-8109-c9b3320a02a3` remained in use. `/` was the writable
+`LiveOS_rootfs` overlay, while both internal NVMe partitions remained
+unmounted. The final dirty-development deployment
+`20260826T124920Z-c5581ad6160d-2154040` installed compositor, experience host,
+and Stock source in 146,419,707,996 ns. The target compositor is 5,824,312
+bytes, SHA-256 `b422bf8b1e9a190c3844e4792217c7cb2af84e31ca9a03198ee4d6a2f89fabf9`;
+the host is 17,445,048 bytes, SHA-256
+`5d8f6d87fe291ef2455179d0878b67da96f3b221040cbb212ed74e670756089a`;
+and Stock source is 48,769 bytes, SHA-256
+`41fb68ea03e3f5e41907f51848a396a0a3089422753e123db5f92fbe4cbe41e3`.
+Transactional authoring activated revision
+`ae84d67ee622eb148f79dceaec3c42ab420ae330c41c5114c6ed4b3de6611e36`.
+
+Calculator and Calendar were visible as two Tiling clients; closing Calendar
+removed it and Calculator immediately filled the available application space.
+Opening the agent rail afterward did not restore Calendar. A separately
+registered and mapped `NativeApplication` surface visibly carried the Stock
+workspace. Typing `PROBE` through the hover composer appeared in both that
+composer and the full Agent surface, proving one keyed editing state. On the
+final binaries, a stationary bubble gesture completed at `(0,881)` with
+`moved=false` and committed exactly one `shell_overlay_activated`. A later drag
+completed at `(602,586)` with `moved=true`, committed only
+`shell_overlay_moved`, and persisted the collapsed bubble at `(968,668)`.
+
+The finalized physical captures include `calendar-closed-reflow.jpg`
+(`55deb4b7...`), `agent-open-no-restore.jpg` (`b7de2765...`),
+`native-application-surface.jpg` (`5cac0a1b...`),
+`inline-composer-focus.jpg` (`8ee06480...`), `agent-bubble-click.jpg`
+(`321ede74...`), and the moved expanded/collapsed pair (`798f7676...` /
+`82454fbd...`). The complete target journal, binary identities, deployment
+manifests, and images are indexed by
+`artifacts/linux-shell-surfaces-framework12-20260826/evidence-manifest.tsv`
+(1,832 bytes, SHA-256
+`b07fb0750bc564b72fecf1602f8cddc3e591fc62c41b0ac0a954c1fc2a2032b6`);
+independent manifest verification passed for all 15 files.
+
+**Decision / next gate:** Accept XDG close/reflow, the bounded shell overlay,
+and the first native-application composition boundary on Framework 12. Do not
+call the application model complete: the current revision and permanent host
+still cohost one active native application surface. The next product gate is a
+real native-application registry/supervisor with independent content-addressed
+revisions, namespaced state and lifecycle, multiple native application
+surfaces, app-owned bounded status contributions, and command-center launch /
+close/focus integration. Overlay follow-up should add a keyboard toggle and
+exercise below-anchor placement and portrait/tablet geometry on hardware.

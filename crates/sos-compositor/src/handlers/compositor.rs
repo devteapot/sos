@@ -3,7 +3,7 @@ use smithay::{
     delegate_compositor, delegate_shm,
     reexports::wayland_server::{
         protocol::{wl_buffer, wl_surface::WlSurface},
-        Client,
+        Client, Resource as _,
     },
     wayland::{
         buffer::BufferHandler,
@@ -16,7 +16,7 @@ use smithay::{
     },
 };
 
-use crate::{handlers::xdg_shell, state::ClientState, state::SosCompositor};
+use crate::{state::ClientState, state::SosCompositor};
 
 #[cfg(feature = "direct-backend")]
 use smithay::{
@@ -52,15 +52,20 @@ impl CompositorHandler for SosCompositor {
                 let sequence = self.policy.record_shell_commit();
                 tracing::debug!(sequence, "observed shell surface commit");
             }
-            if let Some(window) = self.space.elements().find(|window| {
-                window
-                    .wl_surface()
-                    .is_some_and(|surface| surface.as_ref() == &root)
+            if let Some(window) = self.xdg_windows.get(&root.id()).cloned().or_else(|| {
+                self.space
+                    .elements()
+                    .find(|window| {
+                        window
+                            .wl_surface()
+                            .is_some_and(|surface| surface.as_ref() == &root)
+                    })
+                    .cloned()
             }) {
                 window.on_commit();
             }
         }
-        xdg_shell::handle_commit(&mut self.popups, &self.space, surface);
+        self.handle_xdg_commit(surface);
     }
 }
 

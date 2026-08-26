@@ -796,7 +796,7 @@ local function shell_rail(model, state, providers)
         }, panel, 0, "shell-rail-agent")
     end
     return group("column", {
-        width = 76, padding = 9, gap = 10, align = "center", justify = "between",
+        width = 76, padding = 9, gap = 10, align = "center",
         program = { measure_height = 1 },
     }, {
         group("column", { gap = 9, align = "center" }, {
@@ -804,14 +804,64 @@ local function shell_rail(model, state, providers)
             button("HOME", "navigate_home", moss, "shell-home-shortcut"),
             button("APPS", "navigate_apps", moss, "shell-apps-shortcut"),
         }),
-        group("column", { gap = 7, align = "center" }, {
-            text((model.agent or {}).busy and "WORKING" or "AGENT", 8, muted),
-            group("row", {
-                width = 54, height = 54, justify = "center", align = "center",
-            }, { text("✦", 22, white) }, moss, 27, "agent-fab", "toggle_agent_panel",
-                "Open the SOS agent"),
-        }),
     }, white, 0, "shell-rail")
+end
+
+local function agent_overlay(model, state)
+    local hovered = state.agent_overlay_hovered == true
+    local bubble_x = state.agent_overlay_x or 1838
+    local bubble_y = state.agent_overlay_y or 990
+    local above = bubble_y > 520
+    local width = hovered and 430 or 64
+    local height = hovered and 146 or 64
+    local x = hovered and (bubble_x - (width - 64)) or bubble_x
+    local y = hovered and (above and (bubble_y - (height - 64)) or bubble_y) or bubble_y
+    local bubble = group("row", {
+        width = 64, height = 64, justify = "center", align = "center",
+    }, { text((model.agent or {}).busy and "…" or "✦", 24, white) }, moss, 32,
+        "agent-overlay-bubble", "toggle_agent_panel", "Open the SOS agent")
+    bubble.interaction.surface_drag = true
+    local composer = group("column", { width = 430, height = 82, padding = 8, gap = 5 }, {
+        text((model.agent or {}).busy and "SOS IS WORKING" or "ASK SOS", 9, moss),
+        {
+            id = "overlay-agent-prompt",
+            layout = { height = 48, padding = 8 },
+            content = {
+                kind = "text_session", state_key = "agent_draft",
+                value = state.agent_draft or "",
+                placeholder = (model.agent or {}).busy and "Working…" or "Change this experience…",
+                submit_action = "agent_submit",
+            },
+            paint = {{ kind = "fill_bounds", color = white, radius = 13 }},
+            semantics = {
+                role = "text_field", label = "Ask SOS", value = state.agent_draft or "",
+                hint = "Type a request and press enter",
+            },
+        },
+    }, panel, 16, "agent-overlay-composer")
+    local children
+    local flow = "column"
+    if not hovered then
+        children = { bubble }
+    elseif above then
+        flow = "overlay"
+        composer.layout.position = { x = 0, y = 0 }
+        bubble.layout.position = { x = width - 64, y = height - 64 }
+        children = { composer, bubble }
+    else
+        flow = "overlay"
+        bubble.layout.position = { x = width - 64, y = 0 }
+        composer.layout.position = { x = 0, y = 64 }
+        children = { bubble, composer }
+    end
+    return {
+        id = "agent-overlay",
+        layout = { width = width, height = height, flow = flow },
+        content = { kind = "shell_overlay", x = x, y = y, width = width, height = height },
+        interaction = { hover_action = "agent_overlay_hover" },
+        semantics = { role = "status", label = "SOS agent overlay" },
+        children = children,
+    }
 end
 
 local function shell_window_space(model, state, providers)
@@ -824,11 +874,29 @@ local function shell_window_space(model, state, providers)
         },
         paint = {{ kind = "fill_bounds", color = paper, radius = 0 }},
         semantics = { role = "scroll_area", label = "Application window space" },
+    }
+end
+
+local function stock_application(model, state, providers)
+    local workspace = active_workspace(state)
+    return {
+        id = "stock-application-surface",
+        layout = {
+            flow = "column", program = { measure_width = 1, measure_height = 1 },
+            padding = 18, gap = 14,
+        },
+        content = { kind = "application_surface", title = "SOS " .. workspace },
+        paint = {{ kind = "fill_bounds", color = paper, radius = 0 }},
+        semantics = { role = "scroll_area", label = "SOS " .. workspace .. " experience" },
         children = {
-            group("column", { scroll_y = true, padding = 18, gap = 14, grow = true }, {
+            group("row", { justify = "between", align = "center", gap = 12 }, {
+                text("SOS NATIVE EXPERIENCE", 9, moss),
+                text(string.upper(workspace), 9, muted),
+            }, panel, 10, "stock-application-chrome"),
+            group("column", { scroll_y = true, gap = 14, grow = true }, {
                 render_workspace(model, state, providers),
                 group("row", { justify = "between", gap = 12 }, {
-                    text("STOCK SHELL · EDITABLE LUAU REVISION", 9, muted),
+                    text("SOURCE-DEFINED APPLICATION SURFACE", 9, muted),
                     text("SYSTEM PROVIDERS ABI " .. tostring(providers.abi_version or 0), 9, muted),
                 }),
             }, nil, 0, "stock-content-frame"),
@@ -844,6 +912,8 @@ local function render(model, state)
             shell_window_space(model, state, providers),
             shell_rail(model, state, providers),
         }, nil, 0, "shell-body"),
+        agent_overlay(model, state),
+        stock_application(model, state, providers),
     }, paper, 0, "stock-experience-root")
 end
 
@@ -860,11 +930,24 @@ local function update(model, state, event)
     if action == "toggle_command_center" then
         state.shell_panel = state.shell_panel == "command" and nil or "command"
         return state
-    elseif action == "toggle_agent_panel" then
+    elseif action == "toggle_agent_panel" or action == "shell_overlay_activated" then
         state.shell_panel = state.shell_panel == "agent" and nil or "agent"
         return state
     elseif action == "close_shell_panel" then
         state.shell_panel = nil
+        return state
+    elseif action == "agent_overlay_hover" then
+        state.agent_overlay_hovered = event.focused == true
+        return state
+    elseif action == "shell_overlay_moved" then
+        local above = (state.agent_overlay_y or 990) > 520
+        if state.agent_overlay_hovered == true then
+            state.agent_overlay_x = (event.x or 0) + 366
+            state.agent_overlay_y = (event.y or 0) + (above and 82 or 0)
+        else
+            state.agent_overlay_x = event.x or state.agent_overlay_x
+            state.agent_overlay_y = event.y or state.agent_overlay_y
+        end
         return state
     elseif action == "window_layout_floating" then
         state.window_layout = "floating"
@@ -907,7 +990,8 @@ local function update(model, state, event)
     elseif action == "wifi_disconnect" then
         return provider_effect("network", "disconnect", nil, state)
     elseif action == "text_changed"
-        and (event.target == "agent-prompt" or event.target == "panel-agent-prompt") then
+        and (event.target == "agent-prompt" or event.target == "panel-agent-prompt"
+            or event.target == "overlay-agent-prompt") then
         state.agent_draft = event.value or ""
         return state
     elseif action == "text_changed" and event.target == "agenda-composer" then

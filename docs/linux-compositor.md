@@ -1,6 +1,6 @@
 # SOS compositor gates
 
-Date: 2026-08-09
+Date: 2026-08-26
 
 SOS now has a minimal Smithay compositor with a nested development backend and
 a direct DRM/GBM/libinput backend. Both keep Wayland beneath the generated
@@ -17,37 +17,41 @@ revision supervisor
     v
 permanent sos-experience-host PID
     | authenticated bounded control protocol
-    | register / quiesce / arm / configure_window_space <- compositor evidence
+    | register / quiesce / arm / configure bounded shell surfaces
     |
     | Luau -> Scene ABI v3 -> retained GPUI
     v
-authenticated shell wl_surface
-    |
+authenticated GPUI surfaces
+    | shell + shell overlay + native application
 sos-compositor (Smithay 0.7.0)
-    | one shell + bounded Wayland/X11 compatibility toplevels
+    | one shell + one overlay + bounded native/compatibility toplevels
     | shared focus/input/activation policy
     +-- nested winit submit -> outer development compositor
     `-- libseat + udev + DRM/GBM + libinput -> KMS output
 ```
 
-Luau still sees only the versioned Scene and provider capabilities. Its one
-native-backed `window_space` node selects a closed layout mode and is measured
-by GPUI; only the trusted host converts the final bounds into compositor
-geometry. Luau never receives a Wayland object, socket, file descriptor,
-surface identity, PID or arbitrary placement operation.
+Luau still sees only the versioned Scene and provider capabilities. Its keyed
+`window_space`, `shell_overlay`, and `application_surface` nodes describe
+bounded composition intent. Only the trusted host converts measured bounds
+into compositor geometry or opens the corresponding GPUI/XDG surface. Luau
+never receives a Wayland object, socket, file descriptor, surface identity,
+PID, or arbitrary placement operation.
 `compositor-control-protocol` is a separate bounded newline-JSON ABI between
 the trusted permanent host and compositor.
 
 The compositor creates a mode-0600 control socket in a caller-owned mode-0700
 runtime directory. A client must present the launch token and a PID equal to
 the socket's `SO_PEERCRED` PID before opening its GPUI Wayland connection. The
-compositor records that PID as the shell; all other Wayland client PIDs are
-compatibility clients. This is a development-session authenticator. A
+compositor records that PID as trusted. Its first XDG toplevel is the shell,
+its second is the one topmost shell overlay, and subsequent trusted toplevels
+are `NativeApplication`; other Wayland client PIDs are compatibility clients.
+This is a development-session authenticator. A
 production session must also isolate service users/credentials so another
 same-UID process cannot inspect launch credentials.
 
-The policy admits one fullscreen shell and at most eight application windows
-across native Wayland and the explicitly enabled rootless XWayland path.
+The policy admits one fullscreen shell, one bounded overlay, and at most eight
+application windows across SOS-native Wayland, ordinary Wayland, and the
+explicitly enabled rootless XWayland path.
 Application surfaces stay above the shell and within the active window-space
 rectangle. They are not embedded into GPUI or exposed as generated nodes.
 Floating mode uses bounded cascade placement and click-to-raise focus; tiling
@@ -57,13 +61,22 @@ addition. Configure requests are constrained to the declared region, and each
 application's rendered surface tree and pointer hit test are clipped to its
 assigned rectangle. This remains true when an XDG client advertises a minimum
 size larger than a tile. Popups are clipped with their owning application;
-layer shell and arbitrary client placement remain outside this gate.
+layer shell and arbitrary client placement remain outside this gate. A null
+XDG buffer unmaps a role without destroying it; compositor application counts,
+focus candidates, and layout are recomputed immediately. Attaching a later
+buffer maps the same still-live role again. Destroy and unmap therefore cannot
+double-decrement policy state, and an unrelated shell action cannot resurrect
+an unmapped client.
 
-This ordering means Luau panels cannot overlap an application surface in the
-initial implementation. Stock therefore reserves its top bar and command or
-agent rail outside `window_space`; opening a rail reduces the application
-rectangle. A future compositor overlay shell surface may enable transient
-panels above apps without weakening surface ownership.
+Ordinary shell content cannot overlap an application surface. Stock therefore
+reserves its top bar and command or agent rail outside `window_space`; opening
+a rail reduces the application rectangle. The dedicated shell overlay is the
+narrow exception: it stays above all applications, is clamped to the output,
+and can be moved only through the compositor-owned XDG move path. Hover is
+hit-tested by the compositor. A stationary trusted move gesture is reported as
+activation; a geometry-changing gesture reports only its final bounded
+geometry. This lets Luau define the bubble and composer without gaining
+surface handles or global placement authority.
 
 ## Activation fence
 

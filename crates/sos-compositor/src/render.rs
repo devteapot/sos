@@ -8,6 +8,7 @@ use smithay::{
     },
     output::Output,
     utils::{Logical, Rectangle, Scale},
+    wayland::seat::WaylandFocus as _,
 };
 
 use crate::state::SosCompositor;
@@ -36,7 +37,22 @@ pub(crate) fn window_render_elements(
     let application_rectangles = state.application_window_rectangles();
     let mut rendered = Vec::new();
 
-    for window in state.space.elements().rev() {
+    let mut windows = state.space.elements().rev().collect::<Vec<_>>();
+    windows.sort_by_key(|window| {
+        let role = window
+            .wl_surface()
+            .and_then(|surface| SosCompositor::client_role(&surface));
+        match role {
+            Some(crate::policy::ClientRole::ShellOverlay) => 0,
+            Some(crate::policy::ClientRole::NativeApplication) => 1,
+            Some(crate::policy::ClientRole::Compatibility) | None if window.is_x11() => 1,
+            Some(crate::policy::ClientRole::Compatibility) => 1,
+            Some(crate::policy::ClientRole::Shell) => 2,
+            None => 2,
+        }
+    });
+
+    for window in windows {
         let Some(mapped_location) = state.space.element_location(window) else {
             continue;
         };

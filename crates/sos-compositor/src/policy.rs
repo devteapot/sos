@@ -1,6 +1,6 @@
 use anyhow::{bail, Result};
 use compositor_control_protocol::{
-    WindowLayoutMode, WindowSpaceConfiguration, WindowSpaceGeometry,
+    ShellOverlayConfiguration, WindowLayoutMode, WindowSpaceConfiguration, WindowSpaceGeometry,
 };
 
 pub const MAX_COMPATIBILITY_TOPLEVELS: usize = 8;
@@ -16,6 +16,8 @@ pub struct WindowRectangle {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ClientRole {
     Shell,
+    ShellOverlay,
+    NativeApplication,
     Compatibility,
 }
 
@@ -40,6 +42,7 @@ pub struct QueuedRevision {
 pub struct SurfacePolicy {
     shell_pid: Option<u32>,
     shell_mapped: bool,
+    shell_overlay_mapped: bool,
     compatibility_mapped: usize,
     shell_commit_sequence: u64,
     submit_sequence: u64,
@@ -86,15 +89,24 @@ impl SurfacePolicy {
         match role {
             ClientRole::Shell if self.shell_mapped => bail!("shell surface is already mapped"),
             ClientRole::Shell => self.shell_mapped = true,
-            ClientRole::Compatibility if !self.shell_mapped => {
-                bail!("compatibility surface requires a mapped shell")
+            ClientRole::ShellOverlay if !self.shell_mapped => {
+                bail!("shell overlay requires a mapped shell")
             }
-            ClientRole::Compatibility
+            ClientRole::ShellOverlay if self.shell_overlay_mapped => {
+                bail!("shell overlay surface is already mapped")
+            }
+            ClientRole::ShellOverlay => self.shell_overlay_mapped = true,
+            ClientRole::NativeApplication | ClientRole::Compatibility if !self.shell_mapped => {
+                bail!("application surface requires a mapped shell")
+            }
+            ClientRole::NativeApplication | ClientRole::Compatibility
                 if self.compatibility_mapped >= MAX_COMPATIBILITY_TOPLEVELS =>
             {
-                bail!("at most {MAX_COMPATIBILITY_TOPLEVELS} compatibility toplevels are allowed")
+                bail!("at most {MAX_COMPATIBILITY_TOPLEVELS} application toplevels are allowed")
             }
-            ClientRole::Compatibility => self.compatibility_mapped += 1,
+            ClientRole::NativeApplication | ClientRole::Compatibility => {
+                self.compatibility_mapped += 1
+            }
         }
         Ok(())
     }
@@ -102,7 +114,8 @@ impl SurfacePolicy {
     pub fn unmap(&mut self, role: ClientRole) {
         match role {
             ClientRole::Shell => self.shell_mapped = false,
-            ClientRole::Compatibility => {
+            ClientRole::ShellOverlay => self.shell_overlay_mapped = false,
+            ClientRole::NativeApplication | ClientRole::Compatibility => {
                 self.compatibility_mapped = self.compatibility_mapped.saturating_sub(1)
             }
         }
@@ -280,6 +293,39 @@ pub fn validate_window_space(
     let bottom = i64::from(geometry.y) + i64::from(geometry.height);
     if right > i64::from(output.0) || bottom > i64::from(output.1) {
         bail!("window space exceeds the active output");
+    }
+    Ok(configuration)
+}
+
+pub fn default_shell_overlay(output: (i32, i32)) -> ShellOverlayConfiguration {
+    const SIZE: i32 = 72;
+    const MARGIN: i32 = 18;
+    ShellOverlayConfiguration {
+        x: (output.0 - SIZE - MARGIN).max(0),
+        y: (output.1 - SIZE - MARGIN).max(0),
+        width: SIZE as u32,
+        height: SIZE as u32,
+    }
+}
+
+pub fn validate_shell_overlay(
+    configuration: ShellOverlayConfiguration,
+    output: (i32, i32),
+) -> Result<ShellOverlayConfiguration> {
+    if configuration.x < 0
+        || configuration.y < 0
+        || configuration.width < 48
+        || configuration.height < 48
+    {
+        bail!("shell overlay must have a positive origin and be at least 48x48 logical pixels");
+    }
+    if configuration.width > 720 || configuration.height > 360 {
+        bail!("shell overlay exceeds its 720x360 logical-pixel bound");
+    }
+    let right = i64::from(configuration.x) + i64::from(configuration.width);
+    let bottom = i64::from(configuration.y) + i64::from(configuration.height);
+    if right > i64::from(output.0) || bottom > i64::from(output.1) {
+        bail!("shell overlay exceeds the active output");
     }
     Ok(configuration)
 }
@@ -471,11 +517,12 @@ mod tests {
         let mut policy = SurfacePolicy::default();
         policy.map(ClientRole::Shell).unwrap();
         assert!(policy.map(ClientRole::Shell).is_err());
-        for _ in 0..MAX_COMPATIBILITY_TOPLEVELS {
+        policy.map(ClientRole::NativeApplication).unwrap();
+        for _ in 1..MAX_COMPATIBILITY_TOPLEVELS {
             policy.map(ClientRole::Compatibility).unwrap();
         }
         assert!(policy.map(ClientRole::Compatibility).is_err());
-        policy.unmap(ClientRole::Compatibility);
+        policy.unmap(ClientRole::NativeApplication);
         policy.map(ClientRole::Compatibility).unwrap();
         assert_eq!(compatibility_location((1280, 800), (720, 520)), (280, 140));
     }

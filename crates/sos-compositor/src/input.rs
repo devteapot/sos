@@ -431,6 +431,8 @@ impl SosCompositor {
                         time: event.time_msec(),
                     },
                 );
+                self.update_shell_overlay_drag(location);
+                self.update_shell_overlay_hover(location);
                 pointer.relative_motion(
                     self,
                     focus,
@@ -458,6 +460,8 @@ impl SosCompositor {
                         time: event.time_msec(),
                     },
                 );
+                self.update_shell_overlay_drag(position);
+                self.update_shell_overlay_hover(position);
                 pointer.frame(self);
             }
             InputEvent::PointerButton { event, .. } => {
@@ -486,6 +490,9 @@ impl SosCompositor {
                     }
                     ButtonState::Released => {
                         self.pressed_pointer_buttons.remove(&event.button_code());
+                        if event.button_code() == 0x110 {
+                            self.finish_shell_overlay_drag();
+                        }
                         if self.suppressed_pointer_buttons.remove(&event.button_code()) {
                             tracing::info!(
                                 button = event.button_code(),
@@ -508,7 +515,12 @@ impl SosCompositor {
                             return;
                         };
                         if window.is_x11()
-                            || Self::client_role(&surface) == Some(ClientRole::Compatibility)
+                            || Self::client_role(&surface).is_some_and(|role| {
+                                matches!(
+                                    role,
+                                    ClientRole::NativeApplication | ClientRole::Compatibility
+                                )
+                            })
                         {
                             self.space.raise_element(&window, false);
                         }
