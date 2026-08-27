@@ -13353,3 +13353,42 @@ now matches the complete v4 deployment contract.
 prepare a fresh same-boot evidence directory, then launch the Stock shell and
 reference Dashboard graph. Integrated keyboard, touchpad and touchscreen
 criteria cannot be satisfied through PiKVM HID.
+
+## 2026-08-27: Represent the removed legacy experience in live-image audits
+
+**Goal:** Keep the old baked image auditable after the explicitly requested
+legacy Experience removal, without restoring that source or allowing arbitrary
+missing installed files.
+
+**Changed:** Development deployment metadata now declares one exact retired
+baked artifact, `/usr/share/sos/experiences/daily-flow.luau`, and deployment
+idempotently removes that exact path. The physical gate requires that exact
+metadata value. While snapshotting the immutable image's historical install
+manifest, it records only that exact absent file as `retired`; every other
+missing or mismatched baked artifact still fails closed. Both deploy and gate
+tests pin the deletion command, metadata identity, and narrow exception.
+
+**Physical experiment and evidence:** After the corrected v4 allowlist was
+deployed in the complete clean component set, Framework deployment
+`20260827T090741Z-53e8cc3c150b-2570383` passed all installed digest checks in
+24,551,567,902 ns. Generated evidence is under
+`.cache/evidence/framework-v4-deploy/20260827T090741Z-53e8cc3c150b-2570383/`.
+Hardware preparation then reached the baked-artifact snapshot and stopped on
+the exact old 15,676-byte source named by the immutable install manifest. The
+overlay correctly reported that path absent; its baked SHA-256 is
+`09ccddca90f6d0a94ea8fbbb86204bbf8522123d2f73f21becfe964a2851a693`.
+SOS was not launched and the internal disk remained out of scope.
+
+`tests/linux-live-image-test.sh` and `tests/linux-hardware-gate-test.sh` now
+both report PASS, and shell syntax passes.
+
+**Failures and decision:** A clean newly baked image would naturally omit the
+old manifest row, but the current mutable physical diagnostic must remain
+truthful about its immutable lower layer. Restoring the deleted source was
+rejected. A wildcard missing-file exception was also rejected; the deployment
+records and the gate recognizes one exact tombstone.
+
+**Remaining risks and next gate:** Commit and redeploy the complete manifest so
+the tombstone is target evidence, then prepare the Framework campaign again.
+This compatibility tombstone can be removed with the old development image;
+it is not an active experience or activation path.
