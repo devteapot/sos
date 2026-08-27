@@ -13912,3 +13912,42 @@ the namespaced-host fix from one clean revision, and relaunch Dashboard through
 Stock after the exact independent grant reviews. Pass still requires visible
 Dashboard, Agenda, and Media semantics, child event and appearance propagation,
 host recovery, clean logout, same-boot collection, and manifest verification.
+
+## 2026-08-27: Accept concurrent authenticated compositor clients
+
+**Goal:** Retry the Framework Dashboard launch after separating top-level
+accessibility endpoints and diagnose the next failed boundary without relaxing
+the presentation protocol timeout.
+
+**Physical experiment:** Exact clean revision `943ebba` deployed as
+`20260827T113325Z-943ebba00bfa-3350997` in 120,954,048,218 ns. The prepared
+same-boot directory is
+`/home/liveuser/framework12-v4-composition-943ebba`. Stock recovered its
+durable generated revision, and its catalog action launched ordinary Dashboard
+host PID 881336. That host successfully bound the new namespaced accessibility
+socket `accessibility-52cfa993b20dbe27.sock`, proving the preceding fix. It
+then timed out before compositor application registration and was killed after
+the supervisor closed its proxy.
+
+**Root cause:** The mode-0600 compositor control listener accepted one
+connection and called its complete connection loop inline. Stock's permanent
+shell registration is intentionally long-lived, so the listener could never
+accept the Dashboard registration behind it. Raising the five-second protocol
+timeout would only delay the same failure and was rejected.
+
+**Changed:** Each accepted control connection now runs in its own bounded
+client thread. A maximum of 16 registering or registered connections covers
+the eight-live-Instance limit with recovery overlap while rejecting an
+unbounded same-UID connection fan-out. Authentication remains token plus
+`SO_PEERCRED` PID. All policy and geometry mutations still serialize through
+the single calloop channel and compositor state owner.
+
+**Verification:** `cargo test -j1 -p sos-compositor --all-targets` passes all
+29 tests, including recovery of a released connection slot at the hard bound.
+Rust formatting passes.
+
+**Decision and next gate:** Preserve the `943ebba` failure interval, deploy the
+bounded concurrent-listener fix from a clean revision, and repeat the same
+Stock catalog action. Require both authenticated control PIDs, the separate
+semantic endpoints, a mapped Dashboard surface, mounted child semantics, and
+the remaining physical and recovery criteria before collection.

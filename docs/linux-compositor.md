@@ -46,7 +46,10 @@ the socket's `SO_PEERCRED` PID before opening its GPUI Wayland connection. The
 compositor records the Shell host PID as trusted shell authority. Each ordinary
 v4 host separately registers its own peer-credential PID as
 `NativeApplication` but receives no shell-control methods. Other Wayland client
-PIDs are compatibility clients.
+PIDs are compatibility clients. The listener serves at most 16 registered or
+registering control connections concurrently; every mutation still crosses
+the single compositor event-loop channel. A long-lived shell registration
+therefore cannot block an independently presented application from registering.
 This is a development-session authenticator. A
 production session must also isolate service users/credentials so another
 same-UID process cannot inspect launch credentials.
