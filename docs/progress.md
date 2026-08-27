@@ -13111,3 +13111,40 @@ boundaries, so the gate now edits the complete Stock artifact.
 **Remaining risks and next gate:** The focused layer passes. Run one fresh
 downstream direct-DRM attempt. A PASS must still preserve raw evidence and prove
 no singleton pointer.
+
+## 2026-08-27: Prevalidate direct candidates before the timed input hold
+
+**Goal:** Diagnose the post-circuit downstream failure without treating it as
+an input or compositor product regression.
+
+**Changed:** The direct gate now generates and package-validates the complete
+Stock candidate before creating kernel input devices. It parses the retained
+validation report and requires one revision-local module and a valid aggregate
+result. Only then does it begin the bounded input hold and invoke the exact
+submission path again. The hold is five seconds for both successful and
+aborted activations, leaving measured scheduling margin without weakening any
+required input count or suppression assertion.
+
+**Evidence:** The failed downstream run is retained at
+`.cache/evidence/linux-v4-17227eb/attempt3`. Its 13 captured evidence files
+total 116,640 bytes. `SHA256SUMS` is 1,489 bytes with SHA-256
+`72aa35b188317ffec229c0f4efe140e9e31e6beb4eee44fc57f93bacd1c37f93`.
+`result.json` records FAIL after 101.873237232 monotonic seconds. Candidate
+revision `27ddfcc9…` did reach a DRM page flip in unchanged host PID 10147, but
+the log shows the input contacts ended at monotonic second 1011 while candidate
+quiesce began at second 1107 with `keys=0 buttons=0 touches=0`.
+
+**Failures and decision:** The first use of the pinned Luau analyzer cloned and
+built it after the input helper had begun its 1.5-second hold. The gate then
+correctly failed at the first held-input assertion. Prewarming outside the
+timed interval makes compilation readiness an explicit prerequisite and keeps
+the activation assertion about input containment rather than host build speed.
+
+The focused prevalidation reported PASS for ten scenarios and one module. The
+matching package-aware authoring regression, shell syntax, formatting, and diff
+checks passed.
+
+**Remaining risks and next gate:** Run syntax and focused package validation,
+then one clean direct phase from a fresh store and evidence directory. Do not
+accept cached success without the retained prevalidation report and nonzero
+held-input counts.

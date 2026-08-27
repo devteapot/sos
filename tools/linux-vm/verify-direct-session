@@ -262,10 +262,22 @@ grep -F 'Direct input gate active in this complete Stock revision.' \
   "$vm_stock_candidate" >/dev/null
 grep -F 'agent_submit' "$vm_stock_candidate" >/dev/null
 ! cmp -s experiences/default.luau "$vm_stock_candidate"
+./tools/sosctl validate "$vm_stock_candidate" \
+  --module stock.theme=experiences/modules/stock-theme.luau \
+  --json >"$vm_run_dir/candidate-validation.json"
+python3 - "$vm_run_dir/candidate-validation.json" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as validation_file:
+    validation = json.load(validation_file)
+if validation["module_count"] != 1 or not validation["report"]["valid"]:
+    raise SystemExit("complete Stock candidate did not pass package validation")
+PY
 vm_input_ready="$vm_run_dir/uinput-ready"
 # The test controller, not sudo, intentionally owns this disposable log.
 # shellcheck disable=SC2024
-sudo tools/linux-vm/inject-uinput "$vm_input_ready" 1500 \
+sudo tools/linux-vm/inject-uinput "$vm_input_ready" 5000 \
   >"$vm_run_dir/uinput.log" 2>&1 &
 vm_input_pid=$!
 for _ in {1..500}; do
@@ -303,7 +315,7 @@ vm_pid_after="$(sed -n 's/.*"host_pid":\([0-9][0-9]*\).*/\1/p' <<<"$vm_status_af
 # successful presentation path above.
 vm_input_ready="$vm_run_dir/uinput-abort-ready"
 # shellcheck disable=SC2024
-sudo tools/linux-vm/inject-uinput "$vm_input_ready" 1500 \
+sudo tools/linux-vm/inject-uinput "$vm_input_ready" 5000 \
   >"$vm_run_dir/uinput-abort.log" 2>&1 &
 vm_input_pid=$!
 for _ in {1..500}; do
