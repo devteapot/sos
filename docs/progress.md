@@ -15764,6 +15764,14 @@ overlays, rows, and columns. All four focused Android interaction tests pass.
 The complete A33x host fixture passes in 8.04 seconds with 5,108 KiB peak RSS;
 format and diff checks are clean.
 
+The first full product build stopped before ROM packaging after 11.75 seconds
+with 753,780 KiB peak RSS. Compat compiled, but the separately built Core
+variant also shares the Android renderer and could not see the helper because
+the interaction-contract module was still excluded under `core-native`. The
+module is now compiled for both Android deployments while Compat-only IME
+imports remain feature-gated. The focused host tests pass again after that
+visibility correction.
+
 **Decision / next gate:** Include this correction with the faux-provider wire
 fix in one newly sealed Compat candidate. The fresh device hierarchy must show
 the Stock Mobile prompt wholly above the provider row and a physical tap inside

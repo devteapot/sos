@@ -4,7 +4,7 @@ mod agent_bridge;
 mod android;
 #[cfg(any(target_os = "android", test))]
 mod android_agent_contract;
-#[cfg(any(all(target_os = "android", not(feature = "core-native")), test))]
+#[cfg(any(target_os = "android", test))]
 mod android_interaction_contract;
 #[cfg(any(
     target_os = "android",

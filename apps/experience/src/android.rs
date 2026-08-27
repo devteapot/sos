@@ -62,10 +62,9 @@ use sha2::{Digest, Sha256};
 use zeroize::Zeroize;
 
 use crate::android_agent_contract::{AgentActivationEvidence, AgentActivationPhase};
+use crate::android_interaction_contract::semantic_tracker_offset;
 #[cfg(not(feature = "core-native"))]
-use crate::android_interaction_contract::{
-    semantic_tracker_offset, text_tap_outcome, TextTapOutcome,
-};
+use crate::android_interaction_contract::{text_tap_outcome, TextTapOutcome};
 use crate::assets::{self, SosAssets, ALBUM_ASSET};
 #[cfg(feature = "aosp-system")]
 use crate::graph_scene::composed_graph_scene;
