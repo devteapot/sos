@@ -14738,3 +14738,28 @@ ADB, and sideload this exact OTA once. Physical acceptance begins only after
 the fixed surface visibly denies an untrusted request and then accepts the
 known workstation key through explicit user input. Continue the ordered Compat
 composition campaign only on that verified identity.
+
+## 2026-08-27: Prove durable remote ownership of A33x USB nodes
+
+**Goal / environment change:** Remove the repeated manual `setfacl` step from
+the Samsung acceptance lifecycle. The owner installed the repository rule with
+`install-host-usb-rules --group wheel`. The root-owned mode-0644 installed
+file is `/etc/udev/rules.d/70-sos-a33x-usb.rules`, 598 bytes, SHA-256
+`fc5a2b0e69ead827004cee98566d137fdddbf7db24fc0629d55b067d3600e72d`.
+`udevadm test` selects its exact `04e8:685d` entry, resolves group `wheel`, and
+sets mode 0660 while retaining the desktop `uaccess` tag.
+
+**Evidence / decision:** The current `/dev/bus/usb/001/089` node changed to
+`root:wheel` mode 0660 with no named per-user ACL. A remote process can open it;
+adb now reports the expected `unauthorized` state from the installed rejected
+Compat candidate rather than `no permissions`. The old setup appeared to work
+because it reused an authorized `04e8:6860` node or a desktop-seat ACL. SOS's
+ADB-only `04e8:685d` gadget and Recovery's `18d1:d001` endpoint were not both
+covered, and each reenumeration discarded the ephemeral node ACL.
+
+A bounded `adb -s RFCT50EGFCN wait-for-sideload` completed without observing a
+Recovery endpoint; the phone remained on `04e8:685d`. No sideload, reboot,
+wipe, or other phone mutation occurred. The next gate remains the physical
+Side + Volume Down restart, immediate Side + Volume Up Recovery entry, and
+selection of Apply update / Apply from ADB. The host rule is now ready for that
+new node without another ACL repair.
