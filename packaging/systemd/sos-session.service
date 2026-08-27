@@ -32,6 +32,7 @@ Environment=XDG_RUNTIME_DIR=/run/sos
 Environment=LIBSEAT_BACKEND=logind
 Environment=RUST_LOG=sos_compositor=info
 Environment=SOS_ACCESSIBILITY_SOCKET=/run/sos/accessibility.sock
+Environment=SOS_GRAPH_RUNTIME_ISOLATION=process
 ExecStart=/usr/local/libexec/sos/sos-linux-session run \
   --root /var/lib/sos/revisions \
   --runtime-dir /run/sos \

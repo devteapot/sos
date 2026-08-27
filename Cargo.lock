@@ -5148,6 +5148,7 @@ name = "runtime-luau"
 version = "0.1.0"
 dependencies = [
  "async-channel 2.5.0",
+ "base64",
  "experience-ir",
  "experience-package",
  "mlua",

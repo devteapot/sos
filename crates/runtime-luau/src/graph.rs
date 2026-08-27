@@ -1,5 +1,8 @@
 use std::{
     collections::BTreeMap,
+    io::{BufReader, Read, Write},
+    path::Path,
+    process::{Child, Command, Stdio},
     sync::atomic::{AtomicU64, Ordering},
 };
 
@@ -11,14 +14,16 @@ use experience_package::{
     DependencyAlias, EventId, GraphNodeId, InstanceId, PackageMetadata, ResolvedGraph, RevisionId,
     MAX_GRAPH_INSTANCES, MAX_GRAPH_SCENE_NODES,
 };
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::{json, Value as JsonValue};
 use sha2::{Digest, Sha256};
 
 use crate::{LuauRuntime, RevisionAsset, RevisionAssetInput, RuntimeError};
 
 static INSTANCE_SEQUENCE: AtomicU64 = AtomicU64::new(1);
+pub const MAX_GRAPH_WORKER_FRAME_BYTES: usize = 384 * 1024 * 1024;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct GraphRevisionInput {
     pub source: String,
     pub sidecars: Vec<RevisionAssetInput>,
@@ -28,13 +33,14 @@ pub struct GraphRevisionInput {
     pub package: PackageMetadata,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(tag = "status", content = "error", rename_all = "snake_case")]
 pub enum RuntimeInstanceStatus {
     Ready,
     Failed(String),
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 pub struct RuntimeInstanceSnapshot {
     pub instance_id: InstanceId,
     pub experience_id: experience_package::ExperienceId,
@@ -48,14 +54,14 @@ pub struct RuntimeInstanceSnapshot {
     pub assets: Vec<RevisionAsset>,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 pub struct GraphRuntimeSnapshot {
     pub graph_id: String,
     pub root: GraphNodeId,
     pub instances: BTreeMap<GraphNodeId, RuntimeInstanceSnapshot>,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 pub struct GraphEffect {
     pub node_id: GraphNodeId,
     pub instance_id: InstanceId,
@@ -63,13 +69,15 @@ pub struct GraphEffect {
     pub effect: ProviderEffect,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 pub struct GraphActionOutcome {
     pub snapshot: GraphRuntimeSnapshot,
     pub effects: Vec<GraphEffect>,
     pub external_events: Vec<ExperienceOutputEvent>,
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(tag = "command", rename_all = "snake_case")]
 enum GraphWorkerCommand {
     Action {
         request_id: u64,
@@ -92,7 +100,8 @@ enum GraphWorkerCommand {
     Shutdown,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[serde(tag = "result", rename_all = "snake_case")]
 pub enum GraphWorkerResult {
     ActionCompleted {
         request_id: u64,
@@ -108,10 +117,36 @@ pub enum GraphWorkerResult {
     },
 }
 
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(tag = "request", rename_all = "snake_case")]
+enum GraphProcessRequest {
+    Start {
+        graph: ResolvedGraph,
+        inputs: BTreeMap<RevisionId, GraphRevisionInput>,
+    },
+    Command {
+        command: GraphWorkerCommand,
+    },
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(tag = "event", rename_all = "snake_case")]
+enum GraphProcessEvent {
+    Ready { snapshot: GraphRuntimeSnapshot },
+    StartRejected { error: String },
+    Result { result: GraphWorkerResult },
+}
+
+enum GraphWorkerJoin {
+    Thread(std::thread::JoinHandle<()>),
+    Process(std::thread::JoinHandle<()>),
+}
+
 pub struct GraphRuntimeWorker {
     commands: async_channel::Sender<GraphWorkerCommand>,
     results: async_channel::Receiver<GraphWorkerResult>,
-    thread: Option<std::thread::JoinHandle<()>>,
+    join: Option<GraphWorkerJoin>,
+    process_id: Option<u32>,
 }
 
 impl GraphRuntimeWorker {
@@ -136,62 +171,8 @@ impl GraphRuntimeWorker {
                     return;
                 }
                 while let Ok(command) = commands_rx.recv_blocking() {
-                    let result = match command {
-                        GraphWorkerCommand::Action {
-                            request_id,
-                            node_id,
-                            event,
-                        } => match runtime.dispatch_event(&node_id, &event) {
-                            Ok(outcome) => GraphWorkerResult::ActionCompleted {
-                                request_id,
-                                outcome,
-                            },
-                            Err(error) => GraphWorkerResult::Rejected {
-                                request_id,
-                                error: error.to_string(),
-                            },
-                        },
-                        GraphWorkerCommand::RefreshModel {
-                            request_id,
-                            node_id,
-                            model,
-                        } => match runtime.refresh_model(&node_id, model) {
-                            Ok(snapshot) => GraphWorkerResult::Refreshed {
-                                request_id,
-                                snapshot,
-                            },
-                            Err(error) => GraphWorkerResult::Rejected {
-                                request_id,
-                                error: error.to_string(),
-                            },
-                        },
-                        GraphWorkerCommand::ApplyAppearance {
-                            request_id,
-                            appearance,
-                        } => match runtime.apply_appearance(appearance) {
-                            Ok(snapshot) => GraphWorkerResult::Refreshed {
-                                request_id,
-                                snapshot,
-                            },
-                            Err(error) => GraphWorkerResult::Rejected {
-                                request_id,
-                                error: error.to_string(),
-                            },
-                        },
-                        GraphWorkerCommand::Restore {
-                            request_id,
-                            snapshot,
-                        } => match runtime.restore(&snapshot) {
-                            Ok(snapshot) => GraphWorkerResult::Refreshed {
-                                request_id,
-                                snapshot,
-                            },
-                            Err(error) => GraphWorkerResult::Rejected {
-                                request_id,
-                                error: error.to_string(),
-                            },
-                        },
-                        GraphWorkerCommand::Shutdown => break,
+                    let Some(result) = execute_graph_worker_command(&mut runtime, command) else {
+                        break;
                     };
                     if results_tx.send_blocking(result).is_err() {
                         break;
@@ -209,10 +190,86 @@ impl GraphRuntimeWorker {
             Self {
                 commands: commands_tx,
                 results: results_rx,
-                thread: Some(thread),
+                join: Some(GraphWorkerJoin::Thread(thread)),
+                process_id: None,
             },
             ready,
         ))
+    }
+
+    pub fn start_process(
+        executable: &Path,
+        graph: ResolvedGraph,
+        inputs: BTreeMap<RevisionId, GraphRevisionInput>,
+    ) -> Result<(Self, GraphRuntimeSnapshot), RuntimeError> {
+        let mut child = Command::new(executable)
+            .arg("--graph-runtime-worker")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .map_err(|error| {
+                RuntimeError::Invalid(format!(
+                    "could not start graph runtime process {}: {error}",
+                    executable.display()
+                ))
+            })?;
+        let process_id = child.id();
+        let mut input = child.stdin.take().ok_or_else(|| {
+            RuntimeError::Invalid("graph runtime process has no standard input".into())
+        })?;
+        let output = child.stdout.take().ok_or_else(|| {
+            RuntimeError::Invalid("graph runtime process has no standard output".into())
+        })?;
+        let mut output = BufReader::new(output);
+        write_graph_worker_frame(&mut input, &GraphProcessRequest::Start { graph, inputs })?;
+        let ready = match read_graph_worker_frame::<_, GraphProcessEvent>(&mut output)? {
+            Some(GraphProcessEvent::Ready { snapshot }) => snapshot,
+            Some(GraphProcessEvent::StartRejected { error }) => {
+                let _ = child.wait();
+                return Err(RuntimeError::Invalid(error));
+            }
+            Some(GraphProcessEvent::Result { .. }) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(RuntimeError::Invalid(
+                    "graph runtime process returned a result before readiness".into(),
+                ));
+            }
+            None => {
+                let status = child.wait().ok();
+                return Err(RuntimeError::Invalid(format!(
+                    "graph runtime process stopped during startup{}",
+                    status
+                        .map(|status| format!(" with {status}"))
+                        .unwrap_or_default()
+                )));
+            }
+        };
+
+        let (commands_tx, commands_rx) = async_channel::unbounded();
+        let (results_tx, results_rx) = async_channel::unbounded();
+        let join = std::thread::Builder::new()
+            .name("sos-experience-graph-process".into())
+            .spawn(move || {
+                run_graph_process_io(child, input, output, commands_rx, results_tx);
+            })
+            .map_err(|error| {
+                RuntimeError::Invalid(format!("could not monitor graph runtime process: {error}"))
+            })?;
+        Ok((
+            Self {
+                commands: commands_tx,
+                results: results_rx,
+                join: Some(GraphWorkerJoin::Process(join)),
+                process_id: Some(process_id),
+            },
+            ready,
+        ))
+    }
+
+    pub fn process_id(&self) -> Option<u32> {
+        self.process_id
     }
 
     pub fn results(&self) -> async_channel::Receiver<GraphWorkerResult> {
@@ -274,10 +331,11 @@ impl GraphRuntimeWorker {
     pub fn shutdown(mut self) -> Result<(), String> {
         let _ = self.commands.send_blocking(GraphWorkerCommand::Shutdown);
         self.commands.close();
-        if let Some(thread) = self.thread.take() {
-            thread
-                .join()
-                .map_err(|_| "graph runtime worker panicked during shutdown".to_owned())?;
+        if let Some(join) = self.join.take() {
+            let joined = match join {
+                GraphWorkerJoin::Thread(thread) | GraphWorkerJoin::Process(thread) => thread.join(),
+            };
+            joined.map_err(|_| "graph runtime worker panicked during shutdown".to_owned())?;
         }
         Ok(())
     }
@@ -287,6 +345,263 @@ impl Drop for GraphRuntimeWorker {
     fn drop(&mut self) {
         self.commands.close();
     }
+}
+
+fn execute_graph_worker_command(
+    runtime: &mut GraphRuntime,
+    command: GraphWorkerCommand,
+) -> Option<GraphWorkerResult> {
+    let result = match command {
+        GraphWorkerCommand::Action {
+            request_id,
+            node_id,
+            event,
+        } => match runtime.dispatch_event(&node_id, &event) {
+            Ok(outcome) => GraphWorkerResult::ActionCompleted {
+                request_id,
+                outcome,
+            },
+            Err(error) => GraphWorkerResult::Rejected {
+                request_id,
+                error: error.to_string(),
+            },
+        },
+        GraphWorkerCommand::RefreshModel {
+            request_id,
+            node_id,
+            model,
+        } => match runtime.refresh_model(&node_id, model) {
+            Ok(snapshot) => GraphWorkerResult::Refreshed {
+                request_id,
+                snapshot,
+            },
+            Err(error) => GraphWorkerResult::Rejected {
+                request_id,
+                error: error.to_string(),
+            },
+        },
+        GraphWorkerCommand::ApplyAppearance {
+            request_id,
+            appearance,
+        } => match runtime.apply_appearance(appearance) {
+            Ok(snapshot) => GraphWorkerResult::Refreshed {
+                request_id,
+                snapshot,
+            },
+            Err(error) => GraphWorkerResult::Rejected {
+                request_id,
+                error: error.to_string(),
+            },
+        },
+        GraphWorkerCommand::Restore {
+            request_id,
+            snapshot,
+        } => match runtime.restore(&snapshot) {
+            Ok(snapshot) => GraphWorkerResult::Refreshed {
+                request_id,
+                snapshot,
+            },
+            Err(error) => GraphWorkerResult::Rejected {
+                request_id,
+                error: error.to_string(),
+            },
+        },
+        GraphWorkerCommand::Shutdown => return None,
+    };
+    Some(result)
+}
+
+fn command_request_id(command: &GraphWorkerCommand) -> Option<u64> {
+    match command {
+        GraphWorkerCommand::Action { request_id, .. }
+        | GraphWorkerCommand::RefreshModel { request_id, .. }
+        | GraphWorkerCommand::ApplyAppearance { request_id, .. }
+        | GraphWorkerCommand::Restore { request_id, .. } => Some(*request_id),
+        GraphWorkerCommand::Shutdown => None,
+    }
+}
+
+fn run_graph_process_io(
+    mut child: Child,
+    mut input: impl Write,
+    mut output: impl Read,
+    commands: async_channel::Receiver<GraphWorkerCommand>,
+    results: async_channel::Sender<GraphWorkerResult>,
+) {
+    while let Ok(command) = commands.recv_blocking() {
+        let request_id = command_request_id(&command);
+        let shutdown = matches!(&command, GraphWorkerCommand::Shutdown);
+        if let Err(error) =
+            write_graph_worker_frame(&mut input, &GraphProcessRequest::Command { command })
+        {
+            if let Some(request_id) = request_id {
+                let _ = results.send_blocking(GraphWorkerResult::Rejected {
+                    request_id,
+                    error: error.to_string(),
+                });
+            }
+            let _ = child.kill();
+            let _ = child.wait();
+            return;
+        }
+        if shutdown {
+            let _ = child.wait();
+            return;
+        }
+        match read_graph_worker_frame::<_, GraphProcessEvent>(&mut output) {
+            Ok(Some(GraphProcessEvent::Result { result })) => {
+                if results.send_blocking(result).is_err() {
+                    break;
+                }
+            }
+            Ok(Some(GraphProcessEvent::StartRejected { error })) => {
+                if let Some(request_id) = request_id {
+                    let _ =
+                        results.send_blocking(GraphWorkerResult::Rejected { request_id, error });
+                }
+                break;
+            }
+            Ok(Some(GraphProcessEvent::Ready { .. })) => {
+                if let Some(request_id) = request_id {
+                    let _ = results.send_blocking(GraphWorkerResult::Rejected {
+                        request_id,
+                        error: "graph runtime process emitted duplicate readiness".into(),
+                    });
+                }
+                break;
+            }
+            Ok(None) => {
+                if let Some(request_id) = request_id {
+                    let _ = results.send_blocking(GraphWorkerResult::Rejected {
+                        request_id,
+                        error: "graph runtime process stopped before replying".into(),
+                    });
+                }
+                break;
+            }
+            Err(error) => {
+                if let Some(request_id) = request_id {
+                    let _ = results.send_blocking(GraphWorkerResult::Rejected {
+                        request_id,
+                        error: error.to_string(),
+                    });
+                }
+                break;
+            }
+        }
+    }
+    let _ = write_graph_worker_frame(
+        &mut input,
+        &GraphProcessRequest::Command {
+            command: GraphWorkerCommand::Shutdown,
+        },
+    );
+    drop(input);
+    let _ = child.wait();
+}
+
+pub fn run_graph_worker_stdio() -> Result<(), RuntimeError> {
+    let stdin = std::io::stdin();
+    let stdout = std::io::stdout();
+    run_graph_worker_protocol(stdin.lock(), stdout.lock())
+}
+
+fn run_graph_worker_protocol(
+    mut input: impl Read,
+    mut output: impl Write,
+) -> Result<(), RuntimeError> {
+    let Some(request) = read_graph_worker_frame::<_, GraphProcessRequest>(&mut input)? else {
+        return Err(RuntimeError::Invalid(
+            "graph runtime process received no start request".into(),
+        ));
+    };
+    let GraphProcessRequest::Start { graph, inputs } = request else {
+        return Err(RuntimeError::Invalid(
+            "graph runtime process requires start as its first request".into(),
+        ));
+    };
+    let mut runtime = match GraphRuntime::start(graph, inputs) {
+        Ok(runtime) => runtime,
+        Err(error) => {
+            write_graph_worker_frame(
+                &mut output,
+                &GraphProcessEvent::StartRejected {
+                    error: error.to_string(),
+                },
+            )?;
+            return Ok(());
+        }
+    };
+    write_graph_worker_frame(
+        &mut output,
+        &GraphProcessEvent::Ready {
+            snapshot: runtime.snapshot(),
+        },
+    )?;
+    while let Some(request) = read_graph_worker_frame::<_, GraphProcessRequest>(&mut input)? {
+        let GraphProcessRequest::Command { command } = request else {
+            return Err(RuntimeError::Invalid(
+                "graph runtime process received duplicate start".into(),
+            ));
+        };
+        let Some(result) = execute_graph_worker_command(&mut runtime, command) else {
+            return Ok(());
+        };
+        write_graph_worker_frame(&mut output, &GraphProcessEvent::Result { result })?;
+    }
+    Ok(())
+}
+
+fn write_graph_worker_frame(
+    output: &mut impl Write,
+    value: &impl Serialize,
+) -> Result<(), RuntimeError> {
+    let bytes = serde_json::to_vec(value)
+        .map_err(|error| RuntimeError::Invalid(format!("serialize graph worker frame: {error}")))?;
+    if bytes.len() > MAX_GRAPH_WORKER_FRAME_BYTES {
+        return Err(RuntimeError::Invalid(format!(
+            "graph worker frame is {} bytes; limit is {MAX_GRAPH_WORKER_FRAME_BYTES}",
+            bytes.len()
+        )));
+    }
+    let length = u32::try_from(bytes.len())
+        .map_err(|_| RuntimeError::Invalid("graph worker frame length overflow".into()))?;
+    output
+        .write_all(&length.to_be_bytes())
+        .and_then(|_| output.write_all(&bytes))
+        .and_then(|_| output.flush())
+        .map_err(|error| RuntimeError::Invalid(format!("write graph worker frame: {error}")))
+}
+
+fn read_graph_worker_frame<R: Read, T: DeserializeOwned>(
+    input: &mut R,
+) -> Result<Option<T>, RuntimeError> {
+    let mut length = [0_u8; 4];
+    match input.read(&mut length[..1]) {
+        Ok(0) => return Ok(None),
+        Ok(_) => {}
+        Err(error) => {
+            return Err(RuntimeError::Invalid(format!(
+                "read graph worker frame: {error}"
+            )))
+        }
+    }
+    input
+        .read_exact(&mut length[1..])
+        .map_err(|error| RuntimeError::Invalid(format!("read graph worker length: {error}")))?;
+    let length = u32::from_be_bytes(length) as usize;
+    if length == 0 || length > MAX_GRAPH_WORKER_FRAME_BYTES {
+        return Err(RuntimeError::Invalid(format!(
+            "graph worker frame length {length} is outside 1..={MAX_GRAPH_WORKER_FRAME_BYTES}"
+        )));
+    }
+    let mut bytes = vec![0_u8; length];
+    input
+        .read_exact(&mut bytes)
+        .map_err(|error| RuntimeError::Invalid(format!("read graph worker payload: {error}")))?;
+    serde_json::from_slice(&bytes)
+        .map(Some)
+        .map_err(|error| RuntimeError::Invalid(format!("decode graph worker frame: {error}")))
 }
 
 struct RuntimeInstance {
@@ -1193,6 +1508,36 @@ mod tests {
             },
             state_migration: None,
         }
+    }
+
+    #[test]
+    fn graph_worker_frames_are_length_bounded_and_closed() {
+        let mut encoded = Vec::new();
+        write_graph_worker_frame(
+            &mut encoded,
+            &GraphProcessRequest::Command {
+                command: GraphWorkerCommand::Shutdown,
+            },
+        )
+        .unwrap();
+        let decoded =
+            read_graph_worker_frame::<_, GraphProcessRequest>(&mut encoded.as_slice()).unwrap();
+        assert!(matches!(
+            decoded,
+            Some(GraphProcessRequest::Command {
+                command: GraphWorkerCommand::Shutdown
+            })
+        ));
+
+        let oversized = u32::try_from(MAX_GRAPH_WORKER_FRAME_BYTES + 1)
+            .unwrap()
+            .to_be_bytes();
+        assert!(
+            read_graph_worker_frame::<_, GraphProcessRequest>(&mut oversized.as_slice())
+                .unwrap_err()
+                .to_string()
+                .contains("outside")
+        );
     }
 
     #[test]

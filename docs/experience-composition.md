@@ -353,7 +353,10 @@ The implementation is split so the contracts do not depend on GPUI or Linux:
 - `GraphRuntime` owns one sandboxed Luau VM and state namespace per graph node,
   validates mount values and child events, shares state across repeated
   instances of one stable experience, contains child failure, and rolls back a
-  partially failed event cascade;
+  partially failed event cascade. The Linux host can run the complete graph
+  runtime behind a bounded, length-framed subprocess channel. The installed
+  session uses that mode, while `thread` remains an explicit deployment
+  fallback. No Experience API depends on the choice;
 - provider/state protocol v2 commits all changed experience states as one
   durable graph transaction and retains revision-specific state for locked
   graphs after a newer child becomes current;

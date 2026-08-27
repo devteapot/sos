@@ -630,12 +630,12 @@ pub struct ProviderResponse {
     pub error: Option<String>,
 }
 
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 pub struct Scene {
     pub root: SceneNode,
 }
 
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 pub struct SceneNode {
     pub id: Option<String>,
     pub layout: Layout,
@@ -647,7 +647,7 @@ pub struct SceneNode {
     pub children: Vec<SceneNode>,
 }
 
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 pub struct Layout {
     pub flow: Flow,
     pub wrap: bool,
@@ -672,7 +672,7 @@ pub struct Layout {
 /// A bounded retained program evaluated by the host layout engine. Fractions
 /// are relative to the containing block, so responsive layout does not call
 /// back into Luau during frame construction.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq)]
 pub struct LayoutProgram {
     pub measure_width: Option<f32>,
     pub measure_height: Option<f32>,
@@ -680,13 +680,14 @@ pub struct LayoutProgram {
     pub arrange_y: Option<f32>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq)]
 pub struct LayoutPosition {
     pub x: f32,
     pub y: f32,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
 pub enum Flow {
     #[default]
     Overlay,
@@ -694,7 +695,8 @@ pub enum Flow {
     Row,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "kind", content = "value", rename_all = "snake_case")]
 pub enum Content {
     Text(TextContent),
     TextSession(TextSession),
@@ -715,14 +717,14 @@ pub enum Content {
     ApplicationSurface(ApplicationSurfaceContent),
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct TextContent {
     pub value: String,
     pub size: f32,
     pub color: u32,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct TextSession {
     pub state_key: String,
     pub value: String,
@@ -731,31 +733,31 @@ pub struct TextSession {
     pub autofocus: bool,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct ImageContent {
     pub asset: String,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct ProviderSurfaceContent {
     pub surface: String,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct ExperienceMountContent {
     pub dependency: String,
     pub properties: serde_json::Value,
     pub container_appearance: Option<ContainerAppearance>,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct WindowSpaceContent {
     pub layout: WindowLayoutMode,
     pub gap: f32,
     pub fallback: String,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq)]
 pub struct ShellOverlayContent {
     /// Legacy absolute surface origin. Used directly when neither `anchor`
     /// nor declarative `placement` is present.
@@ -773,21 +775,22 @@ pub struct ShellOverlayContent {
     pub anchor: Option<ShellOverlayAnchor>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq)]
 pub struct ShellOverlayPlacement {
     pub horizontal: EdgePlacement,
     pub vertical: EdgePlacement,
     pub margin: f32,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
 pub enum EdgePlacement {
     Start,
     Center,
     End,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq)]
 pub struct ShellOverlayAnchor {
     pub x: f32,
     pub y: f32,
@@ -796,12 +799,13 @@ pub struct ShellOverlayAnchor {
     pub above: bool,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct ApplicationSurfaceContent {
     pub title: String,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
 pub enum WindowLayoutMode {
     #[default]
     Floating,
@@ -809,7 +813,8 @@ pub enum WindowLayoutMode {
     Scrolling,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
 pub enum PaintOp {
     FillBounds {
         color: u32,
@@ -854,7 +859,7 @@ pub enum PaintOp {
     },
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct GlyphRun {
     pub text: String,
     pub color: u32,
@@ -863,7 +868,7 @@ pub struct GlyphRun {
     pub italic: bool,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq)]
 pub struct ClipRect {
     pub x: f32,
     pub y: f32,
@@ -871,7 +876,7 @@ pub struct ClipRect {
     pub height: f32,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq)]
 pub struct Transform2D {
     pub translate_x: f32,
     pub translate_y: f32,
@@ -892,13 +897,13 @@ impl Default for Transform2D {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq)]
 pub struct PaintPoint {
     pub x: f32,
     pub y: f32,
 }
 
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 pub struct Interaction {
     pub tap_action: Option<String>,
     pub hover_action: Option<String>,
@@ -915,7 +920,8 @@ pub struct Interaction {
     pub hit_regions: Vec<HitRegion>,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
 pub enum PointerCapture {
     #[default]
     None,
@@ -923,7 +929,7 @@ pub enum PointerCapture {
     Surface,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct HitRegion {
     pub id: String,
     pub x: f32,
@@ -939,20 +945,21 @@ pub struct HitRegion {
     pub swipe_action: Option<String>,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct Animation {
     pub kind: AnimationKind,
     pub duration_ms: u64,
     pub repeat: bool,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
 pub enum AnimationKind {
     Pulse,
     FadeIn,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct Semantics {
     pub role: SemanticRole,
     pub label: String,
@@ -960,7 +967,8 @@ pub struct Semantics {
     pub hint: Option<String>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
 pub enum SemanticRole {
     Button,
     Image,
@@ -970,14 +978,16 @@ pub enum SemanticRole {
     ScrollArea,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
 pub enum Align {
     Start,
     Center,
     End,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
 pub enum Justify {
     Start,
     Center,

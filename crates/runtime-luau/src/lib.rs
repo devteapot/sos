@@ -33,8 +33,9 @@ use thiserror::Error;
 mod graph;
 
 pub use graph::{
-    GraphActionOutcome, GraphEffect, GraphRevisionInput, GraphRuntime, GraphRuntimeSnapshot,
-    GraphRuntimeWorker, GraphWorkerResult, RuntimeInstanceSnapshot, RuntimeInstanceStatus,
+    run_graph_worker_stdio, GraphActionOutcome, GraphEffect, GraphRevisionInput, GraphRuntime,
+    GraphRuntimeSnapshot, GraphRuntimeWorker, GraphWorkerResult, RuntimeInstanceSnapshot,
+    RuntimeInstanceStatus,
 };
 
 pub const MAX_SOURCE_BYTES: usize = 256 * 1024;
@@ -82,20 +83,36 @@ pub struct LuauRuntime {
     api_version: u32,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub struct RevisionAsset {
     pub id: String,
     pub path: String,
     pub kind: String,
+    #[serde(with = "base64_bytes")]
     pub bytes: Vec<u8>,
     pub sha256: String,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub struct RevisionAssetInput {
     pub id: String,
     pub kind: String,
+    #[serde(with = "base64_bytes")]
     pub bytes: Vec<u8>,
+}
+
+mod base64_bytes {
+    use base64::{engine::general_purpose::STANDARD, Engine as _};
+    use serde::{Deserialize as _, Deserializer, Serializer};
+
+    pub fn serialize<S: Serializer>(bytes: &[u8], serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&STANDARD.encode(bytes))
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<u8>, D::Error> {
+        let encoded = <String>::deserialize(deserializer)?;
+        STANDARD.decode(encoded).map_err(serde::de::Error::custom)
+    }
 }
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]

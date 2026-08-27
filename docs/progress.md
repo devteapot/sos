@@ -12703,7 +12703,49 @@ and validation use the real sidecar and pass.
 
 **Remaining risks and next gate:** Independently presented v4 roots are now
 separate host processes, while mounted graph children still share a process
-with one Luau VM per Instance. Add the optional per-instance worker-process
-deployment without changing the VM API, then close equivalent Android graph,
-state, appearance, input, IME, accessibility, grant, activation, and recovery
-behavior before the two physical acceptance campaigns.
+with one Luau VM per Instance. Add the optional graph worker-process deployment
+without changing the VM API, then close equivalent Android graph, state,
+appearance, input, IME, accessibility, grant, activation, and recovery behavior
+before the two physical acceptance campaigns.
+
+## 2026-08-27: Isolate the v4 graph runtime in an optional worker process
+
+**Goal:** Add the milestone 12 process boundary without making Experience code
+or graph contracts depend on a Linux deployment detail.
+
+**Changed:** `GraphRuntimeWorker` now has thread and process deployments behind
+the same typed Rust API. Process mode re-executes `sos-experience-host` through
+a private worker entry point and exchanges only length-prefixed, closed serde
+messages. The 384 MiB frame cap covers the frozen eight-instance aggregate
+asset and scene limits. Binary assets use base64 inside the private JSON frame
+instead of unbounded integer arrays. Scene IR now has an explicit serde form so
+snapshots can cross the process boundary without converting them to general
+JSON values.
+
+The worker reports readiness before the host can present the graph. Commands
+remain request-ID matched, shutdown closes and reaps the child, and a broken
+pipe returns a rejected operation or closes the results channel. The selectable
+login session and direct system service choose `process` by default.
+`SOS_GRAPH_RUNTIME_ISOLATION=thread` keeps the existing deployment for focused
+debugging. Instance IDs, VM count, state ownership, grants, properties, events,
+and scene limits are identical in both modes.
+
+**Evidence:** `cargo test -p runtime-luau` passed 32 tests, including bounded
+frame round trips. `cargo test -j 1 -p sos-experience --features linux-host
+--test graph_process_isolation -- --nocapture` passed. That test compiled a v4
+graph with a binary sidecar, rendered it in a different PID, completed a state
+update, sent `SIGKILL` to the worker, and observed containment in the still-live
+parent. `bash -n packaging/libexec/sos-login-session` passed.
+
+**Failures and decision:** The first integration link filled the development
+filesystem with regenerable Rust output and failed with `ENOSPC`; the linker
+also exited with a bus error during that attempt. `cargo clean -p
+sos-experience` removed 9.8 GiB of package build output. The identical
+single-job test then passed. This is not product evidence, but it explains why
+the test uses `-j 1` on this host.
+
+**Remaining risks and next gate:** This process boundary isolates the complete
+graph runtime from GPUI and compositor code. It does not assign one OS process
+per mounted Instance, which the frozen deployment rule does not require. Each
+Instance still owns a distinct Luau VM and no API observes process placement.
+Android v4 parity is now the next implementation gate.

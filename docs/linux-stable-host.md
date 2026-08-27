@@ -36,7 +36,10 @@ coordinator recovery path instead of being mistaken for corruption.
 `experience-host-protocol` owns the transport ABI shared by the supervisor and
 host. Host stdout is reserved for newline-delimited protocol events; all GPUI,
 runtime, timing, and recovery diagnostics go to stderr. A candidate is compiled
-and rendered in a fresh Luau VM while the accepted scene remains active. On
+and rendered in a fresh Luau VM while the accepted scene remains active. The
+installed session sets `SOS_GRAPH_RUNTIME_ISOLATION=process`, which moves v4
+graph VMs behind a bounded subprocess protocol. Set it to `thread` only for a
+deliberate compatibility fallback. On
 `present`, the worker commits that prepared VM and the same GPUI entity renders
 the new scene. In an ordinary Wayland session, a GPUI next-frame callback emits
 `presented`. Under `sos-compositor`, the host instead arms the scene handoff and

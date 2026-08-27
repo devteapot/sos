@@ -73,6 +73,12 @@ sos_login_agent_credentials="$sos_login_agent_state_dir/auth.json"
 sos_login_agent_config="$sos_login_agent_state_dir/config.env"
 sos_login_provider_root="${SOS_LINUX_PROVIDER_ROOT:-$sos_login_state_dir/providers}"
 sos_login_provider_grants="${SOS_PROVIDER_GRANTS:-$sos_login_state_dir/provider-grants.json}"
+sos_login_graph_runtime_isolation="${SOS_GRAPH_RUNTIME_ISOLATION:-process}"
+case "$sos_login_graph_runtime_isolation" in
+  thread|process) ;;
+  *) sos_login_fail "SOS_GRAPH_RUNTIME_ISOLATION must be thread or process" ;;
+esac
+export SOS_GRAPH_RUNTIME_ISOLATION="$sos_login_graph_runtime_isolation"
 install -d -m 0700 "$sos_login_state_home" "$sos_login_state_dir" "$sos_login_revision_root"
 
 for sos_login_path in "$sos_login_provider_root" "$sos_login_provider_grants"; do

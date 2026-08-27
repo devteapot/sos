@@ -542,7 +542,7 @@ pub fn run() -> Result<()> {
                 provider_access.as_ref(),
                 options.service_socket.as_deref(),
             )?;
-            let (worker, snapshot) = GraphRuntimeWorker::start(graph.graph, inputs.revisions)
+            let (worker, snapshot) = start_graph_runtime_worker(graph.graph, inputs.revisions)
                 .map_err(|error| anyhow::anyhow!("initialize experience graph: {error}"))?;
             install_graph_provider_frames(&snapshot, &inputs.provider_frames);
             Ok::<_, anyhow::Error>(ActiveGraph {
@@ -1909,9 +1909,10 @@ impl LinuxExperienceHost {
                                 service_socket.as_deref(),
                             )?;
                             let (worker, snapshot) =
-                                GraphRuntimeWorker::start(loaded.graph, inputs.revisions).map_err(
-                                    |error| anyhow::anyhow!("initialize experience graph: {error}"),
-                                )?;
+                                start_graph_runtime_worker(loaded.graph, inputs.revisions)
+                                    .map_err(|error| {
+                                        anyhow::anyhow!("initialize experience graph: {error}")
+                                    })?;
                             Ok(PreparedGraph {
                                 graph_id: graph_id.clone(),
                                 graph: ActiveGraph {
@@ -4428,6 +4429,39 @@ fn load_graph(graph_id: &str, graph_path: &Path, revision_root: &Path) -> Result
         graph,
         revisions,
     })
+}
+
+fn start_graph_runtime_worker(
+    graph: ResolvedGraph,
+    inputs: BTreeMap<RevisionId, GraphRevisionInput>,
+) -> Result<(GraphRuntimeWorker, GraphRuntimeSnapshot)> {
+    match std::env::var_os("SOS_GRAPH_RUNTIME_ISOLATION").as_deref() {
+        None => GraphRuntimeWorker::start(graph, inputs)
+            .map_err(|error| anyhow::anyhow!(error.to_string())),
+        Some(value) if value == std::ffi::OsStr::new("thread") => {
+            GraphRuntimeWorker::start(graph, inputs)
+                .map_err(|error| anyhow::anyhow!(error.to_string()))
+        }
+        Some(value) if value == std::ffi::OsStr::new("process") => {
+            let executable = std::env::var_os("SOS_GRAPH_RUNTIME_WORKER")
+                .map(PathBuf::from)
+                .map(Ok)
+                .unwrap_or_else(std::env::current_exe)
+                .context("resolve graph runtime worker executable")?;
+            let (worker, snapshot) = GraphRuntimeWorker::start_process(&executable, graph, inputs)
+                .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+            eprintln!(
+                "sos_graph_runtime_process_started pid={} executable={}",
+                worker.process_id().unwrap_or_default(),
+                executable.display()
+            );
+            Ok((worker, snapshot))
+        }
+        Some(value) => bail!(
+            "SOS_GRAPH_RUNTIME_ISOLATION must be `thread` or `process`, got {:?}",
+            value
+        ),
+    }
 }
 
 fn graph_runtime_inputs(

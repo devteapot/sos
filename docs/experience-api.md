@@ -137,7 +137,9 @@ Every live export has a transient opaque Instance ID. The host uses it to
 namespace rendered node IDs, revision assets, provider surfaces and sessions,
 text/IME state, pointer capture, and accessibility focus. Graph Node IDs remain
 stable resolved-graph addresses and are never exposed as runtime isolation
-identities.
+identities. Linux may place the graph runtime in the host process or a worker
+process. Both modes preserve the same Instance IDs, snapshots, limits, and
+typed commands. The installed session selects the process mode.
 
 [`experience-composition.md`](experience-composition.md) defines exact
 identity, package, resolver, state, authority, activation, authoring, and
