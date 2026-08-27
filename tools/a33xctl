@@ -223,6 +223,35 @@ doctor() {
   printf '    memory:     %s kB\n' "$memory_kb"
 }
 
+install_host_usb_rules() {
+  [[ "$#" -eq 2 && "$1" == --group ]] || \
+    fail "usage: sudo ./tools/a33xctl install-host-usb-rules --group GROUP"
+  [[ "$EUID" -eq 0 ]] || \
+    fail "host USB rule installation requires root; rerun through sudo"
+  require_command getent
+  require_command install
+  require_command sed
+  require_command udevadm
+  local usb_group="$2"
+  [[ "$usb_group" =~ ^[a-zA-Z_][a-zA-Z0-9_-]*$ ]] || \
+    fail "invalid host USB group: $usb_group"
+  getent group "$usb_group" >/dev/null || fail "host USB group does not exist: $usb_group"
+  local template="$SOS_ROOT/tools/a33x/70-sos-a33x-usb.rules.in"
+  local destination=/etc/udev/rules.d/70-sos-a33x-usb.rules
+  local temporary
+  [[ -f "$template" ]] || fail "host USB rule template is missing: $template"
+  temporary="$(mktemp /tmp/70-sos-a33x-usb.rules.XXXXXX)"
+  trap 'rm -f -- "$temporary"' EXIT
+  sed "s/@SOS_USB_GROUP@/$usb_group/g" "$template" >"$temporary"
+  install -o root -g root -m 0644 "$temporary" "$destination"
+  udevadm control --reload-rules
+  udevadm trigger --action=change --subsystem-match=usb
+  udevadm settle
+  trap - EXIT
+  rm -f -- "$temporary"
+  printf 'host_usb_rules=INSTALLED\npath=%s\ngroup=%s\n' "$destination" "$usb_group"
+}
+
 init() {
   [[ "$#" -eq 0 ]] || fail "usage: ./tools/a33xctl init"
   [[ ! -e "$LINEAGE_ROOT/.repo" ]] || fail "$LINEAGE_ROOT is already initialized"
@@ -2410,6 +2439,8 @@ usage: ./tools/a33xctl <command>
 commands:
   image             build the pinned Ubuntu 24.04 LineageOS host image
   doctor            validate host resources and container tooling
+  install-host-usb-rules --group GROUP
+                    install durable SM-A336B ADB/Recovery node access (requires root)
   init              initialize the separate LineageOS checkout
   sync              sync sources and record an immutable resolved manifest
   hydrate-lfs       fetch and verify the pinned ARM64 WebView LFS object
@@ -2465,6 +2496,7 @@ fi
 case "$command" in
   image) image "$@" ;;
   doctor) doctor "$@" ;;
+  install-host-usb-rules) install_host_usb_rules "$@" ;;
   init) init "$@" ;;
   sync) sync_source "$@" ;;
   hydrate-lfs) hydrate_source_lfs "$@" ;;

@@ -14690,7 +14690,51 @@ boundary, membrane exception, lock/owner guards, and consent actions.
 artifact, install it from Recovery, physically exercise Deny, Allow once, and
 Always allow, and then run the full composition campaign. The workstation's
 existing Samsung/Google USB udev rules still fail to grant remote-session ACLs
-for `04e8:685d` and `18d1:d001`; make that rule durable before the next install
-so device ownership no longer requires repeated manual ACL repair. Core remains
-unmodified and uninstalled. The v3 reader remains bounded to this migration
-window.
+for `04e8:685d` and `18d1:d001`. The new root-only
+`install-host-usb-rules` command installs an exact-PID, group-scoped 0660 rule,
+reloads udev, and retriggers current nodes; its source contract is covered by
+the a33x host suite. Run it once before the next install so device ownership no
+longer requires repeated manual ACL repair. Core remains unmodified and
+uninstalled. The v3 reader remains bounded to this migration window.
+
+## 2026-08-27: Build and seal the trusted-consent Compat candidate
+
+**Goal / evidence:** Compile the complete trusted ADB-consent change from
+clean repository revision `f19c430223a83ecef60f4ac787613078432e8dcd`
+before returning to Recovery. The end-to-end ARM64 Compat build passed in
+334.33 seconds with 2,978,056 KiB peak RSS; Soong's product phase reported
+4:49. The exact identity is
+`sos.compat1.f19c430223a8.2e0169180ab5`. The strict offline inspector passed
+again from the finalized outputs in 18.87 seconds with 48,272 KiB peak RSS,
+including the compiled single-Activity bridge manifest, both framework
+resource bindings, `MANAGE_DEBUGGING` boundary, exact framework membrane
+exception, consent/lock markers, whole-package signature, PIT ceilings, AVB
+hashes and hashtrees, v4 graph controls, API/format 4, and retired-secondary
+absence.
+
+**Artifacts / failure:** The sealed OTA is
+`.cache/evidence/android-v4-f19c430/compat1/compat1.ota.zip`, 1,067,659,231
+bytes, SHA-256
+`d91704446867ca51b95d392a6b1f4a7056e9247d2b8d9280e7fdaf73e758b4e2`.
+The deterministic 9,673-entry target-files archive is 2,173,369,839 bytes,
+SHA-256
+`33b2672cc0fa4c63bf4a6560f1ea7c55b2e0cb3634249d4923af73713ad1cc4b`;
+zstd integrity and complete listing pass, Stock package/theme are present,
+and the retired secondary is absent. The first archive command reused the
+older hyphenated directory spelling, so tar rejected its nonexistent input
+and left a 22-byte output. That exact failed output was removed and the
+resolved Soong `_target_files` directory was archived; no product input or
+sealed OTA changed.
+
+The complete ten-file candidate manifest was generated and independently
+verified. `.cache/evidence/android-v4-f19c430/manifest.tsv` is 978 bytes with
+SHA-256
+`9ca94f833d623513f308e0caeb9c9257146bc6078ea58c1fd7ccd6feff21b93e`.
+This is an offline candidate pass, not a physical verdict.
+
+**Decision / next gate:** Install the durable host USB rule once, manually
+enter Recovery because the currently installed rejected build cannot accept
+ADB, and sideload this exact OTA once. Physical acceptance begins only after
+the fixed surface visibly denies an untrusted request and then accepts the
+known workstation key through explicit user input. Continue the ordered Compat
+composition campaign only on that verified identity.

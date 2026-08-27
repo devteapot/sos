@@ -13,6 +13,7 @@ adb_activity="$repo_root/aosp/device/sos/a33x/frameworkbridge/src/dev/sos/framew
 adb_overlay="$repo_root/aosp/device/sos/a33x/overlays/compat1/framework/res/values/config.xml"
 adb_permissions="$repo_root/aosp/device/sos/a33x/permissions/privapp-permissions-sos.xml"
 activity_policy="$repo_root/aosp/patches/a33x-lineage-23.0/0004-frameworks-base-enforce-sos-core-install-policy.patch"
+usb_rules="$repo_root/tools/a33x/70-sos-a33x-usb.rules.in"
 grep -F 'android:name=".SosAdbConfirmationActivity"' "$adb_manifest" >/dev/null
 grep -F 'android:permission="android.permission.MANAGE_DEBUGGING"' "$adb_manifest" >/dev/null
 grep -F '<permission name="android.permission.MANAGE_DEBUGGING" />' \
@@ -30,6 +31,11 @@ for marker in \
   '"Deny connection"'; do
   grep -F "$marker" "$adb_activity" >/dev/null
 done
+for identity in '04e8.*685d' '04e8.*6860' '18d1.*d001'; do
+  grep -E "$identity" "$usb_rules" >/dev/null
+done
+[[ "$(grep -Fc 'MODE:="0660"' "$usb_rules")" == 3 ]]
+[[ "$(grep -Fc 'GROUP:="@SOS_USB_GROUP@"' "$usb_rules")" == 3 ]]
 
 A33XCTL_ADB="$mock_adb" "$ctl" inspect-core1-readiness \
   --serial MOCKSERIAL \

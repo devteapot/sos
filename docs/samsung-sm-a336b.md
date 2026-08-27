@@ -43,6 +43,27 @@ boot has irreversibly changed the Knox warranty bit to `1`.
 
 ## Connected-device evidence
 
+### Durable host USB access
+
+The phone changes USB identity across Android/Download (`04e8:685d`), stock
+MTP/ADB (`04e8:6860`), and Recovery sideload (`18d1:d001`). Desktop-seat
+`uaccess` alone does not grant a remote acceptance session access after each
+reenumeration. Install the repository's exact-product rule once, selecting a
+group that contains the device owner; on this Fedora workstation that group is
+`wheel`:
+
+```sh
+sudo ./tools/a33xctl install-host-usb-rules --group wheel
+```
+
+The command validates the group, installs
+`/etc/udev/rules.d/70-sos-a33x-usb.rules` as root-owned mode 0644, reloads the
+rules, retriggers current USB devices, and waits for udev to settle. The three
+device nodes become root/group mode 0660 and retain `uaccess` for local-seat
+use. It does not authorize an ADB key, reboot the phone, enter a boot mode, or
+write a partition. Confirm membership with `id` and reconnect once if a
+pre-existing process still holds an older node.
+
 The non-destructive 2026-08-15 probe used the already-authorized ADB connection. It
 did not reboot, unlock, wipe, root, enter Download Mode, or write a partition.
 Developer Options was opened for UI inspection and the phone was returned to
