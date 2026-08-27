@@ -2,6 +2,7 @@
 <permissions>
     <privapp-permissions package="dev.sos.frameworkbridge">
         <permission name="android.permission.INTERACT_ACROSS_USERS_FULL" />
+        <permission name="android.permission.MANAGE_DEBUGGING" />
         <permission name="android.permission.MEDIA_CONTENT_CONTROL" />
     </privapp-permissions>
     <!-- Required only by the fixed Compat chrome to suppress stock status and

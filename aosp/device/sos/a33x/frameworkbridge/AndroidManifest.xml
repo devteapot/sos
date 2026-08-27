@@ -14,6 +14,7 @@
         android:name="android.permission.NEARBY_WIFI_DEVICES"
         android:usesPermissionFlags="neverForLocation" />
     <uses-permission android:name="android.permission.MEDIA_CONTENT_CONTROL" />
+    <uses-permission android:name="android.permission.MANAGE_DEBUGGING" />
     <queries>
         <intent>
             <action android:name="android.intent.action.MAIN" />
@@ -25,9 +26,17 @@
         android:allowBackup="false"
         android:directBootAware="true"
         android:hasCode="true"
-        android:label="SOS headless framework bridge"
+        android:label="SOS trusted framework bridge"
         android:persistent="true"
         android:supportsRtl="false">
+        <activity
+            android:name=".SosAdbConfirmationActivity"
+            android:directBootAware="true"
+            android:excludeFromRecents="true"
+            android:exported="true"
+            android:finishOnCloseSystemDialogs="true"
+            android:permission="android.permission.MANAGE_DEBUGGING"
+            android:theme="@android:style/Theme.Material.NoActionBar" />
         <service
             android:name=".SosProviderNotificationListenerService"
             android:directBootAware="true"

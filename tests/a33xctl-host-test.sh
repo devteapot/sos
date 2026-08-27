@@ -8,6 +8,29 @@ mock_adb="$repo_root/tests/fixtures/a33xctl-mock-adb"
 test_root="$(mktemp -d /tmp/sos-a33xctl-host-test.XXXXXX)"
 trap 'rm -rf -- "$test_root"' EXIT
 
+adb_manifest="$repo_root/aosp/device/sos/a33x/frameworkbridge/AndroidManifest.xml"
+adb_activity="$repo_root/aosp/device/sos/a33x/frameworkbridge/src/dev/sos/frameworkbridge/SosAdbConfirmationActivity.java"
+adb_overlay="$repo_root/aosp/device/sos/a33x/overlays/compat1/framework/res/values/config.xml"
+adb_permissions="$repo_root/aosp/device/sos/a33x/permissions/privapp-permissions-sos.xml"
+activity_policy="$repo_root/aosp/patches/a33x-lineage-23.0/0004-frameworks-base-enforce-sos-core-install-policy.patch"
+grep -F 'android:name=".SosAdbConfirmationActivity"' "$adb_manifest" >/dev/null
+grep -F 'android:permission="android.permission.MANAGE_DEBUGGING"' "$adb_manifest" >/dev/null
+grep -F '<permission name="android.permission.MANAGE_DEBUGGING" />' \
+  "$adb_permissions" >/dev/null
+[[ "$(grep -Fc 'dev.sos.frameworkbridge/.SosAdbConfirmationActivity' "$adb_overlay")" == 2 ]]
+grep -F 'dev.sos.frameworkbridge.SosAdbConfirmationActivity' "$activity_policy" >/dev/null
+for marker in \
+  'SYSTEM_FLAG_HIDE_NON_SYSTEM_OVERLAY_WINDOWS' \
+  'users.isAdminUser()' \
+  'users.isUserUnlocked()' \
+  'adb.allowDebugging(alwaysAllow, key)' \
+  'adbManager().denyDebugging()' \
+  '"Allow once"' \
+  '"Always allow this computer"' \
+  '"Deny connection"'; do
+  grep -F "$marker" "$adb_activity" >/dev/null
+done
+
 A33XCTL_ADB="$mock_adb" "$ctl" inspect-core1-readiness \
   --serial MOCKSERIAL \
   --expected-revision sos.core1.test.revision \

@@ -14636,3 +14636,61 @@ campaign, then repeat with the exact Core OTA. Keep the bounded v3 rollback
 reader through that campaign so Stock can migrate and prove v4-to-v4 rollback;
 then remove the reader, rebuild, and rerun the relevant package and rollback
 checks for the final no-v3 products.
+
+## 2026-08-27: Reject headless Compat ADB authorization and add trusted SOS consent
+
+**Goal / physical evidence:** Begin the sealed Compat campaign without erasing
+the installed migration source. Sysfs identified USB `04e8:685d` as an
+SM-A336B ADB interface despite the host `usb.ids` label “Download Mode.” After
+the device node received an ACL, the installed Core reported revision
+`sos.core1dev.e05f91bb6f0b.0be956df8e63`, profile `core`, revision format 3,
+Experience API 3, and enforcing SELinux. This is the intended legacy import
+case. A fresh inspection of the exact sealed Compat candidate passed in 18.61
+seconds after its hashed target-files archive and OTA were restored to the
+variant-specific build paths without changing their bytes.
+
+Recovery did not preserve `adb reboot sideload-auto-reboot` from that legacy
+Core build: it reached the “No command” recovery screen, exposed no sideload
+transport, and the bounded 170-second host wait stopped without sending OTA
+bytes. A plain recovery reboot followed by physical “Apply update / Apply from
+ADB” produced the expected `18d1:d001` sideload endpoint. The exact
+1,067,699,297-byte Compat OTA, SHA-256
+`3f70274838d07d2aedeeea820b1bab549f628ed9032cc956e31c1a5bb07e1144`,
+then transferred exactly once in 86.82 seconds with `Total xfer: 1.00x`; no
+wipe or second transfer occurred. Evidence is under
+`.cache/evidence/android-v4-cfe4ebb-physical/compat1/`, including the
+5,252-byte sideload log with SHA-256
+`901d1d686b5f88ff4c50796fbf8de2b47e6b81ec0e06aaffd27b118708611dc4`.
+
+**Failure / root cause:** The installed Compat candidate booted and exposed
+ADB but remained `unauthorized`. The product retains `ro.adb.secure=1` while
+intentionally removing SystemUI; Android's default key-confirmation component
+still pointed at the absent SystemUI APK. Compat's system-Activity membrane
+would also have blocked an arbitrary replacement privileged Activity. This is
+a product defect, not a transport timeout, so the sealed `cfe4ebb` Compat OTA
+is rejected as a physical candidate. Automatically accepting a new host key
+or injecting one through recovery was rejected because either path bypasses
+physical user consent.
+
+**Changed / decision:** `SosFrameworkBridge` now contains one fixed,
+platform-signed ADB consent Activity. The Compat framework overlay binds both
+owner and secondary-user confirmation resources to that component. The
+surface validates bounded key input, hides untrusted overlays, requires the
+owner profile to be unlocked, distinguishes Allow once from persistent trust,
+offers an explicit denial path, denies disconnect/close, and never logs key or
+fingerprint material. `MANAGE_DEBUGGING` protects the component and is
+privapp-allowlisted. The framework membrane exception names this exact class;
+all other Android system Activities remain blocked. The artifact inspector now
+checks the compiled resource binding, single-Activity manifest, permission
+boundary, membrane exception, lock/owner guards, and consent actions.
+`tests/a33xctl-host-test.sh`, Bash parsing, patch reverse-application, and
+`git diff --check` pass.
+
+**Remaining risks / next gate:** Compile and inspect a superseding Compat
+artifact, install it from Recovery, physically exercise Deny, Allow once, and
+Always allow, and then run the full composition campaign. The workstation's
+existing Samsung/Google USB udev rules still fail to grant remote-session ACLs
+for `04e8:685d` and `18d1:d001`; make that rule durable before the next install
+so device ownership no longer requires repeated manual ACL repair. Core remains
+unmodified and uninstalled. The v3 reader remains bounded to this migration
+window.

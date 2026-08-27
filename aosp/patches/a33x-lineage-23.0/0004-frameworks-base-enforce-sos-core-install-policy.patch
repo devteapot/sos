@@ -178,7 +178,7 @@ index 92f51bed419f..e0548b6f68d1 100644
          // TODO (b/187680964) Correcting the caller/pid/uid when start activity from shortcut
          // Pending intent launched from systemui also depends on caller app
          if (callerApp == null && realCallingPid > 0) {
-@@ -1531,6 +1555,14 @@ class ActivityStarter {
+@@ -1531,6 +1555,17 @@ class ActivityStarter {
          return mLastStartActivityResult;
      }
 
@@ -187,7 +187,10 @@ index 92f51bed419f..e0548b6f68d1 100644
 +                && activityInfo != null && activityInfo.applicationInfo != null
 +                && (activityInfo.applicationInfo.flags & (ApplicationInfo.FLAG_SYSTEM
 +                        | ApplicationInfo.FLAG_UPDATED_SYSTEM_APP)) != 0
-+                && !"dev.sos.experience".equals(activityInfo.packageName);
++                && !("dev.sos.experience".equals(activityInfo.packageName)
++                        || ("dev.sos.frameworkbridge".equals(activityInfo.packageName)
++                        && "dev.sos.frameworkbridge.SosAdbConfirmationActivity".equals(
++                                activityInfo.name)));
 +    }
 +
      /**
