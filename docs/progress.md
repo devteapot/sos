@@ -15777,3 +15777,35 @@ fix in one newly sealed Compat candidate. The fresh device hierarchy must show
 the Stock Mobile prompt wholly above the provider row and a physical tap inside
 the published prompt bounds must focus that same text session. This remains a
 physical acceptance requirement, not a host-only completion claim.
+
+## 2026-08-28: Seal the Android authoring and semantic-bounds candidate
+
+**Goal / build:** Package the exact faux-provider translation and padded
+overlay semantic correction for a fresh physical campaign. Clean source
+`4dbe4a2eb316935115cb708a5df9eb1f66ebc406` built Compat 1 successfully in
+242.57 seconds with 2,977,928 KiB peak RSS. Its immutable product identity is
+`sos.compat1.4dbe4a2eb316.9dd7e158b5e9`.
+
+**Offline evidence:** `./tools/a33xctl inspect-compat1` passed in 19.91 seconds
+with 48,032 KiB peak RSS. It verified the OTA signature, VINTF, PIT and AVB
+limits, boot chain, Android v4 and Stock Mobile contracts, agent runner,
+authority boundaries, framework bridge permission, system controls, and
+packaged source identities. The packaged 41,828,541-byte `SosShell.apk` has
+SHA-256
+`75a2f6affda6924bde8f320ea5960f818357aa40527055ee191b952afdf7e9e1`.
+The exact 1,067,526,493-byte OTA at
+`.cache/evidence/android-v4-4dbe4a2/compat1/lineage-23.0-20260827-UNOFFICIAL-sos_compat_a33x-4dbe4a2.zip`
+has SHA-256
+`e848a36734077572447dd0fe7fba88be4b24e2c198085dc65888b9e858a34bf9`.
+Its complete ZIP test passed in 4.68 seconds with 2,688 KiB peak RSS. The
+finalized eight-file offline manifest is 710 bytes with SHA-256
+`61dbeff2f934c331fd844796402fec3acc8dec3d3708ab3ca79267bd80035602`;
+independent verification passes.
+
+**Decision / next gate:** This digest is the only authorized replacement.
+Reverify it at the device boundary, install it once through automatic
+Recovery, and create a fresh artifact-bound campaign. In addition to every
+ordered composition and recovery stage, require non-overlapping prompt and
+provider virtual bounds, focus from a point inside the published prompt, a
+successful faux context/validate/submit sequence, a committed distinct v4
+Stock Mobile revision, and real-control rollback to the original v4 revision.
