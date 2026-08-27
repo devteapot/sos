@@ -14944,3 +14944,48 @@ the launcher and navigation are touch-first, ordinary experiences and
 compatible applications occupy the full root, and returning Home restores
 Stock Mobile. Real cutout/inset behavior and orientation remain hardware gates;
 desktop tests do not close them.
+
+## 2026-08-27: Seal the first Stock Mobile Compat candidate
+
+**Goal / build:** Produce the exact Android candidate that combines the
+HOME-owned ADB consent repair with the independent `sos.stock.mobile`
+experience. Clean source revision
+`a7dba1080c6337e10218d60c97febb381feead19` built Compat 1 successfully in
+5:58. Its immutable product identity is
+`sos.compat1.a7dba1080c63.f384ef7bfb46`. Soong installed `mobile.luau`,
+`mobile.package.json`, and `modules/mobile-theme.luau` while explicitly
+removing the Linux `default.luau`, `default.package.json`, and
+`modules/stock-theme.luau` prebuilts.
+
+**Offline evidence:** `./tools/a33xctl inspect-compat1` passed in 19.48 seconds
+with 47,660 KiB peak RSS. It verified the complete package signature, PIT
+ceilings, boot-chain AVB data, recovery packaging, the compiled HOME consent
+Activity and headless bridge, v4 package/API markers, registry and authority
+markers, and the Stock Mobile source contract. The inspector also confirmed
+`ro.sos.revision_format=4`, `ro.sos.experience_api=4`, and the bounded
+rollback-only v3 reader. This remains an offline candidate result.
+
+The sealed OTA is
+`.cache/evidence/android-v4-a7dba10/compat1/lineage-23.0-20260827-UNOFFICIAL-sos_compat_a33x.zip`,
+1,067,649,751 bytes, SHA-256
+`911e2ec4c5a49e374abbac9c4f58d3c82261ff4a4e92df4e0feb812d23e8b4b8`.
+The 9,673-entry deterministic target-files archive is 1,863,732,829 bytes,
+SHA-256
+`96c2402936c8d428009bfa35e1736b2799fe291f9d9d38c2c5dadc591f0146d4`.
+Its zstd integrity passes. It contains all three Mobile inputs and none of the
+three Linux Stock Shell inputs. Archive creation took 117.23 seconds with
+2,390,888 KiB peak RSS.
+
+The finalized nine-file manifest at
+`.cache/evidence/android-v4-a7dba10/manifest.tsv` is 928 bytes, SHA-256
+`1d8ff51f75a2705e9254de461afc96c78640f74959f506f916037b6fcc6bd828`.
+Independent manifest verification passes.
+
+**Decision / next gate:** This exact OTA is the only candidate authorized for
+the next Recovery transfer. First prove that a fresh workstation request
+shows the fixed consent surface and that Deny leaves ADB unauthorized. Then
+exercise Allow once and Always allow with the known workstation key before
+running the Compat composition, full-screen layout, touch, inset, restart,
+rollback, memory, thermal, crash, and AVC campaign. No physical claim is made
+until those checks run on product identity
+`sos.compat1.a7dba1080c63.f384ef7bfb46`.
