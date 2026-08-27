@@ -12984,3 +12984,36 @@ the Framework stable-host composition campaign. Desktop RSS and snapshot
 latencies cannot close compositor input, page-flip, suspend, thermals, or
 device-memory gates. The Samsung v4 composition, IME, accessibility, grant,
 failure, appearance, restart, and rollback campaign remains required.
+
+## 2026-08-27: Preserve direct-DRM acceptance evidence before cleanup
+
+**Goal:** Make the rewritten v4 Debian direct-session run independently
+auditable under the Linux acceptance workflow.
+
+**Changed:** `verify-direct-session` accepts an opt-in absolute
+`SOS_DIRECT_EVIDENCE_DIR`. After stopping the disposable session and restoring
+GDM, it copies finalized compositor, session, uinput, activation, and status
+logs, records the source revision and guest environment, archives the
+socket-free revision store, and writes measured monotonic duration and exit
+status. The default remains destructive temporary cleanup, and an existing or
+relative evidence path is rejected instead of overwritten.
+
+**Evidence:** `bash -n tools/linux-vm/verify-direct-session` passed, and
+`tests/linux-login-session-test.sh` reported
+`linux_login_session_host_tests=PASS` through the v4 mock registry. The v4 VM
+campaign itself is the next gate and will supply the retained artifacts,
+hashes, and measured result.
+
+**Failures and decision:** The prior verifier printed selected evidence but
+removed the raw per-criterion logs on every exit. Console output alone is not
+enough for the formal campaign ledger, so retention is explicit and opt-in
+instead of weakening normal disposable cleanup. Preflight also found that the
+selectable-session component mock still returned a synthetic singleton current
+revision and lacked registry graph commands. The mock now persists isolated
+current, Experience, and graph markers and exercises install-package,
+bootstrap, bootstrap-graph, and experience-status through the active v4 path.
+
+**Remaining risks and next gate:** Synchronize this exact revision into the
+Debian 13 KVM guest, run the direct gate once with a fresh evidence directory,
+copy the finalized artifact set back to the host, verify its manifest, and
+record the verdict. VM evidence still cannot close Framework hardware claims.

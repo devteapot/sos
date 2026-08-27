@@ -141,6 +141,17 @@ restores GDM inside the disposable VM:
 ssh -p 2222 sos@127.0.0.1 '~/sos/tools/linux-vm/verify-direct-session'
 ```
 
+For a formal evidence run, pass a new absolute guest path. The verifier copies
+its finalized compositor, session, input, activation, status, environment, and
+revision-store artifacts there before removing its disposable runtime:
+
+```sh
+ssh -p 2222 sos@127.0.0.1 \
+  'SOS_SOURCE_REVISION=<git-revision> \
+   SOS_DIRECT_EVIDENCE_DIR=/home/sos/evidence/<campaign> \
+   ~/sos/tools/linux-vm/verify-direct-session'
+```
+
 The verifier refuses bare metal, acquires the VirtIO KMS device and `seat0`
 through libseat/seatd, proves the recovery view before shell startup, and binds
 boot, activation, and recovered boot to DRM VBlank evidence. Keep the VNC

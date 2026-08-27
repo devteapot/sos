@@ -4,7 +4,7 @@ set -euo pipefail
 
 vm_repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$vm_repo_root"
-for vm_command in cargo python3 systemctl systemd-detect-virt weston-simple-shm; do
+for vm_command in cargo find python3 systemctl systemd-detect-virt tar weston-simple-shm; do
   command -v "$vm_command" >/dev/null 2>&1 || {
     printf 'error: required command not found: %s\n' "$vm_command" >&2
     exit 1
@@ -25,6 +25,20 @@ systemctl is-active --quiet seatd || {
   exit 1
 }
 
+vm_evidence_dir="${SOS_DIRECT_EVIDENCE_DIR:-}"
+if [[ -n "$vm_evidence_dir" ]]; then
+  [[ "$vm_evidence_dir" == /* ]] || {
+    printf 'error: SOS_DIRECT_EVIDENCE_DIR must be an absolute path\n' >&2
+    exit 1
+  }
+  [[ ! -e "$vm_evidence_dir" ]] || {
+    printf 'error: evidence path already exists: %s\n' "$vm_evidence_dir" >&2
+    exit 1
+  }
+  mkdir -p "$vm_evidence_dir"
+fi
+vm_started_ns="$(python3 -c 'import time; print(time.monotonic_ns())')"
+
 vm_run_dir="$(mktemp -d /tmp/sos-direct-session.XXXXXX)"
 vm_runtime_dir="$vm_run_dir/runtime"
 vm_revision_root="$vm_run_dir/revisions"
@@ -44,6 +58,8 @@ if systemctl is-active --quiet gdm; then
 fi
 
 cleanup_direct_gate() {
+  local vm_exit_status="$?"
+  set +e
   if [[ -w /sys/class/drm/card0-Virtual-2/status ]]; then
     sudo sh -c 'echo off > /sys/class/drm/card0-Virtual-2/status; echo change > /sys/class/drm/card0/uevent' \
       >/dev/null 2>&1 || true
@@ -62,10 +78,47 @@ cleanup_direct_gate() {
   if [[ "$vm_gdm_was_active" == true ]]; then
     sudo systemctl start gdm >/dev/null 2>&1 || true
   fi
+  if [[ -n "$vm_evidence_dir" && -d "$vm_run_dir" ]]; then
+    while IFS= read -r -d '' vm_evidence_file; do
+      cp -- "$vm_evidence_file" "$vm_evidence_dir/"
+    done < <(find "$vm_run_dir" -maxdepth 1 -type f -print0)
+    if [[ -d "$vm_revision_root" ]]; then
+      tar -C "$vm_run_dir" --exclude='revisions/run' \
+        -czf "$vm_evidence_dir/revision-store.tar.gz" revisions
+    fi
+    {
+      printf 'source_revision=%s\n' "${SOS_SOURCE_REVISION:-unknown}"
+      printf 'kernel=%s\n' "$(uname -r)"
+      printf 'virtualization=%s\n' "$(systemd-detect-virt)"
+      printf 'os=%s\n' "${ID:-unknown}"
+      printf 'os_version=%s\n' "${VERSION_ID:-unknown}"
+    } >"$vm_evidence_dir/environment.txt"
+    python3 - "$vm_evidence_dir/result.json" "$vm_started_ns" "$vm_exit_status" <<'PY'
+import json
+import sys
+import time
+
+path, started_ns, exit_status = sys.argv[1:]
+elapsed_ns = time.monotonic_ns() - int(started_ns)
+with open(path, "w", encoding="utf-8") as output:
+    json.dump(
+        {
+            "result": "pass" if exit_status == "0" else "fail",
+            "exit_status": int(exit_status),
+            "elapsed_seconds": elapsed_ns / 1_000_000_000,
+        },
+        output,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    output.write("\n")
+PY
+  fi
   if [[ "$vm_run_dir" == /tmp/sos-direct-session.* && -d "$vm_run_dir" ]]; then
     chmod -R u+w "$vm_run_dir" 2>/dev/null || true
     rm -r -- "$vm_run_dir"
   fi
+  return "$vm_exit_status"
 }
 trap cleanup_direct_gate EXIT
 
@@ -188,6 +241,7 @@ if [[ -w /sys/class/drm/card0-Virtual-2/status ]]; then
 fi
 
 vm_status_before="$(SOS_LINUX_REVISION_ROOT="$vm_revision_root" ./tools/sosctl linux-status)"
+printf '%s\n' "$vm_status_before" >"$vm_run_dir/status-before.json"
 vm_pid_before="$(sed -n 's/.*"host_pid":\([0-9][0-9]*\).*/\1/p' <<<"$vm_status_before")"
 vm_input_ready="$vm_run_dir/uinput-ready"
 # The test controller, not sudo, intentionally owns this disposable log.
@@ -221,6 +275,7 @@ grep -q 'suppressed key held across activation.*released=true' "$vm_run_dir/comp
 grep -q 'suppressed release for button held across activation' "$vm_run_dir/compositor.log"
 [[ "$(grep -c 'suppressed touch release held across activation' "$vm_run_dir/compositor.log")" -eq 2 ]]
 vm_status_after="$(SOS_LINUX_REVISION_ROOT="$vm_revision_root" ./tools/sosctl linux-status)"
+printf '%s\n' "$vm_status_after" >"$vm_run_dir/status-after.json"
 vm_pid_after="$(sed -n 's/.*"host_pid":\([0-9][0-9]*\).*/\1/p' <<<"$vm_status_after")"
 [[ -n "$vm_pid_before" && "$vm_pid_before" == "$vm_pid_after" ]]
 
@@ -291,6 +346,7 @@ for _ in {1..1000}; do
   sleep 0.01
 done
 [[ -n "$vm_restarted_pid" && "$vm_restarted_pid" != "$vm_pid_after" ]]
+printf '%s\n' "$vm_restart_status" >"$vm_run_dir/status-restarted.json"
 
 XDG_RUNTIME_DIR="$vm_runtime_dir" WAYLAND_DISPLAY=wayland-sos \
   weston-simple-shm >"$vm_run_dir/compatibility.log" 2>&1 &
@@ -341,6 +397,9 @@ printf 'linux_direct_session_passed activation_pid=%s restarted_pid=%s revision_
   "$vm_pid_after" "$vm_restarted_pid" "$vm_current_revision"
 printf 'activation=%s\n' "$vm_activation"
 printf 'authority_revision=%s\n' "$vm_authority_revision"
+if [[ -n "$vm_evidence_dir" ]]; then
+  printf 'evidence_dir=%s\n' "$vm_evidence_dir"
+fi
 grep -E \
   'completed significant DRM page flip.*recovery_view=true|presented armed shell revision' \
   "$vm_run_dir/compositor.log"

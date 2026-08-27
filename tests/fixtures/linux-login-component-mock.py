@@ -39,14 +39,50 @@ def wait_for_stop() -> None:
 
 name = os.path.basename(sys.argv[0])
 if name == "sos-revision-supervisor":
+    root = option("--root")
+    os.makedirs(root, exist_ok=True)
+
+    def marker(name: str) -> str:
+        return os.path.join(root, "mock-" + name)
+
+    def read_marker(name: str) -> str | None:
+        try:
+            with open(marker(name), encoding="utf-8") as stored:
+                return stored.read().strip()
+        except FileNotFoundError:
+            return None
+
+    def write_marker(name: str, value: str) -> None:
+        with open(marker(name), "w", encoding="utf-8") as stored:
+            stored.write(value + "\n")
+
     if len(sys.argv) >= 2 and sys.argv[1] == "status":
-        print("1" * 64)
+        print(read_marker("current") or "none")
         raise SystemExit(0)
     if len(sys.argv) >= 2 and sys.argv[1] == "graph-status":
-        print("a" * 64)
+        experience = option("--experience")
+        print(read_marker("graph-" + experience) or "none")
         raise SystemExit(0)
     if len(sys.argv) >= 2 and sys.argv[1] == "install-package":
-        print("2" * 64)
+        package = option("--package")
+        print(("3" if package.endswith("timeflow.package.json") else "2") * 64)
+        raise SystemExit(0)
+    if len(sys.argv) >= 2 and sys.argv[1] == "bootstrap":
+        write_marker("current", option("--revision"))
+        raise SystemExit(0)
+    if len(sys.argv) >= 2 and sys.argv[1] == "bootstrap-graph":
+        experience = option("--experience")
+        write_marker("graph-" + experience, "a" * 64)
+        write_marker("experience-" + experience, option("--revision"))
+        raise SystemExit(0)
+    if len(sys.argv) >= 2 and sys.argv[1] == "experience-status":
+        print(read_marker("experience-" + option("--experience")) or "none")
+        raise SystemExit(0)
+    if len(sys.argv) >= 2 and sys.argv[1] == "migrate-stock-v4":
+        revision = "2" * 64
+        write_marker("graph-sos.stock.shell", "a" * 64)
+        write_marker("experience-sos.stock.shell", revision)
+        print("experience_id=sos.stock.shell revision_id=" + revision)
         raise SystemExit(0)
     raise SystemExit("unsupported revision-supervisor mock command")
 
