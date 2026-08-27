@@ -15743,3 +15743,29 @@ Stock Mobile v4 revision through the system-graph authority, and restore the
 original v4 revision through the real rollback control. Only then audit and
 hash the campaign. Fix and regress the virtual accessibility bounds before
 claiming Android parity complete.
+
+## 2026-08-28: Correct padded overlay accessibility geometry
+
+**Goal / cause:** Close the virtual-node mismatch found while focusing Stock
+Mobile's authoring prompt. Android records semantic bounds through a GPUI
+canvas placed inside each authored node. For a padded overlay node, that
+absolute canvas began at the padded content origin but `size_full` retained the
+outer node size. Its bounds were therefore translated down and right by the
+padding and extended beyond the painted node; row and column nodes did not use
+that placement behavior. This exactly accounts for the prompt's displaced,
+oversized virtual bounds and its apparent overlap with the next row.
+
+**Changed / verification:** Padded overlay semantic trackers now cancel their
+content-origin padding on both axes. The correction is limited to the
+accessibility measurement canvas and does not alter authored layout, paint, or
+touch hit-testing. A platform-neutral interaction-contract helper pins overlay
+padding `14` to offset `-14` while requiring zero correction for unpadded
+overlays, rows, and columns. All four focused Android interaction tests pass.
+The complete A33x host fixture passes in 8.04 seconds with 5,108 KiB peak RSS;
+format and diff checks are clean.
+
+**Decision / next gate:** Include this correction with the faux-provider wire
+fix in one newly sealed Compat candidate. The fresh device hierarchy must show
+the Stock Mobile prompt wholly above the provider row and a physical tap inside
+the published prompt bounds must focus that same text session. This remains a
+physical acceptance requirement, not a host-only completion claim.

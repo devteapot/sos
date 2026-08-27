@@ -63,7 +63,9 @@ use zeroize::Zeroize;
 
 use crate::android_agent_contract::{AgentActivationEvidence, AgentActivationPhase};
 #[cfg(not(feature = "core-native"))]
-use crate::android_interaction_contract::{text_tap_outcome, TextTapOutcome};
+use crate::android_interaction_contract::{
+    semantic_tracker_offset, text_tap_outcome, TextTapOutcome,
+};
 use crate::assets::{self, SosAssets, ALBUM_ASSET};
 #[cfg(feature = "aosp-system")]
 use crate::graph_scene::composed_graph_scene;
@@ -3883,14 +3885,17 @@ impl ExperienceHost {
         }
         if node.semantics.is_some() || node.layout.scroll_y {
             let semantic_id = element_id.clone();
-            element = element.child(
-                canvas(
-                    move |bounds, _, _| accessibility::record_bounds(&semantic_id, bounds),
-                    |_, _, _, _| {},
-                )
-                .absolute()
-                .size_full(),
-            );
+            let mut tracker = canvas(
+                move |bounds, _, _| accessibility::record_bounds(&semantic_id, bounds),
+                |_, _, _, _| {},
+            )
+            .absolute()
+            .size_full();
+            let tracker_offset = semantic_tracker_offset(node.layout.flow, node.layout.padding);
+            if tracker_offset != 0.0 {
+                tracker = tracker.left(px(tracker_offset)).top(px(tracker_offset));
+            }
+            element = element.child(tracker);
         }
         let uses_surface = node
             .paint
