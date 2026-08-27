@@ -13562,3 +13562,64 @@ namespaced Agenda interaction, appearance propagation, failure containment,
 restart, rollback/dismissal, memory, thermals, and exact evidence hashes. The
 local USB ACL and sleeping Framework remain external prerequisites for their
 respective physical gates.
+
+## 2026-08-27: Build and inspect exact v4 Android composition artifacts
+
+**Goal:** Produce installable Compat 1 and Core 1 artifacts from the committed
+Android composition implementation, prove their package and image contracts,
+and preserve the exact inspected inputs before the shared Lineage output tree
+changes product.
+
+**Changed:** No product source changed during this gate. Both builds used clean
+commit `52ce577ac0f46e9a22eec4edde93f136b648b894`. Compat 1 identified itself as
+`sos.compat1.52ce577ac0f4.89321d76b350`; Core 1 identified itself as
+`sos.core1.52ce577ac0f4.8ff80933e8b1`. The complete extracted target-files
+trees were archived with Zstandard alongside each OTA and inspector log under
+`.cache/evidence/android-v4-52ce577/` before the next product build reused the
+Lineage output tree.
+
+**Evidence:** `./tools/a33xctl build-compat1` completed successfully in 5m41s.
+`./tools/a33xctl inspect-compat1` passed whole-package signature, compressed
+data, PIT ceilings, boot/recovery/vendor-boot footers, the complete AVB and
+verity graph, recovery init packaging, exact Stock source/package/theme,
+SELinux labels and policy, provider runner, v4-only creation markers, and all
+four signed reference Experience markers. Preserved Compat 1 artifacts are:
+
+- `compat1/lineage-23.0-20260827-UNOFFICIAL-sos_compat_a33x.zip`:
+  1,067,703,993 bytes, SHA-256
+  `9d013db07b75c469ff4f8186c6ebb944a150a196ff924bbc11276e055c6daf76`;
+- `compat1/lineage_sos_compat_a33x-target-files.tar.zst`:
+  2,175,140,468 bytes, SHA-256
+  `40c2e3134f3c9aea2c27b244cd989c513376a18e05ff10a41ac2c5083cb995a2`;
+  and
+- `compat1/inspect-compat1.log`: 29,237 bytes, SHA-256
+  `99b078dbf0c71bcdbd46623650a17d98440d8f2dc34bb87d9d845accc9f6af38`.
+
+`./tools/a33xctl build-core1` completed successfully in 5m23s.
+`./tools/a33xctl inspect-core1` passed the same signature, PIT, AVB, recovery,
+v4 package, theme, and composition gates plus native no-Zygote ownership,
+pinned Core model validation, disabled user APK installation, and the exact
+Core host/platform policy. Preserved Core 1 artifacts are:
+
+- `core1/lineage-23.0-20260827-UNOFFICIAL-sos_core1_a33x.zip`:
+  1,022,839,686 bytes, SHA-256
+  `66cba1584be3a8a8d9e849a19e57c52ae4c1a45c22ff28183bc2f4f54c4a216c`;
+- `core1/lineage_sos_core1_a33x-target-files.tar.zst`:
+  2,079,179,951 bytes, SHA-256
+  `887e2d0f3f9a0dc11408d2ffe4b1e463432063a006447cb5f7d83d6b7b347699`;
+  and
+- `core1/inspect-core1.log`: 25,466 bytes, SHA-256
+  `7bd04f14962f24d9f84cf076bbe0cd87586f13a1651c5cf31c5e54f7752ba530`.
+
+**Failures and decision:** The earlier Shadow artifact remains rejected because
+it predated the committed composition source. Both final artifacts passed from
+one exact clean commit. The physical Samsung is detected at USB path `1-1.1`,
+but `adb devices -l` reports serial `RFCT50EGFCN` as `no permissions`; no image
+was installed and no physical claim is made from the build inspectors.
+
+**Remaining risks and next gate:** Refresh the Samsung USB ACL, install only the
+preserved inspected Compat 1 artifact, and run the complete device campaign
+before advancing to Core 1. Physical input, accessibility, restart, recovery,
+thermal, memory, and composition behavior remain open. The Framework Linux
+input campaign also remains open and may proceed independently over SSH while
+the Android USB transport is unavailable.
