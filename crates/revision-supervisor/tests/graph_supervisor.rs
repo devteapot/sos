@@ -154,6 +154,63 @@ fn seed_authority(
     ));
 }
 
+fn seed_authority_graphs(
+    client: &provider_state_service::ServiceClient,
+    store: &RevisionStore,
+    graphs: &[ResolvedGraph],
+) {
+    let mut revisions = BTreeMap::new();
+    for graph in graphs {
+        for node in graph.nodes.values() {
+            revisions
+                .entry(node.experience_id.clone())
+                .or_insert_with(|| node.revision_id.to_string());
+        }
+    }
+    let promotions = revisions
+        .into_iter()
+        .map(|(experience_id, revision_id)| {
+            let revision = store.verify(&revision_id).unwrap();
+            let durable: DurableState = serde_json::from_slice(
+                &fs::read(revision.directory.join(&revision.manifest.state.path)).unwrap(),
+            )
+            .unwrap();
+            GraphExperiencePromotion {
+                experience_id,
+                expected_revision: 0,
+                revision_id,
+                schema_version: durable.schema_version,
+                source_sha256: durable.source_sha256,
+                state: durable.state,
+                migration: None,
+                actions: Vec::new(),
+            }
+        })
+        .collect();
+    let transaction_id = "seed-multi-root-graphs".to_owned();
+    client
+        .call(&ServiceRequest::StageGraphPromotion {
+            request_id: 10,
+            draft: GraphPromotionDraft {
+                transaction_id: transaction_id.clone(),
+                activate: true,
+                promotions,
+            },
+        })
+        .unwrap();
+    let response = client
+        .call(&ServiceRequest::PromoteGraph {
+            request_id: 11,
+            transaction_id,
+        })
+        .unwrap();
+    assert!(matches!(
+        response.payload,
+        Some(ResponsePayload::GraphTransaction { record })
+            if record.status == TransactionStatus::Committed
+    ));
+}
+
 #[test]
 fn authority_commit_and_graph_pointers_recover_as_one_activation() {
     let directory = TempDir::new().unwrap();
@@ -418,10 +475,10 @@ fn tracked_child_update_activates_the_complete_graph_and_restarts_exactly() {
     supervisor.boot(&root).unwrap();
     let prepared = supervisor.prepare(&root, &initial_tracked_graph).unwrap();
     supervisor.commit(prepared).unwrap();
-    let (tracked_graph, _) = supervisor
+    let activated = supervisor
         .advance_experience(&agenda_id, &new_agenda)
-        .unwrap()
         .unwrap();
+    let tracked_graph = activated.graph_updates[0].graph_id.clone();
     assert_eq!(supervisor.active_graph(), Some(tracked_graph.as_str()));
     assert_eq!(graphs.current(&root).unwrap().unwrap().0, tracked_graph);
     assert_eq!(
@@ -503,12 +560,11 @@ fn locked_child_update_advances_only_the_child_registry_pointer() {
         Duration::from_secs(2),
     );
     supervisor.boot(&root).unwrap();
-    assert_eq!(
-        supervisor
-            .advance_experience(&agenda_id, &new_agenda)
-            .unwrap(),
-        None
-    );
+    assert!(supervisor
+        .advance_experience(&agenda_id, &new_agenda)
+        .unwrap()
+        .graph_updates
+        .is_empty());
     assert_eq!(graphs.current(&root).unwrap().unwrap().0, old_graph);
     assert_eq!(
         registry
@@ -531,4 +587,330 @@ fn locked_child_update_advances_only_the_child_registry_pointer() {
                 && node.revision_id.as_str() == reference.agenda_revision
         }));
     supervisor.shutdown().unwrap();
+}
+
+fn install_tracked_roots(
+    store: &RevisionStore,
+    reference: &revision_supervisor::ReferenceComposition,
+    registry: &ExperienceRegistry,
+    graphs: &GraphStore,
+) -> (ExperienceId, ExperienceId, String, String) {
+    let installed =
+        install_tracked_roots_named(store, reference, registry, graphs, &["one", "two"]);
+    (
+        installed[0].0.clone(),
+        installed[1].0.clone(),
+        installed[0].1.clone(),
+        installed[1].1.clone(),
+    )
+}
+
+fn install_tracked_roots_named(
+    store: &RevisionStore,
+    reference: &revision_supervisor::ReferenceComposition,
+    registry: &ExperienceRegistry,
+    graphs: &GraphStore,
+    suffixes: &[&str],
+) -> Vec<(ExperienceId, String)> {
+    let dashboard = store.verify(&reference.dashboard_revision).unwrap();
+    let source = fs::read(dashboard.directory.join(&dashboard.manifest.source.path)).unwrap();
+    let base = dashboard.package.unwrap();
+    let main = ExportId::parse("main").unwrap();
+    let mut installed = Vec::new();
+    for suffix in suffixes {
+        let experience_id = ExperienceId::parse(format!("sos.example.dashboard.{suffix}")).unwrap();
+        let mut package = base.clone();
+        package.experience_id = experience_id.clone();
+        package
+            .dependencies
+            .get_mut(&DependencyAlias::parse("agenda").unwrap())
+            .unwrap()
+            .policy = DependencyPolicy::Tracked;
+        let revision_id = store
+            .install_package(RevisionPackageInput {
+                revision: RevisionInput {
+                    source: source.clone(),
+                    state: json!({}),
+                    schema_version: 1,
+                    experience_api_version: 4,
+                    assets: Vec::new(),
+                },
+                package,
+            })
+            .unwrap()
+            .manifest
+            .revision_id;
+        registry
+            .create(&experience_id, ExperienceRole::Ordinary, &revision_id)
+            .unwrap();
+        let graph = GraphResolver::new(store.clone())
+            .resolve_tracked(&revision_id, &main, registry)
+            .unwrap();
+        let graph_id = graphs.install(&graph).unwrap();
+        graphs.set_current(&experience_id, &graph_id).unwrap();
+        installed.push((experience_id, graph_id));
+    }
+    installed
+}
+
+fn install_agenda_update(store: &RevisionStore, revision_id: &str, marker: &str) -> String {
+    let agenda = store.verify(revision_id).unwrap();
+    let package = agenda.package.unwrap();
+    let source = fs::read(agenda.directory.join(&agenda.manifest.source.path)).unwrap();
+    store
+        .install_package(RevisionPackageInput {
+            revision: RevisionInput {
+                source: [source, format!("\n-- {marker}\n").into_bytes()].concat(),
+                state: json!({}),
+                schema_version: 1,
+                experience_api_version: 4,
+                assets: Vec::new(),
+            },
+            package,
+        })
+        .unwrap()
+        .manifest
+        .revision_id
+}
+
+#[test]
+fn tracked_update_presents_every_affected_root_as_one_set() {
+    let directory = TempDir::new().unwrap();
+    let store = RevisionStore::open(directory.path()).unwrap();
+    let reference = install_reference_composition(&store).unwrap();
+    let registry = ExperienceRegistry::open(store.clone()).unwrap();
+    let graphs = GraphStore::open(store.root()).unwrap();
+    let (first, second, first_graph, second_graph) =
+        install_tracked_roots(&store, &reference, &registry, &graphs);
+    let agenda_id = ExperienceId::parse("sos.example.agenda").unwrap();
+    let candidate = install_agenda_update(&store, &reference.agenda_revision, "multi-root update");
+    let mut supervisor = ExperienceGraphSupervisor::new(
+        store,
+        registry.clone(),
+        graphs.clone(),
+        HostCommand::new(host_executable()),
+        Duration::from_secs(2),
+    );
+    supervisor.boot(&first).unwrap();
+    supervisor.boot(&second).unwrap();
+    let activated = supervisor
+        .advance_experience(&agenda_id, &candidate)
+        .unwrap();
+    assert_eq!(activated.graph_updates.len(), 2);
+    assert!(activated
+        .graph_updates
+        .iter()
+        .all(|update| update.host_pid.is_some()));
+    assert_ne!(graphs.current(&first).unwrap().unwrap().0, first_graph);
+    assert_ne!(graphs.current(&second).unwrap().unwrap().0, second_graph);
+    for root in [&first, &second] {
+        assert!(graphs
+            .current(root)
+            .unwrap()
+            .unwrap()
+            .1
+            .nodes
+            .values()
+            .any(|node| {
+                node.experience_id == agenda_id && node.revision_id.as_str() == candidate
+            }));
+    }
+    assert_eq!(
+        registry
+            .current(&agenda_id)
+            .unwrap()
+            .unwrap()
+            .manifest
+            .revision_id,
+        candidate
+    );
+    supervisor.shutdown().unwrap();
+}
+
+#[test]
+fn tracked_update_advances_presented_and_inactive_roots_atomically() {
+    let directory = TempDir::new().unwrap();
+    let store = RevisionStore::open(directory.path()).unwrap();
+    let reference = install_reference_composition(&store).unwrap();
+    let registry = ExperienceRegistry::open(store.clone()).unwrap();
+    let graphs = GraphStore::open(store.root()).unwrap();
+    let (presented, inactive, presented_graph, inactive_graph) =
+        install_tracked_roots(&store, &reference, &registry, &graphs);
+    let agenda_id = ExperienceId::parse("sos.example.agenda").unwrap();
+    let candidate = install_agenda_update(&store, &reference.agenda_revision, "inactive root");
+    let mut supervisor = ExperienceGraphSupervisor::new(
+        store,
+        registry,
+        graphs.clone(),
+        HostCommand::new(host_executable()),
+        Duration::from_secs(2),
+    );
+    supervisor.boot(&presented).unwrap();
+    let advanced = supervisor
+        .advance_experience(&agenda_id, &candidate)
+        .unwrap();
+    assert_eq!(advanced.graph_updates.len(), 2);
+    assert_eq!(
+        advanced
+            .graph_updates
+            .iter()
+            .filter(|update| update.host_pid.is_some())
+            .count(),
+        1
+    );
+    assert!(advanced
+        .graph_updates
+        .iter()
+        .any(|update| { update.root_experience_id == inactive && update.host_pid.is_none() }));
+    assert_ne!(
+        graphs.current(&presented).unwrap().unwrap().0,
+        presented_graph
+    );
+    assert_ne!(
+        graphs.current(&inactive).unwrap().unwrap().0,
+        inactive_graph
+    );
+    supervisor.shutdown().unwrap();
+}
+
+#[test]
+fn top_level_presentation_enforces_the_aggregate_instance_budget() {
+    let directory = TempDir::new().unwrap();
+    let store = RevisionStore::open(directory.path()).unwrap();
+    let reference = install_reference_composition(&store).unwrap();
+    let registry = ExperienceRegistry::open(store.clone()).unwrap();
+    let graphs = GraphStore::open(store.root()).unwrap();
+    let installed = install_tracked_roots_named(
+        &store,
+        &reference,
+        &registry,
+        &graphs,
+        &["budget-one", "budget-two", "budget-three"],
+    );
+    let mut supervisor = ExperienceGraphSupervisor::new(
+        store,
+        registry,
+        graphs,
+        HostCommand::new(host_executable()),
+        Duration::from_secs(2),
+    );
+    supervisor.boot(&installed[0].0).unwrap();
+    supervisor.boot(&installed[1].0).unwrap();
+    assert!(matches!(
+        supervisor.boot(&installed[2].0),
+        Err(Error::InvalidGraph(message)) if message.contains("limit is 8")
+    ));
+    assert_eq!(supervisor.presented_graphs().len(), 2);
+    assert!(supervisor.dismiss(&installed[1].0).unwrap().is_some());
+    assert!(supervisor.boot(&installed[2].0).unwrap().is_some());
+    assert_eq!(supervisor.presented_graphs().len(), 2);
+    supervisor.shutdown().unwrap();
+}
+
+#[test]
+fn authority_commits_one_state_promotion_for_a_multi_root_update() {
+    let directory = TempDir::new().unwrap();
+    let store = RevisionStore::open(directory.path()).unwrap();
+    let reference = install_reference_composition(&store).unwrap();
+    let registry = ExperienceRegistry::open(store.clone()).unwrap();
+    let graphs = GraphStore::open(store.root()).unwrap();
+    let (first, second, _, _) = install_tracked_roots(&store, &reference, &registry, &graphs);
+    let first_resolved = graphs.current(&first).unwrap().unwrap().1;
+    let second_resolved = graphs.current(&second).unwrap().unwrap().1;
+    let socket = directory.path().join("authority-multi.sock");
+    let service = start_authority(
+        socket.clone(),
+        directory.path().join("authority-multi.json"),
+    );
+    let client = provider_state_service::ServiceClient::new(&socket, Duration::from_secs(2));
+    seed_authority_graphs(&client, &store, &[first_resolved, second_resolved]);
+    let agenda_id = ExperienceId::parse("sos.example.agenda").unwrap();
+    let candidate = install_agenda_update(&store, &reference.agenda_revision, "authority set");
+    let mut supervisor = ExperienceGraphSupervisor::new(
+        store,
+        registry,
+        graphs,
+        HostCommand::new(host_executable()),
+        Duration::from_secs(2),
+    )
+    .with_authority(client.clone());
+    supervisor.boot(&first).unwrap();
+    supervisor.boot(&second).unwrap();
+    let advanced = supervisor
+        .advance_experience(&agenda_id, &candidate)
+        .unwrap();
+    assert_eq!(advanced.graph_updates.len(), 2);
+    let state = client
+        .call(&ServiceRequest::GetResource {
+            request_id: 12,
+            query: ResourceQuery::ExperienceStateFor {
+                experience_id: agenda_id,
+            },
+        })
+        .unwrap();
+    assert!(matches!(
+        state.payload,
+        Some(ResponsePayload::Resource {
+            value: ResourceValue::ExperienceStateFor(state),
+        }) if state.resource.revision_id == candidate
+    ));
+    supervisor.shutdown().unwrap();
+    client
+        .call(&ServiceRequest::Shutdown { request_id: 13 })
+        .unwrap();
+    service.join().unwrap().unwrap();
+}
+
+#[test]
+fn multi_root_presentation_fault_recovers_every_old_graph() {
+    let directory = TempDir::new().unwrap();
+    let store = RevisionStore::open(directory.path()).unwrap();
+    let reference = install_reference_composition(&store).unwrap();
+    let registry = ExperienceRegistry::open(store.clone()).unwrap();
+    let graphs = GraphStore::open(store.root()).unwrap();
+    let (first, second, first_graph, second_graph) =
+        install_tracked_roots(&store, &reference, &registry, &graphs);
+    let agenda_id = ExperienceId::parse("sos.example.agenda").unwrap();
+    let candidate = install_agenda_update(&store, &reference.agenda_revision, "faulted set");
+    let mut supervisor = ExperienceGraphSupervisor::new(
+        store.clone(),
+        registry.clone(),
+        graphs.clone(),
+        HostCommand::new(host_executable()),
+        Duration::from_secs(2),
+    );
+    supervisor.boot(&first).unwrap();
+    supervisor.boot(&second).unwrap();
+    let prepared = supervisor
+        .prepare_tracked_update_set(&agenda_id, &candidate)
+        .unwrap();
+    supervisor.configure_fault(Some(GraphActivationFaultPoint::AfterPresented));
+    assert!(matches!(
+        supervisor.commit_set(prepared),
+        Err(Error::InjectedGraphActivationFault(_))
+    ));
+    drop(supervisor);
+
+    let mut recovered = ExperienceGraphSupervisor::new(
+        store,
+        registry.clone(),
+        graphs.clone(),
+        HostCommand::new(host_executable()),
+        Duration::from_secs(2),
+    );
+    assert_eq!(
+        recovered.recover().unwrap().as_deref(),
+        Some(first_graph.as_str())
+    );
+    assert_eq!(graphs.current(&first).unwrap().unwrap().0, first_graph);
+    assert_eq!(graphs.current(&second).unwrap().unwrap().0, second_graph);
+    assert_eq!(
+        registry
+            .current(&agenda_id)
+            .unwrap()
+            .unwrap()
+            .manifest
+            .revision_id,
+        reference.agenda_revision
+    );
 }

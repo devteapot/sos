@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeMap,
     fs::{self, File, OpenOptions},
     io::Write,
     path::{Path, PathBuf},
@@ -7,7 +8,7 @@ use std::{
     time::Duration,
 };
 
-use experience_package::{ExperienceId, ResolvedGraph};
+use experience_package::{ExperienceId, ResolvedGraph, MAX_GRAPH_INSTANCES};
 use provider_state_service::{state_sha256, ServiceClient};
 use serde::{Deserialize, Serialize};
 use service_protocol::{
@@ -45,6 +46,8 @@ pub struct GraphActivationJournal {
     pub authority_transaction_id: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub registry_updates: Vec<RegistryPointerUpdate>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub graph_updates: Vec<GraphPointerUpdate>,
     pub phase: GraphActivationPhase,
 }
 
@@ -53,6 +56,13 @@ pub struct RegistryPointerUpdate {
     pub experience_id: ExperienceId,
     pub previous_revision: String,
     pub candidate_revision: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct GraphPointerUpdate {
+    pub root_experience_id: ExperienceId,
+    pub previous_graph_id: String,
+    pub candidate_graph_id: String,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -71,9 +81,9 @@ pub struct ExperienceGraphSupervisor {
     reverse_dependencies: ReverseDependencyIndex,
     host_command: HostCommand,
     host_timeout: Duration,
-    host: Option<ExperienceHost>,
-    active_root: Option<ExperienceId>,
-    active_graph: Option<String>,
+    hosts: BTreeMap<ExperienceId, ExperienceHost>,
+    active_graphs: BTreeMap<ExperienceId, String>,
+    primary_root: Option<ExperienceId>,
     authority: Option<ServiceClient>,
     journal_file: PathBuf,
     fault: Option<GraphActivationFaultPoint>,
@@ -87,7 +97,26 @@ pub struct PreparedGraphActivation {
     graph: ResolvedGraph,
     authority_transaction_id: Option<String>,
     registry_updates: Vec<RegistryPointerUpdate>,
+    host_prepared: bool,
     input_quiesced: bool,
+}
+
+pub struct PreparedGraphSetActivation {
+    updates: Vec<PreparedGraphActivation>,
+    authority_transaction_id: Option<String>,
+    registry_updates: Vec<RegistryPointerUpdate>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ExperienceAdvance {
+    pub graph_updates: Vec<ExperienceGraphAdvance>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ExperienceGraphAdvance {
+    pub root_experience_id: ExperienceId,
+    pub graph_id: String,
+    pub host_pid: Option<u32>,
 }
 
 impl PreparedGraphActivation {
@@ -117,9 +146,9 @@ impl ExperienceGraphSupervisor {
             reverse_dependencies,
             host_command,
             host_timeout,
-            host: None,
-            active_root: None,
-            active_graph: None,
+            hosts: BTreeMap::new(),
+            active_graphs: BTreeMap::new(),
+            primary_root: None,
             authority: None,
             fault: None,
         }
@@ -131,6 +160,11 @@ impl ExperienceGraphSupervisor {
     }
 
     pub fn boot(&mut self, root_experience_id: &ExperienceId) -> Result<Option<u32>> {
+        if self.hosts.contains_key(root_experience_id) {
+            return Err(Error::InvalidGraph(format!(
+                "experience `{root_experience_id}` is already presented"
+            )));
+        }
         self.recover()?;
         self.reverse_dependencies
             .rebuild(&self.revisions, &self.registry)?;
@@ -138,6 +172,7 @@ impl ExperienceGraphSupervisor {
             return Ok(None);
         };
         self.validate_root(root_experience_id, &graph)?;
+        self.validate_live_instance_budget(std::iter::once((root_experience_id, &graph)))?;
         let mut host = ExperienceHost::launch(self.host_command.clone(), self.host_timeout)?;
         host.boot_graph(
             &graph_id,
@@ -145,9 +180,11 @@ impl ExperienceGraphSupervisor {
             self.revisions.root().to_path_buf(),
         )?;
         let pid = host.id();
-        self.host = Some(host);
-        self.active_root = Some(root_experience_id.clone());
-        self.active_graph = Some(graph_id);
+        self.hosts.insert(root_experience_id.clone(), host);
+        self.active_graphs
+            .insert(root_experience_id.clone(), graph_id);
+        self.primary_root
+            .get_or_insert_with(|| root_experience_id.clone());
         Ok(Some(pid))
     }
 
@@ -156,12 +193,26 @@ impl ExperienceGraphSupervisor {
         root_experience_id: &ExperienceId,
         graph_id: &str,
     ) -> Result<PreparedGraphActivation> {
+        self.prepare_internal(root_experience_id, graph_id, true, false)
+    }
+
+    fn prepare_internal(
+        &mut self,
+        root_experience_id: &ExperienceId,
+        graph_id: &str,
+        stage_authority: bool,
+        allow_unpresented: bool,
+    ) -> Result<PreparedGraphActivation> {
         let graph = self.graphs.verify(graph_id)?;
         self.validate_root(root_experience_id, &graph)?;
+        if self.hosts.contains_key(root_experience_id) {
+            self.validate_live_instance_budget(std::iter::once((root_experience_id, &graph)))?;
+        }
         let candidate_root_revision = graph.nodes[&graph.root].revision_id.to_string();
         let previous_graph_id = self
-            .active_graph
-            .clone()
+            .active_graphs
+            .get(root_experience_id)
+            .cloned()
             .or_else(|| {
                 self.graphs
                     .current(root_experience_id)
@@ -186,20 +237,28 @@ impl ExperienceGraphSupervisor {
                 "experience registry and active graph root disagree".into(),
             ));
         }
-        self.host
-            .as_mut()
-            .ok_or(Error::NoActiveHost)?
-            .prepare_graph(
+        let host_prepared = if let Some(host) = self.hosts.get_mut(root_experience_id) {
+            host.prepare_graph(
                 graph_id,
                 self.graphs.snapshot_path(graph_id)?,
                 self.revisions.root().to_path_buf(),
             )?;
-        let authority_transaction_id = match self.stage_authority_activation(graph_id, &graph) {
+            true
+        } else if allow_unpresented {
+            false
+        } else {
+            return Err(Error::NoActiveHost);
+        };
+        let authority_transaction_id = match stage_authority
+            .then(|| self.stage_authority_activation(graph_id, &graph))
+            .transpose()
+            .map(|transaction| transaction.flatten())
+        {
             Ok(transaction_id) => transaction_id,
             Err(error) => {
                 let _ = self
-                    .host
-                    .as_mut()
+                    .hosts
+                    .get_mut(root_experience_id)
                     .and_then(|host| host.discard_graph(graph_id).ok());
                 return Err(error);
             }
@@ -216,7 +275,8 @@ impl ExperienceGraphSupervisor {
                 previous_revision: previous_root_revision.clone(),
                 candidate_revision: candidate_root_revision,
             }],
-            input_quiesced: false,
+            host_prepared,
+            input_quiesced: !host_prepared,
         })
     }
 
@@ -255,22 +315,34 @@ impl ExperienceGraphSupervisor {
         let mut affected = self
             .reverse_dependencies
             .affected_active_roots(experience_id, &self.graphs)?;
-        let root = self.active_root.clone().ok_or(Error::NoCurrentRevision)?;
-        if *experience_id == root {
-            affected.insert(root.clone());
+        if self.active_graphs.contains_key(experience_id) {
+            affected.insert(experience_id.clone());
         }
-        if affected != std::collections::BTreeSet::from([root.clone()]) {
+        let Some(root) = affected
+            .iter()
+            .next()
+            .cloned()
+            .filter(|_| affected.len() == 1)
+        else {
             return Err(Error::InvalidGraph(format!(
-                "tracked update affects active roots {:?}; this supervisor owns only `{root}`",
-                affected
+                "tracked update affects presented roots {:?}; use a graph-set activation",
+                affected,
+            )));
+        };
+        if !self.active_graphs.contains_key(&root) {
+            return Err(Error::InvalidGraph(format!(
+                "tracked update affects root `{root}`, but this supervisor does not present it"
             )));
         }
-        let root_revision = self
-            .registry
-            .current(&root)?
-            .ok_or(Error::NoCurrentRevision)?
-            .manifest
-            .revision_id;
+        let root_revision = if root == *experience_id {
+            revision_id.to_owned()
+        } else {
+            self.registry
+                .current(&root)?
+                .ok_or(Error::NoCurrentRevision)?
+                .manifest
+                .revision_id
+        };
         let override_revision = experience_package::RevisionId::parse(revision_id)
             .map_err(|error| Error::InvalidGraph(error.to_string()))?;
         let graph = crate::GraphResolver::new(self.revisions.clone())
@@ -291,17 +363,122 @@ impl ExperienceGraphSupervisor {
         Ok(prepared)
     }
 
-    pub fn advance_experience(
+    pub fn prepare_tracked_update_set(
         &mut self,
         experience_id: &ExperienceId,
         revision_id: &str,
-    ) -> Result<Option<(String, u32)>> {
+    ) -> Result<PreparedGraphSetActivation> {
+        self.validate_registry_candidate(experience_id, revision_id)?;
+        let previous_revision = self
+            .registry
+            .current(experience_id)?
+            .ok_or(Error::NoCurrentRevision)?
+            .manifest
+            .revision_id;
         self.reverse_dependencies
             .rebuild(&self.revisions, &self.registry)?;
         let mut affected = self
             .reverse_dependencies
             .affected_active_roots(experience_id, &self.graphs)?;
-        if self.active_root.as_ref() == Some(experience_id) {
+        if self.active_graphs.contains_key(experience_id) {
+            affected.insert(experience_id.clone());
+        }
+        if affected.is_empty() {
+            return Err(Error::InvalidGraph(
+                "graph-set activation requires at least one affected root".into(),
+            ));
+        }
+        let override_revision = experience_package::RevisionId::parse(revision_id)
+            .map_err(|error| Error::InvalidGraph(error.to_string()))?;
+        let overrides = BTreeMap::from([(experience_id.clone(), override_revision)]);
+        let main = experience_package::ExportId::parse("main")
+            .map_err(|error| Error::InvalidGraph(error.to_string()))?;
+        let mut candidates = Vec::new();
+        for root in affected {
+            let root_revision = if root == *experience_id {
+                revision_id.to_owned()
+            } else {
+                self.registry
+                    .current(&root)?
+                    .ok_or(Error::NoCurrentRevision)?
+                    .manifest
+                    .revision_id
+            };
+            let graph = crate::GraphResolver::new(self.revisions.clone())
+                .resolve_tracked_with_overrides(
+                    &root_revision,
+                    &main,
+                    &self.registry,
+                    &overrides,
+                )?;
+            let graph_id = self.graphs.install(&graph)?;
+            candidates.push((root, graph_id, graph));
+        }
+        self.validate_live_instance_budget(
+            candidates
+                .iter()
+                .filter(|(root, _, _)| self.hosts.contains_key(root))
+                .map(|(root, _, graph)| (root, graph)),
+        )?;
+        let mut updates = Vec::new();
+        for (root, graph_id, _) in candidates {
+            match self.prepare_internal(&root, &graph_id, false, true) {
+                Ok(prepared) => updates.push(prepared),
+                Err(error) => {
+                    for prepared in updates {
+                        let _ = self
+                            .hosts
+                            .get_mut(&prepared.root_experience_id)
+                            .and_then(|host| host.discard_graph(&prepared.graph_id).ok());
+                    }
+                    return Err(error);
+                }
+            }
+        }
+        let activation_identity = updates
+            .iter()
+            .map(|update| update.graph_id.as_str())
+            .collect::<Vec<_>>()
+            .join(":");
+        let activation_id = experience_package::hex_sha256(activation_identity.as_bytes());
+        let graphs = updates
+            .iter()
+            .map(|update| update.graph.clone())
+            .collect::<Vec<_>>();
+        let authority_transaction_id = match self.stage_authority_graphs(&activation_id, &graphs) {
+            Ok(transaction_id) => transaction_id,
+            Err(error) => {
+                for prepared in updates {
+                    let _ = self
+                        .hosts
+                        .get_mut(&prepared.root_experience_id)
+                        .and_then(|host| host.discard_graph(&prepared.graph_id).ok());
+                }
+                return Err(error);
+            }
+        };
+        Ok(PreparedGraphSetActivation {
+            updates,
+            authority_transaction_id,
+            registry_updates: vec![RegistryPointerUpdate {
+                experience_id: experience_id.clone(),
+                previous_revision,
+                candidate_revision: revision_id.into(),
+            }],
+        })
+    }
+
+    pub fn advance_experience(
+        &mut self,
+        experience_id: &ExperienceId,
+        revision_id: &str,
+    ) -> Result<ExperienceAdvance> {
+        self.reverse_dependencies
+            .rebuild(&self.revisions, &self.registry)?;
+        let mut affected = self
+            .reverse_dependencies
+            .affected_active_roots(experience_id, &self.graphs)?;
+        if self.active_graphs.contains_key(experience_id) {
             affected.insert(experience_id.clone());
         }
         if affected.is_empty() {
@@ -309,20 +486,37 @@ impl ExperienceGraphSupervisor {
             self.registry.set_current(experience_id, revision_id)?;
             self.reverse_dependencies
                 .rebuild(&self.revisions, &self.registry)?;
-            return Ok(None);
+            return Ok(ExperienceAdvance {
+                graph_updates: Vec::new(),
+            });
+        }
+        if affected.len() > 1
+            || affected
+                .iter()
+                .any(|root| !self.active_graphs.contains_key(root))
+        {
+            let prepared = self.prepare_tracked_update_set(experience_id, revision_id)?;
+            return self.commit_set(prepared);
         }
         let prepared = self.prepare_tracked_update(experience_id, revision_id)?;
+        let root = prepared.root_experience_id.clone();
         let graph_id = prepared.graph_id().to_owned();
         let pid = self.commit(prepared)?;
-        Ok(Some((graph_id, pid)))
+        Ok(ExperienceAdvance {
+            graph_updates: vec![ExperienceGraphAdvance {
+                root_experience_id: root,
+                graph_id,
+                host_pid: Some(pid),
+            }],
+        })
     }
 
     pub fn quiesce(&mut self, prepared: &mut PreparedGraphActivation) -> Result<()> {
         if prepared.input_quiesced {
             return Ok(());
         }
-        self.host
-            .as_mut()
+        self.hosts
+            .get_mut(&prepared.root_experience_id)
             .ok_or(Error::NoActiveHost)?
             .quiesce_graph_input(&prepared.graph_id)?;
         prepared.input_quiesced = true;
@@ -342,12 +536,17 @@ impl ExperienceGraphSupervisor {
             candidate_root_revision: candidate_root_revision.clone(),
             authority_transaction_id: prepared.authority_transaction_id.clone(),
             registry_updates: prepared.registry_updates.clone(),
+            graph_updates: vec![GraphPointerUpdate {
+                root_experience_id: prepared.root_experience_id.clone(),
+                previous_graph_id: prepared.previous_graph_id.clone(),
+                candidate_graph_id: prepared.graph_id.clone(),
+            }],
             phase: GraphActivationPhase::Intent,
         };
         if let Err(error) = self.quiesce(&mut prepared) {
             let _ = self
-                .host
-                .as_mut()
+                .hosts
+                .get_mut(&prepared.root_experience_id)
                 .and_then(|host| host.discard_graph(&prepared.graph_id).ok());
             return Err(error);
         }
@@ -356,8 +555,8 @@ impl ExperienceGraphSupervisor {
         }
         self.inject(GraphActivationFaultPoint::AfterIntent)?;
         if let Err(error) = self
-            .host
-            .as_mut()
+            .hosts
+            .get_mut(&prepared.root_experience_id)
             .ok_or(Error::NoActiveHost)?
             .present_graph(&prepared.graph_id)
         {
@@ -399,14 +598,134 @@ impl ExperienceGraphSupervisor {
         journal.phase = GraphActivationPhase::GraphCommitted;
         self.write_journal(&journal)?;
         self.inject(GraphActivationFaultPoint::AfterGraphCommit)?;
-        self.host
-            .as_mut()
+        self.hosts
+            .get_mut(&prepared.root_experience_id)
             .ok_or(Error::NoActiveHost)?
             .finalize_graph(&prepared.graph_id)?;
-        self.active_root = Some(prepared.root_experience_id);
-        self.active_graph = Some(prepared.graph_id);
+        let root_experience_id = prepared.root_experience_id;
+        self.active_graphs
+            .insert(root_experience_id.clone(), prepared.graph_id);
         self.clear_journal()?;
-        Ok(self.host.as_ref().expect("active host exists").id())
+        Ok(self.hosts[&root_experience_id].id())
+    }
+
+    pub fn commit_set(
+        &mut self,
+        mut prepared: PreparedGraphSetActivation,
+    ) -> Result<ExperienceAdvance> {
+        let primary = prepared
+            .updates
+            .first()
+            .ok_or_else(|| Error::InvalidGraph("graph activation set is empty".into()))?;
+        let candidate_root_revision = primary.graph.nodes[&primary.graph.root]
+            .revision_id
+            .to_string();
+        let mut journal = GraphActivationJournal {
+            format_version: GRAPH_ACTIVATION_JOURNAL_VERSION,
+            root_experience_id: primary.root_experience_id.clone(),
+            previous_graph_id: primary.previous_graph_id.clone(),
+            previous_root_revision: primary.previous_root_revision.clone(),
+            candidate_graph_id: primary.graph_id.clone(),
+            candidate_root_revision,
+            authority_transaction_id: prepared.authority_transaction_id.clone(),
+            registry_updates: prepared.registry_updates.clone(),
+            graph_updates: prepared
+                .updates
+                .iter()
+                .map(|update| GraphPointerUpdate {
+                    root_experience_id: update.root_experience_id.clone(),
+                    previous_graph_id: update.previous_graph_id.clone(),
+                    candidate_graph_id: update.graph_id.clone(),
+                })
+                .collect(),
+            phase: GraphActivationPhase::Intent,
+        };
+        for update in &mut prepared.updates {
+            if let Err(error) = self.quiesce(update) {
+                self.abort_authority(prepared.authority_transaction_id.as_deref())?;
+                for candidate in prepared.updates {
+                    let _ = self
+                        .hosts
+                        .get_mut(&candidate.root_experience_id)
+                        .and_then(|host| host.discard_graph(&candidate.graph_id).ok());
+                }
+                return Err(error);
+            }
+        }
+        if let Err(error) = self.write_journal(&journal) {
+            return self.fail_activation(&journal, error);
+        }
+        self.inject(GraphActivationFaultPoint::AfterIntent)?;
+        for update in &prepared.updates {
+            if !update.host_prepared {
+                continue;
+            }
+            if let Err(error) = self
+                .hosts
+                .get_mut(&update.root_experience_id)
+                .ok_or(Error::NoActiveHost)?
+                .present_graph(&update.graph_id)
+            {
+                return self.fail_activation(&journal, error);
+            }
+        }
+        journal.phase = GraphActivationPhase::Presented;
+        if let Err(error) = self.write_journal(&journal) {
+            return self.fail_activation(&journal, error);
+        }
+        self.inject(GraphActivationFaultPoint::AfterPresented)?;
+        if let Err(error) = self.promote_authority(journal.authority_transaction_id.as_deref()) {
+            return self.fail_activation(&journal, error);
+        }
+        journal.phase = GraphActivationPhase::AuthorityCommitted;
+        if let Err(error) = self.write_journal(&journal) {
+            return self.fail_activation(&journal, error);
+        }
+        self.inject(GraphActivationFaultPoint::AfterAuthorityCommit)?;
+        if let Err(error) = self.apply_registry_updates(&journal, true) {
+            return self.fail_activation(&journal, error);
+        }
+        if let Err(error) = self
+            .reverse_dependencies
+            .rebuild(&self.revisions, &self.registry)
+        {
+            return self.fail_activation(&journal, error);
+        }
+        journal.phase = GraphActivationPhase::RegistryCommitted;
+        if let Err(error) = self.write_journal(&journal) {
+            return self.fail_activation(&journal, error);
+        }
+        self.inject(GraphActivationFaultPoint::AfterRegistryCommit)?;
+        if let Err(error) = self.apply_graph_updates(&journal, true) {
+            return self.fail_activation(&journal, error);
+        }
+        journal.phase = GraphActivationPhase::GraphCommitted;
+        self.write_journal(&journal)?;
+        self.inject(GraphActivationFaultPoint::AfterGraphCommit)?;
+        let mut activated = Vec::new();
+        for update in prepared.updates {
+            let host_pid = if update.host_prepared {
+                let host = self
+                    .hosts
+                    .get_mut(&update.root_experience_id)
+                    .ok_or(Error::NoActiveHost)?;
+                host.finalize_graph(&update.graph_id)?;
+                self.active_graphs
+                    .insert(update.root_experience_id.clone(), update.graph_id.clone());
+                Some(host.id())
+            } else {
+                None
+            };
+            activated.push(ExperienceGraphAdvance {
+                root_experience_id: update.root_experience_id,
+                graph_id: update.graph_id,
+                host_pid,
+            });
+        }
+        self.clear_journal()?;
+        Ok(ExperienceAdvance {
+            graph_updates: activated,
+        })
     }
 
     pub fn configure_fault(&mut self, point: Option<GraphActivationFaultPoint>) {
@@ -429,15 +748,13 @@ impl ExperienceGraphSupervisor {
                 self.apply_registry_updates(&journal, false)?;
                 self.reverse_dependencies
                     .rebuild(&self.revisions, &self.registry)?;
-                self.graphs
-                    .set_current(&journal.root_experience_id, &journal.previous_graph_id)?;
+                self.apply_graph_updates(&journal, false)?;
             }
             _ => {
                 self.apply_registry_updates(&journal, true)?;
                 self.reverse_dependencies
                     .rebuild(&self.revisions, &self.registry)?;
-                self.graphs
-                    .set_current(&journal.root_experience_id, &journal.candidate_graph_id)?;
+                self.apply_graph_updates(&journal, true)?;
             }
         }
         self.clear_journal()?;
@@ -451,63 +768,100 @@ impl ExperienceGraphSupervisor {
 
     pub fn discard(&mut self, prepared: PreparedGraphActivation) -> Result<()> {
         self.abort_authority(prepared.authority_transaction_id.as_deref())?;
-        self.host
-            .as_mut()
+        self.hosts
+            .get_mut(&prepared.root_experience_id)
             .ok_or(Error::NoActiveHost)?
             .discard_graph(&prepared.graph_id)
     }
 
     pub fn poll(&mut self) -> Result<Option<(String, u32, u32)>> {
-        let Some(host) = self.host.as_mut() else {
-            return Ok(None);
-        };
-        let Some(status) = host.try_wait()? else {
-            return Ok(None);
-        };
-        let failed_pid = host.id();
-        self.restart_after_exit(status, failed_pid).map(Some)
+        let roots = self.hosts.keys().cloned().collect::<Vec<_>>();
+        for root in roots {
+            let host = self.hosts.get_mut(&root).expect("presented host exists");
+            let Some(status) = host.try_wait()? else {
+                continue;
+            };
+            let failed_pid = host.id();
+            return self.restart_after_exit(&root, status, failed_pid).map(Some);
+        }
+        Ok(None)
     }
 
     pub fn active_graph(&self) -> Option<&str> {
-        self.active_graph.as_deref()
+        self.primary_root
+            .as_ref()
+            .and_then(|root| self.active_graphs.get(root).map(String::as_str))
+    }
+
+    pub fn active_graph_for(&self, root: &ExperienceId) -> Option<&str> {
+        self.active_graphs.get(root).map(String::as_str)
     }
 
     pub fn host_pid(&self) -> Option<u32> {
-        self.host.as_ref().map(ExperienceHost::id)
+        self.primary_root
+            .as_ref()
+            .and_then(|root| self.hosts.get(root).map(ExperienceHost::id))
+    }
+
+    pub fn presented_graphs(&self) -> BTreeMap<ExperienceId, (String, u32)> {
+        self.hosts
+            .iter()
+            .filter_map(|(root, host)| {
+                self.active_graphs
+                    .get(root)
+                    .map(|graph_id| (root.clone(), (graph_id.clone(), host.id())))
+            })
+            .collect()
+    }
+
+    pub fn dismiss(&mut self, root: &ExperienceId) -> Result<Option<u32>> {
+        let Some(host) = self.hosts.remove(root) else {
+            return Ok(None);
+        };
+        let pid = host.id();
+        host.terminate()?;
+        self.active_graphs.remove(root);
+        if self.primary_root.as_ref() == Some(root) {
+            self.primary_root = self.hosts.keys().next().cloned();
+        }
+        Ok(Some(pid))
     }
 
     pub fn shutdown(&mut self) -> Result<()> {
-        if let Some(host) = self.host.take() {
+        for (_, host) in std::mem::take(&mut self.hosts) {
             host.terminate()?;
         }
-        self.active_graph = None;
-        self.active_root = None;
+        self.active_graphs.clear();
+        self.primary_root = None;
         Ok(())
     }
 
     pub fn restart_host(&mut self) -> Result<(String, u32, u32)> {
-        let host = self.host.take().ok_or(Error::NoActiveHost)?;
+        let root = self.primary_root.clone().ok_or(Error::NoActiveHost)?;
+        let host = self.hosts.remove(&root).ok_or(Error::NoActiveHost)?;
         let previous_pid = host.id();
         host.terminate()?;
-        self.restart_current_graph(previous_pid)
+        self.restart_current_graph(&root, previous_pid)
     }
 
     fn restart_after_exit(
         &mut self,
+        root: &ExperienceId,
         _status: ExitStatus,
         failed_pid: u32,
     ) -> Result<(String, u32, u32)> {
-        self.host.take();
-        self.restart_current_graph(failed_pid)
+        self.hosts.remove(root);
+        self.restart_current_graph(root, failed_pid)
     }
 
-    fn restart_current_graph(&mut self, previous_pid: u32) -> Result<(String, u32, u32)> {
-        let root = self.active_root.clone().ok_or(Error::NoCurrentRevision)?;
-        let (graph_id, graph) = self
-            .graphs
-            .current(&root)?
-            .ok_or(Error::NoCurrentRevision)?;
-        self.validate_root(&root, &graph)?;
+    fn restart_current_graph(
+        &mut self,
+        root: &ExperienceId,
+        previous_pid: u32,
+    ) -> Result<(String, u32, u32)> {
+        let (graph_id, graph) = self.graphs.current(root)?.ok_or(Error::NoCurrentRevision)?;
+        self.validate_root(root, &graph)?;
+        self.validate_live_instance_budget(std::iter::once((root, &graph)))?;
         let mut host = ExperienceHost::launch(self.host_command.clone(), self.host_timeout)?;
         host.boot_graph(
             &graph_id,
@@ -515,8 +869,8 @@ impl ExperienceGraphSupervisor {
             self.revisions.root().to_path_buf(),
         )?;
         let pid = host.id();
-        self.host = Some(host);
-        self.active_graph = Some(graph_id.clone());
+        self.hosts.insert(root.clone(), host);
+        self.active_graphs.insert(root.clone(), graph_id.clone());
         Ok((graph_id, previous_pid, pid))
     }
 
@@ -566,6 +920,43 @@ impl ExperienceGraphSupervisor {
         Ok(())
     }
 
+    fn validate_live_instance_budget<'a>(
+        &self,
+        replacements: impl IntoIterator<Item = (&'a ExperienceId, &'a ResolvedGraph)>,
+    ) -> Result<()> {
+        let mut replacement_sizes = BTreeMap::new();
+        for (root, graph) in replacements {
+            if replacement_sizes
+                .insert(root.clone(), graph.nodes.len())
+                .is_some()
+            {
+                return Err(Error::InvalidGraph(format!(
+                    "live graph budget repeats root `{root}`"
+                )));
+            }
+        }
+        let mut instances = 0usize;
+        for root in self.hosts.keys() {
+            instances += if let Some(size) = replacement_sizes.remove(root) {
+                size
+            } else {
+                let graph_id = self.active_graphs.get(root).ok_or_else(|| {
+                    Error::InvalidGraph(format!(
+                        "presented root `{root}` has no active graph identity"
+                    ))
+                })?;
+                self.graphs.verify(graph_id)?.nodes.len()
+            };
+        }
+        instances += replacement_sizes.values().sum::<usize>();
+        if instances > MAX_GRAPH_INSTANCES {
+            return Err(Error::InvalidGraph(format!(
+                "presented graphs require {instances} live instances; limit is {MAX_GRAPH_INSTANCES}"
+            )));
+        }
+        Ok(())
+    }
+
     fn apply_registry_updates(
         &self,
         journal: &GraphActivationJournal,
@@ -594,75 +985,69 @@ impl ExperienceGraphSupervisor {
         Ok(())
     }
 
+    fn apply_graph_updates(&self, journal: &GraphActivationJournal, candidate: bool) -> Result<()> {
+        if journal.graph_updates.is_empty() {
+            return self.graphs.set_current(
+                &journal.root_experience_id,
+                if candidate {
+                    &journal.candidate_graph_id
+                } else {
+                    &journal.previous_graph_id
+                },
+            );
+        }
+        for update in &journal.graph_updates {
+            self.graphs.set_current(
+                &update.root_experience_id,
+                if candidate {
+                    &update.candidate_graph_id
+                } else {
+                    &update.previous_graph_id
+                },
+            )?;
+        }
+        Ok(())
+    }
+
     fn stage_authority_activation(
         &self,
         graph_id: &str,
         graph: &ResolvedGraph,
     ) -> Result<Option<String>> {
+        self.stage_authority_graphs(graph_id, std::slice::from_ref(graph))
+    }
+
+    fn stage_authority_graphs(
+        &self,
+        activation_id: &str,
+        graphs: &[ResolvedGraph],
+    ) -> Result<Option<String>> {
         let Some(_) = &self.authority else {
             return Ok(None);
         };
         let mut promotions = Vec::new();
-        let mut seen = std::collections::BTreeSet::new();
-        for node in graph.nodes.values() {
-            if !seen.insert(node.experience_id.clone()) {
-                continue;
+        let mut seen = BTreeMap::new();
+        for graph in graphs {
+            for node in graph.nodes.values() {
+                if let Some(revision_id) = seen.get(&node.experience_id) {
+                    if revision_id != &node.revision_id {
+                        return Err(Error::InvalidGraph(format!(
+                            "experience `{}` resolves to multiple revisions across the activation set",
+                            node.experience_id
+                        )));
+                    }
+                    continue;
+                }
+                seen.insert(node.experience_id.clone(), node.revision_id.clone());
+                self.append_authority_promotion(node, &mut promotions)?;
             }
-            let revision = self.revisions.verify(node.revision_id.as_str())?;
-            let durable: DurableState = serde_json::from_slice(&fs::read(
-                revision.directory.join(&revision.manifest.state.path),
-            )?)?;
-            let current = self.authority_state_for(&node.experience_id)?;
-            let exact = self.authority_state_at(&node.experience_id, node.revision_id.as_str())?;
-            if current.revision_id == node.revision_id.as_str()
-                && exact.revision_id == node.revision_id.as_str()
-                && exact.schema_version == durable.schema_version
-                && exact.source_sha256 == durable.source_sha256
-            {
-                continue;
-            }
-            if durable.schema_version < current.schema_version {
-                return Err(Error::InvalidGraph(format!(
-                    "candidate schema {} cannot replace experience `{}` schema {}",
-                    durable.schema_version, node.experience_id, current.schema_version
-                )));
-            }
-            let (state, schema_version, source_sha256) = if exact.revision_id
-                == node.revision_id.as_str()
-                && exact.schema_version == durable.schema_version
-                && exact.source_sha256 == durable.source_sha256
-            {
-                (exact.state, exact.schema_version, exact.source_sha256)
-            } else {
-                (durable.state, durable.schema_version, durable.source_sha256)
-            };
-            let migration = if schema_version > current.schema_version {
-                Some(service_protocol::MigrationProof {
-                    from_schema_version: current.schema_version,
-                    to_schema_version: schema_version,
-                    from_state_sha256: state_sha256(&current.state)
-                        .map_err(|error| Error::InvalidGraph(error.to_string()))?,
-                })
-            } else {
-                None
-            };
-            promotions.push(GraphExperiencePromotion {
-                experience_id: node.experience_id.clone(),
-                expected_revision: current.revision,
-                revision_id: node.revision_id.to_string(),
-                schema_version,
-                source_sha256,
-                state,
-                migration,
-                actions: Vec::new(),
-            });
         }
         if promotions.is_empty() {
             return Ok(None);
         }
         let transaction_id = format!(
             "graph-activate-{}-{}-{}",
-            &graph_id[..32],
+            &activation_id[..32],
             std::process::id(),
             JOURNAL_SEQUENCE.fetch_add(1, Ordering::Relaxed)
         );
@@ -684,6 +1069,62 @@ impl ExperienceGraphSupervisor {
             }
         }
         Ok(Some(transaction_id))
+    }
+
+    fn append_authority_promotion(
+        &self,
+        node: &experience_package::ResolvedGraphNode,
+        promotions: &mut Vec<GraphExperiencePromotion>,
+    ) -> Result<()> {
+        let revision = self.revisions.verify(node.revision_id.as_str())?;
+        let durable: DurableState = serde_json::from_slice(&fs::read(
+            revision.directory.join(&revision.manifest.state.path),
+        )?)?;
+        let current = self.authority_state_for(&node.experience_id)?;
+        let exact = self.authority_state_at(&node.experience_id, node.revision_id.as_str())?;
+        if current.revision_id == node.revision_id.as_str()
+            && exact.revision_id == node.revision_id.as_str()
+            && exact.schema_version == durable.schema_version
+            && exact.source_sha256 == durable.source_sha256
+        {
+            return Ok(());
+        }
+        if durable.schema_version < current.schema_version {
+            return Err(Error::InvalidGraph(format!(
+                "candidate schema {} cannot replace experience `{}` schema {}",
+                durable.schema_version, node.experience_id, current.schema_version
+            )));
+        }
+        let (state, schema_version, source_sha256) = if exact.revision_id
+            == node.revision_id.as_str()
+            && exact.schema_version == durable.schema_version
+            && exact.source_sha256 == durable.source_sha256
+        {
+            (exact.state, exact.schema_version, exact.source_sha256)
+        } else {
+            (durable.state, durable.schema_version, durable.source_sha256)
+        };
+        let migration = if schema_version > current.schema_version {
+            Some(service_protocol::MigrationProof {
+                from_schema_version: current.schema_version,
+                to_schema_version: schema_version,
+                from_state_sha256: state_sha256(&current.state)
+                    .map_err(|error| Error::InvalidGraph(error.to_string()))?,
+            })
+        } else {
+            None
+        };
+        promotions.push(GraphExperiencePromotion {
+            experience_id: node.experience_id.clone(),
+            expected_revision: current.revision,
+            revision_id: node.revision_id.to_string(),
+            schema_version,
+            source_sha256,
+            state,
+            migration,
+            actions: Vec::new(),
+        });
+        Ok(())
     }
 
     fn authority_state_for(
@@ -835,17 +1276,21 @@ impl ExperienceGraphSupervisor {
 
     fn rollback_activation(&mut self, journal: &GraphActivationJournal) -> Result<()> {
         self.abort_authority(journal.authority_transaction_id.as_deref())?;
-        self.host
-            .as_mut()
-            .ok_or(Error::NoActiveHost)?
-            .discard_graph(&journal.candidate_graph_id)?;
+        for update in self.journal_graph_updates(journal) {
+            if let Some(host) = self.hosts.get_mut(&update.root_experience_id) {
+                host.discard_graph(&update.candidate_graph_id)?;
+            }
+        }
         self.apply_registry_updates(journal, false)?;
         self.reverse_dependencies
             .rebuild(&self.revisions, &self.registry)?;
-        self.graphs
-            .set_current(&journal.root_experience_id, &journal.previous_graph_id)?;
-        self.active_root = Some(journal.root_experience_id.clone());
-        self.active_graph = Some(journal.previous_graph_id.clone());
+        self.apply_graph_updates(journal, false)?;
+        for update in self.journal_graph_updates(journal) {
+            if self.hosts.contains_key(&update.root_experience_id) {
+                self.active_graphs
+                    .insert(update.root_experience_id, update.previous_graph_id);
+            }
+        }
         self.clear_journal()
     }
 
@@ -853,15 +1298,27 @@ impl ExperienceGraphSupervisor {
         self.apply_registry_updates(journal, true)?;
         self.reverse_dependencies
             .rebuild(&self.revisions, &self.registry)?;
-        self.graphs
-            .set_current(&journal.root_experience_id, &journal.candidate_graph_id)?;
-        self.host
-            .as_mut()
-            .ok_or(Error::NoActiveHost)?
-            .finalize_graph(&journal.candidate_graph_id)?;
-        self.active_root = Some(journal.root_experience_id.clone());
-        self.active_graph = Some(journal.candidate_graph_id.clone());
+        self.apply_graph_updates(journal, true)?;
+        for update in self.journal_graph_updates(journal) {
+            if let Some(host) = self.hosts.get_mut(&update.root_experience_id) {
+                host.finalize_graph(&update.candidate_graph_id)?;
+                self.active_graphs
+                    .insert(update.root_experience_id, update.candidate_graph_id);
+            }
+        }
         self.clear_journal()
+    }
+
+    fn journal_graph_updates(&self, journal: &GraphActivationJournal) -> Vec<GraphPointerUpdate> {
+        if journal.graph_updates.is_empty() {
+            vec![GraphPointerUpdate {
+                root_experience_id: journal.root_experience_id.clone(),
+                previous_graph_id: journal.previous_graph_id.clone(),
+                candidate_graph_id: journal.candidate_graph_id.clone(),
+            }]
+        } else {
+            journal.graph_updates.clone()
+        }
     }
 
     fn validate_journal(&self, journal: &GraphActivationJournal) -> Result<()> {
@@ -881,6 +1338,18 @@ impl ExperienceGraphSupervisor {
             return Err(Error::InvalidGraph(
                 "graph activation journal root binding mismatch".into(),
             ));
+        }
+        let mut graph_roots = std::collections::BTreeSet::new();
+        for update in self.journal_graph_updates(journal) {
+            if !graph_roots.insert(update.root_experience_id.clone()) {
+                return Err(Error::InvalidGraph(
+                    "graph activation journal repeats a graph root".into(),
+                ));
+            }
+            let previous = self.graphs.verify(&update.previous_graph_id)?;
+            let candidate = self.graphs.verify(&update.candidate_graph_id)?;
+            self.validate_root(&update.root_experience_id, &previous)?;
+            self.validate_root(&update.root_experience_id, &candidate)?;
         }
         let mut experiences = std::collections::BTreeSet::new();
         for update in &journal.registry_updates {

@@ -12563,3 +12563,45 @@ Linux host, but the multi-root tracked activation transaction and equivalent
 Android host routing remain open. Run the updated nested composition campaign
 on the Linux target with Weston available, then extend graph activation across
 all affected presented roots before starting Android parity.
+
+## 2026-08-27: Make tracked graph activation atomic across top-level roots
+
+**Goal:** Close the remaining single-root supervisor assumption so one tracked
+Experience update cannot leave independently launched consumers on different
+child revisions.
+
+**Changed:** The graph supervisor now owns a host and active graph per presented
+root. A tracked update resolves every affected current graph against the exact
+candidate revision, prepares all live hosts, stages the union of authority
+state promotions once, and records all registry and graph-pointer changes in a
+single durable activation journal. Inactive roots with current graph pointers
+advance in the same transaction without creating phantom hosts. Recovery rolls
+the entire set backward before authority commit or forward after it. Conflicting
+revision bindings for the same Experience are rejected before staging.
+
+Top-level presentation is now registry-addressed through `present-experience`
+and `dismiss-experience`; the configured Stock root remains pinned. Each root
+still has an independent host process, while each graph node retains its own
+Luau VM and Instance ID. The supervisor enforces the frozen limit of eight live
+instances across all simultaneously presented graphs and reports whether each
+advanced root was live or inactive.
+
+**Evidence:** `cargo test -p revision-supervisor --all-targets` passed 44 tests.
+The focused graph suite passed 10 cases covering two live tracked roots, a live
+plus inactive root, one authority transaction shared by two roots, rollback of
+both pointers after an injected post-presentation fault, locked pinning, exact
+restart, and rejection of a ninth aggregate instance. Rust formatting and
+all-target compilation passed.
+
+**Failures and decision:** Treating only roots owned by the running supervisor
+as affected would have silently left a registered inactive graph stale. The
+final transaction uses every current graph pointer from the reverse-dependency
+index, but sends prepare, quiesce, present, and finalize only to roots with a
+live host. Recovery no longer inserts inactive roots into the in-memory live
+host map.
+
+**Remaining risks and next gate:** The Linux control and transaction path is
+complete at the supervisor layer, but compositor presentation evidence still
+needs the physical Linux campaign. Audit and finish fork/remix authoring and
+built-in v4 conversion next, then implement the same registry, graph, state,
+appearance, and boundary behavior in the Android authority and host.

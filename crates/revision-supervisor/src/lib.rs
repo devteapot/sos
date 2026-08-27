@@ -16,8 +16,9 @@ pub use coordinator::{
 pub use experience_host_protocol::{HostEvent, HostRequest};
 pub use graph::{GraphResolver, GraphStore};
 pub use graph_supervisor::{
-    ExperienceGraphSupervisor, GraphActivationFaultPoint, GraphActivationJournal,
-    GraphActivationPhase, PreparedGraphActivation, RegistryPointerUpdate,
+    ExperienceAdvance, ExperienceGraphAdvance, ExperienceGraphSupervisor,
+    GraphActivationFaultPoint, GraphActivationJournal, GraphActivationPhase, GraphPointerUpdate,
+    PreparedGraphActivation, PreparedGraphSetActivation, RegistryPointerUpdate,
 };
 pub use host::{ExperienceHost, HostCommand};
 pub use reference::{install_reference_composition, ReferenceComposition};
