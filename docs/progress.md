@@ -13148,3 +13148,54 @@ checks passed.
 then one clean direct phase from a fresh store and evidence directory. Do not
 accept cached success without the retained prevalidation report and nonzero
 held-input counts.
+
+## 2026-08-27: Bind Linux input release and rollback to the graph transaction
+
+**Goal:** Diagnose the fourth direct-DRM result at the first incorrect product
+boundary and make a rejected presented graph return to the accepted graph with
+physical evidence.
+
+**Changed:** The compositor no longer ends its input-quiesce epoch merely
+because an armed candidate frame was presented. A graph candidate remains
+non-interactive until the supervisor has promoted authority state, registry
+and graph pointers and sends `FinalizeGraph`. Boot and bounded legacy revision
+presentation still resume explicitly after their first proven frame.
+
+If authority rejects after candidate presentation, the Linux host now restores
+the previous graph while retaining the candidate's quiesced input epoch, arms a
+new fence for the restored graph, and emits `GraphDiscarded` only after that
+graph has compositor presentation evidence. The compositor permits this
+trusted shell rollback fence to reuse the existing quiesce epoch without an
+input-release gap. The direct verifier now requires the exact five-frame graph
+sequence: boot old, committed new, rejected old, restored new, restarted new.
+
+**Evidence:** Attempt four is retained at
+`.cache/evidence/linux-v4-528a3e6/attempt4`. Its finalized files total 144,395
+bytes. `SHA256SUMS` is 2,388 bytes with SHA-256
+`f69773ffd9653af66f0936eef4b8a900421234e01324f0f463a5ebe6c48a4724`.
+`result.json` records FAIL after 15.877643295 monotonic seconds. Before the
+final count assertion, it proved complete v4 Stock boot and grant review,
+successful candidate activation under held keyboard, pointer, touch and stylus
+input, an authority rejection under the second held-input lifecycle, unchanged
+registry/authority state, and host restart from PID 13025 to 13451. Its four
+DRM frames exposed the missing fifth boundary: the rejected old graph was
+presented, but discard restored the accepted new graph only in host memory and
+returned without a compositor fence.
+
+After the fix, all 28 compositor library tests pass, including explicit
+finalization and rollback rearm policy cases. All 36 Linux/Android experience
+library tests and all 15 graph-supervisor integration tests pass. The Linux
+host compiles with `linux-host`; `bash -n tools/linux-vm/verify-direct-session`,
+formatting, and diff checks pass.
+
+**Failures and decision:** Treating the fourth frame as harmless preview and
+changing the expected count would not prove visible rollback, and releasing
+input at candidate presentation allowed interaction before authority commit.
+The durable transaction already ended at `FinalizeGraph`; physical input and
+discard evidence now use that existing boundary.
+
+**Remaining risks and next gate:** Commit and synchronize this exact revision,
+then run one fresh direct-DRM attempt. PASS requires five ordered DRM graph
+frames, four explicit input-epoch resumptions, retained raw evidence and a
+verified manifest. Framework integrated-input and Samsung physical campaigns
+remain open.

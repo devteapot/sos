@@ -353,7 +353,15 @@ struct PendingCommit {
 struct PendingPresentation {
     request_id: u64,
     revision_id: String,
-    graph: bool,
+    completion: PresentationCompletion,
+}
+
+#[derive(Clone, Debug)]
+enum PresentationCompletion {
+    Revision,
+    BootGraph,
+    GraphCandidate,
+    GraphDiscard { discarded_graph_id: String },
 }
 
 #[derive(Debug)]
@@ -1056,7 +1064,11 @@ impl LinuxExperienceHost {
             pending_presentation: Some(PendingPresentation {
                 request_id: boot_request_id,
                 revision_id: presentation_identity,
-                graph: graph_presentation,
+                completion: if graph_presentation {
+                    PresentationCompletion::BootGraph
+                } else {
+                    PresentationCompletion::Revision
+                },
             }),
             last_presented_revision: None,
             input_quiesced_revision: boot_quiesced_revision,
@@ -1659,6 +1671,17 @@ impl LinuxExperienceHost {
         .detach();
     }
 
+    fn resume_presented_input(&mut self, request_id: u64, quiesced_id: &str) -> Result<()> {
+        if self.input_quiesced_revision.as_deref() != Some(quiesced_id) {
+            bail!("presented input epoch does not match `{quiesced_id}`");
+        }
+        if let Some(fence) = &self.compositor_fence {
+            fence.resume_input(request_id, quiesced_id)?;
+        }
+        self.input_quiesced_revision = None;
+        Ok(())
+    }
+
     fn handle_compositor_event(&mut self, event: FenceEvent, cx: &mut Context<Self>) {
         match event {
             FenceEvent::Presented(presented) => {
@@ -1684,7 +1707,6 @@ impl LinuxExperienceHost {
                     return;
                 }
                 self.last_presented_revision = Some(presented.revision_id.clone());
-                self.input_quiesced_revision = None;
                 self.status = None;
                 eprintln!(
                     "sos_revision_frame revision_id={} evidence={} commit_sequence={} submit_sequence={}",
@@ -1693,16 +1715,61 @@ impl LinuxExperienceHost {
                     presented.commit_sequence,
                     presented.submit_sequence
                 );
-                if pending.graph {
-                    emit(&HostEvent::GraphPresented {
-                        request_id: presented.request_id,
-                        graph_id: presented.revision_id,
-                    });
-                } else {
-                    emit(&HostEvent::Presented {
-                        request_id: presented.request_id,
-                        revision_id: presented.revision_id,
-                    });
+                match pending.completion {
+                    PresentationCompletion::Revision => {
+                        if let Err(error) = self
+                            .resume_presented_input(presented.request_id, &presented.revision_id)
+                        {
+                            eprintln!(
+                                "sos_compositor_input_resume_failed request_id={} revision_id={} error={error:#}",
+                                presented.request_id, presented.revision_id
+                            );
+                            cx.quit();
+                            return;
+                        }
+                        emit(&HostEvent::Presented {
+                            request_id: presented.request_id,
+                            revision_id: presented.revision_id,
+                        });
+                    }
+                    PresentationCompletion::BootGraph => {
+                        if let Err(error) = self
+                            .resume_presented_input(presented.request_id, &presented.revision_id)
+                        {
+                            eprintln!(
+                                "sos_compositor_input_resume_failed request_id={} graph_id={} error={error:#}",
+                                presented.request_id, presented.revision_id
+                            );
+                            cx.quit();
+                            return;
+                        }
+                        emit(&HostEvent::GraphPresented {
+                            request_id: presented.request_id,
+                            graph_id: presented.revision_id,
+                        });
+                    }
+                    PresentationCompletion::GraphCandidate => {
+                        emit(&HostEvent::GraphPresented {
+                            request_id: presented.request_id,
+                            graph_id: presented.revision_id,
+                        });
+                    }
+                    PresentationCompletion::GraphDiscard { discarded_graph_id } => {
+                        if let Err(error) =
+                            self.resume_presented_input(presented.request_id, &discarded_graph_id)
+                        {
+                            eprintln!(
+                                "sos_compositor_input_resume_failed request_id={} graph_id={} error={error:#}",
+                                presented.request_id, discarded_graph_id
+                            );
+                            cx.quit();
+                            return;
+                        }
+                        emit(&HostEvent::GraphDiscarded {
+                            request_id: presented.request_id,
+                            graph_id: discarded_graph_id,
+                        });
+                    }
                 }
                 self.dispatch_pending_input_event(cx);
                 self.dispatch_queued_provider_model(cx);
@@ -2098,7 +2165,7 @@ impl LinuxExperienceHost {
                 self.pending_presentation = Some(PendingPresentation {
                     request_id,
                     revision_id: graph_id,
-                    graph: true,
+                    completion: PresentationCompletion::GraphCandidate,
                 });
                 self.status = Some(("Graph switched; waiting for presented frame".into(), true));
                 cx.notify();
@@ -2215,6 +2282,18 @@ impl LinuxExperienceHost {
                 } else if self.active_graph.as_ref().map(|graph| &graph.graph_id) == Some(&graph_id)
                     && self.rollback_graph.is_some()
                 {
+                    let restored_graph_id = self
+                        .rollback_graph
+                        .as_ref()
+                        .expect("rollback graph was checked")
+                        .graph_id
+                        .clone();
+                    if let Some(fence) = &self.compositor_fence {
+                        if let Err(error) = fence.arm(request_id, &restored_graph_id) {
+                            reject_graph(request_id, graph_id, error.to_string());
+                            return;
+                        }
+                    }
                     let candidate = self.active_graph.take();
                     let restored = self
                         .rollback_graph
@@ -2238,30 +2317,30 @@ impl LinuxExperienceHost {
                             )
                         }));
                     }
-                    if self.input_quiesced_revision.as_deref() == Some(&graph_id) {
-                        if let Some(fence) = &self.compositor_fence {
-                            if let Err(error) = fence.resume_input(request_id, &graph_id) {
-                                reject_graph(request_id, graph_id, error.to_string());
-                                return;
-                            }
-                        }
-                        self.input_quiesced_revision = None;
-                    }
-                    self.pending_presentation = None;
-                    self.last_presented_revision = self
-                        .active_graph
-                        .as_ref()
-                        .map(|graph| graph.graph_id.clone());
+                    self.pending_presentation = Some(PendingPresentation {
+                        request_id,
+                        revision_id: restored_graph_id,
+                        completion: PresentationCompletion::GraphDiscard {
+                            discarded_graph_id: graph_id.clone(),
+                        },
+                    });
                     drop(candidate);
                 } else {
                     reject_graph(request_id, graph_id, "no prepared or rollback graph");
                     return;
                 }
-                self.status = None;
-                emit(&HostEvent::GraphDiscarded {
-                    request_id,
-                    graph_id,
-                });
+                if self.pending_presentation.is_some() {
+                    self.status = Some((
+                        "Restoring accepted graph; waiting for presented frame".into(),
+                        true,
+                    ));
+                } else {
+                    self.status = None;
+                    emit(&HostEvent::GraphDiscarded {
+                        request_id,
+                        graph_id,
+                    });
+                }
                 cx.notify();
             }
             HostRequest::Shutdown { request_id } => {
@@ -2383,7 +2462,7 @@ impl LinuxExperienceHost {
                 self.pending_presentation = Some(PendingPresentation {
                     request_id: commit.present_request_id,
                     revision_id: self.active_revision_id.clone(),
-                    graph: false,
+                    completion: PresentationCompletion::Revision,
                 });
                 self.status = Some((
                     if self.compositor_fence.is_some() {
@@ -3914,16 +3993,25 @@ impl Render for LinuxExperienceHost {
                         "sos_revision_frame revision_id={} evidence=gpui_next_frame",
                         presentation.revision_id
                     );
-                    if presentation.graph {
-                        emit(&HostEvent::GraphPresented {
-                            request_id: presentation.request_id,
-                            graph_id: presentation.revision_id,
-                        });
-                    } else {
-                        emit(&HostEvent::Presented {
+                    match presentation.completion {
+                        PresentationCompletion::Revision => emit(&HostEvent::Presented {
                             request_id: presentation.request_id,
                             revision_id: presentation.revision_id,
-                        });
+                        }),
+                        PresentationCompletion::BootGraph
+                        | PresentationCompletion::GraphCandidate => {
+                            emit(&HostEvent::GraphPresented {
+                                request_id: presentation.request_id,
+                                graph_id: presentation.revision_id,
+                            });
+                        }
+                        PresentationCompletion::GraphDiscard { discarded_graph_id } => {
+                            this.input_quiesced_revision = None;
+                            emit(&HostEvent::GraphDiscarded {
+                                request_id: presentation.request_id,
+                                graph_id: discarded_graph_id,
+                            });
+                        }
                     }
                     this.dispatch_queued_provider_model(cx);
                     cx.notify();

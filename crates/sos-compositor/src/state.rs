@@ -432,7 +432,7 @@ impl SosCompositor {
                             request_id,
                             revision_id,
                             changed,
-                            "resumed compositor input after revision abort"
+                            "resumed compositor input epoch"
                         );
                         let _ = reply.send(Ok(changed));
                     }
@@ -719,7 +719,6 @@ impl SosCompositor {
         presented: crate::policy::QueuedRevision,
         evidence: PresentationEvidence,
     ) {
-        self.end_input_quiesce(true);
         let event = CompositorEvent::Presented {
             request_id: presented.request_id,
             revision_id: presented.revision_id.clone(),

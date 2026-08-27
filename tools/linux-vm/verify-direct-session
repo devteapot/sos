@@ -255,6 +255,7 @@ fi
 vm_status_before="$(SOS_LINUX_REVISION_ROOT="$vm_revision_root" ./tools/sosctl linux-status)"
 printf '%s\n' "$vm_status_before" >"$vm_run_dir/status-before.json"
 vm_pid_before="$(sed -n 's/.*"host_pid":\([0-9][0-9]*\).*/\1/p' <<<"$vm_status_before")"
+vm_graph_before="$(sed -n 's/.*"active_graph":"\([0-9a-f][0-9a-f]*\)".*/\1/p' <<<"$vm_status_before")"
 vm_stock_candidate="$vm_run_dir/direct-input-stock.luau"
 sed '0,/A responsive workspace assembled entirely by this Luau revision\./s//Direct input gate active in this complete Stock revision./' \
   experiences/default.luau >"$vm_stock_candidate"
@@ -308,7 +309,9 @@ grep -q 'suppressed release for button held across activation' "$vm_run_dir/comp
 vm_status_after="$(SOS_LINUX_REVISION_ROOT="$vm_revision_root" ./tools/sosctl linux-status)"
 printf '%s\n' "$vm_status_after" >"$vm_run_dir/status-after.json"
 vm_pid_after="$(sed -n 's/.*"host_pid":\([0-9][0-9]*\).*/\1/p' <<<"$vm_status_after")"
+vm_graph_after="$(sed -n 's/.*"active_graph":"\([0-9a-f][0-9a-f]*\)".*/\1/p' <<<"$vm_status_after")"
 [[ -n "$vm_pid_before" && "$vm_pid_before" == "$vm_pid_after" ]]
+[[ -n "$vm_graph_before" && -n "$vm_graph_after" && "$vm_graph_before" != "$vm_graph_after" ]]
 
 # Repeat the same held-device lifecycle through an authority rejection after
 # compositor quiesce. This proves discard/resume suppression as well as the
@@ -403,13 +406,31 @@ vm_current_revision="$(
 vm_authority_revision="$(authority_experience_revision sos.stock.shell)"
 [[ "$vm_current_revision" == "$vm_authority_revision" ]]
 [[ ! -e "$vm_revision_root/current" ]]
-[[ "$(grep -c 'evidence=drm_page_flip' "$vm_run_dir/session.log")" -eq 3 ]]
+python3 - "$vm_run_dir/session.log" "$vm_graph_before" "$vm_graph_after" <<'PY'
+import re
+import sys
+
+log_path, before, after = sys.argv[1:]
+with open(log_path, encoding="utf-8") as log_file:
+    frames = [
+        match.group(1)
+        for line in log_file
+        if (match := re.search(
+            r"sos_revision_frame revision_id=([0-9a-f]{64}) evidence=drm_page_flip",
+            line,
+        ))
+    ]
+expected = [before, after, before, after, after]
+if frames != expected:
+    raise SystemExit(f"unexpected physical graph frame sequence: {frames!r} != {expected!r}")
+PY
 if grep -qE 'evidence=(gpui_next_frame|nested_backend_submit)' "$vm_run_dir/session.log"; then
   printf 'error: host used weaker presentation evidence in direct mode\n' >&2
   exit 1
 fi
 [[ "$(grep -c 'presented armed shell revision.*evidence=\"drm_page_flip\"' \
-  "$vm_run_dir/compositor.log")" -eq 3 ]]
+  "$vm_run_dir/compositor.log")" -eq 5 ]]
+[[ "$(grep -c 'resumed compositor input epoch' "$vm_run_dir/compositor.log")" -eq 4 ]]
 grep -q "authenticated SOS shell control connection pid=$vm_pid_after" \
   "$vm_run_dir/compositor.log"
 grep -q "authenticated SOS shell control connection pid=$vm_restarted_pid" \

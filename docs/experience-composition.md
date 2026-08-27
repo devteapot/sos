@@ -370,8 +370,11 @@ The implementation is split so the contracts do not depend on GPUI or Linux:
 - the Linux graph host prepares off the GPUI thread, while the graph supervisor
   presents and confirms the complete graph, advances registry and graph
   pointers under a durable journal, then explicitly finalizes the host switch.
-  A normal failure before durable graph commit rolls back the presented graph;
-  crash recovery selects the journaled side of the commit;
+  Compositor input remains quiesced after candidate presentation until that
+  finalization. A normal failure before durable graph commit rearms the
+  compositor for the accepted graph and completes discard only after its
+  restored frame is physically presented; crash recovery selects the journaled
+  side of the commit;
 - the Linux host namespaces nodes, text state, assets, provider surfaces, input,
   accessibility, and provider subscriptions by graph owner; and
 - the trusted authoring broker exposes bounded context, validate, and submit
