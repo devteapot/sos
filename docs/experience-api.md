@@ -117,6 +117,16 @@ events must fit both the export schema and the dependency's explicit boundary
 grant. The parent never receives the child scene, state, provider handles, or
 grants.
 
+`context.viewport` is live host-owned geometry in logical units. It contains
+`width`, `height`, `scale_milli`, and `safe_insets = { left, top, right,
+bottom }`. A top-level host updates that context and rerenders the root when
+its real window metrics, density, display cutout, or gesture insets change;
+the revision and Instance ID do not change. A mounted child receives its
+measured mount size and zero physical-display insets because its parent owns
+the clipped placement. Insets must be non-negative and leave a non-empty
+viewport. Experiences may add their own visual padding, but must keep primary
+content and controls outside the reported unsafe edges.
+
 `model.appearance` is an authority-owned ABI v1 snapshot. It includes scheme,
 contrast, text scale, reduced-motion preference, and semantic color, spacing,
 radius, and typography tokens. It updates live without revision activation.
@@ -310,8 +320,10 @@ bottom navigation, touch geometry, vertically scrolling screens, app launcher,
 and agent flow are authored separately. Applications and ordinary SOS
 Experiences replace the presented root and fill the phone viewport. Stock
 Mobile has no `window_space`, command rail, hover surface, tiling policy, or
-desktop window model. Sharing the provider and appearance ABIs does not merge
-the two Stock identities or their durable resources.
+desktop window model. It consumes the live safe-inset context in its source,
+including cutout clearance above its top bar and gesture clearance below its
+bottom navigation. Sharing the provider and appearance ABIs does not merge the
+two Stock identities or their durable resources.
 
 `render` returns the root scene node. `update` may mutate and return state, or
 return a typed effect envelope:

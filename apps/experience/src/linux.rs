@@ -5519,6 +5519,7 @@ mod tests {
                         export_id: experience_package::ExportId::parse("main").unwrap(),
                         parent: None,
                         dependency: None,
+                        viewport: Default::default(),
                         state: serde_json::json!({}),
                         scene: Some(Scene {
                             root: SceneNode {
@@ -5552,6 +5553,7 @@ mod tests {
                         dependency: Some(
                             experience_package::DependencyAlias::parse("agenda").unwrap(),
                         ),
+                        viewport: Default::default(),
                         state: serde_json::json!({"draft": "authoritative"}),
                         scene: Some(Scene {
                             root: SceneNode {

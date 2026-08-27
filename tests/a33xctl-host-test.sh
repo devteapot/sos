@@ -5,6 +5,7 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ctl="$repo_root/tools/a33xctl"
 mock_adb="$repo_root/tests/fixtures/a33xctl-mock-adb"
+mock_nc="$repo_root/tests/fixtures/a33xctl-mock-nc"
 test_root="$(mktemp -d /tmp/sos-a33xctl-host-test.XXXXXX)"
 trap 'rm -rf -- "$test_root"' EXIT
 
@@ -100,13 +101,29 @@ fi
 
 printf 'compat artifact\n' >"$test_root/compat.ota.zip"
 printf 'core artifact\n' >"$test_root/core.ota.zip"
+failed_campaign="$test_root/failed-capture-campaign"
+if A33XCTL_ADB="$mock_adb" A33XCTL_NC=false \
+  "$ctl" capture-v4-composition-stage \
+    --product compat1 \
+    --serial MOCKSERIAL \
+    --expected-revision sos.compat1.test.revision \
+    --artifact "$test_root/compat.ota.zip" \
+    --root "$failed_campaign" \
+    --stage stock >/dev/null 2>&1; then
+  printf 'failed composition capture unexpectedly passed\n' >&2
+  exit 1
+fi
+[[ -f "$failed_campaign/campaign.json" ]]
+[[ ! -e "$failed_campaign/stages/stock" ]]
+[[ -z "$(find "$failed_campaign/stages" -mindepth 1 -print -quit)" ]]
 for product in compat1 core1; do
   revision="sos.$product.test.revision"
   artifact="$test_root/${product%1}.ota.zip"
   campaign="$test_root/$product-campaign"
   for stage in stock dashboard appearance child-failure child-timeout recovered \
     ime-accessibility host-restart authority-restart authored rollback; do
-    A33XCTL_ADB="$mock_adb" "$ctl" capture-v4-composition-stage \
+    A33XCTL_ADB="$mock_adb" A33XCTL_NC="$mock_nc" \
+      "$ctl" capture-v4-composition-stage \
       --product "$product" \
       --serial MOCKSERIAL \
       --expected-revision "$revision" \

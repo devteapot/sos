@@ -114,6 +114,8 @@ EOF
   }
 
   case "$*" in
+    'forward tcp:0 tcp:47778') printf '47779\r\n' ;;
+    'forward --remove tcp:47779') ;;
     'shell getprop ro.build.version.incremental') printf '%s\r\n' "$mock_revision" ;;
     'shell getprop ro.sos.experience_api') printf '4\r\n' ;;
     'shell getprop ro.sos.revision_format') printf '4\r\n' ;;
@@ -173,9 +175,11 @@ EOF
     'shell cat /proc/500/status'|'shell cat /proc/501/status'|'shell cat /proc/502/status')
       printf 'Name:\tsos-core-host\nVmRSS:\t64000 kB\n'
       ;;
-    'shell uiautomator dump /dev/tty')
+    shell\ uiautomator\ dump\ /data/local/tmp/sos-v4-*-accessibility.xml) ;;
+    shell\ cat\ /data/local/tmp/sos-v4-*-accessibility.xml)
       printf '<hierarchy><node text="Dashboard"/><node content-desc="Open first agenda item"/><node content-desc="Agenda child text input"/><node content-desc="Today · appearance %s"/><node content-desc="Change system theme"/><node content-desc="Roll back Experience graph"/><node content-desc="Return to Stock"/></hierarchy>\n' "$mock_generation"
       ;;
+    shell\ rm\ -f\ /data/local/tmp/sos-v4-*-accessibility.xml) ;;
     *)
       printf 'unexpected v4 mock adb arguments: %s\n' "$*" >&2
       exit 65

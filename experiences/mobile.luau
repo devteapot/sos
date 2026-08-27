@@ -160,7 +160,18 @@ local function screen_name(state: ExperienceState): string
     return "home"
 end
 
-local function mobile_top_bar(state: ExperienceState, providers: SystemProviders): SceneNode
+local function safe_inset(context: ExperienceContext, edge: string): number
+    local insets = context.viewport and context.viewport.safe_insets or nil
+    local value = insets and insets[edge] or 0
+    if type(value) ~= "number" or value < 0 then return 0 end
+    return math.floor(value + 0.5)
+end
+
+local function mobile_top_bar(
+    state: ExperienceState,
+    providers: SystemProviders,
+    context: ExperienceContext
+): SceneNode
     local screen = screen_name(state)
     local titles = {
         home = "Today",
@@ -169,9 +180,11 @@ local function mobile_top_bar(state: ExperienceState, providers: SystemProviders
         controls = "Controls",
     }
     local time = providers.clock.time_label ~= "" and providers.clock.time_label or "--:--"
-    return group("row", {
+    local safe_top = safe_inset(context, "top")
+    local side = math.max(safe_inset(context, "left"), safe_inset(context, "right"))
+    local bar = group("row", {
         height = 86,
-        padding = 18,
+        padding = 18 + side,
         gap = 12,
         align = "end",
         justify = "between",
@@ -194,6 +207,14 @@ local function mobile_top_bar(state: ExperienceState, providers: SystemProviders
             }, { text("•••", 18, accent) }, elevated, theme.radius.control,
                 "mobile-controls-open", "navigate_controls", "Open system controls"),
         }),
+    }, canvas, 0, "mobile-top-bar-content")
+    if safe_top == 0 then
+        bar.id = "mobile-top-bar"
+        return bar
+    end
+    return group("column", { height = 86 + safe_top }, {
+        group("overlay", { height = safe_top }, {}, canvas, 0, "mobile-safe-top"),
+        bar,
     }, canvas, 0, "mobile-top-bar")
 end
 
@@ -385,6 +406,10 @@ local function controls_screen(providers: SystemProviders): SceneNode
     local rows: {SceneNode} = {
         section_heading("System controls", "Large targets for quick phone actions.",
             "mobile-controls-heading"),
+        action_row("mobile-control-theme", "Theme", "Change the system appearance",
+            "stock_system_theme", "CHANGE"),
+        action_row("mobile-control-rollback", "Rollback", "Restore the previous Stock revision",
+            "stock_system_rollback", "RESTORE"),
         action_row("mobile-control-network", "Connectivity", network_summary(providers),
             has_capability(providers, "wifi_disconnect") and providers.connectivity.connected
                 and "wifi_disconnect" or nil,
@@ -411,7 +436,7 @@ local function controls_screen(providers: SystemProviders): SceneNode
     return group("column", { gap = 10 }, rows, nil, 0, "mobile-controls")
 end
 
-local function mobile_bottom_bar(state: ExperienceState): SceneNode
+local function mobile_bottom_bar(state: ExperienceState, context: ExperienceContext): SceneNode
     local active = screen_name(state)
     local items = {
         { screen = "home", label = "TODAY" },
@@ -434,11 +459,30 @@ local function mobile_bottom_bar(state: ExperienceState): SceneNode
             "mobile-nav-" .. item.screen, "navigate_" .. item.screen,
             "Open " .. string.lower(item.label)))
     end
-    return group("row", { height = 84, padding = 10, gap = 8, align = "center" }, children,
-        surface, 0, "mobile-bottom-navigation")
+    local safe_bottom = safe_inset(context, "bottom")
+    local side = math.max(safe_inset(context, "left"), safe_inset(context, "right"))
+    local bar = group("row", {
+        height = 84,
+        padding = 10 + side,
+        gap = 8,
+        align = "center",
+    }, children, surface, 0, "mobile-bottom-navigation-content")
+    if safe_bottom == 0 then
+        bar.id = "mobile-bottom-navigation"
+        return bar
+    end
+    return group("column", { height = 84 + safe_bottom }, {
+        bar,
+        group("overlay", { height = safe_bottom }, {}, surface, 0, "mobile-safe-bottom"),
+    }, surface, 0, "mobile-bottom-navigation")
 end
 
-local function render(model: ExperienceModel, state: ExperienceState, _context: any): SceneNode
+local function render(
+    model: ExperienceModel,
+    state: ExperienceState,
+    _properties: JsonValue,
+    context: ExperienceContext
+): SceneNode
     apply_appearance(model.appearance)
     local providers = model.providers
     local active = screen_name(state)
@@ -452,15 +496,16 @@ local function render(model: ExperienceModel, state: ExperienceState, _context: 
     else
         content = home_screen(model, providers)
     end
+    local side = math.max(safe_inset(context, "left"), safe_inset(context, "right"))
     return group("column", { program = { measure_width = 1, measure_height = 1 } }, {
-        mobile_top_bar(state, providers),
+        mobile_top_bar(state, providers, context),
         group("column", {
             scroll_y = true,
             grow = true,
-            padding = 18,
+            padding = 18 + side,
             gap = 14,
         }, { content }, canvas, 0, "mobile-content-scroll"),
-        mobile_bottom_bar(state),
+        mobile_bottom_bar(state, context),
     }, canvas, 0, "stock-mobile-root")
 end
 
@@ -484,6 +529,9 @@ local function update(
     if action == "navigate_apps" then state.screen = "apps" return state end
     if action == "navigate_agent" then state.screen = "agent" return state end
     if action == "navigate_controls" then state.screen = "controls" return state end
+    if action == "stock_system_theme" or action == "stock_system_rollback" then
+        return state
+    end
     if action == "audio_down" then
         return provider_effect("audio", "adjust_volume", { delta = -10 }, state)
     elseif action == "audio_up" then

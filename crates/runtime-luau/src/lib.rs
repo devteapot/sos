@@ -2737,6 +2737,7 @@ mod tests {
                     width: 320,
                     height: 180,
                     scale_milli: 1000,
+                    ..Default::default()
                 },
                 None,
             )

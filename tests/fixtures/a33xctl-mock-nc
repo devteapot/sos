@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+request="$(cat)"
+request_id="$(jq -er '.request_id' <<<"$request")"
+[[ "$(jq -er '.action' <<<"$request")" == audit_snapshot ]] || exit 64
+[[ "$*" == '--no-shutdown 127.0.0.1 47779' ]] || exit 65
+
+printf '{"request_id":%s,"ok":true,"audit_snapshot":' "$request_id"
+"${A33XCTL_ADB:?}" -s MOCKSERIAL \
+  shell cat /data/misc/sos/provider-state.composition.json
+printf ',"revision_id":null,"source":null,"state":null,"assets":[],"stock_trusted":false,"fallback_performed":false,"states":[],"error":null}\n'

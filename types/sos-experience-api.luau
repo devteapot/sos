@@ -343,7 +343,13 @@ type SceneEvent = {
 }
 
 type ProviderEffect = { provider: string, action: string, payload: JsonValue? }
-type ExperienceViewport = { width: number, height: number, scale_milli: number }
+type ExperienceInsets = { left: number, top: number, right: number, bottom: number }
+type ExperienceViewport = {
+    width: number,
+    height: number,
+    scale_milli: number,
+    safe_insets: ExperienceInsets,
+}
 type ExperienceContext = {
     export_id: string,
     viewport: ExperienceViewport,

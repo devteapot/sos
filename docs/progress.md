@@ -14989,3 +14989,75 @@ running the Compat composition, full-screen layout, touch, inset, restart,
 rollback, memory, thermal, crash, and AVC campaign. No physical claim is made
 until those checks run on product identity
 `sos.compat1.a7dba1080c63.f384ef7bfb46`.
+
+## 2026-08-27: Reject the first physical Stock Mobile layout and repair its owning boundaries
+
+**Goal / physical evidence:** Install the sealed `a7dba10` Compat candidate,
+close the HOME-owned ADB consent gate, and begin the ordered v4 composition
+campaign on SM-A336B `RFCT50EGFCN`. The exact 1,067,649,751-byte OTA with
+SHA-256 `911e2ec4c5a49e374abbac9c4f58d3c82261ff4a4e92df4e0feb812d23e8b4b8`
+was reverified immediately before installation. Its single Recovery transfer
+completed with `Total xfer: 1.00x`, exit 0, and 86.94 seconds wall time. The
+6,855-byte sideload log at
+`.cache/evidence/android-v4-a7dba10-physical/compat1/install/sideload.log` has
+SHA-256 `71b9215ccb3d1aee40488f61a55d8a1014c695ba6a01a0d1f43f2350c3a8f99f`.
+The device booted exact product
+`sos.compat1.a7dba1080c63.f384ef7bfb46` with boot-complete, Compat, package
+format 4, and Experience API 4 markers.
+
+The consent surface passed Deny and Allow once with a temporary workstation
+key. Deny left the transport unauthorized. Allow once authorized the live
+daemon, then restarting that daemon returned the same key to unauthorized,
+proving it was not persisted. The accidentally selected Always allow result
+was retained as the persistent-path gate: after a full device reboot the
+original workstation key reconnected as `device` in 87.81 seconds. The
+original key files were restored byte-for-byte and the temporary private and
+public keys were removed. The 740-byte focused consent log has SHA-256
+`18325397fd768269ad140dcb9bfeff5f0ae7a6a81da85abffefaefed76fa5c98` and
+records the HOME renderer plus bridge-accepted Deny and Allow-once decisions.
+An attempted `adb root` was rejected by the product setting as intended;
+debug-root was not enabled.
+
+**Rejected physical result / diagnosis:** Stock Mobile was visibly distinct
+from the Linux shell, but this candidate does not pass phone layout. The
+source rendered with the runtime's 1024x768 fallback instead of the real
+top-level Android viewport, and the fixed host Theme/Rollback strip overlapped
+its top bar. The measured panel is 1080x2400 at density 450 (2.8125), with an
+88-physical-pixel top display cutout. The 178,378-byte diagnosis screenshot at
+`.cache/evidence/android-v4-a7dba10-physical/compat1/layout-diagnosis/stock.png`
+has SHA-256 `9da17a7f65bf49c51ae7b2f27c00e8e3c07ca36af810cc826bdf8d2fb84c8355`.
+The first campaign capture also failed closed because the non-root ADB shell
+could not read `/data/misc/sos/provider-state.composition.json`; the attempted
+`uiautomator dump /dev/tty` returned only a status line. Making authority state
+readable or enabling root ADB were rejected.
+
+**Changed / evidence:** Experience API viewport context now includes bounded
+logical safe insets. The Android Activity derives live logical width, height,
+density, cutout, and gesture insets from its real decor view, sends them over a
+fixed JNI boundary, and wakes the host. The graph runtime validates and
+rerenders the root transactionally without changing revision or Instance ID;
+mounted children retain host-measured bounds and zero physical-display insets.
+Stock Mobile consumes those values in its source-owned top bar, content, and
+bottom navigation. Its Controls screen now owns touch-sized Theme and Rollback
+rows. The fixed host strip appears only over ordinary top-level Experiences,
+and the two reserved Stock actions are accepted only from the namespaced Stock
+Mobile root.
+
+The authority now exposes a bounded, read-only `AuditSnapshot` response with
+the presented Experience plus authority-owned state, appearance, and grant
+resources. `a33xctl` obtains it through a temporary authorized-ADB local
+forward and removes the forward; it never changes storage permissions.
+Accessibility capture uses a shell-owned temporary device file instead of
+`/dev/tty`, and stage directories become visible only after the complete
+capture succeeds. Protocol, authority, runtime, Experience, and host-harness
+tests pass, including new read-only, safe-inset rerender, and failed-capture
+retry cases. The real ARM64 `aosp-system` Rust build completed in 20.62 seconds
+and the release Java/APK build passed.
+
+**Decision / next gate:** The installed `a7dba10` candidate is accepted for
+ADB consent only and rejected for layout/composition. Commit the repair, build
+and inspect one superseding exact Compat OTA, then install it through the
+already authorized transport. Physical acceptance must prove the corrected
+cutout fit, source-owned Stock controls, full-screen ordinary roots, non-root
+evidence capture, and every ordered composition/restart/authoring/rollback
+stage before Android parity closes.

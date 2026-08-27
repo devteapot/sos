@@ -417,12 +417,14 @@ The implementation is split so the contracts do not depend on GPUI or Linux:
   frame confirmation durably selects that top-level Experience. Dismissal
   stages and confirms Stock through the same path. Because an independently
   presented root replaces the Stock scene, the Android host supplies a small
-  fixed system-control strip: `Home` returns an ordinary root to Stock,
-  `Theme` advances the Stock-authorized appearance resource, and `Rollback`
-  stages the retained graph. These controls are host-owned administrative
-  affordances, not nodes or authority available to ordinary Experience code.
-  Fixed host IDs also publish them through the bounded accessibility bridge;
-  and
+  fixed system-control strip only for an ordinary root: `Home` returns it to
+  Stock, `Theme` advances the Stock-authorized appearance resource, and
+  `Rollback` stages the retained graph. Stock Mobile exposes Theme and Rollback
+  as touch-sized rows on its source-authored Controls screen instead of wearing
+  a host overlay. The host accepts those two reserved actions only from the
+  namespaced Stock Mobile root Instance; a child or ordinary Experience cannot
+  acquire them. Fixed host IDs and Stock source semantics publish the relevant
+  controls through the bounded accessibility bridge; and
 - child update or render failures become a failed child Instance with no
   emitted effects or child events. The mount receives the host-owned
   unavailable placeholder while the root and siblings remain operational.
@@ -474,7 +476,13 @@ this fixed order:
 Each checkpoint binds the exact product revision, device serial, artifact
 path, byte size and SHA-256, monotonic host timing, SELinux state, processes,
 surfaces, authority JSON, screenshot, complete logs, memory, and the
-product-appropriate accessibility or readiness snapshot. The final
+product-appropriate accessibility or readiness snapshot. The authority JSON
+comes from the bounded read-only `AuditSnapshot` revision request over a
+temporary authorized-ADB local forward; capture never makes authority storage
+world-readable and does not require root ADB. Compat accessibility capture
+writes `uiautomator` output to a shell-owned temporary device file, copies the
+XML, and removes that file. A stage is renamed into the campaign only after all
+of its evidence has completed, so a failed capture remains retryable. The final
 `audit-v4-composition-campaign` command rejects missing or reordered stages,
 identity drift, stale state, merged grants, revision changes during appearance,
 uncontained failures, missing recovery, non-namespaced IME evidence, coupled

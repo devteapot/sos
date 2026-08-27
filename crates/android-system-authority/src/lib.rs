@@ -7,8 +7,8 @@ use std::{
 
 pub use android_authority_protocol::MAX_PROVIDER_REQUEST_BYTES;
 use android_authority_protocol::{
-    GraphBundle, GraphEffectWire, GraphRevisionWire, GraphStateUpdateWire, RevisionAssetWire,
-    RevisionRequest, RevisionResponse,
+    AuthorityAuditSnapshot, GraphBundle, GraphEffectWire, GraphRevisionWire, GraphStateUpdateWire,
+    RevisionAssetWire, RevisionRequest, RevisionResponse,
 };
 use experience_ir::{
     ProviderEffect, ProviderRequest, ProviderResponse, ShellExperience, StateEnvelope, MAX_EFFECTS,
@@ -729,6 +729,18 @@ impl AndroidSystemAuthority {
         let result = match request {
             RevisionRequest::Current { .. } => self.current_response(request_id),
             RevisionRequest::CurrentGraph { .. } => self.current_graph_response(request_id),
+            RevisionRequest::AuditSnapshot { .. } => Ok(RevisionResponse {
+                request_id,
+                ok: true,
+                audit_snapshot: Some(AuthorityAuditSnapshot {
+                    format_version: self.composition.format_version,
+                    presented_experience: self.composition.presented_experience.clone(),
+                    states: self.composition.states.clone(),
+                    appearance: self.composition.appearance.clone(),
+                    grants: self.composition.grants.clone(),
+                }),
+                ..RevisionResponse::default()
+            }),
             RevisionRequest::PresentExperience {
                 expected_graph_id,
                 experience_id,
@@ -2038,6 +2050,7 @@ fn revision_response(
         stock_trusted: true,
         fallback_performed,
         graph: None,
+        audit_snapshot: None,
         appearance: None,
         states: Vec::new(),
         error: None,
@@ -2133,6 +2146,28 @@ mod tests {
                 .min_width,
             320
         );
+    }
+
+    #[test]
+    fn audit_snapshot_is_read_only_and_contains_authority_owned_resources() {
+        let temporary = tempfile::tempdir().unwrap();
+        let revision_root = temporary.path().join("revisions");
+        let state_file = temporary.path().join("provider-state.json");
+        let source = "return { api_version = 4, exports = { main = { render = function() return { id = 'root' } end } } }";
+        let mut authority =
+            AndroidSystemAuthority::open_v4(&revision_root, &state_file, stock_v4(source)).unwrap();
+        let before = std::fs::read(&state_file).unwrap();
+
+        let response =
+            authority.dispatch_revision(RevisionRequest::AuditSnapshot { request_id: 9100 });
+        assert!(response.ok);
+        assert_eq!(response.request_id, 9100);
+        let snapshot = response.audit_snapshot.unwrap();
+        let stock_id = ExperienceId::parse(STOCK_MOBILE_EXPERIENCE_ID).unwrap();
+        assert_eq!(snapshot.format_version, 1);
+        assert!(snapshot.states.contains_key(&stock_id));
+        assert!(snapshot.grants.contains_key(&stock_id));
+        assert_eq!(std::fs::read(&state_file).unwrap(), before);
     }
 
     fn install_and_stage(authority: &mut AndroidSystemAuthority, source: &str) -> (String, u64) {

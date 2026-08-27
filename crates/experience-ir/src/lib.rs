@@ -492,10 +492,31 @@ pub struct SceneEvent {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct ExperienceInsets {
+    pub left: u32,
+    pub top: u32,
+    pub right: u32,
+    pub bottom: u32,
+}
+
+impl Default for ExperienceInsets {
+    fn default() -> Self {
+        Self {
+            left: 0,
+            top: 0,
+            right: 0,
+            bottom: 0,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct ExperienceViewport {
     pub width: u32,
     pub height: u32,
     pub scale_milli: u16,
+    #[serde(default)]
+    pub safe_insets: ExperienceInsets,
 }
 
 impl Default for ExperienceViewport {
@@ -504,6 +525,7 @@ impl Default for ExperienceViewport {
             width: 1024,
             height: 768,
             scale_milli: 1000,
+            safe_insets: ExperienceInsets::default(),
         }
     }
 }

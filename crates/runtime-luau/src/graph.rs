@@ -48,6 +48,8 @@ pub struct RuntimeInstanceSnapshot {
     pub export_id: experience_package::ExportId,
     pub parent: Option<GraphNodeId>,
     pub dependency: Option<DependencyAlias>,
+    #[serde(default)]
+    pub viewport: ExperienceViewport,
     pub state: JsonValue,
     pub scene: Option<Scene>,
     pub status: RuntimeInstanceStatus,
@@ -92,6 +94,10 @@ enum GraphWorkerCommand {
     ApplyAppearance {
         request_id: u64,
         appearance: AppearanceProfile,
+    },
+    SetRootViewport {
+        request_id: u64,
+        viewport: ExperienceViewport,
     },
     Restore {
         request_id: u64,
@@ -154,6 +160,14 @@ impl GraphRuntimeWorker {
         graph: ResolvedGraph,
         inputs: BTreeMap<RevisionId, GraphRevisionInput>,
     ) -> Result<(Self, GraphRuntimeSnapshot), RuntimeError> {
+        Self::start_with_root_viewport(graph, inputs, None)
+    }
+
+    pub fn start_with_root_viewport(
+        graph: ResolvedGraph,
+        inputs: BTreeMap<RevisionId, GraphRevisionInput>,
+        root_viewport: Option<ExperienceViewport>,
+    ) -> Result<(Self, GraphRuntimeSnapshot), RuntimeError> {
         let (commands_tx, commands_rx) = async_channel::unbounded();
         let (results_tx, results_rx) = async_channel::unbounded();
         let (ready_tx, ready_rx) = async_channel::bounded(1);
@@ -167,6 +181,12 @@ impl GraphRuntimeWorker {
                         return;
                     }
                 };
+                if let Some(viewport) = root_viewport {
+                    if let Err(error) = runtime.set_root_viewport(viewport) {
+                        let _ = ready_tx.send_blocking(Err(error.to_string()));
+                        return;
+                    }
+                }
                 if ready_tx.send_blocking(Ok(runtime.snapshot())).is_err() {
                     return;
                 }
@@ -319,6 +339,19 @@ impl GraphRuntimeWorker {
             .map_err(|_| "graph runtime worker is unavailable".into())
     }
 
+    pub fn set_root_viewport(
+        &self,
+        request_id: u64,
+        viewport: ExperienceViewport,
+    ) -> Result<(), String> {
+        self.commands
+            .send_blocking(GraphWorkerCommand::SetRootViewport {
+                request_id,
+                viewport,
+            })
+            .map_err(|_| "graph runtime worker is unavailable".into())
+    }
+
     pub fn restore(&self, request_id: u64, snapshot: GraphRuntimeSnapshot) -> Result<(), String> {
         self.commands
             .send_blocking(GraphWorkerCommand::Restore {
@@ -393,6 +426,19 @@ fn execute_graph_worker_command(
                 error: error.to_string(),
             },
         },
+        GraphWorkerCommand::SetRootViewport {
+            request_id,
+            viewport,
+        } => match runtime.set_root_viewport(viewport) {
+            Ok(snapshot) => GraphWorkerResult::Refreshed {
+                request_id,
+                snapshot,
+            },
+            Err(error) => GraphWorkerResult::Rejected {
+                request_id,
+                error: error.to_string(),
+            },
+        },
         GraphWorkerCommand::Restore {
             request_id,
             snapshot,
@@ -416,6 +462,7 @@ fn command_request_id(command: &GraphWorkerCommand) -> Option<u64> {
         GraphWorkerCommand::Action { request_id, .. }
         | GraphWorkerCommand::RefreshModel { request_id, .. }
         | GraphWorkerCommand::ApplyAppearance { request_id, .. }
+        | GraphWorkerCommand::SetRootViewport { request_id, .. }
         | GraphWorkerCommand::Restore { request_id, .. } => Some(*request_id),
         GraphWorkerCommand::Shutdown => None,
     }
@@ -730,6 +777,7 @@ impl GraphRuntime {
                             export_id: node.export_id.clone(),
                             parent: node.parent.clone(),
                             dependency: node.dependency.clone(),
+                            viewport: instance.viewport.clone(),
                             state: instance.state.clone(),
                             scene: instance.scene.clone(),
                             status: instance.status.clone(),
@@ -874,6 +922,61 @@ impl GraphRuntime {
         Ok(self.snapshot())
     }
 
+    pub fn set_root_viewport(
+        &mut self,
+        viewport: ExperienceViewport,
+    ) -> Result<GraphRuntimeSnapshot, RuntimeError> {
+        if viewport.width == 0
+            || viewport.height == 0
+            || !(250..=8000).contains(&viewport.scale_milli)
+            || viewport
+                .safe_insets
+                .left
+                .saturating_add(viewport.safe_insets.right)
+                >= viewport.width
+            || viewport
+                .safe_insets
+                .top
+                .saturating_add(viewport.safe_insets.bottom)
+                >= viewport.height
+        {
+            return Err(RuntimeError::Invalid(
+                "root viewport or safe insets are invalid".into(),
+            ));
+        }
+        let root = self.graph.root.clone();
+        let graph_node = &self.graph.nodes[&root];
+        let export = &self.instances[&root].package.contract.exports[&graph_node.export_id];
+        if viewport.width < export.viewport.min_width
+            || viewport.width > export.viewport.max_width
+            || viewport.height < export.viewport.min_height
+            || viewport.height > export.viewport.max_height
+        {
+            return Err(RuntimeError::Invalid(format!(
+                "root viewport {}x{} is outside export `{}` bounds",
+                viewport.width, viewport.height, graph_node.export_id
+            )));
+        }
+        let previous = self.instances[&root].viewport.clone();
+        self.instances
+            .get_mut(&root)
+            .expect("root graph instance exists")
+            .viewport = viewport;
+        if let Err(error) = self
+            .render_subtree(&root, true)
+            .and_then(|_| self.validate_scene_budget())
+        {
+            self.instances
+                .get_mut(&root)
+                .expect("root graph instance exists")
+                .viewport = previous;
+            self.render_subtree(&root, true)?;
+            self.validate_scene_budget()?;
+            return Err(error);
+        }
+        Ok(self.snapshot())
+    }
+
     pub fn restore(
         &mut self,
         snapshot: &GraphRuntimeSnapshot,
@@ -898,6 +1001,7 @@ impl GraphRuntime {
         }
         for (node_id, saved) in &snapshot.instances {
             let instance = self.instances.get_mut(node_id).expect("node was checked");
+            instance.viewport = saved.viewport.clone();
             instance.state = saved.state.clone();
         }
         let root = self.graph.root.clone();
@@ -1484,6 +1588,7 @@ fn viewport_for(
         width,
         height,
         scale_milli: 1000,
+        ..Default::default()
     }
 }
 
@@ -1567,6 +1672,97 @@ mod tests {
                 .to_string()
                 .contains("outside")
         );
+    }
+
+    #[test]
+    fn root_viewport_and_safe_insets_rerender_without_changing_identity() {
+        let root = GraphNodeId::parse("root").unwrap();
+        let root_revision = revision('e');
+        let graph = ResolvedGraph {
+            format_version: GRAPH_FORMAT_VERSION,
+            root: root.clone(),
+            nodes: BTreeMap::from([(
+                root.clone(),
+                ResolvedGraphNode {
+                    experience_id: ExperienceId::parse("viewport-test").unwrap(),
+                    revision_id: root_revision.clone(),
+                    export_id: ExportId::parse("main").unwrap(),
+                    parent: None,
+                    dependency: None,
+                },
+            )]),
+        };
+        let package = package(
+            "viewport-test",
+            "main",
+            ExperienceExport {
+                properties: ValueSchema::empty_record(),
+                events: BTreeMap::new(),
+                viewport: viewport(),
+                appearance_abi: APPEARANCE_ABI_VERSION,
+                accepts_container_appearance: false,
+            },
+            BTreeMap::new(),
+        );
+        let inputs = BTreeMap::from([(
+            root_revision,
+            GraphRevisionInput {
+                source: r#"
+                    return { api_version = 4, exports = { main = {
+                        render = function(_, _, _, context)
+                            return { id = "viewport", content = { kind = "text",
+                                value = tostring(context.viewport.width) .. ":" ..
+                                    tostring(context.viewport.safe_insets.top),
+                                size = 16, color = 0xffffffff } }
+                        end,
+                    } } }
+                "#
+                .into(),
+                sidecars: vec![],
+                model: providers_fake::snapshot(),
+                state: json!({}),
+                state_schema_version: 1,
+                package,
+            },
+        )]);
+        let mut runtime = GraphRuntime::start(graph, inputs).unwrap();
+        let initial = runtime.snapshot();
+        let instance_id = initial.instances[&root].instance_id.clone();
+        let viewport = ExperienceViewport {
+            width: 360,
+            height: 780,
+            scale_milli: 2813,
+            safe_insets: experience_ir::ExperienceInsets {
+                left: 0,
+                top: 32,
+                right: 0,
+                bottom: 24,
+            },
+        };
+        let updated = runtime.set_root_viewport(viewport).unwrap();
+        assert_eq!(updated.instances[&root].instance_id, instance_id);
+        assert!(matches!(
+            updated.instances[&root]
+                .scene
+                .as_ref()
+                .unwrap()
+                .root
+                .content
+                .as_ref(),
+            Some(Content::Text(text)) if text.value == "360:32"
+        ));
+
+        let invalid = ExperienceViewport {
+            width: 360,
+            height: 780,
+            scale_milli: 2813,
+            safe_insets: experience_ir::ExperienceInsets {
+                top: 780,
+                ..Default::default()
+            },
+        };
+        assert!(runtime.set_root_viewport(invalid).is_err());
+        assert_eq!(runtime.snapshot(), updated);
     }
 
     #[test]

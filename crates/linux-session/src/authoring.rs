@@ -909,6 +909,7 @@ fn evaluate_v4_package_candidate(
                         width,
                         height,
                         scale_milli: 1000,
+                        ..Default::default()
                     },
                     None,
                 )
@@ -929,6 +930,7 @@ fn evaluate_v4_package_candidate(
                     width: export.viewport.min_width,
                     height: export.viewport.min_height,
                     scale_milli: 1000,
+                    ..Default::default()
                 },
                 None,
             )
@@ -1483,6 +1485,7 @@ fn validate_export_viewports(
                         width,
                         height,
                         scale_milli: 1000,
+                        ..Default::default()
                     },
                     None,
                 )
@@ -1503,6 +1506,7 @@ fn validate_export_viewports(
                     width: export.viewport.min_width,
                     height: export.viewport.min_height,
                     scale_milli: 1000,
+                    ..Default::default()
                 },
                 None,
             )

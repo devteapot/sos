@@ -94,6 +94,7 @@ mod tests {
             export_id: ExportId::parse("main").unwrap(),
             parent,
             dependency: dependency.map(|alias| DependencyAlias::parse(alias).unwrap()),
+            viewport: Default::default(),
             state: serde_json::json!({}),
             scene,
             status,

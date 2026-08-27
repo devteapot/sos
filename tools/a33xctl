@@ -1828,6 +1828,33 @@ adb_readonly() {
   "$adb_binary" -s "$serial" "$@"
 }
 
+capture_authority_audit_snapshot() {
+  [[ "$#" -eq 2 ]] || \
+    fail "internal usage: capture_authority_audit_snapshot <serial> <output>"
+  local serial="$1" output="$2"
+  (
+    set -euo pipefail
+    local nc_binary="${A33XCTL_NC:-nc}" port response
+    require_command "$nc_binary"
+    require_command timeout
+    response="$(mktemp "$(dirname "$output")/.authority-audit.XXXXXX")"
+    port="$(adb_readonly "$serial" forward tcp:0 tcp:47778 | tr -d '\r\n')"
+    [[ "$port" =~ ^[0-9]+$ && "$port" -ge 1024 && "$port" -le 65535 ]] || \
+      fail "adb returned an invalid authority-forward port: $port"
+    trap 'adb_readonly "$serial" forward --remove "tcp:$port" >/dev/null 2>&1 || true; rm -f -- "$response"' EXIT
+    printf '%s\n' '{"action":"audit_snapshot","request_id":9100}' | \
+      timeout 15s "$nc_binary" --no-shutdown 127.0.0.1 "$port" >"$response"
+    [[ "$(stat -c %s "$response")" -le 100663296 ]] || \
+      fail "authority audit response exceeded its size limit"
+    jq -e '
+      .request_id == 9100 and .ok == true and
+      (.audit_snapshot | type == "object") and
+      (.audit_snapshot.format_version == 1)
+    ' "$response" >/dev/null || fail "authority returned an invalid audit snapshot"
+    jq -S '.audit_snapshot' "$response" >"$output"
+  )
+}
+
 device_property() {
   [[ "$#" -eq 2 ]] || fail "internal usage: device_property <serial> <property>"
   adb_readonly "$1" shell getprop "$2" | tr -d '\r\n'
@@ -1981,7 +2008,7 @@ capture_v4_composition_stage() {
     "${9}" == --root && "${11}" == --stage ]] || \
     fail "usage: ./tools/a33xctl capture-v4-composition-stage --product compat1|core1 --serial SERIAL --expected-revision REVISION --artifact OTA --root DIR --stage STAGE"
   local product="$2" serial="$4" expected_revision="$6" artifact="$8"
-  local evidence_root="${10}" stage="${12}" previous campaign_file stage_root
+  local evidence_root="${10}" stage="${12}" previous campaign_file stage_root final_stage_root
   local artifact_bytes artifact_sha started_ns finished_ns enforcing
   local authority_pid home_pid core_host_pids platform_pid
   validate_v4_composition_product "$product"
@@ -2032,9 +2059,11 @@ capture_v4_composition_stage() {
     [[ -d "$evidence_root/stages/$previous" ]] || \
       fail "v4 composition stage $stage requires completed stage $previous"
   fi
-  stage_root="$evidence_root/stages/$stage"
-  [[ ! -e "$stage_root" ]] || fail "v4 composition stage already exists: $stage"
-  mkdir -m 0700 -- "$stage_root"
+  final_stage_root="$evidence_root/stages/$stage"
+  [[ ! -e "$final_stage_root" ]] || fail "v4 composition stage already exists: $stage"
+  stage_root="$(mktemp -d "$evidence_root/stages/.$stage.capture.XXXXXX")"
+  chmod 0700 -- "$stage_root"
+  trap 'rm -rf -- "$stage_root"' EXIT
 
   export A33XCTL_CAPTURE_STAGE="$stage"
   export A33XCTL_CAPTURE_PRODUCT="$product"
@@ -2046,8 +2075,7 @@ capture_v4_composition_stage() {
   adb_readonly "$serial" shell ps -AZ >"$stage_root/processes.txt"
   adb_readonly "$serial" shell dumpsys SurfaceFlinger --list >"$stage_root/surfaces.txt"
   adb_readonly "$serial" logcat -d -b all -v threadtime >"$stage_root/logcat.txt"
-  adb_readonly "$serial" shell cat /data/misc/sos/provider-state.composition.json \
-    | tr -d '\r' >"$stage_root/composition.json"
+  capture_authority_audit_snapshot "$serial" "$stage_root/composition.json"
   adb_readonly "$serial" exec-out screencap -p >"$stage_root/screen.png"
   adb_readonly "$serial" shell cat /proc/meminfo >"$stage_root/meminfo.txt"
   authority_pid="$(adb_readonly "$serial" shell pidof sos-authority | tr -d '\r\n')"
@@ -2057,8 +2085,11 @@ capture_v4_composition_stage() {
       >"$stage_root/pids.env"
     adb_readonly "$serial" shell dumpsys meminfo dev.sos.experience \
       >"$stage_root/runtime-memory.txt"
-    adb_readonly "$serial" shell uiautomator dump /dev/tty \
+    local accessibility_remote="/data/local/tmp/sos-v4-$stage-accessibility.xml"
+    adb_readonly "$serial" shell uiautomator dump "$accessibility_remote" >/dev/null
+    adb_readonly "$serial" shell cat "$accessibility_remote" \
       >"$stage_root/accessibility.xml"
+    adb_readonly "$serial" shell rm -f "$accessibility_remote"
   else
     core_host_pids="$(adb_readonly "$serial" shell pidof sos-core-host | \
       tr -d '\r' | tr ' ' '\n' | sed '/^$/d' | sort -n | paste -sd ' ' -)"
@@ -2082,6 +2113,9 @@ capture_v4_composition_stage() {
   printf 'started_ns=%s\nfinished_ns=%s\nduration_ns=%s\n' \
     "$started_ns" "$finished_ns" "$((finished_ns - started_ns))" \
     >>"$stage_root/stage.env"
+  mv -- "$stage_root" "$final_stage_root"
+  trap - EXIT
+  stage_root="$final_stage_root"
   unset A33XCTL_CAPTURE_STAGE A33XCTL_CAPTURE_PRODUCT A33XCTL_CAPTURE_REVISION
   printf 'v4_composition_stage=CAPTURED\nproduct=%s\nserial=%s\nrevision=%s\nstage=%s\nroot=%s\n' \
     "$product" "$serial" "$expected_revision" "$stage" "$evidence_root"

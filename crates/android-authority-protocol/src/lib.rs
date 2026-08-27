@@ -1,4 +1,7 @@
-use std::io::{BufRead, BufReader, Read, Write};
+use std::{
+    collections::BTreeMap,
+    io::{BufRead, BufReader, Read, Write},
+};
 
 use experience_ir::{
     ProviderEffect, ProviderRequest, ProviderResponse, StateEnvelope, MAX_STATE_BYTES,
@@ -8,7 +11,9 @@ use experience_package::{
     RevisionId,
 };
 use serde::{Deserialize, Serialize};
-use service_protocol::{AppearanceResource, ExperienceStateResource, GrantDecisionResource};
+use service_protocol::{
+    AppearanceResource, ExperienceStateResource, GrantDecisionResource, StateResource,
+};
 
 pub const REVISION_ADDRESS: &str = "127.0.0.1:47778";
 pub const CORE_PROVIDER_SOCKET: &str = "/data/misc/sos/provider.sock";
@@ -105,6 +110,19 @@ pub struct GraphStateUpdateWire {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+pub struct AuthorityAuditSnapshot {
+    pub format_version: u32,
+    #[serde(default)]
+    pub presented_experience: Option<ExperienceId>,
+    #[serde(default)]
+    pub states: BTreeMap<ExperienceId, StateResource>,
+    #[serde(default)]
+    pub appearance: AppearanceResource,
+    #[serde(default)]
+    pub grants: BTreeMap<ExperienceId, GrantDecisionResource>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 pub struct GraphEffectWire {
     pub node_id: GraphNodeId,
     pub instance_id: InstanceId,
@@ -119,6 +137,9 @@ pub enum RevisionRequest {
         request_id: u64,
     },
     CurrentGraph {
+        request_id: u64,
+    },
+    AuditSnapshot {
         request_id: u64,
     },
     PresentExperience {
@@ -201,6 +222,7 @@ impl RevisionRequest {
         match self {
             Self::Current { request_id }
             | Self::CurrentGraph { request_id }
+            | Self::AuditSnapshot { request_id }
             | Self::PresentExperience { request_id, .. }
             | Self::DismissExperience { request_id, .. }
             | Self::ConfirmGraph { request_id, .. }
@@ -256,6 +278,8 @@ pub struct RevisionResponse {
     pub fallback_performed: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub graph: Option<GraphBundle>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audit_snapshot: Option<AuthorityAuditSnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub appearance: Option<AppearanceResource>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -414,5 +438,15 @@ mod tests {
             revision_response_error(br#"{"request_id":17,"ok":true}"#),
             "revision authority returned a truncated response"
         );
+    }
+
+    #[test]
+    fn audit_snapshot_has_a_stable_bounded_wire_action() {
+        let request = RevisionRequest::AuditSnapshot { request_id: 91 };
+        assert_eq!(
+            serde_json::to_value(&request).unwrap(),
+            serde_json::json!({"action": "audit_snapshot", "request_id": 91})
+        );
+        assert_eq!(request.request_id(), 91);
     }
 }

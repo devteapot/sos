@@ -30,9 +30,9 @@ use std::{
 #[cfg(not(feature = "aosp-system"))]
 use experience_ir::WifiSecurity;
 use experience_ir::{
-    AgentMessage, AgentMessageRole, Align, AnimationKind, Content, ExperienceModel, Flow,
-    HitRegion, Interaction, Justify, PaintOp, ProviderEffect, Scene, SceneEvent, SceneNode,
-    StateEnvelope, TextContent, MAX_AGENT_MESSAGES, MAX_AGENT_MESSAGE_BYTES,
+    AgentMessage, AgentMessageRole, Align, AnimationKind, Content, ExperienceModel,
+    ExperienceViewport, Flow, HitRegion, Interaction, Justify, PaintOp, ProviderEffect, Scene,
+    SceneEvent, SceneNode, StateEnvelope, TextContent, MAX_AGENT_MESSAGES, MAX_AGENT_MESSAGE_BYTES,
 };
 #[cfg(feature = "aosp-system")]
 use experience_ir::{SemanticRole, Semantics};
@@ -93,6 +93,12 @@ const ANDROID_SYSTEM_THEME_ID: &str = "android-system-theme";
 const ANDROID_SYSTEM_ROLLBACK_ID: &str = "android-system-rollback";
 #[cfg(feature = "aosp-system")]
 const ANDROID_SYSTEM_HOME_ID: &str = "android-system-home";
+#[cfg(feature = "aosp-system")]
+const STOCK_MOBILE_EXPERIENCE_ID: &str = "sos.stock.mobile";
+#[cfg(feature = "aosp-system")]
+const STOCK_MOBILE_THEME_ACTION: &str = "stock_system_theme";
+#[cfg(feature = "aosp-system")]
+const STOCK_MOBILE_ROLLBACK_ACTION: &str = "stock_system_rollback";
 #[cfg(feature = "core-native")]
 static CORE_PLATFORM: OnceLock<Mutex<Option<Arc<AndroidPlatform>>>> = OnceLock::new();
 #[cfg(feature = "core-native")]
@@ -506,6 +512,8 @@ struct ExperienceHost {
     #[cfg(feature = "aosp-system")]
     pending_graph_previous: Option<(u64, GraphRuntimeSnapshot)>,
     #[cfg(feature = "aosp-system")]
+    pending_graph_viewport: Option<(u64, ExperienceViewport)>,
+    #[cfg(feature = "aosp-system")]
     pending_graph_confirmation: Option<String>,
     #[cfg(feature = "aosp-system")]
     pending_graph_agent_activation: Option<AgentActivationEvidence>,
@@ -841,6 +849,8 @@ impl ExperienceHost {
             #[cfg(feature = "aosp-system")]
             pending_graph_previous: None,
             #[cfg(feature = "aosp-system")]
+            pending_graph_viewport: None,
+            #[cfg(feature = "aosp-system")]
             pending_graph_confirmation,
             #[cfg(feature = "aosp-system")]
             pending_graph_agent_activation: None,
@@ -1038,15 +1048,49 @@ impl ExperienceHost {
                     .filter(|instance| matches!(instance.status, RuntimeInstanceStatus::Failed(_)))
                     .count();
                 self.install_graph_snapshot(snapshot);
-                self.status = None;
-                log::info!(
-                    "android_graph_refreshed request_id={} appearance_generation={} failed_instances={}",
-                    request_id,
-                    self.model.appearance.generation,
-                    failed_instances
-                );
+                if self
+                    .pending_graph_viewport
+                    .as_ref()
+                    .is_some_and(|(pending_id, _)| *pending_id == request_id)
+                {
+                    let (_, viewport) = self
+                        .pending_graph_viewport
+                        .take()
+                        .expect("viewport request was checked");
+                    log::info!(
+                        "android_graph_viewport_applied request_id={} width={} height={} scale_milli={} safe_left={} safe_top={} safe_right={} safe_bottom={}",
+                        request_id,
+                        viewport.width,
+                        viewport.height,
+                        viewport.scale_milli,
+                        viewport.safe_insets.left,
+                        viewport.safe_insets.top,
+                        viewport.safe_insets.right,
+                        viewport.safe_insets.bottom
+                    );
+                } else {
+                    self.status = None;
+                    log::info!(
+                        "android_graph_refreshed request_id={} appearance_generation={} failed_instances={}",
+                        request_id,
+                        self.model.appearance.generation,
+                        failed_instances
+                    );
+                }
             }
             GraphWorkerResult::Rejected { request_id, error } => {
+                if self
+                    .pending_graph_viewport
+                    .as_ref()
+                    .is_some_and(|(pending_id, _)| *pending_id == request_id)
+                {
+                    self.pending_graph_viewport = None;
+                    self.status = Some((format!("Viewport update rejected: {error}"), false));
+                    log::warn!(
+                        "android_graph_viewport_rejected request_id={request_id} error={error}"
+                    );
+                    return;
+                }
                 self.pending_graph_previous = None;
                 self.action_in_flight = false;
                 self.status = Some((format!("Graph operation rejected: {error}"), false));
@@ -1090,6 +1134,37 @@ impl ExperienceHost {
         if let Some(graph) = self.active_graph.as_mut() {
             graph.snapshot = snapshot;
         }
+    }
+
+    #[cfg(feature = "aosp-system")]
+    fn sync_root_viewport(&mut self) {
+        if self.pending_graph_viewport.is_some()
+            || self.action_in_flight
+            || self.pending_graph_confirmation.is_some()
+        {
+            return;
+        }
+        let Some(viewport) = native_input::viewport_context() else {
+            return;
+        };
+        let Some(active) = self.active_graph.as_ref() else {
+            return;
+        };
+        if active.snapshot.instances[&active.snapshot.root].viewport == viewport {
+            return;
+        }
+        let request_id = self.allocate_request_id();
+        let Some(active) = self.active_graph.as_ref() else {
+            return;
+        };
+        if let Err(error) = active
+            .worker
+            .set_root_viewport(request_id, viewport.clone())
+        {
+            self.status = Some((format!("Viewport update could not start: {error}"), false));
+            return;
+        }
+        self.pending_graph_viewport = Some((request_id, viewport));
     }
 
     #[cfg(feature = "aosp-system")]
@@ -1362,6 +1437,7 @@ impl ExperienceHost {
                 Ok(graph) => {
                     let results = graph.worker.results();
                     let snapshot = graph.snapshot.clone();
+                    self.pending_graph_viewport = None;
                     self.active_graph = Some(graph);
                     self.install_graph_snapshot(snapshot);
                     self.status = Some(("Restarted v4 experience graph".into(), true));
@@ -1422,6 +1498,37 @@ impl ExperienceHost {
         }
         if self.action_in_flight || self.stress.is_some() {
             return;
+        }
+        #[cfg(feature = "aosp-system")]
+        if self.presented_stock_mobile() {
+            let control = match event.action.as_str() {
+                STOCK_MOBILE_THEME_ACTION => Some(AndroidSystemControl::Theme),
+                STOCK_MOBILE_ROLLBACK_ACTION => Some(AndroidSystemControl::Rollback),
+                _ => None,
+            };
+            if let Some(control) = control {
+                let root_instance = self
+                    .active_graph
+                    .as_ref()
+                    .map(|graph| {
+                        graph.snapshot.instances[&graph.snapshot.root]
+                            .instance_id
+                            .clone()
+                    })
+                    .expect("Stock Mobile requires an active graph");
+                let root_target = event
+                    .target
+                    .as_deref()
+                    .is_some_and(|target| target.starts_with(&format!("{root_instance}::")));
+                if root_target {
+                    self.activate_android_system_control(control, cx);
+                    return;
+                }
+                log::warn!(
+                    "android_stock_control_rejected action={} reason=non_root_target",
+                    event.action
+                );
+            }
         }
         let request_id = self.allocate_request_id();
         log::info!(
@@ -2110,6 +2217,7 @@ impl ExperienceHost {
         };
         let results = graph.worker.results();
         let snapshot = graph.snapshot.clone();
+        self.pending_graph_viewport = None;
         self.active_graph = Some(graph);
         self.install_graph_snapshot(snapshot);
         self.source = candidate_source;
@@ -2169,6 +2277,7 @@ impl ExperienceHost {
         };
         let results = graph.worker.results();
         let snapshot = graph.snapshot.clone();
+        self.pending_graph_viewport = None;
         self.active_graph = Some(graph);
         self.install_graph_snapshot(snapshot);
         self.source = source;
@@ -2189,6 +2298,17 @@ impl ExperienceHost {
         let root = graph.snapshot.instances.get(&graph.snapshot.root)?;
         let revision = graph.revisions.get(&root.revision_id)?;
         (revision.package.role != ExperienceRole::Shell).then(|| root.experience_id.clone())
+    }
+
+    #[cfg(feature = "aosp-system")]
+    fn presented_stock_mobile(&self) -> bool {
+        let Some(graph) = self.active_graph.as_ref() else {
+            return false;
+        };
+        let root = &graph.snapshot.instances[&graph.snapshot.root];
+        let revision = &graph.revisions[&root.revision_id];
+        root.experience_id.as_str() == STOCK_MOBILE_EXPERIENCE_ID
+            && revision.package.role == ExperienceRole::Shell
     }
 
     #[cfg(feature = "aosp-system")]
@@ -2350,6 +2470,7 @@ impl ExperienceHost {
         };
         let results = graph.worker.results();
         let snapshot = graph.snapshot.clone();
+        self.pending_graph_viewport = None;
         self.active_graph = Some(graph);
         self.install_graph_snapshot(snapshot);
         self.source = source;
@@ -4031,6 +4152,8 @@ fn core_credential_overlay() -> impl IntoElement {
 
 impl Render for ExperienceHost {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        #[cfg(feature = "aosp-system")]
+        self.sync_root_viewport();
         #[cfg(feature = "core-native")]
         for mut text in native_input::take_core_credential_input() {
             agent::apply_credential_input(&text);
@@ -4403,8 +4526,7 @@ impl Render for ExperienceHost {
             );
         }
         #[cfg(feature = "aosp-system")]
-        if self.active_graph.is_some() {
-            let ordinary_root = self.presented_ordinary_experience().is_some();
+        if self.presented_ordinary_experience().is_some() {
             let control = |id: &'static str, label: &'static str| {
                 div()
                     .id(SharedString::from(id))
@@ -4443,25 +4565,22 @@ impl Render for ExperienceHost {
                     this.activate_android_system_control(AndroidSystemControl::Rollback, cx);
                 }),
             );
-            let mut controls = div()
+            let controls = div()
                 .absolute()
                 .top(px(12.0))
                 .right(px(12.0))
                 .flex()
                 .gap(px(8.0))
                 .child(theme)
-                .child(rollback);
-            if ordinary_root {
-                let home = control(ANDROID_SYSTEM_HOME_ID, "Home").on_mouse_down(
+                .child(rollback)
+                .child(control(ANDROID_SYSTEM_HOME_ID, "Home").on_mouse_down(
                     MouseButton::Left,
                     cx.listener(|this, _, window, cx| {
                         window.prevent_default();
                         cx.stop_propagation();
                         this.activate_android_system_control(AndroidSystemControl::Home, cx);
                     }),
-                );
-                controls = controls.child(home);
-            }
+                ));
             root = root.child(controls);
         }
         #[cfg(feature = "core-native")]
@@ -4592,8 +4711,12 @@ fn start_android_graph_runtime(
             ));
         }
     }
-    let (worker, snapshot) =
-        GraphRuntimeWorker::start(bundle.graph, inputs).map_err(|error| error.to_string())?;
+    let (worker, snapshot) = GraphRuntimeWorker::start_with_root_viewport(
+        bundle.graph,
+        inputs,
+        native_input::viewport_context(),
+    )
+    .map_err(|error| error.to_string())?;
     assets::install_graph(
         snapshot
             .instances
@@ -4749,6 +4872,7 @@ fn validate_android_candidate_exports(
                         width,
                         height,
                         scale_milli: 1000,
+                        ..Default::default()
                     },
                     None,
                 )
@@ -4766,6 +4890,7 @@ fn validate_android_candidate_exports(
                     width: export.viewport.min_width,
                     height: export.viewport.min_height,
                     scale_milli: 1000,
+                    ..Default::default()
                 },
                 None,
             )
@@ -5249,6 +5374,9 @@ fn current_rss_kb() -> Option<u64> {
 
 #[cfg(feature = "aosp-system")]
 fn append_android_system_control_semantics(scene: &mut Scene, ordinary_root: bool) {
+    if !ordinary_root {
+        return;
+    }
     let control = |id: &str, label: &str, action: &str| SceneNode {
         id: Some(id.into()),
         interaction: Interaction {
