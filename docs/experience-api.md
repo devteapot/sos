@@ -117,7 +117,14 @@ grants.
 contrast, text scale, reduced-motion preference, and semantic color, spacing,
 radius, and typography tokens. It updates live without revision activation.
 Appearance mutation requires the authority's dedicated `appearance-write`
-capability; access to the state/provider socket alone is not sufficient.
+capability; access to the state/provider socket alone is not sufficient. Linux
+binds that capability to a separately provisioned credential. Android's signed
+Stock package requests `appearance_write`, the authority records its reviewed
+grant under the stable Stock Experience ID, and every write still binds the
+exact presented graph and next generation. Ordinary top-level or mounted
+Experiences cannot inherit that grant. Android accepts the request only on the
+SELinux-restricted revision channel used by the fixed SOS host; untrusted app
+domains cannot connect to that port.
 An export may ignore optional design tokens, but not host accessibility or
 trusted-ceremony policy. Styles and assets remain revision-local.
 

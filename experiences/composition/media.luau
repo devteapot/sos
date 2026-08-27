@@ -28,7 +28,7 @@ local function updateMedia(_model: ExperienceModel, state: ExperienceState, even
         state.playing = state.playing ~= true
         return {
             state = state,
-            effects = {{ provider = "music", action = "toggle", payload = {} }},
+            effects = {{ provider = "media", action = "play_pause", payload = {} }},
             events = {{ event = "playback_changed", payload = { playing = state.playing } }},
         }
     end

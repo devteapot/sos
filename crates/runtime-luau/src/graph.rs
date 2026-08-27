@@ -941,10 +941,23 @@ impl GraphRuntime {
                 &instance.properties,
                 instance.viewport.clone(),
                 instance.container_appearance.clone(),
-            )?
+            )
+        };
+        let output = match output {
+            Ok(output) => output,
+            Err(error) if graph_node.parent.is_some() => {
+                let instance = self
+                    .instances
+                    .get_mut(node_id)
+                    .expect("graph instance exists");
+                instance.scene = None;
+                instance.status = RuntimeInstanceStatus::Failed(error.to_string());
+                return Ok(());
+            }
+            Err(error) => return Err(error),
         };
         self.validate_output_events(node_id, &output.events)?;
-        let mut candidate_scene = {
+        let candidate_scene = {
             let instance = self.instances.get(node_id).expect("graph instance exists");
             instance.runtime.render_export(
                 graph_node.export_id.as_str(),
@@ -953,17 +966,24 @@ impl GraphRuntime {
                 &instance.properties,
                 instance.viewport.clone(),
                 instance.container_appearance.clone(),
-            )?
+            )
+        }
+        .and_then(|scene| {
+            validate_scene_authority(
+                &scene,
+                self.instances[node_id].package.role,
+                graph_node.parent.is_some(),
+            )?;
+            Ok(scene)
+        });
+        let (candidate_scene, failure) = match candidate_scene {
+            Ok(mut scene) => {
+                namespace_instance_scene(&mut scene.root, &self.instances[node_id].instance_id);
+                (Some(scene), None)
+            }
+            Err(error) if graph_node.parent.is_some() => (None, Some(error.to_string())),
+            Err(error) => return Err(error),
         };
-        validate_scene_authority(
-            &candidate_scene,
-            self.instances[node_id].package.role,
-            graph_node.parent.is_some(),
-        )?;
-        namespace_instance_scene(
-            &mut candidate_scene.root,
-            &self.instances[node_id].instance_id,
-        );
         let candidate_state = output.state;
         let peers = self
             .graph
@@ -980,8 +1000,12 @@ impl GraphRuntime {
                 .get_mut(node_id)
                 .expect("graph instance exists");
             instance.state = candidate_state.clone();
-            instance.scene = Some(candidate_scene);
-            instance.status = RuntimeInstanceStatus::Ready;
+            instance.scene = candidate_scene;
+            instance.status = failure
+                .as_ref()
+                .map_or(RuntimeInstanceStatus::Ready, |error| {
+                    RuntimeInstanceStatus::Failed(error.clone())
+                });
         }
         for peer in &peers {
             self.instances
@@ -989,17 +1013,22 @@ impl GraphRuntime {
                 .expect("peer graph instance exists")
                 .state = candidate_state.clone();
         }
-        for effect in output.effects {
-            effects.push(GraphEffect {
-                node_id: node_id.clone(),
-                instance_id: self.instances[node_id].instance_id.clone(),
-                revision_id: graph_node.revision_id.clone(),
-                effect,
-            });
+        if failure.is_none() {
+            for effect in output.effects {
+                effects.push(GraphEffect {
+                    node_id: node_id.clone(),
+                    instance_id: self.instances[node_id].instance_id.clone(),
+                    revision_id: graph_node.revision_id.clone(),
+                    effect,
+                });
+            }
+            self.render_children(node_id)?;
         }
-        self.render_children(node_id)?;
         for peer in peers {
             self.render_subtree(&peer, peer == self.graph.root)?;
+        }
+        if failure.is_some() {
+            return Ok(());
         }
         for output_event in output.events {
             let Some(parent_id) = &graph_node.parent else {
@@ -1681,12 +1710,21 @@ mod tests {
                 GraphRevisionInput {
                     source: r#"
                         return { api_version = 4, exports = { summary = {
-                            render = function(_, _, properties)
+                            render = function(_, state, properties)
+                                if state.fail then error("child render failed") end
                                 return { id = "summary", content = { kind = "text",
                                     value = properties.title, size = 16, color = 0xffffffff } }
                             end,
                             update = function(_, state, event)
                                 state.count = (state.count or 0) + 1
+                                if event.action == "fail" then
+                                    state.fail = true
+                                    return { state = state,
+                                        effects = {{ provider = "media", action = "play_pause",
+                                            payload = {} }},
+                                        events = {{ event = "open",
+                                            payload = { item = "must-not-escape" } }} }
+                                end
                                 return { state = state, events = {{ event = "open",
                                     payload = { item = event.value } }} }
                             end,
@@ -1746,6 +1784,25 @@ mod tests {
         let restored = runtime.restore(&initial).unwrap();
         assert!(restored.instances[&root].state.get("opened").is_none());
         assert_eq!(restored.instances[&child].state["child_only"], true);
+
+        let failed_child = runtime
+            .dispatch_event(&child, &json!({"action": "fail"}))
+            .unwrap();
+        assert!(matches!(
+            &failed_child.snapshot.instances[&child].status,
+            RuntimeInstanceStatus::Failed(message) if message.contains("child render failed")
+        ));
+        assert_eq!(
+            failed_child.snapshot.instances[&root].status,
+            RuntimeInstanceStatus::Ready
+        );
+        assert!(failed_child.snapshot.instances[&root]
+            .state
+            .get("opened")
+            .is_none());
+        assert!(failed_child.effects.is_empty());
+        assert!(failed_child.external_events.is_empty());
+        runtime.restore(&initial).unwrap();
 
         assert!(runtime
             .dispatch_scene_event(

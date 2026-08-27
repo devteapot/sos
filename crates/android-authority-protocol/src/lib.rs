@@ -121,6 +121,16 @@ pub enum RevisionRequest {
     CurrentGraph {
         request_id: u64,
     },
+    PresentExperience {
+        request_id: u64,
+        expected_graph_id: String,
+        experience_id: ExperienceId,
+    },
+    DismissExperience {
+        request_id: u64,
+        expected_graph_id: String,
+        experience_id: ExperienceId,
+    },
     ConfirmGraph {
         request_id: u64,
         graph_id: String,
@@ -150,6 +160,13 @@ pub enum RevisionRequest {
     },
     CurrentAppearance {
         request_id: u64,
+    },
+    SetExperienceAppearance {
+        request_id: u64,
+        expected_graph_id: String,
+        writer_experience_id: ExperienceId,
+        expected_generation: u64,
+        profile: AppearanceProfile,
     },
     UpdateAppearance {
         request_id: u64,
@@ -184,12 +201,15 @@ impl RevisionRequest {
         match self {
             Self::Current { request_id }
             | Self::CurrentGraph { request_id }
+            | Self::PresentExperience { request_id, .. }
+            | Self::DismissExperience { request_id, .. }
             | Self::ConfirmGraph { request_id, .. }
             | Self::RollbackGraph { request_id, .. }
             | Self::StageGraphRevision { request_id, .. }
             | Self::DiscardGraph { request_id, .. }
             | Self::CommitGraphAction { request_id, .. }
             | Self::CurrentAppearance { request_id }
+            | Self::SetExperienceAppearance { request_id, .. }
             | Self::UpdateAppearance { request_id, .. }
             | Self::Install { request_id, .. }
             | Self::Activate { request_id, .. }

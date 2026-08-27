@@ -13475,3 +13475,90 @@ this corrected source contract, then rebuild and inspect final Compat 1 and
 Core 1 artifacts from one clean revision. No Android artifact may be installed
 until its source identity, target profile, signatures, AVB graph, package
 contents, byte size, and SHA-256 pass the matching inspector.
+
+## 2026-08-27: Complete Android registry launching and dynamic child containment
+
+**Goal:** Remove the last Stock-only Android composition shortcut before
+building physical artifacts: install the reference Experiences as signed
+product content, launch them through the registry, propagate appearance, and
+contain a child that fails after activation.
+
+**Changed:** The Android revision protocol and authority now stage
+`PresentExperience` and `DismissExperience` against the exact presented graph.
+Presentation writes a pending graph record, starts no pointer mutation, and
+durably selects the top-level Experience only after the host confirms a
+rendered frame. The selected Experience survives authority and host restart.
+Stock is the only registry-owned role that may present another Experience;
+dismissal returns the currently presented ordinary Experience to Stock through
+the same staged path.
+
+The signed Samsung and Cuttlefish authority services now idempotently install
+Agenda, Media, Dashboard, and Agenda-Media Remix. All four receive independent
+top-level `main` graph pointers, while Dashboard retains locked Agenda and Media
+summary mounts. Authority restart does not reset later registry revisions.
+Provider snapshots expose the bounded catalog only to the host; the runtime
+still clears it from every ordinary Experience model. Stock now requests the
+explicit `appearance_write` capability. Android checks that request and its
+reviewed stable-ID grant, the exact presented graph, and the next generation
+before changing authority-owned appearance. A write remains available while
+an ordinary graph is presented without transferring the grant to that graph.
+The request travels over the existing SELinux-restricted administrative
+revision channel: only the fixed Core host or platform-privileged SOS host may
+connect, while untrusted app domains have no `name_connect` permission.
+
+The GPUI host separates `shell.present_experience` and dismissal from provider
+effects, commits the initiating state, prepares the selected graph, and waits
+for its frame before confirmation. Exact bounded deep links support physical
+automation for presentation, dismissal, appearance toggle, and reference
+events. Logs identify the graph root, every Instance/Experience/export, child
+failure/recovery, root readiness, and appearance generation.
+
+The graph runtime now contains both update-time and render-time failures from a
+non-root Instance. It marks only that child failed, removes its scene so the
+host renders the unavailable placeholder, and suppresses the failed update's
+provider effects and output events. The root and siblings remain ready. The
+reference Agenda exposes hidden acceptance failure/recovery actions and
+Dashboard exposes a liveness counter. Media's invalid `music.toggle` fixture
+was corrected to the closed `media.play_pause` ABI and its immutable package
+now requests `music_control`.
+
+**Evidence:** The focused reference graph test installs all four top-level
+graphs, starts Dashboard's three VMs, routes `agenda.open`, contains both an
+Agenda update exception and render exception while Dashboard remains ready,
+commits a root liveness action, recovers Agenda, propagates appearance, and
+checks the self-contained remix. All 32 `runtime-luau` library tests pass.
+
+The Android authority suite passes 16 tests and the revision wire suite passes
+5. The new authority case discovers four signed catalog records, stages the
+three-Instance Dashboard, recovers the pending selection after restart,
+confirms it, denies presentation from an ordinary root, accepts a Stock-granted
+appearance generation while Dashboard is active, denies Dashboard the same
+write, restarts on the exact Dashboard graph and appearance generation, then
+stages and confirms dismissal to Stock. Both ARM64 checks pass:
+`cargo ndk -t arm64-v8a -P 31 check -j1 -p sos-experience --features
+aosp-system` and the `--no-default-features --features core-native` variant.
+`./tools/a33xctl check-product-graph`, shell syntax, Rust formatting, and diff
+whitespace checks pass.
+
+The earlier diagnostic Shadow image completed successfully in 13m44s as
+`sos.shadow.c4e9aec11098.b97282870441`, proving the corrected seven-patch
+Lineage tree and full OTA pipeline. It was built before this change from a
+dirty source identity and is explicitly rejected for installation.
+
+**Failures and decision:** Android previously packaged only Stock even though
+its runtime could decode a graph. Stock therefore received an empty Experience
+catalog, and its valid `shell.present_experience` effect was rejected by the
+system provider registry. Separately, startup rendering contained a broken
+child, but a child that failed during an update caused whole-graph rollback.
+Test-only direct pointer mutation and raw scene injection were rejected. The
+same staged authority protocol and failed-Instance placeholder now cover the
+real product path.
+
+**Remaining risks and next gate:** Commit this slice, rebuild Compat 1 and Core
+1 from the clean revision, run their complete inspectors, then install only an
+exact inspected artifact on serial `RFCT50EGFCN`. Physical acceptance must
+still prove touch, hardware keyboard/IME where applicable, accessibility,
+namespaced Agenda interaction, appearance propagation, failure containment,
+restart, rollback/dismissal, memory, thermals, and exact evidence hashes. The
+local USB ACL and sleeping Framework remain external prerequisites for their
+respective physical gates.

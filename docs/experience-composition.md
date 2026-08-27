@@ -269,11 +269,16 @@ preferences and semantic tokens such as background, surface, text, accent,
 spacing, radius, and type roles. It does not contain executable style rules or
 revision-owned asset references.
 
-Only a caller holding the separately provisioned `appearance-write`
-capability may advance that snapshot. The authority persists only the
-capability digest, rejects missing or mismatched credentials, and still
-requires the next exact generation. Read access to appearance and ordinary
-experience-state grants do not imply write access.
+Only a caller holding the authority's `appearance-write` capability may
+advance that snapshot. Linux persists only the separately provisioned
+capability digest and rejects missing or mismatched credentials. Android binds
+the equivalent `appearance_write` package request and reviewed decision to the
+stable registry-authorized Stock Shell; an ordinary presented root cannot
+acquire it. Both paths bind the exact current generation, and Android also
+binds the exact presented graph. Android's revision port is an administrative
+host boundary restricted by SELinux to the fixed Core host or the
+platform-privileged SOS host; untrusted app domains cannot connect. Read access
+to appearance and ordinary experience-state grants do not imply write access.
 
 The parent is not the source of global appearance. It may offer a bounded
 container appearance override only when the child export declares
@@ -384,16 +389,27 @@ The implementation is split so the contracts do not depend on GPUI or Linux:
   per-Experience state, appearance, grants, per-Instance VM and namespace,
   presentation, journal recovery, and rollback contract. Android Stock edits
   stage a complete candidate graph and move no pointer until a rendered-frame
-  confirmation.
+  confirmation. The signed Android product also installs the four reference
+  Experiences. Stock receives their bounded registry catalog, a
+  `shell.present_experience` action stages the selected exact graph, and a
+  frame confirmation durably selects that top-level Experience. Dismissal
+  stages and confirms Stock through the same path; and
+- child update or render failures become a failed child Instance with no
+  emitted effects or child events. The mount receives the host-owned
+  unavailable placeholder while the root and siblings remain operational.
 
 The checked-in Agenda, Media, Dashboard, and Agenda-Media Remix sources are a
 reference package set. `sos-revision-supervisor install-composition-demo
---root DIR` installs their revisions, registry records, resolved Dashboard
-graph, and lineage metadata.
+--root DIR` installs their revisions, registry records, independently
+launchable `main` graphs, the resolved Dashboard graph, and lineage metadata.
+Android embeds the same source/package constructor in its signed authority and
+installs it idempotently without resetting later registry revisions on
+authority restart.
 
 The shared package, resolver, runtime, and authority code is platform-neutral.
-Android has compile, unit, and restart-fault evidence for the graph path. It
-does not yet have a physical-device composition verdict.
+Android has compile, unit, restart-fault, top-level presentation, appearance,
+and child-containment evidence for the graph path. It does not yet have a
+physical-device composition verdict.
 
 ## Rejected shortcuts
 

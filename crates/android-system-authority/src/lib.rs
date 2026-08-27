@@ -11,7 +11,8 @@ use android_authority_protocol::{
     RevisionRequest, RevisionResponse,
 };
 use experience_ir::{
-    ProviderEffect, ProviderRequest, ProviderResponse, StateEnvelope, MAX_EFFECTS, MAX_STATE_BYTES,
+    ProviderEffect, ProviderRequest, ProviderResponse, ShellExperience, StateEnvelope, MAX_EFFECTS,
+    MAX_STATE_BYTES, SHELL_MODEL_ABI_VERSION,
 };
 use experience_package::{AppearanceProfile, ExperienceId, ExportId, ResolvedGraph};
 use revision_supervisor::{
@@ -38,10 +39,13 @@ struct ActivationJournal {
 }
 
 const COMPOSITION_AUTHORITY_FORMAT_VERSION: u32 = 1;
+const MAX_ANDROID_LAUNCHABLE_EXPERIENCES: usize = 64;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 struct CompositionAuthorityState {
     format_version: u32,
+    #[serde(default)]
+    presented_experience: Option<ExperienceId>,
     #[serde(default)]
     states: BTreeMap<ExperienceId, StateResource>,
     #[serde(default)]
@@ -54,6 +58,7 @@ impl Default for CompositionAuthorityState {
     fn default() -> Self {
         Self {
             format_version: COMPOSITION_AUTHORITY_FORMAT_VERSION,
+            presented_experience: None,
             states: BTreeMap::new(),
             appearance: AppearanceResource::default(),
             grants: BTreeMap::new(),
@@ -69,6 +74,8 @@ struct PendingGraphMigration {
     #[serde(default)]
     candidate: bool,
     #[serde(default)]
+    presentation_only: bool,
+    #[serde(default)]
     staged_states: BTreeMap<ExperienceId, StateResource>,
 }
 
@@ -78,8 +85,14 @@ struct GraphActivationJournal {
     revision_id: String,
     graph_id: Option<String>,
     legacy_fallback: bool,
+    #[serde(default = "default_true")]
+    update_pointers: bool,
     target_composition: CompositionAuthorityState,
     previous_composition: CompositionAuthorityState,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 pub struct AndroidSystemAuthority {
@@ -166,6 +179,108 @@ impl AndroidSystemAuthority {
         )?;
         authority.initialize_v4_stock(&stock, previous_singleton.as_ref())?;
         Ok(authority)
+    }
+
+    pub fn install_reference_composition(&mut self) -> Result<(), String> {
+        let ids = [
+            "sos.example.agenda",
+            "sos.example.media",
+            "sos.example.dashboard",
+            "sos.example.agenda-media-remix",
+        ]
+        .map(|id| ExperienceId::parse(id).map_err(|error| error.to_string()))
+        .into_iter()
+        .collect::<Result<Vec<_>, _>>()?;
+        let present = ids
+            .iter()
+            .map(|id| self.registry.get(id).map_err(|error| error.to_string()))
+            .collect::<Result<Vec<_>, _>>()?;
+        if present.iter().all(Option::is_none) {
+            revision_supervisor::install_reference_composition(&self.revisions)
+                .map_err(|error| error.to_string())?;
+        } else if present.iter().any(Option::is_none) {
+            return Err("Android reference composition registry is incomplete".into());
+        }
+
+        let main = ExportId::parse("main").map_err(|error| error.to_string())?;
+        for id in ids {
+            let revision = self
+                .registry
+                .current(&id)
+                .map_err(|error| error.to_string())?
+                .ok_or_else(|| format!("reference Experience `{id}` has no current revision"))?;
+            if self
+                .graphs
+                .current(&id)
+                .map_err(|error| error.to_string())?
+                .is_none()
+            {
+                let graph = self
+                    .resolver
+                    .resolve(&revision.manifest.revision_id, &main)
+                    .map_err(|error| error.to_string())?;
+                let graph_id = self
+                    .graphs
+                    .install(&graph)
+                    .map_err(|error| error.to_string())?;
+                self.graphs
+                    .set_current(&id, &graph_id)
+                    .map_err(|error| error.to_string())?;
+            }
+            self.seed_product_revision(&revision)?;
+        }
+        self.persist_composition()
+    }
+
+    fn seed_product_revision(&mut self, revision: &VerifiedRevision) -> Result<(), String> {
+        let package = revision
+            .package
+            .as_ref()
+            .ok_or_else(|| "product Experience is not a v4 package".to_owned())?;
+        if !self.composition.states.contains_key(&package.experience_id) {
+            let durable: DurableState = serde_json::from_slice(
+                &fs::read(revision.directory.join(&revision.manifest.state.path))
+                    .map_err(|error| error.to_string())?,
+            )
+            .map_err(|error| error.to_string())?;
+            self.composition.states.insert(
+                package.experience_id.clone(),
+                StateResource {
+                    revision: 0,
+                    revision_id: revision.manifest.revision_id.clone(),
+                    schema_version: durable.schema_version,
+                    source_sha256: durable.source_sha256,
+                    state: durable.state,
+                },
+            );
+        }
+        self.composition
+            .grants
+            .entry(package.experience_id.clone())
+            .or_insert_with(|| GrantDecisionResource {
+                generation: 1,
+                reviewed: true,
+                experience_id: package.experience_id.clone(),
+                provider_capabilities: package.provider_capabilities.clone(),
+                data_flows: package
+                    .dependencies
+                    .iter()
+                    .filter(|(_, binding)| {
+                        !binding.grant.properties.is_empty() || !binding.grant.events.is_empty()
+                    })
+                    .map(|(alias, binding)| {
+                        (
+                            alias.clone(),
+                            DataFlowGrant {
+                                experience_id: binding.experience_id.clone(),
+                                export_id: binding.export_id.clone(),
+                                grant: binding.grant.clone(),
+                            },
+                        )
+                    })
+                    .collect(),
+            });
+        Ok(())
     }
 
     fn finish_open(
@@ -347,6 +462,7 @@ impl AndroidSystemAuthority {
                 revision_id: stock.manifest.revision_id.clone(),
                 graph_id,
                 candidate: false,
+                presentation_only: false,
                 staged_states: BTreeMap::new(),
             })?;
         } else {
@@ -423,13 +539,15 @@ impl AndroidSystemAuthority {
                 .map_err(|error| error.to_string())?,
         )?;
         self.replace_composition(journal.target_composition)?;
-        self.registry
-            .set_current(&journal.experience_id, &journal.revision_id)
-            .map_err(|error| error.to_string())?;
-        if let Some(graph_id) = &journal.graph_id {
-            self.graphs
-                .set_current(&journal.experience_id, graph_id)
+        if journal.update_pointers {
+            self.registry
+                .set_current(&journal.experience_id, &journal.revision_id)
                 .map_err(|error| error.to_string())?;
+            if let Some(graph_id) = &journal.graph_id {
+                self.graphs
+                    .set_current(&journal.experience_id, graph_id)
+                    .map_err(|error| error.to_string())?;
+            }
         }
         if journal.legacy_fallback {
             let temporary = self.legacy_fallback_file.with_extension("tmp");
@@ -480,9 +598,12 @@ impl AndroidSystemAuthority {
     pub fn dispatch_provider(&mut self, request: ProviderRequest) -> ProviderResponse {
         let request_id = request.request_id();
         match request {
-            ProviderRequest::Snapshot { .. } => ProviderResponse {
-                model: Some(self.providers.snapshot_model()),
-                ..provider_response(request_id, true)
+            ProviderRequest::Snapshot { .. } => match self.snapshot_model() {
+                Ok(model) => ProviderResponse {
+                    model: Some(model),
+                    ..provider_response(request_id, true)
+                },
+                Err(error) => provider_failure(request_id, &error),
             },
             ProviderRequest::Action {
                 provider,
@@ -555,11 +676,67 @@ impl AndroidSystemAuthority {
         }
     }
 
+    fn snapshot_model(&self) -> Result<experience_ir::ExperienceModel, String> {
+        let mut model = self.providers.snapshot_model();
+        let mut experiences = Vec::new();
+        for record in self.registry.list().map_err(|error| error.to_string())? {
+            if record.role == experience_package::ExperienceRole::Shell
+                || self
+                    .graphs
+                    .current(&record.experience_id)
+                    .map_err(|error| error.to_string())?
+                    .is_none()
+            {
+                continue;
+            }
+            let title = record
+                .experience_id
+                .as_str()
+                .rsplit('.')
+                .next()
+                .unwrap_or(record.experience_id.as_str())
+                .replace(['-', '_'], " ");
+            experiences.push(ShellExperience {
+                experience_id: record.experience_id.to_string(),
+                title,
+            });
+        }
+        if experiences.len() > MAX_ANDROID_LAUNCHABLE_EXPERIENCES {
+            return Err(format!(
+                "Android registry exposes {} launchable Experiences; limit is {MAX_ANDROID_LAUNCHABLE_EXPERIENCES}",
+                experiences.len()
+            ));
+        }
+        model.shell.abi_version = SHELL_MODEL_ABI_VERSION;
+        model.shell.experiences = experiences;
+        Ok(model)
+    }
+
     pub fn dispatch_revision(&mut self, request: RevisionRequest) -> RevisionResponse {
         let request_id = request.request_id();
         let result = match request {
             RevisionRequest::Current { .. } => self.current_response(request_id),
             RevisionRequest::CurrentGraph { .. } => self.current_graph_response(request_id),
+            RevisionRequest::PresentExperience {
+                expected_graph_id,
+                experience_id,
+                ..
+            } => self.present_experience_response(
+                request_id,
+                &expected_graph_id,
+                &experience_id,
+                false,
+            ),
+            RevisionRequest::DismissExperience {
+                expected_graph_id,
+                experience_id,
+                ..
+            } => self.present_experience_response(
+                request_id,
+                &expected_graph_id,
+                &experience_id,
+                true,
+            ),
             RevisionRequest::ConfirmGraph { graph_id, .. } => {
                 self.confirm_graph_response(request_id, &graph_id)
             }
@@ -598,6 +775,19 @@ impl AndroidSystemAuthority {
                 appearance: Some(self.composition.appearance.clone()),
                 ..RevisionResponse::default()
             }),
+            RevisionRequest::SetExperienceAppearance {
+                expected_graph_id,
+                writer_experience_id,
+                expected_generation,
+                profile,
+                ..
+            } => self.set_experience_appearance_response(
+                request_id,
+                &expected_graph_id,
+                &writer_experience_id,
+                expected_generation,
+                profile,
+            ),
             RevisionRequest::UpdateAppearance {
                 expected_generation,
                 capability,
@@ -656,6 +846,13 @@ impl AndroidSystemAuthority {
         )
     }
 
+    fn active_experience_id(&self) -> Result<ExperienceId, String> {
+        self.composition.presented_experience.clone().map_or_else(
+            || ExperienceId::parse(STOCK_SHELL_EXPERIENCE_ID).map_err(|error| error.to_string()),
+            Ok,
+        )
+    }
+
     fn current_graph_response(&mut self, request_id: u64) -> Result<RevisionResponse, String> {
         if self.legacy_fallback_file.exists() {
             return self.current_response(request_id);
@@ -667,16 +864,103 @@ impl AndroidSystemAuthority {
                 .map_err(|error| error.to_string())?;
             return self.graph_response(request_id, pending.graph_id, graph, true, false);
         }
-        let stock_id =
-            ExperienceId::parse(STOCK_SHELL_EXPERIENCE_ID).map_err(|error| error.to_string())?;
+        let active_id = self.active_experience_id()?;
         let Some((graph_id, graph)) = self
             .graphs
-            .current(&stock_id)
+            .current(&active_id)
             .map_err(|error| error.to_string())?
         else {
             return self.current_response(request_id);
         };
         self.graph_response(request_id, graph_id, graph, false, false)
+    }
+
+    fn present_experience_response(
+        &mut self,
+        request_id: u64,
+        expected_graph_id: &str,
+        experience_id: &ExperienceId,
+        dismiss: bool,
+    ) -> Result<RevisionResponse, String> {
+        if self.legacy_fallback_file.exists() {
+            return Err("top-level presentation is unavailable during legacy rollback".into());
+        }
+        if self.pending_graph()?.is_some() {
+            return Err("another Android graph already awaits presentation".into());
+        }
+        let active_id = self.active_experience_id()?;
+        let (active_graph_id, active_graph) = self
+            .graphs
+            .current(&active_id)
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| "Android authority has no active v4 graph".to_owned())?;
+        if active_graph_id != expected_graph_id {
+            return Err("presented Android graph changed before the lifecycle request".into());
+        }
+        let active_root = active_graph
+            .nodes
+            .get(&active_graph.root)
+            .ok_or_else(|| "active Android graph has no root".to_owned())?;
+        if active_root.experience_id != active_id {
+            return Err("active Android graph root does not match its presented Experience".into());
+        }
+
+        let target_id = if dismiss {
+            if experience_id != &active_id {
+                return Err("dismiss request does not name the presented Experience".into());
+            }
+            ExperienceId::parse(STOCK_SHELL_EXPERIENCE_ID).map_err(|error| error.to_string())?
+        } else {
+            let active_record = self
+                .registry
+                .get(&active_id)
+                .map_err(|error| error.to_string())?
+                .ok_or_else(|| "presented Experience is not registered".to_owned())?;
+            if active_record.role != experience_package::ExperienceRole::Shell {
+                return Err("only the registry-authorized shell may present an Experience".into());
+            }
+            experience_id.clone()
+        };
+        if target_id == active_id {
+            return Err("requested Experience is already presented".into());
+        }
+        let target_record = self
+            .registry
+            .get(&target_id)
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| format!("unknown Experience `{target_id}`"))?;
+        if !dismiss && target_record.role == experience_package::ExperienceRole::Shell {
+            return Err("the shell cannot present another shell Experience".into());
+        }
+        let target_revision = self
+            .registry
+            .current(&target_id)
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| format!("Experience `{target_id}` has no current revision"))?;
+        let (graph_id, graph) = self
+            .graphs
+            .current(&target_id)
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| format!("Experience `{target_id}` has no resolved graph"))?;
+        let root = graph
+            .nodes
+            .get(&graph.root)
+            .ok_or_else(|| "target Android graph has no root".to_owned())?;
+        if root.experience_id != target_id
+            || root.revision_id.as_str() != target_revision.manifest.revision_id
+        {
+            return Err("target Android graph does not match its registry pointer".into());
+        }
+        self.validate_graph_grants(&graph)?;
+        self.write_pending_graph(&PendingGraphMigration {
+            experience_id: target_id,
+            revision_id: target_revision.manifest.revision_id,
+            graph_id: graph_id.clone(),
+            candidate: false,
+            presentation_only: true,
+            staged_states: BTreeMap::new(),
+        })?;
+        self.graph_response(request_id, graph_id, graph, true, false)
     }
 
     fn confirm_graph_response(
@@ -699,11 +983,18 @@ impl AndroidSystemAuthority {
                 .states
                 .insert(experience_id.clone(), state.clone());
         }
+        if pending.presentation_only {
+            let stock_id = ExperienceId::parse(STOCK_SHELL_EXPERIENCE_ID)
+                .map_err(|error| error.to_string())?;
+            target_composition.presented_experience =
+                (pending.experience_id != stock_id).then(|| pending.experience_id.clone());
+        }
         self.activate_graph_durably(GraphActivationJournal {
             experience_id: pending.experience_id,
             revision_id: pending.revision_id,
             graph_id: Some(graph_id.to_owned()),
             legacy_fallback: false,
+            update_pointers: !pending.presentation_only,
             target_composition,
             previous_composition: self.composition.clone(),
         })?;
@@ -720,7 +1011,7 @@ impl AndroidSystemAuthority {
                 return Err("rollback does not name the pending Android graph".into());
             }
             remove_synced(&self.pending_graph_file)?;
-            if pending.candidate {
+            if pending.candidate || pending.presentation_only {
                 return self.current_graph_response(request_id);
             }
             let current = self
@@ -737,11 +1028,10 @@ impl AndroidSystemAuthority {
             );
         }
 
-        let stock_id =
-            ExperienceId::parse(STOCK_SHELL_EXPERIENCE_ID).map_err(|error| error.to_string())?;
+        let active_id = self.active_experience_id()?;
         let (current_graph_id, _) = self
             .graphs
-            .current(&stock_id)
+            .current(&active_id)
             .map_err(|error| error.to_string())?
             .ok_or_else(|| "Android authority has no active v4 graph".to_owned())?;
         if current_graph_id != failed_graph_id {
@@ -749,13 +1039,13 @@ impl AndroidSystemAuthority {
         }
         let previous_revision = self
             .registry
-            .previous(&stock_id)
+            .previous(&active_id)
             .map_err(|error| error.to_string())?
-            .ok_or_else(|| "Android Stock registry has no rollback revision".to_owned())?;
+            .ok_or_else(|| "presented Android Experience has no rollback revision".to_owned())?;
         if previous_revision.package.is_some() {
             let (previous_graph_id, previous_graph) = self
                 .graphs
-                .previous(&stock_id)
+                .previous(&active_id)
                 .map_err(|error| error.to_string())?
                 .ok_or_else(|| "Android graph store has no rollback graph".to_owned())?;
             let previous_composition: CompositionAuthorityState = serde_json::from_slice(
@@ -764,10 +1054,11 @@ impl AndroidSystemAuthority {
             )
             .map_err(|error| error.to_string())?;
             self.activate_graph_durably(GraphActivationJournal {
-                experience_id: stock_id,
+                experience_id: active_id,
                 revision_id: previous_revision.manifest.revision_id,
                 graph_id: Some(previous_graph_id.clone()),
                 legacy_fallback: false,
+                update_pointers: true,
                 target_composition: previous_composition,
                 previous_composition: self.composition.clone(),
             })?;
@@ -775,10 +1066,11 @@ impl AndroidSystemAuthority {
         }
 
         self.activate_graph_durably(GraphActivationJournal {
-            experience_id: stock_id,
+            experience_id: active_id,
             revision_id: previous_revision.manifest.revision_id.clone(),
             graph_id: None,
             legacy_fallback: true,
+            update_pointers: true,
             target_composition: self.composition.clone(),
             previous_composition: self.composition.clone(),
         })?;
@@ -804,11 +1096,10 @@ impl AndroidSystemAuthority {
         if self.pending_graph()?.is_some() {
             return Err("another Android graph already awaits presentation".into());
         }
-        let stock_id =
-            ExperienceId::parse(STOCK_SHELL_EXPERIENCE_ID).map_err(|error| error.to_string())?;
+        let active_id = self.active_experience_id()?;
         let (current_graph_id, current_graph) = self
             .graphs
-            .current(&stock_id)
+            .current(&active_id)
             .map_err(|error| error.to_string())?
             .ok_or_else(|| "Android v4 authoring requires an active graph".to_owned())?;
         if current_graph_id != expected_graph_id {
@@ -938,6 +1229,7 @@ impl AndroidSystemAuthority {
             revision_id: revision.manifest.revision_id,
             graph_id: graph_id.clone(),
             candidate: true,
+            presentation_only: false,
             staged_states,
         })?;
         self.graph_response(request_id, graph_id, graph, true, false)
@@ -971,11 +1263,10 @@ impl AndroidSystemAuthority {
                 .verify(graph_id)
                 .map_err(|error| error.to_string());
         }
-        let stock_id =
-            ExperienceId::parse(STOCK_SHELL_EXPERIENCE_ID).map_err(|error| error.to_string())?;
+        let active_id = self.active_experience_id()?;
         let (current_id, graph) = self
             .graphs
-            .current(&stock_id)
+            .current(&active_id)
             .map_err(|error| error.to_string())?
             .ok_or_else(|| "Android authority has no active v4 graph".to_owned())?;
         if current_id != graph_id {
@@ -1156,6 +1447,64 @@ impl AndroidSystemAuthority {
         if self.appearance_writer.as_deref() != Some(capability) {
             return Err("appearance-write capability denied".into());
         }
+        self.commit_appearance_response(request_id, expected_generation, profile)
+    }
+
+    fn set_experience_appearance_response(
+        &mut self,
+        request_id: u64,
+        expected_graph_id: &str,
+        writer_experience_id: &ExperienceId,
+        expected_generation: u64,
+        profile: AppearanceProfile,
+    ) -> Result<RevisionResponse, String> {
+        if self.pending_graph()?.is_some() {
+            return Err("appearance cannot change while a graph awaits presentation".into());
+        }
+        let active_id = self.active_experience_id()?;
+        let (graph_id, _graph) = self
+            .graphs
+            .current(&active_id)
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| "Android authority has no active v4 graph".to_owned())?;
+        if graph_id != expected_graph_id {
+            return Err("presented Android graph changed before appearance write".into());
+        }
+        let record = self
+            .registry
+            .get(writer_experience_id)
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| "appearance writer is not registered".to_owned())?;
+        if record.role != experience_package::ExperienceRole::Shell {
+            return Err("only the registry-authorized shell may write appearance".into());
+        }
+        let package = self
+            .registry
+            .current(writer_experience_id)
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| "appearance writer has no current revision".to_owned())?
+            .package
+            .ok_or_else(|| "appearance writer is not a v4 package".to_owned())?;
+        let grant = self
+            .composition
+            .grants
+            .get(writer_experience_id)
+            .filter(|grant| grant.reviewed)
+            .ok_or_else(|| "appearance writer has no reviewed grant".to_owned())?;
+        if !package.provider_capabilities.contains("appearance_write")
+            || !grant.provider_capabilities.contains("appearance_write")
+        {
+            return Err("appearance-write capability denied".into());
+        }
+        self.commit_appearance_response(request_id, expected_generation, profile)
+    }
+
+    fn commit_appearance_response(
+        &mut self,
+        request_id: u64,
+        expected_generation: u64,
+        profile: AppearanceProfile,
+    ) -> Result<RevisionResponse, String> {
         profile.validate().map_err(|error| error.to_string())?;
         if self.composition.appearance.profile.generation != expected_generation {
             return Err(format!(
@@ -1702,7 +2051,7 @@ fn provider_failure(request_id: u64, error: &str) -> ProviderResponse {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeMap;
+    use std::collections::{BTreeMap, BTreeSet};
 
     use super::*;
     use android_authority_protocol::RevisionRequest;
@@ -1725,7 +2074,7 @@ mod tests {
                 format_version: PACKAGE_FORMAT_VERSION,
                 experience_id: ExperienceId::parse(STOCK_SHELL_EXPERIENCE_ID).unwrap(),
                 role: ExperienceRole::Shell,
-                provider_capabilities: Default::default(),
+                provider_capabilities: BTreeSet::from(["appearance_write".into()]),
                 contract: ExperienceContract {
                     contract_version: CONTRACT_VERSION,
                     exports: BTreeMap::from([(
@@ -1916,6 +2265,130 @@ mod tests {
         );
         assert_eq!(bundle.appearance.profile.generation, 1);
         assert!(bundle.appearance.profile.reduce_motion);
+    }
+
+    #[test]
+    fn signed_reference_experiences_present_confirm_restart_and_dismiss() {
+        let temporary = tempfile::tempdir().unwrap();
+        let revision_root = temporary.path().join("revisions");
+        let state_file = temporary.path().join("provider.json");
+        let source = r#"
+            return { api_version = 4, exports = { main = {
+                render = function() return { id = "stock" } end,
+                update = function(_, state) return { state = state } end,
+            } } }
+        "#;
+        let mut authority =
+            AndroidSystemAuthority::open_v4(&revision_root, &state_file, stock_v4(source)).unwrap();
+        authority.install_reference_composition().unwrap();
+
+        let snapshot = authority.dispatch_provider(ProviderRequest::Snapshot { request_id: 80 });
+        let catalog = snapshot.model.unwrap().shell.experiences;
+        assert_eq!(catalog.len(), 4);
+        assert!(catalog
+            .iter()
+            .any(|entry| entry.experience_id == "sos.example.dashboard"));
+
+        let stock = authority
+            .dispatch_revision(RevisionRequest::CurrentGraph { request_id: 81 })
+            .graph
+            .unwrap();
+        assert_eq!(stock.graph.nodes.len(), 1);
+        let dashboard_id = ExperienceId::parse("sos.example.dashboard").unwrap();
+        let presented = authority.dispatch_revision(RevisionRequest::PresentExperience {
+            request_id: 82,
+            expected_graph_id: stock.graph_id.clone(),
+            experience_id: dashboard_id.clone(),
+        });
+        assert!(presented.ok, "{:?}", presented.error);
+        let dashboard = presented.graph.unwrap();
+        assert!(dashboard.migration_pending);
+        assert_eq!(dashboard.graph.nodes.len(), 3);
+
+        drop(authority);
+        let mut restarted =
+            AndroidSystemAuthority::open_v4(&revision_root, &state_file, stock_v4(source)).unwrap();
+        restarted.install_reference_composition().unwrap();
+        let pending = restarted
+            .dispatch_revision(RevisionRequest::CurrentGraph { request_id: 83 })
+            .graph
+            .unwrap();
+        assert_eq!(pending.graph_id, dashboard.graph_id);
+        assert!(pending.migration_pending);
+        let confirmed = restarted.dispatch_revision(RevisionRequest::ConfirmGraph {
+            request_id: 84,
+            graph_id: pending.graph_id.clone(),
+        });
+        assert!(confirmed.ok, "{:?}", confirmed.error);
+        assert_eq!(restarted.active_experience_id().unwrap(), dashboard_id);
+        let stock_id = ExperienceId::parse(STOCK_SHELL_EXPERIENCE_ID).unwrap();
+        let mut profile = restarted.composition.appearance.profile.clone();
+        profile.generation = 1;
+        profile.scheme = experience_package::ColorScheme::Light;
+        let appearance = restarted.dispatch_revision(RevisionRequest::SetExperienceAppearance {
+            request_id: 85,
+            expected_graph_id: pending.graph_id.clone(),
+            writer_experience_id: stock_id,
+            expected_generation: 0,
+            profile,
+        });
+        assert!(appearance.ok, "{:?}", appearance.error);
+        assert_eq!(appearance.appearance.unwrap().profile.generation, 1);
+
+        let mut denied_profile = restarted.composition.appearance.profile.clone();
+        denied_profile.generation = 2;
+        let denied_appearance =
+            restarted.dispatch_revision(RevisionRequest::SetExperienceAppearance {
+                request_id: 86,
+                expected_graph_id: pending.graph_id.clone(),
+                writer_experience_id: dashboard_id.clone(),
+                expected_generation: 1,
+                profile: denied_profile,
+            });
+        assert!(!denied_appearance.ok);
+        assert!(denied_appearance
+            .error
+            .unwrap()
+            .contains("authorized shell"));
+
+        let media_id = ExperienceId::parse("sos.example.media").unwrap();
+        let denied = restarted.dispatch_revision(RevisionRequest::PresentExperience {
+            request_id: 87,
+            expected_graph_id: pending.graph_id.clone(),
+            experience_id: media_id,
+        });
+        assert!(!denied.ok);
+        assert!(denied.error.unwrap().contains("authorized shell"));
+
+        drop(restarted);
+        let mut accepted =
+            AndroidSystemAuthority::open_v4(&revision_root, &state_file, stock_v4(source)).unwrap();
+        accepted.install_reference_composition().unwrap();
+        let current = accepted
+            .dispatch_revision(RevisionRequest::CurrentGraph { request_id: 88 })
+            .graph
+            .unwrap();
+        assert_eq!(current.graph_id, pending.graph_id);
+        assert!(!current.migration_pending);
+        assert_eq!(current.appearance.profile.generation, 1);
+        let dismissed = accepted.dispatch_revision(RevisionRequest::DismissExperience {
+            request_id: 89,
+            expected_graph_id: current.graph_id,
+            experience_id: dashboard_id,
+        });
+        assert!(dismissed.ok, "{:?}", dismissed.error);
+        let stock_again = dismissed.graph.unwrap();
+        assert!(stock_again.migration_pending);
+        assert_eq!(stock_again.graph_id, stock.graph_id);
+        let confirmed = accepted.dispatch_revision(RevisionRequest::ConfirmGraph {
+            request_id: 90,
+            graph_id: stock_again.graph_id,
+        });
+        assert!(confirmed.ok, "{:?}", confirmed.error);
+        assert_eq!(
+            accepted.active_experience_id().unwrap().as_str(),
+            STOCK_SHELL_EXPERIENCE_ID
+        );
     }
 
     #[test]
@@ -2112,6 +2585,7 @@ mod tests {
                 revision_id: pending.revision_id.clone(),
                 graph_id: Some(candidate_graph_id.clone()),
                 legacy_fallback: false,
+                update_pointers: true,
                 target_composition: target_composition.clone(),
                 previous_composition: authority.composition.clone(),
             };

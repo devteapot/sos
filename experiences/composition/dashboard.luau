@@ -39,6 +39,8 @@ local function updateDashboard(_model: ExperienceModel, state: ExperienceState, 
         state.opened = event.payload.item
     elseif event.dependency == "media" and event.event == "playback_changed" then
         state.media_playing = event.payload.playing
+    elseif event.action == "acceptance_ping" then
+        state.acceptance_pings = (state.acceptance_pings or 0) + 1
     end
     return { state = state, effects = {} }
 end

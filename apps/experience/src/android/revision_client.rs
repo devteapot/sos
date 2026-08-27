@@ -17,7 +17,7 @@ use android_authority_protocol::{
     request_revision_over_stream, GraphEffectWire, GraphStateUpdateWire, RevisionAssetWire,
     RevisionRequest, RevisionResponse,
 };
-use experience_package::PackageMetadata;
+use experience_package::{AppearanceProfile, ExperienceId, PackageMetadata};
 use runtime_luau::{RevisionAsset, RevisionAssetInput};
 use serde_json::Value as JsonValue;
 use service_protocol::{AppearanceResource, ExperienceStateResource};
@@ -30,6 +30,28 @@ pub(super) fn current_with_retry() -> Result<RevisionResponse, String> {
 
 pub(super) fn current_graph_with_retry() -> Result<RevisionResponse, String> {
     current_request_with_retry(true)
+}
+
+pub(super) fn present_experience(
+    expected_graph_id: String,
+    experience_id: ExperienceId,
+) -> Result<RevisionResponse, String> {
+    request(RevisionRequest::PresentExperience {
+        request_id: allocate_request_id(),
+        expected_graph_id,
+        experience_id,
+    })
+}
+
+pub(super) fn dismiss_experience(
+    expected_graph_id: String,
+    experience_id: ExperienceId,
+) -> Result<RevisionResponse, String> {
+    request(RevisionRequest::DismissExperience {
+        request_id: allocate_request_id(),
+        expected_graph_id,
+        experience_id,
+    })
 }
 
 fn current_request_with_retry(graph: bool) -> Result<RevisionResponse, String> {
@@ -112,6 +134,24 @@ pub(super) fn current_appearance() -> Result<AppearanceResource, String> {
     })?
     .appearance
     .ok_or_else(|| "appearance response omitted its resource".into())
+}
+
+pub(super) fn set_experience_appearance(
+    expected_graph_id: String,
+    expected_generation: u64,
+    profile: AppearanceProfile,
+) -> Result<AppearanceResource, String> {
+    let writer_experience_id =
+        ExperienceId::parse("sos.stock.shell").map_err(|error| error.to_string())?;
+    request(RevisionRequest::SetExperienceAppearance {
+        request_id: allocate_request_id(),
+        expected_graph_id,
+        writer_experience_id,
+        expected_generation,
+        profile,
+    })?
+    .appearance
+    .ok_or_else(|| "appearance write response omitted its resource".into())
 }
 
 pub(super) fn install(

@@ -30,6 +30,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut bootstrap_package = None;
     let mut bootstrap_assets = Vec::new();
     let mut appearance_writer_file = None;
+    let mut install_reference_composition = false;
     let mut args = env::args().skip(1);
     while let Some(argument) = args.next() {
         match argument.as_str() {
@@ -38,6 +39,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             "--bootstrap-source" => bootstrap_source = args.next().map(PathBuf::from),
             "--bootstrap-package" => bootstrap_package = args.next().map(PathBuf::from),
             "--appearance-writer-file" => appearance_writer_file = args.next().map(PathBuf::from),
+            "--install-reference-composition" => install_reference_composition = true,
             "--bootstrap-asset" => {
                 let id = args
                     .next()
@@ -88,6 +90,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     } else {
         AndroidSystemAuthority::open(root, state_file, &bootstrap_source)?
     };
+    if install_reference_composition {
+        authority.install_reference_composition()?;
+    }
     if let Some(path) = appearance_writer_file {
         let capability = fs::read_to_string(path)?;
         authority.configure_appearance_writer(capability.trim())?;

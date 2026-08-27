@@ -1,6 +1,9 @@
 --!strict
 
 local function summary(model: ExperienceModel, state: ExperienceState, properties: JsonValue, context: ExperienceContext): SceneNode
+    if state.acceptance_failure == true then
+        error("reference Agenda acceptance failure")
+    end
     local title = properties.title or "Agenda"
     title = title .. " · appearance " .. tostring(model.appearance.generation)
     local selected = state.selected or "None"
@@ -25,13 +28,19 @@ local function summary(model: ExperienceModel, state: ExperienceState, propertie
 end
 
 local function updateSummary(_model: ExperienceModel, state: ExperienceState, event: any): UpdateOutcome
-    if event.action == "open_first" then
+    if event.action == "acceptance_update_fail" then
+        error("reference Agenda update failure")
+    elseif event.action == "open_first" then
         state.selected = "Design review"
         return {
             state = state,
             effects = {},
             events = {{ event = "open", payload = { item = "Design review" } }},
         }
+    elseif event.action == "acceptance_fail" then
+        state.acceptance_failure = true
+    elseif event.action == "acceptance_recover" then
+        state.acceptance_failure = false
     end
     return { state = state, effects = {} }
 end

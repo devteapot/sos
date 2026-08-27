@@ -15,7 +15,8 @@
     "system_read",
     "video_read",
     "camera_read",
-    "protected_surface"
+    "protected_surface",
+    "appearance_write"
   ],
   "contract": {
     "contract_version": 1,

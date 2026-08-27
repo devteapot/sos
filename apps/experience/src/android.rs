@@ -35,8 +35,8 @@ use experience_ir::{
     StateEnvelope, TextContent, MAX_AGENT_MESSAGES, MAX_AGENT_MESSAGE_BYTES,
 };
 use experience_package::{
-    canonical_sha256, ExperienceRole, GraphNodeId, InstanceId, PackageMetadata, RevisionId,
-    StateMigrationRecord, StateMigrationSource,
+    canonical_sha256, ExperienceId, ExperienceRole, GraphNodeId, InstanceId, PackageMetadata,
+    RevisionId, StateMigrationRecord, StateMigrationSource,
 };
 use gpui::{
     canvas, div, img, prelude::*, px, relative, rgb, Animation as GpuiAnimation, AnimationExt as _,
@@ -72,7 +72,15 @@ static FILES_DIR: OnceLock<PathBuf> = OnceLock::new();
 static RELOAD_REQUESTED: AtomicBool = AtomicBool::new(false);
 static ROLLBACK_REQUESTED: AtomicBool = AtomicBool::new(false);
 static WORKER_RESTART_REQUESTED: AtomicBool = AtomicBool::new(false);
+#[cfg(feature = "aosp-system")]
+static APPEARANCE_TOGGLE_REQUESTED: AtomicBool = AtomicBool::new(false);
 static STRESS_REQUEST: OnceLock<Mutex<Option<StressRequest>>> = OnceLock::new();
+#[cfg(feature = "aosp-system")]
+static EXPERIENCE_LIFECYCLE_REQUEST: OnceLock<Mutex<Option<AndroidExperienceLifecycle>>> =
+    OnceLock::new();
+#[cfg(feature = "aosp-system")]
+static REFERENCE_GRAPH_EVENT_REQUEST: OnceLock<Mutex<Option<AndroidReferenceGraphEvent>>> =
+    OnceLock::new();
 #[cfg(feature = "core-native")]
 static CORE_PLATFORM: OnceLock<Mutex<Option<Arc<AndroidPlatform>>>> = OnceLock::new();
 #[cfg(feature = "core-native")]
@@ -200,6 +208,20 @@ struct ActiveAndroidGraph {
     appearance_generation: u64,
 }
 
+#[cfg(feature = "aosp-system")]
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum AndroidExperienceLifecycle {
+    Present(ExperienceId),
+    Dismiss(ExperienceId),
+}
+
+#[cfg(feature = "aosp-system")]
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct AndroidReferenceGraphEvent {
+    experience_id: ExperienceId,
+    action: String,
+}
+
 #[derive(Clone, Debug)]
 struct GraphOwner {
     node_id: GraphNodeId,
@@ -241,6 +263,15 @@ fn android_main(app: android_activity::AndroidApp) {
         } else if url.starts_with("sos://worker-restart") {
             WORKER_RESTART_REQUESTED.store(true, Ordering::Release);
             log::info!("runtime_worker_restart_requested");
+        } else if url.starts_with("sos://appearance/toggle") {
+            APPEARANCE_TOGGLE_REQUESTED.store(true, Ordering::Release);
+            log::info!("android_appearance_toggle_requested");
+        } else if let Some(experience_id) = url.strip_prefix("sos://experience/present/") {
+            queue_android_experience_lifecycle(experience_id, false);
+        } else if let Some(experience_id) = url.strip_prefix("sos://experience/dismiss/") {
+            queue_android_experience_lifecycle(experience_id, true);
+        } else if let Some(path) = url.strip_prefix("sos://experience/event/") {
+            queue_android_reference_graph_event(path);
         } else if url.starts_with("sos://stress") {
             match parse_stress_request(url) {
                 Some(request) => {
@@ -902,7 +933,7 @@ impl ExperienceHost {
                         Some(("Graph action completed after graph removal".into(), false));
                     return;
                 };
-                let (updates, effects, agent_effects) =
+                let (updates, effects, agent_effects, lifecycle) =
                     match android_graph_action_wire(graph, &previous, &outcome) {
                         Ok(wire) => wire,
                         Err(error) => {
@@ -914,8 +945,12 @@ impl ExperienceHost {
                             return;
                         }
                     };
-                match revision_client::commit_graph_action(graph.graph_id.clone(), updates, effects)
-                {
+                let expected_graph_id = graph.graph_id.clone();
+                match revision_client::commit_graph_action(
+                    expected_graph_id.clone(),
+                    updates,
+                    effects,
+                ) {
                     Ok(states) => {
                         if let Some(active) = self.active_graph.as_mut() {
                             for state in states {
@@ -928,10 +963,24 @@ impl ExperienceHost {
                                 }
                             }
                         }
+                        log_android_graph_status_transitions(&previous, &outcome.snapshot);
                         self.install_graph_snapshot(outcome.snapshot);
                         self.execute_agent_effects(agent_effects);
-                        self.status = None;
                         log::info!("android_graph_action_committed request_id={request_id}");
+                        self.status = lifecycle
+                            .as_ref()
+                            .map(|_| ("Opening Experience…".into(), true));
+                        if let Some(lifecycle) = lifecycle {
+                            if let Err(error) =
+                                self.stage_lifecycle_graph(expected_graph_id, lifecycle, cx)
+                            {
+                                self.status =
+                                    Some((format!("Experience lifecycle failed: {error}"), false));
+                                log::warn!(
+                                    "android_experience_lifecycle_rejected request_id={request_id} error={error}"
+                                );
+                            }
+                        }
                     }
                     Err(error) => {
                         if let Some(active) = self.active_graph.as_ref() {
@@ -945,15 +994,27 @@ impl ExperienceHost {
                     }
                 }
                 self.action_in_flight = false;
-                self.dispatch_pending_input_event(cx);
+                if self.pending_graph_confirmation.is_none() {
+                    self.dispatch_pending_input_event(cx);
+                }
             }
             GraphWorkerResult::Refreshed {
                 request_id,
                 snapshot,
             } => {
+                let failed_instances = snapshot
+                    .instances
+                    .values()
+                    .filter(|instance| matches!(instance.status, RuntimeInstanceStatus::Failed(_)))
+                    .count();
                 self.install_graph_snapshot(snapshot);
                 self.status = None;
-                log::info!("android_graph_refreshed request_id={request_id}");
+                log::info!(
+                    "android_graph_refreshed request_id={} appearance_generation={} failed_instances={}",
+                    request_id,
+                    self.model.appearance.generation,
+                    failed_instances
+                );
             }
             GraphWorkerResult::Rejected { request_id, error } => {
                 self.pending_graph_previous = None;
@@ -2036,6 +2097,106 @@ impl ExperienceHost {
             source_sha256(&self.source)
         );
         Self::attach_graph_channels(results, cx);
+    }
+
+    #[cfg(feature = "aosp-system")]
+    fn stage_lifecycle_graph(
+        &mut self,
+        expected_graph_id: String,
+        lifecycle: AndroidExperienceLifecycle,
+        cx: &mut Context<Self>,
+    ) -> Result<(), String> {
+        let response = match lifecycle.clone() {
+            AndroidExperienceLifecycle::Present(experience_id) => {
+                revision_client::present_experience(expected_graph_id, experience_id)
+            }
+            AndroidExperienceLifecycle::Dismiss(experience_id) => {
+                revision_client::dismiss_experience(expected_graph_id, experience_id)
+            }
+        }?;
+        let bundle = response
+            .graph
+            .ok_or_else(|| "lifecycle response omitted its resolved graph".to_owned())?;
+        if !bundle.migration_pending {
+            return Err("lifecycle graph did not require presentation confirmation".into());
+        }
+        let graph_id = bundle.graph_id.clone();
+        let root_revision_id = bundle.graph.nodes[&bundle.graph.root].revision_id.clone();
+        let root_revision = bundle
+            .revisions
+            .iter()
+            .find(|revision| revision.revision_id == root_revision_id.as_str())
+            .ok_or_else(|| "lifecycle graph omitted its root revision".to_owned())?;
+        let source = root_revision.source.clone();
+        let schema_version = root_revision.state.resource.schema_version;
+        let revision_id = root_revision.revision_id.clone();
+        let graph = match start_android_graph_runtime(bundle, &self.model) {
+            Ok(graph) => graph,
+            Err(error) => {
+                let _ = revision_client::discard_graph(graph_id);
+                return Err(format!("lifecycle graph runtime rejected: {error}"));
+            }
+        };
+        let results = graph.worker.results();
+        let snapshot = graph.snapshot.clone();
+        self.active_graph = Some(graph);
+        self.install_graph_snapshot(snapshot);
+        self.source = source;
+        self.state_schema_version = schema_version;
+        self.system_revision_id = revision_id;
+        self.pending_graph_confirmation = Some(graph_id.clone());
+        self.pending_graph_agent_activation = None;
+        self.status = Some(("Experience rendered; confirming graph…".into(), true));
+        log::info!("android_experience_lifecycle_staged action={lifecycle:?} graph_id={graph_id}");
+        Self::attach_graph_channels(results, cx);
+        cx.notify();
+        Ok(())
+    }
+
+    #[cfg(feature = "aosp-system")]
+    fn toggle_authority_appearance(&mut self) -> Result<(), String> {
+        let graph_id = self
+            .active_graph
+            .as_ref()
+            .map(|graph| graph.graph_id.clone())
+            .ok_or_else(|| "No v4 graph is active".to_owned())?;
+        let expected_generation = self.model.appearance.generation;
+        let mut profile = self.model.appearance.clone();
+        profile.generation = expected_generation.saturating_add(1);
+        profile.scheme = match profile.scheme {
+            experience_package::ColorScheme::Light => experience_package::ColorScheme::Dark,
+            experience_package::ColorScheme::Dark => experience_package::ColorScheme::Light,
+        };
+        let appearance = revision_client::set_experience_appearance(
+            graph_id.clone(),
+            expected_generation,
+            profile,
+        )?;
+        self.model.appearance = appearance.profile.clone();
+        let request_id = self.allocate_request_id();
+        let graph = self
+            .active_graph
+            .as_mut()
+            .ok_or_else(|| "v4 graph disappeared during appearance write".to_owned())?;
+        graph.appearance_generation = appearance.profile.generation;
+        graph
+            .worker
+            .apply_appearance(request_id, appearance.profile.clone())
+            .map_err(|error| error.to_string())?;
+        self.status = Some((
+            format!(
+                "Appearance generation {} is active",
+                appearance.profile.generation
+            ),
+            true,
+        ));
+        log::info!(
+            "android_appearance_write_committed graph_id={} generation={} scheme={:?}",
+            graph_id,
+            appearance.profile.generation,
+            appearance.profile.scheme
+        );
+        Ok(())
     }
 
     #[cfg(feature = "aosp-system")]
@@ -3934,6 +4095,88 @@ impl Render for ExperienceHost {
                 ));
             }
         }
+        #[cfg(feature = "aosp-system")]
+        if APPEARANCE_TOGGLE_REQUESTED.swap(false, Ordering::AcqRel) {
+            if self.action_in_flight || self.pending_graph_confirmation.is_some() {
+                APPEARANCE_TOGGLE_REQUESTED.store(true, Ordering::Release);
+            } else if let Err(error) = self.toggle_authority_appearance() {
+                self.status = Some((format!("Appearance write failed: {error}"), false));
+                log::warn!("android_appearance_write_rejected error={error}");
+            }
+        }
+        #[cfg(feature = "aosp-system")]
+        let lifecycle_request = {
+            EXPERIENCE_LIFECYCLE_REQUEST
+                .get_or_init(|| Mutex::new(None))
+                .lock()
+                .expect("experience lifecycle request lock")
+                .take()
+        };
+        #[cfg(feature = "aosp-system")]
+        if let Some(lifecycle) = lifecycle_request {
+            if self.action_in_flight || self.pending_graph_confirmation.is_some() {
+                *EXPERIENCE_LIFECYCLE_REQUEST
+                    .get_or_init(|| Mutex::new(None))
+                    .lock()
+                    .expect("experience lifecycle request lock") = Some(lifecycle);
+            } else if let Some(graph_id) = self
+                .active_graph
+                .as_ref()
+                .map(|graph| graph.graph_id.clone())
+            {
+                if let Err(error) = self.stage_lifecycle_graph(graph_id, lifecycle, cx) {
+                    self.status = Some((format!("Experience lifecycle failed: {error}"), false));
+                }
+            } else {
+                self.status = Some(("No v4 graph is active".into(), false));
+            }
+        }
+        #[cfg(feature = "aosp-system")]
+        let reference_event_request = {
+            REFERENCE_GRAPH_EVENT_REQUEST
+                .get_or_init(|| Mutex::new(None))
+                .lock()
+                .expect("reference graph event request lock")
+                .take()
+        };
+        #[cfg(feature = "aosp-system")]
+        if let Some(request) = reference_event_request {
+            if self.action_in_flight || self.pending_graph_confirmation.is_some() {
+                *REFERENCE_GRAPH_EVENT_REQUEST
+                    .get_or_init(|| Mutex::new(None))
+                    .lock()
+                    .expect("reference graph event request lock") = Some(request);
+            } else if let Some(instance_id) = self.active_graph.as_ref().and_then(|graph| {
+                graph
+                    .snapshot
+                    .instances
+                    .values()
+                    .find(|instance| instance.experience_id == request.experience_id)
+                    .map(|instance| instance.instance_id.clone())
+            }) {
+                let action = request.action.clone();
+                self.dispatch_event(
+                    SceneEvent {
+                        action: request.action,
+                        target: Some(format!("{instance_id}::acceptance-control")),
+                        ..SceneEvent::default()
+                    },
+                    cx,
+                );
+                log::info!(
+                    "android_reference_graph_event_dispatched experience_id={} action={action}",
+                    request.experience_id
+                );
+            } else {
+                self.status = Some((
+                    format!(
+                        "Reference Experience `{}` is not active",
+                        request.experience_id
+                    ),
+                    false,
+                ));
+            }
+        }
         let stress_request = stress_request_slot()
             .lock()
             .expect("stress request lock")
@@ -4135,6 +4378,23 @@ fn start_android_graph_runtime(
             .values()
             .map(|instance| instance.assets.as_slice()),
     );
+    let root_experience = snapshot.instances[&snapshot.root].experience_id.clone();
+    log::info!(
+        "android_graph_runtime_ready graph_id={} root_experience={} instances={}",
+        bundle.graph_id,
+        root_experience,
+        snapshot.instances.len()
+    );
+    for (node_id, instance) in &snapshot.instances {
+        log::info!(
+            "android_graph_instance_ready node_id={} instance_id={} experience_id={} export_id={} status={:?}",
+            node_id,
+            instance.instance_id,
+            instance.experience_id,
+            instance.export_id,
+            instance.status
+        );
+    }
     Ok(ActiveAndroidGraph {
         graph_id: bundle.graph_id,
         worker,
@@ -4332,6 +4592,7 @@ fn android_graph_action_wire(
         Vec<android_authority_protocol::GraphStateUpdateWire>,
         Vec<android_authority_protocol::GraphEffectWire>,
         Vec<ProviderEffect>,
+        Option<AndroidExperienceLifecycle>,
     ),
     String,
 > {
@@ -4385,9 +4646,40 @@ fn android_graph_action_wire(
         .collect::<Result<Vec<_>, String>>()?;
     let mut effects = Vec::new();
     let mut agent_effects = Vec::new();
+    let mut lifecycle = None;
     for effect in &outcome.effects {
         if effect.effect.provider == "agent" {
             agent_effects.push(effect.effect.clone());
+        } else if effect.effect.provider == "shell" {
+            if effect.node_id != outcome.snapshot.root {
+                return Err("only the presented graph root may request shell lifecycle".into());
+            }
+            let instance = &outcome.snapshot.instances[&effect.node_id];
+            let revision = graph
+                .revisions
+                .get(&instance.revision_id)
+                .ok_or_else(|| "shell lifecycle revision metadata is missing".to_owned())?;
+            if revision.package.role != ExperienceRole::Shell {
+                return Err("only the registry-authorized shell may request lifecycle".into());
+            }
+            let experience_id = effect
+                .effect
+                .payload
+                .get("experience_id")
+                .and_then(JsonValue::as_str)
+                .ok_or_else(|| "shell lifecycle requires experience_id".to_owned())?;
+            let experience_id =
+                ExperienceId::parse(experience_id).map_err(|error| error.to_string())?;
+            let requested = match effect.effect.action.as_str() {
+                "present_experience" => AndroidExperienceLifecycle::Present(experience_id),
+                "dismiss_experience" => AndroidExperienceLifecycle::Dismiss(experience_id),
+                action => return Err(format!("unsupported shell lifecycle action `{action}`")),
+            };
+            if lifecycle.replace(requested).is_some() {
+                return Err(
+                    "one graph action may request at most one shell lifecycle change".into(),
+                );
+            }
         } else {
             effects.push(android_authority_protocol::GraphEffectWire {
                 node_id: effect.node_id.clone(),
@@ -4397,7 +4689,7 @@ fn android_graph_action_wire(
             });
         }
     }
-    Ok((updates, effects, agent_effects))
+    Ok((updates, effects, agent_effects, lifecycle))
 }
 
 #[cfg(feature = "aosp-system")]
@@ -4419,6 +4711,42 @@ fn graph_owner_for_target(snapshot: &GraphRuntimeSnapshot, target: &str) -> Opti
             node_id: node_id.clone(),
             instance_id: instance.instance_id.clone(),
         })
+}
+
+#[cfg(feature = "aosp-system")]
+fn log_android_graph_status_transitions(
+    previous: &GraphRuntimeSnapshot,
+    next: &GraphRuntimeSnapshot,
+) {
+    let root_ready = next
+        .instances
+        .get(&next.root)
+        .is_some_and(|instance| instance.status == RuntimeInstanceStatus::Ready);
+    for (node_id, instance) in &next.instances {
+        let prior = previous.instances.get(node_id).map(|prior| &prior.status);
+        match (&instance.status, prior) {
+            (RuntimeInstanceStatus::Failed(error), Some(RuntimeInstanceStatus::Ready)) => {
+                log::warn!(
+                    "android_graph_instance_failed node_id={} instance_id={} experience_id={} root_ready={} error={}",
+                    node_id,
+                    instance.instance_id,
+                    instance.experience_id,
+                    root_ready,
+                    error
+                );
+            }
+            (RuntimeInstanceStatus::Ready, Some(RuntimeInstanceStatus::Failed(_))) => {
+                log::info!(
+                    "android_graph_instance_recovered node_id={} instance_id={} experience_id={} root_ready={}",
+                    node_id,
+                    instance.instance_id,
+                    instance.experience_id,
+                    root_ready
+                );
+            }
+            _ => {}
+        }
+    }
 }
 
 #[cfg(feature = "aosp-system")]
@@ -4488,6 +4816,55 @@ fn find_text_session<'a>(node: &'a SceneNode, id: &str) -> Option<&'a experience
 
 fn stress_request_slot() -> &'static Mutex<Option<StressRequest>> {
     STRESS_REQUEST.get_or_init(|| Mutex::new(None))
+}
+
+#[cfg(all(feature = "aosp-system", not(feature = "core-native")))]
+fn queue_android_experience_lifecycle(experience_id: &str, dismiss: bool) {
+    match ExperienceId::parse(experience_id) {
+        Ok(experience_id) => {
+            let request = if dismiss {
+                AndroidExperienceLifecycle::Dismiss(experience_id)
+            } else {
+                AndroidExperienceLifecycle::Present(experience_id)
+            };
+            *EXPERIENCE_LIFECYCLE_REQUEST
+                .get_or_init(|| Mutex::new(None))
+                .lock()
+                .expect("experience lifecycle request lock") = Some(request.clone());
+            log::info!("android_experience_lifecycle_requested action={request:?}");
+            request_host_frame();
+        }
+        Err(error) => log::warn!("android_experience_lifecycle_url_rejected error={error}"),
+    }
+}
+
+#[cfg(all(feature = "aosp-system", not(feature = "core-native")))]
+fn queue_android_reference_graph_event(path: &str) {
+    let request = path.split_once('/').and_then(|(experience_id, action)| {
+        if action.is_empty()
+            || action.len() > 64
+            || !action
+                .bytes()
+                .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_')
+        {
+            return None;
+        }
+        Some(AndroidReferenceGraphEvent {
+            experience_id: ExperienceId::parse(experience_id).ok()?,
+            action: action.to_owned(),
+        })
+    });
+    match request {
+        Some(request) => {
+            *REFERENCE_GRAPH_EVENT_REQUEST
+                .get_or_init(|| Mutex::new(None))
+                .lock()
+                .expect("reference graph event request lock") = Some(request.clone());
+            log::info!("android_reference_graph_event_requested event={request:?}");
+            request_host_frame();
+        }
+        None => log::warn!("android_reference_graph_event_url_rejected path={path}"),
+    }
 }
 
 fn loading_scene() -> Scene {

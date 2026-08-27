@@ -111,15 +111,19 @@ pub fn install_reference_composition(store: &RevisionStore) -> Result<ReferenceC
             original(),
         ),
     )?;
+    let mut media_package = package(
+        media_id.clone(),
+        media_contract.clone(),
+        BTreeMap::new(),
+        original(),
+    );
+    media_package
+        .provider_capabilities
+        .insert("music_control".into());
     let media_revision = install(
         store,
         include_str!("../../../experiences/composition/media.luau"),
-        package(
-            media_id.clone(),
-            media_contract.clone(),
-            BTreeMap::new(),
-            original(),
-        ),
+        media_package,
     )?;
     let dashboard_contract = ExperienceContract {
         contract_version: CONTRACT_VERSION,
@@ -229,10 +233,23 @@ pub fn install_reference_composition(store: &RevisionStore) -> Result<ReferenceC
         }
     }
     crate::ReverseDependencyIndex::open(store.root()).rebuild(store, &registry)?;
-    let graph = GraphResolver::new(store.clone()).resolve(&dashboard_revision, &main)?;
+    let resolver = GraphResolver::new(store.clone());
     let graphs = GraphStore::open(store.root())?;
-    let dashboard_graph = graphs.install(&graph)?;
-    graphs.set_current(&dashboard_id, &dashboard_graph)?;
+    let mut dashboard_graph = None;
+    for (id, revision) in [
+        (&agenda_id, &agenda_revision),
+        (&media_id, &media_revision),
+        (&dashboard_id, &dashboard_revision),
+        (&remix_id, &remix_revision),
+    ] {
+        let graph = resolver.resolve(revision, &main)?;
+        let graph_id = graphs.install(&graph)?;
+        graphs.set_current(id, &graph_id)?;
+        if id == &dashboard_id {
+            dashboard_graph = Some(graph_id);
+        }
+    }
+    let dashboard_graph = dashboard_graph.expect("reference Dashboard graph installed");
 
     Ok(ReferenceComposition {
         agenda_revision,
@@ -324,6 +341,16 @@ mod tests {
         let graphs = GraphStore::open(directory.path()).unwrap();
         let graph = graphs.verify(&installed.dashboard_graph).unwrap();
         assert_eq!(graph.nodes.len(), 3);
+        for id in [
+            "sos.example.agenda",
+            "sos.example.media",
+            "sos.example.dashboard",
+            "sos.example.agenda-media-remix",
+        ] {
+            let id = ExperienceId::parse(id).unwrap();
+            let (_, top_level) = graphs.current(&id).unwrap().unwrap();
+            assert_eq!(top_level.nodes[&top_level.root].experience_id, id);
+        }
 
         let mut inputs = BTreeMap::new();
         let model = providers_fake::snapshot();
@@ -377,6 +404,53 @@ mod tests {
         assert_eq!(
             outcome.snapshot.instances[&agenda.0].state["selected"],
             "Design review"
+        );
+
+        let update_failed = runtime
+            .dispatch_event(&agenda.0, &json!({"action":"acceptance_update_fail"}))
+            .unwrap();
+        assert!(matches!(
+            &update_failed.snapshot.instances[&agenda.0].status,
+            RuntimeInstanceStatus::Failed(message)
+                if message.contains("reference Agenda update failure")
+        ));
+        assert_eq!(
+            update_failed.snapshot.instances[&update_failed.snapshot.root].status,
+            RuntimeInstanceStatus::Ready
+        );
+        runtime
+            .dispatch_event(&agenda.0, &json!({"action":"acceptance_recover"}))
+            .unwrap();
+
+        let failed = runtime
+            .dispatch_event(&agenda.0, &json!({"action":"acceptance_fail"}))
+            .unwrap();
+        assert!(matches!(
+            &failed.snapshot.instances[&agenda.0].status,
+            RuntimeInstanceStatus::Failed(message)
+                if message.contains("reference Agenda acceptance failure")
+        ));
+        assert_eq!(
+            failed.snapshot.instances[&failed.snapshot.root].status,
+            RuntimeInstanceStatus::Ready
+        );
+        let parent = runtime
+            .dispatch_event(&failed.snapshot.root, &json!({"action":"acceptance_ping"}))
+            .unwrap();
+        assert_eq!(
+            parent.snapshot.instances[&parent.snapshot.root].status,
+            RuntimeInstanceStatus::Ready
+        );
+        assert_eq!(
+            parent.snapshot.instances[&parent.snapshot.root].state["acceptance_pings"],
+            1
+        );
+        let recovered = runtime
+            .dispatch_event(&agenda.0, &json!({"action":"acceptance_recover"}))
+            .unwrap();
+        assert_eq!(
+            recovered.snapshot.instances[&agenda.0].status,
+            RuntimeInstanceStatus::Ready
         );
 
         let mut appearance = model.appearance;
