@@ -835,6 +835,8 @@ inspect_compat_profile() {
   local properties="$target_files/SYSTEM_EXT/etc/build.prop"
   local seapp_contexts="$target_files/SYSTEM_EXT/etc/selinux/system_ext_seapp_contexts"
   local file_contexts="$target_files/SYSTEM_EXT/etc/selinux/system_ext_file_contexts"
+  local property_contexts="$target_files/SYSTEM_EXT/etc/selinux/system_ext_property_contexts"
+  local system_ext_policy="$target_files/SYSTEM_EXT/etc/selinux/system_ext_sepolicy.cil"
   local privapp_permissions="$target_files/SYSTEM_EXT/etc/permissions/privapp-permissions-sos.xml"
   local latin_ime_apk="$target_files/PRODUCT/app/LatinIME/LatinIME.apk"
   local artifact
@@ -842,11 +844,20 @@ inspect_compat_profile() {
     "$apk" "$authority" "$node" "$node_cxx" "$agent_runner" "$agent_api" \
     "$agent_example_primary" "$bootstrap" \
     "$bootstrap_package" "$stock_theme" "$init_rc" "$properties" \
-    "$seapp_contexts" "$file_contexts" "$privapp_permissions"; do
+    "$seapp_contexts" "$file_contexts" "$property_contexts" \
+    "$system_ext_policy" "$privapp_permissions"; do
     [[ -f "$artifact" ]] || fail "SOS target-files artifact missing: $artifact"
     stat --printf='%n %s bytes\n' "$artifact"
     sha256sum "$artifact"
   done
+  grep -Fx \
+    'sys.sos.authority_recovery_probe u:object_r:sos_authority_recovery_probe_prop:s0 exact bool' \
+    "$property_contexts" >/dev/null || \
+    fail "SOS authority recovery probe property has the wrong installed label or type"
+  grep -F \
+    '(allow shell sos_authority_recovery_probe_prop (property_service (set)))' \
+    "$system_ext_policy" >/dev/null || \
+    fail "SOS userdebug policy omitted the bounded authority recovery permission"
   unzip -tq "$apk"
   [[ "$(unzip -Z1 "$apk" | sed -n 's|^lib/\([^/]*\)/.*|\1|p' | sort -u)" == arm64-v8a ]] || \
     fail "packaged SOS APK is not ARM64-only"

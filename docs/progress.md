@@ -15297,3 +15297,33 @@ the bounded trigger. Build and inspect one superseding exact Compat OTA, install
 it once, and repeat the ordered campaign. The next candidate must pass the new
 authority-only PID gate before authoring and exact rollback. No production user
 build receives the shell property permission.
+
+## 2026-08-27: Seal the bounded-recovery Compat candidate
+
+**Goal / build:** Produce the exact userdebug candidate containing the
+authority-only physical recovery actuator. Clean source
+`0f15bf98f78cd107468994903555c1e72c7fc880` built Compat 1 successfully in
+303.73 seconds with 2,978,784 KiB peak RSS. Its immutable identity is
+`sos.compat1.0f15bf98f78c.3ec21b65cb07`. SELinux compilation, neverallow,
+property-context, compatibility, and APEX policy tests all passed. The compiled
+policy contains only the expected shell `property_service set` permission for
+`sos_authority_recovery_probe_prop` on this userdebug build.
+
+**Offline evidence:** The strengthened `inspect-compat1` gate passed in 19.68
+seconds with 47,768 KiB peak RSS. It verifies the one-shot init trigger, exact
+installed boolean property context, compiled userdebug shell permission, Stock
+Mobile identity, v4 graph/API, signed authority composition, host-owned system
+controls, package signatures, and boot chain. The sealed OTA at
+`.cache/evidence/android-v4-0f15bf9/compat1/lineage-23.0-20260827-UNOFFICIAL-sos_compat_a33x-0f15bf9.zip`
+is 1,067,709,730 bytes with SHA-256
+`146eb025a59ce33140f2829049abca2ce02bd301bbb2cce77bce09bb38d3d733`.
+Its complete ZIP test passed in 4.84 seconds. The finalized five-file evidence
+manifest is 467 bytes with SHA-256
+`50bc82c85044c064dd8b009f619ef1b4b6c19e5fe88b81d8578f821c6e5a308f`;
+independent verification passes.
+
+**Decision / next gate:** This exact OTA is the only authorized replacement.
+Reverify it at the device boundary, install it once through automatic Recovery,
+repeat the complete ordered campaign, and require the authority PID to change
+while the recovered HOME PID remains exact. Authoring and rollback remain open
+until that campaign passes.
