@@ -55,6 +55,7 @@ use sha2::{Digest, Sha256};
 use crate::agent_bridge::{self, AgentUpdate};
 use crate::assets::{self, SosAssets, ALBUM_ASSET};
 use crate::compositor_fence::{CompositorFence, FenceEvent, NativeApplicationRegistration};
+use crate::graph_scene::composed_graph_scene;
 use crate::linux_accessibility::{self, Action as AccessibilityAction};
 use crate::linux_input::{self, NativeTextInput};
 use crate::pointer_input;
@@ -4042,46 +4043,6 @@ fn mount_fallback(message: &str) -> AnyElement {
         .text_size(px(13.))
         .child(SharedString::from(message.to_owned()))
         .into_any_element()
-}
-
-fn composed_graph_scene(snapshot: &GraphRuntimeSnapshot) -> Scene {
-    fn compose(
-        snapshot: &GraphRuntimeSnapshot,
-        owner: &GraphNodeId,
-        node: &SceneNode,
-    ) -> SceneNode {
-        let mut composed = node.clone();
-        let instance_id = &snapshot.instances[owner].instance_id;
-        composed.id = node.id.as_ref().map(|id| format!("{instance_id}::{id}"));
-        composed.children = node
-            .children
-            .iter()
-            .map(|child| compose(snapshot, owner, child))
-            .collect();
-        if let Some(Content::ExperienceMount(mount)) = &node.content {
-            composed.content = None;
-            if let Some((child_id, child)) = snapshot.instances.iter().find(|(_, instance)| {
-                instance.parent.as_ref() == Some(owner)
-                    && instance.dependency.as_ref().map(|alias| alias.as_str())
-                        == Some(mount.dependency.as_str())
-            }) {
-                if let Some(scene) = &child.scene {
-                    composed
-                        .children
-                        .push(compose(snapshot, child_id, &scene.root));
-                }
-            }
-        }
-        composed
-    }
-
-    let root = snapshot
-        .instances
-        .get(&snapshot.root)
-        .and_then(|instance| instance.scene.as_ref())
-        .map(|scene| compose(snapshot, &snapshot.root, &scene.root))
-        .unwrap_or_default();
-    Scene { root }
 }
 
 fn graph_owner(snapshot: &GraphRuntimeSnapshot, node_id: &GraphNodeId) -> GraphOwner {

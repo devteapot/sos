@@ -14485,3 +14485,30 @@ regression and run the real product when a provisioned AOSP workspace is
 available. This improves Android lifecycle evidence but cannot replace the
 still-open SM-A336B physical campaign; the phone remains in Download Mode and
 requires its established physical key restart before Compat installation.
+
+## 2026-08-27: Share and cross-check composed scenes across Linux and Android
+
+**Goal / changed:** Remove the last platform copy of the scene-composition
+transform before installing the cleaned Compat and Core candidates. Linux,
+Compat, and Core now call one pure transform that prefixes node IDs with the
+owning Instance ID, attaches a ready child only to the matching declared
+dependency mount, and leaves a failed child's mount empty for the host-owned
+fallback. The host regression deliberately gives Dashboard and Agenda the
+same raw action ID, mounts Agenda, injects a failed Media sibling, and requires
+all composed IDs to remain unique and Instance-prefixed.
+
+**Failure / fix:** The first ARM64 `gate-strict` check exposed a separate
+configuration regression. Plain non-AOSP builds still compiled appearance,
+top-level lifecycle, and reference-event deep-link branches whose queues exist
+only in the AOSP product. The shipping `aosp-system` and `core-native` checks
+were already green. Non-AOSP builds now reject those product-only links with
+an explicit log entry, while Compat retains the real queue behavior.
+
+**Evidence / decision:** `cargo test --locked -p sos-experience` passes all 18
+default tests. The `linux-host` library passes all 38 tests in 2.85 seconds.
+ARM64 Android release checks pass for plain `gate-strict` in 0.71 seconds,
+Compat `aosp-system` in 0.76 seconds, and `core-native` in 0.83 seconds. Keep
+one composition implementation for all hosts. Rebuild and inspect the exact
+Android candidates after this source change, then run the physical Compat and
+Core campaign when the SM-A336B exposes an authorized recovery or Android
+transport.

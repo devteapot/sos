@@ -63,6 +63,8 @@ use crate::android_agent_contract::{AgentActivationEvidence, AgentActivationPhas
 #[cfg(not(feature = "core-native"))]
 use crate::android_interaction_contract::{text_tap_outcome, TextTapOutcome};
 use crate::assets::{self, SosAssets, ALBUM_ASSET};
+#[cfg(feature = "aosp-system")]
+use crate::graph_scene::composed_graph_scene;
 use crate::pointer_input;
 use crate::scene_surface;
 use crate::{deterministic_stock_agent_candidate, DEFAULT_EXPERIENCE};
@@ -264,8 +266,7 @@ fn android_main(app: android_activity::AndroidApp) {
             WORKER_RESTART_REQUESTED.store(true, Ordering::Release);
             log::info!("runtime_worker_restart_requested");
         } else if url.starts_with("sos://appearance/toggle") {
-            APPEARANCE_TOGGLE_REQUESTED.store(true, Ordering::Release);
-            log::info!("android_appearance_toggle_requested");
+            queue_android_appearance_toggle();
         } else if let Some(experience_id) = url.strip_prefix("sos://experience/present/") {
             queue_android_experience_lifecycle(experience_id, false);
         } else if let Some(experience_id) = url.strip_prefix("sos://experience/dismiss/") {
@@ -530,7 +531,7 @@ impl ExperienceHost {
         let semantic_scene = self
             .active_graph
             .as_ref()
-            .map(|graph| composed_android_graph_scene(&graph.snapshot))
+            .map(|graph| composed_graph_scene(&graph.snapshot))
             .unwrap_or_else(|| self.scene.clone());
         #[cfg(not(feature = "aosp-system"))]
         let semantic_scene = self.scene.clone();
@@ -1538,7 +1539,7 @@ impl ExperienceHost {
         let scene = self
             .active_graph
             .as_ref()
-            .map(|graph| composed_android_graph_scene(&graph.snapshot))
+            .map(|graph| composed_graph_scene(&graph.snapshot))
             .unwrap_or_else(|| self.scene.clone());
         #[cfg(not(feature = "aosp-system"))]
         let scene = self.scene.clone();
@@ -3018,7 +3019,7 @@ impl ExperienceHost {
         let semantic_scene = self
             .active_graph
             .as_ref()
-            .map(|graph| composed_android_graph_scene(&graph.snapshot))
+            .map(|graph| composed_graph_scene(&graph.snapshot))
             .unwrap_or_else(|| self.scene.clone());
         #[cfg(not(feature = "aosp-system"))]
         let semantic_scene = self.scene.clone();
@@ -3990,7 +3991,7 @@ impl Render for ExperienceHost {
         let accessibility_scene = self
             .active_graph
             .as_ref()
-            .map(|graph| composed_android_graph_scene(&graph.snapshot))
+            .map(|graph| composed_graph_scene(&graph.snapshot))
             .unwrap_or_else(|| self.scene.clone());
         #[cfg(not(feature = "aosp-system"))]
         let accessibility_scene = self.scene.clone();
@@ -4745,46 +4746,6 @@ fn log_android_graph_status_transitions(
     }
 }
 
-#[cfg(feature = "aosp-system")]
-fn composed_android_graph_scene(snapshot: &GraphRuntimeSnapshot) -> Scene {
-    fn compose(
-        snapshot: &GraphRuntimeSnapshot,
-        owner: &GraphNodeId,
-        node: &SceneNode,
-    ) -> SceneNode {
-        let mut composed = node.clone();
-        let instance_id = &snapshot.instances[owner].instance_id;
-        composed.id = node.id.as_ref().map(|id| format!("{instance_id}::{id}"));
-        composed.children = node
-            .children
-            .iter()
-            .map(|child| compose(snapshot, owner, child))
-            .collect();
-        if let Some(Content::ExperienceMount(mount)) = &node.content {
-            composed.content = None;
-            if let Some((child_id, child)) = snapshot.instances.iter().find(|(_, instance)| {
-                instance.parent.as_ref() == Some(owner)
-                    && instance.dependency.as_ref().map(|alias| alias.as_str())
-                        == Some(mount.dependency.as_str())
-            }) {
-                if let Some(scene) = &child.scene {
-                    composed
-                        .children
-                        .push(compose(snapshot, child_id, &scene.root));
-                }
-            }
-        }
-        composed
-    }
-    let root = snapshot
-        .instances
-        .get(&snapshot.root)
-        .and_then(|instance| instance.scene.as_ref())
-        .map(|scene| compose(snapshot, &snapshot.root, &scene.root))
-        .unwrap_or_default();
-    Scene { root }
-}
-
 fn android_mount_fallback(message: &str) -> AnyElement {
     div()
         .size_full()
@@ -4797,6 +4758,17 @@ fn android_mount_fallback(message: &str) -> AnyElement {
         .text_size(px(13.0))
         .child(SharedString::from(message.to_owned()))
         .into_any_element()
+}
+
+#[cfg(all(feature = "aosp-system", not(feature = "core-native")))]
+fn queue_android_appearance_toggle() {
+    APPEARANCE_TOGGLE_REQUESTED.store(true, Ordering::Release);
+    log::info!("android_appearance_toggle_requested");
+}
+
+#[cfg(all(not(feature = "aosp-system"), not(feature = "core-native")))]
+fn queue_android_appearance_toggle() {
+    log::warn!("android_appearance_toggle_unsupported_without_aosp_system");
 }
 
 fn find_text_session<'a>(node: &'a SceneNode, id: &str) -> Option<&'a experience_ir::TextSession> {
@@ -4834,6 +4806,11 @@ fn queue_android_experience_lifecycle(experience_id: &str, dismiss: bool) {
     }
 }
 
+#[cfg(all(not(feature = "aosp-system"), not(feature = "core-native")))]
+fn queue_android_experience_lifecycle(_experience_id: &str, _dismiss: bool) {
+    log::warn!("android_experience_lifecycle_unsupported_without_aosp_system");
+}
+
 #[cfg(all(feature = "aosp-system", not(feature = "core-native")))]
 fn queue_android_reference_graph_event(path: &str) {
     let request = path.split_once('/').and_then(|(experience_id, action)| {
@@ -4861,6 +4838,11 @@ fn queue_android_reference_graph_event(path: &str) {
         }
         None => log::warn!("android_reference_graph_event_url_rejected path={path}"),
     }
+}
+
+#[cfg(all(not(feature = "aosp-system"), not(feature = "core-native")))]
+fn queue_android_reference_graph_event(_path: &str) {
+    log::warn!("android_reference_graph_event_unsupported_without_aosp_system");
 }
 
 fn loading_scene() -> Scene {

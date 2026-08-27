@@ -398,7 +398,11 @@ The implementation is split so the contracts do not depend on GPUI or Linux:
   compositor for the accepted graph and completes discard only after its
   restored frame is physically presented; crash recovery selects the journaled
   side of the commit;
-- the Linux host namespaces nodes, text state, assets, provider surfaces, input,
+- one shared host transform attaches child scene roots to their declared mount,
+  prefixes every scene node with the owning Instance ID, and leaves a failed
+  child's mount empty for the host-owned fallback. Linux and both Android
+  profiles use that exact transform instead of maintaining platform copies;
+- the Linux host namespaces text state, assets, provider surfaces, input,
   accessibility, and provider subscriptions by graph owner; and
 - the trusted authoring broker exposes bounded context, validate, and submit
   flows for self-contained fork/remix candidates and live compositions; and
@@ -427,10 +431,13 @@ Android embeds the same source/package constructor in its signed authority and
 installs it idempotently without resetting later registry revisions on
 authority restart.
 
-The shared package, resolver, runtime, and authority code is platform-neutral.
-Android has compile, unit, restart-fault, top-level presentation, appearance,
-and child-containment evidence for the graph path. It does not yet have a
-physical-device composition verdict.
+The shared package, resolver, runtime, authority, and scene-composition code is
+platform-neutral. The scene regression uses duplicate raw node IDs in the
+Dashboard and Agenda Instances, mounts the healthy Agenda child, withholds the
+failed Media child, and requires every resulting ID to remain unique and
+Instance-prefixed. Android has compile, unit, restart-fault, top-level
+presentation, appearance, and child-containment evidence for the graph path.
+It does not yet have a physical-device composition verdict.
 
 ## Milestone closure matrix
 

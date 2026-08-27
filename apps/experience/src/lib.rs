@@ -15,6 +15,12 @@ mod assets;
 mod compositor_fence;
 #[cfg(any(all(target_os = "android", feature = "core-native"), test))]
 mod core_credential;
+#[cfg(any(
+    all(target_os = "android", feature = "aosp-system"),
+    all(target_os = "linux", feature = "linux-host"),
+    test
+))]
+mod graph_scene;
 #[cfg(all(target_os = "linux", feature = "linux-host"))]
 mod linux;
 #[cfg(all(target_os = "linux", feature = "linux-host"))]
