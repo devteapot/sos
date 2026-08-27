@@ -92,6 +92,14 @@ check_android_composition_authority() {
     fail "SOS authority omitted its fatal startup marker"
   grep -aF 'install reference composition failed: ' "$authority" >/dev/null || \
     fail "SOS authority omitted its reference-install startup boundary"
+  for marker in \
+    'raw socket step=socket(AF_INET, SOCK_STREAM)' \
+    'raw socket step=setsockopt(SO_REUSEADDR)' \
+    'raw socket step=bind' \
+    'raw socket step=listen'; do
+    grep -aF "$marker" "$authority" >/dev/null || \
+      fail "SOS authority omitted raw listener diagnostic boundary: $marker"
+  done
   grep -aF 'sos.stock.mobile' "$authority" >/dev/null || \
     fail "SOS authority omitted the reserved Stock Mobile identity"
   for marker in \

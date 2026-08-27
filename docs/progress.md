@@ -15515,3 +15515,58 @@ Reverify it at the device boundary, install it once through automatic Recovery,
 and start a fresh campaign. Require the authority-only restart either to serve
 an audit snapshot or to emit its exact contextual fatal cause while HOME stays
 live; do not advance to authoring on a transient PID.
+
+## 2026-08-27: Isolate the authority failure to its loopback-listener helper
+
+**Goal / physical evidence:** Install the exact authority-diagnostic candidate
+and use its Android log boundary to replace the remaining restart hypothesis
+with an observed cause. Device preflight reverified the 1,067,694,920-byte OTA
+and SHA-256 `99dbed3ed79d8e0e12f4807f04f87a8bcde624f210ffb7cd2120d62b617729d3`
+against live b89 Compat. Automatic Recovery entry took 29.44 seconds, the only
+sideload took 82.44 seconds with `Total xfer: 1.00x`, and exact-product
+readiness took 125.51 seconds. The installed identity was
+`sos.compat1.dcbe6109b7ef.88b08470bdbf`; authority PID 953 and HOME PID 1524
+were live under Enforcing SELinux with no relevant crash, ANR, fatal authority
+marker, or SOS AVC.
+
+The distinct Stock Mobile shell again fit the complete 1080x2400 panel with no
+Compat drawer. Its 181,576-byte screenshot has SHA-256
+`2757901190da72aa6433220e5dcac1bd3a5229eddf4e3822b22ca109c413d845`.
+Dashboard presented and confirmed a three-Instance graph. A real Theme tap
+advanced appearance generation 4 to 5 without revision churn. The Agenda
+update exception and time-budget violation were independently contained and
+recovered; two parent pings, separately keyed state, mounted IME focus/blur,
+and the 12-node Android accessibility tree passed. HOME-only recovery changed
+PID 1524 to 3746, preserved authority PID 953, and restored Dashboard at
+generation 5 with eight durable parent pings.
+
+**Failure / exact diagnosis boundary:** `restart-v4-authority` correctly exited
+1 after 20.25 seconds because no replacement became audit-ready. HOME PID 3746
+survived, the one-shot property reset to 0, and init reported the service as
+restarting. Every five-second replacement emitted the new direct log marker:
+`android_system_authority_failed error=bind provider listener
+127.0.0.1:47777 failed: Connection refused (os error 111)`. The finalized
+4,617,195-byte lifecycle log has SHA-256
+`607b7bdc4c164e508ec967cf081e0bad1ae93404741895547ee0b930398bb6c0`.
+This excludes registry installation, durable state open, revision listener,
+Core Unix sockets, and audit probing, but the helper still combined socket
+creation, `SO_REUSEADDR`, kernel bind, and listen under one outer label. No
+`authority-restart` campaign stage was captured and the campaign remains
+rejected. A cold reboot recovered the exact product, authority PID 942, HOME
+PID 1470, and durable Dashboard in 127.56 seconds; the 142-byte result has
+SHA-256
+`db733acae267d7bf7a7284e7e65ec61463eee55a8c8ecc3b954878d13fb5746a`.
+
+**Changed / verification:** Each raw listener operation now has a stable error
+boundary: socket creation, `SO_REUSEADDR`, bind, and listen. The artifact
+inspector requires all four compiled markers. All 28 authority unit, binary,
+wire, and documentation tests pass, including a non-local-address test that
+proves the bind boundary. The linked ARM64/API 31 release build passes in 13.64
+seconds with 854,504 KiB peak RSS and contains every marker. Bash parsing and
+the complete A33x host fixture pass; the latter took 8.01 seconds with 5,360
+KiB peak RSS.
+
+**Decision / next gate:** Build and inspect one exact raw-step diagnostic
+candidate, install it once, and repeat the ordered campaign. At authority
+recovery, use the emitted raw step to determine the implementation change; do
+not infer which syscall returned errno 111 and do not advance to authoring.

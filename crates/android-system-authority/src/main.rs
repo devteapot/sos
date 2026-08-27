@@ -19,6 +19,10 @@ use android_authority_protocol::{
 use android_system_authority::AndroidSystemAuthority;
 
 const PROVIDER_ADDRESS: &str = "127.0.0.1:47777";
+const SOCKET_CREATE_STEP: &str = "raw socket step=socket(AF_INET, SOCK_STREAM)";
+const SOCKET_REUSE_STEP: &str = "raw socket step=setsockopt(SO_REUSEADDR)";
+const SOCKET_BIND_STEP: &str = "raw socket step=bind";
+const SOCKET_LISTEN_STEP: &str = "raw socket step=listen";
 
 #[cfg(target_os = "android")]
 const ANDROID_LOG_ERROR: libc::c_int = 6;
@@ -208,9 +212,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn bind_reusable_tcp(address: &str) -> io::Result<TcpListener> {
-    let address = address
-        .parse::<SocketAddrV4>()
-        .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
+    let address = address.parse::<SocketAddrV4>().map_err(|error| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("parse TCP listener address {address} failed: {error}"),
+        )
+    })?;
     let raw_fd = unsafe {
         libc::socket(
             libc::AF_INET,
@@ -219,7 +226,7 @@ fn bind_reusable_tcp(address: &str) -> io::Result<TcpListener> {
         )
     };
     if raw_fd < 0 {
-        return Err(io::Error::last_os_error());
+        return Err(socket_step_error(SOCKET_CREATE_STEP, &address));
     }
     let fd = unsafe { OwnedFd::from_raw_fd(raw_fd) };
     let enabled: libc::c_int = 1;
@@ -233,7 +240,7 @@ fn bind_reusable_tcp(address: &str) -> io::Result<TcpListener> {
         )
     };
     if result < 0 {
-        return Err(io::Error::last_os_error());
+        return Err(socket_step_error(SOCKET_REUSE_STEP, &address));
     }
     let socket_address = libc::sockaddr_in {
         sin_family: libc::AF_INET as libc::sa_family_t,
@@ -251,12 +258,20 @@ fn bind_reusable_tcp(address: &str) -> io::Result<TcpListener> {
         )
     };
     if result < 0 {
-        return Err(io::Error::last_os_error());
+        return Err(socket_step_error(SOCKET_BIND_STEP, &address));
     }
     if unsafe { libc::listen(fd.as_raw_fd(), libc::SOMAXCONN) } < 0 {
-        return Err(io::Error::last_os_error());
+        return Err(socket_step_error(SOCKET_LISTEN_STEP, &address));
     }
     Ok(TcpListener::from(fd))
+}
+
+fn socket_step_error(step: &str, address: &SocketAddrV4) -> io::Error {
+    let source = io::Error::last_os_error();
+    io::Error::new(
+        source.kind(),
+        format!("{step} for {address} failed: {source}"),
+    )
 }
 
 fn serve_provider(listener: TcpListener, authority: Arc<Mutex<AndroidSystemAuthority>>) {
@@ -377,6 +392,17 @@ mod tests {
 
         let rebound = bind_reusable_tcp(&address.to_string()).unwrap();
         assert_eq!(rebound.local_addr().unwrap(), address);
+    }
+
+    #[test]
+    fn tcp_listener_reports_the_failing_raw_step() {
+        let error = bind_reusable_tcp("192.0.2.1:0").unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .starts_with("raw socket step=bind for 192.0.2.1:0 failed:"),
+            "{error}"
+        );
     }
 
     fn test_authority() -> (tempfile::TempDir, Arc<Mutex<AndroidSystemAuthority>>) {

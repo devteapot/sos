@@ -76,6 +76,8 @@ grep -F -- '--bootstrap-asset mobile.theme luau' "$android_authority_rc" >/dev/n
 grep -F '__android_log_write(ANDROID_LOG_ERROR' "$android_authority_main" >/dev/null
 grep -F 'install reference composition failed: {error}' \
   "$android_authority_main" >/dev/null
+grep -F 'SOCKET_REUSE_STEP' "$android_authority_main" >/dev/null
+grep -F 'SOCKET_LISTEN_STEP' "$android_authority_main" >/dev/null
 grep -F 'SosCompatChromeService.this, "apps")' \
   "$repo_root/apps/experience/android/gradle/app/src/main/java/dev/gpui/mobile/SosCompatChromeService.java" \
   >/dev/null
