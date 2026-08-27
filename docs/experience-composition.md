@@ -14,9 +14,10 @@ Android migrations import
 legacy Stock state without changing the legacy pointer during the rollback
 window. API v3 is now a legacy activation reader, not the target for checked-in
 experiences or new authoring. Tracked updates activate every affected top-level
-graph atomically. Physical Linux and Android composition acceptance and final
-compatibility removal remain open. The cross-platform wire, deterministic
-property, complete durable-phase fault, and desktop performance gates pass.
+graph atomically. Installed Linux promotion, physical Android composition
+acceptance, and final compatibility removal remain open. The cross-platform
+wire, deterministic property, complete durable-phase fault, and desktop
+performance gates pass.
 
 ## Decision
 
@@ -519,6 +520,18 @@ SHA-256 `0be17dc236149c9755c93b755314f8950e52a2199be20eb1cd08f9dcbbd7e800`.
 Because the target was Fedora development-live, the verdict is deliberately
 `DIAGNOSTIC_PASS promotion_eligible=false`; it closes the Framework composition
 and integrated-input question but not an installed-product promotion gate.
+
+Fresh Compat 1 and Core 1 candidates were then built from exact cleanup source
+`884ab4e0036e621f51ba0a3a6c147a5c591da81e`. Both offline inspectors pass the
+v4 product, graph, signature, AVB, ownership, and retired-secondary-absence
+gates. Their sealed OTAs have SHA-256
+`1e438726c96dfbdfa067b43a7ae4662b7e6b91ff56f4f2693d5c95470f0406ec`
+and `0b0ce039e306c42292cd67eb6be19f15ee753f7ab2ff6b4059247210af4f17fb`;
+their deterministic target-files archives have SHA-256
+`e8dc8d7d41ddbfe7d6459cc63d4f7290bc9f6e147914382aca1f504d0261a4f2`
+and `49ba5c7ace4df8bcd22605f2334da0fa34229b7fd227bf1f657b7f8785a1b863`.
+This supersedes the earlier Android candidates that still carried the retired
+secondary agent input.
 
 The remaining physical composition gate is the Samsung SM-A336B campaign for
 Compat and Core: composition, input, IME, accessibility, appearance, grants,

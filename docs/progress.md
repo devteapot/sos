@@ -14351,3 +14351,48 @@ recovery artifacts. Build and inspect fresh exact Compat 1 and Core 1 packages
 from this cleanup revision, then run their physical campaigns when an
 authorized transport is available. Remove the v3 reader only after those
 recovery artifacts have migrated and successfully rolled back.
+
+## 2026-08-27: Seal cleaned v4 Android Compat 1 and Core 1 candidates
+
+**Goal:** Rebuild both Samsung SM-A336B product profiles from the cleanup
+revision so the candidates reserved for physical acceptance contain Stock and
+the signed reference graph, but no retired Timeflow/Daily Flow package or
+secondary agent example. Preserve immutable OTA and deterministic target-files
+artifacts before any device mutation.
+
+**Compat 1 evidence:** Exact source
+`884ab4e0036e621f51ba0a3a6c147a5c591da81e` produced build identity
+`sos.compat1.884ab4e0036e.9f7afadd0450` in 384,330,589,843 ns.
+`inspect-compat1` passed in 19,390,410,550 ns, including package signature,
+compressed-data, PIT, AVB, product ownership, authority, resident-agent,
+reference-composition, v4 format/API, and retired-secondary-absence checks.
+The sealed OTA is 1,067,612,833 bytes with SHA-256
+`1e438726c96dfbdfa067b43a7ae4662b7e6b91ff56f4f2693d5c95470f0406ec`.
+The deterministic target-files archive is 1,863,975,871 bytes with SHA-256
+`e8dc8d7d41ddbfe7d6459cc63d4f7290bc9f6e147914382aca1f504d0261a4f2`;
+its zstd integrity and absence of the retired secondary input pass.
+
+**Core 1 evidence:** The same source produced build identity
+`sos.core1.884ab4e0036e.1df2554bb5c5` in 373,140,225,319 ns.
+`inspect-core1` passed in 17,584,174,377 ns, including the common artifact
+checks plus pre-unlock host, pinned-model rejection, signed composition,
+no-Zygote ownership, disabled user APK installation, v4 format/API, and
+retired-secondary-absence gates. The sealed OTA is 1,022,887,729 bytes with
+SHA-256
+`0b0ce039e306c42292cd67eb6be19f15ee753f7ab2ff6b4059247210af4f17fb`.
+The deterministic target-files archive is 1,782,249,070 bytes with SHA-256
+`49ba5c7ace4df8bcd22605f2334da0fa34229b7fd227bf1f657b7f8785a1b863`.
+Its 9,657-entry archive passes zstd integrity, contains the Stock package and
+theme module, and contains no Timeflow, Daily Flow, or secondary example.
+
+**Artifacts / failure / decision:** Logs, exact monotonic durations,
+identities, OTAs, target-files archives, and verification transcripts are
+under `.cache/evidence/android-v4-884ab4e/` and remain outside Git. The older
+`.cache/evidence/android-v4-4f93f50/` pair is superseded because it predates
+secondary-input removal. At 2026-08-27T16:00:09+02:00, serial `RFCT50EGFCN`
+still reported `no permissions` through adb and USB `04e8:685d` Download Mode.
+No install, flash, reboot, or other device mutation was attempted. These are
+offline-candidate passes, not physical-product verdicts. The next gate is the
+exact Compat then Core device campaign once an authorized Android or recovery
+transport exists; retained API v3 recovery activation cannot be removed until
+that campaign proves migration and rollback.
