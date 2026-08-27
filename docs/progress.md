@@ -14396,3 +14396,52 @@ offline-candidate passes, not physical-product verdicts. The next gate is the
 exact Compat then Core device campaign once an authorized Android or recovery
 transport exists; retained API v3 recovery activation cannot be removed until
 that campaign proves migration and rollback.
+
+## 2026-08-27: Audit every v4 composition milestone against its exit gate
+
+**Goal:** Reconcile the implementation with the original milestones 0 through
+12, run the broad cross-component verification program from the current
+product tree, and distinguish missing code from physical gates that cannot be
+claimed on desktop evidence.
+
+**Changed:** Added an explicit milestone closure matrix to the composition
+design. Repaired two `gpui-mobile` documentation examples: the platform-view
+element now imports the types and GPUI traits it uses, and the registry example
+accepts a real `PlatformViewFactory` instead of referring to an undefined
+placeholder. No runtime or product behavior changed. A complete source audit
+finds every built-in package and every active authoring path on v4. Remaining
+API v3 literals are bounded migration, rollback, rejection, decoder, and test
+fixtures; no v3 package is shipped or newly authored.
+
+**Verification:** `cargo test --workspace --locked` passed 278 tests in
+9,921,878,687 ns after the documentation repair. The 94 ordinary ignored tests
+are 93 upstream-style GPUI examples plus the deliberately explicit performance
+campaign. Running the Linux graph worker gate with `linux-host` passed its
+process-crash-containment test in 6,482,634,425 ns. The explicit release
+composition campaign passed in 21,230,414,230 ns and measured three Instances:
+1,634 us cold mount readiness, 725 us child-event propagation, 382 us
+appearance propagation, 1,139 us graph activation, 985 us committed recovery,
+and 292 KiB coarse RSS delta per Instance. `services/sos-agent` passed all 19
+build, bounded-authoring, derivation, composition, canonical-wire, and prompt
+tests in 2,958,087,282 ns. The five a33x, Linux login/live-image/hardware, and
+PiKVM host suites all passed in 7,037,440,280 ns.
+
+**Failure / decision:** The first workspace run reached all product tests but
+failed the two incomplete documentation examples; the corrected examples and
+the full unchanged workspace then passed. Milestones 0 through 10 and the
+implementation portion of 12 satisfy their exit conditions. Milestone 11's
+shared Android implementation and offline products are complete, but its
+physical exit gate remains open. The connected SM-A336B is still in Download
+Mode, whose Odin session cannot be converted into the authenticated Recovery
+sideload path from this host; previous evidence establishes that a physical
+Side + Volume Down restart is required. No blind flash or device mutation was
+attempted.
+
+**Remaining risks and next gate:** Physically restart the SM-A336B out of
+Download Mode, then run the exact sealed Compat 1 campaign followed by Core 1,
+including input, IME, accessibility, appearance, grants, child containment,
+restart, rollback, and independently verified manifests. Only after the
+cleaned recovery artifacts migrate and roll back successfully may the bounded
+v3 reader be removed. Installed Linux promotion remains a separate physical
+product gate; the Framework development-live composition diagnostic is already
+green.

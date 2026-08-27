@@ -432,6 +432,33 @@ Android has compile, unit, restart-fault, top-level presentation, appearance,
 and child-containment evidence for the graph path. It does not yet have a
 physical-device composition verdict.
 
+## Milestone closure matrix
+
+The original implementation plan is judged at its stated exit gates, not by
+the presence of a commit with a matching title.
+
+| Milestone | Implementation status | Exit-gate status |
+| --- | --- | --- |
+| 0. Wire model | Closed. `experience-package` owns canonical identities, schemas, contracts, graph limits, and canonical JSON. | Closed by the shared Rust, Linux, Android-authority, and TypeScript fixture plus canonical/oversize rejection and deterministic mutation/property campaigns. |
+| 1. Package format v4 | Closed. Complete package metadata, derivation, contracts, dependencies, hashes, and deterministic revision identity ship in the platform-neutral crate and revision store. | Closed by corruption, digest, signature, legacy-read, sidecar, deterministic identity, and state-migration tests. |
+| 2. Experience registry | Closed. Stable records have independent current/previous pointers; Stock Shell is reserved and pinned; retirement is recoverable. | Closed by independent-history, retirement, legacy import, restart, and atomic-pointer tests. |
+| 3. State and appearance authority | Closed. Durable state is Experience-owned; appearance and grants are separately versioned capability resources; graph state promotes as one batch. | Closed by restart, locked-revision state, appearance-without-revision, grant, stale writer, idempotence, and all promotion-fault tests. |
+| 4. Experience API v4 | Closed. Named exports, typed properties/events, viewports, appearance context, and `experience_mount` are the only authoring target. | Closed by export/scenario, schema, viewport, mount, appearance, and v3 rejection/rollback-reader tests. |
+| 5. Dependency resolver | Closed. Exact aliases, revisions, exports, contract digests, roles, grants, limits, and content-addressed graphs are validated before preparation. | Closed by missing, stale, cyclic, incompatible, unreviewed-flow, depth, and aggregate-instance tests. |
+| 6. Linux runtime graph | Closed. Each Instance owns a VM/runtime record and children render inside host-owned mounts with unavailable fallbacks. | Closed by the reference Dashboard integration, process worker, nested compositor, and exact Framework campaign. |
+| 7. Boundary containment | Closed. Instance namespaces cover scenes, assets, state, semantics, input, text, provider data, focus, clipping, and failures. | Closed by runtime/host/compositor tests and the Framework child-failure, timeout, input, renderer-recovery, and semantic-control campaign. |
+| 8. Graph activation and recovery | Closed. Graph prepare, present, confirm, discard/finalize, journal, authority promotion, and multi-root pointer movement are durable operations. | Closed by every durable cut-point, presentation rollback, power-loss simulation, multi-root fault, restart, and Framework recovery evidence. |
+| 9. Fork, remix, and authoring | Closed. Explicit targets, exact parents, derivation provenance, candidate contracts, migration binding, and fresh grants are enforced. | Closed by self-contained remix, exact-parent, replacement, state-migration, provenance, and no-inherited-grant tests. |
+| 10. Tracked dependencies | Closed. The persistent reverse index resolves every affected locked/tracked root into one activation set. | Closed by compatible tracked advance, locked pinning, inactive/presented multi-root, atomic state, rollback, and restart tests. |
+| 11. Android parity | Implementation closed. Android authority and hosts use the shared package, registry, graph, state, appearance, grant, namespace, and activation model; exact Compat/Core candidates are sealed. | **Physical gate open.** Compile/offline/restart-fault evidence passes, but the SM-A336B composition, input, IME, accessibility, appearance, containment, restart, and rollback campaign has not run on the cleaned candidates. |
+| 12. Stock migration and hardening | Implementation closed. Stock uses semantic appearance tokens and v4 exports; registry launch replaces singleton ownership; the retired secondary product is absent; optional Linux process isolation works. | Code and offline exit conditions are closed. Installed Linux promotion and Android physical hardening remain product-acceptance gates, not missing v4 architecture. |
+
+All active built-ins, signed references, resident-agent examples, and new
+authoring are therefore v4. The v3 reader is deliberately retained only for
+the reversible migration window. Removing it before the cleaned Android
+artifacts have physically migrated and rolled back would violate the original
+migration plan rather than complete it.
+
 ## Rejected shortcuts
 
 - **Raw scene injection.** A parent must not receive child nodes, action
