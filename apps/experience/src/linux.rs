@@ -1439,7 +1439,7 @@ impl LinuxExperienceHost {
             while let Ok(update) = updates.recv().await {
                 if this
                     .update(cx, |this, cx| {
-                        if update.profile.generation <= this.model.appearance.generation {
+                        if !install_newer_appearance(&mut this.model, update.profile.clone()) {
                             return;
                         }
                         eprintln!(
@@ -1460,8 +1460,7 @@ impl LinuxExperienceHost {
                             }
                             return;
                         }
-                        let mut model = this.model.clone();
-                        model.appearance = update.profile;
+                        let model = this.model.clone();
                         this.request_model_refresh(model, cx);
                     })
                     .is_err()
@@ -4326,6 +4325,14 @@ fn start_appearance_updates(
     (initial, receiver)
 }
 
+fn install_newer_appearance(model: &mut ExperienceModel, profile: AppearanceProfile) -> bool {
+    if profile.generation <= model.appearance.generation {
+        return false;
+    }
+    model.appearance = profile;
+    true
+}
+
 fn read_service_appearance(socket: &Path) -> std::result::Result<AppearanceProfile, String> {
     let client = ServiceClient::new(socket, Duration::from_secs(2));
     match call_service(
@@ -5454,6 +5461,25 @@ mod tests {
         assert_eq!(candidate.agent, live.agent);
         assert_eq!(candidate.shell, live.shell);
         assert_eq!(candidate.appearance, live.appearance);
+    }
+
+    #[test]
+    fn graph_appearance_updates_advance_the_model_used_by_provider_refreshes() {
+        let mut host_model = providers_fake::snapshot();
+        let mut appearance = host_model.appearance.clone();
+        appearance.generation = 1;
+        appearance.scheme = experience_package::ColorScheme::Light;
+
+        assert!(install_newer_appearance(
+            &mut host_model,
+            appearance.clone()
+        ));
+        assert_eq!(host_model.appearance, appearance);
+
+        let mut provider_refresh = providers_fake::snapshot();
+        provider_refresh.appearance = host_model.appearance.clone();
+        assert_eq!(provider_refresh.appearance.generation, 1);
+        assert!(!install_newer_appearance(&mut host_model, appearance));
     }
 
     fn start_service(

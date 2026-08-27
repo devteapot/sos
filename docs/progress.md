@@ -14152,3 +14152,54 @@ A fresh Framework campaign must mutate appearance through the authority socket,
 prove generation propagation without revision changes, and repeat composition,
 containment, renderer recovery, Stock revision activation, physical input,
 clean logout, manifest verification, and evidence collection.
+
+## 2026-08-27: Preserve appearance generation across graph child recovery
+
+**Goal / physical experiment:** Exercise live appearance and child containment
+through one fresh exact Framework session after provisioning the missing
+authority credential. Clean revision
+`175137d366f9a72f3d3a379f5ef2dd0c23b5c72d` deployed as
+`20260827T124231Z-175137d366f9-3396618` in 40,113,525,553 ns. PiKVM performed
+the complete GDM SOS selection and login. The persistent appearance capability
+was 64 bytes at mode 0600; the running provider received its separate mode-0400
+runtime copy. Dashboard graph
+`9a49ec819b8d0c83fa45566f16925498dbb95bd882bfc87d6b92526603e637f7`
+presented both locked children.
+
+The authority accepted appearance generation 0 to 1 in 4,964,227 ns and the
+Agenda semantic result exposed generation 1 after 407,318,787 ns. Media's
+custom scene remained byte-for-byte equal and the Agenda, Media, and Dashboard
+revision IDs did not change. The target evidence is under
+`/home/liveuser/framework12-v4-composition-175137d/composition`; the PiKVM
+generation-1 frame is under
+`.cache/evidence/linux-framework-175137d-live/dashboard-appearance-1.jpg`.
+
+**Failure / root cause:** The ordinary Agenda update failure was contained and
+Dashboard committed its next parent ping, but the recovered Agenda displayed
+`Today · appearance 0` while authority state still recorded generation 1.
+`child-recovery-appearance-regression.json` records the healthy parent,
+preserved `Design review` state, recovered child, parent ping 4, authority
+generation 1, and stale child label. The matching PiKVM frame is 92,474 bytes
+with SHA-256
+`987c0523a8be3345784e9c4d648e0bbc47697f35686347dda2c175da6b63e789`.
+
+The Linux host sent a graph-wide appearance command to the runtime worker but
+returned before advancing its own cached `ExperienceModel`. A later provider
+refresh correctly preserved the host's supposedly authoritative appearance,
+which was still generation 0, and that full model refresh rerendered the
+recovered subtree with the stale value. Authority state, graph revision state,
+and failure containment were not corrupted.
+
+**Changed / decision / verification:** Install every newer appearance profile
+in the host model before dispatching it to a graph worker. Provider refreshes
+therefore inherit the same generation, and duplicate or stale profiles remain
+ignored. All 38 Linux-host library tests pass, including the new regression
+that recreates the provider-refresh boundary. The reference live-graph and
+self-contained-remix test also passes. Rust formatting and Git whitespace
+checks pass.
+
+**Remaining risks and next gate:** Commit, redeploy, and repeat the focused
+appearance/failure/recovery sequence before a new clean end-to-end Framework
+campaign. Timeout containment, application-host restart, Stock activation,
+integrated input, logout, and final collection remain open; this diagnostic
+campaign is not an acceptance result.
