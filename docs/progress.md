@@ -13065,3 +13065,49 @@ authority APIs directly.
 only the direct-DRM phase with a new evidence directory. This is the second
 end-to-end attempt for the same objective; another failure triggers the runtime
 debug circuit breaker before any further complete rerun.
+
+## 2026-08-27: Keep the direct input activation inside the Stock v4 contract
+
+**Goal:** Apply the repeated-gate circuit breaker to the second direct-DRM
+failure and repair the earliest failing layer without another full attempt.
+
+**Changed:** The direct verifier no longer activates the standalone minimal
+input Scene as if it were the privileged Stock shell. It derives a visible
+candidate from the complete checked-in Stock source, verifies that the stable
+text changed and the `agent_submit` composer remains, then submits that exact
+candidate through the v4 Stock package flow. The old fixture was removed. The
+input criterion remains compositor-owned: it holds kernel keyboard, button,
+touch, and stylus state across the graph activation and checks suppression at
+the presentation boundary. The maintenance validator no longer runs the entry
+source through a module-unaware standalone analyzer when revision-local modules
+are supplied; it typechecks the sidecars and compiles and validates the complete
+runtime package instead.
+
+**Evidence:** Attempt two is retained at
+`.cache/evidence/linux-v4-661bb29/attempt2`. Its 11 captured evidence files
+total 42,555 bytes. `SHA256SUMS` is 1,357 bytes with SHA-256
+`f98ef9816b84e3e0ad6ea463707c2d4da8a91f9c4b18a40c36a166c38f932ba8`.
+`result.json` records FAIL after 5.565508283 monotonic seconds. It proves both
+graph-authority bootstraps and grant reviews, Stock DRM presentation, stable
+host startup, and all four initial compositor input classes before
+`linux-script` rejected the incomplete fixture with `requires the Stock agent
+composer`.
+
+The focused package-aware regression
+`validates_a_visible_complete_stock_edit_with_its_revision_local_theme` passed.
+The matching `sosctl validate` run compiled the 57,116-byte candidate with the
+`stock.theme` module and reported all ten scenarios valid, from 39 to 121 nodes
+and zero to one text sessions per scenario. Linux session tests, shell syntax,
+the selectable-session fixture, formatting, and diff checks pass.
+
+**Failures and decision:** This was the second full failure for the direct-DRM
+objective. The runtime-debug circuit breaker stopped complete reruns. Comparing
+the attempts isolated distinct sequential preconditions: attempt one lacked
+authority grants; attempt two passed that layer and failed at source extraction
+and revision validation. Weakening the Stock composer check or attaching the
+shell role to the small input fixture would violate v4 role and authoring
+boundaries, so the gate now edits the complete Stock artifact.
+
+**Remaining risks and next gate:** The focused layer passes. Run one fresh
+downstream direct-DRM attempt. A PASS must still preserve raw evidence and prove
+no singleton pointer.

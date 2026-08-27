@@ -749,11 +749,18 @@ validate_script() {
   [[ -n "$source_path" ]] || \
     fail "usage: ./tools/sosctl validate <experience.luau> [--module ID=FILE]... [--json]"
   [[ -f "$source_path" ]] || fail "script not found: $source_path"
-  local json_output=false argument
+  local json_output=false has_modules=false argument
   for argument in "$@"; do
     [[ "$argument" == "--json" ]] && json_output=true
+    [[ "$argument" == "--module" || "$argument" == --module=* ]] && has_modules=true
   done
-  if [[ "$json_output" == true ]]; then
+  if [[ "$has_modules" == true ]]; then
+    if [[ "$json_output" == true ]]; then
+      info "entry source uses revision-local modules; validating the complete runtime package" >&2
+    else
+      info "entry source uses revision-local modules; validating the complete runtime package"
+    fi
+  elif [[ "$json_output" == true ]]; then
     typecheck_script "$source_path" >&2
   else
     typecheck_script "$source_path"

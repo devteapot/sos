@@ -1698,6 +1698,22 @@ mod tests {
     }
 
     #[test]
+    fn validates_a_visible_complete_stock_edit_with_its_revision_local_theme() {
+        let (_temporary, store) = initialized_store();
+        let source = include_str!("../../../experiences/default.luau").replace(
+            "A responsive workspace assembled entirely by this Luau revision.",
+            "Direct input gate active in this complete Stock revision.",
+        );
+        assert!(source.contains("agent_submit"));
+        assert!(source.contains("Direct input gate active in this complete Stock revision."));
+        let candidate = validate_candidate(&store, &authority(&store), source, None).unwrap();
+        assert!(candidate.validation.valid);
+        assert_eq!(candidate.package.experience_id.as_str(), "sos.stock.shell");
+        assert_eq!(candidate.assets.len(), 1);
+        assert_eq!(candidate.assets[0].id, "stock.theme");
+    }
+
+    #[test]
     fn rejects_a_module_that_cannot_render() {
         let (_temporary, store) = initialized_store();
         let error = validate_candidate(

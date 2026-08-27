@@ -255,6 +255,13 @@ fi
 vm_status_before="$(SOS_LINUX_REVISION_ROOT="$vm_revision_root" ./tools/sosctl linux-status)"
 printf '%s\n' "$vm_status_before" >"$vm_run_dir/status-before.json"
 vm_pid_before="$(sed -n 's/.*"host_pid":\([0-9][0-9]*\).*/\1/p' <<<"$vm_status_before")"
+vm_stock_candidate="$vm_run_dir/direct-input-stock.luau"
+sed '0,/A responsive workspace assembled entirely by this Luau revision\./s//Direct input gate active in this complete Stock revision./' \
+  experiences/default.luau >"$vm_stock_candidate"
+grep -F 'Direct input gate active in this complete Stock revision.' \
+  "$vm_stock_candidate" >/dev/null
+grep -F 'agent_submit' "$vm_stock_candidate" >/dev/null
+! cmp -s experiences/default.luau "$vm_stock_candidate"
 vm_input_ready="$vm_run_dir/uinput-ready"
 # The test controller, not sudo, intentionally owns this disposable log.
 # shellcheck disable=SC2024
@@ -273,7 +280,7 @@ for vm_input_class in keyboard relative_pointer pointer_button touch; do
 done
 vm_activation="$(
   SOS_LINUX_REVISION_ROOT="$vm_revision_root" \
-    ./tools/sosctl linux-script tests/fixtures/linux-direct-input.luau
+    ./tools/sosctl linux-script "$vm_stock_candidate"
 )"
 wait "$vm_input_pid"
 vm_input_pid=""
