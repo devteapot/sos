@@ -13707,3 +13707,83 @@ install its new exact revisions, then prepare a fresh same-boot campaign. The
 operator must still use the integrated Framework keyboard, touchpad, and
 touchscreen; accessibility automation may inspect or activate composition
 semantics but cannot satisfy those physical-input criteria.
+
+## 2026-08-27: Freeze exact composition artifacts and redeploy Framework
+
+**Goal:** Replace the now-stale Android and Framework artifacts with exact
+outputs from the composition acceptance-control revision before either physical
+campaign starts.
+
+**Changed:** No product source changed during this gate. Compat 1, Core 1, and
+the Framework deployment all use clean commit
+`ed88d333d02f85b0c9f43ba237a60f3b67cecd8b`. Compat identifies itself as
+`sos.compat1.ed88d333d02f.191469142323`; Core identifies itself as
+`sos.core1.ed88d333d02f.a6e4c4bebd47`. The preserved Android inputs live under
+`.cache/evidence/android-v4-ed88d33/`. This directory does not yet contain a
+final evidence manifest because device evidence still has to be added.
+
+**Android evidence:** `./tools/a33xctl build-compat1` reported a successful
+Lineage build in 3m33s. Its preserved inspector rerun completed in 18.98s and
+passed whole-package signature, compressed data, PIT ceilings, AVB and verity,
+recovery init, exact v4 package and theme bytes, SELinux policy, provider
+runner, and all four signed reference Experience markers. The exact Compat 1
+files are:
+
+- `compat1/lineage-23.0-20260827-UNOFFICIAL-sos_compat_a33x.zip`:
+  1,067,692,779 bytes, SHA-256
+  `49620a0d3115027341d7b08a77f387dd942841207bc3a237f695d88deb60d69f`;
+- `compat1/lineage_sos_compat_a33x-target-files.tar.zst`:
+  2,176,146,364 bytes, SHA-256
+  `9ce371c3a360ae4dc54c55c006efe1c05f573a7726371b3c70a64c10c097af25`;
+- `compat1/inspect-compat1.log`: 29,237 bytes, SHA-256
+  `98362f1ff87f527957ff77c20ccee4cdcbab20504ce56bb1ed423be6b1ec34ff`;
+  and
+- `compat1/inspect-duration.env`: 33 bytes, SHA-256
+  `906be7f1e8e3dc5af615ec5c82b46615f914011c7ba044cc48848f9ee3fe1aad`.
+
+`./tools/a33xctl build-core1` reported a successful Lineage build in 3m28s.
+Its preserved inspector rerun completed in 17.22s and passed the shared image
+checks plus no-Zygote ownership, pinned Core model validation, disabled user
+APK installation, native host and platform policy, and the signed reference
+composition markers. The exact Core 1 files are:
+
+- `core1/lineage-23.0-20260827-UNOFFICIAL-sos_core1_a33x.zip`:
+  1,022,894,881 bytes, SHA-256
+  `c5ef24a41e284bb93febe75d12dd45836f28720eb6e775f0e58594d0f5467b78`;
+- `core1/lineage_sos_core1_a33x-target-files.tar.zst`:
+  2,079,722,884 bytes, SHA-256
+  `e1f15ad5a354987dc6faa2b7e642132b4d86d84671a94ec6ff1a91cc4246fa7a`;
+- `core1/inspect-core1.log`: 25,466 bytes, SHA-256
+  `7b9b167f1f0132df378eb1a52d58db772d620097fa9d0fbb51de50c70effc12a`;
+  and
+- `core1/inspect-duration.env`: 27 bytes, SHA-256
+  `ca295f20f7f20f570d3cc87d28f9734474bf468184bd878ed59920e52fcecafe`.
+
+**Framework environment:** `tools/linux-live-deploy` installed the exact clean
+revision as deployment `20260827T103546Z-ed88d333d02f-3066003` in
+72,958,871,510 ns. Its three local records are under
+`artifacts/linux-live-deploy/20260827T103546Z-ed88d333d02f-3066003/`:
+`deployment-result.env` is 348 bytes with SHA-256
+`d5fe4d49ab74ee12ce8c64291f0689383de196d44b712a566f635d79a7b88ac2`,
+`development-deployment-manifest.tsv` is 2,389 bytes with SHA-256
+`66abe0f29472cd1e3fe545d4240d908ba686d4968df3e1553009a922d6904f1f`,
+and `development-deployment.env` is 345 bytes with SHA-256
+`ed89e9bb6e23cbfc56de8cc0f399b578bc2e480da4d6c9e9ec68b7218a715bbb`.
+The target holds Dashboard graph
+`be6025edc7f87c25167df07079612b78d34a999b4c94514f79d3df179d933582`
+and a fresh same-boot gate at
+`/home/liveuser/framework12-v4-composition-ed88d33`. It remains a
+`development-live` diagnostic with `promotion_eligible=false`.
+
+**Failure and decision:** The earlier `52ce577` Android artifacts and
+`205fc42` Framework deployment predate the acceptance controls and are rejected
+for these campaigns. The Samsung still has not received an OTA. The Framework
+is reachable on the prepared boot, but it remains at GDM. The PiKVM API is
+online and authenticated access is unavailable, so no remote HID was sent and
+no Linux runtime or physical-input claim is made.
+
+**Remaining risks and next gate:** Enter the prepared SOS session, collect the
+integrated Framework input and live Dashboard composition evidence, and return
+cleanly to GDM. Then install only the preserved Compat 1 OTA on serial
+`RFCT50EGFCN`, complete its physical campaign, and advance to the preserved
+Core 1 OTA. Generate manifests only after each evidence directory is final.
