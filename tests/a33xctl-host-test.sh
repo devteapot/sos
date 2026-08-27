@@ -22,6 +22,7 @@ mobile_package="$repo_root/experiences/mobile.package.json"
 mobile_theme="$repo_root/experiences/modules/mobile-theme.luau"
 android_authority_rc="$repo_root/aosp/device/sos/a33x/sos-authority.rc"
 android_authority_main="$repo_root/crates/android-system-authority/src/main.rs"
+android_agent="$repo_root/apps/experience/android/gradle/app/src/main/java/dev/gpui/mobile/GpuiAgent.java"
 grep -F 'android:name="dev.sos.permission.REPORT_ADB_CONSENT"' "$adb_manifest" >/dev/null
 grep -F 'android:protectionLevel="signature"' "$adb_manifest" >/dev/null
 grep -F 'android:name=".SosAdbConsentReceiver"' "$adb_manifest" >/dev/null
@@ -80,6 +81,9 @@ grep -F 'install reference composition failed: {error}' \
   "$android_authority_main" >/dev/null
 grep -F 'SOCKET_REUSE_STEP' "$android_authority_main" >/dev/null
 grep -F 'SOCKET_LISTEN_STEP' "$android_authority_main" >/dev/null
+grep -F 'private static final String PROVIDER_FAKE = "fake";' "$android_agent" >/dev/null
+grep -F 'private static final String RUNNER_PROVIDER_FAUX = "faux";' "$android_agent" >/dev/null
+grep -F '? RUNNER_PROVIDER_FAUX : provider)' "$android_agent" >/dev/null
 grep -F 'SosCompatChromeService.this, "apps")' \
   "$repo_root/apps/experience/android/gradle/app/src/main/java/dev/gpui/mobile/SosCompatChromeService.java" \
   >/dev/null

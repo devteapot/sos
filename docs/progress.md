@@ -15683,3 +15683,63 @@ Install it once through automatic Recovery and start a fresh campaign. Verify
 traffic mask 12 from the live device before the authority-only restart, then
 require an audit-ready replacement with HOME unchanged. Do not advance on a
 new PID alone.
+
+## 2026-08-28: Fix the Stock Mobile faux-provider wire identity
+
+**Goal / physical evidence:** Continue the exact socket-permission candidate
+through the previously blocked authority recovery and then exercise authoring
+from Stock Mobile's real text session. The 1,067,700,551-byte OTA with SHA-256
+`c3fe0466617633f98a1a159d06230deb923bdbc462436d04a5313b3426a59b82`
+installed as `sos.compat1.9a8bd80af5c2.7d1fcf888c79`. Automatic Recovery
+entry took 29.54 seconds, its only sideload took 83.95 seconds with
+`Total xfer: 1.00x`, and exact-product readiness took 114.37 seconds. The live
+PermissionMonitor traffic mask for appId 1000 was 12. HOME-only recovery
+changed PID 1483 to 3283 while authority PID 2451 stayed live. Authority-only
+recovery then passed in 0.45 seconds, changed PID 2451 to 3476 while HOME PID
+3283 stayed live, served a valid audit response, and preserved Dashboard,
+appearance generation 7, and durable state.
+
+The fresh campaign at
+`.cache/evidence/android-v4-9a8bd80-physical/compat1/composition/` captured the
+ordered `stock`, `dashboard`, `appearance`, `child-failure`, `child-timeout`,
+`recovered`, `ime-accessibility`, `host-restart`, and `authority-restart`
+stages. It proved three independent graph Instances, appearance propagation,
+separate child exception and time-budget containment, recovery, mounted IME
+and 13 Android hierarchy nodes including the root, and isolated HOME and
+authority restarts.
+
+**Failure / cause:** The physical authoring UI selected Offline, focused the
+real `mobile-agent-prompt`, submitted through the Samsung IME action key, and
+emitted `android_agent_thread_start provider=fake model=faux`. The bundled
+child then exited 1 after 0.63 seconds with
+`stage=request category=invalid_request`. The Java bridge retained `fake` as
+the Stock UI/provider identity and copied it into the runner request, while the
+closed runner wire schema accepts the deterministic provider only as `faux`.
+No authoring candidate was staged, no `authored` or `rollback` stage was
+captured, and this campaign is rejected. The finalized 3,187,957-byte log has
+SHA-256
+`f9beb04c049a71fb384bda2df492d9d26ce8869218cd4292c22023a163f42bda`;
+the 183,052-byte failure screenshot has SHA-256
+`539846857489c3772f0b5f173e64b271bf4f578b9b69420ac5b7030a359c5e1e`.
+
+This run also exposed an Android accessibility geometry defect. The visible
+prompt focused at physical point `(700,850)`, but its virtual node reported
+`[90,905][1069,1068]` while provider-button nodes simultaneously occupied its
+lower half. The finalized 5,304-byte hierarchy has SHA-256
+`fb6adb48a72da124f120df303fd34d775818222f15b897bffa7a4af3ab7e69e4`.
+The authoring gate used the real painted hit region, so this mismatch did not
+cause the runner rejection, but it remains an Android parity defect.
+
+**Changed / verification:** The trusted Java bridge now explicitly translates
+the persisted/logged `fake` identity to runner-only `faux` when constructing
+the bounded request; live providers are unchanged. The A33x host fixture now
+pins both identities and the translation. It passes in 8.10 seconds with 5,384
+KiB peak RSS. All four focused Android agent contract tests pass.
+
+**Decision / next gate:** Commit and seal a new Compat candidate. Its fresh
+physical campaign must repeat every ordered stage, show the faux child
+completing the exact context/validate/submit tool sequence, commit a distinct
+Stock Mobile v4 revision through the system-graph authority, and restore the
+original v4 revision through the real rollback control. Only then audit and
+hash the campaign. Fix and regress the virtual accessibility bounds before
+claiming Android parity complete.
