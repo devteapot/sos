@@ -1096,6 +1096,10 @@ grep -F "target is not a mutable, non-promotable development-live image" \
   "$test_deploy" >/dev/null
 grep -F "log out of SOS before deploying" "$test_deploy" >/dev/null
 grep -F 'development-deployment-manifest.tsv' "$test_deploy" >/dev/null
+grep -F "'agent-runtime       /usr/local/libexec/sos-agent/dist/agent-runner.cjs'" \
+  "$test_deploy" >/dev/null
+grep -F 'npm --prefix services/sos-agent run build' "$test_deploy" >/dev/null
+grep -F 'login-session agent-login agent-runtime session-target' "$test_deploy" >/dev/null
 grep -F 'lorax' "$test_repo_root/docs/linux-live-image.md" >/dev/null
 grep -F 'install-linux-login-session' "$test_repo_root/docs/linux-live-image.md" >/dev/null
 grep -F 'same-boot' "$test_repo_root/docs/linux-hardware-gate.md" >/dev/null

@@ -64,6 +64,7 @@ development_deploy_components() {
     'provider-probe      /usr/local/libexec/sos/sos-linux-provider-probe' \
     'login-session       /usr/local/libexec/sos/sos-login-session' \
     'agent-login         /usr/local/libexec/sos/sos-agent-login' \
+    'agent-runtime       /usr/local/libexec/sos-agent/dist/agent-runner.cjs' \
     'session-target      /usr/local/lib/systemd/user/sos-session.target' \
     'session-shutdown-target /usr/local/lib/systemd/user/sos-session-shutdown.target' \
     'hardware-gate       /usr/local/libexec/sos/linux-hardware-gate' \
@@ -92,6 +93,7 @@ development_deploy_binary_name() {
     provider-probe) printf 'sos-linux-provider-probe\n' ;;
     login-session) printf 'sos-login-session\n' ;;
     agent-login) printf 'sos-agent-login\n' ;;
+    agent-runtime) printf 'agent-runner.cjs\n' ;;
     session-target) printf 'sos-session.target\n' ;;
     session-shutdown-target) printf 'sos-session-shutdown.target\n' ;;
     hardware-gate) printf 'linux-hardware-gate\n' ;;
@@ -114,6 +116,7 @@ development_deploy_source_path() {
       ;;
     login-session) printf '%s/packaging/libexec/sos-login-session\n' "$development_deploy_root" ;;
     agent-login) printf '%s/packaging/libexec/sos-agent-login\n' "$development_deploy_root" ;;
+    agent-runtime) printf '%s/services/sos-agent/dist/agent-runner.cjs\n' "$development_deploy_root" ;;
     session-target) printf '%s/packaging/systemd/user/sos-session.target\n' "$development_deploy_root" ;;
     session-shutdown-target) printf '%s/packaging/systemd/user/sos-session-shutdown.target\n' "$development_deploy_root" ;;
     hardware-gate) printf '%s/tools/linux-hardware-gate\n' "$development_deploy_root" ;;
@@ -133,6 +136,7 @@ development_deploy_destination() {
     compositor|experience-host|provider|supervisor|session|authoring|provider-probe|login-session|agent-login|hardware-gate)
       printf '/usr/local/libexec/sos/%s\n' "$(development_deploy_binary_name "$1")"
       ;;
+    agent-runtime) printf '/usr/local/libexec/sos-agent/dist/agent-runner.cjs\n' ;;
     session-target) printf '/usr/local/lib/systemd/user/sos-session.target\n' ;;
     session-shutdown-target) printf '/usr/local/lib/systemd/user/sos-session-shutdown.target\n' ;;
     stock-base) printf '/usr/share/sos/experiences/default.luau\n' ;;
@@ -148,7 +152,7 @@ development_deploy_destination() {
 
 development_deploy_mode() {
   case "$1" in
-    compositor|experience-host|provider|supervisor|session|authoring|provider-probe|login-session|agent-login|hardware-gate) printf '0755\n' ;;
+    compositor|experience-host|provider|supervisor|session|authoring|provider-probe|login-session|agent-login|agent-runtime|hardware-gate) printf '0755\n' ;;
     session-target|session-shutdown-target|stock-base|stock-package|stock-theme|api-doc|agent-doc|stable-host-doc|display-defaults) printf '0644\n' ;;
     *) development_deploy_fail "unknown component: $1" ;;
   esac
@@ -185,6 +189,9 @@ development_deploy_build_component() {
       cargo build --locked --release \
         -p providers-linux --bin sos-linux-provider-probe
       ;;
+    agent-runtime)
+      npm --prefix services/sos-agent run build
+      ;;
     login-session|agent-login|session-target|session-shutdown-target|hardware-gate|stock-base|stock-package|stock-theme|api-doc|agent-doc|stable-host-doc|display-defaults) ;;
     *) development_deploy_fail "unknown component: $component" ;;
   esac
@@ -213,7 +220,7 @@ development_deploy_run() {
   if [[ "${#requested_components[@]}" -eq 0 ]]; then
     requested_components=(
       compositor experience-host provider supervisor session authoring provider-probe
-      login-session agent-login session-target session-shutdown-target hardware-gate
+      login-session agent-login agent-runtime session-target session-shutdown-target hardware-gate
       stock-base stock-package stock-theme
       api-doc agent-doc stable-host-doc
       display-defaults
@@ -231,7 +238,7 @@ development_deploy_run() {
     fi
   done
   local command
-  for command in cargo date git install mktemp scp sed sha256sum ssh stat; do
+  for command in cargo date git install mktemp npm scp sed sha256sum ssh stat; do
     command -v "$command" >/dev/null 2>&1 || \
       development_deploy_fail "required command not found: $command"
   done

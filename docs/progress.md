@@ -14027,3 +14027,54 @@ syntax, Rust formatting, and diff whitespace checks pass.
 archive the old registry record on the Framework, and prepare a fresh exact
 same-boot campaign. Physical Dashboard composition, child event, appearance,
 application-host recovery, integrated input, and clean logout remain open.
+
+## 2026-08-27: Deploy the resident-agent runtime with Linux source changes
+
+**Goal / physical failure:** Run the fresh Framework campaign from exact clean
+revision `99fc6edbb1b3f0a8b2f07abeab6e2dc93f7282e5`. The complete deployment
+`20260827T120844Z-99fc6edbb1b3-3373758` passed in 221,202,268,279 ns and the
+gate at `/home/liveuser/framework12-v4-composition-99fc6ed` acquired its
+root-owned sleep inhibitor. PiKVM selected the SOS GDM session and submitted
+the login remotely. GDM opened session 300 at monotonic timestamp
+114591.240238, but the session returned to tty4 at 114594.773129, about 3.53
+seconds later. The console selection, black transition, and returned console
+frames are retained under
+`.cache/evidence/linux-framework-99fc6ed-live/`; their SHA-256 values are
+`082af38c44505a2fdc53ae274e13860673935c8bd78a2f4e54986d0dd5de3cb9`,
+`8be18d70dd2ffbfbb73d3aec970541fec3c4dfb27e1dbc4c86736e6bc108af8b`,
+and `f2e47040186ffa55231ea2c06479f40a08be91831c0a69c2802515e83e4271ea`.
+This run is diagnostic and not an acceptance result.
+
+**Diagnosis / evidence:** The compositor reached direct DRM on both outputs,
+the provider and supervisor started, and Stock host PID 898012 authenticated
+as the shell. The resident agent then exited with `missing required option
+--example-secondary`; the login wrapper correctly treated the missing agent
+socket as fatal and closed the graphical session. The target's bundled runner
+was the baked 1,878,811-byte artifact with SHA-256
+`3eee6e7922fb82e344277793a435bb8edd36a2c183050b638a3c6ca13d3bc99a`.
+The current one-example-capable bundle is 1,890,551 bytes with SHA-256
+`c98c35fefede6b9c5d53f5b01021e63ed7ccd790470db5c3f02a186305ae4b58`.
+`linux-live-deploy` rebuilt and copied native binaries and checked-in assets,
+but did not define the resident-agent runtime as a deployable component, so
+the source/API change and runtime artifact diverged despite the agent tests
+passing locally.
+
+**Verification:** The agent package rebuilt the exact 1,890,551-byte bundle
+and all 19 tests passed, including the packaged runner with only one example.
+The complete Linux live-image host suite passed, the deploy component listing
+contains `agent-runtime` at its installed path, Bash parsing and the Git
+whitespace check passed. The ordered local campaign took 3.742 seconds.
+ShellCheck was not installed in this checkout environment, so no ShellCheck
+result is claimed for this change.
+
+**Changed / decision / remaining risk / next gate:** Add `agent-runtime` to the
+development deployment contract and its default component set. It runs the
+pinned package build, stages the executable bundle, records its size and
+digest in the deployment manifest, installs it at
+`/usr/local/libexec/sos-agent/dist/agent-runner.cjs`, and verifies the remote
+digest like every native component. The host regression now requires this
+component and build step. Updating only the current target by hand was
+rejected because the next full deployment would silently recreate the same
+source/runtime skew. Run the agent and live-image host suites, commit the
+change, deploy the exact clean revision, and repeat the PiKVM login. The full
+Dashboard composition and physical acceptance gates remain open.
