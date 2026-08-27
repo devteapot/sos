@@ -269,6 +269,20 @@ metadata, not a fabricated counter. The compositor presented its recovery view
 both before boot and between the killed/restarted hosts, and the separate
 compatibility client mapped at `(280, 140)`.
 
+The 2026-08-27 x86_64 Debian 13 v4 graph campaign passed at source revision
+`294fe67` on kernel `6.12.101+deb13-amd64` in 15.887747472 monotonic seconds.
+It booted Stock graph `b8d0745f…`, activated candidate graph `27ddfcc9…` in
+unchanged host PID 16868, physically presented a fault-injected rejected Stock
+candidate, physically restored `27ddfcc9…` before completing discard, and
+restarted that accepted graph in PID 17301. The exact DRM-frame graph sequence
+was old, new, rejected old, restored new, restarted new. Input stayed quiesced
+from each candidate boundary until authority finalization or the restored
+frame; both held-input lifecycles contained one keyboard key, one pointer
+button and two touch contacts. Registry and authority agreed, no singleton
+pointer was created, and GDM and seatd were active after cleanup. The retained
+evidence is indexed from `docs/progress.md`; it is VM, not physical-panel or
+integrated-input evidence.
+
 The direct backend remains intentionally one seat, but accepts multiple DRM
 devices and simultaneous connected outputs. Its default mirror policy prefers
 the internal `eDP` connector as the canonical logical canvas, falling back to

@@ -13235,3 +13235,42 @@ structured message instead of weakening authentication evidence.
 **Remaining risks and next gate:** Run syntax checks, commit, synchronize and
 perform one fresh direct phase. A PASS must retain and verify the same evidence
 set. Physical Framework and Samsung acceptance remain open.
+
+## 2026-08-27: Pass the v4 Debian direct-DRM graph gate
+
+**Goal:** Close the virtual Linux physical-presentation phase with a clean,
+auditable v4 graph verdict after the focused authentication assertion fix.
+
+**Changed:** No product code changed during this attempt. The exact committed
+verifier and rollback/input transaction implementation from source revision
+`294fe67` were synchronized into the Debian 13 guest.
+
+**Evidence:** `tools/linux-vm/verify-direct-session` reported
+`linux_direct_session_passed` with activation PID 16868, restarted PID 17301,
+revision `e094a24c…`, and `drm_page_flip` evidence. `result.json` records PASS
+after 15.887747472 monotonic seconds. The retained bundle is
+`.cache/evidence/linux-v4-294fe67/attempt6`; its finalized files total 125,684
+bytes. `SHA256SUMS` is 2,388 bytes with SHA-256
+`1e143313c4d2e39d5647baa26227a24e026f0ddc8c5100111250d5241309cda1`,
+and `sha256sum -c` verifies all 19 listed artifacts.
+
+The session contains exactly five DRM graph frames in the required order:
+Stock boot `b8d0745f…`, committed candidate `27ddfcc9…`, rejected Stock
+`b8d0745f…`, restored candidate `27ddfcc9…`, and restarted candidate
+`27ddfcc9…`. The compositor recorded four explicit input-epoch resumptions, so
+the rejected and restored frames remained in one closed epoch. Both successful
+and faulted activations began with one held keyboard key, one held pointer
+button and two held touch contacts, and their later releases were suppressed.
+Stylus pressure traversed tablet-v2. Registry and authority revisions agreed,
+the fresh store had no singleton `current`, the compatibility client mapped,
+and GDM and seatd were active after cleanup.
+
+**Failures and decision:** None in the accepted run. This closes the Debian
+direct-DRM v4 graph gate, including visible rollback and host restart. It does
+not make a Framework panel, integrated-input, suspend, latency or thermal claim.
+
+**Remaining risks and next gate:** Run the stable-host campaign on the physical
+Framework using only input devices present in the prepared inventory and an
+actual Dashboard composition graph. Then complete the Samsung v4 composition,
+IME, accessibility, grant, child-failure, appearance, restart and rollback
+campaign.

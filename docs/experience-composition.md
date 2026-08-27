@@ -2,8 +2,9 @@
 
 Date: 2026-08-26
 
-Status: physical acceptance in progress. Package format v4, Experience API v4, the
-registry and graph resolver, isolated graph runtime, authority-owned
+Status: physical acceptance in progress. The Debian direct-DRM v4 graph gate
+passes; Framework integrated-input and Android device acceptance remain open.
+Package format v4, Experience API v4, the registry and graph resolver, isolated graph runtime, authority-owned
 appearance, graph state and activation transactions, derivation and
 composition authoring, and the Linux and Android host paths are implemented.
 Stock and Timeflow are v4 packages. Rolling Linux and Android migrations import
