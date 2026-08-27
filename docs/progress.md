@@ -15061,3 +15061,39 @@ already authorized transport. Physical acceptance must prove the corrected
 cutout fit, source-owned Stock controls, full-screen ordinary roots, non-root
 evidence capture, and every ordered composition/restart/authoring/rollback
 stage before Android parity closes.
+
+## 2026-08-27: Seal the viewport-corrected Stock Mobile Compat candidate
+
+**Goal / build:** Produce the one exact replacement for the rejected physical
+layout candidate. Clean source revision
+`7da25e9c8a6c125f68f6adb6aef105509edbbb2a` built Compat 1 successfully in
+247.44 seconds with 2,979,196 KiB peak RSS. Its immutable product identity is
+`sos.compat1.7da25e9c8a6c.b93bb9eb8875`. This revision adds the live Android
+viewport and safe-inset boundary, transactionally rerenders the root while
+preserving its Instance ID, moves the reserved Theme and Rollback actions into
+Stock Mobile, and leaves the fixed host controls only over ordinary roots.
+
+**Offline evidence:** `./tools/a33xctl inspect-compat1` passed in 19.64 seconds
+with 47,620 KiB peak RSS. It verified the Stock Mobile identity and
+phone-native source contract, host-owned system controls, authority markers,
+package signature and boot-chain data, package format 4, Experience API 4, and
+the rollback-only v3 reader. The inspection log is 29,355 bytes with SHA-256
+`4112b815af0f33edac3f73ce800962d652801d49b86baa77ea007f77893c2714`.
+
+The sealed OTA at
+`.cache/evidence/android-v4-7da25e9/compat1/lineage-23.0-20260827-UNOFFICIAL-sos_compat_a33x-7da25e9.zip`
+is 1,067,674,864 bytes with SHA-256
+`2a3c91d3c784cdf04cd3dc79b76520b017d53fb61a7545016b96e0a57ad74945`.
+Its complete ZIP integrity check passed in 4.50 seconds. The finalized
+five-file evidence manifest at
+`.cache/evidence/android-v4-7da25e9/compat1/MANIFEST.sha256` is 465 bytes with
+SHA-256
+`cdadd44107d647777762b86b818d68c4f751c7207989b4b79a5ea186391cfd53`;
+independent manifest verification passes.
+
+**Decision / next gate:** This exact OTA is the only candidate authorized for
+the replacement Recovery transfer. Reverify its identity and digest at the
+device boundary, install it once, then require exact-product readiness and the
+complete ordered non-root composition campaign. Offline evidence does not
+close the physical cutout, touch, composition, restart, recovery, or rollback
+gates.
