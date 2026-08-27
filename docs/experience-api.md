@@ -677,8 +677,11 @@ does not use this Compat-only outside-tap policy.
 
 Before presentation the host enforces, among other checks:
 
-- exact module `api_version = 3`;
-- 2,048 scene nodes, depth 32, and 256 children per node;
+- exact module `api_version = 4` and agreement with its immutable v4 package
+  contract; `api_version = 3` is accepted only when activating a retained
+  legacy rollback revision;
+- 2,048 scene nodes per instance, 8,192 aggregate graph scene nodes, depth 32,
+  and 256 children per node;
 - 4,096 recursively counted paint operations, depth 16, 8,192 path points,
   256 glyph runs, and 256 hit regions per node;
 - bounded text, coordinates, dimensions, animation durations, state, effects,

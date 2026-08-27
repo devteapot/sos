@@ -222,12 +222,19 @@ impl Authority {
                 )));
             }
             let promotion_draft = promotion.as_promotion(&draft.transaction_id);
-            let current = revision_state_for(
-                &self.data,
-                promotion.experience_id.as_str(),
-                &promotion.revision_id,
-                &promotion_draft,
-            );
+            let current = if draft.activate {
+                initial_state_for(
+                    &promotion_draft,
+                    self.data.experiences.get(promotion.experience_id.as_str()),
+                )
+            } else {
+                revision_state_for(
+                    &self.data,
+                    promotion.experience_id.as_str(),
+                    &promotion.revision_id,
+                    &promotion_draft,
+                )
+            };
             validate_draft(&promotion_draft, &current)?;
         }
         if self.data.transactions.contains_key(&draft.transaction_id) {
@@ -444,12 +451,19 @@ impl Authority {
         }
         for promotion in &record.draft.promotions {
             let promotion_draft = promotion.as_promotion(transaction_id);
-            let current = revision_state_for(
-                &self.data,
-                promotion.experience_id.as_str(),
-                &promotion.revision_id,
-                &promotion_draft,
-            );
+            let current = if record.draft.activate {
+                initial_state_for(
+                    &promotion_draft,
+                    self.data.experiences.get(promotion.experience_id.as_str()),
+                )
+            } else {
+                revision_state_for(
+                    &self.data,
+                    promotion.experience_id.as_str(),
+                    &promotion.revision_id,
+                    &promotion_draft,
+                )
+            };
             if promotion.expected_revision != current.revision {
                 return Err(conflict(format!(
                     "staged experience `{}` is stale: expected {}, current {}",
@@ -463,12 +477,19 @@ impl Authority {
         let mut committed_revisions = BTreeMap::new();
         for promotion in &record.draft.promotions {
             let promotion_draft = promotion.as_promotion(transaction_id);
-            let current = revision_state_for(
-                &committing,
-                promotion.experience_id.as_str(),
-                &promotion.revision_id,
-                &promotion_draft,
-            );
+            let current = if record.draft.activate {
+                initial_state_for(
+                    &promotion_draft,
+                    committing.experiences.get(promotion.experience_id.as_str()),
+                )
+            } else {
+                revision_state_for(
+                    &committing,
+                    promotion.experience_id.as_str(),
+                    &promotion.revision_id,
+                    &promotion_draft,
+                )
+            };
             let revision = current.revision.saturating_add(1);
             let next_state = StateResource {
                 revision,
@@ -482,12 +503,13 @@ impl Authority {
                 .entry(promotion.experience_id.to_string())
                 .or_default()
                 .insert(promotion.revision_id.clone(), next_state.clone());
-            let is_current = committing
-                .experiences
-                .get(promotion.experience_id.as_str())
-                .is_none_or(|state| {
-                    state.revision_id.is_empty() || state.revision_id == promotion.revision_id
-                });
+            let is_current = record.draft.activate
+                || committing
+                    .experiences
+                    .get(promotion.experience_id.as_str())
+                    .is_none_or(|state| {
+                        state.revision_id.is_empty() || state.revision_id == promotion.revision_id
+                    });
             if is_current {
                 committing
                     .experiences

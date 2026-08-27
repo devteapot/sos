@@ -251,15 +251,8 @@ impl GraphStore {
         if hex_sha256(&bytes) != graph_id {
             return Err(Error::InvalidGraph("graph content digest mismatch".into()));
         }
-        let graph: ResolvedGraph = serde_json::from_slice(&bytes)?;
-        graph
-            .validate()
-            .map_err(|error| Error::InvalidGraph(error.to_string()))?;
-        if canonical_json(&graph).map_err(|error| Error::InvalidGraph(error.to_string()))? != bytes
-        {
-            return Err(Error::InvalidGraph("graph is not canonical JSON".into()));
-        }
-        Ok(graph)
+        ResolvedGraph::from_canonical_bytes(&bytes)
+            .map_err(|error| Error::InvalidGraph(error.to_string()))
     }
 
     pub fn set_current(&self, experience_id: &ExperienceId, graph_id: &str) -> Result<()> {

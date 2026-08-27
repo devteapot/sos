@@ -1,0 +1,30 @@
+{
+  "format_version": 4,
+  "experience_id": "sos.timeflow",
+  "role": "ordinary",
+  "contract": {
+    "contract_version": 1,
+    "exports": {
+      "main": {
+        "properties": {
+          "type": "record",
+          "fields": {}
+        },
+        "events": {},
+        "viewport": {
+          "min_width": 320,
+          "min_height": 200,
+          "max_width": 3840,
+          "max_height": 2160
+        },
+        "appearance_abi": 1,
+        "accepts_container_appearance": false
+      }
+    }
+  },
+  "dependencies": {},
+  "derivation": {
+    "kind": "original",
+    "parents": []
+  }
+}

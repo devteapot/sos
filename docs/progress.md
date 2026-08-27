@@ -12394,3 +12394,73 @@ deployment or replace the previously required physical input and composition
 campaigns. Bake the guard and Daily Flow removal into a clean image, reboot the
 Framework from that image, and repeat manual SOS login plus the remaining
 physical gates.
+
+## 2026-08-27: Begin the complete v4 built-in and graph-activation migration
+
+**Goal:** Resume the frozen experience-composition plan from its actual
+implementation state, remove v3 as an authoring and built-in target, and close
+the wire, migration, and atomic graph-state gaps before the remaining Linux and
+Android gates.
+
+**Changed:** The shared `experience-package` crate now defines opaque Instance
+IDs, 256 KiB canonical package and graph wire limits, and strict canonical
+decoders. One checked-in fixture covers a complete package, contract,
+dependency binding, derivation, appearance profile, graph, instance identity,
+and every frozen numeric limit. Rust, the Linux adapter, the Android authority
+adapter, and the TypeScript resident-agent decoder consume that same fixture;
+unknown fields, non-canonical bytes, and oversized payloads are rejected. The
+canonical form is RFC 8785 JCS, including ECMAScript number formatting and
+UTF-16 property ordering rather than a Rust-specific approximation.
+
+Stock Shell and Timeflow now declare Experience API v4 exports and immutable
+v4 packages. Stock loads its one revision-local `stock.theme` module instead
+of duplicating that palette in the bootstrap source and maps authority-owned
+semantic color tokens onto revision-local fallbacks at render time. The Linux
+installer, development deploy tool, image checks, and selectable-session runner
+carry both packages and the Stock theme module. A fresh session installs and
+boots the reserved `sos.stock.shell` graph and registers `sos.timeflow`.
+
+For an existing v3 store, `migrate-stock-v4` copies the verified durable state
+into the v4 package, creates the Stock registry and graph records, and leaves
+the old single `current` pointer unchanged. Once the provider starts, the
+session seeds exact graph state through an explicit activation-mode graph
+transaction and boots the supervisor with `--root-experience
+sos.stock.shell`. Runtime graph state updates retain their prior exact-revision
+semantics; only graph activation changes the stable per-experience current
+state. The activation journal now places authority commit before registry and
+graph pointer commits and records an authority transaction. A crash before
+that commit aborts and returns to the old graph; a crash after it completes the
+new graph. Resolved graphs also reject one Experience ID bound to multiple
+revisions.
+
+**Evidence:** `cargo test -p experience-package --test wire_model` passed three
+wire tests. The shared Linux and Android wire fixture tests each passed, and
+`npm --prefix services/sos-agent test` passed 19 tests. Focused package
+validation rendered all ten Stock scenarios (43–125 nodes) and the 70-node
+Timeflow scenario successfully. `cargo test -p provider-state-service -p
+sos-linux-session -p revision-supervisor` passed the authority, registry,
+resolver, coordinator, supervisor, authoring, and session suites. A new fault
+test killed activation immediately after authority commit and recovered the
+candidate state, registry pointer, and graph pointer together. A migration
+test preserved `{"count":7}` under the v4 revision while proving the legacy
+pointer still named the original v3 revision. `tests/linux-login-session-test.sh`
+and `tests/linux-live-image-test.sh` passed, as did Rust formatting, focused
+compilation, and the TypeScript build.
+
+**Failures and decision:** The first authority change treated every graph
+state batch as activation and broke the locked-revision test with `expected 1,
+current 2`. The protocol now distinguishes activation batches from ordinary
+state-update batches, preserving locked historical state while allowing an
+activation to advance stable Experience state. A first package-install smoke
+command omitted Cargo's binary selector; rerunning against the explicit
+`sos-revision-supervisor` binary installed Stock revision `62374642…`,
+Timeflow revision `1c3a0ed8…`, and Stock graph `ba056e2b…` successfully.
+
+**Remaining risks and next gate:** This checkpoint has host evidence only and
+does not close a hardware milestone. Finish persistent reverse-dependency and
+multi-root tracked activation, convert ordinary authoring to v4 graph
+activation, complete Instance-ID containment and appearance-write grants,
+migrate Android and all current fixtures, then run full fault, fuzz,
+performance, Linux physical, and Android physical campaigns. Retain the
+legacy pointer and v3 activation reader until the migrated Stock graph has
+booted, presented, restarted, and rolled back on the Framework.

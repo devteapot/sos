@@ -67,7 +67,10 @@ development_deploy_components() {
     'session-shutdown-target /usr/local/lib/systemd/user/sos-session-shutdown.target' \
     'hardware-gate       /usr/local/libexec/sos/linux-hardware-gate' \
     'stock-base          /usr/share/sos/experiences/default.luau' \
+    'stock-package       /usr/share/sos/experiences/default.package.json' \
+    'stock-theme         /usr/share/sos/experiences/modules/stock-theme.luau' \
     'timeflow            /usr/share/sos/experiences/timeflow.luau' \
+    'timeflow-package    /usr/share/sos/experiences/timeflow.package.json' \
     'api-doc             /usr/share/doc/sos/experience-api.md' \
     'agent-doc           /usr/share/doc/sos/sos-agent.md' \
     'stable-host-doc     /usr/share/doc/sos/linux-stable-host.md' \
@@ -94,7 +97,10 @@ development_deploy_binary_name() {
     session-shutdown-target) printf 'sos-session-shutdown.target\n' ;;
     hardware-gate) printf 'linux-hardware-gate\n' ;;
     stock-base) printf 'default.luau\n' ;;
+    stock-package) printf 'default.package.json\n' ;;
+    stock-theme) printf 'stock-theme.luau\n' ;;
     timeflow) printf 'timeflow.luau\n' ;;
+    timeflow-package) printf 'timeflow.package.json\n' ;;
     api-doc) printf 'experience-api.md\n' ;;
     agent-doc) printf 'sos-agent.md\n' ;;
     stable-host-doc) printf 'linux-stable-host.md\n' ;;
@@ -115,7 +121,10 @@ development_deploy_source_path() {
     session-shutdown-target) printf '%s/packaging/systemd/user/sos-session-shutdown.target\n' "$development_deploy_root" ;;
     hardware-gate) printf '%s/tools/linux-hardware-gate\n' "$development_deploy_root" ;;
     stock-base) printf '%s/experiences/default.luau\n' "$development_deploy_root" ;;
+    stock-package) printf '%s/experiences/default.package.json\n' "$development_deploy_root" ;;
+    stock-theme) printf '%s/experiences/modules/stock-theme.luau\n' "$development_deploy_root" ;;
     timeflow) printf '%s/experiences/timeflow.luau\n' "$development_deploy_root" ;;
+    timeflow-package) printf '%s/experiences/timeflow.package.json\n' "$development_deploy_root" ;;
     api-doc) printf '%s/docs/experience-api.md\n' "$development_deploy_root" ;;
     agent-doc) printf '%s/docs/sos-agent.md\n' "$development_deploy_root" ;;
     stable-host-doc) printf '%s/docs/linux-stable-host.md\n' "$development_deploy_root" ;;
@@ -132,7 +141,10 @@ development_deploy_destination() {
     session-target) printf '/usr/local/lib/systemd/user/sos-session.target\n' ;;
     session-shutdown-target) printf '/usr/local/lib/systemd/user/sos-session-shutdown.target\n' ;;
     stock-base) printf '/usr/share/sos/experiences/default.luau\n' ;;
+    stock-package) printf '/usr/share/sos/experiences/default.package.json\n' ;;
+    stock-theme) printf '/usr/share/sos/experiences/modules/stock-theme.luau\n' ;;
     timeflow) printf '/usr/share/sos/experiences/timeflow.luau\n' ;;
+    timeflow-package) printf '/usr/share/sos/experiences/timeflow.package.json\n' ;;
     api-doc) printf '/usr/share/doc/sos/experience-api.md\n' ;;
     agent-doc) printf '/usr/share/doc/sos/sos-agent.md\n' ;;
     stable-host-doc) printf '/usr/share/doc/sos/linux-stable-host.md\n' ;;
@@ -144,7 +156,7 @@ development_deploy_destination() {
 development_deploy_mode() {
   case "$1" in
     compositor|experience-host|provider|supervisor|session|authoring|provider-probe|login-session|agent-login|hardware-gate) printf '0755\n' ;;
-    session-target|session-shutdown-target|stock-base|timeflow|api-doc|agent-doc|stable-host-doc|display-defaults) printf '0644\n' ;;
+    session-target|session-shutdown-target|stock-base|stock-package|stock-theme|timeflow|timeflow-package|api-doc|agent-doc|stable-host-doc|display-defaults) printf '0644\n' ;;
     *) development_deploy_fail "unknown component: $1" ;;
   esac
 }
@@ -180,7 +192,7 @@ development_deploy_build_component() {
       cargo build --locked --release \
         -p providers-linux --bin sos-linux-provider-probe
       ;;
-    login-session|agent-login|session-target|session-shutdown-target|hardware-gate|stock-base|timeflow|api-doc|agent-doc|stable-host-doc|display-defaults) ;;
+    login-session|agent-login|session-target|session-shutdown-target|hardware-gate|stock-base|stock-package|stock-theme|timeflow|timeflow-package|api-doc|agent-doc|stable-host-doc|display-defaults) ;;
     *) development_deploy_fail "unknown component: $component" ;;
   esac
 }
@@ -209,7 +221,8 @@ development_deploy_run() {
     requested_components=(
       compositor experience-host provider supervisor session authoring provider-probe
       login-session agent-login session-target session-shutdown-target hardware-gate
-      stock-base timeflow api-doc agent-doc stable-host-doc
+      stock-base stock-package stock-theme timeflow timeflow-package
+      api-doc agent-doc stable-host-doc
       display-defaults
     )
   fi

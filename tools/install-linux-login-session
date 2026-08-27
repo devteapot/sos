@@ -207,6 +207,17 @@ sudo install -o root -g root -m 0644 \
 sudo install -o root -g root -m 0644 \
   experiences/timeflow.luau "$(sos_install_target /usr/share/sos/experiences/timeflow.luau)"
 sudo install -o root -g root -m 0644 \
+  experiences/default.package.json \
+  "$(sos_install_target /usr/share/sos/experiences/default.package.json)"
+sudo install -o root -g root -m 0644 \
+  experiences/timeflow.package.json \
+  "$(sos_install_target /usr/share/sos/experiences/timeflow.package.json)"
+sudo install -d -o root -g root -m 0755 \
+  "$(sos_install_target /usr/share/sos/experiences/modules)"
+sudo install -o root -g root -m 0644 \
+  experiences/modules/stock-theme.luau \
+  "$(sos_install_target /usr/share/sos/experiences/modules/stock-theme.luau)"
+sudo install -o root -g root -m 0644 \
   docs/experience-api.md "$(sos_install_target /usr/share/doc/sos/experience-api.md)"
 sudo install -o root -g root -m 0644 \
   docs/linux-stable-host.md "$(sos_install_target /usr/share/doc/sos/linux-stable-host.md)"
@@ -241,7 +252,10 @@ sos_install_artifacts=(
   /usr/local/lib/systemd/user/sos-session.target
   /usr/local/lib/systemd/user/sos-session-shutdown.target
   /usr/share/sos/experiences/default.luau
+  /usr/share/sos/experiences/default.package.json
+  /usr/share/sos/experiences/modules/stock-theme.luau
   /usr/share/sos/experiences/timeflow.luau
+  /usr/share/sos/experiences/timeflow.package.json
 )
 for sos_install_artifact in "${sos_install_artifacts[@]}"; do
   sos_install_artifact_target="$(sos_install_target "$sos_install_artifact")"

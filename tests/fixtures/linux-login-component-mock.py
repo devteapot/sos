@@ -42,6 +42,12 @@ if name == "sos-revision-supervisor":
     if len(sys.argv) >= 2 and sys.argv[1] == "status":
         print("1" * 64)
         raise SystemExit(0)
+    if len(sys.argv) >= 2 and sys.argv[1] == "graph-status":
+        print("a" * 64)
+        raise SystemExit(0)
+    if len(sys.argv) >= 2 and sys.argv[1] == "install-package":
+        print("2" * 64)
+        raise SystemExit(0)
     raise SystemExit("unsupported revision-supervisor mock command")
 
 if name == "sos-linux-session":

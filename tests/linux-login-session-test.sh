@@ -45,6 +45,10 @@ XDG_STATE_HOME="$test_state" \
 SOS_INSTALL_ROOT="$test_bin" \
 SOS_AGENT_MAIN="$test_root/agent-runner.cjs" \
 SOS_DEFAULT_EXPERIENCE="$test_repo_root/experiences/default.luau" \
+SOS_DEFAULT_PACKAGE="$test_repo_root/experiences/default.package.json" \
+SOS_STOCK_THEME="$test_repo_root/experiences/modules/stock-theme.luau" \
+SOS_TIMEFLOW_EXPERIENCE="$test_repo_root/experiences/timeflow.luau" \
+SOS_TIMEFLOW_PACKAGE="$test_repo_root/experiences/timeflow.package.json" \
 SOS_TEST_AGENT_ARGS_FILE="$test_root/agent-arguments.txt" \
 SOS_TEST_SESSION_ENV_FILE="$test_root/session-environment.txt" \
 SOS_TEST_SYSTEMCTL_ARGS_FILE="$test_root/systemctl-arguments.txt" \
@@ -97,6 +101,10 @@ if PATH="$test_bin:$PATH" \
   SOS_INSTALL_ROOT="$test_bin" \
   SOS_AGENT_MAIN="$test_root/agent-runner.cjs" \
   SOS_DEFAULT_EXPERIENCE="$test_repo_root/experiences/default.luau" \
+  SOS_DEFAULT_PACKAGE="$test_repo_root/experiences/default.package.json" \
+  SOS_STOCK_THEME="$test_repo_root/experiences/modules/stock-theme.luau" \
+  SOS_TIMEFLOW_EXPERIENCE="$test_repo_root/experiences/timeflow.luau" \
+  SOS_TIMEFLOW_PACKAGE="$test_repo_root/experiences/timeflow.package.json" \
   SOS_TEST_AGENT_ARGS_FILE="$test_root/live-agent-arguments.txt" \
     "$test_session" >"$test_root/live-session.txt" 2>&1; then
   printf 'error: live selectable session started without credentials\n' >&2

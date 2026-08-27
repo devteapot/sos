@@ -1,29 +1,13 @@
 --!strict
--- SOS Stock Shell. This is a privileged, replaceable Scene ABI v3 revision.
+-- SOS Stock Shell. This is a privileged, replaceable Experience API v4 package.
 -- Its window-space node is a bounded compositor primitive; every surrounding
 -- bar, panel, control, workspace, and policy choice remains ordinary Luau.
 -- Credentials, lock, permission, emergency, confirmation, and Recovery remain
 -- fixed native surfaces below the revision boundary.
 
--- The bootstrap remains a single immutable file, but uses the same token
--- shape available to revision-local theme modules (`stock.theme`).
-local theme = {
-    color = {
-        ink = 0x17211B,
-        muted = 0x637069,
-        paper = 0xF3F1E8,
-        white = 0xFEFDF8,
-        moss = 0x3E6B52,
-        mint = 0xDCE8D8,
-        amber = 0xE9A23B,
-        alert = 0x8C3A36,
-        rose = 0xF2DDD7,
-        sand = 0xE8E4D7,
-        panel = 0xECE9DC,
-    },
-    space = { xs = 4, sm = 8, md = 12, lg = 16, xl = 24 },
-    radius = { control = 12, card = 18, panel = 22 },
-}
+-- Visual implementation remains revision-local. The authority supplies only
+-- typed semantic appearance values, which are resolved onto these fallbacks.
+local theme = require("stock.theme")
 
 local ink = theme.color.ink
 local muted = theme.color.muted
@@ -36,6 +20,28 @@ local alert = theme.color.alert
 local rose = theme.color.rose
 local sand = theme.color.sand
 local panel = theme.color.panel
+
+local function appearance_color(appearance: any, token: string, fallback: number): number
+    local value = appearance and appearance.colors and appearance.colors[token] or nil
+    if type(value) ~= "string" or not string.match(value, "^#[0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F]$") then
+        return fallback
+    end
+    return tonumber(string.sub(value, 2, 7), 16) or fallback
+end
+
+local function apply_appearance(appearance: any)
+    ink = appearance_color(appearance, "text.primary", theme.color.ink)
+    muted = appearance_color(appearance, "text.muted", theme.color.muted)
+    paper = appearance_color(appearance, "surface.canvas", theme.color.paper)
+    white = appearance_color(appearance, "surface.primary", theme.color.white)
+    moss = appearance_color(appearance, "accent.primary", theme.color.moss)
+    mint = appearance_color(appearance, "accent.subtle", theme.color.mint)
+    amber = appearance_color(appearance, "status.warning", theme.color.amber)
+    alert = appearance_color(appearance, "status.danger", theme.color.alert)
+    rose = appearance_color(appearance, "status.danger_subtle", theme.color.rose)
+    sand = appearance_color(appearance, "surface.secondary", theme.color.sand)
+    panel = appearance_color(appearance, "surface.panel", theme.color.panel)
+end
 
 local assets = {
     stock_mark = {
@@ -1012,6 +1018,7 @@ local function stock_application(model: ExperienceModel, state: ExperienceState,
 end
 
 local function render(model: ExperienceModel, state: ExperienceState): SceneNode
+    apply_appearance(model.appearance)
     local providers = model.providers
     return group("column", { program = { measure_width = 1, measure_height = 1 } }, {
         shell_top_bar(model, state, providers),
@@ -1209,10 +1216,11 @@ local function update(
 end
 
 return {
-    api_version = 3,
+    api_version = 4,
     state_version = 1,
     assets = assets,
     validation_scenarios = validation_scenarios,
-    render = render,
-    update = update,
+    exports = {
+        main = { render = render, update = update },
+    },
 }

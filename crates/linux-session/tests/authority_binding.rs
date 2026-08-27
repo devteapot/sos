@@ -1,14 +1,105 @@
 use std::{fs, path::PathBuf, thread, time::Duration};
 
 use provider_state_service::ServiceClient;
-use revision_supervisor::{ActivationJournal, JournalPhase, RevisionInput, RevisionStore};
+use revision_supervisor::{
+    ActivationJournal, ExperienceRegistry, GraphResolver, GraphStore, JournalPhase, RevisionInput,
+    RevisionPackageInput, RevisionStore,
+};
 use service_protocol::{
     PromotionDraft, ResourceQuery, ResourceValue, ResponsePayload, ServiceRequest,
     TransactionStatus,
 };
 use sos_linux_session::{
-    bootstrap_authority, shutdown_authority, stage_revision, BootstrapOutcome,
+    bootstrap_authority, bootstrap_graph_authority, shutdown_authority, stage_revision,
+    BootstrapOutcome, GraphBootstrapOutcome,
 };
+
+#[test]
+fn migrates_legacy_stock_state_into_the_v4_graph_without_changing_the_legacy_pointer() {
+    let temporary = tempfile::tempdir().unwrap();
+    let root = temporary.path().join("revisions");
+    let socket = temporary.path().join("provider.sock");
+    let authority_file = temporary.path().join("authority.json");
+    let store = RevisionStore::open(&root).unwrap();
+    let legacy = store
+        .install(RevisionInput {
+            source: b"return { api_version = 3 }".to_vec(),
+            state: serde_json::json!({"count": 7}),
+            schema_version: 1,
+            experience_api_version: 3,
+            assets: Vec::new(),
+        })
+        .unwrap();
+    store.set_current(&legacy.manifest.revision_id).unwrap();
+    let package: experience_package::PackageMetadata =
+        serde_json::from_str(include_str!("../../../experiences/default.package.json")).unwrap();
+    let candidate = store
+        .install_package(RevisionPackageInput {
+            revision: RevisionInput {
+                source: b"return { api_version = 4, exports = { main = {} } }".to_vec(),
+                state: serde_json::json!({"count": 7}),
+                schema_version: 1,
+                experience_api_version: 4,
+                assets: Vec::new(),
+            },
+            package,
+        })
+        .unwrap();
+    let stock = experience_package::ExperienceId::parse("sos.stock.shell").unwrap();
+    let registry = ExperienceRegistry::open(store.clone()).unwrap();
+    registry.migrate_legacy_current().unwrap();
+    registry
+        .set_current(&stock, &candidate.manifest.revision_id)
+        .unwrap();
+    let graph = GraphResolver::new(store.clone())
+        .resolve(
+            &candidate.manifest.revision_id,
+            &experience_package::ExportId::parse("main").unwrap(),
+        )
+        .unwrap();
+    let graphs = GraphStore::open(&root).unwrap();
+    let graph_id = graphs.install(&graph).unwrap();
+    graphs.set_current(&stock, &graph_id).unwrap();
+    let service = start_service(socket.clone(), authority_file);
+    bootstrap_authority(&root, &socket, Duration::from_secs(2)).unwrap();
+
+    assert!(matches!(
+        bootstrap_graph_authority(&root, &stock, &socket, Duration::from_secs(2)).unwrap(),
+        GraphBootstrapOutcome::Initialized {
+            graph_id: initialized,
+            experience_count: 1,
+            ..
+        } if initialized == graph_id
+    ));
+    assert!(matches!(
+        bootstrap_graph_authority(&root, &stock, &socket, Duration::from_secs(2)).unwrap(),
+        GraphBootstrapOutcome::AlreadyBound { graph_id: initialized }
+            if initialized == graph_id
+    ));
+    assert_eq!(
+        store.current().unwrap().unwrap().manifest.revision_id,
+        legacy.manifest.revision_id
+    );
+    let client = ServiceClient::new(&socket, Duration::from_secs(2));
+    let state = client
+        .call(&ServiceRequest::GetResource {
+            request_id: 30,
+            query: ResourceQuery::ExperienceStateAt {
+                experience_id: stock,
+                revision_id: candidate.manifest.revision_id.clone(),
+            },
+        })
+        .unwrap();
+    assert!(matches!(
+        state.payload,
+        Some(ResponsePayload::Resource {
+            value: ResourceValue::ExperienceStateAt(state),
+        }) if state.resource.revision_id == candidate.manifest.revision_id
+            && state.resource.state == serde_json::json!({"count": 7})
+    ));
+    shutdown_authority(&socket, Duration::from_secs(2)).unwrap();
+    service.join().unwrap().unwrap();
+}
 
 #[test]
 fn bootstraps_current_and_stages_the_next_verified_revision() {

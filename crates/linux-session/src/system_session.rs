@@ -18,15 +18,16 @@ use std::{
 
 use anyhow::{bail, Context as _, Result};
 use compositor_control_protocol::read_shell_token_file;
+use experience_package::ExperienceId;
 use nix::{
     sys::signal::{kill, Signal},
     sys::socket::{getsockopt, sockopt::PeerCredentials},
     unistd::{chown, Gid, Pid, Uid, User},
 };
-use revision_supervisor::RevisionStore;
+use revision_supervisor::{GraphStore, RevisionStore, STOCK_SHELL_EXPERIENCE_ID};
 use signal_hook::consts::{SIGHUP, SIGINT, SIGTERM};
 
-use crate::{bootstrap_authority, shutdown_authority, stage_revision};
+use crate::{bootstrap_authority, bootstrap_graph_authority, shutdown_authority, stage_revision};
 
 const POLL_INTERVAL: Duration = Duration::from_millis(20);
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
@@ -288,6 +289,11 @@ fn start_and_monitor(
         .context("cannot boot the system session before the revision pointer is initialized")?
         .manifest
         .revision_id;
+    let stock_experience_id = ExperienceId::parse(STOCK_SHELL_EXPERIENCE_ID)
+        .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+    let graph_mode = GraphStore::open(&options.revision_root)?
+        .current(&stock_experience_id)?
+        .is_some();
     let recovery_state_file = options.runtime_directory.join("recovery.json");
     let recovery_command_socket = options.runtime_directory.join("recovery-command.sock");
     let safe_mode_file = state_directory.join("safe-mode");
@@ -435,6 +441,15 @@ fn start_and_monitor(
         options.startup_timeout,
     )?;
     println!("linux_system_session_authority outcome={bootstrap:?}");
+    if graph_mode {
+        let graph_bootstrap = bootstrap_graph_authority(
+            &options.revision_root,
+            &stock_experience_id,
+            &provider_socket,
+            options.startup_timeout,
+        )?;
+        println!("linux_system_session_graph_authority outcome={graph_bootstrap:?}");
+    }
 
     processes.host_launcher = Some(HostLauncher::start(
         &host_launcher_socket,
@@ -465,7 +480,7 @@ fn start_and_monitor(
     )?);
     let mut supervisor_command =
         role_command(&options.supervisor_executable, &options.supervisor_identity);
-    let supervisor = supervisor_command
+    supervisor_command
         .arg("serve")
         .arg("--root")
         .arg(&options.revision_root)
@@ -478,7 +493,13 @@ fn start_and_monitor(
         .arg("--host-arg")
         .arg("--launcher-socket")
         .arg("--host-arg")
-        .arg(&host_launcher_socket)
+        .arg(&host_launcher_socket);
+    if graph_mode {
+        supervisor_command
+            .arg("--root-experience")
+            .arg(STOCK_SHELL_EXPERIENCE_ID);
+    }
+    let supervisor = supervisor_command
         .env("XDG_RUNTIME_DIR", &options.runtime_directory)
         .env("HOME", state_directory)
         .stdin(Stdio::null())
@@ -507,7 +528,9 @@ fn start_and_monitor(
         stopping,
         processes.supervisor.as_mut().unwrap(),
     )?;
-    println!("linux_system_session_ready revision_id={current_revision} evidence=drm_page_flip");
+    println!(
+        "linux_system_session_ready revision_id={current_revision} graph_mode={graph_mode} evidence=drm_page_flip"
+    );
     write_recovery_status(
         &recovery_state_file,
         &store,

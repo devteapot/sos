@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use serde::{Deserialize, Serialize};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use thiserror::Error;
@@ -19,6 +19,8 @@ pub const MAX_SCHEMA_DEPTH: usize = 8;
 pub const MAX_SCHEMA_FIELDS: usize = 64;
 pub const MAX_SCHEMA_LIST_ITEMS: usize = 256;
 pub const MAX_BOUNDARY_VALUE_BYTES: usize = 16 * 1024;
+pub const MAX_PACKAGE_METADATA_BYTES: usize = 256 * 1024;
+pub const MAX_RESOLVED_GRAPH_BYTES: usize = 256 * 1024;
 pub const MAX_GRAPH_DEPTH: usize = 4;
 pub const MAX_GRAPH_INSTANCES: usize = 8;
 pub const MAX_GRAPH_SCENE_NODES: usize = 8_192;
@@ -63,6 +65,16 @@ pub enum Error {
     InvalidGraph(String),
     #[error("canonical JSON serialization failed: {0}")]
     Json(#[from] serde_json::Error),
+    #[error("JCS serialization failed: {0}")]
+    CanonicalJson(String),
+    #[error("{kind} JSON is not canonical")]
+    NonCanonicalJson { kind: &'static str },
+    #[error("{kind} JSON has {actual} bytes, limit is {limit}")]
+    WirePayloadTooLarge {
+        kind: &'static str,
+        actual: usize,
+        limit: usize,
+    },
 }
 
 macro_rules! string_id {
@@ -100,6 +112,7 @@ string_id!(DependencyAlias, "dependency alias", MAX_NAME_BYTES);
 string_id!(EventId, "event ID", MAX_NAME_BYTES);
 string_id!(TokenId, "token ID", MAX_NAME_BYTES);
 string_id!(GraphNodeId, "graph node ID", MAX_EXPERIENCE_ID_BYTES);
+string_id!(InstanceId, "instance ID", MAX_EXPERIENCE_ID_BYTES);
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[serde(transparent)]
@@ -784,6 +797,12 @@ impl PackageMetadata {
         self.validate()?;
         canonical_json(self)
     }
+
+    pub fn from_canonical_bytes(bytes: &[u8]) -> Result<Self, Error> {
+        let package: Self = decode_canonical_json(bytes, "package", MAX_PACKAGE_METADATA_BYTES)?;
+        package.validate()?;
+        Ok(package)
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -823,11 +842,22 @@ impl ResolvedGraph {
         if !self.nodes.contains_key(&self.root) {
             return Err(Error::InvalidGraph("root node is missing".into()));
         }
+        let mut experience_revisions = BTreeMap::new();
         for (id, node) in &self.nodes {
             GraphNodeId::parse(id.as_str())?;
             ExperienceId::parse(node.experience_id.as_str())?;
             RevisionId::parse(node.revision_id.as_str())?;
             ExportId::parse(node.export_id.as_str())?;
+            if let Some(existing) =
+                experience_revisions.insert(node.experience_id.clone(), node.revision_id.clone())
+            {
+                if existing != node.revision_id {
+                    return Err(Error::InvalidGraph(format!(
+                        "experience `{}` appears at more than one revision",
+                        node.experience_id
+                    )));
+                }
+            }
             if id == &self.root {
                 if node.parent.is_some() || node.dependency.is_some() {
                     return Err(Error::InvalidGraph(
@@ -874,13 +904,34 @@ impl ResolvedGraph {
         self.validate()?;
         canonical_sha256(self)
     }
+
+    pub fn from_canonical_bytes(bytes: &[u8]) -> Result<Self, Error> {
+        let graph: Self = decode_canonical_json(bytes, "resolved graph", MAX_RESOLVED_GRAPH_BYTES)?;
+        graph.validate()?;
+        Ok(graph)
+    }
+}
+
+pub fn decode_canonical_json<T>(bytes: &[u8], kind: &'static str, limit: usize) -> Result<T, Error>
+where
+    T: DeserializeOwned + Serialize,
+{
+    if bytes.len() > limit {
+        return Err(Error::WirePayloadTooLarge {
+            kind,
+            actual: bytes.len(),
+            limit,
+        });
+    }
+    let decoded = serde_json::from_slice(bytes)?;
+    if canonical_json(&decoded)? != bytes {
+        return Err(Error::NonCanonicalJson { kind });
+    }
+    Ok(decoded)
 }
 
 pub fn canonical_json<T: Serialize + ?Sized>(value: &T) -> Result<Vec<u8>, Error> {
-    let value = serde_json::to_value(value)?;
-    let mut output = Vec::new();
-    write_canonical(&value, &mut output)?;
-    Ok(output)
+    serde_jcs::to_vec(value).map_err(|error| Error::CanonicalJson(error.to_string()))
 }
 
 pub fn canonical_sha256<T: Serialize + ?Sized>(value: &T) -> Result<String, Error> {
@@ -889,40 +940,6 @@ pub fn canonical_sha256<T: Serialize + ?Sized>(value: &T) -> Result<String, Erro
 
 pub fn hex_sha256(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
-}
-
-fn write_canonical(value: &Value, output: &mut Vec<u8>) -> Result<(), serde_json::Error> {
-    match value {
-        Value::Null => output.extend_from_slice(b"null"),
-        Value::Bool(value) => output.extend_from_slice(if *value { b"true" } else { b"false" }),
-        Value::Number(value) => output.extend_from_slice(value.to_string().as_bytes()),
-        Value::String(value) => serde_json::to_writer(output, value)?,
-        Value::Array(values) => {
-            output.push(b'[');
-            for (index, value) in values.iter().enumerate() {
-                if index > 0 {
-                    output.push(b',');
-                }
-                write_canonical(value, output)?;
-            }
-            output.push(b']');
-        }
-        Value::Object(values) => {
-            output.push(b'{');
-            let mut entries = values.iter().collect::<Vec<_>>();
-            entries.sort_by(|left, right| left.0.cmp(right.0));
-            for (index, (key, value)) in entries.into_iter().enumerate() {
-                if index > 0 {
-                    output.push(b',');
-                }
-                serde_json::to_writer(&mut *output, key)?;
-                output.push(b':');
-                write_canonical(value, output)?;
-            }
-            output.push(b'}');
-        }
-    }
-    Ok(())
 }
 
 fn valid_name(value: &str, max_bytes: usize) -> bool {

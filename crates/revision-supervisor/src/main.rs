@@ -10,9 +10,10 @@ use std::{
 
 use provider_state_service::ServiceClient;
 use revision_supervisor::{
-    install_reference_composition, CoordinatedSupervisor, ExperienceGraphSupervisor,
+    install_reference_composition, CoordinatedSupervisor, DurableState, ExperienceGraphSupervisor,
     ExperienceRegistry, GraphResolver, GraphStore, HostCommand, RevisionAssetInput, RevisionInput,
     RevisionPackageInput, RevisionStore, RevisionSupervisor, SupervisorEvent,
+    STOCK_SHELL_EXPERIENCE_ID,
 };
 use serde::{Deserialize, Serialize};
 
@@ -55,11 +56,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     match args.next().as_deref() {
         Some("install") => install(parse_options(args.collect())?),
         Some("install-package") => install_package(parse_options(args.collect())?),
+        Some("migrate-stock-v4") => migrate_stock_v4(parse_options(args.collect())?),
         Some("install-composition-demo") => {
             install_composition_demo(parse_options(args.collect())?)
         }
         Some("bootstrap") => bootstrap(parse_options(args.collect())?),
         Some("bootstrap-graph") => bootstrap_graph(parse_options(args.collect())?),
+        Some("graph-status") => graph_status(parse_options(args.collect())?),
         Some("activate") => control_command(parse_options(args.collect())?, "activate"),
         Some("activate-graph") => control_command(parse_options(args.collect())?, "activate-graph"),
         Some("refresh-tracked") => {
@@ -142,6 +145,75 @@ fn install_package(options: Options) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+#[derive(Serialize)]
+struct StockMigrationResult {
+    revision_id: String,
+    graph_id: String,
+    legacy_current_unchanged: bool,
+}
+
+fn migrate_stock_v4(options: Options) -> Result<(), Box<dyn std::error::Error>> {
+    let root = options.required("--root")?;
+    let source = fs::read(options.required("--source")?)?;
+    let package: experience_package::PackageMetadata =
+        serde_json::from_slice(&fs::read(options.required("--package")?)?)?;
+    let stock_id = experience_package::ExperienceId::parse(STOCK_SHELL_EXPERIENCE_ID)?;
+    if package.experience_id != stock_id
+        || package.role != experience_package::ExperienceRole::Shell
+    {
+        return Err("Stock migration requires the reserved shell package identity".into());
+    }
+    let assets = read_assets(&options)?;
+    let store = RevisionStore::open(&root)?;
+    let legacy = store
+        .current()?
+        .ok_or("Stock migration requires an initialized legacy current pointer")?;
+    let durable: DurableState = serde_json::from_slice(&fs::read(
+        legacy.directory.join(&legacy.manifest.state.path),
+    )?)?;
+    let revision = store.install_package(RevisionPackageInput {
+        revision: RevisionInput {
+            source,
+            state: durable.state,
+            schema_version: durable.schema_version,
+            experience_api_version: 4,
+            assets,
+        },
+        package,
+    })?;
+    let revision_id = revision.manifest.revision_id;
+    let registry = ExperienceRegistry::open(store.clone())?;
+    if registry.get(&stock_id)?.is_none() {
+        if legacy.package.is_none() {
+            registry.migrate_legacy_current()?;
+        } else {
+            registry.create(
+                &stock_id,
+                experience_package::ExperienceRole::Shell,
+                &revision_id,
+            )?;
+        }
+    }
+    registry.set_current(&stock_id, &revision_id)?;
+    let graph = GraphResolver::new(store.clone())
+        .resolve(&revision_id, &experience_package::ExportId::parse("main")?)?;
+    let graphs = GraphStore::open(store.root())?;
+    let graph_id = graphs.install(&graph)?;
+    graphs.set_current(&stock_id, &graph_id)?;
+    let legacy_current_unchanged = store
+        .current()?
+        .is_some_and(|current| current.manifest.revision_id == legacy.manifest.revision_id);
+    println!(
+        "{}",
+        serde_json::to_string(&StockMigrationResult {
+            revision_id,
+            graph_id,
+            legacy_current_unchanged,
+        })?
+    );
+    Ok(())
+}
+
 fn bootstrap_graph(options: Options) -> Result<(), Box<dyn std::error::Error>> {
     let root = options.required("--root")?;
     let experience_id = experience_package::ExperienceId::parse(options.required("--experience")?)?;
@@ -171,6 +243,17 @@ fn bootstrap_graph(options: Options) -> Result<(), Box<dyn std::error::Error>> {
     let graph_id = graphs.install(&graph)?;
     graphs.set_current(&experience_id, &graph_id)?;
     println!("{graph_id}");
+    Ok(())
+}
+
+fn graph_status(options: Options) -> Result<(), Box<dyn std::error::Error>> {
+    let root = options.required("--root")?;
+    let experience_id = experience_package::ExperienceId::parse(options.required("--experience")?)?;
+    let graphs = GraphStore::open(root)?;
+    match graphs.current(&experience_id)? {
+        Some((graph_id, _)) => println!("{graph_id}"),
+        None => println!("none"),
+    }
     Ok(())
 }
 
@@ -264,13 +347,24 @@ fn serve(options: Options) -> Result<(), Box<dyn std::error::Error>> {
         let root_experience = experience_package::ExperienceId::parse(root_experience)?;
         let registry = ExperienceRegistry::open(store.clone())?;
         let graphs = GraphStore::open(store.root())?;
-        let mut graph = ExperienceGraphSupervisor::new(
+        let graph = ExperienceGraphSupervisor::new(
             store.clone(),
             registry.clone(),
             graphs.clone(),
             host_command,
             timeout,
         );
+        let mut graph = if let Some(service_socket) = options.optional("--service-socket") {
+            let service_timeout = Duration::from_millis(
+                options
+                    .optional("--service-timeout-ms")
+                    .unwrap_or_else(|| "5000".into())
+                    .parse()?,
+            );
+            graph.with_authority(ServiceClient::new(service_socket, service_timeout))
+        } else {
+            graph
+        };
         graph.boot(&root_experience)?;
         Runtime::Graph {
             supervisor: graph,
@@ -582,7 +676,7 @@ fn parse_options(arguments: Vec<String>) -> Result<Options, String> {
 }
 
 fn usage() -> &'static str {
-    "usage:\n  sos-revision-supervisor install --root DIR --source FILE --state FILE --schema N --api N [--asset ID:KIND:FILE ...]\n  sos-revision-supervisor install-package --root DIR --source FILE --state FILE --schema N --package FILE [--asset ID:KIND:FILE ...]\n  sos-revision-supervisor install-composition-demo --root DIR\n  sos-revision-supervisor bootstrap --root DIR --revision ID\n  sos-revision-supervisor bootstrap-graph --root DIR --experience ID --revision ID [--export ID]\n  sos-revision-supervisor serve --root DIR --host-executable FILE [--host-arg VALUE ...] [--root-experience ID] [--timeout-ms N] [--service-socket PATH --service-timeout-ms N]\n  sos-revision-supervisor activate --root DIR --revision ID [--transaction ID]\n  sos-revision-supervisor activate-graph --root DIR --graph ID\n  sos-revision-supervisor refresh-tracked --root DIR\n  sos-revision-supervisor daemon-status --root DIR\n  sos-revision-supervisor shutdown --root DIR\n  sos-revision-supervisor status --root DIR"
+    "usage:\n  sos-revision-supervisor install --root DIR --source FILE --state FILE --schema N --api N [--asset ID:KIND:FILE ...]\n  sos-revision-supervisor install-package --root DIR --source FILE --state FILE --schema N --package FILE [--asset ID:KIND:FILE ...]\n  sos-revision-supervisor migrate-stock-v4 --root DIR --source FILE --package FILE [--asset ID:KIND:FILE ...]\n  sos-revision-supervisor install-composition-demo --root DIR\n  sos-revision-supervisor bootstrap --root DIR --revision ID\n  sos-revision-supervisor bootstrap-graph --root DIR --experience ID --revision ID [--export ID]\n  sos-revision-supervisor graph-status --root DIR --experience ID\n  sos-revision-supervisor serve --root DIR --host-executable FILE [--host-arg VALUE ...] [--root-experience ID] [--timeout-ms N] [--service-socket PATH --service-timeout-ms N]\n  sos-revision-supervisor activate --root DIR --revision ID [--transaction ID]\n  sos-revision-supervisor activate-graph --root DIR --graph ID\n  sos-revision-supervisor refresh-tracked --root DIR\n  sos-revision-supervisor daemon-status --root DIR\n  sos-revision-supervisor shutdown --root DIR\n  sos-revision-supervisor status --root DIR"
 }
 
 fn send_control(

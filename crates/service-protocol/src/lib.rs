@@ -158,6 +158,8 @@ impl GraphExperiencePromotion {
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 pub struct GraphPromotionDraft {
     pub transaction_id: String,
+    #[serde(default)]
+    pub activate: bool,
     pub promotions: Vec<GraphExperiencePromotion>,
 }
 

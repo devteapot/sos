@@ -2,13 +2,15 @@
 
 Date: 2026-08-26
 
-Status: implemented contract and Linux reference path with nested-Wayland and
-direct-DRM VM acceptance. Package format v4, Experience API v4, the registry
-and graph resolver, isolated graph runtime, authority-owned appearance, graph
-state transactions, derivation and composition authoring, and the Linux host
-path are implemented. API v3 remains available for legacy single-experience
-revisions. Physical Linux acceptance and Android host integration remain open
-and are listed below.
+Status: implementation in progress. Package format v4, Experience API v4, the
+registry and graph resolver, isolated graph runtime, authority-owned
+appearance, graph state and activation transactions, derivation and
+composition authoring, and the Linux host path are implemented. Stock and
+Timeflow are v4 packages, and a Linux migration imports legacy Stock state
+without changing the legacy pointer during the rollback window. API v3 is now
+a legacy activation reader, not the target for checked-in experiences or new
+authoring. Physical Linux acceptance, complete Android host integration,
+tracked multi-root activation, and final compatibility removal remain open.
 
 ## Decision
 

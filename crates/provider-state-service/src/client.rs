@@ -12,6 +12,7 @@ use std::os::linux::net::SocketAddrExt;
 
 use service_protocol::{ServiceRequest, ServiceRequestEnvelope, ServiceResponse, MAX_STATE_BYTES};
 
+#[derive(Clone, Debug)]
 pub struct ServiceClient {
     socket: PathBuf,
     timeout: Duration,

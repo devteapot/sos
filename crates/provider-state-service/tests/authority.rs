@@ -42,6 +42,7 @@ fn injected(error: AuthorityError, expected: FaultPoint) {
 fn graph_draft(transaction_id: &str) -> GraphPromotionDraft {
     GraphPromotionDraft {
         transaction_id: transaction_id.into(),
+        activate: false,
         promotions: [
             ("dashboard", 'd', json!({"selected": "agenda"})),
             ("agenda", 'a', json!({"open": true})),
@@ -404,6 +405,7 @@ fn locked_revision_state_survives_a_newer_current_revision_and_restart() {
         authority
             .stage_graph(GraphPromotionDraft {
                 transaction_id: "locked-graph-action".into(),
+                activate: false,
                 promotions: vec![GraphExperiencePromotion {
                     experience_id: experience_id.clone(),
                     expected_revision: 1,

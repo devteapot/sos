@@ -4,11 +4,15 @@ mod system_session;
 use std::{fs, path::Path, time::Duration};
 
 use anyhow::{bail, Context as _, Result};
+use experience_package::ExperienceId;
 use provider_state_service::{state_sha256, ServiceClient};
-use revision_supervisor::{ActivationJournal, DurableState, RevisionStore, VerifiedRevision};
+use revision_supervisor::{
+    ActivationJournal, DurableState, GraphStore, RevisionStore, VerifiedRevision,
+};
 use service_protocol::{
-    MigrationProof, PromotionDraft, ResourceQuery, ResourceValue, ResponsePayload, ServiceRequest,
-    StateResource, TransactionRecord, TransactionStatus,
+    GraphExperiencePromotion, GraphPromotionDraft, MigrationProof, PromotionDraft, ResourceQuery,
+    ResourceValue, ResponsePayload, ServiceRequest, StateResource, TransactionRecord,
+    TransactionStatus,
 };
 
 pub use authoring::{run_authoring_broker, AuthoringBrokerOptions};
@@ -28,6 +32,18 @@ pub enum BootstrapOutcome {
     RecoveryRequired {
         pointer_revision: String,
         authority_revision: String,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum GraphBootstrapOutcome {
+    Initialized {
+        transaction_id: String,
+        graph_id: String,
+        experience_count: usize,
+    },
+    AlreadyBound {
+        graph_id: String,
     },
 }
 
@@ -79,6 +95,173 @@ pub fn bootstrap_authority(
         transaction_id,
         revision_id: target.revision_id,
     })
+}
+
+pub fn bootstrap_graph_authority(
+    revision_root: &Path,
+    root_experience_id: &ExperienceId,
+    service_socket: &Path,
+    timeout: Duration,
+) -> Result<GraphBootstrapOutcome> {
+    let store = RevisionStore::open(revision_root)?;
+    let graphs = GraphStore::open(revision_root)?;
+    let (graph_id, graph) = graphs
+        .current(root_experience_id)?
+        .with_context(|| format!("experience `{root_experience_id}` has no active graph"))?;
+    let client = ServiceClient::new(service_socket, timeout);
+    let mut promotions = Vec::new();
+    let mut seen = std::collections::BTreeSet::new();
+    for node in graph.nodes.values() {
+        if !seen.insert(node.experience_id.clone()) {
+            let first = graph
+                .nodes
+                .values()
+                .find(|candidate| candidate.experience_id == node.experience_id)
+                .expect("seen experience has a graph node");
+            if first.revision_id != node.revision_id {
+                bail!(
+                    "graph uses experience `{}` at more than one revision",
+                    node.experience_id
+                );
+            }
+            continue;
+        }
+        let revision = store.verify(node.revision_id.as_str())?;
+        let durable = load_revision_state(&revision)?.durable;
+        let exact =
+            get_experience_state_at(&client, &node.experience_id, node.revision_id.as_str())?;
+        if exact.revision_id == node.revision_id.as_str()
+            && exact.schema_version == durable.schema_version
+            && exact.source_sha256 == durable.source_sha256
+        {
+            continue;
+        }
+        let current = get_experience_state_for(&client, &node.experience_id)?;
+        if durable.schema_version < current.schema_version {
+            bail!(
+                "graph revision schema {} cannot replace experience `{}` schema {}",
+                durable.schema_version,
+                node.experience_id,
+                current.schema_version
+            );
+        }
+        let migration = if durable.schema_version > current.schema_version {
+            Some(MigrationProof {
+                from_schema_version: current.schema_version,
+                to_schema_version: durable.schema_version,
+                from_state_sha256: state_sha256(&current.state)?,
+            })
+        } else {
+            None
+        };
+        promotions.push(GraphExperiencePromotion {
+            experience_id: node.experience_id.clone(),
+            expected_revision: current.revision,
+            revision_id: node.revision_id.to_string(),
+            schema_version: durable.schema_version,
+            source_sha256: durable.source_sha256,
+            state: durable.state,
+            migration,
+            actions: Vec::new(),
+        });
+    }
+    if promotions.is_empty() {
+        return Ok(GraphBootstrapOutcome::AlreadyBound { graph_id });
+    }
+    let transaction_id = format!("linux-graph-bootstrap-{graph_id}");
+    let draft = GraphPromotionDraft {
+        transaction_id: transaction_id.clone(),
+        activate: true,
+        promotions,
+    };
+    let staged = call(
+        &client,
+        &ServiceRequest::StageGraphPromotion {
+            request_id: 20,
+            draft: draft.clone(),
+        },
+    )?;
+    match staged {
+        ResponsePayload::GraphTransaction { record }
+            if record.draft == draft && record.status != TransactionStatus::Aborted => {}
+        _ => bail!("provider authority did not retain graph bootstrap transaction"),
+    }
+    let promoted = call(
+        &client,
+        &ServiceRequest::PromoteGraph {
+            request_id: 21,
+            transaction_id: transaction_id.clone(),
+        },
+    )?;
+    let experience_count = match promoted {
+        ResponsePayload::GraphTransaction { record }
+            if record.draft == draft && record.status == TransactionStatus::Committed =>
+        {
+            record.draft.promotions.len()
+        }
+        _ => bail!("provider authority did not commit graph bootstrap transaction"),
+    };
+    for promotion in &draft.promotions {
+        let exact =
+            get_experience_state_at(&client, &promotion.experience_id, &promotion.revision_id)?;
+        if exact.revision_id != promotion.revision_id
+            || exact.schema_version != promotion.schema_version
+            || exact.source_sha256 != promotion.source_sha256
+            || exact.state != promotion.state
+        {
+            bail!(
+                "provider authority did not bind graph state for experience `{}`",
+                promotion.experience_id
+            );
+        }
+    }
+    Ok(GraphBootstrapOutcome::Initialized {
+        transaction_id,
+        graph_id,
+        experience_count,
+    })
+}
+
+fn get_experience_state_for(
+    client: &ServiceClient,
+    experience_id: &ExperienceId,
+) -> Result<StateResource> {
+    match call(
+        client,
+        &ServiceRequest::GetResource {
+            request_id: 22,
+            query: ResourceQuery::ExperienceStateFor {
+                experience_id: experience_id.clone(),
+            },
+        },
+    )? {
+        ResponsePayload::Resource {
+            value: ResourceValue::ExperienceStateFor(state),
+        } => Ok(state.resource),
+        _ => bail!("provider authority returned the wrong experience state payload"),
+    }
+}
+
+fn get_experience_state_at(
+    client: &ServiceClient,
+    experience_id: &ExperienceId,
+    revision_id: &str,
+) -> Result<StateResource> {
+    match call(
+        client,
+        &ServiceRequest::GetResource {
+            request_id: 23,
+            query: ResourceQuery::ExperienceStateAt {
+                experience_id: experience_id.clone(),
+                revision_id: revision_id.into(),
+            },
+        },
+    )? {
+        ResponsePayload::Resource {
+            value: ResourceValue::ExperienceStateAt(state),
+        } => Ok(state.resource),
+        _ => bail!("provider authority returned the wrong revision state payload"),
+    }
 }
 
 fn journal_binds_mismatch(

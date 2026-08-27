@@ -293,19 +293,8 @@ impl RevisionStore {
                     ));
                 }
                 let bytes = fs::read(directory.join(&identity.path))?;
-                let package: PackageMetadata = serde_json::from_slice(&bytes)?;
-                package
-                    .validate()
+                let package = PackageMetadata::from_canonical_bytes(&bytes)
                     .map_err(|error| Error::InvalidRevision(error.to_string()))?;
-                if package
-                    .canonical_bytes()
-                    .map_err(|error| Error::InvalidRevision(error.to_string()))?
-                    != bytes
-                {
-                    return Err(Error::InvalidRevision(
-                        "package metadata is not canonical JSON".into(),
-                    ));
-                }
                 Some(package)
             }
             None => None,

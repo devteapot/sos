@@ -25,8 +25,7 @@ use experience_ir::{
     MAX_AGENT_MESSAGE_BYTES, SHELL_MODEL_ABI_VERSION,
 };
 use experience_package::{
-    canonical_json, hex_sha256, ExperienceId, GraphNodeId, PackageMetadata, ResolvedGraph,
-    RevisionId,
+    hex_sha256, ExperienceId, GraphNodeId, PackageMetadata, ResolvedGraph, RevisionId,
 };
 use gpui::{
     div, img, point, prelude::*, px, relative, rgb, size, Animation as GpuiAnimation,
@@ -4008,18 +4007,14 @@ fn load_graph(graph_id: &str, graph_path: &Path, revision_root: &Path) -> Result
     if bytes.len() > 1024 * 1024 || hex_sha256(&bytes) != graph_id {
         bail!("resolved experience graph identity mismatch");
     }
-    let graph: ResolvedGraph =
-        serde_json::from_slice(&bytes).context("decode resolved experience graph")?;
-    graph
-        .validate()
+    let graph = ResolvedGraph::from_canonical_bytes(&bytes)
         .map_err(|error| anyhow::anyhow!(error.to_string()))?;
     if graph
         .id()
         .map_err(|error| anyhow::anyhow!(error.to_string()))?
         != graph_id
-        || canonical_json(&graph).map_err(|error| anyhow::anyhow!(error.to_string()))? != bytes
     {
-        bail!("resolved experience graph is not canonical");
+        bail!("resolved experience graph identity mismatch");
     }
     let mut revisions = std::collections::BTreeMap::new();
     for node in graph.nodes.values() {
@@ -4043,16 +4038,8 @@ fn load_graph(graph_id: &str, graph_path: &Path, revision_root: &Path) -> Result
             .as_ref()
             .context("graph revision lacks package metadata")?;
         let package_bytes = read_verified_file(&directory, package_identity)?;
-        let package: PackageMetadata =
-            serde_json::from_slice(&package_bytes).context("decode graph revision package")?;
-        package
-            .validate()
+        let package = PackageMetadata::from_canonical_bytes(&package_bytes)
             .map_err(|error| anyhow::anyhow!(error.to_string()))?;
-        if canonical_json(&package).map_err(|error| anyhow::anyhow!(error.to_string()))?
-            != package_bytes
-        {
-            bail!("graph revision package is not canonical");
-        }
         revisions.insert(
             node.revision_id.clone(),
             LoadedGraphRevision { revision, package },
@@ -4466,6 +4453,7 @@ fn commit_graph_action(
                 request_id: 2,
                 draft: GraphPromotionDraft {
                     transaction_id: transaction_id.clone(),
+                    activate: false,
                     promotions,
                 },
             },

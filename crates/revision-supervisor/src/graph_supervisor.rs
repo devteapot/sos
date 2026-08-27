@@ -8,10 +8,16 @@ use std::{
 };
 
 use experience_package::{ExperienceId, ResolvedGraph};
+use provider_state_service::{state_sha256, ServiceClient};
 use serde::{Deserialize, Serialize};
+use service_protocol::{
+    GraphExperiencePromotion, GraphPromotionDraft, ResourceQuery, ResourceValue, ResponsePayload,
+    ServiceRequest, TransactionStatus,
+};
 
 use crate::{
-    Error, ExperienceHost, ExperienceRegistry, GraphStore, HostCommand, Result, RevisionStore,
+    DurableState, Error, ExperienceHost, ExperienceRegistry, GraphStore, HostCommand, Result,
+    RevisionStore,
 };
 
 const GRAPH_ACTIVATION_JOURNAL_VERSION: u32 = 1;
@@ -22,6 +28,7 @@ static JOURNAL_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 pub enum GraphActivationPhase {
     Intent,
     Presented,
+    AuthorityCommitted,
     RegistryCommitted,
     GraphCommitted,
 }
@@ -34,6 +41,8 @@ pub struct GraphActivationJournal {
     pub previous_root_revision: String,
     pub candidate_graph_id: String,
     pub candidate_root_revision: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub authority_transaction_id: Option<String>,
     pub phase: GraphActivationPhase,
 }
 
@@ -41,6 +50,7 @@ pub struct GraphActivationJournal {
 pub enum GraphActivationFaultPoint {
     AfterIntent,
     AfterPresented,
+    AfterAuthorityCommit,
     AfterRegistryCommit,
     AfterGraphCommit,
 }
@@ -54,6 +64,7 @@ pub struct ExperienceGraphSupervisor {
     host: Option<ExperienceHost>,
     active_root: Option<ExperienceId>,
     active_graph: Option<String>,
+    authority: Option<ServiceClient>,
     journal_file: PathBuf,
     fault: Option<GraphActivationFaultPoint>,
 }
@@ -64,6 +75,7 @@ pub struct PreparedGraphActivation {
     previous_graph_id: String,
     previous_root_revision: String,
     graph: ResolvedGraph,
+    authority_transaction_id: Option<String>,
     input_quiesced: bool,
 }
 
@@ -95,8 +107,14 @@ impl ExperienceGraphSupervisor {
             host: None,
             active_root: None,
             active_graph: None,
+            authority: None,
             fault: None,
         }
+    }
+
+    pub fn with_authority(mut self, authority: ServiceClient) -> Self {
+        self.authority = Some(authority);
+        self
     }
 
     pub fn boot(&mut self, root_experience_id: &ExperienceId) -> Result<Option<u32>> {
@@ -160,12 +178,23 @@ impl ExperienceGraphSupervisor {
                 self.graphs.snapshot_path(graph_id)?,
                 self.revisions.root().to_path_buf(),
             )?;
+        let authority_transaction_id = match self.stage_authority_activation(graph_id, &graph) {
+            Ok(transaction_id) => transaction_id,
+            Err(error) => {
+                let _ = self
+                    .host
+                    .as_mut()
+                    .and_then(|host| host.discard_graph(graph_id).ok());
+                return Err(error);
+            }
+        };
         Ok(PreparedGraphActivation {
             root_experience_id: root_experience_id.clone(),
             graph_id: graph_id.into(),
             previous_graph_id,
             previous_root_revision,
             graph,
+            authority_transaction_id,
             input_quiesced: false,
         })
     }
@@ -193,6 +222,7 @@ impl ExperienceGraphSupervisor {
             previous_root_revision: prepared.previous_root_revision.clone(),
             candidate_graph_id: prepared.graph_id.clone(),
             candidate_root_revision: candidate_root_revision.clone(),
+            authority_transaction_id: prepared.authority_transaction_id.clone(),
             phase: GraphActivationPhase::Intent,
         };
         if let Err(error) = self.quiesce(&mut prepared) {
@@ -219,6 +249,14 @@ impl ExperienceGraphSupervisor {
             return self.fail_activation(&journal, error);
         }
         self.inject(GraphActivationFaultPoint::AfterPresented)?;
+        if let Err(error) = self.promote_authority(journal.authority_transaction_id.as_deref()) {
+            return self.fail_activation(&journal, error);
+        }
+        journal.phase = GraphActivationPhase::AuthorityCommitted;
+        if let Err(error) = self.write_journal(&journal) {
+            return self.fail_activation(&journal, error);
+        }
+        self.inject(GraphActivationFaultPoint::AfterAuthorityCommit)?;
         if let Err(error) = self
             .registry
             .set_current(&prepared.root_experience_id, &candidate_root_revision)
@@ -262,14 +300,16 @@ impl ExperienceGraphSupervisor {
             return Ok(None);
         };
         self.validate_journal(&journal)?;
-        match journal.phase {
-            GraphActivationPhase::Intent | GraphActivationPhase::Presented => {
+        let authority_committed = self.authority_transaction_committed(&journal)?;
+        match (journal.phase, authority_committed) {
+            (GraphActivationPhase::Intent | GraphActivationPhase::Presented, false) => {
+                self.abort_authority(journal.authority_transaction_id.as_deref())?;
                 self.registry
                     .set_current(&journal.root_experience_id, &journal.previous_root_revision)?;
                 self.graphs
                     .set_current(&journal.root_experience_id, &journal.previous_graph_id)?;
             }
-            GraphActivationPhase::RegistryCommitted | GraphActivationPhase::GraphCommitted => {
+            _ => {
                 self.registry.set_current(
                     &journal.root_experience_id,
                     &journal.candidate_root_revision,
@@ -279,17 +319,16 @@ impl ExperienceGraphSupervisor {
             }
         }
         self.clear_journal()?;
-        Ok(Some(match journal.phase {
-            GraphActivationPhase::Intent | GraphActivationPhase::Presented => {
+        Ok(Some(match (journal.phase, authority_committed) {
+            (GraphActivationPhase::Intent | GraphActivationPhase::Presented, false) => {
                 journal.previous_graph_id
             }
-            GraphActivationPhase::RegistryCommitted | GraphActivationPhase::GraphCommitted => {
-                journal.candidate_graph_id
-            }
+            _ => journal.candidate_graph_id,
         }))
     }
 
     pub fn discard(&mut self, prepared: PreparedGraphActivation) -> Result<()> {
+        self.abort_authority(prepared.authority_transaction_id.as_deref())?;
         self.host
             .as_mut()
             .ok_or(Error::NoActiveHost)?
@@ -362,6 +401,214 @@ impl ExperienceGraphSupervisor {
         Ok(())
     }
 
+    fn stage_authority_activation(
+        &self,
+        graph_id: &str,
+        graph: &ResolvedGraph,
+    ) -> Result<Option<String>> {
+        let Some(_) = &self.authority else {
+            return Ok(None);
+        };
+        let mut promotions = Vec::new();
+        let mut seen = std::collections::BTreeSet::new();
+        for node in graph.nodes.values() {
+            if !seen.insert(node.experience_id.clone()) {
+                continue;
+            }
+            let revision = self.revisions.verify(node.revision_id.as_str())?;
+            let durable: DurableState = serde_json::from_slice(&fs::read(
+                revision.directory.join(&revision.manifest.state.path),
+            )?)?;
+            let current = self.authority_state_for(&node.experience_id)?;
+            let exact = self.authority_state_at(&node.experience_id, node.revision_id.as_str())?;
+            if current.revision_id == node.revision_id.as_str()
+                && exact.revision_id == node.revision_id.as_str()
+                && exact.schema_version == durable.schema_version
+                && exact.source_sha256 == durable.source_sha256
+            {
+                continue;
+            }
+            if durable.schema_version < current.schema_version {
+                return Err(Error::InvalidGraph(format!(
+                    "candidate schema {} cannot replace experience `{}` schema {}",
+                    durable.schema_version, node.experience_id, current.schema_version
+                )));
+            }
+            let (state, schema_version, source_sha256) = if exact.revision_id
+                == node.revision_id.as_str()
+                && exact.schema_version == durable.schema_version
+                && exact.source_sha256 == durable.source_sha256
+            {
+                (exact.state, exact.schema_version, exact.source_sha256)
+            } else {
+                (durable.state, durable.schema_version, durable.source_sha256)
+            };
+            let migration = if schema_version > current.schema_version {
+                Some(service_protocol::MigrationProof {
+                    from_schema_version: current.schema_version,
+                    to_schema_version: schema_version,
+                    from_state_sha256: state_sha256(&current.state)
+                        .map_err(|error| Error::InvalidGraph(error.to_string()))?,
+                })
+            } else {
+                None
+            };
+            promotions.push(GraphExperiencePromotion {
+                experience_id: node.experience_id.clone(),
+                expected_revision: current.revision,
+                revision_id: node.revision_id.to_string(),
+                schema_version,
+                source_sha256,
+                state,
+                migration,
+                actions: Vec::new(),
+            });
+        }
+        if promotions.is_empty() {
+            return Ok(None);
+        }
+        let transaction_id = format!(
+            "graph-activate-{}-{}-{}",
+            &graph_id[..32],
+            std::process::id(),
+            JOURNAL_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+        );
+        let draft = GraphPromotionDraft {
+            transaction_id: transaction_id.clone(),
+            activate: true,
+            promotions,
+        };
+        match self.call_authority(&ServiceRequest::StageGraphPromotion {
+            request_id: 30,
+            draft: draft.clone(),
+        })? {
+            ResponsePayload::GraphTransaction { record }
+                if record.draft == draft && record.status == TransactionStatus::Staged => {}
+            _ => {
+                return Err(Error::InvalidGraph(
+                    "authority did not retain the staged graph activation".into(),
+                ))
+            }
+        }
+        Ok(Some(transaction_id))
+    }
+
+    fn authority_state_for(
+        &self,
+        experience_id: &ExperienceId,
+    ) -> Result<service_protocol::StateResource> {
+        match self.call_authority(&ServiceRequest::GetResource {
+            request_id: 31,
+            query: ResourceQuery::ExperienceStateFor {
+                experience_id: experience_id.clone(),
+            },
+        })? {
+            ResponsePayload::Resource {
+                value: ResourceValue::ExperienceStateFor(state),
+            } => Ok(state.resource),
+            _ => Err(Error::InvalidGraph(
+                "authority returned the wrong experience state payload".into(),
+            )),
+        }
+    }
+
+    fn authority_state_at(
+        &self,
+        experience_id: &ExperienceId,
+        revision_id: &str,
+    ) -> Result<service_protocol::StateResource> {
+        match self.call_authority(&ServiceRequest::GetResource {
+            request_id: 32,
+            query: ResourceQuery::ExperienceStateAt {
+                experience_id: experience_id.clone(),
+                revision_id: revision_id.into(),
+            },
+        })? {
+            ResponsePayload::Resource {
+                value: ResourceValue::ExperienceStateAt(state),
+            } => Ok(state.resource),
+            _ => Err(Error::InvalidGraph(
+                "authority returned the wrong revision state payload".into(),
+            )),
+        }
+    }
+
+    fn call_authority(&self, request: &ServiceRequest) -> Result<ResponsePayload> {
+        let client = self.authority.as_ref().ok_or_else(|| {
+            Error::InvalidGraph("graph activation authority is unavailable".into())
+        })?;
+        let response = client.call(request)?;
+        if !response.ok {
+            return Err(Error::InvalidGraph(format!(
+                "graph activation authority rejected the request: {:?}",
+                response.error
+            )));
+        }
+        response.payload.ok_or_else(|| {
+            Error::InvalidGraph("graph activation authority omitted its response".into())
+        })
+    }
+
+    fn promote_authority(&self, transaction_id: Option<&str>) -> Result<()> {
+        let Some(transaction_id) = transaction_id else {
+            return Ok(());
+        };
+        match self.call_authority(&ServiceRequest::PromoteGraph {
+            request_id: 33,
+            transaction_id: transaction_id.into(),
+        })? {
+            ResponsePayload::GraphTransaction { record }
+                if record.status == TransactionStatus::Committed =>
+            {
+                Ok(())
+            }
+            _ => Err(Error::InvalidGraph(
+                "authority did not commit the graph activation".into(),
+            )),
+        }
+    }
+
+    fn abort_authority(&self, transaction_id: Option<&str>) -> Result<()> {
+        let Some(transaction_id) = transaction_id else {
+            return Ok(());
+        };
+        match self.call_authority(&ServiceRequest::AbortGraph {
+            request_id: 34,
+            transaction_id: transaction_id.into(),
+        })? {
+            ResponsePayload::GraphTransaction { record }
+                if record.status == TransactionStatus::Aborted =>
+            {
+                Ok(())
+            }
+            _ => Err(Error::InvalidGraph(
+                "authority did not abort the graph activation".into(),
+            )),
+        }
+    }
+
+    fn authority_transaction_committed(&self, journal: &GraphActivationJournal) -> Result<bool> {
+        let Some(transaction_id) = &journal.authority_transaction_id else {
+            return Ok(matches!(
+                journal.phase,
+                GraphActivationPhase::AuthorityCommitted
+                    | GraphActivationPhase::RegistryCommitted
+                    | GraphActivationPhase::GraphCommitted
+            ));
+        };
+        match self.call_authority(&ServiceRequest::GetGraphTransaction {
+            request_id: 35,
+            transaction_id: transaction_id.clone(),
+        })? {
+            ResponsePayload::GraphTransaction { record } => {
+                Ok(record.status == TransactionStatus::Committed)
+            }
+            _ => Err(Error::InvalidGraph(
+                "authority returned the wrong graph transaction payload".into(),
+            )),
+        }
+    }
+
     fn inject(&mut self, point: GraphActivationFaultPoint) -> Result<()> {
         if self.fault == Some(point) {
             self.fault = None;
@@ -372,15 +619,29 @@ impl ExperienceGraphSupervisor {
     }
 
     fn fail_activation<T>(&mut self, journal: &GraphActivationJournal, error: Error) -> Result<T> {
-        match self.rollback_activation(journal) {
+        let authority_committed =
+            self.authority_transaction_committed(journal)
+                .unwrap_or(matches!(
+                    journal.phase,
+                    GraphActivationPhase::AuthorityCommitted
+                        | GraphActivationPhase::RegistryCommitted
+                        | GraphActivationPhase::GraphCommitted
+                ));
+        let recovery = if authority_committed {
+            self.roll_forward_activation(journal)
+        } else {
+            self.rollback_activation(journal)
+        };
+        match recovery {
             Ok(()) => Err(error),
-            Err(rollback) => Err(Error::InvalidGraph(format!(
-                "graph activation failed ({error}); rollback also failed ({rollback})"
+            Err(recovery) => Err(Error::InvalidGraph(format!(
+                "graph activation failed ({error}); recovery also failed ({recovery})"
             ))),
         }
     }
 
     fn rollback_activation(&mut self, journal: &GraphActivationJournal) -> Result<()> {
+        self.abort_authority(journal.authority_transaction_id.as_deref())?;
         self.host
             .as_mut()
             .ok_or(Error::NoActiveHost)?
@@ -391,6 +652,22 @@ impl ExperienceGraphSupervisor {
             .set_current(&journal.root_experience_id, &journal.previous_graph_id)?;
         self.active_root = Some(journal.root_experience_id.clone());
         self.active_graph = Some(journal.previous_graph_id.clone());
+        self.clear_journal()
+    }
+
+    fn roll_forward_activation(&mut self, journal: &GraphActivationJournal) -> Result<()> {
+        self.registry.set_current(
+            &journal.root_experience_id,
+            &journal.candidate_root_revision,
+        )?;
+        self.graphs
+            .set_current(&journal.root_experience_id, &journal.candidate_graph_id)?;
+        self.host
+            .as_mut()
+            .ok_or(Error::NoActiveHost)?
+            .finalize_graph(&journal.candidate_graph_id)?;
+        self.active_root = Some(journal.root_experience_id.clone());
+        self.active_graph = Some(journal.candidate_graph_id.clone());
         self.clear_journal()
     }
 
