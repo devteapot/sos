@@ -13623,3 +13623,46 @@ before advancing to Core 1. Physical input, accessibility, restart, recovery,
 thermal, memory, and composition behavior remain open. The Framework Linux
 input campaign also remains open and may proceed independently over SSH while
 the Android USB transport is unavailable.
+
+## 2026-08-27: Recheck the v4-only authoring and Linux host boundary
+
+**Goal:** Verify at the exact documentation head that no checked-in Linux
+experience or creation command can return to Experience API v3, and distinguish
+the remaining physical prerequisites from product failures.
+
+**Changed:** No product or target state changed. The audit ran at commit
+`9610dec`. Stock and Timeflow are the only checked-in general Linux experiences
+and both have package-v4 manifests. `sosctl linux-script` requires
+`api_version = 4`, installs the Stock package through the v4 package path,
+resolves a graph, and activates that graph. Daily Flow has no source, package,
+agent input, or activation path. Its remaining non-historical occurrences are
+the exact retired baked-artifact tombstone and tests that require its deletion.
+API v3 remains only the deliberately bounded activation/rollback decoder and
+test fixtures that exercise that compatibility reader. Scene ABI v3 references
+describe the retained scene model and are not Experience API v3 authoring.
+
+**Evidence:** `tests/linux-live-image-test.sh`,
+`tests/linux-hardware-gate-test.sh`, and
+`tests/linux-login-session-test.sh` each reported `PASS`. The corrected command
+`cargo test -j1 -p sos-linux-session -p revision-supervisor --all-targets`
+passed 69 tests with one explicit desktop-performance test ignored: registry,
+resolver, tracked update, graph journal, authority transaction, authoring,
+legacy import, and shared v4 wire cases all passed. A case-insensitive source
+audit found the Daily Flow name outside `docs/progress.md` only in the exact
+live-image tombstone and its pinning tests.
+
+**Failures and decision:** The first combined Rust invocation selected the
+nonexistent Cargo package name `linux-session`; Cargo rejected it before
+running tests. Repeating the unchanged test command with the declared package
+name `sos-linux-session` passed. No hardware verdict is inferred. The Samsung
+enumerates as USB `04e8:685d` in Download Mode, so adb cannot own it, and the
+Framework address `192.168.1.132` returns `No route to host`. No OTA, target
+file, session, or boot state was changed.
+
+**Remaining risks and next gate:** Exit Samsung Download Mode into the existing
+authorized Android system, unlock and replug it, then sideload the exact
+inspected Compat 1 artifact through the established one-OTA recovery path.
+Wake the Framework and redeploy the current clean v4 component set before its
+integrated input and composition campaign. Retain the v3 rollback reader until
+the pinned recovery artifacts have completed migration, as required by the
+rolling and reversible plan; do not restore v3 authoring.
