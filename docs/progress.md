@@ -13951,3 +13951,36 @@ bounded concurrent-listener fix from a clean revision, and repeat the same
 Stock catalog action. Require both authenticated control PIDs, the separate
 semantic endpoints, a mapped Dashboard surface, mounted child semantics, and
 the remaining physical and recovery criteria before collection.
+
+## 2026-08-27: Filter Linux provider snapshots by reviewed grants
+
+**Goal:** Continue the same Framework Dashboard launch after the concurrent
+compositor-listener repair and stop at the first remaining failed boundary.
+
+**Physical experiment and failure:** Exact clean revision `e024434` deployed as
+`20260827T114243Z-e024434871c3-3355860` in 95,551,157,858 ns. PiKVM selected
+the SOS GDM session and entered the prepared login without local intervention.
+Stock presented on both physical DRM outputs and kept its permanent host alive.
+Its `Open dashboard` semantic action launched ordinary host PID 887248. The
+host bound `accessibility-52cfa993b20dbe27.sock` and authenticated a concurrent
+`NativeApplication` compositor-control connection, proving both preceding
+fixes. It then stopped before graph preparation because its empty, reviewed
+provider grant could not pass the Linux snapshot reader's unconditional
+`NotesRead` check. The compositor closed only the failed application's control
+connection; Stock remained interactive.
+
+**Root cause and changed code:** `ProviderHub::snapshot_with_frames` required
+`NotesRead`, `CalendarRead`, `MusicRead`, and `SystemRead` before returning any
+model. That made every ordinary v4 Experience request Stock's complete read
+set, even when its package declared no provider access. Linux snapshots now
+read each domain only when the authority-reviewed grant contains that domain's
+read capability. Denied notes, calendar, music, legacy network/system, system
+provider data, and provider surfaces arrive as empty typed values. Effects
+retain their separate capability checks. The reference Media package now
+declares both `music_read`, which its renderer consumes, and `music_control`,
+which its toggle effect consumes.
+
+**Decision and next gate:** Run the focused provider and reference-graph tests,
+then redeploy one clean revision. The next physical attempt must render the
+complete Dashboard graph rather than widening Dashboard's authority decision.
+The current run is diagnostic evidence, not an acceptance result.

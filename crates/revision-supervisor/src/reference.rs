@@ -119,6 +119,9 @@ pub fn install_reference_composition(store: &RevisionStore) -> Result<ReferenceC
     );
     media_package
         .provider_capabilities
+        .insert("music_read".into());
+    media_package
+        .provider_capabilities
         .insert("music_control".into());
     let media_revision = install(
         store,
