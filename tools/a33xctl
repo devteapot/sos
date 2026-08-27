@@ -1049,6 +1049,13 @@ inspect_compat_profile() {
       stat --printf='%n %s bytes\n' "$artifact"
       sha256sum "$artifact"
     done
+    local bridge_manifest_dump
+    bridge_manifest_dump="$(container out/host/linux-x86/bin/aapt2 dump xmltree \
+      --file AndroidManifest.xml "$bridge_apk")"
+    grep -F 'package="dev.sos.frameworkbridge"' <<<"$bridge_manifest_dump" >/dev/null || \
+      fail "SOS framework bridge has the wrong application ID"
+    grep -F '="android.permission.INTERNET"' <<<"$bridge_manifest_dump" >/dev/null || \
+      fail "SOS framework bridge omitted the system UID socket-create permission"
     file "$host" | grep -F 'ARM aarch64' >/dev/null || \
       fail "native Compat host is not AArch64"
     file "$host_runtime" | grep -F 'ARM aarch64' >/dev/null || \

@@ -15599,3 +15599,56 @@ it once through automatic Recovery, and run a fresh artifact-bound campaign.
 The authority restart must either become audit-ready or report the exact raw
 socket operation returning errno 111. No authoring or rollback claim follows
 from this diagnostic artifact alone.
+
+## 2026-08-27: Identify Android's post-boot socket-create denial
+
+**Goal / physical evidence:** Install the raw-step candidate once and replace
+the combined listener error with the first failed operation. Device preflight
+reverified the 1,067,731,695-byte OTA and SHA-256
+`3891b536043aa7e150bb630f22e848c14af7767aef113c721253b63cb6e08a39`
+against live dcbe Compat. Automatic Recovery entry took 29.45 seconds, the
+only sideload took 84.08 seconds with `Total xfer: 1.00x`, and exact-product
+readiness took 112.00 seconds. The installed identity was
+`sos.compat1.0f519dd1a318.967ed8346550`; authority PID 941 and HOME PID 1474
+were live under Enforcing SELinux without a relevant crash or SOS-domain AVC.
+
+The fresh campaign under
+`.cache/evidence/android-v4-0f519dd-physical/compat1/composition/` captured
+Stock Mobile, a three-Instance Dashboard, appearance generation 5 to 6 with
+unchanged revision IDs, separate Agenda update and time-budget failures,
+recovery, two new parent pings, mounted IME focus and outside blur, 12 composed
+semantics plus the Android hierarchy root, and HOME recovery from PID 1474 to
+3352 while authority PID 941 remained live. `restart-v4-authority` then exited
+1 after 20.07 seconds. HOME PID 3352 survived, but every replacement authority
+failed before bind with `raw socket step=socket(AF_INET, SOCK_STREAM)` and
+errno 111. The finalized 3,700,617-byte log has SHA-256
+`71dfe48b7605dff8987b7a726834d94e322f9f1e35a0632819a0fa9e5eb3824e`.
+No `authority-restart` stage or campaign manifest was created. A cold reboot
+restored the exact product, authority PID 947, and HOME PID 1435 in 125.65
+seconds.
+
+**Cause:** Android's Bionic `netdClientSocket` changes a kernel `EPERM` from
+an AF_INET socket-create attempt to `ECONNREFUSED`. Connectivity attaches its
+`cgroupsock/inet_create` BPF program after the authority's first boot start.
+That program requires `BPF_PERMISSION_INTERNET`, bit 4. The device's own
+PermissionMonitor record reports appId 1000, the authority's UID, with traffic
+mask 8 only, which is `UPDATE_DEVICE_STATS`; the 23,552-byte captured policy
+record has SHA-256
+`0c98d5465e5f7741f47d08ecc7647f259b2466e75220a278bfcdfc361fc93c62`.
+This explains the timing: the initial daemon creates its listeners before the
+BPF program attaches, while every later init restart is denied at socket
+creation. Port reuse, bind state, and listen state are not involved.
+
+**Changed / verification:** The persistent platform-signed framework bridge,
+which already shares appId 1000 with the native authority, now declares
+`android.permission.INTERNET`. Package inspection decodes the installed bridge
+APK and rejects a missing package identity or permission, and the host fixture
+checks the source declaration. Bash parsing and the complete A33x host fixture
+pass in 8.34 seconds with 5,128 KiB peak RSS.
+
+**Decision / next gate:** Build and inspect one exact candidate, then install
+it once. Before the authority restart, require the device PermissionMonitor
+record to report appId 1000 traffic mask 12. The authority must then replace
+its PID, serve a valid audit snapshot, preserve the HOME PID and composed
+Dashboard, and reset its one-shot property. Only that result can reopen the
+authored and v4-to-v4 rollback stages.

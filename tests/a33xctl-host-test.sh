@@ -27,6 +27,8 @@ grep -F 'android:protectionLevel="signature"' "$adb_manifest" >/dev/null
 grep -F 'android:name=".SosAdbConsentReceiver"' "$adb_manifest" >/dev/null
 grep -F 'android:permission="dev.sos.permission.REPORT_ADB_CONSENT"' \
   "$adb_manifest" >/dev/null
+grep -F '<uses-permission android:name="android.permission.INTERNET" />' \
+  "$adb_manifest" >/dev/null
 grep -F 'android:name="dev.gpui.mobile.SosAdbConfirmationActivity"' \
   "$adb_home_manifest" >/dev/null
 grep -F 'android:permission="android.permission.MANAGE_DEBUGGING"' \
