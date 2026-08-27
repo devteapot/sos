@@ -93,12 +93,14 @@ target/debug/sos-revision-supervisor daemon-status \
 
 vm_status_before="$(SOS_LINUX_REVISION_ROOT="$vm_revision_root" ./tools/sosctl linux-status)"
 vm_pid_before="$(sed -n 's/.*"host_pid":\([0-9][0-9]*\).*/\1/p' <<<"$vm_status_before")"
-vm_activation="$(SOS_LINUX_REVISION_ROOT="$vm_revision_root" ./tools/sosctl linux-script experiences/timeflow.luau)"
+vm_activation="$(SOS_LINUX_REVISION_ROOT="$vm_revision_root" ./tools/sosctl linux-script tests/fixtures/stock-authoring-v4.luau)"
 vm_status_after="$(SOS_LINUX_REVISION_ROOT="$vm_revision_root" ./tools/sosctl linux-status)"
 vm_pid_after="$(sed -n 's/.*"host_pid":\([0-9][0-9]*\).*/\1/p' <<<"$vm_status_after")"
 [[ -n "$vm_pid_before" && "$vm_pid_before" == "$vm_pid_after" ]]
-vm_current_revision="$(target/debug/sos-revision-supervisor status --root "$vm_revision_root")"
-vm_authority_revision="$(sed -n 's/.*"revision_id": "\([0-9a-f]*\)".*/\1/p' "$vm_revision_root/authority.json" | head -1)"
+vm_current_revision="$(target/debug/sos-revision-supervisor experience-status \
+  --root "$vm_revision_root" --experience sos.stock.shell)"
+vm_authority_revision="$(jq -r '.experiences["sos.stock.shell"].revision_id' \
+  "$vm_revision_root/authority.json")"
 [[ "$vm_current_revision" == "$vm_authority_revision" ]]
 
 SOS_LINUX_REVISION_ROOT="$vm_revision_root" ./tools/sosctl linux-stop >/dev/null

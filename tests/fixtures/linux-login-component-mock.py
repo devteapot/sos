@@ -77,8 +77,7 @@ if name == "sos-revision-supervisor":
         print(read_marker("graph-" + experience) or "none")
         raise SystemExit(0)
     if len(sys.argv) >= 2 and sys.argv[1] == "install-package":
-        package = option("--package")
-        print(("3" if package.endswith("timeflow.package.json") else "2") * 64)
+        print("2" * 64)
         raise SystemExit(0)
     if len(sys.argv) >= 2 and sys.argv[1] == "bootstrap":
         write_marker("current", option("--revision"))
@@ -90,6 +89,14 @@ if name == "sos-revision-supervisor":
         raise SystemExit(0)
     if len(sys.argv) >= 2 and sys.argv[1] == "experience-status":
         print(read_marker("experience-" + option("--experience")) or "none")
+        raise SystemExit(0)
+    if len(sys.argv) >= 2 and sys.argv[1] == "retire-experience":
+        experience = option("--experience")
+        try:
+            os.unlink(marker("experience-" + experience))
+        except FileNotFoundError:
+            pass
+        print("retired=true experience_id=" + experience)
         raise SystemExit(0)
     if len(sys.argv) >= 2 and sys.argv[1] == "migrate-stock-v4":
         revision = "2" * 64

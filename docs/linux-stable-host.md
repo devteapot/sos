@@ -496,7 +496,7 @@ complete gate.
 
 The 2026-08-27 x86_64 Debian 13 campaign completed the full gate in 57.952
 seconds on kernel `6.12.101+deb13-amd64`. The resident faux Pi flow activated
-Timeflow revision `431f6687…` with DRM page-flip evidence, and the later
+revision `431f6687…` with DRM page-flip evidence, and the later
 activation/recovery campaign ended on revision `578c1f5a…`. The lifecycle
 owner moved from PID 878 to recovered PID 1877 and then PID 2146 after the
 intentional service failures; the host moved from PID 1005 to 1764 and 1957.

@@ -205,13 +205,8 @@ sudo install -o root -g root -m 0644 \
 sudo install -o root -g root -m 0644 \
   experiences/default.luau "$(sos_install_target /usr/share/sos/experiences/default.luau)"
 sudo install -o root -g root -m 0644 \
-  experiences/timeflow.luau "$(sos_install_target /usr/share/sos/experiences/timeflow.luau)"
-sudo install -o root -g root -m 0644 \
   experiences/default.package.json \
   "$(sos_install_target /usr/share/sos/experiences/default.package.json)"
-sudo install -o root -g root -m 0644 \
-  experiences/timeflow.package.json \
-  "$(sos_install_target /usr/share/sos/experiences/timeflow.package.json)"
 sudo install -d -o root -g root -m 0755 \
   "$(sos_install_target /usr/share/sos/experiences/modules)"
 sudo install -o root -g root -m 0644 \
@@ -254,8 +249,6 @@ sos_install_artifacts=(
   /usr/share/sos/experiences/default.luau
   /usr/share/sos/experiences/default.package.json
   /usr/share/sos/experiences/modules/stock-theme.luau
-  /usr/share/sos/experiences/timeflow.luau
-  /usr/share/sos/experiences/timeflow.package.json
 )
 for sos_install_artifact in "${sos_install_artifacts[@]}"; do
   sos_install_artifact_target="$(sos_install_target "$sos_install_artifact")"
@@ -277,10 +270,10 @@ sos_install_existing_manifest="$(sos_install_target /usr/share/doc/sos/install-m
 if [[ -f "$sos_install_existing_manifest" && ! -L "$sos_install_existing_manifest" ]]; then
   while IFS=$'\t' read -r sos_install_old_path _; do
     case "$sos_install_old_path" in
-      /usr/share/sos/experiences/*.luau)
+      /usr/share/sos/experiences/*.luau|/usr/share/sos/experiences/*.package.json)
         sos_install_old_name="${sos_install_old_path#/usr/share/sos/experiences/}"
         [[ "$sos_install_old_name" != */* \
-          && "$sos_install_old_name" =~ ^[A-Za-z0-9._-]+\.luau$ ]] || \
+          && "$sos_install_old_name" =~ ^[A-Za-z0-9._-]+\.(luau|package\.json)$ ]] || \
           sos_install_fail "unsafe obsolete experience path in installed manifest"
         if ! cut -f 1 "$sos_install_manifest" | grep -Fxq "$sos_install_old_path"; then
           sudo rm -f -- "$(sos_install_target "$sos_install_old_path")"

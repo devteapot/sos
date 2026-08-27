@@ -13,6 +13,7 @@ hardware_gate_development_manifest=/usr/share/doc/sos/development-deployment-man
 hardware_gate_session_entry=/usr/share/wayland-sessions/sos.desktop
 hardware_gate_state_home="${XDG_STATE_HOME:-$HOME/.local/state}"
 hardware_gate_awake_unit=sos-linux-hardware-gate-awake.service
+hardware_gate_retired_baked_artifacts=/usr/share/sos/experiences/daily-flow.luau:/usr/share/sos/experiences/timeflow.luau:/usr/share/sos/experiences/timeflow.package.json
 hardware_gate_collect_cleanup_unit=""
 
 hardware_gate_fail() {
@@ -104,6 +105,11 @@ hardware_gate_stop_awake_inhibitor() {
 hardware_gate_metadata_value() {
   local file="$1" key="$2"
   sed -n "s/^${key}=//p" "$file" | tail -n 1
+}
+
+hardware_gate_colon_list_contains() {
+  local values="$1" expected="$2"
+  [[ ":$values:" == *":$expected:"* ]]
 }
 
 hardware_gate_monotonic_ns() {
@@ -343,9 +349,9 @@ hardware_gate_verify_installed_files() {
 
 hardware_gate_snapshot_development_files() {
   local output="$1" path expected_bytes expected_sha actual_bytes actual_sha count=0 status
-  local retired_baked_artifact
-  retired_baked_artifact="$(hardware_gate_metadata_value \
-    "$hardware_gate_development_metadata" retired_baked_artifact)"
+  local retired_baked_artifacts
+  retired_baked_artifacts="$(hardware_gate_metadata_value \
+    "$hardware_gate_development_metadata" retired_baked_artifacts)"
   : >"$output"
   while IFS=$'\t' read -r path expected_bytes expected_sha; do
     [[ -n "$path" && -n "$expected_bytes" && -n "$expected_sha" ]] || \
@@ -355,8 +361,7 @@ hardware_gate_snapshot_development_files() {
       *) hardware_gate_fail "unsafe baked artifact path: $path" ;;
     esac
     if [[ ! -f "$path" ]]; then
-      if [[ "$path" == /usr/share/sos/experiences/daily-flow.luau \
-        && "$retired_baked_artifact" == "$path" ]]; then
+      if hardware_gate_colon_list_contains "$retired_baked_artifacts" "$path"; then
         printf '%s\t0\t-\tretired\t%s\t%s\n' \
           "$path" "$expected_bytes" "$expected_sha" >>"$output"
         count=$((count + 1))
@@ -387,16 +392,16 @@ hardware_gate_verify_development_deployment() {
   [[ -r "$hardware_gate_development_metadata" \
     && -r "$hardware_gate_development_manifest" ]] || \
     hardware_gate_fail "development deployment metadata and manifest must be present together"
-  local source_revision source_dirty retired_baked_artifact
+  local source_revision source_dirty retired_baked_artifacts
   local path expected_bytes expected_sha count=0
   source_revision="$(hardware_gate_metadata_value "$hardware_gate_development_metadata" source_revision)"
   source_dirty="$(hardware_gate_metadata_value "$hardware_gate_development_metadata" source_dirty)"
-  retired_baked_artifact="$(hardware_gate_metadata_value \
-    "$hardware_gate_development_metadata" retired_baked_artifact)"
+  retired_baked_artifacts="$(hardware_gate_metadata_value \
+    "$hardware_gate_development_metadata" retired_baked_artifacts)"
   [[ "$source_revision" =~ ^[0-9a-f]{40}$ && "$source_dirty" =~ ^(true|false)$ ]] || \
     hardware_gate_fail "development deployment source identity is invalid"
-  [[ "$retired_baked_artifact" == /usr/share/sos/experiences/daily-flow.luau ]] || \
-    hardware_gate_fail "development deployment retired-artifact identity is invalid"
+  [[ "$retired_baked_artifacts" == "$hardware_gate_retired_baked_artifacts" ]] || \
+    hardware_gate_fail "development deployment retired-artifact identities are invalid"
   while IFS=$'\t' read -r path expected_bytes expected_sha; do
     case "$path" in
       /usr/local/libexec/sos/sos-compositor|\
@@ -414,8 +419,6 @@ hardware_gate_verify_development_deployment() {
       /usr/share/sos/experiences/default.luau|\
       /usr/share/sos/experiences/default.package.json|\
       /usr/share/sos/experiences/modules/stock-theme.luau|\
-      /usr/share/sos/experiences/timeflow.luau|\
-      /usr/share/sos/experiences/timeflow.package.json|\
       /usr/share/doc/sos/experience-api.md|\
       /usr/share/doc/sos/sos-agent.md|\
       /usr/share/doc/sos/linux-stable-host.md|\
@@ -804,17 +807,26 @@ hardware_gate_audit_dir() {
     hardware_gate_audit_failed=true
   fi
 
-  local host_launches
-  host_launches="$(grep -c 'linux_system_session_component component=host pid=' "$journal" || true)"
-  if [[ "$host_launches" -eq 1 ]] && ! grep -q 'HostRestarted' "$journal"; then
-    printf 'criterion=stable_host_lifecycle result=PASS host_launches=1\n'
+  local shell_host_pids application_host_pids
+  shell_host_pids="$({
+    sed -n 's/.*authenticated SOS compositor control connection pid=\([0-9][0-9]*\) role=Shell.*/\1/p' \
+      "$journal"
+  } | sort -u | sed '/^$/d' | wc -l)"
+  application_host_pids="$({
+    sed -n 's/.*authenticated SOS compositor control connection pid=\([0-9][0-9]*\) role=NativeApplication.*/\1/p' \
+      "$journal"
+  } | sort -u | sed '/^$/d' | wc -l)"
+  if [[ "$shell_host_pids" -eq 1 ]]; then
+    printf 'criterion=stable_host_lifecycle result=PASS shell_host_pids=1 application_host_pids=%s\n' \
+      "$application_host_pids"
   else
-    printf 'criterion=stable_host_lifecycle result=FAIL host_launches=%s\n' "$host_launches"
+    printf 'criterion=stable_host_lifecycle result=FAIL shell_host_pids=%s application_host_pids=%s\n' \
+      "$shell_host_pids" "$application_host_pids"
     hardware_gate_audit_failed=true
   fi
 
-  current_revision="$(tr -d '\n' <"$evidence_dir/current-revision.txt")"
-  authority_revision="$(tr -d '\n' <"$evidence_dir/authority-revision.txt")"
+  current_revision="$(tr -d '\n' <"$evidence_dir/stock-registry-revision.txt")"
+  authority_revision="$(tr -d '\n' <"$evidence_dir/stock-authority-revision.txt")"
   if [[ -n "$current_revision" && "$current_revision" == "$authority_revision" ]]; then
     printf 'criterion=durable_authority result=PASS revision_id=%s\n' "$current_revision"
   else
@@ -948,13 +960,13 @@ hardware_gate_collect() {
   systemctl status display-manager --no-pager >"$evidence_dir/display-manager-after.txt" 2>&1 || true
 
   local revision_root="$state_home/sos/revisions"
-  /usr/local/libexec/sos/sos-revision-supervisor status --root "$revision_root" \
-    >"$evidence_dir/current-revision.txt"
+  /usr/local/libexec/sos/sos-revision-supervisor experience-status \
+    --root "$revision_root" \
+    --experience sos.stock.shell >"$evidence_dir/stock-registry-revision.txt"
   [[ -r "$state_home/sos/provider/authority.json" ]] || \
     hardware_gate_fail "durable provider authority is missing"
-  # Pin to AuthorityData.current.revision_id; drafts and events also contain revision_id.
-  jq -er '.current.revision_id // empty | select(length > 0)' \
-    "$state_home/sos/provider/authority.json" >"$evidence_dir/authority-revision.txt"
+  jq -er '.experiences["sos.stock.shell"].revision_id // empty | select(length > 0)' \
+    "$state_home/sos/provider/authority.json" >"$evidence_dir/stock-authority-revision.txt"
   cp -- "$state_home/sos/provider/authority.json" "$evidence_dir/authority.json"
 
   started_ns="$(hardware_gate_metadata_value "$evidence_dir/campaign.env" started_monotonic_ns)"

@@ -88,6 +88,10 @@ printf '%s\n' \
   'sos_login_agent_mode mode=offline' \
   'sos_login_agent_started pid=44 socket=/run/user/1000/sos/agent.sock' \
   'linux_system_session_component component=host pid=55 uid=1000' \
+  'authenticated SOS compositor control connection pid=55 role=Shell' \
+  'linux_system_session_component component=host pid=77 uid=1000' \
+  'authenticated SOS compositor control connection pid=77 role=NativeApplication' \
+  'GraphHostRestarted { graph_id: dashboard, failed_host_pid: 66, host_pid: 77 }' \
   'observed native compositor input input_class="keyboard"' \
   'observed native compositor input input_class="relative_pointer"' \
   'observed native compositor input input_class="pointer_button"' \
@@ -103,8 +107,8 @@ printf '%s\n' \
   'Device:                  Integrated Touchscreen' \
   'Capabilities:            touch' >"$test_evidence/environment/libinput.txt"
 : >"$test_evidence/journal-kernel.txt"
-printf '2222\n' >"$test_evidence/current-revision.txt"
-printf '2222\n' >"$test_evidence/authority-revision.txt"
+printf '2222\n' >"$test_evidence/stock-registry-revision.txt"
+printf '2222\n' >"$test_evidence/stock-authority-revision.txt"
 printf '{}\n' >"$test_evidence/authority.json"
 printf 'active\n' >"$test_evidence/display-manager-active.txt"
 printf '%s\n' \
@@ -119,6 +123,8 @@ printf '%s\n' \
 grep -Fx "criterion=same_boot result=PASS boot_id=$test_boot_id" \
   "$test_root/pass-audit.txt" >/dev/null
 grep -Fx 'criterion=gate_awake_inhibitor result=PASS' \
+  "$test_root/pass-audit.txt" >/dev/null
+grep -Fx 'criterion=stable_host_lifecycle result=PASS shell_host_pids=1 application_host_pids=1' \
   "$test_root/pass-audit.txt" >/dev/null
 grep -Fx \
   'linux_hardware_gate_result=PASS evidence=drm_page_flip physical_input=keyboard,touchpad,touchscreen' \
@@ -179,7 +185,7 @@ LC_ALL=C.UTF-8 \
   "$test_gate" verify-manifest --evidence-dir "$test_evidence" \
   >"$test_root/manifest-pass.txt"
 grep -F 'evidence_manifest_verified=PASS' "$test_root/manifest-pass.txt" >/dev/null
-printf 'tampered\n' >>"$test_evidence/current-revision.txt"
+printf 'tampered\n' >>"$test_evidence/stock-registry-revision.txt"
 if "$test_gate" verify-manifest --evidence-dir "$test_evidence" \
   >"$test_root/manifest-fail.txt" 2>&1; then
   printf 'error: manifest verification accepted tampered evidence\n' >&2
@@ -187,7 +193,7 @@ if "$test_gate" verify-manifest --evidence-dir "$test_evidence" \
 fi
 grep -F 'manifested evidence size changed' "$test_root/manifest-fail.txt" >/dev/null
 
-printf '2222\n' >"$test_evidence/current-revision.txt"
+printf '2222\n' >"$test_evidence/stock-registry-revision.txt"
 printf '%s\n' \
   'agent_mode=offline' \
   'boot_kind=development-live' \
@@ -306,14 +312,12 @@ grep -F 'image-identity.env' "$test_gate" >/dev/null
 grep -F 'payload_sha256' "$test_gate" >/dev/null
 grep -F 'boot_id=' "$test_gate" >/dev/null
 grep -F '/usr/local/libexec/sos/linux-hardware-gate collect' "$test_gate" >/dev/null
-grep -F 'retired_baked_artifact' "$test_gate" >/dev/null
+grep -F 'retired_baked_artifacts' "$test_gate" >/dev/null
 grep -F '/usr/share/sos/experiences/daily-flow.luau' "$test_gate" >/dev/null
 for test_development_path in \
   /usr/local/libexec/sos/sos-agent-login \
   /usr/share/sos/experiences/default.package.json \
   /usr/share/sos/experiences/modules/stock-theme.luau \
-  /usr/share/sos/experiences/timeflow.luau \
-  /usr/share/sos/experiences/timeflow.package.json \
   /usr/share/doc/sos/sos-agent.md \
   /usr/share/doc/sos/linux-stable-host.md \
   /etc/xdg/monitors.xml; do

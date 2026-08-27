@@ -54,7 +54,7 @@ Start the resident service with Pi's faux provider in the second. This performs
 the real SOS validation, staging, and activation path without a model API call:
 
 ```sh
-./tools/sosctl linux-agent-run --fake experiences/timeflow.luau
+./tools/sosctl linux-agent-run --fake tests/fixtures/stock-authoring-v4.luau
 ```
 
 In the GPUI experience, type the request into the “Make it yours” field and
@@ -66,8 +66,8 @@ press Enter. The maintenance client remains useful for protocol diagnosis:
 ```
 
 The expected tool order is context, validation, submission. The GPUI host must
-remain the same process while the active revision changes and the window renders
-the Timeflow candidate.
+remain the same process while the active Stock revision changes and the window
+renders the v4 candidate.
 
 The packaged direct-KMS gate automates this exact product path through the
 semantic interface rather than calling the agent socket. It sets and submits

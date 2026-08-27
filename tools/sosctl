@@ -1144,7 +1144,7 @@ linux_run() {
   build_linux_session
   mkdir -p "$LINUX_REVISION_ROOT"
 
-  local current_revision current_graph timeflow_revision timeflow_graph
+  local current_revision current_graph
   current_revision="$($LINUX_SUPERVISOR experience-status \
     --root "$LINUX_REVISION_ROOT" \
     --experience sos.stock.shell)"
@@ -1168,26 +1168,12 @@ linux_run() {
       --revision "$current_revision" >/dev/null
   fi
 
-  timeflow_revision="$($LINUX_SUPERVISOR experience-status \
-    --root "$LINUX_REVISION_ROOT" \
-    --experience sos.timeflow)"
-  if [[ "$timeflow_revision" == "none" ]]; then
-    info "installing the initial packaged Timeflow Experience"
-    timeflow_revision="$($LINUX_SUPERVISOR install-package \
+  if [[ "$($LINUX_SUPERVISOR experience-status \
       --root "$LINUX_REVISION_ROOT" \
-      --source "$SOS_ROOT/experiences/timeflow.luau" \
-      --state "$SOS_ROOT/tests/fixtures/empty-state.json" \
-      --schema 1 \
-      --package "$SOS_ROOT/experiences/timeflow.package.json")"
-  fi
-  timeflow_graph="$($LINUX_SUPERVISOR graph-status \
-    --root "$LINUX_REVISION_ROOT" \
-    --experience sos.timeflow)"
-  if [[ "$timeflow_graph" == "none" ]]; then
-    "$LINUX_SUPERVISOR" bootstrap-graph \
+      --experience sos.timeflow)" != "none" ]]; then
+    "$LINUX_SUPERVISOR" retire-experience \
       --root "$LINUX_REVISION_ROOT" \
-      --experience sos.timeflow \
-      --revision "$timeflow_revision" >/dev/null
+      --experience sos.timeflow >/dev/null
   fi
 
   if [[ ! -f "$LINUX_GRANT_CAPABILITY_FILE" ]]; then
@@ -1213,22 +1199,16 @@ linux_run() {
   trap 'exit 130' INT
   trap 'exit 143' TERM
   wait_for_linux_socket "$LINUX_PROVIDER_SOCKET" "$provider_pid" "provider/state authority"
-  for experience_binding in \
-    "sos.stock.shell:$current_revision" \
-    "sos.timeflow:$timeflow_revision"; do
-    local experience_id="${experience_binding%%:*}"
-    local trusted_revision="${experience_binding#*:}"
-    "$LINUX_SESSION" bootstrap-graph \
-      --root "$LINUX_REVISION_ROOT" \
-      --experience "$experience_id" \
-      --service-socket "$LINUX_PROVIDER_SOCKET"
-    "$LINUX_SESSION" review-graph-grants \
-      --root "$LINUX_REVISION_ROOT" \
-      --experience "$experience_id" \
-      --revision "$trusted_revision" \
-      --service-socket "$LINUX_PROVIDER_SOCKET" \
-      --capability-file "$LINUX_GRANT_CAPABILITY_FILE"
-  done
+  "$LINUX_SESSION" bootstrap-graph \
+    --root "$LINUX_REVISION_ROOT" \
+    --experience sos.stock.shell \
+    --service-socket "$LINUX_PROVIDER_SOCKET"
+  "$LINUX_SESSION" review-graph-grants \
+    --root "$LINUX_REVISION_ROOT" \
+    --experience sos.stock.shell \
+    --revision "$current_revision" \
+    --service-socket "$LINUX_PROVIDER_SOCKET" \
+    --capability-file "$LINUX_GRANT_CAPABILITY_FILE"
 
   info "starting permanent Linux graph host at revision $current_revision"
   local arguments=(
@@ -1373,7 +1353,6 @@ linux_agent_run() {
     --credentials "$LINUX_AGENT_CREDENTIALS"
     --api-doc "$SOS_ROOT/docs/experience-api.md"
     --example "$SOS_ROOT/experiences/default.luau"
-    --example-secondary "$SOS_ROOT/experiences/timeflow.luau"
   )
   if [[ -n "$fake_source" ]]; then
     arguments+=(--fake-source "$fake_source")

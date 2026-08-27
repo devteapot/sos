@@ -18,16 +18,12 @@ sos_login_bin_dir="${SOS_INSTALL_ROOT:-/usr/local/libexec/sos}"
 sos_login_default_source="${SOS_DEFAULT_EXPERIENCE:-/usr/share/sos/experiences/default.luau}"
 sos_login_default_package="${SOS_DEFAULT_PACKAGE:-/usr/share/sos/experiences/default.package.json}"
 sos_login_stock_theme="${SOS_STOCK_THEME:-/usr/share/sos/experiences/modules/stock-theme.luau}"
-sos_login_timeflow_source="${SOS_TIMEFLOW_EXPERIENCE:-/usr/share/sos/experiences/timeflow.luau}"
-sos_login_timeflow_package="${SOS_TIMEFLOW_PACKAGE:-/usr/share/sos/experiences/timeflow.package.json}"
 sos_login_state_home="${XDG_STATE_HOME:-$HOME/.local/state}"
 for sos_login_path in \
   "$sos_login_bin_dir" \
   "$sos_login_default_source" \
   "$sos_login_default_package" \
   "$sos_login_stock_theme" \
-  "$sos_login_timeflow_source" \
-  "$sos_login_timeflow_package" \
   "$sos_login_state_home"; do
   [[ "$sos_login_path" == /* ]] || sos_login_fail "session paths must be absolute: $sos_login_path"
 done
@@ -51,9 +47,7 @@ done
   sos_login_fail "missing default experience: $sos_login_default_source"
 for sos_login_package_file in \
   "$sos_login_default_package" \
-  "$sos_login_stock_theme" \
-  "$sos_login_timeflow_source" \
-  "$sos_login_timeflow_package"; do
+  "$sos_login_stock_theme"; do
   [[ -r "$sos_login_package_file" ]] || \
     sos_login_fail "missing v4 experience package input: $sos_login_package_file"
 done
@@ -174,24 +168,12 @@ if [[ "$sos_login_stock_graph" == none ]]; then
   fi
 fi
 
-sos_login_initial_state="$sos_login_state_dir/.timeflow-initial-state.$$"
-printf '{}\n' >"$sos_login_initial_state"
-sos_login_timeflow_revision="$($sos_login_supervisor_bin install-package \
-  --root "$sos_login_revision_root" \
-  --source "$sos_login_timeflow_source" \
-  --state "$sos_login_initial_state" \
-  --schema 1 \
-  --package "$sos_login_timeflow_package")"
-rm -f -- "$sos_login_initial_state"
-if [[ "$($sos_login_supervisor_bin graph-status \
+if [[ "$($sos_login_supervisor_bin experience-status \
     --root "$sos_login_revision_root" \
-    --experience sos.timeflow)" == none ]]; then
-  "$sos_login_supervisor_bin" bootstrap-graph \
+    --experience sos.timeflow)" != none ]]; then
+  "$sos_login_supervisor_bin" retire-experience \
     --root "$sos_login_revision_root" \
-    --experience sos.timeflow \
-    --revision "$sos_login_timeflow_revision" >/dev/null
-  printf 'sos_login_experience_registered experience_id=sos.timeflow revision_id=%s\n' \
-    "$sos_login_timeflow_revision"
+    --experience sos.timeflow
 fi
 if [[ ! -f "$sos_login_trusted_stock_file" ]]; then
   sos_login_current_stock="$($sos_login_supervisor_bin experience-status \
@@ -279,7 +261,6 @@ systemd-inhibit \
   --authority-file "$sos_login_authority_file" \
   --shell-token-file "$sos_login_token_file" \
   --trusted-stock-revision "$sos_login_stock_revision" \
-  --trusted-timeflow-revision "$sos_login_timeflow_revision" \
   --agent-socket "$sos_login_agent_socket" \
   --compositor "$sos_login_compositor_bin" \
   --provider "$sos_login_provider_bin" \
@@ -362,7 +343,6 @@ node "$sos_login_agent_main" serve \
   --state "$sos_login_agent_state_dir/messages.json" \
   --api-doc /usr/share/doc/sos/experience-api.md \
   --example /usr/share/sos/experiences/default.luau \
-  --example-secondary /usr/share/sos/experiences/timeflow.luau \
   "${sos_login_agent_arguments[@]}" &
 sos_login_agent_pid=$!
 sos_login_wait_for_socket "$sos_login_agent_socket" \

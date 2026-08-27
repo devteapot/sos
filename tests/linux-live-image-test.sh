@@ -47,7 +47,7 @@ PY
 for test_component in \
   compositor experience-host provider supervisor session authoring provider-probe \
   login-session agent-login session-target session-shutdown-target hardware-gate \
-  stock-base stock-package stock-theme timeflow timeflow-package \
+  stock-base stock-package stock-theme \
   api-doc agent-doc stable-host-doc \
   display-defaults; do
   grep -E "^${test_component}[[:space:]]+/" \
@@ -106,6 +106,8 @@ printf '%s\n' \
   '    stage="$(cat "$TEST_DEPLOY_STATE")"' \
   '    [[ "$command" == *"sudo install -d -o root -g root -m 0755 '\''/usr/share/sos/experiences/modules'\'';"* ]]' \
   '    [[ "$command" == *"sudo rm -f -- '\''/usr/share/sos/experiences/daily-flow.luau'\'';"* ]]' \
+  '    [[ "$command" == *"sudo rm -f -- '\''/usr/share/sos/experiences/timeflow.luau'\'';"* ]]' \
+  '    [[ "$command" == *"sudo rm -f -- '\''/usr/share/sos/experiences/timeflow.package.json'\'';"* ]]' \
   '    mkdir -p "$TEST_DEPLOY_REMOTE/usr/local/libexec/sos" "$TEST_DEPLOY_REMOTE/usr/local/lib/systemd/user" "$TEST_DEPLOY_REMOTE/usr/share/doc/sos" "$TEST_DEPLOY_REMOTE/usr/share/sos/experiences/modules" "$TEST_DEPLOY_REMOTE/etc/xdg"' \
   '    for source in "$stage"/sos-*; do cp -- "$source" "$TEST_DEPLOY_REMOTE/usr/local/libexec/sos/$(basename "$source")"; done' \
   '    [[ ! -f "$stage/linux-hardware-gate" ]] || cp -- "$stage/linux-hardware-gate" "$TEST_DEPLOY_REMOTE/usr/local/libexec/sos/"' \
@@ -114,8 +116,6 @@ printf '%s\n' \
   '    [[ ! -f "$stage/default.luau" ]] || cp -- "$stage/default.luau" "$TEST_DEPLOY_REMOTE/usr/share/sos/experiences/"' \
   '    [[ ! -f "$stage/default.package.json" ]] || cp -- "$stage/default.package.json" "$TEST_DEPLOY_REMOTE/usr/share/sos/experiences/"' \
   '    [[ ! -f "$stage/stock-theme.luau" ]] || cp -- "$stage/stock-theme.luau" "$TEST_DEPLOY_REMOTE/usr/share/sos/experiences/modules/"' \
-  '    [[ ! -f "$stage/timeflow.luau" ]] || cp -- "$stage/timeflow.luau" "$TEST_DEPLOY_REMOTE/usr/share/sos/experiences/"' \
-  '    [[ ! -f "$stage/timeflow.package.json" ]] || cp -- "$stage/timeflow.package.json" "$TEST_DEPLOY_REMOTE/usr/share/sos/experiences/"' \
   '    [[ ! -f "$stage/experience-api.md" ]] || cp -- "$stage/experience-api.md" "$TEST_DEPLOY_REMOTE/usr/share/doc/sos/"' \
   '    [[ ! -f "$stage/sos-agent.md" ]] || cp -- "$stage/sos-agent.md" "$TEST_DEPLOY_REMOTE/usr/share/doc/sos/"' \
   '    [[ ! -f "$stage/linux-stable-host.md" ]] || cp -- "$stage/linux-stable-host.md" "$TEST_DEPLOY_REMOTE/usr/share/doc/sos/"' \
@@ -165,8 +165,6 @@ SOS_DEVELOPMENT_DEPLOY_ARTIFACTS_DIR="$test_root/deploy-artifacts" \
     --component stock-base \
     --component stock-package \
     --component stock-theme \
-    --component timeflow \
-    --component timeflow-package \
     --component api-doc \
     --component agent-doc \
     --component stable-host-doc \
@@ -182,8 +180,8 @@ done
 [[ -f "$test_deploy_remote/usr/share/sos/experiences/default.luau" ]]
 [[ -f "$test_deploy_remote/usr/share/sos/experiences/default.package.json" ]]
 [[ -f "$test_deploy_remote/usr/share/sos/experiences/modules/stock-theme.luau" ]]
-[[ -f "$test_deploy_remote/usr/share/sos/experiences/timeflow.luau" ]]
-[[ -f "$test_deploy_remote/usr/share/sos/experiences/timeflow.package.json" ]]
+[[ ! -e "$test_deploy_remote/usr/share/sos/experiences/timeflow.luau" ]]
+[[ ! -e "$test_deploy_remote/usr/share/sos/experiences/timeflow.package.json" ]]
 [[ -f "$test_deploy_remote/usr/share/doc/sos/experience-api.md" ]]
 [[ -f "$test_deploy_remote/usr/share/doc/sos/sos-agent.md" ]]
 [[ -f "$test_deploy_remote/usr/share/doc/sos/linux-stable-host.md" ]]
@@ -196,9 +194,9 @@ test_deployment_metadata="$test_deploy_remote/usr/share/doc/sos/development-depl
 test_deployment_manifest="$test_deploy_remote/usr/share/doc/sos/development-deployment-manifest.tsv"
 grep -Fx 'image_kind=development-live' "$test_deployment_metadata" >/dev/null
 grep -Fx 'promotion_eligible=false' "$test_deployment_metadata" >/dev/null
-grep -Fx 'retired_baked_artifact=/usr/share/sos/experiences/daily-flow.luau' \
+grep -Fx 'retired_baked_artifacts=/usr/share/sos/experiences/daily-flow.luau:/usr/share/sos/experiences/timeflow.luau:/usr/share/sos/experiences/timeflow.package.json' \
   "$test_deployment_metadata" >/dev/null
-[[ "$(wc -l <"$test_deployment_manifest")" -eq 17 ]]
+[[ "$(wc -l <"$test_deployment_manifest")" -eq 15 ]]
 while IFS=$'\t' read -r test_path test_bytes test_sha; do
   [[ "$(stat -c %s "$test_deploy_remote$test_path")" == "$test_bytes" ]]
   [[ "$(sha256sum "$test_deploy_remote$test_path" | cut -d ' ' -f 1)" == "$test_sha" ]]
@@ -579,8 +577,6 @@ mkdir -p \
 : >"$test_rootfs/usr/share/sos/experiences/default.luau"
 : >"$test_rootfs/usr/share/sos/experiences/default.package.json"
 : >"$test_rootfs/usr/share/sos/experiences/modules/stock-theme.luau"
-: >"$test_rootfs/usr/share/sos/experiences/timeflow.luau"
-: >"$test_rootfs/usr/share/sos/experiences/timeflow.package.json"
 cp -- "$test_repo_root/packaging/xdg/framework12-pikvm-monitors.xml" \
   "$test_rootfs/etc/xdg/monitors.xml"
 : >"$test_rootfs/usr/lib/systemd/system/gdm.service"

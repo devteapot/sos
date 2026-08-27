@@ -192,14 +192,11 @@ sudo install -o root -g root -m 0644 \
   "$vm_guest_root/docs/experience-api.md" /usr/share/doc/sos/experience-api.md
 sudo install -o root -g root -m 0644 \
   "$vm_guest_root/docs/sos-agent.md" /usr/share/doc/sos/sos-agent.md
-for vm_experience in default.luau timeflow.luau; do
-  sudo install -o root -g root -m 0644 \
-    "$vm_guest_root/experiences/$vm_experience" "/usr/share/sos/experiences/$vm_experience"
-done
-for vm_package in default.package.json timeflow.package.json; do
-  sudo install -o root -g root -m 0644 \
-    "$vm_guest_root/experiences/$vm_package" "/usr/share/sos/experiences/$vm_package"
-done
+sudo install -o root -g root -m 0644 \
+  "$vm_guest_root/experiences/default.luau" /usr/share/sos/experiences/default.luau
+sudo install -o root -g root -m 0644 \
+  "$vm_guest_root/experiences/default.package.json" \
+  /usr/share/sos/experiences/default.package.json
 sudo install -o root -g root -m 0644 \
   "$vm_guest_root/experiences/modules/stock-theme.luau" \
   /usr/share/sos/experiences/modules/stock-theme.luau
@@ -236,11 +233,7 @@ sudo install -d -o sos-supervisor -g sos-ipc -m 0750 /var/lib/sos/staging
 sudo install -o sos-supervisor -g sos-ipc -m 0640 \
   "$vm_guest_root/experiences/default.luau" /var/lib/sos/staging/default.luau
 sudo install -o sos-supervisor -g sos-ipc -m 0640 \
-  "$vm_guest_root/experiences/timeflow.luau" /var/lib/sos/staging/timeflow.luau
-sudo install -o sos-supervisor -g sos-ipc -m 0640 \
   "$vm_guest_root/experiences/default.package.json" /var/lib/sos/staging/default.package.json
-sudo install -o sos-supervisor -g sos-ipc -m 0640 \
-  "$vm_guest_root/experiences/timeflow.package.json" /var/lib/sos/staging/timeflow.package.json
 sudo install -o sos-supervisor -g sos-ipc -m 0640 \
   "$vm_guest_root/experiences/modules/stock-theme.luau" /var/lib/sos/staging/stock-theme.luau
 sudo install -o sos-supervisor -g sos-ipc -m 0640 \
@@ -252,12 +245,6 @@ vm_revision="$(sudo -u sos-supervisor "$vm_bin_dir/sos-revision-supervisor" inst
   --schema 1 \
   --package /var/lib/sos/staging/default.package.json \
   --asset stock.theme:luau:/var/lib/sos/staging/stock-theme.luau)"
-vm_timeflow_revision="$(sudo -u sos-supervisor "$vm_bin_dir/sos-revision-supervisor" install-package \
-  --root /var/lib/sos/revisions \
-  --source /var/lib/sos/staging/timeflow.luau \
-  --state /var/lib/sos/staging/empty-state.json \
-  --schema 1 \
-  --package /var/lib/sos/staging/timeflow.package.json)"
 sudo -u sos-supervisor "$vm_bin_dir/sos-revision-supervisor" bootstrap \
   --root /var/lib/sos/revisions \
   --revision "$vm_revision" >/dev/null
@@ -265,12 +252,8 @@ sudo -u sos-supervisor "$vm_bin_dir/sos-revision-supervisor" bootstrap-graph \
   --root /var/lib/sos/revisions \
   --experience sos.stock.shell \
   --revision "$vm_revision" >/dev/null
-sudo -u sos-supervisor "$vm_bin_dir/sos-revision-supervisor" bootstrap-graph \
-  --root /var/lib/sos/revisions \
-  --experience sos.timeflow \
-  --revision "$vm_timeflow_revision" >/dev/null
-sudo sh -c 'printf "SOS_TRUSTED_STOCK_REVISION=%s\nSOS_TRUSTED_TIMEFLOW_REVISION=%s\n" "$1" "$2" > /var/lib/sos/trusted-revisions.env' \
-  sh "$vm_revision" "$vm_timeflow_revision"
+sudo sh -c 'printf "SOS_TRUSTED_STOCK_REVISION=%s\n" "$1" > /var/lib/sos/trusted-revisions.env' \
+  sh "$vm_revision"
 sudo chown root:root /var/lib/sos/trusted-revisions.env
 sudo chmod 0644 /var/lib/sos/trusted-revisions.env
 sudo systemctl daemon-reload
@@ -283,8 +266,7 @@ sudo systemd-analyze verify \
 sudo systemctl enable sos-agent.target
 sudo systemctl disable --now seatd.service
 sudo systemctl set-default sos-session.target
-printf 'boot_revision=%s timeflow_revision=%s api_version=4\n' \
-  "$vm_revision" "$vm_timeflow_revision"
+printf 'boot_revision=%s api_version=4\n' "$vm_revision"
 REMOTE_INSTALL
 
 printf 'Rebooting into sos-session.target; SSH is used only as the test controller.\n'
@@ -353,16 +335,16 @@ for _ in {1..500}; do
 done
 accessibility_call '{"method":"snapshot"}' \
   | jq -e 'any(.snapshot.nodes[]; .id == "panel-agent-prompt" and .editable)' >/dev/null
-[[ "$(accessibility_call '{"method":"action","kind":"set_value","target":"panel-agent-prompt","value":"Turn this into a spatial time flow"}' | jq -r '.ok')" == true ]]
+[[ "$(accessibility_call '{"method":"action","kind":"set_value","target":"panel-agent-prompt","value":"Make Stock calmer"}' | jq -r '.ok')" == true ]]
 for _ in {1..500}; do
   if accessibility_call '{"method":"snapshot"}' \
-    | jq -e 'any(.snapshot.nodes[]; .id == "panel-agent-prompt" and .value == "Turn this into a spatial time flow")' >/dev/null; then
+    | jq -e 'any(.snapshot.nodes[]; .id == "panel-agent-prompt" and .value == "Make Stock calmer")' >/dev/null; then
     break
   fi
   sleep 0.02
 done
 accessibility_call '{"method":"snapshot"}' \
-  | jq -e 'any(.snapshot.nodes[]; .id == "panel-agent-prompt" and .value == "Turn this into a spatial time flow")' >/dev/null
+  | jq -e 'any(.snapshot.nodes[]; .id == "panel-agent-prompt" and .value == "Make Stock calmer")' >/dev/null
 [[ "$(accessibility_call '{"method":"action","kind":"submit","target":"panel-agent-prompt"}' | jq -r '.ok')" == true ]]
 for _ in {1..3000}; do
   vm_after_status="$(sudo -u sos-supervisor "$vm_bin_dir/sos-revision-supervisor" daemon-status \

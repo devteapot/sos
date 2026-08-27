@@ -763,8 +763,6 @@ live_image_check_rootfs() {
     /usr/share/wayland-sessions/sos.desktop \
     /usr/share/sos/experiences/default.package.json \
     /usr/share/sos/experiences/modules/stock-theme.luau \
-    /usr/share/sos/experiences/timeflow.luau \
-    /usr/share/sos/experiences/timeflow.package.json \
     /usr/share/doc/sos/install-metadata.env \
     /usr/share/doc/sos/install-manifest.tsv \
     "$live_image_development_access" \

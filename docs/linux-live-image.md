@@ -195,7 +195,7 @@ checkout, deploy only the changed native components:
 
 With no `--component`, the tool builds and deploys all six native session
 components, the read-only `provider-probe`, both login helpers, the two per-user
-graphical-session targets, `hardware-gate`, Stock, Timeflow, the installed
+graphical-session targets, `hardware-gate`, Stock, the installed
 documentation, and the Framework/PiKVM `display-defaults`. It opens one
 multiplexed SSH connection, verifies the target's
 `development-live`/non-promotable identity, refuses deployment while SOS is

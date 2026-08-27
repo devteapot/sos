@@ -86,7 +86,6 @@ pub struct SystemSessionOptions {
     pub authority_file: PathBuf,
     pub shell_token_file: PathBuf,
     pub trusted_stock_revision: String,
-    pub trusted_timeflow_revision: String,
     pub agent_socket: PathBuf,
     pub compositor_executable: PathBuf,
     pub provider_executable: PathBuf,
@@ -487,39 +486,26 @@ fn start_and_monitor(
         let capability = grant_capability
             .as_deref()
             .context("v4 graph mode requires a grant-review capability")?;
-        let timeflow_experience_id = ExperienceId::parse("sos.timeflow")
-            .map_err(|error| anyhow::anyhow!(error.to_string()))?;
-        for (experience_id, trusted_revision) in [
-            (
-                &stock_experience_id,
-                options.trusted_stock_revision.as_str(),
-            ),
-            (
-                &timeflow_experience_id,
-                options.trusted_timeflow_revision.as_str(),
-            ),
-        ] {
-            let graph_bootstrap = bootstrap_graph_authority(
-                &options.revision_root,
-                experience_id,
-                &provider_socket,
-                options.startup_timeout,
-            )?;
-            println!(
-                "linux_system_session_graph_authority experience_id={experience_id} outcome={graph_bootstrap:?}"
-            );
-            let reviewed = review_trusted_graph_grants(
-                &options.revision_root,
-                experience_id,
-                trusted_revision,
-                &provider_socket,
-                capability,
-                options.startup_timeout,
-            )?;
-            println!(
-                "linux_system_session_grants experience_id={experience_id} reviewed={reviewed}"
-            );
-        }
+        let graph_bootstrap = bootstrap_graph_authority(
+            &options.revision_root,
+            &stock_experience_id,
+            &provider_socket,
+            options.startup_timeout,
+        )?;
+        println!(
+            "linux_system_session_graph_authority experience_id={stock_experience_id} outcome={graph_bootstrap:?}"
+        );
+        let reviewed = review_trusted_graph_grants(
+            &options.revision_root,
+            &stock_experience_id,
+            options.trusted_stock_revision.as_str(),
+            &provider_socket,
+            capability,
+            options.startup_timeout,
+        )?;
+        println!(
+            "linux_system_session_grants experience_id={stock_experience_id} reviewed={reviewed}"
+        );
     } else {
         let bootstrap = bootstrap_authority(
             &options.revision_root,

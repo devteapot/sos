@@ -78,6 +78,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         Some("resolve-graph") => resolve_graph(parse_options(args.collect())?),
         Some("graph-status") => graph_status(parse_options(args.collect())?),
         Some("experience-status") => experience_status(parse_options(args.collect())?),
+        Some("retire-experience") => retire_experience(parse_options(args.collect())?),
         Some("activate") => control_command(parse_options(args.collect())?, "activate"),
         Some("activate-graph") => control_command(parse_options(args.collect())?, "activate-graph"),
         Some("advance-experience") => {
@@ -305,6 +306,17 @@ fn experience_status(options: Options) -> Result<(), Box<dyn std::error::Error>>
         },
         None => println!("none"),
     }
+    Ok(())
+}
+
+fn retire_experience(options: Options) -> Result<(), Box<dyn std::error::Error>> {
+    let root = options.required("--root")?;
+    let experience_id = experience_package::ExperienceId::parse(options.required("--experience")?)?;
+    let store = RevisionStore::open(&root)?;
+    let registry = ExperienceRegistry::open(store.clone())?;
+    let retired = registry.retire(&experience_id)?;
+    ReverseDependencyIndex::open(store.root()).rebuild(&store, &registry)?;
+    println!("retired={retired} experience_id={experience_id}");
     Ok(())
 }
 
@@ -823,7 +835,7 @@ fn parse_options(arguments: Vec<String>) -> Result<Options, String> {
 }
 
 fn usage() -> &'static str {
-    "usage:\n  sos-revision-supervisor install-package --root DIR --source FILE --state FILE --schema N --package FILE [--asset ID:KIND:FILE ...]\n  sos-revision-supervisor migrate-stock-v4 --root DIR --source FILE --package FILE [--asset ID:KIND:FILE ...]\n  sos-revision-supervisor install-composition-demo --root DIR\n  sos-revision-supervisor bootstrap --root DIR --revision ID\n  sos-revision-supervisor bootstrap-graph --root DIR --experience ID --revision ID [--export ID]\n  sos-revision-supervisor resolve-graph --root DIR --revision ID [--export ID]\n  sos-revision-supervisor graph-status --root DIR --experience ID\n  sos-revision-supervisor experience-status --root DIR --experience ID\n  sos-revision-supervisor serve --root DIR --host-executable FILE [--host-arg VALUE ...] [--root-experience ID] [--timeout-ms N] [--service-socket PATH --service-timeout-ms N]\n  sos-revision-supervisor activate --root DIR --revision ID [--transaction ID]\n  sos-revision-supervisor activate-graph --root DIR --graph ID\n  sos-revision-supervisor advance-experience --root DIR --experience ID --revision ID\n  sos-revision-supervisor present-experience --root DIR --experience ID\n  sos-revision-supervisor dismiss-experience --root DIR --experience ID\n  sos-revision-supervisor refresh-tracked --root DIR\n  sos-revision-supervisor daemon-status --root DIR\n  sos-revision-supervisor restart --root DIR\n  sos-revision-supervisor shutdown --root DIR\n  sos-revision-supervisor status --root DIR"
+    "usage:\n  sos-revision-supervisor install-package --root DIR --source FILE --state FILE --schema N --package FILE [--asset ID:KIND:FILE ...]\n  sos-revision-supervisor migrate-stock-v4 --root DIR --source FILE --package FILE [--asset ID:KIND:FILE ...]\n  sos-revision-supervisor install-composition-demo --root DIR\n  sos-revision-supervisor bootstrap --root DIR --revision ID\n  sos-revision-supervisor bootstrap-graph --root DIR --experience ID --revision ID [--export ID]\n  sos-revision-supervisor resolve-graph --root DIR --revision ID [--export ID]\n  sos-revision-supervisor graph-status --root DIR --experience ID\n  sos-revision-supervisor experience-status --root DIR --experience ID\n  sos-revision-supervisor retire-experience --root DIR --experience ID\n  sos-revision-supervisor serve --root DIR --host-executable FILE [--host-arg VALUE ...] [--root-experience ID] [--timeout-ms N] [--service-socket PATH --service-timeout-ms N]\n  sos-revision-supervisor activate --root DIR --revision ID [--transaction ID]\n  sos-revision-supervisor activate-graph --root DIR --graph ID\n  sos-revision-supervisor advance-experience --root DIR --experience ID --revision ID\n  sos-revision-supervisor present-experience --root DIR --experience ID\n  sos-revision-supervisor dismiss-experience --root DIR --experience ID\n  sos-revision-supervisor refresh-tracked --root DIR\n  sos-revision-supervisor daemon-status --root DIR\n  sos-revision-supervisor restart --root DIR\n  sos-revision-supervisor shutdown --root DIR\n  sos-revision-supervisor status --root DIR"
 }
 
 fn send_control(

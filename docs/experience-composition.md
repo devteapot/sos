@@ -7,7 +7,8 @@ passes; Framework integrated-input and Android device acceptance remain open.
 Package format v4, Experience API v4, the registry and graph resolver, isolated graph runtime, authority-owned
 appearance, graph state and activation transactions, derivation and
 composition authoring, and the Linux and Android host paths are implemented.
-Stock and Timeflow are v4 packages. Rolling Linux and Android migrations import
+Stock and the reference composition set are v4 packages. Rolling Linux and
+Android migrations import
 legacy Stock state without changing the legacy pointer during the rollback
 window. API v3 is now a legacy activation reader, not the target for checked-in
 experiences or new authoring. Tracked updates activate every affected top-level
@@ -360,6 +361,10 @@ The implementation is split so the contracts do not depend on GPUI or Linux:
   limits, canonical JSON, and content digests;
 - revision manifest v4 hashes `package.json`, while the experience registry
   keeps stable per-experience current and previous pointers;
+- retiring an ordinary Experience moves its complete registry record into the
+  recoverable `retired-experiences` archive. Retired records disappear from the
+  launch catalog without deleting revisions or derivation history. The pinned
+  Stock Shell cannot be retired;
 - fresh Linux v4 boot creates only Experience registry and graph pointers and
   bootstraps authority state per Experience. The singleton pointer exists only
   when an imported v3 rollback artifact already owns it;
@@ -379,6 +384,9 @@ The implementation is split so the contracts do not depend on GPUI or Linux:
 - the authority keeps separately capability-protected, versioned appearance
   and stable-Experience grant resources; the Linux graph host intersects each
   revision's declared provider requests with that Experience's reviewed grant;
+- Linux provider snapshots read only reviewed domains. Ungranted notes,
+  calendar, media, system, legacy network, and provider surfaces enter Luau as
+  empty typed values rather than failing graph startup or exposing Stock data;
 - the Linux graph host prepares off the GPUI thread, while the graph supervisor
   presents and confirms the complete graph, advances registry and graph
   pointers under a durable journal, then explicitly finalizes the host switch.

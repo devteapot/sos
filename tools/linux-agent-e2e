@@ -123,7 +123,6 @@ node "$test_agent_package/dist/agent-runner.cjs" serve \
   --authoring-socket "$test_authoring_socket" \
   --api-doc "$test_repo_root/docs/experience-api.md" \
   --example "$test_repo_root/experiences/default.luau" \
-  --example-secondary "$test_repo_root/experiences/timeflow.luau" \
   --fake-source "$test_repo_root/tests/fixtures/stock-authoring-v4.luau" \
   >"$test_root/agent.log" 2>&1 &
 test_agent_pid=$!

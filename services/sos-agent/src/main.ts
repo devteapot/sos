@@ -137,9 +137,10 @@ export async function runCli(): Promise<void> {
 
   const socketPath = required("--socket");
   const backend = new UnixAuthoringBackend(required("--authoring-socket"));
+  const secondaryExample = option("--example-secondary");
   const systemPrompt = await readSystemPrompt({
     apiPath: required("--api-doc"),
-    examples: [required("--example"), required("--example-secondary")],
+    examples: [required("--example"), ...(secondaryExample ? [secondaryExample] : [])],
   });
   const fakeSource = option("--fake-source") ?? process.env.SOS_AGENT_FAKE_SOURCE;
   const statePath = option("--state");

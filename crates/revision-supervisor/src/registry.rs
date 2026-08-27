@@ -124,6 +124,30 @@ impl ExperienceRegistry {
         Ok(records)
     }
 
+    pub fn retire(&self, experience_id: &ExperienceId) -> Result<bool> {
+        if experience_id.as_str() == STOCK_SHELL_EXPERIENCE_ID {
+            return Err(Error::InvalidRegistry(
+                "the pinned Stock Shell experience cannot be retired".into(),
+            ));
+        }
+        if self.get(experience_id)?.is_none() {
+            return Ok(false);
+        }
+        let retired_root = self.store.root().join("retired-experiences");
+        fs::create_dir_all(&retired_root)?;
+        set_mode(&retired_root, 0o755)?;
+        let destination = retired_root.join(experience_id.as_str());
+        if destination.exists() {
+            return Err(Error::InvalidRegistry(format!(
+                "retired experience archive already exists for `{experience_id}`"
+            )));
+        }
+        fs::rename(self.record_path(experience_id), &destination)?;
+        sync_directory(&self.root)?;
+        sync_directory(&retired_root)?;
+        Ok(true)
+    }
+
     pub fn current(&self, experience_id: &ExperienceId) -> Result<Option<VerifiedRevision>> {
         self.pointer(experience_id, "current")
     }
@@ -441,5 +465,32 @@ mod tests {
                 .revision_id,
             legacy
         );
+    }
+
+    #[test]
+    fn ordinary_experience_retirement_is_recoverable_and_removes_it_from_listing() {
+        let directory = TempDir::new().unwrap();
+        let store = RevisionStore::open(directory.path()).unwrap();
+        let registry = ExperienceRegistry::open(store.clone()).unwrap();
+        let agenda = ExperienceId::parse("agenda").unwrap();
+        let revision = install_v4(&store, "agenda", ExperienceRole::Ordinary, "agenda");
+        registry
+            .create(&agenda, ExperienceRole::Ordinary, &revision)
+            .unwrap();
+
+        assert!(registry.retire(&agenda).unwrap());
+        assert!(registry.get(&agenda).unwrap().is_none());
+        assert!(registry.list().unwrap().is_empty());
+        assert!(directory
+            .path()
+            .join("retired-experiences/agenda/identity.json")
+            .is_file());
+        assert!(!registry.retire(&agenda).unwrap());
+
+        let stock = ExperienceId::parse(STOCK_SHELL_EXPERIENCE_ID).unwrap();
+        assert!(matches!(
+            registry.retire(&stock),
+            Err(Error::InvalidRegistry(message)) if message.contains("cannot be retired")
+        ));
     }
 }

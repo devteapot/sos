@@ -20,17 +20,15 @@ test("the package build removes obsolete Android-only runner outputs", async () 
   await assert.rejects(fs.access(path.resolve("dist/android-runner.cjs")));
 });
 
-test("the packaged runner applies the bounded faux Pi contract", async () => {
+test("the packaged runner applies the bounded faux Pi contract with one example", async () => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), "sos-agent-runner-"));
   const api = path.join(directory, "experience-api.md");
   const primary = path.join(directory, "primary.luau");
-  const secondary = path.join(directory, "secondary.luau");
   const candidate = "return { api_version = 4, exports = { main = { render = function() return { id = 'next' } end } } }";
   try {
     await Promise.all([
       fs.writeFile(api, "# Test API\n"),
       fs.writeFile(primary, "return { api_version = 4, exports = { main = {} } }\n"),
-      fs.writeFile(secondary, "return { api_version = 4, exports = { main = {} }, alternate = true }\n"),
     ]);
     const response = await exchange(
       [
@@ -40,8 +38,6 @@ test("the packaged runner applies the bounded faux Pi contract", async () => {
         api,
         "--example",
         primary,
-        "--example-secondary",
-        secondary,
       ],
       {
         action: "prompt",

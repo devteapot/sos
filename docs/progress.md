@@ -13984,3 +13984,46 @@ which its toggle effect consumes.
 then redeploy one clean revision. The next physical attempt must render the
 complete Dashboard graph rather than widening Dashboard's authority decision.
 The current run is diagnostic evidence, not an acceptance result.
+
+## 2026-08-27: Retire the secondary Linux experience and fix the v4 physical audit
+
+**Goal:** Remove the obsolete secondary Experience from the Linux product and
+make the Framework gate judge the multi-host v4 system instead of its former
+single-revision assumptions.
+
+**Changed:** The selectable login, direct system session, development runner,
+installer, live-image check, and resident-agent unit no longer install,
+bootstrap, review, advertise, or use the secondary Timeflow package. The agent
+prompt builder now accepts one required Stock example; Android may still pass a
+second example while its migration remains open. On an upgraded Linux state
+directory, `retire-experience` atomically moves the old ordinary registry
+record to `retired-experiences/<Experience ID>`. Its revision history remains
+recoverable, but it no longer enters Stock's launch catalog. The pinned Stock
+Shell cannot be retired. Development deployment also removes the two baked
+Timeflow files and the older Daily Flow source, and records that exact retired
+artifact list for the hardware gate.
+
+The hardware collector now reads Stock with `experience-status` and compares
+that v4 registry revision to
+`authority.experiences["sos.stock.shell"].revision_id`. It no longer compares
+the compatibility singleton pointer to v4 authority state. Stable lifecycle
+now requires one unique authenticated `Shell` compositor-control PID while
+allowing independently presented and intentionally recovered
+`NativeApplication` hosts. Counting every isolated host as a shell restart was
+rejected because successful Dashboard composition necessarily creates another
+host. Deleting old revision data was also rejected; registry retirement keeps
+history while removing the product entry point.
+
+**Verification:** `cargo test -j1 -p revision-supervisor --all-targets` passes
+50 tests plus the explicitly ignored desktop metric, including recoverable
+retirement and the pinned-shell rejection. `cargo test -j1 -p
+sos-linux-session --all-targets` passes 20 tests. `cargo test -j1 -p
+sos-experience --features linux-host --lib` passes 37 tests. The login-session,
+hardware-gate, and live-image shell suites pass. The agent TypeScript build and
+all 19 tests pass, including the packaged runner with only one example. Shell
+syntax, Rust formatting, and diff whitespace checks pass.
+
+**Decision and next gate:** Commit and deploy this clean v4 Linux product set,
+archive the old registry record on the Framework, and prepare a fresh exact
+same-boot campaign. Physical Dashboard composition, child event, appearance,
+application-host recovery, integrated input, and clean logout remain open.

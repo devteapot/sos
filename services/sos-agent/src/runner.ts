@@ -15,9 +15,10 @@ function required(name: string): string {
 }
 
 if (process.argv[2] === "stdio") {
+  const secondary = option("--example-secondary");
   runStdio({
     apiPath: required("--api-doc"),
-    examples: [required("--example"), required("--example-secondary")],
+    examples: [required("--example"), ...(secondary ? [secondary] : [])],
   }).catch(reportStdioFailure);
 } else {
   runCli().catch((error: Error) => {
