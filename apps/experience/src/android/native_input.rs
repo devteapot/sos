@@ -8,7 +8,9 @@ use std::{
     },
 };
 
-use experience_ir::{ExperienceInsets, ExperienceViewport, MAX_TEXT_BYTES};
+#[cfg(not(feature = "core-native"))]
+use experience_ir::ExperienceInsets;
+use experience_ir::{ExperienceViewport, MAX_TEXT_BYTES};
 #[cfg(feature = "core-native")]
 use gpui::rgb;
 use gpui::{
