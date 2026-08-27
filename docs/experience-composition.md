@@ -255,6 +255,12 @@ For every mount, the host must enforce these rules:
 - the complete dependency graph is acyclic and bounded in depth, total VMs,
   retained nodes, assets, memory, render time, and event traffic.
 
+The shell keeps the canonical Linux semantic socket. Each independently
+presented ordinary top-level Experience binds a separate bounded socket name
+derived from its stable Experience ID; mounted children remain namespaced
+inside their owning host's semantic tree. A second top-level host must never
+reuse, replace, or disable the shell's semantic endpoint.
+
 Nested composition is allowed only within those graph limits. A dependency
 cycle rejects the candidate before presentation.
 

@@ -13863,3 +13863,52 @@ host.
 Commit and deploy the decoder fix, prepare a new same-boot directory from that
 exact clean revision, and make one fresh physical login attempt. The Framework
 integrated-input and live Dashboard composition criteria remain open.
+
+## 2026-08-27: Isolate accessibility endpoints for presented Experiences
+
+**Goal:** Resume the Framework composition campaign after the v4 grant decoder
+repair and follow the first failed top-level Dashboard launch to its earliest
+runtime boundary.
+
+**Physical experiment:** The exact clean `05845c7` source deployed as
+`20260827T111453Z-05845c792079-3342501` in 147,826,226,695 ns. The new gate at
+`/home/liveuser/framework12-v4-composition-05845c7` acquired its root-owned
+GDM-gap inhibitor before the temporary inhibitor was released. The SOS login
+then reached physical DRM presentation, loaded Stock's reviewed
+`appearance_write` grant, presented Stock, and kept the permanent host and
+offline authoring agent alive. A console-driven prompt produced and presented
+candidate Stock revision
+`26f36f17f51251e5c8c911e9d8cbec0a34b5d9a2b2e2fb3db2ed03245fe30491`
+without restarting the permanent host.
+
+The first Dashboard catalog action was correctly denied because the reference
+Media and Dashboard packages had not received independent authority decisions.
+This was an acceptance-preparation omission, not permission inheritance: the
+trusted `bootstrap-graph` and exact `review-graph-grants` commands initialized
+the three-Experience graph and recorded one Media capability review plus one
+Dashboard data-flow review. The retry advanced past grants and launched PID
+871467, then failed at monotonic timestamp `111585.383886` with
+`accessibility service is already listening` on the shell's canonical socket.
+The supervisor retained Stock. Direct cross-root `activate-graph` was also
+rejected as designed because the configured root did not match the Dashboard
+graph; no pointer was forced.
+
+**Changed:** The Linux host now reads the first graph request and determines
+its registry role before starting accessibility. The shell continues to own
+the canonical `SOS_ACCESSIBILITY_SOCKET`. An independently presented ordinary
+Experience derives a fixed-length SHA-256 namespace from its stable Experience
+ID and binds a sibling socket, while mounted child semantics stay namespaced in
+the host tree. This prevents a top-level application host from colliding with
+or replacing shell semantics and keeps the Unix path below the platform length
+limit even for a maximum-size Experience ID.
+
+**Verification:** `cargo test -j1 -p sos-experience --features linux-host
+--lib` passes 37 tests, including the bounded, stable, distinct top-level
+accessibility path regression. The default `sos-experience` library suite
+passes all 18 tests, and Rust formatting passes.
+
+**Decision and next gate:** Preserve the `05845c7` diagnostic interval, deploy
+the namespaced-host fix from one clean revision, and relaunch Dashboard through
+Stock after the exact independent grant reviews. Pass still requires visible
+Dashboard, Agenda, and Media semantics, child event and appearance propagation,
+host recovery, clean logout, same-boot collection, and manifest verification.

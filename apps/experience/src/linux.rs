@@ -443,8 +443,6 @@ struct DurableState {
 pub fn run() -> Result<()> {
     let touch_wakes = pointer_input::install();
     let options = parse_options(std::env::args().skip(1))?;
-    let accessibility =
-        linux_accessibility::start_from_environment().map_err(|error| anyhow::anyhow!(error))?;
     let (first_request, reader) = read_first_request()?;
     let (request_id, revision, loaded_graph, presentation_id, launchable_experiences) =
         match first_request {
@@ -490,6 +488,21 @@ pub fn run() -> Result<()> {
         let node = &graph.graph.nodes[&graph.graph.root];
         graph.revisions[&node.revision_id].package.role == experience_package::ExperienceRole::Shell
     });
+    let root_grant_identity = loaded_graph.as_ref().map(|graph| {
+        let node = &graph.graph.nodes[&graph.graph.root];
+        let package = &graph.revisions[&node.revision_id].package;
+        (
+            node.experience_id.clone(),
+            package.provider_capabilities.clone(),
+        )
+    });
+    let top_level_experience_id = (!root_is_shell)
+        .then(|| root_grant_identity.as_ref().map(|(id, _)| id.clone()))
+        .flatten();
+    let accessibility = linux_accessibility::start_from_environment_for_experience(
+        top_level_experience_id.as_ref().map(ExperienceId::as_str),
+    )
+    .map_err(|error| anyhow::anyhow!(error))?;
     let compositor_fence = if root_is_shell {
         CompositorFence::from_environment()?
     } else {
@@ -511,17 +524,6 @@ pub fn run() -> Result<()> {
             "sos_compositor_armed request_id={request_id} revision_id={presentation_id} after_commit_sequence={after_commit_sequence}"
         );
     }
-    let root_grant_identity = loaded_graph.as_ref().map(|graph| {
-        let node = &graph.graph.nodes[&graph.graph.root];
-        let package = &graph.revisions[&node.revision_id].package;
-        (
-            node.experience_id.clone(),
-            package.provider_capabilities.clone(),
-        )
-    });
-    let top_level_experience_id = (!root_is_shell)
-        .then(|| root_grant_identity.as_ref().map(|(id, _)| id.clone()))
-        .flatten();
     let graph_mode = loaded_graph.is_some();
     let (mut model, provider_updates, provider_access) = start_provider_updates(
         &revision.revision_id,
