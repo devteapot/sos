@@ -12929,3 +12929,58 @@ syntax and desktop component tests but has not yet rerun inside the Debian VM.
 Run that gate before treating its old physical evidence as v4 evidence. Then
 close fuzz, fault, performance, and documentation coverage before starting the
 Framework and Samsung physical campaigns.
+
+## 2026-08-27: Close v4 desktop boundary, recovery, and measurement coverage
+
+**Goal:** Complete the platform-neutral verification required before rerunning
+the Linux and Android physical composition campaigns.
+
+**Changed:** Added deterministic generated-boundary tests without a new fuzzing
+runtime dependency. They generate bounded closed schemas and resolved graphs,
+check canonical round trips and stable graph identities, reject wrong types and
+structural corruption, and mutate the shared package and graph fixture at the
+byte boundary. Graph-supervisor fault coverage now interrupts every durable
+activation cut point: intent, presented, authority committed, registry
+committed, and graph committed. Each restart asserts both the registry and
+graph pointer, not only the returned recovery decision.
+
+Added an explicit release-profile desktop measurement for the reference
+Agenda, Media, and Dashboard graph. It installs and resolves the immutable
+packages, starts all three VMs through mounted-scene readiness, dispatches a
+namespaced child event, propagates appearance, activates a new root graph,
+recovers a committed journal, and reports Linux process RSS. Android pointer
+containment tests now exercise local Router owners instead of racing through
+the process-global production router when Rust runs tests concurrently.
+
+**Evidence:** `cargo test -j1 -p experience-package --all-targets --
+--nocapture` passed 13 tests. The generated corpus covered 10,000 schemas,
+10,000 graphs, and 5,000 mutations of each canonical fixture in 2.74 seconds.
+`cargo test -j1 -p revision-supervisor --test graph_supervisor
+activation_journal_recovers_an_atomic_graph_at_every_durable_phase --
+--nocapture` passed all five injected phases. Core Rust, Linux, Android, and
+TypeScript shared-wire tests passed; `npm test` in `services/sos-agent` passed
+19 tests.
+
+`cargo test --release -j1 -p revision-supervisor --test composition_metrics --
+--ignored --nocapture` measured 1.383 ms for package install and graph
+resolution, 1.347 ms from graph start through all three mounted scenes ready,
+0.693 ms from child event to composed snapshot, 0.250 ms for appearance to
+composed snapshot, 0.809 ms for graph prepare/present/commit, and 0.610 ms for
+committed-journal recovery. Process RSS changed from 7,496 to 8,268 KiB, a 772
+KiB delta or coarse 257 KiB per Instance. After the Router isolation fix,
+`cargo test --workspace --all-targets -j1` passed the complete Rust workspace.
+Both ARM64 `cargo ndk` checks for `aosp-system` and `core-native` passed.
+
+**Failures and decision:** The first workspace-wide run exposed two parallel
+Android pointer-test failures. Both tests used the singleton production Router,
+so an active surface capture and render order from one case could overwrite the
+other. Router operations now have owner-local helpers used by the tests; the
+production entry points retain one locked Router per host process. The desktop
+latencies stop at a complete composed snapshot and are not labeled as physical
+frame latency.
+
+**Remaining risks and next gate:** Run the rewritten v4 direct-DRM VM gate and
+the Framework stable-host composition campaign. Desktop RSS and snapshot
+latencies cannot close compositor input, page-flip, suspend, thermals, or
+device-memory gates. The Samsung v4 composition, IME, accessibility, grant,
+failure, appearance, restart, and rollback campaign remains required.

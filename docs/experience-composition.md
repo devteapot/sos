@@ -2,7 +2,7 @@
 
 Date: 2026-08-26
 
-Status: implementation in progress. Package format v4, Experience API v4, the
+Status: physical acceptance in progress. Package format v4, Experience API v4, the
 registry and graph resolver, isolated graph runtime, authority-owned
 appearance, graph state and activation transactions, derivation and
 composition authoring, and the Linux and Android host paths are implemented.
@@ -11,7 +11,8 @@ legacy Stock state without changing the legacy pointer during the rollback
 window. API v3 is now a legacy activation reader, not the target for checked-in
 experiences or new authoring. Tracked updates activate every affected top-level
 graph atomically. Physical Linux and Android composition acceptance and final
-compatibility removal remain open.
+compatibility removal remain open. The cross-platform wire, deterministic
+property, complete durable-phase fault, and desktop performance gates pass.
 
 ## Decision
 
@@ -410,8 +411,8 @@ does not yet have a physical-device composition verdict.
 
 ## Acceptance status
 
-Desktop tests and the explicit Linux VM campaign complete the non-physical
-parts of the first gate:
+Desktop tests and the nested Linux VM campaign complete the non-physical parts
+of the first gate:
 
 1. Agenda and Media publish independent `main` and `summary` exports.
 2. Dashboard mounts both summaries through exact locked aliases.
@@ -428,6 +429,24 @@ parts of the first gate:
 8. Graph pointers, revision-specific states, appearance, and provenance all
    survive authority or supervisor reopen tests.
 
+The shared boundary campaign decodes the same canonical fixture in core Rust,
+Linux, Android, and TypeScript and rejects non-canonical, unknown, or oversized
+input in each implementation. Deterministic property tests cover 10,000
+bounded schemas, 10,000 resolved graphs, and 10,000 byte-level package or graph
+mutations. Graph activation fault injection now interrupts all five durable
+cut points. Intent and presentation recover the complete old graph; authority,
+registry, and graph commits recover the complete candidate.
+
+The repeatable release-profile desktop probe measured a three-Instance
+Dashboard graph on the development workstation. Package install and resolution
+took 1.383 ms, cold start through all mounted scenes ready took 1.347 ms, a
+child event reached the composed snapshot in 0.693 ms, appearance propagated
+to the composed snapshot in 0.250 ms, graph prepare/present/commit took 0.809
+ms, and committed-journal recovery took 0.610 ms. Process RSS increased by 772
+KiB, or a coarse 257 KiB per Instance. These measurements exercise the
+serialization, VM, and transaction boundaries. They are not compositor frame,
+physical input, or device memory verdicts.
+
 `tools/linux-compositor/verify-composition-nested` additionally installed the
 reference packages into a disposable Debian 13 graph store and presented graph
 `f09068511e1c9d2c160fcc55583e9d347024fbf4a6ca2fa53ff2492a983ab287`
@@ -440,10 +459,11 @@ activation, host recovery in PID 13305, and compositor-owned
 
 The broader nested gate then passed pointer/text and accessibility routing,
 clipping, conditional shell auxiliary-window lifecycle, compatibility-window
-coexistence, exact presentation fences, and host recovery. The direct-DRM VM
-gate passed the corresponding page-flip boundary, and the cold-boot gate passed
-resident-agent authoring, VT pause/resume, `s2idle` freezer recovery, output
-hotplug, separated identities, process recovery, and reboot restoration.
+coexistence, exact presentation fences, and host recovery. An earlier
+direct-DRM VM and cold-boot campaign passed page flips, resident-agent
+authoring, VT pause/resume, `s2idle` freezer recovery, output hotplug, separated
+identities, process recovery, and reboot restoration. Those runs predate the
+v4-only boot rewrite and remain host evidence, not v4 composition acceptance.
 
 The final host and compositor binaries have since run on the Framework 12. A
 2026-08-27 development-live diagnostic proved the recovery view and two

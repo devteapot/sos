@@ -581,6 +581,89 @@ fn activation_journal_rolls_back_when_only_presentation_completed() {
 }
 
 #[test]
+fn activation_journal_recovers_an_atomic_graph_at_every_durable_phase() {
+    let cases = [
+        (GraphActivationFaultPoint::AfterIntent, false),
+        (GraphActivationFaultPoint::AfterPresented, false),
+        (GraphActivationFaultPoint::AfterAuthorityCommit, true),
+        (GraphActivationFaultPoint::AfterRegistryCommit, true),
+        (GraphActivationFaultPoint::AfterGraphCommit, true),
+    ];
+
+    for (fault, candidate_wins) in cases {
+        let directory = TempDir::new().unwrap();
+        let store = RevisionStore::open(directory.path()).unwrap();
+        let first_revision = install(&store, "first");
+        let second_revision = install(&store, "second");
+        let root = ExperienceId::parse("dashboard").unwrap();
+        let registry = ExperienceRegistry::open(store.clone()).unwrap();
+        registry
+            .create(&root, ExperienceRole::Ordinary, &first_revision)
+            .unwrap();
+        let graphs = GraphStore::open(directory.path()).unwrap();
+        let first_graph = graphs.install(&graph(&first_revision)).unwrap();
+        let second_graph = graphs.install(&graph(&second_revision)).unwrap();
+        graphs.set_current(&root, &first_graph).unwrap();
+
+        let mut supervisor = ExperienceGraphSupervisor::new(
+            store.clone(),
+            registry.clone(),
+            graphs.clone(),
+            HostCommand::new(host_executable()),
+            Duration::from_secs(2),
+        );
+        supervisor.boot(&root).unwrap();
+        let prepared = supervisor.prepare(&root, &second_graph).unwrap();
+        supervisor.configure_fault(Some(fault));
+        assert!(matches!(
+            supervisor.commit(prepared),
+            Err(Error::InjectedGraphActivationFault(_))
+        ));
+        assert!(supervisor.journal().unwrap().is_some());
+        drop(supervisor);
+
+        let mut recovered = ExperienceGraphSupervisor::new(
+            store,
+            registry.clone(),
+            graphs.clone(),
+            HostCommand::new(host_executable()),
+            Duration::from_secs(2),
+        );
+        let expected_graph = if candidate_wins {
+            &second_graph
+        } else {
+            &first_graph
+        };
+        let expected_revision = if candidate_wins {
+            &second_revision
+        } else {
+            &first_revision
+        };
+        assert_eq!(
+            recovered.recover().unwrap().as_deref(),
+            Some(expected_graph.as_str()),
+            "wrong recovery result at {fault:?}"
+        );
+        assert!(recovered.journal().unwrap().is_none());
+        assert_eq!(
+            graphs.current(&root).unwrap().unwrap().0,
+            *expected_graph,
+            "graph pointer split at {fault:?}"
+        );
+        assert_eq!(
+            registry
+                .current(&root)
+                .unwrap()
+                .unwrap()
+                .manifest
+                .revision_id,
+            *expected_revision,
+            "registry pointer split at {fault:?}"
+        );
+    }
+}
+
+#[test]
 fn tracked_child_update_activates_the_complete_graph_and_restarts_exactly() {
     let directory = TempDir::new().unwrap();
     let store = RevisionStore::open(directory.path()).unwrap();
