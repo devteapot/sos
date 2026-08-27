@@ -14763,3 +14763,11 @@ wipe, or other phone mutation occurred. The next gate remains the physical
 Side + Volume Down restart, immediate Side + Volume Up Recovery entry, and
 selection of Apply update / Apply from ADB. The host rule is now ready for that
 new node without another ACL repair.
+
+The first physical restart attempt subsequently returned to the rejected SOS
+Compat image instead of Recovery. A second, explicitly measured
+`wait-for-sideload` ran for 300.00 seconds and exited 124 with 5,372 KiB peak
+RSS; USB remained the same booted `04e8:685d` endpoint. No OTA bytes or device
+commands were sent. The next retry may use either the fixed lock surface's
+Volume Up+Down recovery chord after a Side off/wake cycle, or the established
+Side+Volume Down then immediate Side+Volume Up boot sequence.
