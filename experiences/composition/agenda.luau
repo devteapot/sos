@@ -23,6 +23,18 @@ local function summary(model: ExperienceModel, state: ExperienceState, propertie
                 interaction = { tap_action = "open_first" },
                 semantics = { role = "button", label = "Open first agenda item" },
             },
+            {
+                id = "agenda-update-fail",
+                content = { kind = "text", value = "FAIL CHILD", size = 12, color = 0xfca5a5ff },
+                interaction = { tap_action = "acceptance_update_fail" },
+                semantics = { role = "button", label = "Trigger child update failure" },
+            },
+            {
+                id = "agenda-timeout",
+                content = { kind = "text", value = "TIMEOUT CHILD", size = 12, color = 0xfca5a5ff },
+                interaction = { tap_action = "acceptance_timeout" },
+                semantics = { role = "button", label = "Trigger child timeout" },
+            },
         },
     }
 end
@@ -30,6 +42,8 @@ end
 local function updateSummary(_model: ExperienceModel, state: ExperienceState, event: any): UpdateOutcome
     if event.action == "acceptance_update_fail" then
         error("reference Agenda update failure")
+    elseif event.action == "acceptance_timeout" then
+        while true do end
     elseif event.action == "open_first" then
         state.selected = "Design review"
         return {

@@ -16,6 +16,17 @@ local function renderDashboard(model: ExperienceModel, state: ExperienceState, _
             },
             { id = "opened", content = { kind = "text", value = opened, size = 14, color = 0x9ca3afff } },
             {
+                id = "dashboard-ping",
+                content = {
+                    kind = "text",
+                    value = "PARENT READY " .. tostring(state.acceptance_pings or 0),
+                    size = 12,
+                    color = 0x86efacff,
+                },
+                interaction = { tap_action = "acceptance_ping" },
+                semantics = { role = "button", label = "Ping parent experience" },
+            },
+            {
                 id = "agenda-slot",
                 layout = { width = 440, height = 180, clip_bounds = true },
                 content = {

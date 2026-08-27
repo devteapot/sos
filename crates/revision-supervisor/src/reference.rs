@@ -422,6 +422,32 @@ mod tests {
             .dispatch_event(&agenda.0, &json!({"action":"acceptance_recover"}))
             .unwrap();
 
+        let timed_out = runtime
+            .dispatch_event(&agenda.0, &json!({"action":"acceptance_timeout"}))
+            .unwrap();
+        assert!(matches!(
+            &timed_out.snapshot.instances[&agenda.0].status,
+            RuntimeInstanceStatus::Failed(_)
+        ));
+        assert_eq!(
+            timed_out.snapshot.instances[&timed_out.snapshot.root].status,
+            RuntimeInstanceStatus::Ready
+        );
+        let parent_after_timeout = runtime
+            .dispatch_event(
+                &timed_out.snapshot.root,
+                &json!({"action":"acceptance_ping"}),
+            )
+            .unwrap();
+        assert_eq!(
+            parent_after_timeout.snapshot.instances[&parent_after_timeout.snapshot.root].state
+                ["acceptance_pings"],
+            1
+        );
+        runtime
+            .dispatch_event(&agenda.0, &json!({"action":"acceptance_recover"}))
+            .unwrap();
+
         let failed = runtime
             .dispatch_event(&agenda.0, &json!({"action":"acceptance_fail"}))
             .unwrap();
@@ -443,7 +469,7 @@ mod tests {
         );
         assert_eq!(
             parent.snapshot.instances[&parent.snapshot.root].state["acceptance_pings"],
-            1
+            2
         );
         let recovered = runtime
             .dispatch_event(&agenda.0, &json!({"action":"acceptance_recover"}))

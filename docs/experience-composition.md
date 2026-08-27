@@ -402,6 +402,10 @@ The checked-in Agenda, Media, Dashboard, and Agenda-Media Remix sources are a
 reference package set. `sos-revision-supervisor install-composition-demo
 --root DIR` installs their revisions, registry records, independently
 launchable `main` graphs, the resolved Dashboard graph, and lineage metadata.
+The reference Dashboard and Agenda also publish ordinary semantic controls for
+the physical acceptance campaign: a parent liveness action and child update or
+timeout failures. They travel through the same namespaced input and runtime
+paths as product actions; no diagnostic backdoor enters the Experience API.
 Android embeds the same source/package constructor in its signed authority and
 installs it idempotently without resetting later registry revisions on
 authority restart.

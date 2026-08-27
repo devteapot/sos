@@ -13666,3 +13666,44 @@ Wake the Framework and redeploy the current clean v4 component set before its
 integrated input and composition campaign. Retain the v3 rollback reader until
 the pinned recovery artifacts have completed migration, as required by the
 rolling and reversible plan; do not restore v3 authoring.
+
+## 2026-08-27: Make child failure and timeout physically addressable
+
+**Goal:** Let the Framework and Samsung campaigns prove child containment
+through the shipped reference graph instead of substituting a direct runtime
+unit-test call for physical host behavior.
+
+**Changed:** Agenda's reference summary now has semantic controls that trigger
+an update exception and an instruction-budget timeout. Dashboard has a parent
+liveness control and displays its committed count. These are ordinary Scene
+ABI interactions. Their Instance-owned targets pass through the same input,
+graph worker, authority transaction, and fallback rendering paths as any other
+child or parent action. No host-only event injection or cross-experience call
+was added. The reference integration test now times out Agenda, verifies that
+Dashboard remains Ready, commits a Dashboard action, recovers Agenda, and then
+continues the existing render-failure proof.
+
+**Evidence:** Both changed Luau sources passed `sosctl validate`. Agenda
+validated at 2,882 bytes with five nodes and four semantic nodes; Dashboard
+validated at 2,603 bytes with six nodes and two semantic nodes. The focused
+reference composition test passed, including the bounded timeout interrupt,
+and all 32 `runtime-luau` library tests passed. Both default and
+`direct-backend` compositor checks also pass without the earlier feature-only
+unused-parameter warning.
+
+**Physical environment and failure:** Before this audit changed the reference
+source, clean commit `205fc42548d529ec011f189a71e367092257a379` deployed all
+Linux components to the Framework as deployment
+`20260827T103016Z-205fc42548d5-3061033`. The deployer verified every installed
+digest in 218,496,599,593 ns. The laptop remained at GDM on boot ID
+`9b1818f2-c6c3-4829-8109-c9b3320a02a3`, with no SOS process and no mounted
+internal NVMe. The newly installed reference set produced Dashboard graph
+`d3a96aeec8cd8c290e38602ce91d41f4d05a459d3843fdd864e325a58ba24c3f`.
+That deployment is now stale by design because the acceptance controls changed
+after the audit. It is deployment evidence, not runtime acceptance.
+
+**Decision and next gate:** Commit and redeploy the complete reference set,
+install its new exact revisions, then prepare a fresh same-boot campaign. The
+operator must still use the integrated Framework keyboard, touchpad, and
+touchscreen; accessibility automation may inspect or activate composition
+semantics but cannot satisfy those physical-input criteria.
