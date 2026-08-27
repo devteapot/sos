@@ -6,6 +6,9 @@ const MAX_RESPONSE_BYTES = 8 * 1024 * 1024;
 
 type AuthoringModule = { id: string; source: string };
 type AuthoringParent = { experience_id: string; revision_id: string };
+type AuthoringStateSource =
+  | { kind: "fresh" }
+  | { kind: "experience_revision"; experience_id: string; revision_id: string };
 type AuthoringDependency = {
   alias: string;
   experience_id: string;
@@ -17,6 +20,8 @@ type AuthoringDependency = {
 type DerivedCandidate = {
   target_experience_id: string;
   parents: AuthoringParent[];
+  state_source: AuthoringStateSource;
+  provider_capabilities: string[];
   request: string;
   rationale: string;
   contract: unknown;
@@ -26,6 +31,8 @@ type DerivedCandidate = {
 type ComposedCandidate = {
   target_experience_id: string;
   dependencies: AuthoringDependency[];
+  state_source: AuthoringStateSource;
+  provider_capabilities: string[];
   contract: unknown;
   source: string;
   modules?: AuthoringModule[];
@@ -133,6 +140,21 @@ export function createAuthoringTools(backend: AuthoringBackend): AgentTool[] {
   const derivedParameters = {
     target_experience_id: Type.String({ minLength: 1, maxLength: 128 }),
     parents: parentParameters,
+    state_source: Type.Union([
+      Type.Object({ kind: Type.Literal("fresh") }, { additionalProperties: false }),
+      Type.Object(
+        {
+          kind: Type.Literal("experience_revision"),
+          experience_id: Type.String({ minLength: 1, maxLength: 128 }),
+          revision_id: Type.String({ minLength: 64, maxLength: 64 }),
+        },
+        { additionalProperties: false },
+      ),
+    ]),
+    provider_capabilities: Type.Array(Type.String({ minLength: 1, maxLength: 64 }), {
+      maxItems: 64,
+      uniqueItems: true,
+    }),
     request: Type.String({ minLength: 1, maxLength: 16_384 }),
     rationale: Type.String({ minLength: 1, maxLength: 4_096 }),
     contract: Type.Any(),
@@ -164,6 +186,21 @@ export function createAuthoringTools(backend: AuthoringBackend): AgentTool[] {
   const composedParameters = {
     target_experience_id: Type.String({ minLength: 1, maxLength: 128 }),
     dependencies: dependencyParameters,
+    state_source: Type.Union([
+      Type.Object({ kind: Type.Literal("fresh") }, { additionalProperties: false }),
+      Type.Object(
+        {
+          kind: Type.Literal("experience_revision"),
+          experience_id: Type.String({ minLength: 1, maxLength: 128 }),
+          revision_id: Type.String({ minLength: 64, maxLength: 64 }),
+        },
+        { additionalProperties: false },
+      ),
+    ]),
+    provider_capabilities: Type.Array(Type.String({ minLength: 1, maxLength: 64 }), {
+      maxItems: 64,
+      uniqueItems: true,
+    }),
     contract: Type.Any(),
     source: Type.String({ minLength: 1, maxLength: 262_144 }),
     modules: moduleParameters,
@@ -279,7 +316,7 @@ export function createAuthoringTools(backend: AuthoringBackend): AgentTool[] {
       name: "validate_derived_experience",
       label: "Validate fork or remix",
       description:
-        "Validate a complete self-contained API v4 fork or remix against exact parents, every declared export, bounded viewports, and accessibility appearance states.",
+        "Validate a complete self-contained API v4 fork or remix against exact parents, an explicit fresh or revision-backed state migration source, every declared export, bounded viewports, and accessibility appearance states.",
       parameters: Type.Object(derivedParameters, { additionalProperties: false }),
       executionMode: "sequential",
       async execute(_id, parameters, signal) {
@@ -363,7 +400,7 @@ export function createAuthoringTools(backend: AuthoringBackend): AgentTool[] {
       name: "validate_composed_experience",
       label: "Validate live composition",
       description:
-        "Validate a complete API v4 parent experience and its mounts against exact dependency exports, grants, viewports, and accessibility appearance states.",
+        "Validate a complete API v4 parent experience, its explicit state migration source, and its mounts against exact dependency exports, grants, viewports, and accessibility appearance states.",
       parameters: Type.Object(composedParameters, { additionalProperties: false }),
       executionMode: "sequential",
       async execute(_id, parameters, signal) {

@@ -532,6 +532,51 @@ pub struct DerivationRecord {
     pub rationale: Option<String>,
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum StateMigrationSource {
+    Fresh,
+    ExperienceRevision {
+        experience_id: ExperienceId,
+        revision_id: RevisionId,
+        schema_version: u64,
+        state_sha256: String,
+    },
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct StateMigrationRecord {
+    pub source: StateMigrationSource,
+    pub target_schema_version: u64,
+    pub result_state_sha256: String,
+}
+
+impl StateMigrationRecord {
+    pub fn validate(&self) -> Result<(), Error> {
+        if self.target_schema_version == 0 || !is_sha256(&self.result_state_sha256) {
+            return Err(Error::InvalidDerivation(
+                "state migration target or result digest is invalid".into(),
+            ));
+        }
+        if let StateMigrationSource::ExperienceRevision {
+            experience_id,
+            revision_id,
+            schema_version,
+            state_sha256,
+        } = &self.source
+        {
+            ExperienceId::parse(experience_id.as_str())?;
+            RevisionId::parse(revision_id.as_str())?;
+            if *schema_version == 0 || !is_sha256(state_sha256) {
+                return Err(Error::InvalidDerivation(
+                    "state migration source binding is invalid".into(),
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
 impl DerivationRecord {
     pub fn validate(&self) -> Result<(), Error> {
         if self.parents.len() > MAX_DERIVATION_PARENTS {
@@ -762,10 +807,14 @@ pub struct PackageMetadata {
     pub format_version: u32,
     pub experience_id: ExperienceId,
     pub role: ExperienceRole,
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub provider_capabilities: BTreeSet<String>,
     pub contract: ExperienceContract,
     #[serde(default)]
     pub dependencies: BTreeMap<DependencyAlias, DependencyBinding>,
     pub derivation: DerivationRecord,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state_migration: Option<StateMigrationRecord>,
 }
 
 impl PackageMetadata {
@@ -778,8 +827,21 @@ impl PackageMetadata {
             });
         }
         ExperienceId::parse(self.experience_id.as_str())?;
+        if self.provider_capabilities.len() > MAX_SCHEMA_FIELDS
+            || self
+                .provider_capabilities
+                .iter()
+                .any(|capability| !valid_name(capability, MAX_NAME_BYTES))
+        {
+            return Err(Error::InvalidContract(
+                "provider capability request is invalid or oversized".into(),
+            ));
+        }
         self.contract.validate()?;
         self.derivation.validate()?;
+        if let Some(migration) = &self.state_migration {
+            migration.validate()?;
+        }
         if self.dependencies.len() > MAX_DEPENDENCIES {
             return Err(Error::CountLimit {
                 kind: "dependency",
@@ -1110,6 +1172,7 @@ mod tests {
             format_version: PACKAGE_FORMAT_VERSION,
             experience_id: ExperienceId::parse("agenda").unwrap(),
             role: ExperienceRole::Ordinary,
+            provider_capabilities: BTreeSet::new(),
             contract: contract(),
             dependencies: BTreeMap::new(),
             derivation: DerivationRecord {
@@ -1118,6 +1181,7 @@ mod tests {
                 request_sha256: None,
                 rationale: None,
             },
+            state_migration: None,
         };
         assert!(matches!(
             metadata.validate(),

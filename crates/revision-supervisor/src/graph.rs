@@ -476,6 +476,7 @@ mod tests {
             format_version: PACKAGE_FORMAT_VERSION,
             experience_id: ExperienceId::parse(experience_id).unwrap(),
             role: ExperienceRole::Ordinary,
+            provider_capabilities: Default::default(),
             contract: ExperienceContract {
                 contract_version: CONTRACT_VERSION,
                 exports: BTreeMap::from([(ExportId::parse(export_id).unwrap(), export)]),
@@ -487,6 +488,7 @@ mod tests {
                 request_sha256: None,
                 rationale: None,
             },
+            state_migration: None,
         }
     }
 

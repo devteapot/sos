@@ -33,7 +33,9 @@ use gpui::{
     Window, WindowBackgroundAppearance, WindowBounds, WindowDecorations, WindowKind, WindowOptions,
 };
 use provider_state_service::ServiceClient;
-use providers_linux::{load_grants, ProviderContext, ProviderFrame, ProviderHub, ProviderSnapshot};
+use providers_linux::{
+    load_grants, Capability, ProviderContext, ProviderFrame, ProviderHub, ProviderSnapshot,
+};
 use runtime_luau::{
     load_revision_assets, GraphRevisionInput, GraphRuntimeSnapshot, GraphRuntimeWorker,
     GraphWorkerResult, RevisionAssetInput, RuntimeInstanceStatus, RuntimeWorker, WorkerReady,
@@ -85,8 +87,16 @@ struct LinuxProviderAccess {
     hub: ProviderHub,
     grant_path: PathBuf,
     allow_development_wildcard: bool,
+    grant_authority: Option<ServiceClient>,
+    revision_grants: Arc<Mutex<BTreeMap<String, RevisionGrantIdentity>>>,
     active_revisions: Arc<Mutex<BTreeSet<String>>>,
     instance_contexts: Arc<Mutex<BTreeMap<InstanceId, ProviderContext>>>,
+}
+
+#[derive(Clone, Debug)]
+struct RevisionGrantIdentity {
+    experience_id: ExperienceId,
+    requested_capabilities: BTreeSet<String>,
 }
 
 impl LinuxProviderAccess {
@@ -107,12 +117,57 @@ impl LinuxProviderAccess {
                 return Ok(context);
             }
         }
-        let mut context = load_grants(
-            &self.grant_path,
-            revision_id,
-            self.allow_development_wildcard,
-        )
-        .with_context(|| format!("load provider grants {}", self.grant_path.display()))?;
+        let mut context = if let Some(authority) = &self.grant_authority {
+            let identity = self
+                .revision_grants
+                .lock()
+                .expect("provider revision identity lock")
+                .get(revision_id)
+                .cloned()
+                .with_context(|| {
+                    format!("revision {revision_id} has no Experience grant identity")
+                })?;
+            let response = authority.call(&ServiceRequest::GetResource {
+                request_id: 70,
+                query: ResourceQuery::GrantDecisionFor {
+                    experience_id: identity.experience_id.clone(),
+                },
+            })?;
+            let grants = match (response.ok, response.payload, response.error) {
+                (
+                    true,
+                    Some(ResponsePayload::Resource {
+                        value: ResourceValue::GrantDecision(decision),
+                    }),
+                    _,
+                ) if decision.reviewed && decision.experience_id == identity.experience_id => {
+                    decision
+                        .provider_capabilities
+                        .into_iter()
+                        .filter(|capability| identity.requested_capabilities.contains(capability))
+                        .map(|capability| {
+                            serde_json::from_value::<Capability>(JsonValue::String(capability))
+                                .map_err(anyhow::Error::from)
+                        })
+                        .collect::<Result<BTreeSet<_>>>()?
+                }
+                (_, _, Some(ServiceError::NotFound { .. })) => BTreeSet::new(),
+                _ => bail!("authority returned an invalid provider grant decision"),
+            };
+            ProviderContext {
+                revision_id: revision_id.into(),
+                instance_id: None,
+                grants,
+                cancellation: Default::default(),
+            }
+        } else {
+            load_grants(
+                &self.grant_path,
+                revision_id,
+                self.allow_development_wildcard,
+            )
+            .with_context(|| format!("load provider grants {}", self.grant_path.display()))?
+        };
         context.instance_id = instance_id.cloned();
         if let Some(instance_id) = instance_id {
             self.instance_contexts
@@ -121,6 +176,24 @@ impl LinuxProviderAccess {
                 .insert(instance_id.clone(), context.clone());
         }
         Ok(context)
+    }
+
+    fn register_revision(
+        &self,
+        revision_id: &str,
+        experience_id: &ExperienceId,
+        requested_capabilities: &BTreeSet<String>,
+    ) {
+        self.revision_grants
+            .lock()
+            .expect("provider revision identity lock")
+            .insert(
+                revision_id.into(),
+                RevisionGrantIdentity {
+                    experience_id: experience_id.clone(),
+                    requested_capabilities: requested_capabilities.clone(),
+                },
+            );
     }
 
     fn snapshot(&self, revision_id: &str) -> Result<ProviderSnapshot> {
@@ -405,8 +478,24 @@ pub fn run() -> Result<()> {
             "sos_compositor_armed request_id={request_id} revision_id={presentation_id} after_commit_sequence={after_commit_sequence}"
         );
     }
-    let (mut model, provider_updates, provider_access) =
-        start_provider_updates(&revision.revision_id)?;
+    let root_grant_identity = loaded_graph.as_ref().map(|graph| {
+        let node = &graph.graph.nodes[&graph.graph.root];
+        let package = &graph.revisions[&node.revision_id].package;
+        (
+            node.experience_id.clone(),
+            package.provider_capabilities.clone(),
+        )
+    });
+    let graph_mode = loaded_graph.is_some();
+    let (mut model, provider_updates, provider_access) = start_provider_updates(
+        &revision.revision_id,
+        root_grant_identity
+            .as_ref()
+            .map(|(experience_id, capabilities)| (experience_id, capabilities)),
+        graph_mode
+            .then_some(options.service_socket.as_deref())
+            .flatten(),
+    )?;
     let (appearance, appearance_updates) =
         start_appearance_updates(options.service_socket.as_deref());
     model.appearance = appearance;
@@ -3933,6 +4022,8 @@ fn semantic_ids(scene: &Scene) -> Vec<String> {
 
 fn start_provider_updates(
     revision_id: &str,
+    grant_identity: Option<(&ExperienceId, &BTreeSet<String>)>,
+    grant_authority_socket: Option<&Path>,
 ) -> Result<(
     ExperienceModel,
     async_channel::Receiver<ProviderUpdate>,
@@ -3963,6 +4054,21 @@ fn start_provider_updates(
         grant_path,
         allow_development_wildcard: std::env::var_os("SOS_PROVIDER_DEVELOPMENT_GRANTS").as_deref()
             == Some(std::ffi::OsStr::new("1")),
+        grant_authority: grant_authority_socket
+            .map(|socket| ServiceClient::new(socket, Duration::from_secs(2))),
+        revision_grants: Arc::new(Mutex::new(
+            grant_identity
+                .map(|(experience_id, requested_capabilities)| {
+                    BTreeMap::from([(
+                        revision_id.into(),
+                        RevisionGrantIdentity {
+                            experience_id: experience_id.clone(),
+                            requested_capabilities: requested_capabilities.clone(),
+                        },
+                    )])
+                })
+                .unwrap_or_default(),
+        )),
         active_revisions: Arc::new(Mutex::new(BTreeSet::from([revision_id.into()]))),
         instance_contexts: Arc::new(Mutex::new(BTreeMap::new())),
     };
@@ -4272,6 +4378,15 @@ fn graph_runtime_inputs(
     let mut provider_frames = BTreeMap::new();
     if provider_access.is_some() {
         assets::clear_provider_frames();
+    }
+    if let Some(access) = provider_access {
+        for (revision_id, loaded) in &graph.revisions {
+            access.register_revision(
+                revision_id.as_str(),
+                &loaded.package.experience_id,
+                &loaded.package.provider_capabilities,
+            );
+        }
     }
     for (revision_id, loaded) in &graph.revisions {
         let provider_snapshot = provider_access
@@ -5439,6 +5554,8 @@ mod tests {
             hub: ProviderHub::open(temporary.path().join("linux-providers")).unwrap(),
             grant_path,
             allow_development_wildcard: false,
+            grant_authority: None,
+            revision_grants: Arc::new(Mutex::new(BTreeMap::new())),
             active_revisions: Arc::new(Mutex::new(BTreeSet::from([revision_id.clone()]))),
             instance_contexts: Arc::new(Mutex::new(BTreeMap::new())),
         };

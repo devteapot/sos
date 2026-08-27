@@ -10,9 +10,9 @@ use revision_supervisor::{
     ActivationJournal, DurableState, GraphStore, RevisionStore, VerifiedRevision,
 };
 use service_protocol::{
-    GraphExperiencePromotion, GraphPromotionDraft, MigrationProof, PromotionDraft, ResourceQuery,
-    ResourceValue, ResponsePayload, ServiceRequest, StateResource, TransactionRecord,
-    TransactionStatus,
+    DataFlowGrant, GrantDecisionResource, GraphExperiencePromotion, GraphPromotionDraft,
+    MigrationProof, PromotionDraft, ResourceQuery, ResourceValue, ResponsePayload, ServiceError,
+    ServiceRequest, StateResource, TransactionRecord, TransactionStatus,
 };
 
 pub use authoring::{run_authoring_broker, AuthoringBrokerOptions};
@@ -220,6 +220,222 @@ pub fn bootstrap_graph_authority(
         graph_id,
         experience_count,
     })
+}
+
+pub fn review_trusted_graph_grants(
+    revision_root: &Path,
+    root_experience_id: &ExperienceId,
+    trusted_root_revision: &str,
+    service_socket: &Path,
+    grant_capability: &str,
+    timeout: Duration,
+) -> Result<usize> {
+    let store = RevisionStore::open(revision_root)?;
+    let graphs = GraphStore::open(revision_root)?;
+    let (_, graph) = graphs
+        .current(root_experience_id)?
+        .with_context(|| format!("experience `{root_experience_id}` has no active graph"))?;
+    let root = graph
+        .nodes
+        .get(&graph.root)
+        .context("trusted graph root is missing")?;
+    if root.revision_id.as_str() != trusted_root_revision {
+        return Ok(0);
+    }
+    let client = ServiceClient::new(service_socket, timeout);
+    let mut updated = 0usize;
+    // Bootstrap only the exact product revision named by the native launcher.
+    // Children retain their own Experience grants and are never approved merely
+    // because they happen to be mounted by a trusted root.
+    for node in std::iter::once(root) {
+        let revision = store.verify(node.revision_id.as_str())?;
+        let package = revision
+            .package
+            .context("trusted graph node is missing package metadata")?;
+        let data_flows: std::collections::BTreeMap<
+            experience_package::DependencyAlias,
+            DataFlowGrant,
+        > = package
+            .dependencies
+            .iter()
+            .filter(|(_, binding)| {
+                !binding.grant.properties.is_empty() || !binding.grant.events.is_empty()
+            })
+            .map(|(alias, binding)| {
+                (
+                    alias.clone(),
+                    DataFlowGrant {
+                        experience_id: binding.experience_id.clone(),
+                        export_id: binding.export_id.clone(),
+                        grant: binding.grant.clone(),
+                    },
+                )
+            })
+            .collect();
+        if package.provider_capabilities.is_empty() && data_flows.is_empty() {
+            continue;
+        }
+        let queried = client.call(&ServiceRequest::GetResource {
+            request_id: 22,
+            query: ResourceQuery::GrantDecisionFor {
+                experience_id: node.experience_id.clone(),
+            },
+        })?;
+        let (expected_generation, existing) = match (queried.payload, queried.error) {
+            (
+                Some(ResponsePayload::Resource {
+                    value: ResourceValue::GrantDecision(decision),
+                }),
+                _,
+            ) if queried.ok => (decision.generation, Some(decision)),
+            (_, Some(ServiceError::NotFound { .. })) => (0, None),
+            (_, error) => bail!("grant authority query failed: {error:?}"),
+        };
+        if existing.as_ref().is_some_and(|decision| {
+            decision.reviewed
+                && decision.experience_id == node.experience_id
+                && package
+                    .provider_capabilities
+                    .is_subset(&decision.provider_capabilities)
+                && data_flows.iter().all(|(alias, requested)| {
+                    decision.data_flows.get(alias).is_some_and(|approved| {
+                        approved.experience_id == requested.experience_id
+                            && approved.export_id == requested.export_id
+                            && requested
+                                .grant
+                                .properties
+                                .is_subset(&approved.grant.properties)
+                            && requested.grant.events.is_subset(&approved.grant.events)
+                    })
+                })
+        }) {
+            continue;
+        }
+        let mut provider_capabilities = package.provider_capabilities;
+        let mut approved_data_flows = data_flows;
+        if let Some(existing) = existing {
+            provider_capabilities.extend(existing.provider_capabilities);
+            for (alias, flow) in existing.data_flows {
+                approved_data_flows.entry(alias).or_insert(flow);
+            }
+        }
+        let response = client.call(&ServiceRequest::UpdateGrantDecision {
+            request_id: 23,
+            expected_generation,
+            capability: grant_capability.into(),
+            decision: GrantDecisionResource {
+                generation: expected_generation.saturating_add(1),
+                reviewed: true,
+                experience_id: node.experience_id.clone(),
+                provider_capabilities,
+                data_flows: approved_data_flows,
+            },
+        })?;
+        if !response.ok {
+            bail!(
+                "grant authority rejected trusted graph review: {:?}",
+                response.error
+            );
+        }
+        updated = updated.saturating_add(1);
+    }
+    Ok(updated)
+}
+
+pub fn review_revision_grants(
+    revision_root: &Path,
+    revision_id: &str,
+    service_socket: &Path,
+    grant_capability: &str,
+    timeout: Duration,
+) -> Result<GrantDecisionResource> {
+    let store = RevisionStore::open(revision_root)?;
+    let revision = store.verify(revision_id)?;
+    let package = revision
+        .package
+        .context("grant review requires a v4 package revision")?;
+    let data_flows: std::collections::BTreeMap<experience_package::DependencyAlias, DataFlowGrant> =
+        package
+            .dependencies
+            .iter()
+            .filter(|(_, binding)| {
+                !binding.grant.properties.is_empty() || !binding.grant.events.is_empty()
+            })
+            .map(|(alias, binding)| {
+                (
+                    alias.clone(),
+                    DataFlowGrant {
+                        experience_id: binding.experience_id.clone(),
+                        export_id: binding.export_id.clone(),
+                        grant: binding.grant.clone(),
+                    },
+                )
+            })
+            .collect();
+    let client = ServiceClient::new(service_socket, timeout);
+    let queried = client.call(&ServiceRequest::GetResource {
+        request_id: 24,
+        query: ResourceQuery::GrantDecisionFor {
+            experience_id: package.experience_id.clone(),
+        },
+    })?;
+    let (expected_generation, existing) = match (queried.ok, queried.payload, queried.error) {
+        (
+            true,
+            Some(ResponsePayload::Resource {
+                value: ResourceValue::GrantDecision(decision),
+            }),
+            _,
+        ) => (decision.generation, Some(decision)),
+        (_, _, Some(ServiceError::NotFound { .. })) => (0, None),
+        (_, _, error) => bail!("grant authority query failed: {error:?}"),
+    };
+    if existing.as_ref().is_some_and(|decision| {
+        decision.reviewed
+            && package
+                .provider_capabilities
+                .is_subset(&decision.provider_capabilities)
+            && data_flows.iter().all(|(alias, requested)| {
+                decision.data_flows.get(alias).is_some_and(|approved| {
+                    approved.experience_id == requested.experience_id
+                        && approved.export_id == requested.export_id
+                        && requested
+                            .grant
+                            .properties
+                            .is_subset(&approved.grant.properties)
+                        && requested.grant.events.is_subset(&approved.grant.events)
+                })
+            })
+    }) {
+        return Ok(existing.expect("checked as present"));
+    }
+    let mut provider_capabilities = package.provider_capabilities;
+    let mut approved_data_flows = data_flows;
+    if let Some(existing) = existing {
+        provider_capabilities.extend(existing.provider_capabilities);
+        for (alias, flow) in existing.data_flows {
+            approved_data_flows.entry(alias).or_insert(flow);
+        }
+    }
+    let decision = GrantDecisionResource {
+        generation: expected_generation.saturating_add(1),
+        reviewed: true,
+        experience_id: package.experience_id,
+        provider_capabilities,
+        data_flows: approved_data_flows,
+    };
+    match call(
+        &client,
+        &ServiceRequest::UpdateGrantDecision {
+            request_id: 25,
+            expected_generation,
+            capability: grant_capability.into(),
+            decision: decision.clone(),
+        },
+    )? {
+        ResponsePayload::GrantDecisionUpdated { value } if value == decision => Ok(value),
+        _ => bail!("grant authority returned the wrong review payload"),
+    }
 }
 
 fn get_experience_state_for(

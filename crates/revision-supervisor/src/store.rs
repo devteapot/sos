@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
-use experience_package::{PackageMetadata, PACKAGE_FORMAT_VERSION};
+use experience_package::{canonical_sha256, PackageMetadata, PACKAGE_FORMAT_VERSION};
 
 use crate::{Error, Result};
 
@@ -112,6 +112,11 @@ impl RevisionStore {
             .package
             .validate()
             .map_err(|error| Error::InvalidRevision(error.to_string()))?;
+        validate_state_migration(
+            &input.package,
+            input.revision.schema_version,
+            &input.revision.state,
+        )?;
         self.install_inner(input.revision, Some(input.package))
     }
 
@@ -308,6 +313,9 @@ impl RevisionStore {
                 "source, state, and schema do not describe one revision".into(),
             ));
         }
+        if let Some(package) = &package {
+            validate_state_migration(package, state.schema_version, &state.state)?;
+        }
         Ok(VerifiedRevision {
             directory,
             manifest,
@@ -387,6 +395,29 @@ impl RevisionStore {
         }
         Ok(self.root.join("revisions").join(revision_id))
     }
+}
+
+fn validate_state_migration(
+    package: &PackageMetadata,
+    schema_version: u64,
+    state: &Value,
+) -> Result<()> {
+    let Some(migration) = &package.state_migration else {
+        return Ok(());
+    };
+    if migration.target_schema_version != schema_version {
+        return Err(Error::InvalidRevision(
+            "package state migration target does not match the durable schema".into(),
+        ));
+    }
+    let digest =
+        canonical_sha256(state).map_err(|error| Error::InvalidRevision(error.to_string()))?;
+    if migration.result_state_sha256 != digest {
+        return Err(Error::InvalidRevision(
+            "package state migration result does not match durable state".into(),
+        ));
+    }
+    Ok(())
 }
 
 fn identity(path: &str, bytes: &[u8]) -> FileIdentity {

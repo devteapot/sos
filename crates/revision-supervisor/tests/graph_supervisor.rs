@@ -1,10 +1,17 @@
-use std::{collections::BTreeMap, fs, path::PathBuf, thread, time::Duration};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    fs,
+    path::PathBuf,
+    thread,
+    time::Duration,
+};
 
 use experience_package::{
     DependencyAlias, DependencyPolicy, DerivationKind, DerivationRecord, ExperienceContract,
     ExperienceExport, ExperienceId, ExperienceRole, ExportId, GraphNodeId, PackageMetadata,
-    ResolvedGraph, ResolvedGraphNode, RevisionId, ValueSchema, ViewportContract,
-    APPEARANCE_ABI_VERSION, CONTRACT_VERSION, GRAPH_FORMAT_VERSION, PACKAGE_FORMAT_VERSION,
+    ResolvedGraph, ResolvedGraphNode, RevisionId, StateMigrationRecord, StateMigrationSource,
+    ValueSchema, ViewportContract, APPEARANCE_ABI_VERSION, CONTRACT_VERSION, GRAPH_FORMAT_VERSION,
+    PACKAGE_FORMAT_VERSION,
 };
 use revision_supervisor::{
     install_reference_composition, DurableState, Error, ExperienceGraphSupervisor,
@@ -13,8 +20,8 @@ use revision_supervisor::{
 };
 use serde_json::json;
 use service_protocol::{
-    GraphExperiencePromotion, GraphPromotionDraft, ResourceQuery, ResourceValue, ResponsePayload,
-    ServiceRequest, TransactionStatus,
+    DataFlowGrant, GrantDecisionResource, GraphExperiencePromotion, GraphPromotionDraft,
+    ResourceQuery, ResourceValue, ResponsePayload, ServiceRequest, TransactionStatus,
 };
 use tempfile::TempDir;
 
@@ -29,6 +36,7 @@ fn package() -> PackageMetadata {
         format_version: PACKAGE_FORMAT_VERSION,
         experience_id: ExperienceId::parse("dashboard").unwrap(),
         role: ExperienceRole::Ordinary,
+        provider_capabilities: Default::default(),
         contract: ExperienceContract {
             contract_version: CONTRACT_VERSION,
             exports: BTreeMap::from([(
@@ -54,6 +62,7 @@ fn package() -> PackageMetadata {
             request_sha256: None,
             rationale: None,
         },
+        state_migration: None,
     }
 }
 
@@ -98,7 +107,14 @@ fn start_authority(
 ) -> thread::JoinHandle<Result<(), Box<dyn std::error::Error + Send + Sync>>> {
     let handle = thread::spawn({
         let socket = socket.clone();
-        move || provider_state_service::serve(&socket, &state_file)
+        move || {
+            provider_state_service::serve_with_writers(
+                &socket,
+                &state_file,
+                None,
+                Some("test-grant-review"),
+            )
+        }
     });
     for _ in 0..200 {
         if socket.exists() {
@@ -158,6 +174,7 @@ fn seed_authority_graphs(
     client: &provider_state_service::ServiceClient,
     store: &RevisionStore,
     graphs: &[ResolvedGraph],
+    review_grants: bool,
 ) {
     let mut revisions = BTreeMap::new();
     for graph in graphs {
@@ -208,6 +225,79 @@ fn seed_authority_graphs(
         response.payload,
         Some(ResponsePayload::GraphTransaction { record })
             if record.status == TransactionStatus::Committed
+    ));
+    if !review_grants {
+        return;
+    }
+    let mut reviewed = BTreeSet::new();
+    for graph in graphs {
+        for node in graph.nodes.values() {
+            if !reviewed.insert(node.experience_id.clone()) {
+                continue;
+            }
+            let revision = store.verify(node.revision_id.as_str()).unwrap();
+            let package = revision.package.unwrap();
+            let data_flows: BTreeMap<DependencyAlias, DataFlowGrant> = package
+                .dependencies
+                .iter()
+                .filter(|(_, binding)| {
+                    !binding.grant.properties.is_empty() || !binding.grant.events.is_empty()
+                })
+                .map(|(alias, binding)| {
+                    (
+                        alias.clone(),
+                        DataFlowGrant {
+                            experience_id: binding.experience_id.clone(),
+                            export_id: binding.export_id.clone(),
+                            grant: binding.grant.clone(),
+                        },
+                    )
+                })
+                .collect();
+            if package.provider_capabilities.is_empty() && data_flows.is_empty() {
+                continue;
+            }
+            let response = client
+                .call(&ServiceRequest::UpdateGrantDecision {
+                    request_id: 14,
+                    expected_generation: 0,
+                    capability: "test-grant-review".into(),
+                    decision: GrantDecisionResource {
+                        generation: 1,
+                        reviewed: true,
+                        experience_id: node.experience_id.clone(),
+                        provider_capabilities: package.provider_capabilities,
+                        data_flows,
+                    },
+                })
+                .unwrap();
+            assert!(response.ok);
+        }
+    }
+}
+
+#[test]
+fn package_install_rejects_a_state_migration_result_that_does_not_match_state() {
+    let directory = TempDir::new().unwrap();
+    let store = RevisionStore::open(directory.path()).unwrap();
+    let mut package = package();
+    package.state_migration = Some(StateMigrationRecord {
+        source: StateMigrationSource::Fresh,
+        target_schema_version: 1,
+        result_state_sha256: "0".repeat(64),
+    });
+    assert!(matches!(
+        store.install_package(RevisionPackageInput {
+            revision: RevisionInput {
+                source: b"return { api_version = 4, exports = {} }".to_vec(),
+                state: json!({}),
+                schema_version: 1,
+                experience_api_version: 4,
+                assets: vec![],
+            },
+            package,
+        }),
+        Err(Error::InvalidRevision(message)) if message.contains("migration result")
     ));
 }
 
@@ -823,7 +913,7 @@ fn authority_commits_one_state_promotion_for_a_multi_root_update() {
         directory.path().join("authority-multi.json"),
     );
     let client = provider_state_service::ServiceClient::new(&socket, Duration::from_secs(2));
-    seed_authority_graphs(&client, &store, &[first_resolved, second_resolved]);
+    seed_authority_graphs(&client, &store, &[first_resolved, second_resolved], true);
     let agenda_id = ExperienceId::parse("sos.example.agenda").unwrap();
     let candidate = install_agenda_update(&store, &reference.agenda_revision, "authority set");
     let mut supervisor = ExperienceGraphSupervisor::new(
@@ -857,6 +947,100 @@ fn authority_commits_one_state_promotion_for_a_multi_root_update() {
     supervisor.shutdown().unwrap();
     client
         .call(&ServiceRequest::Shutdown { request_id: 13 })
+        .unwrap();
+    service.join().unwrap().unwrap();
+}
+
+#[test]
+fn graph_boot_rejects_unreviewed_cross_experience_data_flows() {
+    let directory = TempDir::new().unwrap();
+    let store = RevisionStore::open(directory.path()).unwrap();
+    let reference = install_reference_composition(&store).unwrap();
+    let registry = ExperienceRegistry::open(store.clone()).unwrap();
+    let graphs = GraphStore::open(store.root()).unwrap();
+    let (root, _, _, _) = install_tracked_roots(&store, &reference, &registry, &graphs);
+    let resolved = graphs.current(&root).unwrap().unwrap().1;
+    let socket = directory.path().join("authority-unreviewed.sock");
+    let service = start_authority(
+        socket.clone(),
+        directory.path().join("authority-unreviewed.json"),
+    );
+    let client = provider_state_service::ServiceClient::new(&socket, Duration::from_secs(2));
+    seed_authority_graphs(&client, &store, &[resolved], false);
+    let mut supervisor = ExperienceGraphSupervisor::new(
+        store,
+        registry,
+        graphs,
+        HostCommand::new(host_executable()),
+        Duration::from_secs(2),
+    )
+    .with_authority(client.clone());
+    assert!(matches!(
+        supervisor.boot(&root),
+        Err(Error::InvalidGraph(_))
+    ));
+    client
+        .call(&ServiceRequest::Shutdown { request_id: 15 })
+        .unwrap();
+    service.join().unwrap().unwrap();
+}
+
+#[test]
+fn stable_experience_grant_authorizes_a_later_revision_with_the_same_boundary() {
+    let directory = TempDir::new().unwrap();
+    let store = RevisionStore::open(directory.path()).unwrap();
+    let reference = install_reference_composition(&store).unwrap();
+    let registry = ExperienceRegistry::open(store.clone()).unwrap();
+    let graphs = GraphStore::open(store.root()).unwrap();
+    let installed =
+        install_tracked_roots_named(&store, &reference, &registry, &graphs, &["stable-grant"]);
+    let root = installed[0].0.clone();
+    let current_graph = graphs.current(&root).unwrap().unwrap().1;
+    let current_root = &current_graph.nodes[&current_graph.root];
+    let current = store.verify(current_root.revision_id.as_str()).unwrap();
+    let package = current.package.unwrap();
+    let source = fs::read(current.directory.join(&current.manifest.source.path)).unwrap();
+
+    let socket = directory.path().join("authority-stable-grant.sock");
+    let service = start_authority(
+        socket.clone(),
+        directory.path().join("authority-stable-grant.json"),
+    );
+    let client = provider_state_service::ServiceClient::new(&socket, Duration::from_secs(2));
+    seed_authority_graphs(&client, &store, &[current_graph], true);
+
+    let replacement = store
+        .install_package(RevisionPackageInput {
+            revision: RevisionInput {
+                source: [source, b"\n-- stable grant replacement\n".to_vec()].concat(),
+                state: json!({}),
+                schema_version: 1,
+                experience_api_version: 4,
+                assets: vec![],
+            },
+            package,
+        })
+        .unwrap()
+        .manifest
+        .revision_id;
+    let replacement_graph = GraphResolver::new(store.clone())
+        .resolve_tracked(&replacement, &ExportId::parse("main").unwrap(), &registry)
+        .unwrap();
+    let replacement_graph_id = graphs.install(&replacement_graph).unwrap();
+    let mut supervisor = ExperienceGraphSupervisor::new(
+        store,
+        registry,
+        graphs,
+        HostCommand::new(host_executable()),
+        Duration::from_secs(2),
+    )
+    .with_authority(client.clone());
+    supervisor.boot(&root).unwrap();
+    let prepared = supervisor.prepare(&root, &replacement_graph_id).unwrap();
+    supervisor.discard(prepared).unwrap();
+    supervisor.shutdown().unwrap();
+    client
+        .call(&ServiceRequest::Shutdown { request_id: 16 })
         .unwrap();
     service.join().unwrap().unwrap();
 }

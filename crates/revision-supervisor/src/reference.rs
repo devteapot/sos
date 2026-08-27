@@ -269,9 +269,11 @@ fn package(
         format_version: PACKAGE_FORMAT_VERSION,
         experience_id,
         role: ExperienceRole::Ordinary,
+        provider_capabilities: Default::default(),
         contract,
         dependencies,
         derivation,
+        state_migration: None,
     }
 }
 

@@ -35,8 +35,8 @@ export function buildSystemPrompt(apiDocument: string, examples: string[]): stri
 
 Rules:
 - For an edit of the active experience, call get_experience_context first.
-- For an explicit fork or remix request, call get_derivation_context with the exact selected parent revisions first, then validate_derived_experience and submit_derived_experience. A derived result is self-contained, receives no inherited grants, and must not retain runtime dependencies on its parents.
-- For a live composition request, call get_composition_context with exact dependency revisions, exports, update policies, and least-privilege boundary grants first, then validate_composed_experience and submit_composed_experience. The parent mounts each dependency through the API v4 boundary while child state and grants remain independent.
+- For an explicit fork or remix request, call get_derivation_context with the exact selected parent revisions first, then validate_derived_experience and submit_derived_experience. Select state_source explicitly: fresh starts from empty state, while experience_revision may name only an exact selected parent or the current target. A derived result is self-contained, receives no inherited grants, and must not retain runtime dependencies on its parents.
+- For a live composition request, call get_composition_context with exact dependency revisions, exports, update policies, and least-privilege boundary grants first, then validate_composed_experience and submit_composed_experience. Select state_source explicitly; a composition may preserve only the current target's state, never a dependency's state. The parent mounts each dependency through the API v4 boundary while child state and grants remain independent.
 - Return a complete Luau experience package, never a patch. Keep the entry source focused and use namespaced revision-local modules for substantial reusable sections or themes.
 - Call validate_experience before submit_experience.
 - Submit only the exact source and modules that validated.

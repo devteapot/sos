@@ -131,6 +131,8 @@ test("derived authoring binds exact parents and the complete validated package",
   const candidate = {
     target_experience_id: "agenda-media-remix",
     parents,
+    state_source: { kind: "fresh" as const },
+    provider_capabilities: [],
     request: "Combine agenda and media",
     rationale: "The user requested one information architecture.",
     contract: { contract_version: 1, exports: {} },
@@ -183,6 +185,8 @@ test("composition authoring binds exact dependencies and the validated graph roo
   const candidate = {
     target_experience_id: "dashboard",
     dependencies,
+    state_source: { kind: "fresh" as const },
+    provider_capabilities: [],
     contract: { contract_version: 1, exports: {} },
     source: "return { api_version = 4, exports = {} }",
   };

@@ -27,7 +27,10 @@ use nix::{
 use revision_supervisor::{GraphStore, RevisionStore, STOCK_SHELL_EXPERIENCE_ID};
 use signal_hook::consts::{SIGHUP, SIGINT, SIGTERM};
 
-use crate::{bootstrap_authority, bootstrap_graph_authority, shutdown_authority, stage_revision};
+use crate::{
+    bootstrap_authority, bootstrap_graph_authority, review_revision_grants,
+    review_trusted_graph_grants, shutdown_authority, stage_revision,
+};
 
 const POLL_INTERVAL: Duration = Duration::from_millis(20);
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
@@ -82,6 +85,8 @@ pub struct SystemSessionOptions {
     pub host_cache_directory: PathBuf,
     pub authority_file: PathBuf,
     pub shell_token_file: PathBuf,
+    pub trusted_stock_revision: String,
+    pub trusted_timeflow_revision: String,
     pub agent_socket: PathBuf,
     pub compositor_executable: PathBuf,
     pub provider_executable: PathBuf,
@@ -311,6 +316,25 @@ fn start_and_monitor(
     } else {
         None
     };
+    let grant_capability_file = state_directory.join("grant-review.capability");
+    let (provider_grant_capability, grant_capability) = if grant_capability_file.exists() {
+        let capability = fs::read_to_string(&grant_capability_file)?;
+        let capability = capability.trim_end_matches(['\r', '\n']).to_owned();
+        if capability.is_empty() || capability.len() > 256 {
+            bail!("grant-review capability must contain 1 to 256 bytes");
+        }
+        let destination = options
+            .runtime_directory
+            .join(format!("credential-grant-review-{}", std::process::id()));
+        copy_role_credential(
+            &grant_capability_file,
+            &destination,
+            &options.provider_identity,
+        )?;
+        (Some(destination), Some(capability))
+    } else {
+        (None, None)
+    };
     let recovery_socket = UnixDatagram::bind(&recovery_command_socket)
         .with_context(|| format!("bind {}", recovery_command_socket.display()))?;
     fs::set_permissions(&recovery_command_socket, fs::Permissions::from_mode(0o660))?;
@@ -428,6 +452,11 @@ fn start_and_monitor(
             .arg("--appearance-capability-file")
             .arg(&appearance_capability_file);
     }
+    if let Some(grant_capability_file) = &provider_grant_capability {
+        provider_command
+            .arg("--grant-capability-file")
+            .arg(grant_capability_file);
+    }
     let provider = provider_command
         .arg("--socket")
         .arg(&provider_socket)
@@ -468,6 +497,29 @@ fn start_and_monitor(
             options.startup_timeout,
         )?;
         println!("linux_system_session_graph_authority outcome={graph_bootstrap:?}");
+        let capability = grant_capability
+            .as_deref()
+            .context("v4 graph mode requires a grant-review capability")?;
+        let reviewed = review_trusted_graph_grants(
+            &options.revision_root,
+            &stock_experience_id,
+            &options.trusted_stock_revision,
+            &provider_socket,
+            capability,
+            options.startup_timeout,
+        )?;
+        println!("linux_system_session_grants reviewed={reviewed}");
+        let timeflow = review_revision_grants(
+            &options.revision_root,
+            &options.trusted_timeflow_revision,
+            &provider_socket,
+            capability,
+            options.startup_timeout,
+        )?;
+        println!(
+            "linux_system_session_grants experience_id={} generation={}",
+            timeflow.experience_id, timeflow.generation
+        );
     }
 
     processes.host_launcher = Some(HostLauncher::start(

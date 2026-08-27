@@ -121,6 +121,18 @@ capability; access to the state/provider socket alone is not sufficient.
 An export may ignore optional design tokens, but not host accessibility or
 trusted-ceremony policy. Styles and assets remain revision-local.
 
+Provider capabilities and cross-experience property/event flows are immutable
+package requests. The authority stores the reviewed decision under the stable
+Experience ID, and the host exposes only capabilities requested by the running
+revision and included in that decision. A new revision may reuse an existing
+superset grant; a fork or remix with a new Experience ID requires its own
+review. Agent authoring cannot hold the native `grant-review` capability.
+
+New v4 authoring also names an explicit state source. It may start fresh or
+migrate the authority's retained state for one exact selected parent/current
+target revision. The package hashes both source and result state identities,
+and installation verifies the result against the immutable durable state.
+
 Every live export has a transient opaque Instance ID. The host uses it to
 namespace rendered node IDs, revision assets, provider surfaces and sessions,
 text/IME state, pointer capture, and accessibility focus. Graph Node IDs remain

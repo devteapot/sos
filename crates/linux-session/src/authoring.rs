@@ -13,9 +13,10 @@ use std::{
 use anyhow::{bail, Context as _, Result};
 use experience_ir::{Content, SceneNode};
 use experience_package::{
-    hex_sha256, BoundaryGrant, DependencyAlias, DependencyBinding, DependencyPolicy,
-    DerivationKind, DerivationParent, DerivationRecord, ExperienceContract, ExperienceId, ExportId,
-    PackageMetadata, RevisionId, PACKAGE_FORMAT_VERSION,
+    canonical_sha256, hex_sha256, BoundaryGrant, DependencyAlias, DependencyBinding,
+    DependencyPolicy, DerivationKind, DerivationParent, DerivationRecord, ExperienceContract,
+    ExperienceId, ExportId, PackageMetadata, RevisionId, StateMigrationRecord,
+    StateMigrationSource, PACKAGE_FORMAT_VERSION,
 };
 use nix::{
     sys::socket::{getsockopt, sockopt::PeerCredentials},
@@ -34,7 +35,8 @@ use runtime_luau::{
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use service_protocol::{
-    ResourceQuery, ResourceValue, ResponsePayload, ServiceRequest, StateResource,
+    DataFlowGrant, ResourceQuery, ResourceValue, ResponsePayload, ServiceError, ServiceRequest,
+    StateResource,
 };
 
 const MAX_AUTHORING_MODULES: usize = 16;
@@ -75,6 +77,8 @@ enum AuthoringRequest {
     ValidateDerivedExperience {
         target_experience_id: ExperienceId,
         parents: Vec<AuthoringParent>,
+        state_source: AuthoringStateSource,
+        provider_capabilities: Vec<String>,
         request: String,
         rationale: String,
         contract: ExperienceContract,
@@ -85,6 +89,8 @@ enum AuthoringRequest {
     SubmitDerivedExperience {
         target_experience_id: ExperienceId,
         parents: Vec<AuthoringParent>,
+        state_source: AuthoringStateSource,
+        provider_capabilities: Vec<String>,
         request: String,
         rationale: String,
         contract: ExperienceContract,
@@ -97,6 +103,8 @@ enum AuthoringRequest {
     ValidateComposedExperience {
         target_experience_id: ExperienceId,
         dependencies: Vec<AuthoringDependency>,
+        state_source: AuthoringStateSource,
+        provider_capabilities: Vec<String>,
         contract: ExperienceContract,
         source: String,
         #[serde(default)]
@@ -105,6 +113,8 @@ enum AuthoringRequest {
     SubmitComposedExperience {
         target_experience_id: ExperienceId,
         dependencies: Vec<AuthoringDependency>,
+        state_source: AuthoringStateSource,
+        provider_capabilities: Vec<String>,
         contract: ExperienceContract,
         source: String,
         #[serde(default)]
@@ -129,6 +139,16 @@ struct AuthoringDependency {
     policy: DependencyPolicy,
     #[serde(default)]
     grant: BoundaryGrant,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum AuthoringStateSource {
+    Fresh,
+    ExperienceRevision {
+        experience_id: ExperienceId,
+        revision_id: RevisionId,
+    },
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -185,6 +205,12 @@ struct ValidatedDerivedCandidate {
     assets: Vec<StoreAssetInput>,
     package: PackageMetadata,
     exports_validated: usize,
+}
+
+struct ResolvedAuthoringState {
+    schema_version: u64,
+    state: Value,
+    source: StateMigrationSource,
 }
 
 pub fn run_authoring_broker(options: AuthoringBrokerOptions) -> Result<()> {
@@ -348,6 +374,10 @@ fn handle(options: &AuthoringBrokerOptions, request: AuthoringRequest) -> Result
                 &active.revision.manifest.revision_id,
             )?;
             let candidate = evaluate_candidate(&store, &authority, source, modules, false)?;
+            let grant_review_required = grant_review_required(
+                &ServiceClient::new(&options.service_socket, options.timeout),
+                &candidate.package,
+            )?;
             Ok(json!({
                 "valid": candidate.validation.valid,
                 "source_bytes": candidate.source.len(),
@@ -355,6 +385,7 @@ fn handle(options: &AuthoringBrokerOptions, request: AuthoringRequest) -> Result
                 "schema_version": candidate.schema_version,
                 "experience_id": candidate.package.experience_id,
                 "package": candidate.package,
+                "grant_review_required": grant_review_required,
                 "report": candidate.validation,
             }))
         }
@@ -366,6 +397,10 @@ fn handle(options: &AuthoringBrokerOptions, request: AuthoringRequest) -> Result
                 &active.revision.manifest.revision_id,
             )?;
             let candidate = validate_candidate(&store, &authority, source, modules)?;
+            let grant_review_required = grant_review_required(
+                &ServiceClient::new(&options.service_socket, options.timeout),
+                &candidate.package,
+            )?;
             let revision = store.install_package(RevisionPackageInput {
                 revision: RevisionInput {
                     source: candidate.source,
@@ -393,6 +428,18 @@ fn handle(options: &AuthoringBrokerOptions, request: AuthoringRequest) -> Result
                     "event": "already_active",
                 }));
             }
+            if grant_review_required {
+                return Ok(json!({
+                    "revision_id": revision.manifest.revision_id,
+                    "experience_id": active.package.experience_id,
+                    "graph_id": graph_id,
+                    "active_revision": active.revision.manifest.revision_id,
+                    "active_graph": active.graph_id,
+                    "activated": false,
+                    "activation_required": true,
+                    "grant_review_required": true,
+                }));
+            }
             let supervisor =
                 activate_graph(&options.supervisor_socket, &graph_id, options.timeout)?;
             Ok(json!({
@@ -408,6 +455,8 @@ fn handle(options: &AuthoringBrokerOptions, request: AuthoringRequest) -> Result
         AuthoringRequest::ValidateDerivedExperience {
             target_experience_id,
             parents,
+            state_source,
+            provider_capabilities,
             request,
             rationale,
             contract,
@@ -418,11 +467,21 @@ fn handle(options: &AuthoringBrokerOptions, request: AuthoringRequest) -> Result
                 &store,
                 target_experience_id,
                 parents,
+                state_source,
+                provider_capabilities,
                 request,
                 rationale,
                 contract,
                 source,
                 modules,
+                Some(&ServiceClient::new(
+                    &options.service_socket,
+                    options.timeout,
+                )),
+            )?;
+            let grant_review_required = grant_review_required(
+                &ServiceClient::new(&options.service_socket, options.timeout),
+                &candidate.package,
             )?;
             Ok(json!({
                 "valid": true,
@@ -431,11 +490,14 @@ fn handle(options: &AuthoringBrokerOptions, request: AuthoringRequest) -> Result
                 "schema_version": candidate.schema_version,
                 "exports_validated": candidate.exports_validated,
                 "package": candidate.package,
+                "grant_review_required": grant_review_required,
             }))
         }
         AuthoringRequest::SubmitDerivedExperience {
             target_experience_id,
             parents,
+            state_source,
+            provider_capabilities,
             request,
             rationale,
             contract,
@@ -447,11 +509,21 @@ fn handle(options: &AuthoringBrokerOptions, request: AuthoringRequest) -> Result
                 &store,
                 target_experience_id.clone(),
                 parents,
+                state_source,
+                provider_capabilities,
                 request,
                 rationale,
                 contract,
                 source,
                 modules,
+                Some(&ServiceClient::new(
+                    &options.service_socket,
+                    options.timeout,
+                )),
+            )?;
+            let grant_review_required = grant_review_required(
+                &ServiceClient::new(&options.service_socket, options.timeout),
+                &candidate.package,
             )?;
             let revision = store.install_package(RevisionPackageInput {
                 revision: RevisionInput {
@@ -494,11 +566,14 @@ fn handle(options: &AuthoringBrokerOptions, request: AuthoringRequest) -> Result
                 "registry_current_changed": registry_current_changed,
                 "activated": false,
                 "activation_required": true,
+                "grant_review_required": grant_review_required,
             }))
         }
         AuthoringRequest::ValidateComposedExperience {
             target_experience_id,
             dependencies,
+            state_source,
+            provider_capabilities,
             contract,
             source,
             modules,
@@ -507,9 +582,19 @@ fn handle(options: &AuthoringBrokerOptions, request: AuthoringRequest) -> Result
                 &store,
                 target_experience_id,
                 dependencies,
+                state_source,
+                provider_capabilities,
                 contract,
                 source,
                 modules,
+                Some(&ServiceClient::new(
+                    &options.service_socket,
+                    options.timeout,
+                )),
+            )?;
+            let grant_review_required = grant_review_required(
+                &ServiceClient::new(&options.service_socket, options.timeout),
+                &candidate.package,
             )?;
             Ok(json!({
                 "valid": true,
@@ -519,11 +604,14 @@ fn handle(options: &AuthoringBrokerOptions, request: AuthoringRequest) -> Result
                 "exports_validated": candidate.exports_validated,
                 "dependencies_validated": candidate.package.dependencies.len(),
                 "package": candidate.package,
+                "grant_review_required": grant_review_required,
             }))
         }
         AuthoringRequest::SubmitComposedExperience {
             target_experience_id,
             dependencies,
+            state_source,
+            provider_capabilities,
             contract,
             source,
             modules,
@@ -533,9 +621,19 @@ fn handle(options: &AuthoringBrokerOptions, request: AuthoringRequest) -> Result
                 &store,
                 target_experience_id.clone(),
                 dependencies,
+                state_source,
+                provider_capabilities,
                 contract,
                 source,
                 modules,
+                Some(&ServiceClient::new(
+                    &options.service_socket,
+                    options.timeout,
+                )),
+            )?;
+            let grant_review_required = grant_review_required(
+                &ServiceClient::new(&options.service_socket, options.timeout),
+                &candidate.package,
             )?;
             let revision = store.install_package(RevisionPackageInput {
                 revision: RevisionInput {
@@ -569,6 +667,7 @@ fn handle(options: &AuthoringBrokerOptions, request: AuthoringRequest) -> Result
                 "registry_current_changed": registry_current_changed,
                 "activated": false,
                 "activation_required": true,
+                "grant_review_required": grant_review_required,
             }))
         }
     }
@@ -696,9 +795,12 @@ fn evaluate_composed_candidate(
     store: &RevisionStore,
     target_experience_id: ExperienceId,
     dependencies: Vec<AuthoringDependency>,
+    state_source: AuthoringStateSource,
+    provider_capabilities: Vec<String>,
     contract: ExperienceContract,
     source: String,
     modules: Option<Vec<AuthoringModule>>,
+    authority: Option<&ServiceClient>,
 ) -> Result<ValidatedDerivedCandidate> {
     let (bindings, _) = inspect_dependencies(store, &dependencies)?;
     contract
@@ -710,10 +812,16 @@ fn evaluate_composed_candidate(
     {
         bail!("a composed top-level experience must export `main`");
     }
+    let allowed_state_sources = current_target_state_source(store, &target_experience_id)?
+        .into_iter()
+        .collect();
+    let initial_state =
+        resolve_authoring_state(store, state_source, &allowed_state_sources, authority)?;
     let package = PackageMetadata {
         format_version: PACKAGE_FORMAT_VERSION,
         experience_id: target_experience_id,
         role: experience_package::ExperienceRole::Ordinary,
+        provider_capabilities: authoring_provider_capabilities(provider_capabilities)?,
         contract,
         dependencies: bindings,
         derivation: DerivationRecord {
@@ -722,19 +830,21 @@ fn evaluate_composed_candidate(
             request_sha256: None,
             rationale: None,
         },
+        state_migration: None,
     };
     package
         .validate()
         .map_err(|error| anyhow::anyhow!(error.to_string()))?;
-    evaluate_v4_package_candidate(store, package, source, modules, true)
+    evaluate_v4_package_candidate(store, package, source, modules, true, initial_state)
 }
 
 fn evaluate_v4_package_candidate(
     store: &RevisionStore,
-    package: PackageMetadata,
+    mut package: PackageMetadata,
     source: String,
     modules: Option<Vec<AuthoringModule>>,
     validate_mounts: bool,
+    initial_state: ResolvedAuthoringState,
 ) -> Result<ValidatedDerivedCandidate> {
     if source.is_empty() || source.len() > MAX_SOURCE_BYTES {
         bail!("experience source is outside the bounded size");
@@ -768,10 +878,19 @@ fn evaluate_v4_package_candidate(
         bail!("source exports do not exactly match the declared contract");
     }
     let state = runtime
-        .migrate_state(1, &json!({}))
+        .migrate_state(initial_state.schema_version, &initial_state.state)
         .map_err(|error| anyhow::anyhow!(error.to_string()))?;
     let schema_version = runtime
         .state_schema_version()
+        .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+    package.state_migration = Some(StateMigrationRecord {
+        source: initial_state.source,
+        target_schema_version: schema_version,
+        result_state_sha256: canonical_sha256(&state)
+            .map_err(|error| anyhow::anyhow!(error.to_string()))?,
+    });
+    package
+        .validate()
         .map_err(|error| anyhow::anyhow!(error.to_string()))?;
     let mut model = providers_fake::snapshot();
     for (export_id, export) in &package.contract.exports {
@@ -905,11 +1024,14 @@ fn evaluate_derived_candidate(
     store: &RevisionStore,
     target_experience_id: ExperienceId,
     parents: Vec<AuthoringParent>,
+    state_source: AuthoringStateSource,
+    provider_capabilities: Vec<String>,
     request: String,
     rationale: String,
     contract: ExperienceContract,
     source: String,
     modules: Option<Vec<AuthoringModule>>,
+    authority: Option<&ServiceClient>,
 ) -> Result<ValidatedDerivedCandidate> {
     validate_parent_selection(store, &parents)?;
     if source.is_empty() || source.len() > MAX_SOURCE_BYTES {
@@ -924,80 +1046,13 @@ fn evaluate_derived_candidate(
     contract
         .validate()
         .map_err(|error| anyhow::anyhow!(error.to_string()))?;
-    let assets = new_candidate_assets(modules)?;
-    let runtime_assets = assets
+    let mut allowed_state_sources = parents
         .iter()
-        .map(|asset| RuntimeAssetInput {
-            id: asset.id.clone(),
-            kind: asset.kind.clone(),
-            bytes: asset.bytes.clone(),
-        })
-        .collect();
-    let runtime = LuauRuntime::compile_with_assets(&source, runtime_assets)
-        .map_err(|error| anyhow::anyhow!("compile derived experience: {error}"))?;
-    if runtime.api_version() != experience_ir::EXPERIENCE_API_VERSION_V4 {
-        bail!("derived experiences must use experience API v4");
-    }
-    let implemented = runtime
-        .export_ids()
-        .map_err(|error| anyhow::anyhow!(error.to_string()))?;
-    let declared = contract
-        .exports
-        .keys()
-        .map(ToString::to_string)
+        .map(|parent| (parent.experience_id.clone(), parent.revision_id.clone()))
         .collect::<std::collections::BTreeSet<_>>();
-    if implemented
-        .into_iter()
-        .collect::<std::collections::BTreeSet<_>>()
-        != declared
-    {
-        bail!("derived source exports do not exactly match the declared contract");
-    }
-    let state = runtime
-        .migrate_state(1, &json!({}))
-        .map_err(|error| anyhow::anyhow!(error.to_string()))?;
-    let schema_version = runtime
-        .state_schema_version()
-        .map_err(|error| anyhow::anyhow!(error.to_string()))?;
-    let mut model = providers_fake::snapshot();
-    for (export_id, export) in &contract.exports {
-        let properties = export.properties.example_value();
-        for (width, height) in [
-            (export.viewport.min_width, export.viewport.min_height),
-            (export.viewport.max_width, export.viewport.max_height),
-        ] {
-            runtime
-                .render_export(
-                    export_id.as_str(),
-                    &model,
-                    &state,
-                    &properties,
-                    experience_ir::ExperienceViewport {
-                        width,
-                        height,
-                        scale_milli: 1000,
-                    },
-                    None,
-                )
-                .map_err(|error| anyhow::anyhow!(error.to_string()))?;
-        }
-        model.appearance.contrast = experience_package::Contrast::High;
-        model.appearance.reduce_motion = true;
-        runtime
-            .render_export(
-                export_id.as_str(),
-                &model,
-                &state,
-                &properties,
-                experience_ir::ExperienceViewport {
-                    width: export.viewport.min_width,
-                    height: export.viewport.min_height,
-                    scale_milli: 1000,
-                },
-                None,
-            )
-            .map_err(|error| anyhow::anyhow!(error.to_string()))?;
-    }
+    allowed_state_sources.extend(current_target_state_source(store, &target_experience_id)?);
+    let initial_state =
+        resolve_authoring_state(store, state_source, &allowed_state_sources, authority)?;
     let derivation = DerivationRecord {
         kind: if parents.len() == 1 {
             DerivationKind::Fork
@@ -1018,21 +1073,163 @@ fn evaluate_derived_candidate(
         format_version: PACKAGE_FORMAT_VERSION,
         experience_id: target_experience_id,
         role: experience_package::ExperienceRole::Ordinary,
+        provider_capabilities: authoring_provider_capabilities(provider_capabilities)?,
         contract,
         dependencies: Default::default(),
         derivation,
+        state_migration: None,
     };
     package
         .validate()
         .map_err(|error| anyhow::anyhow!(error.to_string()))?;
-    Ok(ValidatedDerivedCandidate {
-        source: source.into_bytes(),
-        state,
-        schema_version,
-        assets,
-        exports_validated: package.contract.exports.len(),
-        package,
-    })
+    evaluate_v4_package_candidate(store, package, source, modules, false, initial_state)
+}
+
+fn current_target_state_source(
+    store: &RevisionStore,
+    target_experience_id: &ExperienceId,
+) -> Result<Option<(ExperienceId, RevisionId)>> {
+    let registry = ExperienceRegistry::open(store.clone())?;
+    if registry.get(target_experience_id)?.is_none() {
+        return Ok(None);
+    }
+    let Some(current) = registry.current(target_experience_id)? else {
+        return Ok(None);
+    };
+    Ok(Some((
+        target_experience_id.clone(),
+        RevisionId::parse(current.manifest.revision_id)
+            .map_err(|error| anyhow::anyhow!(error.to_string()))?,
+    )))
+}
+
+fn authoring_provider_capabilities(
+    capabilities: Vec<String>,
+) -> Result<std::collections::BTreeSet<String>> {
+    if capabilities.len() > experience_package::MAX_SCHEMA_FIELDS {
+        bail!("provider capability request is too large");
+    }
+    let unique = capabilities
+        .iter()
+        .cloned()
+        .collect::<std::collections::BTreeSet<_>>();
+    if unique.len() != capabilities.len() {
+        bail!("provider capability request contains a duplicate");
+    }
+    Ok(unique)
+}
+
+fn grant_review_required(client: &ServiceClient, package: &PackageMetadata) -> Result<bool> {
+    let data_flows: BTreeMap<DependencyAlias, DataFlowGrant> = package
+        .dependencies
+        .iter()
+        .filter(|(_, binding)| {
+            !binding.grant.properties.is_empty() || !binding.grant.events.is_empty()
+        })
+        .map(|(alias, binding)| {
+            (
+                alias.clone(),
+                DataFlowGrant {
+                    experience_id: binding.experience_id.clone(),
+                    export_id: binding.export_id.clone(),
+                    grant: binding.grant.clone(),
+                },
+            )
+        })
+        .collect();
+    if package.provider_capabilities.is_empty() && data_flows.is_empty() {
+        return Ok(false);
+    }
+    let response = client.call(&ServiceRequest::GetResource {
+        request_id: 41,
+        query: ResourceQuery::GrantDecisionFor {
+            experience_id: package.experience_id.clone(),
+        },
+    })?;
+    let decision = match (response.ok, response.payload, response.error) {
+        (
+            true,
+            Some(ResponsePayload::Resource {
+                value: ResourceValue::GrantDecision(decision),
+            }),
+            _,
+        ) => decision,
+        (_, _, Some(ServiceError::NotFound { .. })) => return Ok(true),
+        (_, _, error) => bail!("grant authority query failed: {error:?}"),
+    };
+    Ok(!decision.reviewed
+        || decision.experience_id != package.experience_id
+        || !package
+            .provider_capabilities
+            .is_subset(&decision.provider_capabilities)
+        || data_flows.iter().any(|(alias, requested)| {
+            decision.data_flows.get(alias).is_none_or(|approved| {
+                approved.experience_id != requested.experience_id
+                    || approved.export_id != requested.export_id
+                    || !requested
+                        .grant
+                        .properties
+                        .is_subset(&approved.grant.properties)
+                    || !requested.grant.events.is_subset(&approved.grant.events)
+            })
+        }))
+}
+
+fn resolve_authoring_state(
+    store: &RevisionStore,
+    source: AuthoringStateSource,
+    allowed: &std::collections::BTreeSet<(ExperienceId, RevisionId)>,
+    authority: Option<&ServiceClient>,
+) -> Result<ResolvedAuthoringState> {
+    match source {
+        AuthoringStateSource::Fresh => Ok(ResolvedAuthoringState {
+            schema_version: 1,
+            state: json!({}),
+            source: StateMigrationSource::Fresh,
+        }),
+        AuthoringStateSource::ExperienceRevision {
+            experience_id,
+            revision_id,
+        } => {
+            if !allowed.contains(&(experience_id.clone(), revision_id.clone())) {
+                bail!(
+                    "state migration source must be an exact selected parent or the current target revision"
+                );
+            }
+            let revision = store.verify(revision_id.as_str())?;
+            let package = revision
+                .package
+                .as_ref()
+                .context("state migration sources must use package format v4")?;
+            if package.experience_id != experience_id {
+                bail!("state migration source revision belongs to a different experience");
+            }
+            let authority = authority
+                .context("revision-backed state migration requires the durable state authority")?;
+            let resource =
+                get_authority_experience_state(authority, &experience_id, revision_id.as_str())?;
+            let durable =
+                load_durable_state(&revision.directory.join(&revision.manifest.state.path))?;
+            if resource.revision_id != revision_id.as_str()
+                || resource.schema_version != durable.schema_version
+                || resource.source_sha256 != durable.source_sha256
+            {
+                bail!("state authority does not retain the exact selected source revision");
+            }
+            let state_sha256 = canonical_sha256(&resource.state)
+                .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+            Ok(ResolvedAuthoringState {
+                schema_version: resource.schema_version,
+                state: resource.state,
+                source: StateMigrationSource::ExperienceRevision {
+                    experience_id,
+                    revision_id,
+                    schema_version: resource.schema_version,
+                    state_sha256,
+                },
+            })
+        }
+    }
 }
 
 fn validate_parent_selection(store: &RevisionStore, parents: &[AuthoringParent]) -> Result<()> {
@@ -1207,6 +1404,23 @@ fn evaluate_candidate(
     let schema_version = runtime
         .state_schema_version()
         .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+    let mut package = active.package;
+    package.state_migration = Some(StateMigrationRecord {
+        source: StateMigrationSource::ExperienceRevision {
+            experience_id: package.experience_id.clone(),
+            revision_id: RevisionId::parse(current.manifest.revision_id.clone())
+                .map_err(|error| anyhow::anyhow!(error.to_string()))?,
+            schema_version: authority.schema_version,
+            state_sha256: canonical_sha256(&authority.state)
+                .map_err(|error| anyhow::anyhow!(error.to_string()))?,
+        },
+        target_schema_version: schema_version,
+        result_state_sha256: canonical_sha256(&state)
+            .map_err(|error| anyhow::anyhow!(error.to_string()))?,
+    });
+    package
+        .validate()
+        .map_err(|error| anyhow::anyhow!(error.to_string()))?;
     let report = runtime
         .validate_all(&providers_fake::snapshot(), &state)
         .map_err(|error| anyhow::anyhow!("validate candidate scenarios: {error}"))?;
@@ -1229,12 +1443,12 @@ fn evaluate_candidate(
         bail!("candidate validation scenarios failed: {failures}");
     }
     if report.valid {
-        if active.package.role == experience_package::ExperienceRole::Shell
+        if package.role == experience_package::ExperienceRole::Shell
             && !has_shell_agent_composer(&runtime, &state)?
         {
             bail!("candidate must retain a Luau text_session whose submit_action is agent_submit");
         }
-        validate_export_viewports(store, &active.package, &runtime, &state)?;
+        validate_export_viewports(store, &package, &runtime, &state)?;
     }
     Ok(ValidatedCandidate {
         source: source.into_bytes(),
@@ -1242,7 +1456,7 @@ fn evaluate_candidate(
         schema_version,
         assets,
         validation: report,
-        package: active.package,
+        package,
     })
 }
 
@@ -1596,16 +1810,26 @@ mod tests {
                     revision_id: RevisionId::parse(reference.media_revision).unwrap(),
                 },
             ],
+            AuthoringStateSource::Fresh,
+            Vec::new(),
             "Combine agenda and media".into(),
             "The result needs one information architecture.".into(),
             remix.package.unwrap().contract,
             include_str!("../../../experiences/composition/agenda-media-remix.luau").into(),
+            None,
             None,
         )
         .unwrap();
         assert_eq!(candidate.package.derivation.kind, DerivationKind::Remix);
         assert_eq!(candidate.package.derivation.parents.len(), 2);
         assert!(candidate.package.dependencies.is_empty());
+        assert!(matches!(
+            candidate.package.state_migration,
+            Some(StateMigrationRecord {
+                source: StateMigrationSource::Fresh,
+                ..
+            })
+        ));
         assert_eq!(candidate.exports_validated, 1);
     }
 
@@ -1632,13 +1856,17 @@ mod tests {
             &store,
             ExperienceId::parse("sos.example.user-dashboard").unwrap(),
             dependencies,
+            AuthoringStateSource::Fresh,
+            Vec::new(),
             package.contract,
             include_str!("../../../experiences/composition/dashboard.luau").into(),
+            None,
             None,
         )
         .unwrap();
         assert_eq!(candidate.package.derivation.kind, DerivationKind::Original);
         assert_eq!(candidate.package.dependencies.len(), 2);
+        assert!(candidate.package.state_migration.is_some());
         assert_eq!(candidate.exports_validated, 1);
     }
 
@@ -1675,11 +1903,14 @@ mod tests {
             &store,
             dashboard_id.clone(),
             dependencies,
+            AuthoringStateSource::Fresh,
+            Vec::new(),
             package.contract,
             format!(
                 "{}\n",
                 include_str!("../../../experiences/composition/dashboard.luau")
             ),
+            None,
             None,
         )
         .unwrap();

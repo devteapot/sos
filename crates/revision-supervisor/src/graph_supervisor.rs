@@ -12,8 +12,8 @@ use experience_package::{ExperienceId, ResolvedGraph, MAX_GRAPH_INSTANCES};
 use provider_state_service::{state_sha256, ServiceClient};
 use serde::{Deserialize, Serialize};
 use service_protocol::{
-    GraphExperiencePromotion, GraphPromotionDraft, ResourceQuery, ResourceValue, ResponsePayload,
-    ServiceRequest, TransactionStatus,
+    DataFlowGrant, GraphExperiencePromotion, GraphPromotionDraft, ResourceQuery, ResourceValue,
+    ResponsePayload, ServiceRequest, TransactionStatus,
 };
 
 use crate::{
@@ -172,6 +172,7 @@ impl ExperienceGraphSupervisor {
             return Ok(None);
         };
         self.validate_root(root_experience_id, &graph)?;
+        self.validate_graph_grants(&graph)?;
         self.validate_live_instance_budget(std::iter::once((root_experience_id, &graph)))?;
         let mut host = ExperienceHost::launch(self.host_command.clone(), self.host_timeout)?;
         host.boot_graph(
@@ -205,6 +206,7 @@ impl ExperienceGraphSupervisor {
     ) -> Result<PreparedGraphActivation> {
         let graph = self.graphs.verify(graph_id)?;
         self.validate_root(root_experience_id, &graph)?;
+        self.validate_graph_grants(&graph)?;
         if self.hosts.contains_key(root_experience_id) {
             self.validate_live_instance_budget(std::iter::once((root_experience_id, &graph)))?;
         }
@@ -917,6 +919,76 @@ impl ExperienceGraphSupervisor {
             ));
         }
         self.revisions.verify(node.revision_id.as_str())?;
+        Ok(())
+    }
+
+    fn validate_graph_grants(&self, graph: &ResolvedGraph) -> Result<()> {
+        if self.authority.is_none() {
+            return Ok(());
+        }
+        for node in graph.nodes.values() {
+            let revision = self.revisions.verify(node.revision_id.as_str())?;
+            let package = revision.package.as_ref().ok_or_else(|| {
+                Error::InvalidGraph("v4 graph node is missing package metadata".into())
+            })?;
+            let data_flows = package
+                .dependencies
+                .iter()
+                .filter(|(_, binding)| {
+                    !binding.grant.properties.is_empty() || !binding.grant.events.is_empty()
+                })
+                .map(|(alias, binding)| {
+                    (
+                        alias.clone(),
+                        DataFlowGrant {
+                            experience_id: binding.experience_id.clone(),
+                            export_id: binding.export_id.clone(),
+                            grant: binding.grant.clone(),
+                        },
+                    )
+                })
+                .collect::<BTreeMap<_, _>>();
+            if package.provider_capabilities.is_empty() && data_flows.is_empty() {
+                continue;
+            }
+            let decision = match self.call_authority(&ServiceRequest::GetResource {
+                request_id: 36,
+                query: ResourceQuery::GrantDecisionFor {
+                    experience_id: node.experience_id.clone(),
+                },
+            })? {
+                ResponsePayload::Resource {
+                    value: ResourceValue::GrantDecision(decision),
+                } => decision,
+                _ => {
+                    return Err(Error::InvalidGraph(
+                        "authority returned the wrong grant decision payload".into(),
+                    ))
+                }
+            };
+            if !decision.reviewed
+                || decision.experience_id != node.experience_id
+                || !package
+                    .provider_capabilities
+                    .is_subset(&decision.provider_capabilities)
+                || data_flows.iter().any(|(alias, requested)| {
+                    decision.data_flows.get(alias).is_none_or(|approved| {
+                        approved.experience_id != requested.experience_id
+                            || approved.export_id != requested.export_id
+                            || !requested
+                                .grant
+                                .properties
+                                .is_subset(&approved.grant.properties)
+                            || !requested.grant.events.is_subset(&approved.grant.events)
+                    })
+                })
+            {
+                return Err(Error::InvalidGraph(format!(
+                    "revision `{}` lacks an exact authority grant decision",
+                    node.revision_id
+                )));
+            }
+        }
         Ok(())
     }
 

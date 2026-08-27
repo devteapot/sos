@@ -25,13 +25,22 @@ pub fn serve(
     socket: &Path,
     state_file: &Path,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    serve_with_appearance_writer(socket, state_file, None)
+    serve_with_writers(socket, state_file, None, None)
 }
 
 pub fn serve_with_appearance_writer(
     socket: &Path,
     state_file: &Path,
     appearance_writer: Option<&str>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    serve_with_writers(socket, state_file, appearance_writer, None)
+}
+
+pub fn serve_with_writers(
+    socket: &Path,
+    state_file: &Path,
+    appearance_writer: Option<&str>,
+    grant_writer: Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let abstract_socket = socket.as_os_str().as_encoded_bytes().starts_with(b"@");
     if !abstract_socket && socket.exists() {
@@ -58,6 +67,9 @@ pub fn serve_with_appearance_writer(
     let mut authority = Authority::open(state_file)?;
     if let Some(capability) = appearance_writer {
         authority.configure_appearance_writer(capability)?;
+    }
+    if let Some(capability) = grant_writer {
+        authority.configure_grant_writer(capability)?;
     }
     let result = (|| {
         for stream in listener.incoming() {
@@ -164,28 +176,45 @@ pub fn dispatch(request: ServiceRequest, authority: &mut Authority) -> ServiceRe
         return ServiceResponse::failure(request_id, map_error(error));
     }
     let result = match request {
-        ServiceRequest::GetResource { query, .. } => Ok(ResponsePayload::Resource {
-            value: match query {
-                ResourceQuery::ExperienceState => {
-                    ResourceValue::ExperienceState(authority.current())
-                }
-                ResourceQuery::ExperienceStateFor { experience_id } => {
-                    ResourceValue::ExperienceStateFor(service_protocol::ExperienceStateResource {
-                        resource: authority.current_for(experience_id.as_str()),
-                        experience_id,
+        ServiceRequest::GetResource { query, .. } => match query {
+            ResourceQuery::GrantDecisionFor { experience_id } => authority
+                .grant_decision_for(experience_id.as_str())
+                .map(|value| ResponsePayload::Resource {
+                    value: ResourceValue::GrantDecision(value),
+                })
+                .ok_or_else(|| {
+                    AuthorityError::Service(ServiceError::NotFound {
+                        message: format!("no grant decision for experience: {experience_id}"),
                     })
-                }
-                ResourceQuery::ExperienceStateAt {
-                    experience_id,
-                    revision_id,
-                } => ResourceValue::ExperienceStateAt(service_protocol::ExperienceStateResource {
-                    resource: authority.current_at(experience_id.as_str(), &revision_id),
-                    experience_id,
                 }),
-                ResourceQuery::Appearance => ResourceValue::Appearance(authority.appearance()),
-                ResourceQuery::Notes => ResourceValue::Notes(authority.notes()),
-            },
-        }),
+            query => Ok(ResponsePayload::Resource {
+                value: match query {
+                    ResourceQuery::ExperienceState => {
+                        ResourceValue::ExperienceState(authority.current())
+                    }
+                    ResourceQuery::ExperienceStateFor { experience_id } => {
+                        ResourceValue::ExperienceStateFor(
+                            service_protocol::ExperienceStateResource {
+                                resource: authority.current_for(experience_id.as_str()),
+                                experience_id,
+                            },
+                        )
+                    }
+                    ResourceQuery::ExperienceStateAt {
+                        experience_id,
+                        revision_id,
+                    } => ResourceValue::ExperienceStateAt(
+                        service_protocol::ExperienceStateResource {
+                            resource: authority.current_at(experience_id.as_str(), &revision_id),
+                            experience_id,
+                        },
+                    ),
+                    ResourceQuery::Appearance => ResourceValue::Appearance(authority.appearance()),
+                    ResourceQuery::Notes => ResourceValue::Notes(authority.notes()),
+                    ResourceQuery::GrantDecisionFor { .. } => unreachable!(),
+                },
+            }),
+        },
         ServiceRequest::StagePromotion { draft, .. } => authority
             .stage(draft)
             .map(|record| ResponsePayload::Transaction { record }),
@@ -203,6 +232,14 @@ pub fn dispatch(request: ServiceRequest, authority: &mut Authority) -> ServiceRe
         } => authority
             .update_appearance(expected_generation, &capability, profile)
             .map(|value| ResponsePayload::AppearanceUpdated { value }),
+        ServiceRequest::UpdateGrantDecision {
+            expected_generation,
+            capability,
+            decision,
+            ..
+        } => authority
+            .update_grant_decision(expected_generation, &capability, decision)
+            .map(|value| ResponsePayload::GrantDecisionUpdated { value }),
         ServiceRequest::Promote { transaction_id, .. } => authority
             .promote(&transaction_id)
             .map(|record| ResponsePayload::Transaction { record }),

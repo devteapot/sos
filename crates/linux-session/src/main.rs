@@ -1,9 +1,13 @@
-use std::{collections::BTreeMap, env, path::PathBuf, time::Duration};
+use std::{
+    collections::BTreeMap, env, fs, os::unix::fs::PermissionsExt as _, path::PathBuf,
+    time::Duration,
+};
 
 use anyhow::{bail, Context as _, Result};
 use sos_linux_session::{
-    bootstrap_authority, run_host_proxy, run_system_session, shutdown_authority, stage_revision,
-    BootstrapOutcome, ServiceIdentity, SessionIdentityMode, SystemSessionOptions,
+    bootstrap_authority, review_revision_grants, run_host_proxy, run_system_session,
+    shutdown_authority, stage_revision, BootstrapOutcome, ServiceIdentity, SessionIdentityMode,
+    SystemSessionOptions,
 };
 
 fn main() {
@@ -62,6 +66,34 @@ fn run() -> Result<()> {
             let service_socket = PathBuf::from(options.required("--service-socket")?);
             shutdown_authority(&service_socket, timeout)?;
         }
+        "review-grants" => {
+            options.ensure_only(&[
+                "--root",
+                "--revision",
+                "--service-socket",
+                "--capability-file",
+                "--timeout-ms",
+            ])?;
+            let capability_path = PathBuf::from(options.required("--capability-file")?);
+            let metadata = fs::metadata(&capability_path)?;
+            if !metadata.is_file()
+                || metadata.permissions().mode() & 0o077 != 0
+                || metadata.len() == 0
+                || metadata.len() > 257
+            {
+                bail!("grant capability file must be a private 1 to 256 byte regular file");
+            }
+            let capability = fs::read_to_string(capability_path)?;
+            let capability = capability.trim_end_matches(['\r', '\n']);
+            let decision = review_revision_grants(
+                PathBuf::from(options.required("--root")?).as_path(),
+                options.required("--revision")?,
+                PathBuf::from(options.required("--service-socket")?).as_path(),
+                capability,
+                timeout,
+            )?;
+            println!("{}", serde_json::to_string(&decision)?);
+        }
         "run" | "run-user" => {
             let shared_login_user = command == "run-user";
             options.ensure_only(&[
@@ -69,6 +101,8 @@ fn run() -> Result<()> {
                 "--runtime-dir",
                 "--authority-file",
                 "--shell-token-file",
+                "--trusted-stock-revision",
+                "--trusted-timeflow-revision",
                 "--agent-socket",
                 "--compositor",
                 "--provider",
@@ -120,6 +154,8 @@ fn run() -> Result<()> {
                 host_cache_directory,
                 authority_file: PathBuf::from(options.required("--authority-file")?),
                 shell_token_file: PathBuf::from(options.required("--shell-token-file")?),
+                trusted_stock_revision: options.required("--trusted-stock-revision")?.into(),
+                trusted_timeflow_revision: options.required("--trusted-timeflow-revision")?.into(),
                 agent_socket: PathBuf::from(options.required("--agent-socket")?),
                 compositor_executable: PathBuf::from(options.required("--compositor")?),
                 provider_executable: PathBuf::from(options.required("--provider")?),
@@ -194,5 +230,5 @@ impl Options {
 }
 
 fn usage() -> &'static str {
-    "usage:\n  sos-linux-session bootstrap --root DIR --service-socket PATH [--timeout-ms N]\n  sos-linux-session stage --root DIR --revision ID --service-socket PATH [--timeout-ms N]\n  sos-linux-session shutdown --service-socket PATH [--timeout-ms N]\n  sos-linux-session run --root DIR --runtime-dir DIR --authority-file FILE --shell-token-file FILE --agent-socket PATH --compositor FILE --provider FILE --supervisor FILE --host FILE --compositor-user USER --provider-user USER --supervisor-user USER --host-user USER [--timeout-ms N]\n  sos-linux-session run-user --root DIR --runtime-dir DIR --authority-file FILE --shell-token-file FILE --agent-socket PATH --compositor FILE --provider FILE --supervisor FILE --host FILE [--timeout-ms N]"
+    "usage:\n  sos-linux-session bootstrap --root DIR --service-socket PATH [--timeout-ms N]\n  sos-linux-session stage --root DIR --revision ID --service-socket PATH [--timeout-ms N]\n  sos-linux-session shutdown --service-socket PATH [--timeout-ms N]\n  sos-linux-session review-grants --root DIR --revision ID --service-socket PATH --capability-file FILE [--timeout-ms N]\n  sos-linux-session run --root DIR --runtime-dir DIR --authority-file FILE --shell-token-file FILE --trusted-stock-revision ID --trusted-timeflow-revision ID --agent-socket PATH --compositor FILE --provider FILE --supervisor FILE --host FILE --compositor-user USER --provider-user USER --supervisor-user USER --host-user USER [--timeout-ms N]\n  sos-linux-session run-user --root DIR --runtime-dir DIR --authority-file FILE --shell-token-file FILE --trusted-stock-revision ID --trusted-timeflow-revision ID --agent-socket PATH --compositor FILE --provider FILE --supervisor FILE --host FILE [--timeout-ms N]"
 }

@@ -1,9 +1,11 @@
+use std::collections::{BTreeMap, BTreeSet};
+
 use provider_state_service::{state_sha256, Authority, AuthorityError};
 use serde_json::json;
 use service_protocol::{
-    ExperiencePromotionDraft, FaultPoint, GraphExperiencePromotion, GraphPromotionDraft,
-    MigrationProof, NotesAction, PromotionDraft, ProviderAction, ServiceError, ServiceEventKind,
-    TransactionStatus,
+    DataFlowGrant, ExperiencePromotionDraft, FaultPoint, GrantDecisionResource,
+    GraphExperiencePromotion, GraphPromotionDraft, MigrationProof, NotesAction, PromotionDraft,
+    ProviderAction, ServiceError, ServiceEventKind, TransactionStatus,
 };
 use tempfile::TempDir;
 
@@ -380,6 +382,56 @@ fn experience_state_and_appearance_are_independent_resources() {
     assert_eq!(authority.current().revision, 0);
     drop(authority);
     assert_eq!(open(&directory).appearance().profile, appearance);
+}
+
+#[test]
+fn stable_experience_grants_are_capability_protected_versioned_and_persistent() {
+    let directory = TempDir::new().unwrap();
+    let mut authority = open(&directory);
+    let decision = GrantDecisionResource {
+        generation: 1,
+        reviewed: true,
+        experience_id: experience_package::ExperienceId::parse("dashboard").unwrap(),
+        provider_capabilities: BTreeSet::from(["notes_read".into()]),
+        data_flows: BTreeMap::from([(
+            experience_package::DependencyAlias::parse("agenda").unwrap(),
+            DataFlowGrant {
+                experience_id: experience_package::ExperienceId::parse("agenda").unwrap(),
+                export_id: experience_package::ExportId::parse("summary").unwrap(),
+                grant: experience_package::BoundaryGrant {
+                    properties: BTreeSet::from(["title".into()]),
+                    events: BTreeSet::new(),
+                },
+            },
+        )]),
+    };
+    assert!(authority
+        .update_grant_decision(0, "ungranted", decision.clone())
+        .is_err());
+    authority.configure_grant_writer("review-secret").unwrap();
+    authority
+        .update_grant_decision(0, "review-secret", decision.clone())
+        .unwrap();
+    assert_eq!(
+        authority.grant_decision_for("dashboard"),
+        Some(decision.clone())
+    );
+    assert!(authority
+        .update_grant_decision(0, "review-secret", decision.clone())
+        .is_err());
+    let expanded = GrantDecisionResource {
+        generation: 2,
+        provider_capabilities: BTreeSet::from(["notes_read".into(), "notes_write".into()]),
+        ..decision.clone()
+    };
+    authority
+        .update_grant_decision(1, "review-secret", expanded.clone())
+        .unwrap();
+    drop(authority);
+    assert_eq!(
+        open(&directory).grant_decision_for("dashboard"),
+        Some(expanded)
+    );
 }
 
 #[test]

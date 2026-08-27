@@ -9,8 +9,9 @@ composition authoring, and the Linux host path are implemented. Stock and
 Timeflow are v4 packages, and a Linux migration imports legacy Stock state
 without changing the legacy pointer during the rollback window. API v3 is now
 a legacy activation reader, not the target for checked-in experiences or new
-authoring. Physical Linux acceptance, complete Android host integration,
-tracked multi-root activation, and final compatibility removal remain open.
+authoring. Tracked updates activate every affected top-level graph atomically.
+Physical Linux acceptance, complete Android host integration, and final
+compatibility removal remain open.
 
 ## Decision
 
@@ -37,8 +38,8 @@ composition.
 
 | Term | Meaning |
 | --- | --- |
-| Experience ID | Stable identity that groups revision history, durable UI state, and published exports. It does not grant authority. |
-| Revision ID | Immutable identity for exact source, modules, assets, state, schemas, dependencies, and provenance. Provider grants remain revision-bound. |
+| Experience ID | Stable identity that groups revision history, durable UI state, published exports, and reviewed grant decisions. Possessing the ID does not grant authority. |
+| Revision ID | Immutable identity for exact source, modules, assets, state, schemas, dependencies, state-migration record, and provenance. |
 | Instance ID | Opaque runtime identity for one mounted or top-level execution. It never grants authority. |
 | Export ID | Stable name for one child entry point, such as `main` or `summary`, within a versioned experience contract. |
 | Dependency alias | Revision-local name by which parent source refers to one resolved child export. |
@@ -84,6 +85,13 @@ messages, and media state therefore do not need to be copied from parent UI
 state into a remix. A migration may carry deliberate user-interface state,
 such as a chosen layout or pinned filter, but it must not merge arbitrary JSON
 tables or transfer provider-scoped opaque IDs.
+
+Every derived or composed authoring request selects either fresh state or one
+exact current-target/selected-parent revision. Revision-backed migration reads
+the authority's retained state for that exact revision. The immutable package
+records the source Experience ID, Revision ID, schema version, source-state
+digest, target schema version, and migrated-state digest; installation rejects
+a package whose declared result differs from its durable state.
 
 Revision history and derivation lineage are related but different:
 
@@ -217,9 +225,13 @@ All values crossing the boundary count as an explicit data flow between two
 experience identities. The composition package must declare that flow, and
 the authority must allow it. This prevents a parent with access to one private
 provider from using a child's unrelated action grant as a confused deputy.
-Provider-scoped opaque IDs cannot cross as ordinary strings. A later brokered
-selection-transfer contract would need to revalidate both identities and the
-fresh provider snapshot.
+Provider-scoped opaque IDs cannot cross as ordinary strings. Provider and
+cross-experience data-flow reviews are versioned authority resources keyed by
+stable Experience ID. A later revision may use only the intersection of its
+package-declared requests and that stable reviewed grant. Forks and remixes
+create new Experience IDs by default and therefore do not inherit parent
+grants. A later brokered selection-transfer contract would need to revalidate
+both identities and the fresh provider snapshot.
 
 ### Runtime containment
 
@@ -293,9 +305,10 @@ callback into the shell.
 
 ## Authoring and activation
 
-The resident authoring surface retains the API v3 active-edit flow and adds
-separate API v4 derivation and composition flows. Neither gives the model
-filesystem or package-registry access.
+The resident authoring surface emits only API v4 packages for active edits,
+derivations, and live compositions. API v3 remains readable only for bounded
+rollback of retained artifacts. None of the authoring flows gives the model
+filesystem, registry, activation, or grant-review authority.
 
 The trusted authoring broker must:
 
@@ -304,7 +317,8 @@ The trusted authoring broker must:
 2. return their complete inspectable source packages and contracts to the
    authoring model;
 3. bind validation to the exact candidate source, modules, assets, state
-   schema, derivation parents, dependencies, and contracts;
+   schema and migration record, provider requests, derivation parents,
+   dependencies, and contracts;
 4. validate every exported entry point at representative bounded viewports and
    supported appearance states;
 5. install and return the exact resolved graph that passed validation without
@@ -343,6 +357,9 @@ The implementation is split so the contracts do not depend on GPUI or Linux:
 - provider/state protocol v2 commits all changed experience states as one
   durable graph transaction and retains revision-specific state for locked
   graphs after a newer child becomes current;
+- the authority keeps separately capability-protected, versioned appearance
+  and stable-Experience grant resources; the Linux graph host intersects each
+  revision's declared provider requests with that Experience's reviewed grant;
 - the Linux graph host prepares off the GPUI thread, while the graph supervisor
   presents and confirms the complete graph, advances registry and graph
   pointers under a durable journal, then explicitly finalizes the host switch.

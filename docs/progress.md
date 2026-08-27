@@ -12605,3 +12605,51 @@ complete at the supervisor layer, but compositor presentation evidence still
 needs the physical Linux campaign. Audit and finish fork/remix authoring and
 built-in v4 conversion next, then implement the same registry, graph, state,
 appearance, and boundary behavior in the Android authority and host.
+
+## 2026-08-27: Bind v4 authoring state and grants to explicit authority records
+
+**Goal:** Remove the remaining implicit state/grant assumptions from v4
+authoring and make provider access follow the frozen stable-Experience
+authority model.
+
+**Changed:** Package format v4 now carries an immutable state-migration record
+with a fresh or exact Experience/revision source, source schema and state hash,
+target schema, and result state hash. Derived and composed authoring requests
+must choose that state source explicitly and declare bounded provider
+capability requests. Exact revision migration reads the authority's retained
+state; the revision store rejects a package whose migration result does not
+match the installed durable state.
+
+Authority format 3 adds capability-protected, generation-checked grant
+decisions keyed by stable Experience ID. Decisions cover provider capabilities
+and exact child Experience/export property and event flows. The graph
+supervisor rejects unreviewed or overreaching graphs before preparation. In v4
+graph mode the Linux host reads authority grants and intersects them with the
+running revision's immutable requests; the legacy grant file remains only on
+the singleton v3 rollback path. Trusted Stock and Timeflow packages receive
+native bootstrap review, while agent-authored candidates report that review is
+required and cannot activate until a native caller uses the private review
+capability. Existing supersets are preserved and reused across revisions of
+the same Experience.
+
+**Evidence:** `cargo check --workspace --all-targets` passed. `cargo test -p
+experience-package` passed 10 tests, `cargo test -p provider-state-service`
+passed 15, `cargo test -p revision-supervisor` passed 47 after adding migration
+digest rejection and stable-grant/revision coverage, `cargo test -p
+sos-linux-session --lib` passed 15, `npm --prefix services/sos-agent test`
+passed 19, and `cargo test -p sos-experience --features linux-host --lib --
+--test-threads=1` passed 34. Rust formatting and
+`bash -n packaging/libexec/sos-login-session` passed.
+
+**Failures and decision:** The first grant draft keyed reviews by immutable
+revision, conflicting with the frozen ownership rule. Moving the record to the
+stable Experience ID exposed a second issue: returning the complete stable
+superset to an older revision would exceed that revision's declaration. The
+host now intersects both sets. Trusted review is idempotent and unions an
+existing superset instead of silently revoking it.
+
+**Remaining risks and next gate:** This closes explicit migration provenance
+and Linux grant enforcement at the desktop-test boundary. Finish Stock's
+top-level launch migration and optional worker-process isolation, then port the
+registry, graph protocol, authority resources, and Instance-scoped routing to
+Android before either physical acceptance campaign.

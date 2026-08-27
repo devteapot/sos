@@ -8,17 +8,18 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 use service_protocol::{
-    AppearanceResource, EffectReceipt, ExperiencePromotionDraft, FaultPoint, GraphEffectReceipt,
-    GraphPromotionDraft, GraphTransactionRecord, MigrationProof, NotesAction, NotesResource,
-    PromotionDraft, ProviderAction, ServiceError, ServiceEvent, ServiceEventKind, StateResource,
-    TransactionRecord, TransactionStatus, MAX_ACTIONS, MAX_EVENTS_PER_REQUEST,
+    AppearanceResource, EffectReceipt, ExperiencePromotionDraft, FaultPoint, GrantDecisionResource,
+    GraphEffectReceipt, GraphPromotionDraft, GraphTransactionRecord, MigrationProof, NotesAction,
+    NotesResource, PromotionDraft, ProviderAction, ServiceError, ServiceEvent, ServiceEventKind,
+    StateResource, TransactionRecord, TransactionStatus, MAX_ACTIONS, MAX_EVENTS_PER_REQUEST,
     MAX_GRAPH_PROMOTIONS, MAX_STATE_BYTES,
 };
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 const LEGACY_AUTHORITY_FORMAT_VERSION: u32 = 1;
-const AUTHORITY_FORMAT_VERSION: u32 = 2;
+const EXPERIENCE_AUTHORITY_FORMAT_VERSION: u32 = 2;
+const AUTHORITY_FORMAT_VERSION: u32 = 3;
 const STOCK_SHELL_EXPERIENCE_ID: &str = "sos.stock.shell";
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
@@ -50,6 +51,10 @@ struct AuthorityData {
     appearance: AppearanceResource,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     appearance_writer_sha256: Option<String>,
+    #[serde(default)]
+    grant_decisions: BTreeMap<String, GrantDecisionResource>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    grant_writer_sha256: Option<String>,
     notes: NotesResource,
     transactions: BTreeMap<String, TransactionRecord>,
     #[serde(default)]
@@ -70,6 +75,8 @@ impl Default for AuthorityData {
             experience_revisions: BTreeMap::new(),
             appearance: AppearanceResource::default(),
             appearance_writer_sha256: None,
+            grant_decisions: BTreeMap::new(),
+            grant_writer_sha256: None,
             notes: NotesResource::default(),
             transactions: BTreeMap::new(),
             graph_transactions: BTreeMap::new(),
@@ -149,6 +156,10 @@ impl Authority {
 
     pub fn appearance(&self) -> AppearanceResource {
         self.data.appearance.clone()
+    }
+
+    pub fn grant_decision_for(&self, experience_id: &str) -> Option<GrantDecisionResource> {
+        self.data.grant_decisions.get(experience_id).cloned()
     }
 
     pub fn notes(&self) -> NotesResource {
@@ -391,6 +402,77 @@ impl Authority {
                 self.replace_durably(next)
             }
         }
+    }
+
+    pub fn update_grant_decision(
+        &mut self,
+        expected_generation: u64,
+        capability: &str,
+        decision: GrantDecisionResource,
+    ) -> Result<GrantDecisionResource, AuthorityError> {
+        self.require_capability(
+            capability,
+            self.data.grant_writer_sha256.as_deref(),
+            "grant-review",
+        )?;
+        validate_grant_decision(&decision)?;
+        let current_generation = self
+            .data
+            .grant_decisions
+            .get(decision.experience_id.as_str())
+            .map_or(0, |current| current.generation);
+        if current_generation != expected_generation {
+            return Err(conflict(format!(
+                "grant decision generation conflict: expected {expected_generation}, current {current_generation}"
+            )));
+        }
+        if decision.generation != expected_generation.saturating_add(1) {
+            return Err(invalid(
+                "new grant decision generation must follow the expected generation",
+            ));
+        }
+        let mut next = self.data.clone();
+        next.grant_decisions
+            .insert(decision.experience_id.to_string(), decision.clone());
+        self.replace_durably(next)?;
+        Ok(decision)
+    }
+
+    pub fn configure_grant_writer(&mut self, capability: &str) -> Result<(), AuthorityError> {
+        if capability.is_empty() || capability.len() > 256 {
+            return Err(invalid(
+                "grant-review capability must contain 1 to 256 bytes",
+            ));
+        }
+        let digest = format!("{:x}", Sha256::digest(capability.as_bytes()));
+        match self.data.grant_writer_sha256.as_deref() {
+            Some(current) if current == digest => Ok(()),
+            Some(_) => Err(conflict("grant-review capability does not match authority")),
+            None => {
+                let mut next = self.data.clone();
+                next.grant_writer_sha256 = Some(digest);
+                self.replace_durably(next)
+            }
+        }
+    }
+
+    fn require_capability(
+        &self,
+        capability: &str,
+        expected_sha256: Option<&str>,
+        name: &str,
+    ) -> Result<(), AuthorityError> {
+        if capability.is_empty()
+            || capability.len() > 256
+            || expected_sha256
+                != Some(format!("{:x}", Sha256::digest(capability.as_bytes())).as_str())
+        {
+            return Err(ServiceError::Denied {
+                message: format!("{name} capability denied"),
+            }
+            .into());
+        }
+        Ok(())
     }
 
     pub fn promote(&mut self, transaction_id: &str) -> Result<TransactionRecord, AuthorityError> {
@@ -938,6 +1020,15 @@ fn validate_loaded(data: &AuthorityData) -> Result<(), AuthorityError> {
     if let Some(digest) = &data.appearance_writer_sha256 {
         validate_sha256("appearance writer capability", digest)?;
     }
+    if let Some(digest) = &data.grant_writer_sha256 {
+        validate_sha256("grant writer capability", digest)?;
+    }
+    for (experience_id, decision) in &data.grant_decisions {
+        if experience_id != decision.experience_id.as_str() {
+            return Err(invalid("grant decision index mismatch"));
+        }
+        validate_grant_decision(decision)?;
+    }
     for (experience_id, state) in &data.experiences {
         experience_package::ExperienceId::parse(experience_id)
             .map_err(|error| invalid(error.to_string()))?;
@@ -995,6 +1086,11 @@ fn validate_loaded(data: &AuthorityData) -> Result<(), AuthorityError> {
 fn migrate_loaded(data: &mut AuthorityData) -> Result<bool, AuthorityError> {
     match data.format_version {
         AUTHORITY_FORMAT_VERSION => Ok(backfill_revision_states(data)),
+        EXPERIENCE_AUTHORITY_FORMAT_VERSION => {
+            data.format_version = AUTHORITY_FORMAT_VERSION;
+            backfill_revision_states(data);
+            Ok(true)
+        }
         LEGACY_AUTHORITY_FORMAT_VERSION => {
             data.format_version = AUTHORITY_FORMAT_VERSION;
             data.experiences
@@ -1005,6 +1101,55 @@ fn migrate_loaded(data: &mut AuthorityData) -> Result<bool, AuthorityError> {
         }
         _ => Err(invalid("invalid authority file version")),
     }
+}
+
+fn validate_grant_decision(decision: &GrantDecisionResource) -> Result<(), AuthorityError> {
+    experience_package::ExperienceId::parse(decision.experience_id.as_str())
+        .map_err(|error| invalid(error.to_string()))?;
+    if decision.generation == 0
+        || decision.provider_capabilities.len() > experience_package::MAX_SCHEMA_FIELDS
+    {
+        return Err(invalid(
+            "grant decision generation or capability count is invalid",
+        ));
+    }
+    for capability in &decision.provider_capabilities {
+        if capability.is_empty()
+            || capability.len() > experience_package::MAX_NAME_BYTES
+            || !capability
+                .bytes()
+                .next()
+                .is_some_and(|byte| byte.is_ascii_lowercase())
+            || capability.bytes().any(|byte| {
+                !(byte.is_ascii_lowercase()
+                    || byte.is_ascii_digit()
+                    || matches!(byte, b'.' | b'_' | b'-'))
+            })
+        {
+            return Err(invalid("grant decision contains an invalid capability"));
+        }
+    }
+    if decision.data_flows.len() > experience_package::MAX_DEPENDENCIES {
+        return Err(invalid("grant decision contains too many data flows"));
+    }
+    for (alias, flow) in &decision.data_flows {
+        experience_package::DependencyAlias::parse(alias.as_str())
+            .map_err(|error| invalid(error.to_string()))?;
+        experience_package::ExperienceId::parse(flow.experience_id.as_str())
+            .map_err(|error| invalid(error.to_string()))?;
+        experience_package::ExportId::parse(flow.export_id.as_str())
+            .map_err(|error| invalid(error.to_string()))?;
+        for property in &flow.grant.properties {
+            if property.is_empty() || property.len() > experience_package::MAX_NAME_BYTES {
+                return Err(invalid("grant decision contains an invalid property"));
+            }
+        }
+        for event in &flow.grant.events {
+            experience_package::EventId::parse(event.as_str())
+                .map_err(|error| invalid(error.to_string()))?;
+        }
+    }
+    Ok(())
 }
 
 fn backfill_revision_states(data: &mut AuthorityData) -> bool {

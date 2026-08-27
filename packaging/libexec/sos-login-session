@@ -65,6 +65,8 @@ sos_login_state_dir="$sos_login_state_home/sos"
 sos_login_revision_root="$sos_login_state_dir/revisions"
 sos_login_authority_file="$sos_login_state_dir/provider/authority.json"
 sos_login_token_file="$sos_login_state_dir/shell-token"
+sos_login_grant_capability_file="$sos_login_state_dir/grant-review.capability"
+sos_login_trusted_stock_file="$sos_login_state_dir/trusted-stock-revision"
 sos_login_output_config="$sos_login_state_dir/output.json"
 sos_login_agent_state_dir="$sos_login_state_dir/agent"
 sos_login_agent_credentials="$sos_login_agent_state_dir/auth.json"
@@ -110,6 +112,14 @@ if [[ ! -f "$sos_login_token_file" ]]; then
   rm -f -- "$sos_login_token_tmp"
 fi
 chmod 0600 "$sos_login_token_file"
+if [[ ! -f "$sos_login_grant_capability_file" ]]; then
+  sos_login_grant_tmp="$sos_login_state_dir/.grant-review.$$"
+  od -An -N32 -tx1 /dev/urandom | tr -d ' \n' >"$sos_login_grant_tmp"
+  chmod 0600 "$sos_login_grant_tmp"
+  mv -n -- "$sos_login_grant_tmp" "$sos_login_grant_capability_file"
+  rm -f -- "$sos_login_grant_tmp"
+fi
+chmod 0600 "$sos_login_grant_capability_file"
 if [[ ! -e "$sos_login_output_config" ]]; then
   printf '{}\n' >"$sos_login_output_config"
 fi
@@ -137,6 +147,8 @@ if [[ "$sos_login_current" == none ]]; then
     --root "$sos_login_revision_root" \
     --experience sos.stock.shell \
     --revision "$sos_login_revision" >/dev/null
+  printf '%s\n' "$sos_login_revision" >"$sos_login_trusted_stock_file"
+  chmod 0600 "$sos_login_trusted_stock_file"
   printf 'sos_login_session_initialized api_version=4 revision_id=%s\n' "$sos_login_revision"
 elif [[ "$($sos_login_supervisor_bin graph-status \
     --root "$sos_login_revision_root" \
@@ -147,6 +159,11 @@ elif [[ "$($sos_login_supervisor_bin graph-status \
     --package "$sos_login_default_package" \
     --asset "stock.theme:luau:$sos_login_stock_theme")"
   printf 'sos_login_session_migrated %s\n' "$sos_login_migration"
+  sos_login_migrated_revision="$($sos_login_supervisor_bin experience-status \
+    --root "$sos_login_revision_root" \
+    --experience sos.stock.shell)"
+  printf '%s\n' "$sos_login_migrated_revision" >"$sos_login_trusted_stock_file"
+  chmod 0600 "$sos_login_trusted_stock_file"
 fi
 
 sos_login_initial_state="$sos_login_state_dir/.timeflow-initial-state.$$"
@@ -168,6 +185,22 @@ if [[ "$($sos_login_supervisor_bin graph-status \
   printf 'sos_login_experience_registered experience_id=sos.timeflow revision_id=%s\n' \
     "$sos_login_timeflow_revision"
 fi
+if [[ ! -f "$sos_login_trusted_stock_file" ]]; then
+  sos_login_current_stock="$($sos_login_supervisor_bin experience-status \
+    --root "$sos_login_revision_root" \
+    --experience sos.stock.shell)"
+  [[ "$sos_login_current_stock" =~ ^[0-9a-f]{64}$ \
+    && -f "$sos_login_revision_root/revisions/$sos_login_current_stock/source.luau" ]] || \
+    sos_login_fail "Stock registry does not contain a verifiable v4 revision"
+  cmp -s -- "$sos_login_default_source" \
+    "$sos_login_revision_root/revisions/$sos_login_current_stock/source.luau" || \
+    sos_login_fail "cannot infer a trusted product grant for a customized Stock revision"
+  printf '%s\n' "$sos_login_current_stock" >"$sos_login_trusted_stock_file"
+  chmod 0600 "$sos_login_trusted_stock_file"
+fi
+sos_login_stock_revision="$(tr -d '\r\n' <"$sos_login_trusted_stock_file")"
+[[ "$sos_login_stock_revision" =~ ^[0-9a-f]{64}$ ]] || \
+  sos_login_fail "trusted Stock revision is invalid"
 
 sos_login_runtime="$(mktemp -d "$XDG_RUNTIME_DIR/sos-session.XXXXXX")"
 sos_login_agent_socket="$sos_login_runtime/agent.sock"
@@ -237,6 +270,8 @@ systemd-inhibit \
   --runtime-dir "$sos_login_runtime" \
   --authority-file "$sos_login_authority_file" \
   --shell-token-file "$sos_login_token_file" \
+  --trusted-stock-revision "$sos_login_stock_revision" \
+  --trusted-timeflow-revision "$sos_login_timeflow_revision" \
   --agent-socket "$sos_login_agent_socket" \
   --compositor "$sos_login_compositor_bin" \
   --provider "$sos_login_provider_bin" \

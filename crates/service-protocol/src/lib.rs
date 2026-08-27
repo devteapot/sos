@@ -1,6 +1,8 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
-use experience_package::{AppearanceProfile, ExperienceId};
+use experience_package::{
+    AppearanceProfile, BoundaryGrant, DependencyAlias, ExperienceId, ExportId,
+};
 use serde::{Deserialize, Serialize};
 
 pub const LEGACY_PROTOCOL_VERSION: u32 = 1;
@@ -45,6 +47,25 @@ pub struct AppearanceResource {
     pub profile: AppearanceProfile,
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct GrantDecisionResource {
+    pub generation: u64,
+    pub reviewed: bool,
+    pub experience_id: ExperienceId,
+    #[serde(default)]
+    pub provider_capabilities: BTreeSet<String>,
+    #[serde(default)]
+    pub data_flows: BTreeMap<DependencyAlias, DataFlowGrant>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct DataFlowGrant {
+    pub experience_id: ExperienceId,
+    pub export_id: ExportId,
+    #[serde(flatten)]
+    pub grant: BoundaryGrant,
+}
+
 impl Default for AppearanceResource {
     fn default() -> Self {
         Self {
@@ -69,6 +90,9 @@ pub enum ResourceQuery {
         experience_id: ExperienceId,
         revision_id: String,
     },
+    GrantDecisionFor {
+        experience_id: ExperienceId,
+    },
     Appearance,
     Notes,
 }
@@ -79,6 +103,7 @@ pub enum ResourceValue {
     ExperienceState(StateResource),
     ExperienceStateFor(ExperienceStateResource),
     ExperienceStateAt(ExperienceStateResource),
+    GrantDecision(GrantDecisionResource),
     Appearance(AppearanceResource),
     Notes(NotesResource),
 }
@@ -295,6 +320,12 @@ pub enum ServiceRequest {
         capability: String,
         profile: AppearanceProfile,
     },
+    UpdateGrantDecision {
+        request_id: u64,
+        expected_generation: u64,
+        capability: String,
+        decision: GrantDecisionResource,
+    },
     Promote {
         request_id: u64,
         transaction_id: String,
@@ -341,6 +372,7 @@ impl ServiceRequest {
             | Self::StageExperiencePromotion { request_id, .. }
             | Self::StageGraphPromotion { request_id, .. }
             | Self::UpdateAppearance { request_id, .. }
+            | Self::UpdateGrantDecision { request_id, .. }
             | Self::Promote { request_id, .. }
             | Self::Abort { request_id, .. }
             | Self::GetTransaction { request_id, .. }
@@ -377,6 +409,7 @@ pub enum ResponsePayload {
     Transaction { record: TransactionRecord },
     GraphTransaction { record: GraphTransactionRecord },
     AppearanceUpdated { value: AppearanceResource },
+    GrantDecisionUpdated { value: GrantDecisionResource },
     Events { events: Vec<ServiceEvent> },
     FaultConfigured,
     Shutdown,

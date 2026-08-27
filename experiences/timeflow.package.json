@@ -2,6 +2,7 @@
   "format_version": 4,
   "experience_id": "sos.timeflow",
   "role": "ordinary",
+  "provider_capabilities": ["calendar_read", "system_read"],
   "contract": {
     "contract_version": 1,
     "exports": {
