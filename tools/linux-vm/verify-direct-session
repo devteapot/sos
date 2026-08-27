@@ -431,9 +431,9 @@ fi
 [[ "$(grep -c 'presented armed shell revision.*evidence=\"drm_page_flip\"' \
   "$vm_run_dir/compositor.log")" -eq 5 ]]
 [[ "$(grep -c 'resumed compositor input epoch' "$vm_run_dir/compositor.log")" -eq 4 ]]
-grep -q "authenticated SOS shell control connection pid=$vm_pid_after" \
+grep -q "authenticated SOS compositor control connection pid=$vm_pid_after role=Shell" \
   "$vm_run_dir/compositor.log"
-grep -q "authenticated SOS shell control connection pid=$vm_restarted_pid" \
+grep -q "authenticated SOS compositor control connection pid=$vm_restarted_pid role=Shell" \
   "$vm_run_dir/compositor.log"
 grep -q 'HostRestarted' "$vm_run_dir/session.log"
 grep -q 'accepted Wayland client.*role=Compatibility' "$vm_run_dir/compositor.log"

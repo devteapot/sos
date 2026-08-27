@@ -13199,3 +13199,39 @@ then run one fresh direct-DRM attempt. PASS requires five ordered DRM graph
 frames, four explicit input-epoch resumptions, retained raw evidence and a
 verified manifest. Framework integrated-input and Samsung physical campaigns
 remain open.
+
+## 2026-08-27: Correct the final direct verifier authentication assertion
+
+**Goal:** Preserve and classify the first run with physically evidenced graph
+rollback, then repair its exact non-product failure before one downstream run.
+
+**Changed:** The final direct-session PID checks now match the compositor's
+current structured authentication message, including the explicit
+`role=Shell`. No product behavior or acceptance count changed.
+
+**Evidence:** Attempt five is retained at
+`.cache/evidence/linux-v4-769866b/attempt5`. Its finalized files total 147,484
+bytes. `SHA256SUMS` is 2,388 bytes with SHA-256
+`45a7f672e1cb20b03c8647b31caa2b3c10030393c542bf4b5b6714884c486d8e`;
+`sha256sum -c` verifies all 19 listed artifacts. `result.json` records FAIL
+after 31.726691694 monotonic seconds.
+
+The run nevertheless passed the complete product boundary before line 434:
+five ordered DRM graph frames were Stock boot `b8d0745f…`, accepted candidate
+`27ddfcc9…`, rejected Stock `b8d0745f…`, physically restored candidate
+`27ddfcc9…`, and restarted candidate `27ddfcc9…`. The compositor recorded four
+explicit input-epoch resumptions, with the rejected and restored frames sharing
+one quiesced epoch. Registry and authority revisions agreed, no singleton
+pointer existed, both held-input lifecycles had nonzero keyboard, button and
+two-touch state, host PID changed from 15336 to 15770 after the forced crash,
+and compatibility mapping succeeded. GDM and seatd were active after cleanup.
+
+**Failures and decision:** The gate stopped because it searched for the removed
+phrase `authenticated SOS shell control connection`; both relevant log lines
+use `authenticated SOS compositor control connection ... role=Shell`. The PID
+values and shell role were present. The assertion now follows the actual stable
+structured message instead of weakening authentication evidence.
+
+**Remaining risks and next gate:** Run syntax checks, commit, synchronize and
+perform one fresh direct phase. A PASS must retain and verify the same evidence
+set. Physical Framework and Samsung acceptance remain open.
