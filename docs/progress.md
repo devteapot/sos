@@ -15652,3 +15652,34 @@ record to report appId 1000 traffic mask 12. The authority must then replace
 its PID, serve a valid audit snapshot, preserve the HOME PID and composed
 Dashboard, and reset its one-shot property. Only that result can reopen the
 authored and v4-to-v4 rollback stages.
+
+## 2026-08-27: Seal the Android socket-permission candidate
+
+**Goal / build:** Package the exact bridge permission and inspection gate that
+should keep the native authority eligible for AF_INET socket creation after
+Connectivity attaches its BPF program. Clean source
+`9a8bd80af5c20ee51bdb2d24c12cb5e9b67a14c1` built Compat 1 successfully in
+248.30 seconds with 2,978,428 KiB peak RSS. Its immutable product identity is
+`sos.compat1.9a8bd80af5c2.7d1fcf888c79`.
+
+**Offline evidence:** `./tools/a33xctl inspect-compat1` passed in 20.19 seconds
+with 47,528 KiB peak RSS. It decoded the installed 41,374-byte
+`SosFrameworkBridge.apk`, verified package `dev.sos.frameworkbridge`, and
+required `android.permission.INTERNET`; that APK has SHA-256
+`d7c2f0fbd6b9a11bbe45766e03d33b7a318bf68cfc6ad21e136d6ddb8b905667`.
+The OTA signature, VINTF, PIT and AVB limits, boot chain, v4 and Stock Mobile
+contracts, authority boundaries, and system controls also passed. The exact
+1,067,700,551-byte OTA at
+`.cache/evidence/android-v4-9a8bd80/compat1/lineage-23.0-20260827-UNOFFICIAL-sos_compat_a33x-9a8bd80.zip`
+has SHA-256
+`c3fe0466617633f98a1a159d06230deb923bdbc462436d04a5313b3426a59b82`.
+Its complete ZIP test passed in 4.50 seconds. The finalized eight-file offline
+manifest is 712 bytes with SHA-256
+`f1552b73bb16bd8f8eaf755c9db7ea50963eb25c6bdcd2c779dc97de556ccf45`;
+independent verification passes.
+
+**Decision / next gate:** This digest is the only authorized replacement.
+Install it once through automatic Recovery and start a fresh campaign. Verify
+traffic mask 12 from the live device before the authority-only restart, then
+require an audit-ready replacement with HOME unchanged. Do not advance on a
+new PID alone.
