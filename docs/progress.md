@@ -14203,3 +14203,102 @@ appearance/failure/recovery sequence before a new clean end-to-end Framework
 campaign. Timeout containment, application-host restart, Stock activation,
 integrated input, logout, and final collection remain open; this diagnostic
 campaign is not an acceptance result.
+
+## 2026-08-27: Complete the exact Framework v4 composition diagnostic
+
+**Goal and environment:** Close the full locked-composition Linux campaign on
+the Framework Laptop 12 from exact clean revision
+`4f93f50e9e559329eb6120ec5dcbeccfd530a1e7`. The complete development payload
+deployed as `20260827T125525Z-4f93f50e9e55-3402102` in 119,126,621,512 ns.
+PiKVM performed the SOS GDM selection, login, graphical observation, agent
+prompt entry, and clean logout. A root-owned block inhibitor protected the
+entire prepared campaign from idle, sleep, and lid-switch handling. This was
+Fedora development-live boot `9b1818f2-c6c3-4829-8109-c9b3320a02a3`, so it
+is intentionally promotion-ineligible and does not claim installed-product
+acceptance.
+
+**Physical composition evidence:** Stock launched locked Dashboard graph
+`9a49ec819b8d0c83fa45566f16925498dbb95bd882bfc87d6b92526603e637f7`
+through its semantic catalog action. The graph mounted independent Agenda
+revision `0fa593bb5dc1f655dfeacad3ff2a7fc457c98807ecf6800a42eb9accdbc7967d`
+and Media revision `8befbf5c1ebcde560edbc1e3254ff92c4e11bd86bf6ed1e015e484da4c2ff930`
+inside Dashboard revision
+`6ced86a21146c706b78851bf8278e797169d88d7a9296a62ea8adbaab265f9f0`.
+Agenda durable state survived restart from the preceding attempt. Appearance
+generation 1 to 2 committed through the authority in 6,256,369 ns and reached
+child semantics in 405,414,126 ns without changing any revision ID; Media's
+custom scene remained byte-identical.
+
+An injected Agenda update failure was contained in 21,994,463 ns and recovered
+after a parent event in 68,844,068 ns. An injected child timeout was contained
+in 22,575,946 ns and recovered in 90,349,829 ns. Both paths preserved Agenda
+state, kept Dashboard interactive, and restored appearance generation 2.
+Killing Dashboard renderer PID 926078 left Stock renderer PID 925154 alive;
+the application proxy and renderer restarted as PIDs 928138 and 928142 in
+197,354,046 ns with both mounts, state, and appearance intact. PiKVM then
+submitted `Make the workspace feel calmer` through Stock's resident agent.
+Stock atomically advanced from revision `26f36f17…` to
+`f39a6050cb0e8fb444beb7d4b1d7f62f76f992336688330c59ef8de5b2124479`
+and presented graph
+`f226d9795e5a6a5ca0a8f4d14f1df686fc569820aca6dc0d324712d5f7a427f0`;
+the pointer-visible change took 335,181,758 ns. Dashboard then dismissed
+through the v4 experience action.
+
+The exact prepared inventory and compositor journal proved the integrated AT
+keyboard, PIXA3854 touchpad motion and primary button, and ILIT2901 touchscreen
+contact, alongside physical DRM page flips on both outputs. PiKVM performed the
+clean logout and GDM recovery. Collection measured 1,320,441,618,564 ns from
+prepare through logout. All hardware-gate criteria passed: same boot, recovery
+page flip, direct compositor, session readiness, resident agent, all four input
+classes, prepared inventory, clean logout, awake inhibitor, transactional
+activation, multi-host lifecycle, durable authority, fallback display manager,
+process failures, and kernel GPU faults.
+
+**Evidence and decision:** The sealed bundle is
+`.cache/evidence/linux-framework-4f93f50-campaign/`, 2,968,676 bytes including
+the manifest. Its 8,696-byte 87-file manifest has SHA-256
+`0be17dc236149c9755c93b755314f8950e52a2199be20eb1cd08f9dcbbd7e800`.
+Both target-side and independent local `verify-manifest` and `audit` runs
+passed. The exact result is
+`DIAGNOSTIC_PASS promotion_eligible=false`; composition and recovery are green
+on physical Framework hardware, while installed-product promotion remains a
+separate gate.
+
+## 2026-08-27: Build and inspect exact v4 Android Compat 1 and Core 1 artifacts
+
+**Goal:** Produce immutable Samsung SM-A336B candidates from the same exact
+`4f93f50e9e559329eb6120ec5dcbeccfd530a1e7` source used by the successful
+Framework campaign, then run every offline package gate before touching the
+device.
+
+**Compat 1 evidence:** `build-compat1` produced build identity
+`sos.compat1.4f93f50e9e55.a55ec0763af3`. `inspect-compat1` passed in
+19,343,480,782 ns, covering the whole-package signature, compressed-data
+integrity, PIT ceilings, AVB consistency, recovery device init, ARM64-only
+native payload, native Compat ownership, system IME, UI-removal policy,
+authority and resident-agent payloads, reference composition markers, and
+`ro.sos.revision_format=4` / `ro.sos.experience_api=4`. The preserved OTA is
+1,067,689,645 bytes with SHA-256
+`ac4d46e40b38ea8b59a655ad1afefec7b11b5366d33e712925c87a9e9dd3e7f2`.
+Its deterministic target-files archive is 2,173,516,615 bytes with SHA-256
+`fd763645f3a2d9d5307a8f044974a2225626565bb23979d6e22e188a0fcf965d`.
+
+**Core 1 evidence:** `build-core1` completed in 251,728,919,131 ns with build
+identity `sos.core1.4f93f50e9e55.45ba3d420456`. `inspect-core1` passed in
+17,245,525,725 ns, covering the package and AVB gates plus Core's pre-unlock
+native host, pinned-model rejection, signed reference composition, no-Zygote
+UI ownership, disabled user APK installation, and v4 format/API markers. The
+preserved OTA is 1,022,880,554 bytes with SHA-256
+`f70e1bfbc264187363d81829abfc7edf1fd60dc9db32b494a30acd5365c8dd33`.
+Its deterministic target-files archive is 2,076,956,250 bytes with SHA-256
+`9600dd6ec5db97b32c1c83493156afa273fc1af4a1a07b05326079d0d0595641`.
+Logs, durations, identities, packages, and target files are under
+`.cache/evidence/android-v4-4f93f50/` and remain outside Git.
+
+**Decision and remaining gate:** Do not install either artifact while serial
+`RFCT50EGFCN` is exposed only as Samsung USB Download Mode (`04e8:685d`) and
+`adb` reports `no permissions`. No device mutation was attempted. Physical
+Compat and Core acceptance, including exact revision readiness, composition,
+properties/events, grants, appearance, restart/rollback, IME, accessibility,
+input containment, and final evidence manifests, remains open until an
+authorized Android or recovery transport exists.
