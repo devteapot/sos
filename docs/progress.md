@@ -13392,3 +13392,86 @@ records and the gate recognizes one exact tombstone.
 the tombstone is target evidence, then prepare the Framework campaign again.
 This compatibility tombstone can be removed with the old development image;
 it is not an active experience or activation path.
+
+## 2026-08-27: Stage the Framework v4 composition campaign without claiming runtime
+
+**Goal:** Put the exact clean v4 deployment and reference graph on the physical
+Framework 12 while preserving the distinction between preparation and live
+composition evidence.
+
+**Changed environment and evidence:** Clean source revision
+`c4e9aec110982b27e82e63ba2158dad8aff259c9` was completely deployed as
+`20260827T091047Z-c4e9aec11098-2574462`. The deployer independently verified
+every installed digest and completed in 29,171,952,848 ns. Generated evidence
+is under
+`.cache/evidence/framework-v4-deploy/20260827T091047Z-c4e9aec11098-2574462/`;
+the mutable live overlay remains `promotion_eligible=false`.
+
+The hardware gate then prepared
+`/home/liveuser/framework12-v4-composition-c4e9aec` on Framework Laptop 12,
+Fedora 44, kernel `6.19.10-300.fc44.x86_64`, boot ID
+`9b1818f2-c6c3-4829-8109-c9b3320a02a3`. The internal NVMe remained unmounted.
+The content-addressed reference set was installed with Dashboard graph
+`f09068511e1c9d2c160fcc55583e9d347024fbf4a6ca2fa53ff2492a983ab287`,
+Dashboard revision
+`6676864289356369df159b1e55f110e08878948c94272398ec0580765e5eee98`,
+Agenda revision
+`30e496f607393114c5a3963a25b91681c5a49d222db16801cbe6882b42b3ba3b`,
+Media revision
+`f6a9b11b2ce849ae5525319e6dd34e14ef38406ee27b8d1524bd03bff04c8bb6`,
+and self-contained remix revision
+`d5f061a7097eb069c83046679cc937287219fa475c6697da381abcb23eae2de3`.
+
+**Failure and decision:** The laptop became unreachable before GDM or SOS was
+reconfigured and before the graph runtime started. No autologin mutation was
+made. Preparation is retained on the live overlay, but it is not presentation,
+input, restart, or rollback evidence. If the boot ID changes after wake, the
+same-boot evidence directory must be discarded and prepared again.
+
+**Remaining risks and next gate:** Wake the Framework, verify the same boot ID,
+then run Dashboard through physical presentation, mounted-child interaction,
+appearance propagation, restart, rollback, and integrated keyboard, touchpad,
+and touchscreen checks. PiKVM HID cannot satisfy the integrated-input gate.
+
+## 2026-08-27: Recover Android build capacity and align the Core 1 patch contract
+
+**Goal:** Resume a clean Samsung v4 build without accepting stale generated
+images or a source patch whose declared target set differs from the applied
+Lineage tree.
+
+**Changed environment:** The accepted Debian VM was stopped cleanly before its
+79 GiB generated `.cache/linux-vm` runtime was removed. An unrelated,
+rebuildable 163 GiB `/home/carlid/dev/aosp-sos/out` tree was also removed.
+Linux source, the retained acceptance evidence, the 417 MiB base image, and the
+active `/home/carlid/dev/lineage-a33x` source/output tree were preserved. Free
+space increased from 116 GiB to 331 GiB; `./tools/a33xctl doctor` then passed
+with 350,166,740 KiB available.
+
+The pinned patch
+`0005-s5e8825-select-no-zygote-for-sos-core1.patch` now names both the shipping
+`lineage_sos_core1_a33x` product and the non-shipping
+`lineage_sos_core1_dev_a33x` provider-probe product in its make condition and
+description. This matches the already-applied Lineage hardware tree instead of
+failing patch idempotence on the second target.
+
+**Evidence:** `git -C /home/carlid/dev/lineage-a33x/device/samsung/s5e8825-common
+apply --reverse --check` passes for the corrected patch. A subsequent
+`./tools/a33xctl apply-patches` classified all seven pinned patches as already
+applied. The standalone ARM64 APK, GPUI Core runtime, native Node runtime, Pi
+runner, and Android authority rebuilt successfully before the shadow Lineage
+compile began.
+
+**Failures and decision:** The first `build-core` stopped because patch 0005
+could neither apply nor reverse cleanly: the Lineage tree already contained the
+two-product condition while the repository patch described only Core 1
+shipping. Reverting the provider-probe protection was rejected. Generated
+Linux VM and old AOSP output were removed only after identifying them as
+rebuildable and outside the retained evidence set. The shadow build launched
+from the earlier dirty patch state is diagnostic only and cannot be selected
+for a device.
+
+**Remaining risks and next gate:** Finish the diagnostic shadow build, commit
+this corrected source contract, then rebuild and inspect final Compat 1 and
+Core 1 artifacts from one clean revision. No Android artifact may be installed
+until its source identity, target profile, signatures, AVB graph, package
+contents, byte size, and SHA-256 pass the matching inspector.
