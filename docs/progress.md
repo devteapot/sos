@@ -15229,3 +15229,27 @@ Agenda recovery markers after both containment failures before continuing to
 IME, restart, authoring, and rollback. The `af57c0f` product remains accepted
 for Stock layout, Compat chrome ownership, Dashboard composition, appearance,
 and failure containment only.
+
+## 2026-08-27: Seal the recovery-observable Compat candidate
+
+**Goal / build:** Produce the exact candidate that makes failed-to-ready child
+transitions observable whether recovery comes from an action or an authority
+refresh. Clean source `3693138b49afb7103b33e63edbcbd82eb5532908` built
+Compat 1 in 242.29 seconds with 2,978,672 KiB peak RSS. Its immutable identity
+is `sos.compat1.3693138b49af.cf58ca7e57f2`.
+
+**Offline evidence:** `./tools/a33xctl inspect-compat1` passed in 19.73 seconds
+with 47,784 KiB peak RSS, including the Stock Mobile, owner-guarded chrome,
+signed authority, v4 graph/API, package signature, boot-chain, and bounded
+legacy-reader gates. The sealed OTA at
+`.cache/evidence/android-v4-3693138/compat1/lineage-23.0-20260827-UNOFFICIAL-sos_compat_a33x-3693138.zip`
+is 1,067,652,445 bytes with SHA-256
+`84c5523b948aea5b0462fd4e2b6d1f078dccc381f754cdb978b2c30b79aec47b`.
+Its complete ZIP check passed in 4.43 seconds. The seven-file evidence manifest
+has SHA-256
+`09850f701fb9eb3a279c20e82aa96e6709f184b8f98bfd58483f11cd165f81db`;
+independent verification passes.
+
+**Decision / next gate:** Install only this exact OTA. Begin a fresh campaign,
+repeat the accepted Stock, Dashboard, appearance, failure, and timeout gates,
+and require two explicit recovery markers before the remaining ordered stages.
