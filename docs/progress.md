@@ -14573,3 +14573,66 @@ transport before installation: at 2026-08-27T17:09:06+02:00, adb still reports
 bounded v3 rollback reader until the physical campaign has migrated Stock and
 proved rollback between two v4 revisions; only then remove it and rebuild the
 final no-v3 products.
+
+## 2026-08-27: Seal exact Android v4 composition candidates
+
+**Goal / changed:** Rebuild the Compat 1 and Core 1 products from the complete
+physical-campaign implementation and seal the exact install inputs before any
+Samsung mutation. Both builds use clean source
+`cfe4ebb63eb3b7ffc9bf72c95a25f33152e1314c`. Compat identity
+`sos.compat1.cfe4ebb63eb3.a6a42402ae5b` built in 269.80 seconds with
+2,974,452 KiB peak RSS. Its offline inspector passed in 19.29 seconds with
+47,512 KiB peak RSS. Core identity
+`sos.core1.cfe4ebb63eb3.4d984b84b044` built in 260.94 seconds with
+2,978,176 KiB peak RSS. Its offline inspector passed in 17.27 seconds with
+47,860 KiB peak RSS. Both inspectors require revision format 4 and Experience
+API 4, preserve `ro.sos.legacy_revision_read=3` only for the reversible
+rollback window, and pass the v4 system-control, graph, signature, AVB,
+ownership, and retired-secondary-absence checks.
+
+**Artifact evidence:** Compat produced
+`.cache/evidence/android-v4-cfe4ebb/compat1/compat1.ota.zip`, 1,067,699,297
+bytes, SHA-256
+`3f70274838d07d2aedeeea820b1bab549f628ed9032cc956e31c1a5bb07e1144`.
+Its deterministic 9,673-entry target-files archive is 2,173,677,658 bytes,
+SHA-256
+`dd80b1332c37e3a385551e70da4b829d938ef1a3967dda0bc09582b76f97c631`;
+archive creation took 3.88 seconds with 113,524 KiB peak RSS. Core produced
+`.cache/evidence/android-v4-cfe4ebb/core1/core1.ota.zip`, 1,022,859,688 bytes,
+SHA-256
+`c183cba1d9cbc71d19ef91a960716c6a621b3272bb075ed3c016a498c868c454`.
+Its deterministic 9,657-entry target-files archive is 2,077,042,185 bytes,
+SHA-256
+`95dcb14c5287fc33efb0006431559a81ad107901042cb976bcc5e2e0b29103ae`;
+archive creation took 3.54 seconds with 114,052 KiB peak RSS. `zstd -t` and a
+complete tar listing pass for both archives. Each contains Stock and its theme
+and contains no Timeflow, Daily Flow, or retired example-secondary product.
+
+**Failure / decision:** The first Core archive attempt used Compat's
+`-target-files` directory spelling. Core actually generates
+`lineage_sos_core1_a33x-target_files`; tar rejected the missing input and left
+a 22-byte invalid output. No product input was altered. Replacing that output
+from the resolved Core directory with the same sorted, epoch-zero,
+numeric-owner archive recipe produced the verified artifact above. Keep the
+variant-specific source path explicit rather than normalizing a path that the
+Lineage products do not share.
+
+**Manifest and transport evidence:**
+`./tools/a33xctl evidence-manifest-generate --root
+.cache/evidence/android-v4-cfe4ebb --output
+.cache/evidence/android-v4-cfe4ebb/manifest.tsv` recorded 22 finalized files;
+`evidence-manifest-verify` independently passed. The 2,129-byte manifest has
+SHA-256
+`697ae62cc3f66211eebb2e95e97decd4fef34ec4935fe7ede6784c5274939bc8`.
+At 2026-08-27T17:24:36+02:00, serial `RFCT50EGFCN` still reported adb `no
+permissions` at USB path `1-1.1`, and `lsusb` identified `04e8:685d` Download
+Mode. `.cache/evidence/android-v4-cfe4ebb/transport-status.txt` records that
+read-only observation. No phone mutation was attempted.
+
+**Decision / next gate:** These are accepted offline candidates, not physical
+product verdicts. When the Samsung exposes authorized Android or Recovery,
+install the exact Compat OTA and run its complete staged v4 composition
+campaign, then repeat with the exact Core OTA. Keep the bounded v3 rollback
+reader through that campaign so Stock can migrate and prove v4-to-v4 rollback;
+then remove the reader, rebuild, and rerun the relevant package and rollback
+checks for the final no-v3 products.

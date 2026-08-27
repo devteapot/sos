@@ -609,11 +609,28 @@ This superseded the earlier Android candidates that still carried the retired
 secondary agent input. Their independently verified 17-file evidence manifest
 has SHA-256
 `a8f056b6d8c77d56b2ed6b4f297802b5b726a3f4200573ab43859114690f7b93`.
-Those cleanup artifacts are themselves now superseded by the shared Android
-scene transform, mounted-child IME fixture, and host-owned navigation,
-appearance, rollback, and evidence-campaign additions. They remain historical
-offline evidence; final candidates must be rebuilt from the new exact source
-before installation.
+Those cleanup artifacts are themselves now superseded by final candidates
+built from exact source
+`cfe4ebb63eb3b7ffc9bf72c95a25f33152e1314c`, which contains the shared
+Android scene transform, mounted-child IME fixture, host-owned navigation,
+appearance and rollback controls, and the complete evidence campaign. Compat
+build identity `sos.compat1.cfe4ebb63eb3.a6a42402ae5b` produced a
+1,067,699,297-byte OTA with SHA-256
+`3f70274838d07d2aedeeea820b1bab549f628ed9032cc956e31c1a5bb07e1144`
+and a deterministic 2,173,677,658-byte target-files archive with SHA-256
+`dd80b1332c37e3a385551e70da4b829d938ef1a3967dda0bc09582b76f97c631`.
+Core build identity `sos.core1.cfe4ebb63eb3.4d984b84b044` produced a
+1,022,859,688-byte OTA with SHA-256
+`c183cba1d9cbc71d19ef91a960716c6a621b3272bb075ed3c016a498c868c454`
+and a deterministic 2,077,042,185-byte target-files archive with SHA-256
+`95dcb14c5287fc33efb0006431559a81ad107901042cb976bcc5e2e0b29103ae`.
+Both offline inspectors pass and both archives contain Stock and its semantic
+theme while excluding the retired secondary experience. The independently
+verified 22-file evidence manifest is
+`.cache/evidence/android-v4-cfe4ebb/manifest.tsv`, 2,129 bytes, with SHA-256
+`697ae62cc3f66211eebb2e95e97decd4fef34ec4935fe7ede6784c5274939bc8`.
+These are the exact artifacts reserved for the next physical gate, not a
+physical-device verdict.
 
 The remaining physical composition gate is the Samsung SM-A336B campaign for
 Compat and Core: composition, input, IME, accessibility, appearance, grants,
