@@ -17,6 +17,7 @@ use android_authority_protocol::{
     request_revision_over_stream, GraphEffectWire, GraphStateUpdateWire, RevisionAssetWire,
     RevisionRequest, RevisionResponse,
 };
+use experience_package::PackageMetadata;
 use runtime_luau::{RevisionAsset, RevisionAssetInput};
 use serde_json::Value as JsonValue;
 use service_protocol::{AppearanceResource, ExperienceStateResource};
@@ -62,6 +63,32 @@ pub(super) fn rollback_graph(failed_graph_id: String) -> Result<RevisionResponse
     request(RevisionRequest::RollbackGraph {
         request_id: allocate_request_id(),
         failed_graph_id,
+    })
+}
+
+pub(super) fn stage_graph_revision(
+    expected_graph_id: String,
+    package: PackageMetadata,
+    source: String,
+    state: JsonValue,
+    schema_version: u64,
+    assets: Vec<RevisionAssetWire>,
+) -> Result<RevisionResponse, String> {
+    request(RevisionRequest::StageGraphRevision {
+        request_id: allocate_request_id(),
+        expected_graph_id,
+        package,
+        source,
+        state,
+        schema_version,
+        assets,
+    })
+}
+
+pub(super) fn discard_graph(graph_id: String) -> Result<RevisionResponse, String> {
+    request(RevisionRequest::DiscardGraph {
+        request_id: allocate_request_id(),
+        graph_id,
     })
 }
 

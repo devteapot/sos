@@ -66,6 +66,20 @@ struct PendingGraphMigration {
     experience_id: ExperienceId,
     revision_id: String,
     graph_id: String,
+    #[serde(default)]
+    candidate: bool,
+    #[serde(default)]
+    staged_states: BTreeMap<ExperienceId, StateResource>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct GraphActivationJournal {
+    experience_id: ExperienceId,
+    revision_id: String,
+    graph_id: Option<String>,
+    legacy_fallback: bool,
+    target_composition: CompositionAuthorityState,
+    previous_composition: CompositionAuthorityState,
 }
 
 pub struct AndroidSystemAuthority {
@@ -80,10 +94,13 @@ pub struct AndroidSystemAuthority {
     state_file: PathBuf,
     journal_file: PathBuf,
     composition_file: PathBuf,
+    previous_composition_file: PathBuf,
+    graph_activation_journal_file: PathBuf,
     composition: CompositionAuthorityState,
     pending_graph_file: PathBuf,
     legacy_fallback_file: PathBuf,
     appearance_writer: Option<String>,
+    legacy_authoring_enabled: bool,
 }
 
 impl AndroidSystemAuthority {
@@ -115,7 +132,7 @@ impl AndroidSystemAuthority {
                 stock.clone()
             }
         };
-        Self::finish_open(revision_root, state_file, revisions, stock, current)
+        Self::finish_open(revision_root, state_file, revisions, stock, current, true)
     }
 
     pub fn open_v4(
@@ -139,8 +156,14 @@ impl AndroidSystemAuthority {
                 stock.clone()
             }
         };
-        let mut authority =
-            Self::finish_open(revision_root, state_file, revisions, stock.clone(), current)?;
+        let mut authority = Self::finish_open(
+            revision_root,
+            state_file,
+            revisions,
+            stock.clone(),
+            current,
+            false,
+        )?;
         authority.initialize_v4_stock(&stock, previous_singleton.as_ref())?;
         Ok(authority)
     }
@@ -151,6 +174,7 @@ impl AndroidSystemAuthority {
         revisions: RevisionStore,
         stock: VerifiedRevision,
         current: VerifiedRevision,
+        legacy_authoring_enabled: bool,
     ) -> Result<Self, String> {
         let initial = if state_file.exists() {
             serde_json::from_slice::<StateEnvelope>(
@@ -167,6 +191,8 @@ impl AndroidSystemAuthority {
         };
         let journal_file = revision_root.join("activation-journal.json");
         let composition_file = state_file.with_extension("composition.json");
+        let previous_composition_file = state_file.with_extension("composition.previous.json");
+        let graph_activation_journal_file = revision_root.join("graph-activation-journal.json");
         let composition = match fs::read(&composition_file) {
             Ok(bytes) => {
                 let composition: CompositionAuthorityState =
@@ -202,14 +228,18 @@ impl AndroidSystemAuthority {
             state_file,
             journal_file,
             composition_file,
+            previous_composition_file,
+            graph_activation_journal_file,
             composition,
             pending_graph_file: revision_root.join("pending-v4-graph.json"),
             legacy_fallback_file: revision_root.join("legacy-v3-fallback"),
             appearance_writer: None,
+            legacy_authoring_enabled,
         };
         authority.persist_state()?;
         authority.persist_composition()?;
         authority.recover_activation()?;
+        authority.recover_graph_activation()?;
         authority.ensure_consistent()?;
         Ok(authority)
     }
@@ -316,6 +346,8 @@ impl AndroidSystemAuthority {
                 experience_id: stock_id,
                 revision_id: stock.manifest.revision_id.clone(),
                 graph_id,
+                candidate: false,
+                staged_states: BTreeMap::new(),
             })?;
         } else {
             let graph = self
@@ -362,6 +394,71 @@ impl AndroidSystemAuthority {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
             Err(error) => Err(error.to_string()),
         }
+    }
+
+    fn activate_graph_durably(&mut self, journal: GraphActivationJournal) -> Result<(), String> {
+        self.revisions
+            .verify(&journal.revision_id)
+            .map_err(|error| error.to_string())?;
+        if let Some(graph_id) = &journal.graph_id {
+            self.graphs
+                .verify(graph_id)
+                .map_err(|error| error.to_string())?;
+        }
+        let temporary = self.graph_activation_journal_file.with_extension("tmp");
+        write_synced_atomic(
+            &temporary,
+            &self.graph_activation_journal_file,
+            &serde_json::to_vec_pretty(&journal).map_err(|error| error.to_string())?,
+        )?;
+        self.complete_graph_activation(journal)
+    }
+
+    fn complete_graph_activation(&mut self, journal: GraphActivationJournal) -> Result<(), String> {
+        let temporary = self.previous_composition_file.with_extension("tmp");
+        write_synced_atomic(
+            &temporary,
+            &self.previous_composition_file,
+            &serde_json::to_vec_pretty(&journal.previous_composition)
+                .map_err(|error| error.to_string())?,
+        )?;
+        self.replace_composition(journal.target_composition)?;
+        self.registry
+            .set_current(&journal.experience_id, &journal.revision_id)
+            .map_err(|error| error.to_string())?;
+        if let Some(graph_id) = &journal.graph_id {
+            self.graphs
+                .set_current(&journal.experience_id, graph_id)
+                .map_err(|error| error.to_string())?;
+        }
+        if journal.legacy_fallback {
+            let temporary = self.legacy_fallback_file.with_extension("tmp");
+            write_synced_atomic(
+                &temporary,
+                &self.legacy_fallback_file,
+                journal.revision_id.as_bytes(),
+            )?;
+        } else {
+            remove_synced(&self.legacy_fallback_file)?;
+        }
+        remove_synced(&self.pending_graph_file)?;
+        remove_synced(&self.graph_activation_journal_file)
+    }
+
+    fn recover_graph_activation(&mut self) -> Result<(), String> {
+        let bytes = match fs::read(&self.graph_activation_journal_file) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => return Err(error.to_string()),
+        };
+        let journal: GraphActivationJournal =
+            serde_json::from_slice(&bytes).map_err(|error| error.to_string())?;
+        println!(
+            "android_graph_activation_recovering revision_id={} graph_id={}",
+            journal.revision_id,
+            journal.graph_id.as_deref().unwrap_or("legacy-v3")
+        );
+        self.complete_graph_activation(journal)
     }
 
     pub fn configure_appearance_writer(&mut self, capability: &str) -> Result<(), String> {
@@ -469,6 +566,26 @@ impl AndroidSystemAuthority {
             RevisionRequest::RollbackGraph {
                 failed_graph_id, ..
             } => self.rollback_graph_response(request_id, &failed_graph_id),
+            RevisionRequest::StageGraphRevision {
+                expected_graph_id,
+                package,
+                source,
+                state,
+                schema_version,
+                assets,
+                ..
+            } => self.stage_graph_revision_response(
+                request_id,
+                &expected_graph_id,
+                package,
+                source,
+                state,
+                schema_version,
+                assets,
+            ),
+            RevisionRequest::DiscardGraph { graph_id, .. } => {
+                self.discard_graph_response(request_id, &graph_id)
+            }
             RevisionRequest::CommitGraphAction {
                 graph_id,
                 updates,
@@ -576,14 +693,20 @@ impl AndroidSystemAuthority {
         self.graphs
             .verify(graph_id)
             .map_err(|error| error.to_string())?;
-        self.registry
-            .set_current(&pending.experience_id, &pending.revision_id)
-            .map_err(|error| error.to_string())?;
-        self.graphs
-            .set_current(&pending.experience_id, graph_id)
-            .map_err(|error| error.to_string())?;
-        remove_synced(&self.pending_graph_file)?;
-        remove_synced(&self.legacy_fallback_file)?;
+        let mut target_composition = self.composition.clone();
+        for (experience_id, state) in &pending.staged_states {
+            target_composition
+                .states
+                .insert(experience_id.clone(), state.clone());
+        }
+        self.activate_graph_durably(GraphActivationJournal {
+            experience_id: pending.experience_id,
+            revision_id: pending.revision_id,
+            graph_id: Some(graph_id.to_owned()),
+            legacy_fallback: false,
+            target_composition,
+            previous_composition: self.composition.clone(),
+        })?;
         self.current_graph_response(request_id)
     }
 
@@ -597,6 +720,9 @@ impl AndroidSystemAuthority {
                 return Err("rollback does not name the pending Android graph".into());
             }
             remove_synced(&self.pending_graph_file)?;
+            if pending.candidate {
+                return self.current_graph_response(request_id);
+            }
             let current = self
                 .registry
                 .current(&pending.experience_id)
@@ -632,24 +758,30 @@ impl AndroidSystemAuthority {
                 .previous(&stock_id)
                 .map_err(|error| error.to_string())?
                 .ok_or_else(|| "Android graph store has no rollback graph".to_owned())?;
-            self.registry
-                .set_current(&stock_id, &previous_revision.manifest.revision_id)
-                .map_err(|error| error.to_string())?;
-            self.graphs
-                .set_current(&stock_id, &previous_graph_id)
-                .map_err(|error| error.to_string())?;
+            let previous_composition: CompositionAuthorityState = serde_json::from_slice(
+                &fs::read(&self.previous_composition_file)
+                    .map_err(|_| "Android graph rollback state is unavailable".to_owned())?,
+            )
+            .map_err(|error| error.to_string())?;
+            self.activate_graph_durably(GraphActivationJournal {
+                experience_id: stock_id,
+                revision_id: previous_revision.manifest.revision_id,
+                graph_id: Some(previous_graph_id.clone()),
+                legacy_fallback: false,
+                target_composition: previous_composition,
+                previous_composition: self.composition.clone(),
+            })?;
             return self.graph_response(request_id, previous_graph_id, previous_graph, false, true);
         }
 
-        self.registry
-            .set_current(&stock_id, &previous_revision.manifest.revision_id)
-            .map_err(|error| error.to_string())?;
-        let temporary = self.legacy_fallback_file.with_extension("tmp");
-        write_synced_atomic(
-            &temporary,
-            &self.legacy_fallback_file,
-            previous_revision.manifest.revision_id.as_bytes(),
-        )?;
+        self.activate_graph_durably(GraphActivationJournal {
+            experience_id: stock_id,
+            revision_id: previous_revision.manifest.revision_id.clone(),
+            graph_id: None,
+            legacy_fallback: true,
+            target_composition: self.composition.clone(),
+            previous_composition: self.composition.clone(),
+        })?;
         revision_response(
             request_id,
             &previous_revision,
@@ -657,6 +789,173 @@ impl AndroidSystemAuthority {
             &self.stock_revision_id,
             true,
         )
+    }
+
+    fn stage_graph_revision_response(
+        &mut self,
+        request_id: u64,
+        expected_graph_id: &str,
+        package: experience_package::PackageMetadata,
+        source: String,
+        state: serde_json::Value,
+        schema_version: u64,
+        assets: Vec<RevisionAssetWire>,
+    ) -> Result<RevisionResponse, String> {
+        if self.pending_graph()?.is_some() {
+            return Err("another Android graph already awaits presentation".into());
+        }
+        let stock_id =
+            ExperienceId::parse(STOCK_SHELL_EXPERIENCE_ID).map_err(|error| error.to_string())?;
+        let (current_graph_id, current_graph) = self
+            .graphs
+            .current(&stock_id)
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| "Android v4 authoring requires an active graph".to_owned())?;
+        if current_graph_id != expected_graph_id {
+            return Err("authoring target graph changed before staging".into());
+        }
+        let current_root = current_graph
+            .nodes
+            .get(&current_graph.root)
+            .ok_or_else(|| "active Android graph has no root".to_owned())?;
+        if package.experience_id != current_root.experience_id {
+            return Err("candidate package does not target the active Experience".into());
+        }
+        let record = self
+            .registry
+            .get(&package.experience_id)
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| "candidate Experience is not registered".to_owned())?;
+        if package.role != record.role {
+            return Err("candidate role does not match the registry-owned role".into());
+        }
+        let current_state = self
+            .composition
+            .states
+            .get(&package.experience_id)
+            .ok_or_else(|| "active authoring target has no authority state".to_owned())?;
+        let migration = package
+            .state_migration
+            .as_ref()
+            .ok_or_else(|| "v4 replacement requires an explicit state migration".to_owned())?;
+        match &migration.source {
+            experience_package::StateMigrationSource::ExperienceRevision {
+                experience_id,
+                revision_id,
+                schema_version: source_schema_version,
+                state_sha256,
+            } if experience_id == &package.experience_id
+                && revision_id == &current_root.revision_id
+                && *source_schema_version == current_state.schema_version
+                && state_sha256
+                    == &experience_package::canonical_sha256(&current_state.state)
+                        .map_err(|error| error.to_string())? => {}
+            _ => {
+                return Err(
+                    "candidate state migration does not bind the active authority state".into(),
+                )
+            }
+        }
+        let revision = self
+            .revisions
+            .install_package(RevisionPackageInput {
+                revision: RevisionInput {
+                    source: source.into_bytes(),
+                    state: state.clone(),
+                    schema_version,
+                    experience_api_version: experience_ir::EXPERIENCE_API_VERSION_V4,
+                    assets: assets
+                        .into_iter()
+                        .map(|asset| RevisionAssetInput {
+                            id: asset.id,
+                            kind: asset.kind,
+                            bytes: asset.bytes,
+                        })
+                        .collect(),
+                },
+                package,
+            })
+            .map_err(|error| error.to_string())?;
+        let graph = self
+            .resolver
+            .resolve(
+                &revision.manifest.revision_id,
+                &ExportId::parse("main").map_err(|error| error.to_string())?,
+            )
+            .map_err(|error| error.to_string())?;
+        self.validate_graph_grants(&graph)?;
+        let graph_id = self
+            .graphs
+            .install(&graph)
+            .map_err(|error| error.to_string())?;
+        let mut staged_states = BTreeMap::new();
+        for node in graph.nodes.values() {
+            if staged_states.contains_key(&node.experience_id) {
+                continue;
+            }
+            let binding = self
+                .revisions
+                .verify(node.revision_id.as_str())
+                .map_err(|error| error.to_string())?;
+            let staged = if node.experience_id == revision.package.as_ref().unwrap().experience_id {
+                let current = self
+                    .composition
+                    .states
+                    .get(&node.experience_id)
+                    .ok_or_else(|| "active authoring target has no authority state".to_owned())?;
+                StateResource {
+                    revision: current.revision.saturating_add(1),
+                    revision_id: node.revision_id.to_string(),
+                    schema_version,
+                    source_sha256: binding.manifest.source.sha256,
+                    state: state.clone(),
+                }
+            } else if let Some(current) = self
+                .composition
+                .states
+                .get(&node.experience_id)
+                .filter(|current| current.revision_id == node.revision_id.as_str())
+            {
+                current.clone()
+            } else {
+                let durable: DurableState = serde_json::from_slice(
+                    &fs::read(binding.directory.join(&binding.manifest.state.path))
+                        .map_err(|error| error.to_string())?,
+                )
+                .map_err(|error| error.to_string())?;
+                StateResource {
+                    revision: 0,
+                    revision_id: node.revision_id.to_string(),
+                    schema_version: durable.schema_version,
+                    source_sha256: durable.source_sha256,
+                    state: durable.state,
+                }
+            };
+            staged_states.insert(node.experience_id.clone(), staged);
+        }
+        self.write_pending_graph(&PendingGraphMigration {
+            experience_id: current_root.experience_id.clone(),
+            revision_id: revision.manifest.revision_id,
+            graph_id: graph_id.clone(),
+            candidate: true,
+            staged_states,
+        })?;
+        self.graph_response(request_id, graph_id, graph, true, false)
+    }
+
+    fn discard_graph_response(
+        &mut self,
+        request_id: u64,
+        graph_id: &str,
+    ) -> Result<RevisionResponse, String> {
+        let pending = self
+            .pending_graph()?
+            .ok_or_else(|| "no Android graph awaits discard".to_owned())?;
+        if pending.graph_id != graph_id {
+            return Err("discard does not name the pending Android graph".into());
+        }
+        remove_synced(&self.pending_graph_file)?;
+        self.current_graph_response(request_id)
     }
 
     fn graph_for_action(&self, graph_id: &str) -> Result<ResolvedGraph, String> {
@@ -899,6 +1198,11 @@ impl AndroidSystemAuthority {
         fallback_performed: bool,
     ) -> Result<RevisionResponse, String> {
         self.validate_graph_grants(&graph)?;
+        let staged_states = self
+            .pending_graph()?
+            .filter(|pending| pending.graph_id == graph_id && pending.candidate)
+            .map(|pending| pending.staged_states)
+            .unwrap_or_default();
         let mut revisions = Vec::new();
         let mut seeded_state = false;
         let mut seen = BTreeMap::<String, ExperienceId>::new();
@@ -923,27 +1227,30 @@ impl AndroidSystemAuthority {
                     format!("v4 graph experience `{experience_id}` is not registered")
                 })?;
             package.role = record.role;
-            let state = match self.composition.states.get(&experience_id) {
+            let state = match staged_states.get(&experience_id) {
                 Some(state) if state.revision_id == revision_id => state.clone(),
-                _ => {
-                    let durable: DurableState = serde_json::from_slice(
-                        &fs::read(revision.directory.join(&revision.manifest.state.path))
-                            .map_err(|error| error.to_string())?,
-                    )
-                    .map_err(|error| error.to_string())?;
-                    let state = StateResource {
-                        revision: 0,
-                        revision_id: revision_id.clone(),
-                        schema_version: durable.schema_version,
-                        source_sha256: durable.source_sha256,
-                        state: durable.state,
-                    };
-                    self.composition
-                        .states
-                        .insert(experience_id.clone(), state.clone());
-                    seeded_state = true;
-                    state
-                }
+                _ => match self.composition.states.get(&experience_id) {
+                    Some(state) if state.revision_id == revision_id => state.clone(),
+                    _ => {
+                        let durable: DurableState = serde_json::from_slice(
+                            &fs::read(revision.directory.join(&revision.manifest.state.path))
+                                .map_err(|error| error.to_string())?,
+                        )
+                        .map_err(|error| error.to_string())?;
+                        let state = StateResource {
+                            revision: 0,
+                            revision_id: revision_id.clone(),
+                            schema_version: durable.schema_version,
+                            source_sha256: durable.source_sha256,
+                            state: durable.state,
+                        };
+                        self.composition
+                            .states
+                            .insert(experience_id.clone(), state.clone());
+                        seeded_state = true;
+                        state
+                    }
+                },
             };
             revisions.push(GraphRevisionWire {
                 revision_id: revision_id.clone(),
@@ -994,6 +1301,22 @@ impl AndroidSystemAuthority {
                 .package
                 .as_ref()
                 .ok_or_else(|| "v4 graph contains a legacy revision".to_owned())?;
+            let record = self
+                .registry
+                .get(&node.experience_id)
+                .map_err(|error| error.to_string())?
+                .ok_or_else(|| {
+                    format!(
+                        "graph experience `{}` is not registered",
+                        node.experience_id
+                    )
+                })?;
+            if package.experience_id != node.experience_id || package.role != record.role {
+                return Err(format!(
+                    "graph revision `{}` conflicts with its registry identity",
+                    node.revision_id
+                ));
+            }
             let requested_flows = package
                 .dependencies
                 .iter()
@@ -1048,6 +1371,12 @@ impl AndroidSystemAuthority {
         experience_api_version: u32,
         assets: Vec<RevisionAssetWire>,
     ) -> Result<RevisionResponse, String> {
+        if !self.legacy_authoring_enabled {
+            return Err(
+                "bare v3 authoring is disabled after the v4 Experience registry is installed"
+                    .into(),
+            );
+        }
         let revision = self
             .revisions
             .install(RevisionInput {
@@ -1587,6 +1916,273 @@ mod tests {
         );
         assert_eq!(bundle.appearance.profile.generation, 1);
         assert!(bundle.appearance.profile.reduce_motion);
+    }
+
+    #[test]
+    fn v4_authoring_stages_presents_discards_and_rolls_back_whole_graphs() {
+        let temporary = tempfile::tempdir().unwrap();
+        let revision_root = temporary.path().join("revisions");
+        let state_file = temporary.path().join("provider.json");
+        let original = r#"
+            return { api_version = 4, exports = { main = {
+                render = function() return { id = "original" } end,
+                update = function(_, state) return { state = state } end,
+            } } }
+        "#;
+        let candidate = r#"
+            return { api_version = 4, exports = { main = {
+                render = function() return { id = "candidate" } end,
+                update = function(_, state) return { state = state } end,
+            } } }
+        "#;
+        let mut authority =
+            AndroidSystemAuthority::open_v4(&revision_root, &state_file, stock_v4(original))
+                .unwrap();
+        let bare_v3 = authority.dispatch_revision(RevisionRequest::Install {
+            request_id: 59,
+            source: "return { api_version = 3 }".into(),
+            state: json!({}),
+            schema_version: 1,
+            experience_api_version: experience_ir::EXPERIENCE_API_VERSION,
+            assets: vec![],
+        });
+        assert!(!bare_v3.ok);
+        assert!(bare_v3
+            .error
+            .unwrap()
+            .contains("bare v3 authoring is disabled"));
+        let current = authority.dispatch_revision(RevisionRequest::CurrentGraph { request_id: 60 });
+        let current_bundle = current.graph.unwrap();
+        let original_graph_id = current_bundle.graph_id.clone();
+        let original_revision_id = current_bundle.graph.nodes[&current_bundle.graph.root]
+            .revision_id
+            .clone();
+        let original_state = current_bundle.revisions[0].state.resource.clone();
+        let mut package = current_bundle.revisions[0].package.clone();
+        package.state_migration = Some(experience_package::StateMigrationRecord {
+            source: experience_package::StateMigrationSource::ExperienceRevision {
+                experience_id: package.experience_id.clone(),
+                revision_id: original_revision_id.clone(),
+                schema_version: original_state.schema_version,
+                state_sha256: experience_package::canonical_sha256(&original_state.state).unwrap(),
+            },
+            target_schema_version: 1,
+            result_state_sha256: experience_package::canonical_sha256(&json!({"edited": true}))
+                .unwrap(),
+        });
+
+        let staged = authority.dispatch_revision(RevisionRequest::StageGraphRevision {
+            request_id: 61,
+            expected_graph_id: original_graph_id.clone(),
+            package: package.clone(),
+            source: candidate.into(),
+            state: json!({"edited": true}),
+            schema_version: 1,
+            assets: vec![],
+        });
+        assert!(staged.ok, "{:?}", staged.error);
+        let staged_bundle = staged.graph.unwrap();
+        assert!(staged_bundle.migration_pending);
+        assert_ne!(staged_bundle.graph_id, original_graph_id);
+        assert_eq!(
+            staged_bundle.revisions[0].state.resource.state,
+            json!({"edited": true})
+        );
+        assert_eq!(
+            authority
+                .registry
+                .current(&ExperienceId::parse(STOCK_SHELL_EXPERIENCE_ID).unwrap())
+                .unwrap()
+                .unwrap()
+                .manifest
+                .revision_id,
+            original_revision_id.as_str()
+        );
+
+        let discarded = authority.dispatch_revision(RevisionRequest::DiscardGraph {
+            request_id: 62,
+            graph_id: staged_bundle.graph_id,
+        });
+        assert_eq!(discarded.graph.unwrap().graph_id, original_graph_id);
+
+        let staged = authority.dispatch_revision(RevisionRequest::StageGraphRevision {
+            request_id: 63,
+            expected_graph_id: original_graph_id.clone(),
+            package,
+            source: candidate.into(),
+            state: json!({"edited": true}),
+            schema_version: 1,
+            assets: vec![],
+        });
+        let candidate_graph_id = staged.graph.unwrap().graph_id;
+        let confirmed = authority.dispatch_revision(RevisionRequest::ConfirmGraph {
+            request_id: 64,
+            graph_id: candidate_graph_id.clone(),
+        });
+        assert_eq!(
+            confirmed.graph.as_ref().unwrap().graph_id,
+            candidate_graph_id
+        );
+        assert_eq!(
+            confirmed.graph.as_ref().unwrap().revisions[0]
+                .state
+                .resource
+                .state,
+            json!({"edited": true})
+        );
+
+        let rolled_back = authority.dispatch_revision(RevisionRequest::RollbackGraph {
+            request_id: 65,
+            failed_graph_id: candidate_graph_id,
+        });
+        assert!(rolled_back.fallback_performed);
+        assert_eq!(
+            rolled_back.graph.as_ref().unwrap().graph_id,
+            original_graph_id
+        );
+        assert_eq!(
+            rolled_back.graph.unwrap().revisions[0].state.resource.state,
+            json!({})
+        );
+    }
+
+    #[test]
+    fn v4_graph_activation_recovers_every_durable_phase() {
+        let original = r#"
+            return { api_version = 4, exports = { main = {
+                render = function() return { id = "original" } end,
+                update = function(_, state) return { state = state } end,
+            } } }
+        "#;
+        let candidate = r#"
+            return { api_version = 4, exports = { main = {
+                render = function() return { id = "candidate" } end,
+                update = function(_, state) return { state = state } end,
+            } } }
+        "#;
+
+        for completed_phase in 0..=5 {
+            let temporary = tempfile::tempdir().unwrap();
+            let revision_root = temporary.path().join("revisions");
+            let state_file = temporary.path().join("provider.json");
+            let mut authority =
+                AndroidSystemAuthority::open_v4(&revision_root, &state_file, stock_v4(original))
+                    .unwrap();
+            let current = authority
+                .dispatch_revision(RevisionRequest::CurrentGraph { request_id: 70 })
+                .graph
+                .unwrap();
+            let original_graph_id = current.graph_id.clone();
+            let root = &current.graph.nodes[&current.graph.root];
+            let original_revision_id = root.revision_id.clone();
+            let original_state = current.revisions[0].state.resource.clone();
+            let mut package = current.revisions[0].package.clone();
+            package.state_migration = Some(experience_package::StateMigrationRecord {
+                source: experience_package::StateMigrationSource::ExperienceRevision {
+                    experience_id: package.experience_id.clone(),
+                    revision_id: original_revision_id.clone(),
+                    schema_version: original_state.schema_version,
+                    state_sha256: experience_package::canonical_sha256(&original_state.state)
+                        .unwrap(),
+                },
+                target_schema_version: 1,
+                result_state_sha256: experience_package::canonical_sha256(
+                    &json!({"phase": completed_phase}),
+                )
+                .unwrap(),
+            });
+            let staged = authority.dispatch_revision(RevisionRequest::StageGraphRevision {
+                request_id: 71,
+                expected_graph_id: original_graph_id.clone(),
+                package,
+                source: candidate.into(),
+                state: json!({"phase": completed_phase}),
+                schema_version: 1,
+                assets: vec![],
+            });
+            assert!(staged.ok, "phase {completed_phase}: {:?}", staged.error);
+            let candidate_graph_id = staged.graph.unwrap().graph_id;
+            let pending = authority.pending_graph().unwrap().unwrap();
+            let mut target_composition = authority.composition.clone();
+            for (experience_id, state) in pending.staged_states {
+                target_composition.states.insert(experience_id, state);
+            }
+            let journal = GraphActivationJournal {
+                experience_id: pending.experience_id.clone(),
+                revision_id: pending.revision_id.clone(),
+                graph_id: Some(candidate_graph_id.clone()),
+                legacy_fallback: false,
+                target_composition: target_composition.clone(),
+                previous_composition: authority.composition.clone(),
+            };
+            write_synced_atomic(
+                &authority
+                    .graph_activation_journal_file
+                    .with_extension("tmp"),
+                &authority.graph_activation_journal_file,
+                &serde_json::to_vec_pretty(&journal).unwrap(),
+            )
+            .unwrap();
+            if completed_phase >= 1 {
+                write_synced_atomic(
+                    &authority.previous_composition_file.with_extension("tmp"),
+                    &authority.previous_composition_file,
+                    &serde_json::to_vec_pretty(&journal.previous_composition).unwrap(),
+                )
+                .unwrap();
+            }
+            if completed_phase >= 2 {
+                authority
+                    .replace_composition(target_composition.clone())
+                    .unwrap();
+            }
+            if completed_phase >= 3 {
+                authority
+                    .registry
+                    .set_current(&pending.experience_id, &pending.revision_id)
+                    .unwrap();
+            }
+            if completed_phase >= 4 {
+                authority
+                    .graphs
+                    .set_current(&pending.experience_id, &candidate_graph_id)
+                    .unwrap();
+            }
+            if completed_phase >= 5 {
+                remove_synced(&authority.pending_graph_file).unwrap();
+            }
+            drop(authority);
+
+            let mut recovered =
+                AndroidSystemAuthority::open_v4(&revision_root, &state_file, stock_v4(original))
+                    .unwrap();
+            let active =
+                recovered.dispatch_revision(RevisionRequest::CurrentGraph { request_id: 72 });
+            assert!(active.ok, "phase {completed_phase}: {:?}", active.error);
+            let active = active.graph.unwrap();
+            assert_eq!(
+                active.graph_id, candidate_graph_id,
+                "phase {completed_phase}"
+            );
+            assert_eq!(
+                active.revisions[0].state.resource.state,
+                json!({"phase": completed_phase}),
+                "phase {completed_phase}"
+            );
+            assert!(!recovered.graph_activation_journal_file.exists());
+            assert!(!recovered.pending_graph_file.exists());
+
+            let rollback = recovered.dispatch_revision(RevisionRequest::RollbackGraph {
+                request_id: 73,
+                failed_graph_id: candidate_graph_id,
+            });
+            assert!(rollback.ok, "phase {completed_phase}: {:?}", rollback.error);
+            assert_eq!(
+                rollback.graph.unwrap().graph_id,
+                original_graph_id,
+                "phase {completed_phase}"
+            );
+        }
     }
 
     #[test]

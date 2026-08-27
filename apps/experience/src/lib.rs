@@ -46,6 +46,9 @@ pub const DEFAULT_EXPERIENCE: &str = include_str!("../../../experiences/default.
 pub const TIMEFLOW_EXPERIENCE: &str = include_str!("../../../experiences/timeflow.luau");
 pub const STOCK_THEME_MODULE: &str = include_str!("../../../experiences/modules/stock-theme.luau");
 
+const STOCK_AGENT_VARIANT_ORIGINAL: &str = "Make Stock Base yours";
+const STOCK_AGENT_VARIANT_ALTERNATE: &str = "Shape Stock Base around your day";
+
 pub fn deterministic_agent_candidate(current_source: &str) -> &'static str {
     if current_source.trim() == TIMEFLOW_EXPERIENCE.trim() {
         DEFAULT_EXPERIENCE
@@ -54,9 +57,22 @@ pub fn deterministic_agent_candidate(current_source: &str) -> &'static str {
     }
 }
 
+pub fn deterministic_stock_agent_candidate(current_source: &str) -> String {
+    if current_source.contains(STOCK_AGENT_VARIANT_ALTERNATE) {
+        DEFAULT_EXPERIENCE.to_owned()
+    } else {
+        DEFAULT_EXPERIENCE.replacen(
+            STOCK_AGENT_VARIANT_ORIGINAL,
+            STOCK_AGENT_VARIANT_ALTERNATE,
+            1,
+        )
+    }
+}
+
 #[cfg(not(target_os = "android"))]
 fn compile_built_in(source: &str) -> Result<runtime_luau::LuauRuntime, runtime_luau::RuntimeError> {
-    let sidecars = (source.trim() == DEFAULT_EXPERIENCE.trim())
+    let sidecars = source
+        .contains("require(\"stock.theme\")")
         .then(|| runtime_luau::RevisionAssetInput {
             id: "stock.theme".into(),
             kind: "luau".into(),
@@ -78,6 +94,14 @@ pub fn validate_embedded_experience() -> Result<usize, String> {
 
 #[cfg(test)]
 mod tests {
+    fn scene_contains_agent_composer(node: &experience_ir::SceneNode) -> bool {
+        matches!(
+            &node.content,
+            Some(experience_ir::Content::TextSession(session))
+                if session.submit_action.as_deref() == Some("agent_submit")
+        ) || node.children.iter().any(scene_contains_agent_composer)
+    }
+
     #[test]
     fn embedded_experience_is_valid() {
         let runtime = super::compile_built_in(super::DEFAULT_EXPERIENCE).unwrap();
@@ -476,6 +500,27 @@ mod tests {
                 .render(&providers_fake::snapshot(), &runtime.initial_state())
                 .unwrap();
             assert!(experience_ir::validate_scene(&scene).unwrap() > 15);
+        }
+    }
+
+    #[test]
+    fn deterministic_stock_agent_candidate_retains_the_shell_contract() {
+        let first = super::deterministic_stock_agent_candidate(super::DEFAULT_EXPERIENCE);
+        assert_ne!(first.trim(), super::DEFAULT_EXPERIENCE.trim());
+        let second = super::deterministic_stock_agent_candidate(&first);
+        assert_eq!(second.trim(), super::DEFAULT_EXPERIENCE.trim());
+
+        for source in [&first, &second] {
+            let runtime = super::compile_built_in(source).unwrap();
+            assert_eq!(
+                runtime.api_version(),
+                experience_ir::EXPERIENCE_API_VERSION_V4
+            );
+            assert_eq!(runtime.export_ids().unwrap(), vec!["main"]);
+            let mut state = runtime.initial_state();
+            state["active_workspace"] = serde_json::json!("agent");
+            let scene = runtime.render(&providers_fake::snapshot(), &state).unwrap();
+            assert!(scene_contains_agent_composer(&scene.root));
         }
     }
 }

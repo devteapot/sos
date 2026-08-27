@@ -129,6 +129,19 @@ pub enum RevisionRequest {
         request_id: u64,
         failed_graph_id: String,
     },
+    StageGraphRevision {
+        request_id: u64,
+        expected_graph_id: String,
+        package: PackageMetadata,
+        source: String,
+        state: serde_json::Value,
+        schema_version: u64,
+        assets: Vec<RevisionAssetWire>,
+    },
+    DiscardGraph {
+        request_id: u64,
+        graph_id: String,
+    },
     CommitGraphAction {
         request_id: u64,
         graph_id: String,
@@ -173,6 +186,8 @@ impl RevisionRequest {
             | Self::CurrentGraph { request_id }
             | Self::ConfirmGraph { request_id, .. }
             | Self::RollbackGraph { request_id, .. }
+            | Self::StageGraphRevision { request_id, .. }
+            | Self::DiscardGraph { request_id, .. }
             | Self::CommitGraphAction { request_id, .. }
             | Self::CurrentAppearance { request_id }
             | Self::UpdateAppearance { request_id, .. }

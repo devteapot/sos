@@ -12817,3 +12817,62 @@ authoring and staged graph-activation API, add Android-side graph fixture
 coverage, build and install the resulting ARM64 product, then run restart,
 rollback, IME, accessibility, grant isolation, child-failure, appearance, and
 composition acceptance on the Samsung target.
+
+## 2026-08-27: Make Android authoring a staged v4 graph transaction
+
+**Goal:** Remove Android's remaining singleton source-swap authoring path from
+the active product and make a generated Stock revision use the same immutable
+package, resolved graph, presentation, recovery, and rollback rules as every
+other v4 activation.
+
+**Changed:** The Android authority protocol now stages an immutable package
+revision against an exact active graph and can discard the staged graph before
+presentation. The authority checks the stable Experience ID and registry-owned
+role, exact current state hash and schema, package contract, grants, resolved
+graph limits, and dependency bindings before returning the candidate graph.
+Candidate state stays separate until the host confirms a rendered frame.
+
+Confirmation writes one graph-activation journal before it replaces the
+composition state, Experience registry pointer, graph pointer, and legacy
+fallback marker. Restart recovery completes that journal from every durable
+phase. Whole-graph rollback restores the prior composition state and pointers.
+Opening the v4 authority disables bare v3 installation, while the legacy
+revision reader and rollback activation remain available for existing recovery
+artifacts.
+
+The Android host now compiles generated source with the active revision's
+sidecars, requires API v4 and the exact active export set, migrates state with
+an explicit exact-parent record, validates all declared scenarios and export
+viewports, starts the candidate graph with one VM per Instance, and confirms it
+only after GPUI presents a frame. Failed runtime preparation discards the
+staged graph. The fake agent now makes a visible edit to the v4 Stock package
+instead of replacing the shell with the unrelated Timeflow Experience. Both
+agent preflight and host submission require the privileged Stock shell to keep
+its `agent_submit` text session. Agent activation evidence advances through
+validated, staged, and committed phases on the graph path.
+
+**Evidence:** `cargo test -j1 -p android-authority-protocol -p
+android-system-authority` passed 26 tests. The new authoring case covers stage,
+discard, presentation, candidate state commit, whole-graph rollback, and v3
+authoring rejection. The recovery case interrupted six consecutive journal
+phases and proved that every restart selected the complete candidate graph,
+removed pending intent, and could roll back to the original graph. `cargo test
+-j1 -p sos-experience` passed 18 tests, including a fake-agent Stock edit that
+retains API v4, the `main` export, theme module, and agent composer. Both
+`cargo ndk -t arm64-v8a -P 31 check -j1 -p sos-experience --features
+aosp-system` and `cargo ndk -t arm64-v8a -P 31 check -j1 -p sos-experience
+--no-default-features --features core-native` passed. `cargo fmt --all` and
+`git diff --check` passed.
+
+**Failures and decision:** The first Stock agent test compiled the modified
+source without its `stock.theme` module and failed at `require`. The built-in
+compiler now derives sidecar need from the declared module import, matching the
+package behavior. Android v4 authoring is accepted as the only creation path.
+The v3 code remains a bounded read and rollback compatibility path.
+
+**Remaining risks and next gate:** This is host compilation and authority fault
+evidence, not a Samsung hardware verdict. Audit checked-in tools, fixtures, and
+recovery scripts for any remaining v3 creation. Then complete the shared
+desktop verification campaign and run the Android graph activation, restart,
+rollback, IME, accessibility, appearance, grant, containment, and child-failure
+campaign on the physical SM-A336B.

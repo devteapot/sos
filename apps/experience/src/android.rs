@@ -34,7 +34,10 @@ use experience_ir::{
     HitRegion, Interaction, Justify, PaintOp, ProviderEffect, Scene, SceneEvent, SceneNode,
     StateEnvelope, TextContent, MAX_AGENT_MESSAGES, MAX_AGENT_MESSAGE_BYTES,
 };
-use experience_package::{ExperienceRole, GraphNodeId, InstanceId, PackageMetadata, RevisionId};
+use experience_package::{
+    canonical_sha256, ExperienceRole, GraphNodeId, InstanceId, PackageMetadata, RevisionId,
+    StateMigrationRecord, StateMigrationSource,
+};
 use gpui::{
     canvas, div, img, prelude::*, px, relative, rgb, Animation as GpuiAnimation, AnimationExt as _,
     AnyElement, App, Application, Context, Entity, MouseButton, Render, ScrollHandle, SharedString,
@@ -183,6 +186,8 @@ struct AndroidGraphRevision {
     package: PackageMetadata,
     allowed_capabilities: BTreeSet<String>,
     state_revision: u64,
+    schema_version: u64,
+    sidecars: Vec<runtime_luau::RevisionAssetInput>,
 }
 
 #[cfg(feature = "aosp-system")]
@@ -437,6 +442,8 @@ struct ExperienceHost {
     pending_graph_previous: Option<(u64, GraphRuntimeSnapshot)>,
     #[cfg(feature = "aosp-system")]
     pending_graph_confirmation: Option<String>,
+    #[cfg(feature = "aosp-system")]
+    pending_graph_agent_activation: Option<AgentActivationEvidence>,
     scene: Scene,
     state: JsonValue,
     remote_state_revision: Option<u64>,
@@ -768,6 +775,8 @@ impl ExperienceHost {
             pending_graph_previous: None,
             #[cfg(feature = "aosp-system")]
             pending_graph_confirmation,
+            #[cfg(feature = "aosp-system")]
+            pending_graph_agent_activation: None,
             scene: {
                 #[cfg(feature = "aosp-system")]
                 {
@@ -1065,7 +1074,7 @@ impl ExperienceHost {
             while let Ok(update) = updates.recv().await {
                 if this
                     .update(cx, |this, cx| {
-                        this.handle_agent_update(update);
+                        this.handle_agent_update(update, cx);
                         cx.notify();
                     })
                     .is_err()
@@ -1162,7 +1171,7 @@ impl ExperienceHost {
                     ready.initialize_us
                 );
                 if file_path(CANDIDATE_FILE).is_file() {
-                    self.submit_reload();
+                    self.submit_reload(cx);
                 }
             }
             Err(error) if self.source.trim() != DEFAULT_EXPERIENCE.trim() => {
@@ -1760,32 +1769,36 @@ impl ExperienceHost {
         }
     }
 
-    fn submit_reload(&mut self) {
+    fn submit_reload(&mut self, cx: &mut Context<Self>) {
         let Some(candidate_source) = read_file(CANDIDATE_FILE) else {
             self.status = Some(("No candidate script found".into(), false));
             return;
         };
-        self.submit_candidate_source(candidate_source);
+        self.submit_candidate_source(candidate_source, cx);
     }
 
-    fn submit_candidate_source(&mut self, candidate_source: String) {
-        self.submit_candidate_source_with_origin(candidate_source, false);
+    fn submit_candidate_source(&mut self, candidate_source: String, cx: &mut Context<Self>) {
+        self.submit_candidate_source_with_origin(candidate_source, false, cx);
     }
 
-    fn submit_agent_candidate_source(&mut self, candidate_source: String) {
-        self.submit_candidate_source_with_origin(candidate_source, true);
+    fn submit_agent_candidate_source(&mut self, candidate_source: String, cx: &mut Context<Self>) {
+        self.submit_candidate_source_with_origin(candidate_source, true, cx);
     }
 
     fn submit_candidate_source_with_origin(
         &mut self,
         candidate_source: String,
         from_verified_agent: bool,
+        cx: &mut Context<Self>,
     ) {
         if self.worker.is_none() {
-            self.status = Some((
-                "This host accepts only packaged v4 authoring targets".into(),
-                false,
-            ));
+            #[cfg(feature = "aosp-system")]
+            self.submit_v4_candidate(candidate_source, from_verified_agent, cx);
+            #[cfg(not(feature = "aosp-system"))]
+            {
+                let _ = (candidate_source, from_verified_agent);
+                self.status = Some(("Runtime worker is unavailable".into(), false));
+            }
             return;
         }
         if self.stress.is_some()
@@ -1829,6 +1842,189 @@ impl ExperienceHost {
             self.pending_agent_activations.remove(&request_id);
             self.status = Some((format!("Candidate could not start: {error}"), false));
         }
+    }
+
+    #[cfg(feature = "aosp-system")]
+    fn submit_v4_candidate(
+        &mut self,
+        candidate_source: String,
+        from_verified_agent: bool,
+        cx: &mut Context<Self>,
+    ) {
+        if self.action_in_flight || self.pending_graph_confirmation.is_some() {
+            self.status = Some((
+                "A graph action or activation is already active".into(),
+                false,
+            ));
+            return;
+        }
+        let mut agent_activation = from_verified_agent.then(|| {
+            let request_id = self.allocate_request_id();
+            AgentActivationEvidence::submitted(request_id)
+        });
+        let Some(active) = self.active_graph.as_ref() else {
+            self.status = Some(("No v4 authoring target is active".into(), false));
+            return;
+        };
+        let root = &active.snapshot.root;
+        let root_instance = &active.snapshot.instances[root];
+        let current = &active.revisions[&root_instance.revision_id];
+        let runtime = match runtime_luau::LuauRuntime::compile_with_assets(
+            &candidate_source,
+            current.sidecars.clone(),
+        ) {
+            Ok(runtime) => runtime,
+            Err(error) => {
+                self.status = Some((format!("Candidate compile failed: {error}"), false));
+                return;
+            }
+        };
+        if runtime.api_version() != experience_ir::EXPERIENCE_API_VERSION_V4 {
+            self.status = Some((
+                "New authoring submissions must use Experience API v4".into(),
+                false,
+            ));
+            return;
+        }
+        let implemented = match runtime.export_ids() {
+            Ok(exports) => exports.into_iter().collect::<BTreeSet<_>>(),
+            Err(error) => {
+                self.status = Some((format!("Candidate exports failed: {error}"), false));
+                return;
+            }
+        };
+        let declared = current
+            .package
+            .contract
+            .exports
+            .keys()
+            .map(ToString::to_string)
+            .collect::<BTreeSet<_>>();
+        if implemented != declared {
+            self.status = Some((
+                "Candidate exports do not match the active v4 contract".into(),
+                false,
+            ));
+            return;
+        }
+        let state = match runtime.migrate_state(current.schema_version, &root_instance.state) {
+            Ok(state) => state,
+            Err(error) => {
+                self.status = Some((format!("Candidate state migration failed: {error}"), false));
+                return;
+            }
+        };
+        let schema_version = match runtime.state_schema_version() {
+            Ok(version) => version,
+            Err(error) => {
+                self.status = Some((format!("Candidate state schema failed: {error}"), false));
+                return;
+            }
+        };
+        let mut package = current.package.clone();
+        package.state_migration = Some(StateMigrationRecord {
+            source: StateMigrationSource::ExperienceRevision {
+                experience_id: package.experience_id.clone(),
+                revision_id: root_instance.revision_id.clone(),
+                schema_version: current.schema_version,
+                state_sha256: match canonical_sha256(&root_instance.state) {
+                    Ok(digest) => digest,
+                    Err(error) => {
+                        self.status =
+                            Some((format!("Candidate state hash failed: {error}"), false));
+                        return;
+                    }
+                },
+            },
+            target_schema_version: schema_version,
+            result_state_sha256: match canonical_sha256(&state) {
+                Ok(digest) => digest,
+                Err(error) => {
+                    self.status = Some((format!("Migrated state hash failed: {error}"), false));
+                    return;
+                }
+            },
+        });
+        if let Err(error) = package.validate() {
+            self.status = Some((format!("Candidate package failed: {error}"), false));
+            return;
+        }
+        let model =
+            filter_android_graph_model(&self.model, package.role, &current.allowed_capabilities);
+        if let Err(error) = validate_android_candidate_exports(&runtime, &package, &model, &state) {
+            self.status = Some((format!("Candidate validation failed: {error}"), false));
+            return;
+        }
+        if let Some(evidence) = agent_activation.as_mut() {
+            evidence
+                .advance(AgentActivationPhase::Validated)
+                .expect("v4 agent validation must follow submission");
+            log::info!(
+                "android_agent_candidate_validation_ack request_id={} phase=validated authority_committed=false",
+                evidence.request_id()
+            );
+        }
+        let assets = current
+            .sidecars
+            .iter()
+            .map(|asset| android_authority_protocol::RevisionAssetWire {
+                id: asset.id.clone(),
+                kind: asset.kind.clone(),
+                bytes: asset.bytes.clone(),
+            })
+            .collect();
+        self.status = Some(("Candidate validated; staging v4 graph…".into(), true));
+        let response = match revision_client::stage_graph_revision(
+            active.graph_id.clone(),
+            package,
+            candidate_source.clone(),
+            state,
+            schema_version,
+            assets,
+        ) {
+            Ok(response) => response,
+            Err(error) => {
+                self.status = Some((format!("Candidate staging failed: {error}"), false));
+                return;
+            }
+        };
+        let Some(bundle) = response.graph else {
+            self.status = Some(("Candidate staging omitted its resolved graph".into(), false));
+            return;
+        };
+        if let Some(evidence) = agent_activation.as_mut() {
+            evidence
+                .advance(AgentActivationPhase::Staged)
+                .expect("v4 graph staging must follow validation");
+            log::info!(
+                "android_agent_activation_stage_ack request_id={} graph_id={} phase=staged authority_committed=false",
+                evidence.request_id(),
+                bundle.graph_id
+            );
+        }
+        let graph_id = bundle.graph_id.clone();
+        let graph = match start_android_graph_runtime(bundle, &self.model) {
+            Ok(graph) => graph,
+            Err(error) => {
+                let _ = revision_client::discard_graph(graph_id);
+                self.status = Some((format!("Candidate graph rejected: {error}"), false));
+                return;
+            }
+        };
+        let results = graph.worker.results();
+        let snapshot = graph.snapshot.clone();
+        self.active_graph = Some(graph);
+        self.install_graph_snapshot(snapshot);
+        self.source = candidate_source;
+        self.state_schema_version = schema_version;
+        self.system_revision_id = self.active_graph.as_ref().unwrap().snapshot.instances
+            [&self.active_graph.as_ref().unwrap().snapshot.root]
+            .revision_id
+            .to_string();
+        self.pending_graph_confirmation = Some(graph_id.clone());
+        self.pending_graph_agent_activation = agent_activation;
+        self.status = Some(("Candidate rendered; confirming v4 graph…".into(), true));
+        Self::attach_graph_channels(results, cx);
     }
 
     fn advance_agent_activation(&mut self, request_id: u64, phase: AgentActivationPhase) -> bool {
@@ -2507,7 +2703,7 @@ impl ExperienceHost {
         Ok(())
     }
 
-    fn handle_agent_update(&mut self, update: agent::AgentUpdate) {
+    fn handle_agent_update(&mut self, update: agent::AgentUpdate, cx: &mut Context<Self>) {
         match update {
             agent::AgentUpdate::Started { prompt } => {
                 self.model.agent.busy = true;
@@ -2528,7 +2724,7 @@ impl ExperienceHost {
             agent::AgentUpdate::Candidate { source, summary } => {
                 push_agent_message(&mut self.model, AgentMessageRole::Assistant, summary);
                 self.model.agent.activity = "Validating the proposed experience".into();
-                self.submit_agent_candidate_source(source);
+                self.submit_agent_candidate_source(source, cx);
             }
             agent::AgentUpdate::Completed => {
                 self.model.agent.busy = false;
@@ -2810,6 +3006,16 @@ impl ExperienceHost {
                 }) =>
             {
                 log::info!("android_graph_presented graph_id={graph_id} confirmed=true");
+                if let Some(mut evidence) = self.pending_graph_agent_activation.take() {
+                    evidence
+                        .advance(AgentActivationPhase::Committed)
+                        .expect("v4 agent commit must follow graph staging");
+                    log::info!(
+                        "android_agent_activation_commit request_id={} graph_id={} phase=committed authority=system-graph",
+                        evidence.request_id(),
+                        graph_id
+                    );
+                }
             }
             Ok(_) | Err(_) => {
                 let rollback = revision_client::rollback_graph(graph_id.clone());
@@ -3623,7 +3829,7 @@ impl Render for ExperienceHost {
                 RELOAD_REQUESTED.store(true, Ordering::Release);
                 cx.notify();
             } else {
-                self.submit_reload();
+                self.submit_reload(cx);
             }
         }
         if WORKER_RESTART_REQUESTED.swap(false, Ordering::AcqRel) {
@@ -3775,11 +3981,12 @@ fn start_android_graph_runtime(
         let mut model =
             filter_android_graph_model(root_model, revision.package.role, &allowed_capabilities);
         model.appearance = bundle.appearance.profile.clone();
+        let sidecars = revision_client::inputs(revision.assets.clone());
         inputs.insert(
             revision_id.clone(),
             GraphRevisionInput {
                 source: revision.source.clone(),
-                sidecars: revision_client::inputs(revision.assets.clone()),
+                sidecars: sidecars.clone(),
                 model,
                 state: revision.state.resource.state.clone(),
                 state_schema_version: revision.state.resource.schema_version,
@@ -3792,6 +3999,8 @@ fn start_android_graph_runtime(
                 package: revision.package.clone(),
                 allowed_capabilities,
                 state_revision: revision.state.resource.revision,
+                schema_version: revision.state.resource.schema_version,
+                sidecars,
             },
         );
     }
@@ -3902,6 +4111,109 @@ fn filter_android_graph_model(
         model.agent = experience_ir::AgentConversation::default();
     }
     model
+}
+
+#[cfg(feature = "aosp-system")]
+fn validate_android_candidate_exports(
+    runtime: &runtime_luau::LuauRuntime,
+    package: &PackageMetadata,
+    model: &ExperienceModel,
+    state: &JsonValue,
+) -> Result<(), String> {
+    let report = runtime
+        .validate_all(model, state)
+        .map_err(|error| error.to_string())?;
+    if !report.valid {
+        let failures = report
+            .scenarios
+            .iter()
+            .filter_map(|scenario| {
+                scenario
+                    .diagnostic
+                    .as_ref()
+                    .map(|diagnostic| diagnostic.message.clone())
+            })
+            .collect::<Vec<_>>()
+            .join("; ");
+        return Err(format!("candidate scenarios failed: {failures}"));
+    }
+    if package.role == ExperienceRole::Shell
+        && !android_shell_has_agent_composer(runtime, model, state)?
+    {
+        return Err(
+            "Stock Shell candidates must retain a text_session that submits agent_submit".into(),
+        );
+    }
+    let mut appearance_model = model.clone();
+    for (export_id, export) in &package.contract.exports {
+        let properties = export.properties.example_value();
+        for (width, height) in [
+            (export.viewport.min_width, export.viewport.min_height),
+            (export.viewport.max_width, export.viewport.max_height),
+        ] {
+            runtime
+                .render_export(
+                    export_id.as_str(),
+                    &appearance_model,
+                    state,
+                    &properties,
+                    experience_ir::ExperienceViewport {
+                        width,
+                        height,
+                        scale_milli: 1000,
+                    },
+                    None,
+                )
+                .map_err(|error| error.to_string())?;
+        }
+        appearance_model.appearance.contrast = experience_package::Contrast::High;
+        appearance_model.appearance.reduce_motion = true;
+        runtime
+            .render_export(
+                export_id.as_str(),
+                &appearance_model,
+                state,
+                &properties,
+                experience_ir::ExperienceViewport {
+                    width: export.viewport.min_width,
+                    height: export.viewport.min_height,
+                    scale_milli: 1000,
+                },
+                None,
+            )
+            .map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
+#[cfg(feature = "aosp-system")]
+fn android_shell_has_agent_composer(
+    runtime: &runtime_luau::LuauRuntime,
+    model: &ExperienceModel,
+    state: &JsonValue,
+) -> Result<bool, String> {
+    fn contains_composer(node: &SceneNode) -> bool {
+        matches!(
+            &node.content,
+            Some(Content::TextSession(session))
+                if session.submit_action.as_deref() == Some("agent_submit")
+        ) || node.children.iter().any(contains_composer)
+    }
+
+    for (key, value) in [("active_workspace", "agent"), ("shell_panel", "agent")] {
+        let mut branch = state.clone();
+        let object = branch
+            .as_object_mut()
+            .ok_or_else(|| "Stock Shell state must be a record".to_owned())?;
+        object.insert(key.into(), JsonValue::String(value.into()));
+        let scene = runtime
+            .render(model, &branch)
+            .map_err(|error| format!("render Stock agent branch: {error}"))?;
+        if contains_composer(&scene.root) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 #[cfg(feature = "aosp-system")]
