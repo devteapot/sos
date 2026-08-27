@@ -5,12 +5,12 @@ Date: 2026-08-26
 Status: implementation in progress. Package format v4, Experience API v4, the
 registry and graph resolver, isolated graph runtime, authority-owned
 appearance, graph state and activation transactions, derivation and
-composition authoring, and the Linux host path are implemented. Stock and
-Timeflow are v4 packages, and a Linux migration imports legacy Stock state
-without changing the legacy pointer during the rollback window. API v3 is now
-a legacy activation reader, not the target for checked-in experiences or new
-authoring. Tracked updates activate every affected top-level graph atomically.
-Physical Linux acceptance, complete Android host integration, and final
+composition authoring, and the Linux and Android host paths are implemented.
+Stock and Timeflow are v4 packages. Rolling Linux and Android migrations import
+legacy Stock state without changing the legacy pointer during the rollback
+window. API v3 is now a legacy activation reader, not the target for checked-in
+experiences or new authoring. Tracked updates activate every affected top-level
+graph atomically. Physical Linux and Android composition acceptance and final
 compatibility removal remain open.
 
 ## Decision
@@ -371,7 +371,12 @@ The implementation is split so the contracts do not depend on GPUI or Linux:
 - the Linux host namespaces nodes, text state, assets, provider surfaces, input,
   accessibility, and provider subscriptions by graph owner; and
 - the trusted authoring broker exposes bounded context, validate, and submit
-  flows for self-contained fork/remix candidates and live compositions.
+  flows for self-contained fork/remix candidates and live compositions; and
+- the Android authority and GPUI host use the same package, registry, graph,
+  per-Experience state, appearance, grants, per-Instance VM and namespace,
+  presentation, journal recovery, and rollback contract. Android Stock edits
+  stage a complete candidate graph and move no pointer until a rendered-frame
+  confirmation.
 
 The checked-in Agenda, Media, Dashboard, and Agenda-Media Remix sources are a
 reference package set. `sos-revision-supervisor install-composition-demo
@@ -379,8 +384,8 @@ reference package set. `sos-revision-supervisor install-composition-demo
 graph, and lineage metadata.
 
 The shared package, resolver, runtime, and authority code is platform-neutral.
-The Android GPUI host still boots the legacy single-revision authority path and
-does not yet consume a resolved graph. No Android composition claim is made.
+Android has compile, unit, and restart-fault evidence for the graph path. It
+does not yet have a physical-device composition verdict.
 
 ## Rejected shortcuts
 
@@ -449,10 +454,11 @@ GDM. It did not boot the reference graph: supervisor status recorded
 touch observations also came from hot-added uinput devices, so the corrected
 auditor rejects the physical-input claim.
 
-Physical live-composition acceptance therefore remains open. It must boot the
-Dashboard graph on the Framework, observe both independently owned mounted
-children, dispatch a namespaced child event, apply appearance data, and retain
-the graph across a physical host restart without synthetic input standing in
-for integrated hardware. Panel latency, suspend, GPU recovery, thermals, and
-power evidence remain separate gates. Android graph loading, rendering,
-authoring, and physical-device recovery remain a separate platform milestone.
+Physical live-composition acceptance therefore remains open. The Linux gate
+must boot the Dashboard graph on the Framework, observe both independently
+owned mounted children, dispatch a namespaced child event, apply appearance
+data, and retain the graph across a physical host restart without synthetic
+input standing in for integrated hardware. The Android gate must repeat the
+composition, input, IME, accessibility, appearance, grant, child-failure,
+restart, and rollback campaign on the SM-A336B. Panel latency, suspend, GPU
+recovery, thermals, and power evidence remain separate gates.

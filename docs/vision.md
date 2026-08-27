@@ -129,9 +129,9 @@ behind a live mount.
 The versioned identity, authority, appearance, update, authoring, and
 acceptance rules are defined in
 [`experience-composition.md`](experience-composition.md). Package and
-Experience API v4 implement them in the shared runtime and Linux host; API v3
-remains the legacy single-experience path, and Android host integration remains
-open.
+Experience API v4 implement them in the shared runtime and the Linux and
+Android hosts. API v3 remains only as a bounded rollback reader. Physical
+live-composition acceptance remains open on both platforms.
 
 ## One experience language, not a permanent IR ceiling
 

@@ -70,6 +70,7 @@ use native_input::NativeTextInput;
 
 static FILES_DIR: OnceLock<PathBuf> = OnceLock::new();
 static RELOAD_REQUESTED: AtomicBool = AtomicBool::new(false);
+static ROLLBACK_REQUESTED: AtomicBool = AtomicBool::new(false);
 static WORKER_RESTART_REQUESTED: AtomicBool = AtomicBool::new(false);
 static STRESS_REQUEST: OnceLock<Mutex<Option<StressRequest>>> = OnceLock::new();
 #[cfg(feature = "core-native")]
@@ -234,6 +235,9 @@ fn android_main(app: android_activity::AndroidApp) {
         if url.starts_with("sos://reload") {
             RELOAD_REQUESTED.store(true, Ordering::Release);
             log::info!("script_reload_requested");
+        } else if url.starts_with("sos://rollback") {
+            ROLLBACK_REQUESTED.store(true, Ordering::Release);
+            log::info!("graph_rollback_requested");
         } else if url.starts_with("sos://worker-restart") {
             WORKER_RESTART_REQUESTED.store(true, Ordering::Release);
             log::info!("runtime_worker_restart_requested");
@@ -444,6 +448,8 @@ struct ExperienceHost {
     pending_graph_confirmation: Option<String>,
     #[cfg(feature = "aosp-system")]
     pending_graph_agent_activation: Option<AgentActivationEvidence>,
+    #[cfg(feature = "aosp-system")]
+    pending_graph_rollback_presentation: Option<String>,
     scene: Scene,
     state: JsonValue,
     remote_state_revision: Option<u64>,
@@ -777,6 +783,8 @@ impl ExperienceHost {
             pending_graph_confirmation,
             #[cfg(feature = "aosp-system")]
             pending_graph_agent_activation: None,
+            #[cfg(feature = "aosp-system")]
+            pending_graph_rollback_presentation: None,
             scene: {
                 #[cfg(feature = "aosp-system")]
                 {
@@ -1845,6 +1853,12 @@ impl ExperienceHost {
     }
 
     #[cfg(feature = "aosp-system")]
+    fn reject_v4_candidate(&mut self, message: String) {
+        log::warn!("android_v4_candidate_rejected error={message}");
+        self.status = Some((message, false));
+    }
+
+    #[cfg(feature = "aosp-system")]
     fn submit_v4_candidate(
         &mut self,
         candidate_source: String,
@@ -1852,10 +1866,7 @@ impl ExperienceHost {
         cx: &mut Context<Self>,
     ) {
         if self.action_in_flight || self.pending_graph_confirmation.is_some() {
-            self.status = Some((
-                "A graph action or activation is already active".into(),
-                false,
-            ));
+            self.reject_v4_candidate("A graph action or activation is already active".into());
             return;
         }
         let mut agent_activation = from_verified_agent.then(|| {
@@ -1863,7 +1874,7 @@ impl ExperienceHost {
             AgentActivationEvidence::submitted(request_id)
         });
         let Some(active) = self.active_graph.as_ref() else {
-            self.status = Some(("No v4 authoring target is active".into(), false));
+            self.reject_v4_candidate("No v4 authoring target is active".into());
             return;
         };
         let root = &active.snapshot.root;
@@ -1875,21 +1886,18 @@ impl ExperienceHost {
         ) {
             Ok(runtime) => runtime,
             Err(error) => {
-                self.status = Some((format!("Candidate compile failed: {error}"), false));
+                self.reject_v4_candidate(format!("Candidate compile failed: {error}"));
                 return;
             }
         };
         if runtime.api_version() != experience_ir::EXPERIENCE_API_VERSION_V4 {
-            self.status = Some((
-                "New authoring submissions must use Experience API v4".into(),
-                false,
-            ));
+            self.reject_v4_candidate("New authoring submissions must use Experience API v4".into());
             return;
         }
         let implemented = match runtime.export_ids() {
             Ok(exports) => exports.into_iter().collect::<BTreeSet<_>>(),
             Err(error) => {
-                self.status = Some((format!("Candidate exports failed: {error}"), false));
+                self.reject_v4_candidate(format!("Candidate exports failed: {error}"));
                 return;
             }
         };
@@ -1901,23 +1909,22 @@ impl ExperienceHost {
             .map(ToString::to_string)
             .collect::<BTreeSet<_>>();
         if implemented != declared {
-            self.status = Some((
+            self.reject_v4_candidate(
                 "Candidate exports do not match the active v4 contract".into(),
-                false,
-            ));
+            );
             return;
         }
         let state = match runtime.migrate_state(current.schema_version, &root_instance.state) {
             Ok(state) => state,
             Err(error) => {
-                self.status = Some((format!("Candidate state migration failed: {error}"), false));
+                self.reject_v4_candidate(format!("Candidate state migration failed: {error}"));
                 return;
             }
         };
         let schema_version = match runtime.state_schema_version() {
             Ok(version) => version,
             Err(error) => {
-                self.status = Some((format!("Candidate state schema failed: {error}"), false));
+                self.reject_v4_candidate(format!("Candidate state schema failed: {error}"));
                 return;
             }
         };
@@ -1930,8 +1937,7 @@ impl ExperienceHost {
                 state_sha256: match canonical_sha256(&root_instance.state) {
                     Ok(digest) => digest,
                     Err(error) => {
-                        self.status =
-                            Some((format!("Candidate state hash failed: {error}"), false));
+                        self.reject_v4_candidate(format!("Candidate state hash failed: {error}"));
                         return;
                     }
                 },
@@ -1940,19 +1946,19 @@ impl ExperienceHost {
             result_state_sha256: match canonical_sha256(&state) {
                 Ok(digest) => digest,
                 Err(error) => {
-                    self.status = Some((format!("Migrated state hash failed: {error}"), false));
+                    self.reject_v4_candidate(format!("Migrated state hash failed: {error}"));
                     return;
                 }
             },
         });
         if let Err(error) = package.validate() {
-            self.status = Some((format!("Candidate package failed: {error}"), false));
+            self.reject_v4_candidate(format!("Candidate package failed: {error}"));
             return;
         }
         let model =
             filter_android_graph_model(&self.model, package.role, &current.allowed_capabilities);
         if let Err(error) = validate_android_candidate_exports(&runtime, &package, &model, &state) {
-            self.status = Some((format!("Candidate validation failed: {error}"), false));
+            self.reject_v4_candidate(format!("Candidate validation failed: {error}"));
             return;
         }
         if let Some(evidence) = agent_activation.as_mut() {
@@ -1984,12 +1990,12 @@ impl ExperienceHost {
         ) {
             Ok(response) => response,
             Err(error) => {
-                self.status = Some((format!("Candidate staging failed: {error}"), false));
+                self.reject_v4_candidate(format!("Candidate staging failed: {error}"));
                 return;
             }
         };
         let Some(bundle) = response.graph else {
-            self.status = Some(("Candidate staging omitted its resolved graph".into(), false));
+            self.reject_v4_candidate("Candidate staging omitted its resolved graph".into());
             return;
         };
         if let Some(evidence) = agent_activation.as_mut() {
@@ -2007,7 +2013,7 @@ impl ExperienceHost {
             Ok(graph) => graph,
             Err(error) => {
                 let _ = revision_client::discard_graph(graph_id);
-                self.status = Some((format!("Candidate graph rejected: {error}"), false));
+                self.reject_v4_candidate(format!("Candidate graph rejected: {error}"));
                 return;
             }
         };
@@ -2024,7 +2030,89 @@ impl ExperienceHost {
         self.pending_graph_confirmation = Some(graph_id.clone());
         self.pending_graph_agent_activation = agent_activation;
         self.status = Some(("Candidate rendered; confirming v4 graph…".into(), true));
+        log::info!(
+            "android_v4_candidate_staged graph_id={} source_sha256={}",
+            graph_id,
+            source_sha256(&self.source)
+        );
         Self::attach_graph_channels(results, cx);
+    }
+
+    #[cfg(feature = "aosp-system")]
+    fn rollback_active_graph(&mut self, cx: &mut Context<Self>) {
+        if self.action_in_flight || self.pending_graph_confirmation.is_some() {
+            self.status = Some((
+                "A graph action or activation is already active".into(),
+                false,
+            ));
+            return;
+        }
+        let Some(active) = self.active_graph.as_ref() else {
+            self.status = Some(("No active v4 graph can be rolled back".into(), false));
+            return;
+        };
+        let failed_graph_id = active.graph_id.clone();
+        let response = match revision_client::rollback_graph(failed_graph_id.clone()) {
+            Ok(response) => response,
+            Err(error) => {
+                self.status = Some((format!("Graph rollback failed: {error}"), false));
+                log::warn!(
+                    "android_graph_rollback_rejected graph_id={} error={error}",
+                    failed_graph_id
+                );
+                return;
+            }
+        };
+        let Some(bundle) = response.graph else {
+            self.status = Some((
+                "Rollback selected the retained v3 recovery artifact; relaunching is required"
+                    .into(),
+                false,
+            ));
+            log::warn!(
+                "android_graph_rollback_selected_legacy failed_graph_id={}",
+                failed_graph_id
+            );
+            return;
+        };
+        let graph_id = bundle.graph_id.clone();
+        let root_revision_id = bundle.graph.nodes[&bundle.graph.root].revision_id.clone();
+        let Some(root_revision) = bundle
+            .revisions
+            .iter()
+            .find(|revision| revision.revision_id == root_revision_id.as_str())
+        else {
+            log::error!("android_graph_rollback_omitted_root graph_id={graph_id}");
+            std::process::abort();
+        };
+        let source = root_revision.source.clone();
+        let schema_version = root_revision.state.resource.schema_version;
+        let revision_id = root_revision.revision_id.clone();
+        let graph = match start_android_graph_runtime(bundle, &self.model) {
+            Ok(graph) => graph,
+            Err(error) => {
+                let restore = revision_client::rollback_graph(graph_id.clone());
+                log::error!(
+                    "android_graph_rollback_runtime_rejected graph_id={graph_id} error={error} restore_ok={}",
+                    restore.is_ok()
+                );
+                std::process::abort();
+            }
+        };
+        let results = graph.worker.results();
+        let snapshot = graph.snapshot.clone();
+        self.active_graph = Some(graph);
+        self.install_graph_snapshot(snapshot);
+        self.source = source;
+        self.state_schema_version = schema_version;
+        self.system_revision_id = revision_id;
+        self.pending_graph_rollback_presentation = Some(graph_id.clone());
+        self.status = Some((
+            "Graph rollback rendered; awaiting presentation…".into(),
+            true,
+        ));
+        Self::attach_graph_channels(results, cx);
+        cx.notify();
     }
 
     fn advance_agent_activation(&mut self, request_id: u64, phase: AgentActivationPhase) -> bool {
@@ -3835,6 +3923,17 @@ impl Render for ExperienceHost {
         if WORKER_RESTART_REQUESTED.swap(false, Ordering::AcqRel) {
             self.restart_worker(cx);
         }
+        if ROLLBACK_REQUESTED.swap(false, Ordering::AcqRel) {
+            #[cfg(feature = "aosp-system")]
+            self.rollback_active_graph(cx);
+            #[cfg(not(feature = "aosp-system"))]
+            {
+                self.status = Some((
+                    "Graph rollback requires the v4 system authority".into(),
+                    false,
+                ));
+            }
+        }
         let stress_request = stress_request_slot()
             .lock()
             .expect("stress request lock")
@@ -3921,6 +4020,13 @@ impl Render for ExperienceHost {
         if let Some(graph_id) = self.pending_graph_confirmation.take() {
             cx.on_next_frame(window, move |this, _, _| {
                 this.confirm_presented_graph(graph_id)
+            });
+        }
+        #[cfg(feature = "aosp-system")]
+        if let Some(graph_id) = self.pending_graph_rollback_presentation.take() {
+            cx.on_next_frame(window, move |this, _, _| {
+                this.status = Some(("Previous v4 graph is active".into(), true));
+                log::info!("android_graph_rollback_presented graph_id={graph_id}");
             });
         }
         if self.accessibility_dirty

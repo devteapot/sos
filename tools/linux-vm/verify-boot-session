@@ -182,6 +182,7 @@ done
 sudo install -d -o root -g root -m 0755 \
   /usr/local/libexec/sos-agent \
   /usr/share/sos/experiences \
+  /usr/share/sos/experiences/modules \
   /usr/share/doc/sos
 sudo cp -a "$vm_guest_root/services/sos-agent/dist" \
   "$vm_guest_root/services/sos-agent/node_modules" \
@@ -195,6 +196,17 @@ for vm_experience in default.luau timeflow.luau; do
   sudo install -o root -g root -m 0644 \
     "$vm_guest_root/experiences/$vm_experience" "/usr/share/sos/experiences/$vm_experience"
 done
+for vm_package in default.package.json timeflow.package.json; do
+  sudo install -o root -g root -m 0644 \
+    "$vm_guest_root/experiences/$vm_package" "/usr/share/sos/experiences/$vm_package"
+done
+sudo install -o root -g root -m 0644 \
+  "$vm_guest_root/experiences/modules/stock-theme.luau" \
+  /usr/share/sos/experiences/modules/stock-theme.luau
+sudo cp /usr/share/sos/experiences/default.luau \
+  /usr/share/sos/experiences/stock-agent-variant.luau
+sudo sed -i '0,/Make Stock Base yours/s//Shape Stock Base around your day/' \
+  /usr/share/sos/experiences/stock-agent-variant.luau
 sudo install -o root -g root -m 0644 \
   "$vm_guest_root/packaging/systemd/sos-session.service" \
   /etc/systemd/system/sos-session.service
@@ -208,10 +220,13 @@ done
 sudo sh -c 'umask 077; od -An -N32 -tx1 /dev/urandom | tr -d " \n" > /etc/sos/shell-token'
 sudo chown root:root /etc/sos/shell-token
 sudo chmod 0400 /etc/sos/shell-token
+sudo sh -c 'umask 027; od -An -N32 -tx1 /dev/urandom | tr -d " \n" > /var/lib/sos/grant-review.capability'
+sudo chown sos-compositor:sos-ipc /var/lib/sos/grant-review.capability
+sudo chmod 0640 /var/lib/sos/grant-review.capability
 sudo sh -c 'printf "%s\n" \
   "SOS_AGENT_PROVIDER=openai-codex" \
   "SOS_AGENT_MODEL=gpt-5.6-sol" \
-  "SOS_AGENT_FAKE_SOURCE=/usr/share/sos/experiences/timeflow.luau" \
+  "SOS_AGENT_FAKE_SOURCE=/usr/share/sos/experiences/stock-agent-variant.luau" \
   > /etc/sos/agent.env'
 sudo chown root:root /etc/sos/agent.env
 sudo chmod 0444 /etc/sos/agent.env
@@ -223,16 +238,41 @@ sudo install -o sos-supervisor -g sos-ipc -m 0640 \
 sudo install -o sos-supervisor -g sos-ipc -m 0640 \
   "$vm_guest_root/experiences/timeflow.luau" /var/lib/sos/staging/timeflow.luau
 sudo install -o sos-supervisor -g sos-ipc -m 0640 \
+  "$vm_guest_root/experiences/default.package.json" /var/lib/sos/staging/default.package.json
+sudo install -o sos-supervisor -g sos-ipc -m 0640 \
+  "$vm_guest_root/experiences/timeflow.package.json" /var/lib/sos/staging/timeflow.package.json
+sudo install -o sos-supervisor -g sos-ipc -m 0640 \
+  "$vm_guest_root/experiences/modules/stock-theme.luau" /var/lib/sos/staging/stock-theme.luau
+sudo install -o sos-supervisor -g sos-ipc -m 0640 \
   "$vm_guest_root/tests/fixtures/empty-state.json" /var/lib/sos/staging/empty-state.json
-vm_revision="$(sudo -u sos-supervisor "$vm_bin_dir/sos-revision-supervisor" install \
+vm_revision="$(sudo -u sos-supervisor "$vm_bin_dir/sos-revision-supervisor" install-package \
   --root /var/lib/sos/revisions \
   --source /var/lib/sos/staging/default.luau \
   --state /var/lib/sos/staging/empty-state.json \
   --schema 1 \
-  --api 3)"
+  --package /var/lib/sos/staging/default.package.json \
+  --asset stock.theme:luau:/var/lib/sos/staging/stock-theme.luau)"
+vm_timeflow_revision="$(sudo -u sos-supervisor "$vm_bin_dir/sos-revision-supervisor" install-package \
+  --root /var/lib/sos/revisions \
+  --source /var/lib/sos/staging/timeflow.luau \
+  --state /var/lib/sos/staging/empty-state.json \
+  --schema 1 \
+  --package /var/lib/sos/staging/timeflow.package.json)"
 sudo -u sos-supervisor "$vm_bin_dir/sos-revision-supervisor" bootstrap \
   --root /var/lib/sos/revisions \
   --revision "$vm_revision" >/dev/null
+sudo -u sos-supervisor "$vm_bin_dir/sos-revision-supervisor" bootstrap-graph \
+  --root /var/lib/sos/revisions \
+  --experience sos.stock.shell \
+  --revision "$vm_revision" >/dev/null
+sudo -u sos-supervisor "$vm_bin_dir/sos-revision-supervisor" bootstrap-graph \
+  --root /var/lib/sos/revisions \
+  --experience sos.timeflow \
+  --revision "$vm_timeflow_revision" >/dev/null
+sudo sh -c 'printf "SOS_TRUSTED_STOCK_REVISION=%s\nSOS_TRUSTED_TIMEFLOW_REVISION=%s\n" "$1" "$2" > /var/lib/sos/trusted-revisions.env' \
+  sh "$vm_revision" "$vm_timeflow_revision"
+sudo chown root:root /var/lib/sos/trusted-revisions.env
+sudo chmod 0644 /var/lib/sos/trusted-revisions.env
 sudo systemctl daemon-reload
 sudo systemd-analyze verify \
   /etc/systemd/system/sos-session.service \
@@ -243,7 +283,8 @@ sudo systemd-analyze verify \
 sudo systemctl enable sos-agent.target
 sudo systemctl disable --now seatd.service
 sudo systemctl set-default sos-session.target
-printf 'boot_revision=%s\n' "$vm_revision"
+printf 'boot_revision=%s timeflow_revision=%s api_version=4\n' \
+  "$vm_revision" "$vm_timeflow_revision"
 REMOTE_INSTALL
 
 printf 'Rebooting into sos-session.target; SSH is used only as the test controller.\n'
@@ -334,8 +375,11 @@ vm_after_status="$(sudo -u sos-supervisor "$vm_bin_dir/sos-revision-supervisor" 
   --root "$vm_revision_root")"
 vm_after_revision="$(jq -er '.active_revision' <<<"$vm_after_status")"
 vm_after_host="$(jq -er '.host_pid' <<<"$vm_after_status")"
+vm_after_graph="$(sudo -u sos-supervisor "$vm_bin_dir/sos-revision-supervisor" graph-status \
+  --root "$vm_revision_root" --experience sos.stock.shell)"
 [[ "$vm_after_revision" =~ ^[0-9a-f]{64}$ ]]
 [[ "$vm_after_revision" != "$vm_before_revision" ]]
+[[ "$vm_after_graph" =~ ^[0-9a-f]{64}$ ]]
 [[ "$vm_after_host" == "$vm_before_host" ]]
 vm_agent_pid="$(systemctl show sos-agent.service -p MainPID --value)"
 vm_broker_pid="$(systemctl show sos-agent-authoring.service -p MainPID --value)"
@@ -346,7 +390,7 @@ for vm_tool in get_experience_context validate_experience submit_experience; do
     | grep "sos_agent_tool_started name=$vm_tool" >/dev/null
 done
 sudo journalctl -b -t sos-linux-session --no-pager \
-  | grep "presented armed shell revision.*revision_id=\"$vm_after_revision\".*evidence=\"drm_page_flip\"" >/dev/null
+  | grep "presented armed shell revision.*revision_id=\"$vm_after_graph\".*evidence=\"drm_page_flip\"" >/dev/null
 for _ in {1..1000}; do
   if accessibility_call '{"method":"snapshot"}' \
     | jq -e 'any(.snapshot.nodes[]; .id == "agent-status" and .value == "Ready") and any(.snapshot.nodes[]; .label == "SOS message" and (.value | contains("candidate experience is active")))' >/dev/null; then
@@ -521,6 +565,11 @@ host_pid() {
     --root "$vm_revision_root" | jq -er '.host_pid'
 }
 
+active_revision() {
+  sudo -u sos-supervisor "$vm_bin_dir/sos-revision-supervisor" daemon-status \
+    --root "$vm_revision_root" | jq -er '.active_revision'
+}
+
 recovery_action() {
   python3 - "$1" <<'PY'
 import json
@@ -604,23 +653,22 @@ vm_host_credential="$(sudo find /run/sos -maxdepth 1 -type f \
 [[ "$(sudo stat -c '%a %U' "$vm_compositor_credential")" == '400 sos-compositor' ]]
 [[ "$(sudo stat -c '%a %U' "$vm_host_credential")" == '400 sos-host' ]]
 
-vm_candidate="$(sudo -u sos-supervisor "$vm_bin_dir/sos-revision-supervisor" install \
-  --root "$vm_revision_root" \
-  --source /var/lib/sos/staging/timeflow.luau \
-  --state /var/lib/sos/staging/empty-state.json \
-  --schema 1 \
-  --api 3)"
-vm_transaction="$(sudo -u sos-supervisor "$vm_bin_dir/sos-linux-session" stage \
-  --root "$vm_revision_root" \
-  --revision "$vm_candidate" \
-  --service-socket "$vm_provider_socket")"
-vm_activation="$(sudo -u sos-supervisor "$vm_bin_dir/sos-revision-supervisor" activate \
-  --root "$vm_revision_root" \
-  --revision "$vm_candidate" \
-  --transaction "$vm_transaction")"
+vm_before_candidate="$(active_revision)"
+vm_activation="$(node /usr/local/libexec/sos-agent/dist/agent-runner.cjs prompt \
+  --socket /run/sos-agent/agent.sock \
+  --request 'Refine the active Stock workspace while retaining its composer')"
+for _ in {1..3000}; do
+  vm_candidate="$(active_revision 2>/dev/null || true)"
+  [[ "$vm_candidate" =~ ^[0-9a-f]{64}$ && "$vm_candidate" != "$vm_before_candidate" ]] && break
+  sleep 0.02
+done
+[[ "$vm_candidate" =~ ^[0-9a-f]{64}$ && "$vm_candidate" != "$vm_before_candidate" ]]
+vm_candidate_graph="$(sudo -u sos-supervisor "$vm_bin_dir/sos-revision-supervisor" graph-status \
+  --root "$vm_revision_root" --experience sos.stock.shell)"
+[[ "$vm_candidate_graph" =~ ^[0-9a-f]{64}$ ]]
 vm_host_after="$(host_pid)"
 [[ "$vm_host_after" == "$vm_host_before" ]]
-[[ "$(sudo -u sos-supervisor "$vm_bin_dir/sos-revision-supervisor" status --root "$vm_revision_root")" == "$vm_candidate" ]]
+[[ "$(active_revision)" == "$vm_candidate" ]]
 [[ "$(authority_revision)" == "$vm_candidate" ]]
 
 # Exercise the lifecycle command used by the compositor-owned recovery panel,
@@ -637,7 +685,7 @@ vm_previous="$(sudo jq -er '.previous_revision' /run/sos/recovery.json)"
 [[ "$vm_previous" =~ ^[0-9a-f]{64}$ && "$vm_previous" != "$vm_candidate" ]]
 recovery_action rollback
 for _ in {1..1000}; do
-  if [[ "$(sudo -u sos-supervisor "$vm_bin_dir/sos-revision-supervisor" status --root "$vm_revision_root" 2>/dev/null || true)" == "$vm_previous" ]] \
+  if [[ "$(active_revision 2>/dev/null || true)" == "$vm_previous" ]] \
     && [[ "$(sudo jq -r '.current_revision' /run/sos/recovery.json)" == "$vm_previous" ]] \
     && [[ "$(sudo jq -r '.progress' /run/sos/recovery.json)" == RUNNING ]]; then
     break
@@ -648,7 +696,7 @@ done
 [[ "$(host_pid)" == "$vm_host_after" ]]
 recovery_action rollback
 for _ in {1..1000}; do
-  if [[ "$(sudo -u sos-supervisor "$vm_bin_dir/sos-revision-supervisor" status --root "$vm_revision_root" 2>/dev/null || true)" == "$vm_candidate" ]] \
+  if [[ "$(active_revision 2>/dev/null || true)" == "$vm_candidate" ]] \
     && [[ "$(sudo jq -r '.current_revision' /run/sos/recovery.json)" == "$vm_candidate" ]] \
     && [[ "$(sudo jq -r '.progress' /run/sos/recovery.json)" == RUNNING ]]; then
     break
@@ -720,7 +768,7 @@ vm_session_after="$(loginctl show-seat seat0 -p ActiveSession --value)"
 [[ "$(loginctl show-session "$vm_session_after" -p Leader --value)" == "$vm_main_after" ]]
 vm_host_after_restart="$(host_pid)"
 [[ "$vm_host_after_restart" =~ ^[1-9][0-9]*$ ]]
-[[ "$(sudo -u sos-supervisor "$vm_bin_dir/sos-revision-supervisor" status --root "$vm_revision_root")" == "$vm_candidate" ]]
+[[ "$(active_revision)" == "$vm_candidate" ]]
 [[ "$(authority_revision)" == "$vm_candidate" ]]
 vm_restart_count="$(systemctl show sos-session.service -p NRestarts --value)"
 [[ "$vm_restart_count" -ge 1 ]]
@@ -765,7 +813,7 @@ vm_session_final="$(loginctl show-seat seat0 -p ActiveSession --value)"
 [[ "$(loginctl show-session "$vm_session_final" -p Leader --value)" == "$vm_main_final" ]]
 [[ "$(ps -o user= -p "$vm_main_final" | xargs)" == sos-compositor ]]
 [[ "$(ps -o user= -p "$(pgrep -u sos-host -f '^/usr/local/libexec/sos/sos-experience-host')" | xargs)" == sos-host ]]
-[[ "$(sudo -u sos-supervisor "$vm_bin_dir/sos-revision-supervisor" status --root "$vm_revision_root")" == "$vm_candidate" ]]
+[[ "$(active_revision)" == "$vm_candidate" ]]
 [[ "$(authority_revision)" == "$vm_candidate" ]]
 sudo journalctl -b -t sos-linux-session --no-pager \
   | grep 'linux_system_session_recovered artifact=abandoned_process_registry' >/dev/null

@@ -99,17 +99,22 @@ cargo build -p revision-supervisor --bins
 SUPERVISOR=target/debug/sos-revision-supervisor
 ROOT=/tmp/sos-revisions
 
-$SUPERVISOR install --root "$ROOT" --source experience.luau \
-  --state state.json --schema 1 --api 3 \
-  --asset hero:png:hero.png --asset display:font:Display.otf
+$SUPERVISOR install-package --root "$ROOT" --source experience.luau \
+  --state state.json --schema 1 --package package.json \
+  --asset theme:luau:theme.luau
 $SUPERVISOR bootstrap --root "$ROOT" --revision <initial-revision-id>
-$SUPERVISOR serve --root "$ROOT" --host-executable /usr/libexec/sos-experience-host
-$SUPERVISOR activate --root "$ROOT" --revision <candidate-revision-id>
+$SUPERVISOR bootstrap-graph --root "$ROOT" \
+  --experience <experience-id> --revision <initial-revision-id>
+$SUPERVISOR serve --root "$ROOT" --host-executable /usr/libexec/sos-experience-host \
+  --root-experience <experience-id>
+$SUPERVISOR activate-graph --root "$ROOT" --graph <candidate-graph-id>
 ```
 
-`bootstrap` refuses an initialized store. All later pointer movement belongs to
-the daemon. Coordinated mode additionally requires a stable state transaction
-ID; see [`coordinated-activation.md`](coordinated-activation.md).
+Use the `install-package` command shown above. Bare `install` authoring is
+disabled. `bootstrap` refuses an initialized store, and all later registry and
+graph pointer movement belongs to the daemon. The retained v3 reader can still
+activate an artifact that existed before migration, but no CLI authoring path
+creates one.
 
 ## Evidence
 

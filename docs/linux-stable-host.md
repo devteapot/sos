@@ -81,27 +81,26 @@ On a Linux desktop or VM logged into a Wayland session:
 ```
 
 Omit `--windowed` for a fullscreen shell surface. The first run creates an
-ignored content-addressed store at `.cache/linux-revisions-v3`, installs
-`experiences/default.luau`, and boots it through the real supervisor. The
-command stays in the foreground so host and recovery logs remain visible.
+ignored content-addressed store at `.cache/linux-revisions-v4`, installs the
+complete Stock v4 package and theme module, creates its registry and graph
+pointers, and boots it through the real supervisor. The command stays in the
+foreground so host and recovery logs remain visible.
 
 From a second terminal:
 
 ```sh
-./tools/sosctl linux-script experiences/timeflow.luau
+./tools/sosctl linux-agent-run --fake .cache/agent-candidates/android-stock-agent.luau
+./tools/sosctl linux-agent-prompt "make the active Stock workspace calmer"
 ./tools/sosctl linux-status
 ./tools/sosctl linux-stop
 ```
 
-`linux-script` accepts an optional second `state.json` argument and otherwise
-starts the candidate with `{}`. It stages that immutable state in the authority,
-then supplies the stable transaction ID to the coordinated supervisor. Set
-`SOS_LINUX_REVISION_ROOT` to use a disposable or isolated revision store. Use
-the supervisor's `install --asset ID:KIND:FILE` interface described in
-[`revision-supervisor.md`](revision-supervisor.md) when testing v3 sidecars.
-The shell helper remains development orchestration. The boot-owned appliance
-path below implements the same lifecycle without granting generated code
-process authority.
+The resident authoring broker validates the exact v4 package, migration, and
+resolved graph before presentation. `linux-script` remains a trusted local
+shortcut for a Stock-compatible v4 source and optional state file; it does not
+create a bare revision. Set `SOS_LINUX_REVISION_ROOT` to use a disposable or
+isolated revision store. The boot-owned appliance path below implements the
+same lifecycle without granting generated code process authority.
 
 The reproducible Debian 13 guest definition, provisioning command, and nested
 acceptance gate are in [`linux-vm.md`](linux-vm.md).

@@ -17,12 +17,12 @@ generated widgets. The architectural north star is
 
 ## Current status
 
-As of 2026-08-26, SOS has moved beyond its original Android application
+As of 2026-08-27, SOS has moved beyond its original Android application
 laboratory into the privileged system and native-ownership phase.
 
 | Track | Current evidence |
 | --- | --- |
-| Generated experience | API v3 supports legacy single-experience revisions. Package and Experience API v4 add named exports, exact fork/remix lineage, host-owned live mounts, isolated child VMs/state/grants, typed appearance, locked or tracked graphs, and transactional Linux activation. The Agenda, Media, Dashboard, and self-contained remix reference gate passes desktop tests; physical Linux and Android graph-host acceptance remain open. |
+| Generated experience | Package and Experience API v4 own all built-ins and new authoring. They add named exports, exact fork/remix lineage, host-owned live mounts, isolated child VMs, state and grants, typed appearance, locked or tracked graphs, and transactional activation on Linux and Android. API v3 is a bounded rollback reader. The Agenda, Media, Dashboard, and self-contained remix reference gate passes desktop tests; physical Linux and Android graph acceptance remain open. |
 | Android APK harness | The physical SM-A336B passed the stable-host regression, typed provider effect, durable state/authority recovery, and a 10,000-swap device soak. This remains a regression harness, not the product boundary. |
 | Linux | A permanent GPUI/Wayland host, durable provider/state service, revision supervisor, resident Pi authoring agent, authenticated Smithay compositor, selectable GDM session, and Debian direct-DRM VM gate are implemented. Physical Linux hardware remains unproven. |
 | AOSP Cuttlefish | Pristine Android 17, SOS-as-HOME, and an init-supervised on-device authority passed in x86-64 Cuttlefish. |
@@ -119,16 +119,21 @@ session with:
 ./tools/sosctl m1-stop
 ```
 
-Replace only the experience while the same process and APK remain alive:
+Validate a v4 Experience or stage a Stock-compatible v4 edit while the same
+process and APK remain alive:
 
 ```sh
 ./tools/sosctl validate experiences/android-exit-agent.luau
-./tools/sosctl script experiences/timeflow.luau
-./tools/sosctl agent-apply experiences/android-exit-agent.luau
+./tools/sosctl agent-generate "make the Stock workspace calmer"
+./tools/sosctl agent-apply .cache/agent-candidates/android-stock-agent.luau
 ./tools/sosctl rollback
 ./tools/sosctl worker-restart
-./tools/sosctl stress 10000
 ```
+
+The source delivery command edits the active Stock Experience and therefore
+keeps its v4 `main` export and agent composer. Ordinary Experiences such as
+Timeflow keep their own registry identities and launch as independent
+top-level graphs.
 
 The original unmodified GPUI Mobile hardware spike remains available through
 `./tools/sosctl run`; see [`docs/experiment.md`](docs/experiment.md).

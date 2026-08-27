@@ -1,4 +1,5 @@
--- SOS Experience API v3 and v4 Luau type prelude.
+-- SOS Experience API v4 Luau type prelude. Retained v3 revisions use the same
+-- scene value types only through the bounded rollback reader.
 -- This file is prepended by `sosctl typecheck`; the embedded VM erases the
 -- matching annotations and the Rust decoder remains the authority boundary.
 

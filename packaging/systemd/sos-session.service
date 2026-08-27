@@ -33,11 +33,14 @@ Environment=LIBSEAT_BACKEND=logind
 Environment=RUST_LOG=sos_compositor=info
 Environment=SOS_ACCESSIBILITY_SOCKET=/run/sos/accessibility.sock
 Environment=SOS_GRAPH_RUNTIME_ISOLATION=process
+EnvironmentFile=/var/lib/sos/trusted-revisions.env
 ExecStart=/usr/local/libexec/sos/sos-linux-session run \
   --root /var/lib/sos/revisions \
   --runtime-dir /run/sos \
   --authority-file /var/lib/sos/provider/authority.json \
   --shell-token-file %d/shell-token \
+  --trusted-stock-revision ${SOS_TRUSTED_STOCK_REVISION} \
+  --trusted-timeflow-revision ${SOS_TRUSTED_TIMEFLOW_REVISION} \
   --agent-socket /run/sos-agent/agent.sock \
   --compositor /usr/local/libexec/sos/sos-compositor \
   --provider /usr/local/libexec/sos/sos-provider-state-service \

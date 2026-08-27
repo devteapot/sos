@@ -12876,3 +12876,56 @@ recovery scripts for any remaining v3 creation. Then complete the shared
 desktop verification campaign and run the Android graph activation, restart,
 rollback, IME, accessibility, appearance, grant, containment, and child-failure
 campaign on the physical SM-A336B.
+
+## 2026-08-27: Remove the remaining v3 creation paths
+
+**Goal:** Make Experience API v4 the only built-in and authoring target across
+repository tools, Linux boot setup, Android source delivery, and checked-in
+examples, while retaining the explicit v3 rollback reader.
+
+**Changed:** `android-exit-agent.luau` now publishes a v4 `main` export. The
+Android development helper seeds generated work from Stock v4, preserves its
+theme module and agent composer, waits for graph presentation, reports source
+identity, and invokes live whole-graph rollback. The host accepts the rollback
+request through a deep link, starts the previous graph, and reports success
+only after GPUI presents a frame. Candidate failures now emit one stable log
+record for device automation.
+
+The revision supervisor CLI rejects bare `install`; new callers must provide a
+complete v4 package. The direct-DRM boot campaign now installs packaged Stock
+and Timeflow revisions, creates both registry graphs, provisions grant review
+and exact trusted revision inputs, boots the graph supervisor, uses the
+resident authoring broker for replacement, and checks graph-aware status and
+rollback. Its systemd unit now passes the trusted product revision IDs from a
+root-owned environment file. The type prelude, top-level status, architecture,
+runtime, host, supervisor, and composition documents describe v4 as the active
+contract and v3 as read-only recovery compatibility.
+
+**Evidence:** `./tools/sosctl validate
+experiences/android-exit-agent.luau --json` passed Luau type checking and the
+runtime's complete scenario validation at 15,383 source bytes and 22 scene
+nodes. `cargo test -j1 -p revision-supervisor --all-targets` passed 48 tests.
+`cargo test -j1 -p sos-linux-session --all-targets` passed 18 tests, including
+v4 authoring, graph authority, recovery history, and the retained legacy
+migration fixture. `cargo test -j1 -p sos-experience` passed 18 tests. The
+ARM64 `cargo ndk -t arm64-v8a -P 31 check -j1 -p sos-experience --features
+aosp-system` check and the corresponding `--no-default-features --features
+core-native` check passed. `tests/linux-login-session-test.sh`, `bash -n
+tools/sosctl tools/linux-vm/verify-boot-session
+packaging/libexec/sos-login-session`, `cargo fmt --all -- --check`, and `git
+diff --check` passed.
+
+**Failures and decision:** The audit found two active leftovers. The direct-DRM
+VM still installed and swapped singleton v3 revisions, and the systemd unit did
+not supply the trusted revision arguments required by graph mode. It also used
+Timeflow as a fake Stock edit, which the v4 shell-composer check correctly
+rejects. The rewritten campaign uses a visible Stock variant through the
+authoring broker. No built-in, public CLI, or resident authoring flow creates
+v3 now. Direct library fixtures still create v3 artifacts solely to prove
+migration and rollback decoding.
+
+**Remaining risks and next gate:** The rewritten direct-DRM campaign has passed
+syntax and desktop component tests but has not yet rerun inside the Debian VM.
+Run that gate before treating its old physical evidence as v4 evidence. Then
+close fuzz, fault, performance, and documentation coverage before starting the
+Framework and Samsung physical campaigns.

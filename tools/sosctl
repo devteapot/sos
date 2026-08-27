@@ -879,12 +879,14 @@ agent_generate_script() {
 
   local run_id target transcript final_message prompt
   run_id="$(date -u +%Y%m%dT%H%M%SZ)-luna-medium"
-  target="$SOS_ROOT/experiences/android-exit-agent.luau"
+  target="$SOS_ROOT/.cache/agent-candidates/android-stock-agent.luau"
   transcript="$ARTIFACT_DIR/agent-$run_id.jsonl"
   final_message="$ARTIFACT_DIR/agent-$run_id-final.txt"
-  prompt="You are performing a single-shot SOS experience mutation. Read docs/experience-api.md and the existing experiences. Implement this request: $request
+  mkdir -p "$(dirname "$target")"
+  cp "$SOS_ROOT/experiences/default.luau" "$target"
+  prompt="You are performing a single-shot SOS Stock Shell mutation. Read docs/experience-api.md and the existing experiences. Implement this request: $request
 
-Create or replace only experiences/android-exit-agent.luau. Do not edit any other file. The file must be a complete Luau module satisfying the documented API. Calculate custom spatial geometry and drag/drop behavior in Luau; do not emulate the request with ordinary cards. Do not run validation or edit again after creating the file; the outer harness performs the single authoritative validation attempt."
+Edit only .cache/agent-candidates/android-stock-agent.luau. Do not edit any other file. The file is a complete Experience API v4 Stock Shell module. Keep its main export, stock.theme import, validation branches, and at least one text_session whose submit_action is agent_submit. Calculate custom spatial geometry and drag/drop behavior in Luau when the request needs it. Do not run validation or edit again after changing the file; the outer harness performs the single authoritative validation attempt."
 
   info "running headless Codex with gpt-5.6-luna / medium reasoning"
   (
@@ -899,7 +901,8 @@ Create or replace only experiences/android-exit-agent.luau. Do not edit any othe
       "$prompt" | tee "$transcript"
   )
   [[ -f "$target" ]] || fail "agent did not create $target"
-  validate_script "$target"
+  validate_script "$target" \
+    --module "stock.theme=$SOS_ROOT/experiences/modules/stock-theme.luau"
   info "generated source: $target"
   info "agent transcript: $transcript"
 }
@@ -907,7 +910,12 @@ Create or replace only experiences/android-exit-agent.luau. Do not edit any othe
 agent_apply_script() {
   local source_path="${1:-}"
   [[ -n "$source_path" ]] || fail "usage: ./tools/sosctl agent-apply <experience.luau>"
-  validate_script "$source_path"
+  if grep -F 'require("stock.theme")' "$source_path" >/dev/null; then
+    validate_script "$source_path" \
+      --module "stock.theme=$SOS_ROOT/experiences/modules/stock-theme.luau"
+  else
+    validate_script "$source_path"
+  fi
 
   resolve_android_environment
   require_command adb
@@ -915,22 +923,26 @@ agent_apply_script() {
   local app_pid before_results result=""
   app_pid="$(adb shell pidof "$M1_ANDROID_PACKAGE" | tr -d '\r')"
   [[ -n "$app_pid" ]] || fail "$M1_ANDROID_PACKAGE is not running; use ./tools/sosctl m1-launch"
-  before_results="$(adb logcat -d --pid="$app_pid" -v brief | grep -Ec 'script_(visible|rejected)' || true)"
+  before_results="$(adb logcat -d --pid="$app_pid" -v brief \
+    | grep -Ec 'script_(visible|rejected)|android_graph_presented|android_v4_candidate_rejected' || true)"
   install_script "$source_path"
   for _ in {1..100}; do
-    result="$(adb logcat -d --pid="$app_pid" -v brief | grep -E 'script_(visible|rejected)' | tail -n +$((before_results + 1)) | tail -n 1 || true)"
+    result="$(adb logcat -d --pid="$app_pid" -v brief \
+      | grep -E 'script_(visible|rejected)|android_graph_presented|android_v4_candidate_rejected' \
+      | tail -n +$((before_results + 1)) | tail -n 1 || true)"
     [[ -n "$result" ]] && break
     sleep 0.1
   done
   [[ -n "$result" ]] || fail "candidate produced no acceptance result"
   printf '%s\n' "$result"
-  [[ "$result" == *"script_visible"* ]] || fail "candidate was rejected"
+  [[ "$result" == *"script_visible"* || "$result" == *"android_graph_presented"* ]] \
+    || fail "candidate was rejected"
 
   mkdir -p "$ARTIFACT_DIR"
   local screenshot="$ARTIFACT_DIR/sos-agent-latest.png"
   adb exec-out screencap -p > "$screenshot"
   local active_hash
-  active_hash="$(adb shell run-as "$M1_ANDROID_PACKAGE" sha256sum files/experience.active.luau | awk '{ print $1 }')"
+  active_hash="$(sha256sum "$source_path" | awk '{ print $1 }')"
   info "candidate accepted; active source SHA-256: $active_hash"
   info "inspection screenshot: $screenshot"
   info "keep this revision or run ./tools/sosctl rollback"
@@ -962,6 +974,29 @@ rollback_script() {
   resolve_android_environment
   require_command adb
   select_device
+  if [[ "$(adb shell getprop ro.sos.revision_format | tr -d '\r')" == 4 ]]; then
+    local app_pid before_results result=""
+    app_pid="$(adb shell pidof "$M1_ANDROID_PACKAGE" | tr -d '\r')"
+    [[ -n "$app_pid" ]] || fail "$M1_ANDROID_PACKAGE is not running; use ./tools/sosctl m1-launch"
+    before_results="$(adb logcat -d --pid="$app_pid" -v brief \
+      | grep -Ec 'android_graph_rollback_(presented|rejected|selected_legacy)' || true)"
+    adb shell am start \
+      -W \
+      -a android.intent.action.VIEW \
+      -d 'sos://rollback' \
+      -n "$M1_ANDROID_PACKAGE/$ANDROID_ACTIVITY" >/dev/null
+    for _ in {1..100}; do
+      result="$(adb logcat -d --pid="$app_pid" -v brief \
+        | grep -E 'android_graph_rollback_(presented|rejected|selected_legacy)' \
+        | tail -n +$((before_results + 1)) | tail -n 1 || true)"
+      [[ -n "$result" ]] && break
+      sleep 0.1
+    done
+    [[ "$result" == *"android_graph_rollback_presented"* ]] || \
+      fail "v4 graph rollback did not reach a visible frame: ${result:-no result}"
+    printf '%s\n' "$result"
+    return
+  fi
   adb shell run-as "$M1_ANDROID_PACKAGE" \
     test -f files/experience.previous.luau || fail "no accepted previous revision is available"
   adb shell run-as "$M1_ANDROID_PACKAGE" \
@@ -1185,6 +1220,12 @@ linux_script() {
   local state_file="${2:-$SOS_ROOT/tests/fixtures/empty-state.json}"
   [[ -f "$source_file" ]] || fail "experience source not found: $source_file"
   [[ -f "$state_file" ]] || fail "experience state not found: $state_file"
+  grep -Eq 'api_version[[:space:]]*=[[:space:]]*4' "$source_file" || \
+    fail "linux-script accepts only Experience API v4 source"
+  grep -F 'agent_submit' "$source_file" >/dev/null || \
+    fail "linux-script edits Stock and requires the Stock agent composer"
+  validate_script "$source_file" \
+    --module "stock.theme=$SOS_ROOT/experiences/modules/stock-theme.luau"
   [[ -S "$LINUX_REVISION_ROOT/run/supervisor.sock" ]] || \
     fail "Linux supervisor is not running; start ./tools/sosctl linux-run"
   [[ -S "$LINUX_PROVIDER_SOCKET" ]] || \
@@ -1325,10 +1366,10 @@ Commands:
   validate <file> [--module ID=FILE]... [--json]
                       Typecheck and validate every declared Luau scenario.
   typecheck <file>    Check a Luau source against the current API type prelude.
-  agent-apply <file>  Validate, install, await frame, and capture screenshot.
+  agent-apply <file>  Validate and stage a Stock-compatible v4 edit, await its frame, and capture it.
   agent-generate <request>
                       One-shot headless Codex generation (Luna, medium).
-  rollback            Submit the prior accepted Luau source as a candidate.
+  rollback            Present the prior accepted v4 graph, or use the retained compat source path.
   stress [count]      Run frame-paced transactional swaps (default: 1000).
   worker-restart      Recreate the Luau worker without replacing the APK.
   linux-run [--windowed]

@@ -64,7 +64,10 @@ fn main() {
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut args = env::args().skip(1);
     match args.next().as_deref() {
-        Some("install") => install(parse_options(args.collect())?),
+        Some("install") => Err(
+            "bare revision installation is disabled; use install-package for Experience API v4"
+                .into(),
+        ),
         Some("install-package") => install_package(parse_options(args.collect())?),
         Some("migrate-stock-v4") => migrate_stock_v4(parse_options(args.collect())?),
         Some("install-composition-demo") => {
@@ -316,25 +319,6 @@ fn resolve_graph(options: Options) -> Result<(), Box<dyn std::error::Error>> {
     let store = RevisionStore::open(&root)?;
     let graph = GraphResolver::new(store.clone()).resolve(&revision_id, &export_id)?;
     println!("{}", GraphStore::open(store.root())?.install(&graph)?);
-    Ok(())
-}
-
-fn install(options: Options) -> Result<(), Box<dyn std::error::Error>> {
-    let root = options.required("--root")?;
-    let source = fs::read(options.required("--source")?)?;
-    let state = serde_json::from_slice(&fs::read(options.required("--state")?)?)?;
-    let schema_version = options.required("--schema")?.parse()?;
-    let experience_api_version = options.required("--api")?.parse()?;
-    let assets = read_assets(&options)?;
-    let store = RevisionStore::open(root)?;
-    let revision = store.install(RevisionInput {
-        source,
-        state,
-        schema_version,
-        experience_api_version,
-        assets,
-    })?;
-    println!("{}", revision.manifest.revision_id);
     Ok(())
 }
 
@@ -839,7 +823,7 @@ fn parse_options(arguments: Vec<String>) -> Result<Options, String> {
 }
 
 fn usage() -> &'static str {
-    "usage:\n  sos-revision-supervisor install --root DIR --source FILE --state FILE --schema N --api N [--asset ID:KIND:FILE ...]\n  sos-revision-supervisor install-package --root DIR --source FILE --state FILE --schema N --package FILE [--asset ID:KIND:FILE ...]\n  sos-revision-supervisor migrate-stock-v4 --root DIR --source FILE --package FILE [--asset ID:KIND:FILE ...]\n  sos-revision-supervisor install-composition-demo --root DIR\n  sos-revision-supervisor bootstrap --root DIR --revision ID\n  sos-revision-supervisor bootstrap-graph --root DIR --experience ID --revision ID [--export ID]\n  sos-revision-supervisor resolve-graph --root DIR --revision ID [--export ID]\n  sos-revision-supervisor graph-status --root DIR --experience ID\n  sos-revision-supervisor experience-status --root DIR --experience ID\n  sos-revision-supervisor serve --root DIR --host-executable FILE [--host-arg VALUE ...] [--root-experience ID] [--timeout-ms N] [--service-socket PATH --service-timeout-ms N]\n  sos-revision-supervisor activate --root DIR --revision ID [--transaction ID]\n  sos-revision-supervisor activate-graph --root DIR --graph ID\n  sos-revision-supervisor advance-experience --root DIR --experience ID --revision ID\n  sos-revision-supervisor present-experience --root DIR --experience ID\n  sos-revision-supervisor dismiss-experience --root DIR --experience ID\n  sos-revision-supervisor refresh-tracked --root DIR\n  sos-revision-supervisor daemon-status --root DIR\n  sos-revision-supervisor restart --root DIR\n  sos-revision-supervisor shutdown --root DIR\n  sos-revision-supervisor status --root DIR"
+    "usage:\n  sos-revision-supervisor install-package --root DIR --source FILE --state FILE --schema N --package FILE [--asset ID:KIND:FILE ...]\n  sos-revision-supervisor migrate-stock-v4 --root DIR --source FILE --package FILE [--asset ID:KIND:FILE ...]\n  sos-revision-supervisor install-composition-demo --root DIR\n  sos-revision-supervisor bootstrap --root DIR --revision ID\n  sos-revision-supervisor bootstrap-graph --root DIR --experience ID --revision ID [--export ID]\n  sos-revision-supervisor resolve-graph --root DIR --revision ID [--export ID]\n  sos-revision-supervisor graph-status --root DIR --experience ID\n  sos-revision-supervisor experience-status --root DIR --experience ID\n  sos-revision-supervisor serve --root DIR --host-executable FILE [--host-arg VALUE ...] [--root-experience ID] [--timeout-ms N] [--service-socket PATH --service-timeout-ms N]\n  sos-revision-supervisor activate --root DIR --revision ID [--transaction ID]\n  sos-revision-supervisor activate-graph --root DIR --graph ID\n  sos-revision-supervisor advance-experience --root DIR --experience ID --revision ID\n  sos-revision-supervisor present-experience --root DIR --experience ID\n  sos-revision-supervisor dismiss-experience --root DIR --experience ID\n  sos-revision-supervisor refresh-tracked --root DIR\n  sos-revision-supervisor daemon-status --root DIR\n  sos-revision-supervisor restart --root DIR\n  sos-revision-supervisor shutdown --root DIR\n  sos-revision-supervisor status --root DIR"
 }
 
 fn send_control(
