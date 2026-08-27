@@ -1,16 +1,22 @@
-use std::collections::BTreeMap;
+use std::{
+    collections::BTreeMap,
+    sync::atomic::{AtomicU64, Ordering},
+};
 
 use experience_ir::{
     AppearanceProfile, Content, ExperienceEvent, ExperienceModel, ExperienceOutputEvent,
-    ExperienceViewport, ProviderEffect, Scene, SceneEvent, SceneNode,
+    ExperienceViewport, PaintOp, ProviderEffect, Scene, SceneEvent, SceneNode,
 };
 use experience_package::{
-    DependencyAlias, EventId, GraphNodeId, PackageMetadata, ResolvedGraph, RevisionId,
-    MAX_GRAPH_INSTANCES,
+    DependencyAlias, EventId, GraphNodeId, InstanceId, PackageMetadata, ResolvedGraph, RevisionId,
+    MAX_GRAPH_INSTANCES, MAX_GRAPH_SCENE_NODES,
 };
 use serde_json::{json, Value as JsonValue};
+use sha2::{Digest, Sha256};
 
 use crate::{LuauRuntime, RevisionAsset, RevisionAssetInput, RuntimeError};
+
+static INSTANCE_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone, Debug)]
 pub struct GraphRevisionInput {
@@ -30,6 +36,7 @@ pub enum RuntimeInstanceStatus {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct RuntimeInstanceSnapshot {
+    pub instance_id: InstanceId,
     pub experience_id: experience_package::ExperienceId,
     pub revision_id: RevisionId,
     pub export_id: experience_package::ExportId,
@@ -51,6 +58,7 @@ pub struct GraphRuntimeSnapshot {
 #[derive(Clone, Debug, PartialEq)]
 pub struct GraphEffect {
     pub node_id: GraphNodeId,
+    pub instance_id: InstanceId,
     pub revision_id: RevisionId,
     pub effect: ProviderEffect,
 }
@@ -282,6 +290,7 @@ impl Drop for GraphRuntimeWorker {
 }
 
 struct RuntimeInstance {
+    instance_id: InstanceId,
     runtime: LuauRuntime,
     model: ExperienceModel,
     state: JsonValue,
@@ -357,6 +366,7 @@ impl GraphRuntime {
             instances.insert(
                 node_id.clone(),
                 RuntimeInstance {
+                    instance_id: new_instance_id(&graph_id, node_id)?,
                     runtime,
                     model: input.model.clone(),
                     state: input.state.clone(),
@@ -382,6 +392,7 @@ impl GraphRuntime {
         runtime.validate_runtime_graph()?;
         let root = runtime.graph.root.clone();
         runtime.render_subtree(&root, true)?;
+        runtime.validate_scene_budget()?;
         Ok(runtime)
     }
 
@@ -398,6 +409,7 @@ impl GraphRuntime {
                     (
                         node_id.clone(),
                         RuntimeInstanceSnapshot {
+                            instance_id: instance.instance_id.clone(),
                             experience_id: node.experience_id.clone(),
                             revision_id: node.revision_id.clone(),
                             export_id: node.export_id.clone(),
@@ -406,7 +418,17 @@ impl GraphRuntime {
                             state: instance.state.clone(),
                             scene: instance.scene.clone(),
                             status: instance.status.clone(),
-                            assets: instance.runtime.assets().to_vec(),
+                            assets: instance
+                                .runtime
+                                .assets()
+                                .iter()
+                                .cloned()
+                                .map(|mut asset| {
+                                    asset.path =
+                                        instance_asset_path(&instance.instance_id, &asset.path);
+                                    asset
+                                })
+                                .collect(),
                         },
                     )
                 })
@@ -432,7 +454,9 @@ impl GraphRuntime {
         let previous = self.snapshot();
         let mut effects = Vec::new();
         let mut external_events = Vec::new();
-        if let Err(error) = self.update_node(node_id, event, &mut effects, &mut external_events, 0)
+        if let Err(error) = self
+            .update_node(node_id, event, &mut effects, &mut external_events, 0)
+            .and_then(|_| self.validate_scene_budget())
         {
             return match self.restore(&previous) {
                 Ok(_) => Err(error),
@@ -491,6 +515,16 @@ impl GraphRuntime {
                 return Err(error);
             }
         }
+        if let Err(error) = self.validate_scene_budget() {
+            for (node_id, previous) in previous_models {
+                self.instances
+                    .get_mut(&node_id)
+                    .expect("graph instance exists")
+                    .model = previous;
+            }
+            self.restore(&previous_snapshot)?;
+            return Err(error);
+        }
         Ok(self.snapshot())
     }
 
@@ -508,7 +542,10 @@ impl GraphRuntime {
             instance.model.appearance = appearance.clone();
         }
         let root = self.graph.root.clone();
-        if let Err(error) = self.render_subtree(&root, true) {
+        if let Err(error) = self
+            .render_subtree(&root, true)
+            .and_then(|_| self.validate_scene_budget())
+        {
             for (node_id, appearance) in previous {
                 self.instances
                     .get_mut(&node_id)
@@ -531,7 +568,8 @@ impl GraphRuntime {
             || snapshot.instances.len() != self.instances.len()
             || snapshot.instances.iter().any(|(node_id, saved)| {
                 self.graph.nodes.get(node_id).is_none_or(|node| {
-                    saved.experience_id != node.experience_id
+                    saved.instance_id != self.instances[node_id].instance_id
+                        || saved.experience_id != node.experience_id
                         || saved.revision_id != node.revision_id
                         || saved.export_id != node.export_id
                         || saved.parent != node.parent
@@ -549,6 +587,7 @@ impl GraphRuntime {
         }
         let root = self.graph.root.clone();
         self.render_subtree(&root, true)?;
+        self.validate_scene_budget()?;
         Ok(self.snapshot())
     }
 
@@ -606,7 +645,10 @@ impl GraphRuntime {
             self.instances[node_id].package.role,
             graph_node.parent.is_some(),
         )?;
-        namespace_provider_surfaces(&mut candidate_scene.root, graph_node.revision_id.as_str());
+        namespace_instance_scene(
+            &mut candidate_scene.root,
+            &self.instances[node_id].instance_id,
+        );
         let candidate_state = output.state;
         let peers = self
             .graph
@@ -635,6 +677,7 @@ impl GraphRuntime {
         for effect in output.effects {
             effects.push(GraphEffect {
                 node_id: node_id.clone(),
+                instance_id: self.instances[node_id].instance_id.clone(),
                 revision_id: graph_node.revision_id.clone(),
                 effect,
             });
@@ -690,7 +733,7 @@ impl GraphRuntime {
         match scene {
             Ok(mut scene) => {
                 validate_scene_authority(&scene, self.instances[node_id].package.role, !root)?;
-                namespace_provider_surfaces(&mut scene.root, graph_node.revision_id.as_str());
+                namespace_instance_scene(&mut scene.root, &self.instances[node_id].instance_id);
                 let instance = self
                     .instances
                     .get_mut(node_id)
@@ -919,6 +962,24 @@ impl GraphRuntime {
         Ok(())
     }
 
+    fn validate_scene_budget(&self) -> Result<(), RuntimeError> {
+        fn count(node: &SceneNode) -> usize {
+            1 + node.children.iter().map(count).sum::<usize>()
+        }
+        let nodes = self
+            .instances
+            .values()
+            .filter_map(|instance| instance.scene.as_ref())
+            .map(|scene| count(&scene.root))
+            .sum::<usize>();
+        if nodes > MAX_GRAPH_SCENE_NODES {
+            return Err(RuntimeError::Invalid(format!(
+                "experience graph produced {nodes} scene nodes, limit is {MAX_GRAPH_SCENE_NODES}"
+            )));
+        }
+        Ok(())
+    }
+
     fn validate_output_events(
         &self,
         node_id: &GraphNodeId,
@@ -990,12 +1051,46 @@ fn validate_scene_authority(
     visit(&scene.root, role, mounted)
 }
 
-fn namespace_provider_surfaces(node: &mut SceneNode, revision_id: &str) {
+fn new_instance_id(graph_id: &str, node_id: &GraphNodeId) -> Result<InstanceId, RuntimeError> {
+    let sequence = INSTANCE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let digest = Sha256::digest(
+        format!("{}:{sequence}:{graph_id}:{node_id}", std::process::id()).as_bytes(),
+    );
+    InstanceId::parse(format!("i-{digest:x}"))
+        .map_err(|error| RuntimeError::Invalid(error.to_string()))
+}
+
+fn instance_asset_path(instance_id: &InstanceId, path: &str) -> String {
+    format!("instances/{instance_id}/{path}")
+}
+
+fn namespace_instance_scene(node: &mut SceneNode, instance_id: &InstanceId) {
+    if let Some(Content::Image(image)) = &mut node.content {
+        if image.asset != "album-orbit" {
+            image.asset = instance_asset_path(instance_id, &image.asset);
+        }
+    }
     if let Some(Content::ProviderSurface(surface)) = &mut node.content {
-        surface.surface = format!("{revision_id}::{}", surface.surface);
+        surface.surface = format!("{instance_id}::{}", surface.surface);
+    }
+    fn namespace_paint(operation: &mut PaintOp, instance_id: &InstanceId) {
+        match operation {
+            PaintOp::Shader { asset, .. } => {
+                *asset = instance_asset_path(instance_id, asset);
+            }
+            PaintOp::Layer { operations, .. } => {
+                for operation in operations {
+                    namespace_paint(operation, instance_id);
+                }
+            }
+            _ => {}
+        }
+    }
+    for operation in &mut node.paint {
+        namespace_paint(operation, instance_id);
     }
     for child in &mut node.children {
-        namespace_provider_surfaces(child, revision_id);
+        namespace_instance_scene(child, instance_id);
     }
 }
 
@@ -1260,8 +1355,19 @@ mod tests {
             ),
         ]);
 
+        let second = GraphRuntime::start(graph.clone(), inputs.clone())
+            .unwrap()
+            .snapshot();
         let mut runtime = GraphRuntime::start(graph, inputs).unwrap();
         let initial = runtime.snapshot();
+        assert_ne!(
+            initial.instances[&root].instance_id,
+            initial.instances[&child].instance_id
+        );
+        assert_ne!(
+            initial.instances[&root].instance_id,
+            second.instances[&root].instance_id
+        );
         assert_eq!(
             initial.instances[&child]
                 .scene
@@ -1359,5 +1465,52 @@ mod tests {
                 .to_string()
                 .contains("native application surface")
         );
+    }
+
+    #[test]
+    fn instance_namespace_covers_assets_shaders_and_provider_surfaces() {
+        let instance_id = InstanceId::parse("i-boundary").unwrap();
+        let mut root = SceneNode {
+            content: Some(Content::Image(experience_ir::ImageContent {
+                asset: "assets/image.png".into(),
+            })),
+            paint: vec![PaintOp::Layer {
+                clip: None,
+                transform: experience_ir::Transform2D::default(),
+                opacity: 1.0,
+                operations: vec![PaintOp::Shader {
+                    asset: "assets/effect.wgsl".into(),
+                    x: 0.0,
+                    y: 0.0,
+                    width: 10.0,
+                    height: 10.0,
+                }],
+            }],
+            children: vec![SceneNode {
+                content: Some(Content::ProviderSurface(
+                    experience_ir::ProviderSurfaceContent {
+                        surface: "camera".into(),
+                    },
+                )),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        namespace_instance_scene(&mut root, &instance_id);
+        let Some(Content::Image(image)) = &root.content else {
+            panic!("image remains present")
+        };
+        assert_eq!(image.asset, "instances/i-boundary/assets/image.png");
+        let PaintOp::Layer { operations, .. } = &root.paint[0] else {
+            panic!("layer remains present")
+        };
+        let PaintOp::Shader { asset, .. } = &operations[0] else {
+            panic!("shader remains present")
+        };
+        assert_eq!(asset, "instances/i-boundary/assets/effect.wgsl");
+        let Some(Content::ProviderSurface(surface)) = &root.children[0].content else {
+            panic!("provider surface remains present")
+        };
+        assert_eq!(surface.surface, "i-boundary::camera");
     }
 }

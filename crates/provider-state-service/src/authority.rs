@@ -48,6 +48,8 @@ struct AuthorityData {
     experience_revisions: BTreeMap<String, BTreeMap<String, StateResource>>,
     #[serde(default)]
     appearance: AppearanceResource,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    appearance_writer_sha256: Option<String>,
     notes: NotesResource,
     transactions: BTreeMap<String, TransactionRecord>,
     #[serde(default)]
@@ -67,6 +69,7 @@ impl Default for AuthorityData {
             )]),
             experience_revisions: BTreeMap::new(),
             appearance: AppearanceResource::default(),
+            appearance_writer_sha256: None,
             notes: NotesResource::default(),
             transactions: BTreeMap::new(),
             graph_transactions: BTreeMap::new(),
@@ -336,8 +339,19 @@ impl Authority {
     pub fn update_appearance(
         &mut self,
         expected_generation: u64,
+        capability: &str,
         profile: experience_package::AppearanceProfile,
     ) -> Result<AppearanceResource, AuthorityError> {
+        if capability.is_empty()
+            || capability.len() > 256
+            || self.data.appearance_writer_sha256.as_deref()
+                != Some(format!("{:x}", Sha256::digest(capability.as_bytes())).as_str())
+        {
+            return Err(ServiceError::Denied {
+                message: "appearance-write capability denied".into(),
+            }
+            .into());
+        }
         profile
             .validate()
             .map_err(|error| invalid(error.to_string()))?;
@@ -357,6 +371,26 @@ impl Authority {
         let result = next.appearance.clone();
         self.replace_durably(next)?;
         Ok(result)
+    }
+
+    pub fn configure_appearance_writer(&mut self, capability: &str) -> Result<(), AuthorityError> {
+        if capability.is_empty() || capability.len() > 256 {
+            return Err(invalid(
+                "appearance-write capability must contain 1 to 256 bytes",
+            ));
+        }
+        let digest = format!("{:x}", Sha256::digest(capability.as_bytes()));
+        match self.data.appearance_writer_sha256.as_deref() {
+            Some(current) if current == digest => Ok(()),
+            Some(_) => Err(conflict(
+                "appearance-write capability does not match authority",
+            )),
+            None => {
+                let mut next = self.data.clone();
+                next.appearance_writer_sha256 = Some(digest);
+                self.replace_durably(next)
+            }
+        }
     }
 
     pub fn promote(&mut self, transaction_id: &str) -> Result<TransactionRecord, AuthorityError> {
@@ -901,6 +935,9 @@ fn validate_loaded(data: &AuthorityData) -> Result<(), AuthorityError> {
         .profile
         .validate()
         .map_err(|error| invalid(error.to_string()))?;
+    if let Some(digest) = &data.appearance_writer_sha256 {
+        validate_sha256("appearance writer capability", digest)?;
+    }
     for (experience_id, state) in &data.experiences {
         experience_package::ExperienceId::parse(experience_id)
             .map_err(|error| invalid(error.to_string()))?;

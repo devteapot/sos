@@ -4722,6 +4722,7 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "experience-ir",
+ "experience-package",
  "providers-fake",
  "serde",
  "serde_json",

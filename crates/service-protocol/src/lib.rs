@@ -292,6 +292,7 @@ pub enum ServiceRequest {
     UpdateAppearance {
         request_id: u64,
         expected_generation: u64,
+        capability: String,
         profile: AppearanceProfile,
     },
     Promote {
@@ -385,6 +386,7 @@ pub enum ResponsePayload {
 #[serde(tag = "code", rename_all = "snake_case")]
 pub enum ServiceError {
     InvalidRequest { message: String },
+    Denied { message: String },
     Conflict { message: String },
     NotFound { message: String },
     InvalidMigration { message: String },

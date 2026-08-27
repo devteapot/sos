@@ -25,6 +25,14 @@ pub fn serve(
     socket: &Path,
     state_file: &Path,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    serve_with_appearance_writer(socket, state_file, None)
+}
+
+pub fn serve_with_appearance_writer(
+    socket: &Path,
+    state_file: &Path,
+    appearance_writer: Option<&str>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let abstract_socket = socket.as_os_str().as_encoded_bytes().starts_with(b"@");
     if !abstract_socket && socket.exists() {
         return Err(format!("service socket already exists: {}", socket.display()).into());
@@ -48,6 +56,9 @@ pub fn serve(
         fs::set_permissions(socket, fs::Permissions::from_mode(0o660))?;
     }
     let mut authority = Authority::open(state_file)?;
+    if let Some(capability) = appearance_writer {
+        authority.configure_appearance_writer(capability)?;
+    }
     let result = (|| {
         for stream in listener.incoming() {
             let mut stream = stream?;
@@ -186,10 +197,11 @@ pub fn dispatch(request: ServiceRequest, authority: &mut Authority) -> ServiceRe
             .map(|record| ResponsePayload::GraphTransaction { record }),
         ServiceRequest::UpdateAppearance {
             expected_generation,
+            capability,
             profile,
             ..
         } => authority
-            .update_appearance(expected_generation, profile)
+            .update_appearance(expected_generation, &capability, profile)
             .map(|value| ResponsePayload::AppearanceUpdated { value }),
         ServiceRequest::Promote { transaction_id, .. } => authority
             .promote(&transaction_id)

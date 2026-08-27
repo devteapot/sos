@@ -4,4 +4,4 @@ mod server;
 
 pub use authority::{state_sha256, Authority, AuthorityError};
 pub use client::ServiceClient;
-pub use server::{dispatch, serve};
+pub use server::{dispatch, serve, serve_with_appearance_writer};

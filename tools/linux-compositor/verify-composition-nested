@@ -19,6 +19,8 @@ gate_accessibility_socket="$gate_runtime_dir/accessibility.sock"
 gate_provider_socket="$gate_runtime_dir/provider-state.sock"
 gate_authority_file="$gate_run_dir/authority.json"
 gate_token="sos-composition-$BASHPID-$RANDOM"
+gate_appearance_token="sos-appearance-$BASHPID-$RANDOM"
+gate_appearance_capability_file="$gate_run_dir/appearance-write.capability"
 gate_evidence_dir="${SOS_COMPOSITION_GATE_EVIDENCE_DIR:-}"
 mkdir "$gate_runtime_dir"
 chmod 700 "$gate_runtime_dir"
@@ -195,10 +197,13 @@ gate_install="$(target/debug/sos-revision-supervisor install-composition-demo \
 printf '%s\n' "$gate_install" >"$gate_run_dir/install.json"
 gate_graph_id="$(jq -r '.dashboard_graph' <<<"$gate_install")"
 [[ "$gate_graph_id" =~ ^[0-9a-f]{64}$ ]]
+printf '%s\n' "$gate_appearance_token" >"$gate_appearance_capability_file"
+chmod 600 "$gate_appearance_capability_file"
 
 target/debug/sos-provider-state-service \
   --socket "$gate_provider_socket" \
   --state-file "$gate_authority_file" \
+  --appearance-capability-file "$gate_appearance_capability_file" \
   >"$gate_run_dir/provider.log" 2>&1 &
 gate_provider_pid=$!
 for _ in {1..500}; do
@@ -251,7 +256,7 @@ for _ in {1..1000}; do
 done
 jq -e '
   [.snapshot.nodes[].id] as $ids
-  | any($ids[]; . == "root::heading")
+  | any($ids[]; endswith("::heading"))
     and any($ids[]; endswith("::agenda-open"))
     and any($ids[]; endswith("::media-toggle"))
 ' "$gate_run_dir/accessibility-before.json" >/dev/null
@@ -276,7 +281,7 @@ done
 [[ "$(jq -r '.experiences["sos.example.dashboard"].state.opened // empty' \
   "$gate_authority_file")" == "Design review" ]]
 
-service_call '{"protocol_version":2,"method":"update_appearance","request_id":10,"expected_generation":0,"profile":{"abi_version":1,"generation":1,"scheme":"light","contrast":"high","text_scale_milli":1250,"reduce_motion":true,"colors":{"background":"#ffffffff"},"spacing":{},"radii":{},"typography":{}}}' \
+service_call "{\"protocol_version\":2,\"method\":\"update_appearance\",\"request_id\":10,\"expected_generation\":0,\"capability\":\"$gate_appearance_token\",\"profile\":{\"abi_version\":1,\"generation\":1,\"scheme\":\"light\",\"contrast\":\"high\",\"text_scale_milli\":1250,\"reduce_motion\":true,\"colors\":{\"background\":\"#ffffffff\"},\"spacing\":{},\"radii\":{},\"typography\":{}}}" \
   >"$gate_run_dir/appearance-response.json"
 jq -e '.ok and .payload.result == "appearance_updated" and .payload.value.generation == 1' \
   "$gate_run_dir/appearance-response.json" >/dev/null

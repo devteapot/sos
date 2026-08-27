@@ -255,6 +255,12 @@ preferences and semantic tokens such as background, surface, text, accent,
 spacing, radius, and type roles. It does not contain executable style rules or
 revision-owned asset references.
 
+Only a caller holding the separately provisioned `appearance-write`
+capability may advance that snapshot. The authority persists only the
+capability digest, rejects missing or mismatched credentials, and still
+requires the next exact generation. Read access to appearance and ordinary
+experience-state grants do not imply write access.
+
 The parent is not the source of global appearance. It may offer a bounded
 container appearance override only when the child export declares
 `accepts_container_appearance`. Resolution follows this order:

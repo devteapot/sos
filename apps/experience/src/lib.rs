@@ -44,6 +44,7 @@ pub use linux::run as run_linux_host;
 
 pub const DEFAULT_EXPERIENCE: &str = include_str!("../../../experiences/default.luau");
 pub const TIMEFLOW_EXPERIENCE: &str = include_str!("../../../experiences/timeflow.luau");
+pub const STOCK_THEME_MODULE: &str = include_str!("../../../experiences/modules/stock-theme.luau");
 
 pub fn deterministic_agent_candidate(current_source: &str) -> &'static str {
     if current_source.trim() == TIMEFLOW_EXPERIENCE.trim() {
@@ -54,9 +55,21 @@ pub fn deterministic_agent_candidate(current_source: &str) -> &'static str {
 }
 
 #[cfg(not(target_os = "android"))]
+fn compile_built_in(source: &str) -> Result<runtime_luau::LuauRuntime, runtime_luau::RuntimeError> {
+    let sidecars = (source.trim() == DEFAULT_EXPERIENCE.trim())
+        .then(|| runtime_luau::RevisionAssetInput {
+            id: "stock.theme".into(),
+            kind: "luau".into(),
+            bytes: STOCK_THEME_MODULE.as_bytes().to_vec(),
+        })
+        .into_iter()
+        .collect();
+    runtime_luau::LuauRuntime::compile_with_assets(source, sidecars)
+}
+
+#[cfg(not(target_os = "android"))]
 pub fn validate_embedded_experience() -> Result<usize, String> {
-    let runtime = runtime_luau::LuauRuntime::compile(DEFAULT_EXPERIENCE)
-        .map_err(|error| error.to_string())?;
+    let runtime = compile_built_in(DEFAULT_EXPERIENCE).map_err(|error| error.to_string())?;
     let scene = runtime
         .render(&providers_fake::snapshot(), &runtime.initial_state())
         .map_err(|error| error.to_string())?;
@@ -67,7 +80,7 @@ pub fn validate_embedded_experience() -> Result<usize, String> {
 mod tests {
     #[test]
     fn embedded_experience_is_valid() {
-        let runtime = runtime_luau::LuauRuntime::compile(super::DEFAULT_EXPERIENCE).unwrap();
+        let runtime = super::compile_built_in(super::DEFAULT_EXPERIENCE).unwrap();
         let initial_scene = runtime
             .render(&providers_fake::snapshot(), &runtime.initial_state())
             .unwrap();
@@ -272,7 +285,7 @@ mod tests {
         assert!(contains_id(&agent_panel_scene.root, "panel-agent-prompt"));
         assert!(experience_ir::validate_scene(&agent_panel_scene).is_ok());
         for source in [super::DEFAULT_EXPERIENCE, super::TIMEFLOW_EXPERIENCE] {
-            let runtime = runtime_luau::LuauRuntime::compile(source).unwrap();
+            let runtime = super::compile_built_in(source).unwrap();
             let model = providers_fake::snapshot();
             let state = if source == super::DEFAULT_EXPERIENCE {
                 runtime
@@ -436,7 +449,7 @@ mod tests {
         assert_eq!(second.trim(), super::TIMEFLOW_EXPERIENCE.trim());
 
         for source in [first, second] {
-            let runtime = runtime_luau::LuauRuntime::compile(source).unwrap();
+            let runtime = super::compile_built_in(source).unwrap();
             let scene = runtime
                 .render(&providers_fake::snapshot(), &runtime.initial_state())
                 .unwrap();

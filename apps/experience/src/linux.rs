@@ -25,7 +25,7 @@ use experience_ir::{
     MAX_AGENT_MESSAGE_BYTES, SHELL_MODEL_ABI_VERSION,
 };
 use experience_package::{
-    hex_sha256, ExperienceId, GraphNodeId, PackageMetadata, ResolvedGraph, RevisionId,
+    hex_sha256, ExperienceId, GraphNodeId, InstanceId, PackageMetadata, ResolvedGraph, RevisionId,
 };
 use gpui::{
     div, img, point, prelude::*, px, relative, rgb, size, Animation as GpuiAnimation,
@@ -57,6 +57,9 @@ use crate::pointer_input;
 use crate::scene_surface;
 use crate::window_space;
 
+const MAX_PENDING_INPUT_EVENTS: usize = 64;
+const MAX_PENDING_INPUT_EVENTS_PER_INSTANCE: usize = 16;
+
 #[derive(Clone, Debug)]
 struct Options {
     service_socket: Option<PathBuf>,
@@ -83,31 +86,57 @@ struct LinuxProviderAccess {
     grant_path: PathBuf,
     allow_development_wildcard: bool,
     active_revisions: Arc<Mutex<BTreeSet<String>>>,
+    instance_contexts: Arc<Mutex<BTreeMap<InstanceId, ProviderContext>>>,
 }
 
 impl LinuxProviderAccess {
-    fn context(&self, revision_id: &str) -> Result<ProviderContext> {
-        load_grants(
+    fn context(
+        &self,
+        revision_id: &str,
+        instance_id: Option<&InstanceId>,
+    ) -> Result<ProviderContext> {
+        if let Some(instance_id) = instance_id {
+            if let Some(context) = self
+                .instance_contexts
+                .lock()
+                .expect("provider instance context lock")
+                .get(instance_id)
+                .filter(|context| context.revision_id == revision_id)
+                .cloned()
+            {
+                return Ok(context);
+            }
+        }
+        let mut context = load_grants(
             &self.grant_path,
             revision_id,
             self.allow_development_wildcard,
         )
-        .with_context(|| format!("load provider grants {}", self.grant_path.display()))
+        .with_context(|| format!("load provider grants {}", self.grant_path.display()))?;
+        context.instance_id = instance_id.cloned();
+        if let Some(instance_id) = instance_id {
+            self.instance_contexts
+                .lock()
+                .expect("provider instance context lock")
+                .insert(instance_id.clone(), context.clone());
+        }
+        Ok(context)
     }
 
     fn snapshot(&self, revision_id: &str) -> Result<ProviderSnapshot> {
         self.hub
-            .snapshot_with_frames(&self.context(revision_id)?)
+            .snapshot_with_frames(&self.context(revision_id, None)?)
             .with_context(|| format!("read Linux provider snapshot for revision {revision_id}"))
     }
 
     fn execute_effects(
         &self,
         revision_id: &str,
+        instance_id: Option<&InstanceId>,
         effects: &[experience_ir::ProviderEffect],
     ) -> std::result::Result<(), String> {
         let context = self
-            .context(revision_id)
+            .context(revision_id, instance_id)
             .map_err(|error| error.to_string())?;
         for effect in effects {
             self.hub
@@ -122,13 +151,39 @@ impl LinuxProviderAccess {
             .active_revisions
             .lock()
             .expect("provider revision lock") = BTreeSet::from([revision_id.into()]);
+        let mut contexts = self
+            .instance_contexts
+            .lock()
+            .expect("provider instance context lock");
+        for context in contexts.values() {
+            context.cancellation.cancel();
+        }
+        contexts.clear();
     }
 
-    fn activate_graph(&self, revisions: impl IntoIterator<Item = String>) {
+    fn activate_graph(&self, instances: impl IntoIterator<Item = (InstanceId, String)>) {
+        let instances = instances.into_iter().collect::<BTreeMap<_, _>>();
         *self
             .active_revisions
             .lock()
-            .expect("provider revision lock") = revisions.into_iter().collect();
+            .expect("provider revision lock") = instances.values().cloned().collect();
+        let mut contexts = self
+            .instance_contexts
+            .lock()
+            .expect("provider instance context lock");
+        let stale = contexts
+            .iter()
+            .filter_map(|(instance_id, context)| {
+                (instances.get(instance_id).map(String::as_str)
+                    != Some(context.revision_id.as_str()))
+                .then_some(instance_id.clone())
+            })
+            .collect::<Vec<_>>();
+        for instance_id in stale {
+            if let Some(context) = contexts.remove(&instance_id) {
+                context.cancellation.cancel();
+            }
+        }
     }
 
     fn active_revisions(&self) -> Vec<String> {
@@ -176,6 +231,12 @@ struct ActiveGraph {
     worker: GraphRuntimeWorker,
     snapshot: GraphRuntimeSnapshot,
     revisions: BTreeMap<RevisionId, LoadedGraphRevision>,
+    provider_frames: BTreeMap<RevisionId, Vec<ProviderFrame>>,
+}
+
+struct GraphRuntimeInputs {
+    revisions: BTreeMap<RevisionId, GraphRevisionInput>,
+    provider_frames: BTreeMap<RevisionId, Vec<ProviderFrame>>,
 }
 
 struct PreparedGraph {
@@ -260,6 +321,12 @@ struct GestureSession {
     last_at: Instant,
     click_count: usize,
     moved: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct GraphOwner {
+    node_id: GraphNodeId,
+    instance_id: InstanceId,
 }
 
 #[derive(Debug, Deserialize)]
@@ -355,24 +422,25 @@ pub fn run() -> Result<()> {
                 provider_access.as_ref(),
                 options.service_socket.as_deref(),
             )?;
-            let (worker, snapshot) = GraphRuntimeWorker::start(graph.graph, inputs)
+            let (worker, snapshot) = GraphRuntimeWorker::start(graph.graph, inputs.revisions)
                 .map_err(|error| anyhow::anyhow!("initialize experience graph: {error}"))?;
+            install_graph_provider_frames(&snapshot, &inputs.provider_frames);
             Ok::<_, anyhow::Error>(ActiveGraph {
                 graph_id: graph.graph_id,
                 worker,
                 snapshot,
                 revisions: graph.revisions,
+                provider_frames: inputs.provider_frames,
             })
         })
         .transpose()?;
     if let (Some(access), Some(graph)) = (&provider_access, &active_graph) {
-        access.activate_graph(
-            graph
-                .snapshot
-                .instances
-                .values()
-                .map(|instance| instance.revision_id.to_string()),
-        );
+        access.activate_graph(graph.snapshot.instances.values().map(|instance| {
+            (
+                instance.instance_id.clone(),
+                instance.revision_id.to_string(),
+            )
+        }));
     }
     let (worker, ready) = RuntimeWorker::start_with_assets(
         revision.source.clone(),
@@ -562,7 +630,7 @@ impl Render for ShellOverlayView {
                     RenderTarget::Overlay,
                     host.active_graph
                         .as_ref()
-                        .map(|graph| graph.snapshot.root.clone()),
+                        .map(|graph| graph_owner(&graph.snapshot, &graph.snapshot.root)),
                     window,
                     host_cx,
                 )
@@ -602,7 +670,7 @@ impl Render for ApplicationSurfaceView {
                     RenderTarget::Application,
                     host.active_graph
                         .as_ref()
-                        .map(|graph| graph.snapshot.root.clone()),
+                        .map(|graph| graph_owner(&graph.snapshot, &graph.snapshot.root)),
                     window,
                     host_cx,
                 )
@@ -737,7 +805,7 @@ pub(super) struct LinuxExperienceHost {
     semantic_focus: Option<String>,
     active_graph: Option<ActiveGraph>,
     rollback_graph: Option<ActiveGraph>,
-    node_owners: HashMap<String, GraphNodeId>,
+    node_owners: HashMap<String, GraphOwner>,
 }
 
 impl LinuxExperienceHost {
@@ -1060,12 +1128,53 @@ impl LinuxExperienceHost {
     }
 
     fn install_graph_snapshot(&mut self, snapshot: GraphRuntimeSnapshot, cx: &mut Context<Self>) {
+        let live_instances = snapshot
+            .instances
+            .values()
+            .map(|instance| instance.instance_id.to_string())
+            .collect::<BTreeSet<_>>();
+        let is_live = |scoped: &str| {
+            scoped
+                .split_once("::")
+                .is_some_and(|(instance_id, _)| live_instances.contains(instance_id))
+        };
+        self.inputs.retain(|id, _| is_live(id));
+        self.input_state_shadow.retain(|id, _| is_live(id));
+        self.surface_gestures.retain(|id, _| is_live(id));
+        self.surface_taps.retain(|id, _| is_live(id));
+        if self
+            .active_input_id
+            .as_deref()
+            .is_some_and(|id| !is_live(id))
+        {
+            self.active_input_id = None;
+        }
+        if self
+            .semantic_focus
+            .as_deref()
+            .is_some_and(|id| !is_live(id))
+        {
+            self.semantic_focus = None;
+        }
+        self.pending_input_events.retain(|event| {
+            event
+                .target
+                .as_deref()
+                .is_none_or(|target| !target.contains("::") || is_live(target))
+        });
         assets::install_graph(
             snapshot
                 .instances
                 .values()
                 .map(|instance| instance.assets.as_slice()),
         );
+        if let Some(graph) = self
+            .active_graph
+            .as_ref()
+            .filter(|graph| graph.graph_id == snapshot.graph_id)
+        {
+            install_graph_provider_frames(&snapshot, &graph.provider_frames);
+        }
         if let Some(root) = snapshot.instances.get(&snapshot.root) {
             if let Some(scene) = &root.scene {
                 self.scene = scene.clone();
@@ -1088,16 +1197,25 @@ impl LinuxExperienceHost {
             while let Ok(update) = updates.recv().await {
                 if this
                     .update(cx, |this, cx| {
-                        let graph_node = this.active_graph.as_ref().and_then(|graph| {
-                            graph
-                                .snapshot
-                                .instances
-                                .iter()
-                                .find(|(_, instance)| {
-                                    instance.revision_id.as_str() == update.revision_id
-                                })
-                                .map(|(node_id, _)| node_id.clone())
-                        });
+                        let graph_instances = this
+                            .active_graph
+                            .as_ref()
+                            .map(|graph| {
+                                graph
+                                    .snapshot
+                                    .instances
+                                    .iter()
+                                    .filter(|(_, instance)| {
+                                        instance.revision_id.as_str() == update.revision_id
+                                    })
+                                    .map(|(node_id, instance)| {
+                                        (node_id.clone(), instance.instance_id.clone())
+                                    })
+                                    .collect::<Vec<_>>()
+                            })
+                            .unwrap_or_default();
+                        let graph_node =
+                            graph_instances.first().map(|(node_id, _)| node_id.clone());
                         if update.revision_id != this.active_revision_id && graph_node.is_none() {
                             eprintln!(
                                 "sos_provider_event_dropped event_revision={} active_revision={}",
@@ -1110,10 +1228,20 @@ impl LinuxExperienceHost {
                             update.generation, this.active_revision_id
                         );
                         if this.active_graph.is_some() {
-                            assets::install_provider_frames_scoped(
-                                &update.revision_id,
-                                &update.frames,
-                            );
+                            for (_, instance_id) in &graph_instances {
+                                assets::install_provider_frames_scoped(
+                                    instance_id.as_str(),
+                                    &update.frames,
+                                );
+                            }
+                            if let (Some(graph), Ok(revision_id)) = (
+                                &mut this.active_graph,
+                                RevisionId::parse(update.revision_id.clone()),
+                            ) {
+                                graph
+                                    .provider_frames
+                                    .insert(revision_id, update.frames.clone());
+                            }
                         } else {
                             assets::install_provider_frames(&update.frames);
                         }
@@ -1640,7 +1768,7 @@ impl LinuxExperienceHost {
                                 service_socket.as_deref(),
                             )?;
                             let (worker, snapshot) =
-                                GraphRuntimeWorker::start(loaded.graph, inputs).map_err(
+                                GraphRuntimeWorker::start(loaded.graph, inputs.revisions).map_err(
                                     |error| anyhow::anyhow!("initialize experience graph: {error}"),
                                 )?;
                             Ok(PreparedGraph {
@@ -1650,6 +1778,7 @@ impl LinuxExperienceHost {
                                     worker,
                                     snapshot,
                                     revisions: loaded.revisions,
+                                    provider_frames: inputs.provider_frames,
                                 },
                                 root_revision,
                             })
@@ -1813,13 +1942,12 @@ impl LinuxExperienceHost {
                 self.rollback_graph = self.active_graph.replace(prepared.graph);
                 self.install_graph_snapshot(candidate_snapshot, cx);
                 if let (Some(access), Some(graph)) = (&self.provider_access, &self.active_graph) {
-                    access.activate_graph(
-                        graph
-                            .snapshot
-                            .instances
-                            .values()
-                            .map(|instance| instance.revision_id.to_string()),
-                    );
+                    access.activate_graph(graph.snapshot.instances.values().map(|instance| {
+                        (
+                            instance.instance_id.clone(),
+                            instance.revision_id.to_string(),
+                        )
+                    }));
                 }
                 self.pending_presentation = Some(PendingPresentation {
                     request_id,
@@ -1957,13 +2085,12 @@ impl LinuxExperienceHost {
                     self.install_graph_snapshot(restored_snapshot, cx);
                     if let (Some(access), Some(graph)) = (&self.provider_access, &self.active_graph)
                     {
-                        access.activate_graph(
-                            graph
-                                .snapshot
-                                .instances
-                                .values()
-                                .map(|instance| instance.revision_id.to_string()),
-                        );
+                        access.activate_graph(graph.snapshot.instances.values().map(|instance| {
+                            (
+                                instance.instance_id.clone(),
+                                instance.revision_id.to_string(),
+                            )
+                        }));
                     }
                     if self.input_quiesced_revision.as_deref() == Some(&graph_id) {
                         if let Some(fence) = &self.compositor_fence {
@@ -2498,17 +2625,23 @@ impl LinuxExperienceHost {
             let owner = event
                 .target
                 .as_ref()
-                .and_then(|target| self.node_owners.get(target))
-                .cloned()
-                .unwrap_or_else(|| graph.snapshot.root.clone());
+                .and_then(|target| {
+                    self.node_owners
+                        .get(target)
+                        .cloned()
+                        .or_else(|| graph_owner_for_target(&graph.snapshot, target))
+                })
+                .unwrap_or_else(|| graph_owner(&graph.snapshot, &graph.snapshot.root));
             if let Some(target) = &mut event.target {
-                let prefix = format!("{}::", owner.as_str());
+                let prefix = format!("{}::", owner.instance_id);
                 if let Some(local) = target.strip_prefix(&prefix) {
                     *target = local.to_owned();
                 }
             }
             eprintln!(
-                "sos_graph_action_dispatched request_id={request_id} node_id={owner} action={} target={}",
+                "sos_graph_action_dispatched request_id={request_id} node_id={} instance_id={} action={} target={}",
+                owner.node_id,
+                owner.instance_id,
                 event.action,
                 event.target.as_deref().unwrap_or("none")
             );
@@ -2521,7 +2654,7 @@ impl LinuxExperienceHost {
                     return;
                 }
             };
-            if let Err(error) = graph.worker.action(request_id, owner, event) {
+            if let Err(error) = graph.worker.action(request_id, owner.node_id, event) {
                 self.action_in_flight = false;
                 self.status = Some((format!("Action could not start: {error}"), false));
                 cx.notify();
@@ -2578,7 +2711,36 @@ impl LinuxExperienceHost {
                 return;
             }
         }
-        if self.pending_input_events.len() >= 64 {
+        let instance_id = event
+            .target
+            .as_deref()
+            .and_then(|target| target.split_once("::"))
+            .map(|(instance_id, _)| instance_id.to_owned());
+        if instance_id.as_ref().is_some_and(|instance_id| {
+            self.pending_input_events
+                .iter()
+                .filter(|queued| {
+                    queued
+                        .target
+                        .as_deref()
+                        .is_some_and(|target| target.starts_with(&format!("{instance_id}::")))
+                })
+                .count()
+                >= MAX_PENDING_INPUT_EVENTS_PER_INSTANCE
+        }) {
+            let position = self.pending_input_events.iter().position(|queued| {
+                instance_id.as_ref().is_some_and(|instance_id| {
+                    queued
+                        .target
+                        .as_deref()
+                        .is_some_and(|target| target.starts_with(&format!("{instance_id}::")))
+                })
+            });
+            if let Some(position) = position {
+                self.pending_input_events.remove(position);
+            }
+        }
+        if self.pending_input_events.len() >= MAX_PENDING_INPUT_EVENTS {
             if let Some(position) = self
                 .pending_input_events
                 .iter()
@@ -2719,12 +2881,13 @@ impl LinuxExperienceHost {
     fn surface_down(
         &mut self,
         surface_id: String,
-        region: HitRegion,
+        mut region: HitRegion,
         specification: &Interaction,
         position: (f32, f32),
         platform_click_count: usize,
         cx: &mut Context<Self>,
     ) {
+        region.id = self.scoped_graph_target(&surface_id, &region.id);
         let (x, y) = position;
         let now = Instant::now();
         let press = region.press_action.clone();
@@ -2801,6 +2964,8 @@ impl LinuxExperienceHost {
                 return;
             };
             let now = Instant::now();
+            let mut region = region.clone();
+            region.id = self.scoped_graph_target(&surface_id, &region.id);
             self.surface_gestures.insert(
                 surface_id.clone(),
                 GestureSession {
@@ -2874,6 +3039,13 @@ impl LinuxExperienceHost {
                 cx,
             );
         }
+    }
+
+    fn scoped_graph_target(&self, surface_id: &str, local_target: &str) -> String {
+        self.node_owners.get(surface_id).map_or_else(
+            || local_target.to_owned(),
+            |owner| format!("{}::{local_target}", owner.instance_id),
+        )
     }
 
     fn surface_up(
@@ -2989,7 +3161,7 @@ impl LinuxExperienceHost {
         node: &SceneNode,
         path: SharedString,
         target: RenderTarget,
-        owner: Option<GraphNodeId>,
+        owner: Option<GraphOwner>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -3004,7 +3176,7 @@ impl LinuxExperienceHost {
         let local_id = node.id.clone().unwrap_or_else(|| path.to_string());
         let element_id = owner.as_ref().map_or_else(
             || local_id.clone(),
-            |owner| format!("{}::{local_id}", owner.as_str()),
+            |owner| format!("{}::{local_id}", owner.instance_id),
         );
         if let Some(owner) = &owner {
             self.node_owners.insert(element_id.clone(), owner.clone());
@@ -3110,7 +3282,7 @@ impl LinuxExperienceHost {
         if let Some(Content::TextSession(input)) = &node.content {
             let state_key = owner.as_ref().map_or_else(
                 || input.state_key.clone(),
-                |owner| format!("{}::{}", owner.as_str(), input.state_key),
+                |owner| format!("{}::{}", owner.instance_id, input.state_key),
             );
             let displayed_value = self
                 .input_state_shadow
@@ -3198,7 +3370,10 @@ impl LinuxExperienceHost {
         if let Some(Content::ExperienceMount(mount)) = &node.content {
             element = element.overflow_hidden();
             let mounted = self.active_graph.as_ref().and_then(|graph| {
-                let parent = owner.as_ref().unwrap_or(&graph.snapshot.root);
+                let parent = owner
+                    .as_ref()
+                    .map(|owner| &owner.node_id)
+                    .unwrap_or(&graph.snapshot.root);
                 graph
                     .snapshot
                     .instances
@@ -3210,19 +3385,22 @@ impl LinuxExperienceHost {
                     })
                     .map(|(node_id, instance)| {
                         (
-                            node_id.clone(),
+                            GraphOwner {
+                                node_id: node_id.clone(),
+                                instance_id: instance.instance_id.clone(),
+                            },
                             instance.scene.clone(),
                             instance.status.clone(),
                         )
                     })
             });
             match mounted {
-                Some((child_id, Some(scene), RuntimeInstanceStatus::Ready)) => {
+                Some((child_owner, Some(scene), RuntimeInstanceStatus::Ready)) => {
                     element = element.child(self.render_node(
                         &scene.root,
-                        SharedString::from(format!("mount-{child_id}")),
+                        SharedString::from(format!("mount-{}", child_owner.node_id)),
                         target,
-                        Some(child_id),
+                        Some(child_owner),
                         window,
                         cx,
                     ));
@@ -3549,7 +3727,7 @@ impl Render for LinuxExperienceHost {
             RenderTarget::Base,
             self.active_graph
                 .as_ref()
-                .map(|graph| graph.snapshot.root.clone()),
+                .map(|graph| graph_owner(&graph.snapshot, &graph.snapshot.root)),
             window,
             cx,
         );
@@ -3631,10 +3809,8 @@ fn composed_graph_scene(snapshot: &GraphRuntimeSnapshot) -> Scene {
         node: &SceneNode,
     ) -> SceneNode {
         let mut composed = node.clone();
-        composed.id = node
-            .id
-            .as_ref()
-            .map(|id| format!("{}::{id}", owner.as_str()));
+        let instance_id = &snapshot.instances[owner].instance_id;
+        composed.id = node.id.as_ref().map(|id| format!("{instance_id}::{id}"));
         composed.children = node
             .children
             .iter()
@@ -3664,6 +3840,25 @@ fn composed_graph_scene(snapshot: &GraphRuntimeSnapshot) -> Scene {
         .map(|scene| compose(snapshot, &snapshot.root, &scene.root))
         .unwrap_or_default();
     Scene { root }
+}
+
+fn graph_owner(snapshot: &GraphRuntimeSnapshot, node_id: &GraphNodeId) -> GraphOwner {
+    GraphOwner {
+        node_id: node_id.clone(),
+        instance_id: snapshot.instances[node_id].instance_id.clone(),
+    }
+}
+
+fn graph_owner_for_target(snapshot: &GraphRuntimeSnapshot, target: &str) -> Option<GraphOwner> {
+    let (instance_id, _) = target.split_once("::")?;
+    snapshot
+        .instances
+        .iter()
+        .find(|(_, instance)| instance.instance_id.as_str() == instance_id)
+        .map(|(node_id, instance)| GraphOwner {
+            node_id: node_id.clone(),
+            instance_id: instance.instance_id.clone(),
+        })
 }
 
 fn shell_overlay_node(node: &SceneNode) -> Option<&SceneNode> {
@@ -3702,15 +3897,16 @@ fn reconcile_graph_input_state_shadow(
     snapshot: &GraphRuntimeSnapshot,
 ) {
     shadow.retain(|scoped_key, value| {
-        let Some((node_id, state_key)) = scoped_key.split_once("::") else {
+        let Some((instance_id, state_key)) = scoped_key.split_once("::") else {
             return true;
         };
-        let Ok(node_id) = GraphNodeId::parse(node_id) else {
+        let Ok(instance_id) = InstanceId::parse(instance_id) else {
             return true;
         };
         snapshot
             .instances
-            .get(&node_id)
+            .values()
+            .find(|instance| instance.instance_id == instance_id)
             .and_then(|instance| instance.state.get(state_key))
             .and_then(JsonValue::as_str)
             != Some(value.as_str())
@@ -3768,6 +3964,7 @@ fn start_provider_updates(
         allow_development_wildcard: std::env::var_os("SOS_PROVIDER_DEVELOPMENT_GRANTS").as_deref()
             == Some(std::ffi::OsStr::new("1")),
         active_revisions: Arc::new(Mutex::new(BTreeSet::from([revision_id.into()]))),
+        instance_contexts: Arc::new(Mutex::new(BTreeMap::new())),
     };
     // Fingerprint before taking the initial snapshot. Providers such as PipeWire
     // can become ready while the first model is being collected; recording the
@@ -4069,9 +4266,10 @@ fn graph_runtime_inputs(
     root_model: &ExperienceModel,
     provider_access: Option<&LinuxProviderAccess>,
     service_socket: Option<&Path>,
-) -> Result<std::collections::BTreeMap<RevisionId, GraphRevisionInput>> {
+) -> Result<GraphRuntimeInputs> {
     let root_revision = &graph.graph.nodes[&graph.graph.root].revision_id;
     let mut inputs = std::collections::BTreeMap::new();
+    let mut provider_frames = BTreeMap::new();
     if provider_access.is_some() {
         assets::clear_provider_frames();
     }
@@ -4080,7 +4278,7 @@ fn graph_runtime_inputs(
             .map(|access| access.snapshot(revision_id.as_str()))
             .transpose()?;
         if let Some(snapshot) = &provider_snapshot {
-            assets::install_provider_frames_scoped(revision_id.as_str(), &snapshot.frames);
+            provider_frames.insert(revision_id.clone(), snapshot.frames.clone());
         }
         let mut model = if revision_id == root_revision {
             root_model.clone()
@@ -4118,7 +4316,22 @@ fn graph_runtime_inputs(
             },
         );
     }
-    Ok(inputs)
+    Ok(GraphRuntimeInputs {
+        revisions: inputs,
+        provider_frames,
+    })
+}
+
+fn install_graph_provider_frames(
+    snapshot: &GraphRuntimeSnapshot,
+    frames: &BTreeMap<RevisionId, Vec<ProviderFrame>>,
+) {
+    assets::clear_provider_frames();
+    for instance in snapshot.instances.values() {
+        if let Some(frames) = frames.get(&instance.revision_id) {
+            assets::install_provider_frames_scoped(instance.instance_id.as_str(), frames);
+        }
+    }
 }
 
 fn read_experience_state(
@@ -4245,7 +4458,7 @@ fn commit_action(
     )?)?;
 
     if let Some(access) = provider_access {
-        if let Err(error) = access.execute_effects(revision_id, &linux_effects) {
+        if let Err(error) = access.execute_effects(revision_id, None, &linux_effects) {
             let _ = call_service(
                 &client,
                 &ServiceRequest::Abort {
@@ -4325,14 +4538,16 @@ fn commit_graph_action(
             .instances
             .get(&effect.node_id)
             .ok_or_else(|| format!("graph effect has unknown node `{}`", effect.node_id))?;
-        if effect.revision_id != instance.revision_id {
-            return Err("graph effect revision does not match its instance".into());
+        if effect.revision_id != instance.revision_id || effect.instance_id != instance.instance_id
+        {
+            return Err("graph effect identity does not match its instance".into());
         }
         affected.insert(instance.experience_id.clone());
     }
 
     let mut actions = BTreeMap::<ExperienceId, Vec<ProviderAction>>::new();
-    let mut linux_effects = BTreeMap::<RevisionId, Vec<experience_ir::ProviderEffect>>::new();
+    let mut linux_effects =
+        BTreeMap::<InstanceId, (RevisionId, Vec<experience_ir::ProviderEffect>)>::new();
     let mut agent_prompt = None;
     let mut shell_controls = Vec::new();
     for graph_effect in &outcome.effects {
@@ -4388,8 +4603,9 @@ fn commit_graph_action(
                 .or_default()
                 .push(action),
             None => linux_effects
-                .entry(graph_effect.revision_id.clone())
-                .or_default()
+                .entry(graph_effect.instance_id.clone())
+                .or_insert_with(|| (graph_effect.revision_id.clone(), Vec::new()))
+                .1
                 .push(effect.clone()),
         }
     }
@@ -4459,8 +4675,10 @@ fn commit_graph_action(
             },
         )?)?;
         if let Some(access) = provider_access {
-            for (revision_id, effects) in &linux_effects {
-                if let Err(error) = access.execute_effects(revision_id.as_str(), effects) {
+            for (instance_id, (revision_id, effects)) in &linux_effects {
+                if let Err(error) =
+                    access.execute_effects(revision_id.as_str(), Some(instance_id), effects)
+                {
                     let _ = call_service(
                         &client,
                         &ServiceRequest::AbortGraph {
@@ -4974,6 +5192,7 @@ mod tests {
                 (
                     root.clone(),
                     runtime_luau::RuntimeInstanceSnapshot {
+                        instance_id: InstanceId::parse("i-root").unwrap(),
                         experience_id: ExperienceId::parse("dashboard").unwrap(),
                         revision_id: root_revision,
                         export_id: experience_package::ExportId::parse("main").unwrap(),
@@ -5004,6 +5223,7 @@ mod tests {
                 (
                     child.clone(),
                     runtime_luau::RuntimeInstanceSnapshot {
+                        instance_id: InstanceId::parse("i-agenda").unwrap(),
                         experience_id: ExperienceId::parse("agenda").unwrap(),
                         revision_id: child_revision,
                         export_id: experience_package::ExportId::parse("summary").unwrap(),
@@ -5032,19 +5252,22 @@ mod tests {
             ]),
         };
         let composed = composed_graph_scene(&snapshot);
-        assert_eq!(composed.root.id.as_deref(), Some("root::dashboard"));
+        assert_eq!(composed.root.id.as_deref(), Some("i-root::dashboard"));
         let slot = &composed.root.children[0];
-        assert_eq!(slot.id.as_deref(), Some("root::slot"));
+        assert_eq!(slot.id.as_deref(), Some("i-root::slot"));
         assert!(slot.content.is_none());
-        assert_eq!(slot.children[0].id.as_deref(), Some("agenda-child::editor"));
+        assert_eq!(slot.children[0].id.as_deref(), Some("i-agenda::editor"));
 
         let mut shadow = HashMap::from([
-            ("agenda-child::draft".into(), "authoritative".into()),
-            ("root::draft".into(), "local".into()),
+            ("i-agenda::draft".into(), "authoritative".into()),
+            ("i-root::draft".into(), "local".into()),
         ]);
         reconcile_graph_input_state_shadow(&mut shadow, &snapshot);
-        assert!(!shadow.contains_key("agenda-child::draft"));
-        assert_eq!(shadow.get("root::draft").map(String::as_str), Some("local"));
+        assert!(!shadow.contains_key("i-agenda::draft"));
+        assert_eq!(
+            shadow.get("i-root::draft").map(String::as_str),
+            Some("local")
+        );
     }
 
     #[test]
@@ -5217,6 +5440,7 @@ mod tests {
             grant_path,
             allow_development_wildcard: false,
             active_revisions: Arc::new(Mutex::new(BTreeSet::from([revision_id.clone()]))),
+            instance_contexts: Arc::new(Mutex::new(BTreeMap::new())),
         };
         let mut authority = provider_state_service::Authority::open(&state_file).unwrap();
         authority

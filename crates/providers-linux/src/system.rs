@@ -1024,6 +1024,7 @@ mod tests {
         let adapter = SystemAdapter::connect();
         let context = ProviderContext {
             revision_id: "denied".into(),
+            instance_id: None,
             grants: BTreeSet::new(),
             cancellation: Default::default(),
         };
@@ -1043,6 +1044,7 @@ mod tests {
         let adapter = SystemAdapter::connect();
         let context = ProviderContext {
             revision_id: "audio-adjustment".into(),
+            instance_id: None,
             grants: [Capability::AudioControl].into_iter().collect(),
             cancellation: Default::default(),
         };

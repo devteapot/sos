@@ -284,20 +284,33 @@ fn start_and_monitor(
     )?;
 
     let store = RevisionStore::open(&options.revision_root)?;
-    let current_revision = store
-        .current()?
-        .context("cannot boot the system session before the revision pointer is initialized")?
-        .manifest
-        .revision_id;
     let stock_experience_id = ExperienceId::parse(STOCK_SHELL_EXPERIENCE_ID)
         .map_err(|error| anyhow::anyhow!(error.to_string()))?;
     let graph_mode = GraphStore::open(&options.revision_root)?
         .current(&stock_experience_id)?
         .is_some();
+    let current_revision = recovery_revisions(&store, graph_mode)?.0;
+    if current_revision.is_empty() {
+        bail!("cannot boot the system session before its revision pointer is initialized");
+    }
     let recovery_state_file = options.runtime_directory.join("recovery.json");
     let recovery_command_socket = options.runtime_directory.join("recovery-command.sock");
     let safe_mode_file = state_directory.join("safe-mode");
     let provider_disable_file = state_directory.join("providers-disabled");
+    let appearance_capability_file = state_directory.join("appearance-write.capability");
+    let provider_appearance_capability = if appearance_capability_file.exists() {
+        let destination = options
+            .runtime_directory
+            .join(format!("credential-appearance-{}", std::process::id()));
+        copy_role_credential(
+            &appearance_capability_file,
+            &destination,
+            &options.provider_identity,
+        )?;
+        Some(destination)
+    } else {
+        None
+    };
     let recovery_socket = UnixDatagram::bind(&recovery_command_socket)
         .with_context(|| format!("bind {}", recovery_command_socket.display()))?;
     fs::set_permissions(&recovery_command_socket, fs::Permissions::from_mode(0o660))?;
@@ -317,6 +330,7 @@ fn start_and_monitor(
         &store,
         "STARTING SYSTEM SESSION",
         "",
+        graph_mode,
         safe_mode_file.exists(),
         provider_disable_file.exists(),
     )?;
@@ -409,6 +423,11 @@ fn start_and_monitor(
     prepare_role_file_parent(&options.authority_file, &options.provider_identity)?;
     let mut provider_command =
         role_command(&options.provider_executable, &options.provider_identity);
+    if let Some(appearance_capability_file) = &provider_appearance_capability {
+        provider_command
+            .arg("--appearance-capability-file")
+            .arg(&appearance_capability_file);
+    }
     let provider = provider_command
         .arg("--socket")
         .arg(&provider_socket)
@@ -536,11 +555,13 @@ fn start_and_monitor(
         &store,
         "RUNNING",
         "",
+        graph_mode,
         safe_mode_file.exists(),
         provider_disable_file.exists(),
     )?;
     let mut observed_recovery_status = recovery_status_key(
         &store,
+        graph_mode,
         safe_mode_file.exists(),
         provider_disable_file.exists(),
     )?;
@@ -585,9 +606,11 @@ fn start_and_monitor(
             &recovery_state_file,
             &safe_mode_file,
             &provider_disable_file,
+            graph_mode,
         )?;
         let next_recovery_status_key = recovery_status_key(
             &store,
+            graph_mode,
             safe_mode_file.exists(),
             provider_disable_file.exists(),
         )?;
@@ -597,6 +620,7 @@ fn start_and_monitor(
                 &store,
                 "RUNNING",
                 "",
+                graph_mode,
                 next_recovery_status_key.2,
                 next_recovery_status_key.3,
             )?;
@@ -1091,6 +1115,7 @@ fn handle_recovery_action(
     state_file: &Path,
     safe_mode_file: &Path,
     provider_disable_file: &Path,
+    graph_mode: bool,
 ) -> Result<()> {
     let mut bytes = [0_u8; 4096];
     let size = match socket.recv(&mut bytes) {
@@ -1110,12 +1135,32 @@ fn handle_recovery_action(
         store,
         &format!("APPLYING {}", action.replace('_', " ").to_uppercase()),
         "",
+        graph_mode,
         safe_mode_file.exists(),
         provider_disable_file.exists(),
     )?;
     let result = match action.as_str() {
         "restart" => restart_host(options),
         "rollback" => (|| -> Result<()> {
+            if graph_mode {
+                let stock = ExperienceId::parse(STOCK_SHELL_EXPERIENCE_ID)
+                    .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+                let previous_graph = GraphStore::open(&options.revision_root)?
+                    .previous(&stock)?
+                    .context("no previous experience graph is available")?
+                    .0;
+                let status = Command::new(&options.supervisor_executable)
+                    .arg("activate-graph")
+                    .arg("--root")
+                    .arg(&options.revision_root)
+                    .arg("--graph")
+                    .arg(previous_graph)
+                    .status()?;
+                return status
+                    .success()
+                    .then_some(())
+                    .context("supervisor rejected recovery graph rollback");
+            }
             let previous = store
                 .previous()?
                 .context("no previous revision is available")?
@@ -1162,6 +1207,7 @@ fn handle_recovery_action(
                 store,
                 "RUNNING",
                 "",
+                graph_mode,
                 safe_mode_file.exists(),
                 provider_disable_file.exists(),
             )?;
@@ -1173,6 +1219,7 @@ fn handle_recovery_action(
                 store,
                 "ACTION FAILED",
                 &error.to_string(),
+                graph_mode,
                 safe_mode_file.exists(),
                 provider_disable_file.exists(),
             )?;
@@ -1207,11 +1254,12 @@ fn write_recovery_status(
     store: &RevisionStore,
     progress: &str,
     failure_reason: &str,
+    graph_mode: bool,
     safe_mode: bool,
     providers_disabled: bool,
 ) -> Result<()> {
     let (current_revision, previous_revision, _, _) =
-        recovery_status_key(store, safe_mode, providers_disabled)?;
+        recovery_status_key(store, graph_mode, safe_mode, providers_disabled)?;
     let value = serde_json::json!({
         "current_revision": current_revision,
         "previous_revision": previous_revision,
@@ -1228,22 +1276,47 @@ fn write_recovery_status(
 
 fn recovery_status_key(
     store: &RevisionStore,
+    graph_mode: bool,
     safe_mode: bool,
     providers_disabled: bool,
 ) -> Result<(String, String, bool, bool)> {
-    let current_revision = store
-        .current()?
-        .map(|revision| revision.manifest.revision_id)
-        .unwrap_or_default();
-    let previous_revision = store
-        .previous()?
-        .map(|revision| revision.manifest.revision_id)
-        .unwrap_or_default();
+    let (current_revision, previous_revision) = recovery_revisions(store, graph_mode)?;
     Ok((
         current_revision,
         previous_revision,
         safe_mode,
         providers_disabled,
+    ))
+}
+
+fn recovery_revisions(store: &RevisionStore, graph_mode: bool) -> Result<(String, String)> {
+    if graph_mode {
+        let stock = ExperienceId::parse(STOCK_SHELL_EXPERIENCE_ID)
+            .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+        let graphs = GraphStore::open(store.root())?;
+        let revision = |graph: experience_package::ResolvedGraph| {
+            graph.nodes[&graph.root].revision_id.to_string()
+        };
+        return Ok((
+            graphs
+                .current(&stock)?
+                .map(|(_, graph)| revision(graph))
+                .unwrap_or_default(),
+            graphs
+                .previous(&stock)?
+                .map(|(_, graph)| revision(graph))
+                .unwrap_or_default(),
+        ));
+    }
+    Ok((
+        store
+            .current()?
+            .map(|revision| revision.manifest.revision_id)
+            .unwrap_or_default(),
+        store
+            .previous()?
+            .map(|revision| revision.manifest.revision_id)
+            .unwrap_or_default(),
     ))
 }
 
@@ -1445,6 +1518,57 @@ mod tests {
 
         assert!(take_session_exit_request(&receiver).unwrap());
         assert!(!take_session_exit_request(&receiver).unwrap());
+    }
+
+    #[test]
+    fn recovery_status_uses_graph_history_in_v4_mode() {
+        let temporary = tempfile::tempdir().unwrap();
+        let store = RevisionStore::open(temporary.path()).unwrap();
+        let reference = revision_supervisor::install_reference_composition(&store).unwrap();
+        let stock = ExperienceId::parse(STOCK_SHELL_EXPERIENCE_ID).unwrap();
+        let graphs = GraphStore::open(store.root()).unwrap();
+        let initial_graph = revision_supervisor::GraphResolver::new(store.clone())
+            .resolve(
+                &reference.dashboard_revision,
+                &experience_package::ExportId::parse("main").unwrap(),
+            )
+            .unwrap();
+        let initial_graph_id = graphs.install(&initial_graph).unwrap();
+        graphs.set_current(&stock, &initial_graph_id).unwrap();
+        let current = store.verify(&reference.dashboard_revision).unwrap();
+        let package = current.package.unwrap();
+        let source = fs::read(current.directory.join(&current.manifest.source.path)).unwrap();
+        let candidate = store
+            .install_package(revision_supervisor::RevisionPackageInput {
+                revision: revision_supervisor::RevisionInput {
+                    source: [source, b"\n-- recovery candidate\n".to_vec()].concat(),
+                    state: serde_json::json!({}),
+                    schema_version: 1,
+                    experience_api_version: 4,
+                    assets: Vec::new(),
+                },
+                package,
+            })
+            .unwrap()
+            .manifest
+            .revision_id;
+        let graph = revision_supervisor::GraphResolver::new(store.clone())
+            .resolve(
+                &candidate,
+                &experience_package::ExportId::parse("main").unwrap(),
+            )
+            .unwrap();
+        let graph_id = graphs.install(&graph).unwrap();
+        graphs.set_current(&stock, &graph_id).unwrap();
+
+        assert_eq!(
+            recovery_revisions(&store, true).unwrap(),
+            (candidate, reference.dashboard_revision)
+        );
+        assert_eq!(
+            recovery_revisions(&store, false).unwrap(),
+            (String::new(), String::new())
+        );
     }
 
     #[test]

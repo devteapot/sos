@@ -362,7 +362,15 @@ fn experience_state_and_appearance_are_independent_resources() {
         experience_package::TokenId::parse("accent").unwrap(),
         "#00ffffff".into(),
     );
-    authority.update_appearance(0, appearance.clone()).unwrap();
+    assert!(authority
+        .update_appearance(0, "ungranted", appearance.clone())
+        .is_err());
+    authority
+        .configure_appearance_writer("appearance-test-capability")
+        .unwrap();
+    authority
+        .update_appearance(0, "appearance-test-capability", appearance.clone())
+        .unwrap();
 
     assert_eq!(
         authority.current_for(experience_id.as_str()).state["filter"],

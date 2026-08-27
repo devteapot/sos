@@ -116,8 +116,16 @@ grants.
 `model.appearance` is an authority-owned ABI v1 snapshot. It includes scheme,
 contrast, text scale, reduced-motion preference, and semantic color, spacing,
 radius, and typography tokens. It updates live without revision activation.
+Appearance mutation requires the authority's dedicated `appearance-write`
+capability; access to the state/provider socket alone is not sufficient.
 An export may ignore optional design tokens, but not host accessibility or
 trusted-ceremony policy. Styles and assets remain revision-local.
+
+Every live export has a transient opaque Instance ID. The host uses it to
+namespace rendered node IDs, revision assets, provider surfaces and sessions,
+text/IME state, pointer capture, and accessibility focus. Graph Node IDs remain
+stable resolved-graph addresses and are never exposed as runtime isolation
+identities.
 
 [`experience-composition.md`](experience-composition.md) defines exact
 identity, package, resolver, state, authority, activation, authoring, and

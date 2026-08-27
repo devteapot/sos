@@ -17,6 +17,7 @@ use experience_ir::{
     CalendarEvent, ExperienceModel, Music, Note, ProviderEffect, ProviderSurface,
     ProviderSurfaceKind, ProviderSurfaceStatus, SystemState,
 };
+use experience_package::InstanceId;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
@@ -42,6 +43,7 @@ pub enum Capability {
 #[derive(Clone, Debug)]
 pub struct ProviderContext {
     pub revision_id: String,
+    pub instance_id: Option<InstanceId>,
     pub grants: BTreeSet<Capability>,
     pub cancellation: CancellationToken,
 }
@@ -418,6 +420,7 @@ fn required_string<'a>(
 pub fn prototype_grants(revision_id: impl Into<String>) -> ProviderContext {
     ProviderContext {
         revision_id: revision_id.into(),
+        instance_id: None,
         grants: [
             Capability::ApplicationLaunch,
             Capability::AudioControl,
@@ -467,6 +470,7 @@ pub fn load_grants(
     });
     Ok(ProviderContext {
         revision_id: revision_id.into(),
+        instance_id: None,
         grants: selected.unwrap_or_default(),
         cancellation: CancellationToken::default(),
     })
@@ -763,6 +767,7 @@ mod tests {
         let hub = ProviderHub::open(temp.path()).unwrap();
         let context = ProviderContext {
             revision_id: "limited".into(),
+            instance_id: None,
             grants: BTreeSet::new(),
             cancellation: CancellationToken::default(),
         };

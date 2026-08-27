@@ -12512,3 +12512,54 @@ root, so an update affecting multiple independently presented tracked roots is
 still rejected rather than partially committed. Generalize the activation
 unit across every affected root, then close Instance-ID namespaces, recovery
 actions, authority appearance grants, and the remaining Android parity work.
+
+## 2026-08-27: Enforce Linux Instance boundaries and graph-native recovery
+
+**Goal:** Replace stable graph/revision identities at live isolation
+boundaries, protect appearance mutation, and ensure Recovery operates on the
+v4 graph that the session actually presents.
+
+**Changed:** Each graph VM now receives a fresh opaque Instance ID when its
+runtime starts; a second instantiation of the same content-addressed graph gets
+different IDs. Runtime snapshots and provider effects carry that identity.
+Linux namespaces rendered element and accessibility IDs, text/IME state,
+pointer and hit-region capture, revision image/font/shader paths, provider
+surfaces, provider frames, and provider-effect contexts by Instance ID. Stale
+input, focus, gestures, and per-instance provider contexts are discarded or
+cancelled when an instance leaves the active graph. Pending input is bounded
+globally and per instance, child coordinates remain mount-local, and the graph
+runtime enforces the frozen 8,192 aggregate scene-node limit.
+
+The system-session Recovery status and rollback action now use the reserved
+Stock graph's current and previous records in graph mode. An explicit restart
+recreates the exact active graph host. Appearance writes now require a
+separately provisioned `appearance-write` capability: the authority persists
+only its SHA-256 digest, rejects socket clients without the exact capability,
+and retains exact generation checks. The Linux session copies an optional
+0600 capability file into the provider identity's private runtime credential
+before starting the authority. The nested composition gate supplies that
+credential explicitly.
+
+**Evidence:** `cargo test -p runtime-luau` passed 31 tests, including fresh
+instance identity, independent VM/state behavior, provider/asset namespacing,
+scene authority, and graph rollback. `cargo test -p provider-state-service`
+passed 14 tests, including denial before the appearance grant and persistence
+after an authorized update. `cargo test -p sos-linux-session --lib` passed 15
+tests, including a v4 graph-history Recovery test. `cargo test -p
+sos-experience --features linux-host --lib` passed 34 tests, including
+Instance-scoped accessibility/text state and pointer hit regions. Focused
+all-target compilation, Rust formatting, shell syntax validation, and
+`git diff --check` passed.
+
+**Failures and decision:** The first embedded Stock test compiled the new
+`require("stock.theme")` source without its revision-local module. The helper
+now compiles checked-in Stock with the same module sidecar used by packaging.
+The local nested Weston campaign could not start because this development host
+does not have the `weston` executable; it failed before creating product
+evidence and therefore closes no presentation gate.
+
+**Remaining risks and next gate:** Instance namespaces are implemented on the
+Linux host, but the multi-root tracked activation transaction and equivalent
+Android host routing remain open. Run the updated nested composition campaign
+on the Linux target with Weston available, then extend graph activation across
+all affected presented roots before starting Android parity.
