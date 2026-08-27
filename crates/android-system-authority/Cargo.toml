@@ -13,6 +13,7 @@ libc = "0.2"
 revision-supervisor = { path = "../revision-supervisor" }
 serde.workspace = true
 serde_json.workspace = true
+service-protocol.workspace = true
 
 [dev-dependencies]
 android-provider-acceptance = { path = "../android-provider-acceptance" }

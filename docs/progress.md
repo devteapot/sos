@@ -12749,3 +12749,71 @@ graph runtime from GPUI and compositor code. It does not assign one OS process
 per mounted Instance, which the frozen deployment rule does not require. Each
 Instance still owns a distinct Luau VM and no API observes process placement.
 Android v4 parity is now the next implementation gate.
+
+## 2026-08-27: Move the Android authority and host onto the v4 graph boundary
+
+**Goal:** Replace Android's singleton v3 runtime ownership with the same stable
+Experience, resolved graph, per-Instance runtime, durable state, appearance,
+grant, and recovery boundaries used by Linux.
+
+**Changed:** The Android authority now imports an existing singleton install as
+the reserved Stock Shell Experience without moving or rewriting the legacy
+pointer or state file. A packaged v4 Stock revision is installed beside it,
+resolved into a content-addressed graph, and returned as a pending migration.
+Only a host presentation confirmation moves the registry and graph pointers.
+Rejecting that pending graph removes it and returns the untouched v3 artifact;
+the fallback marker survives another authority restart. Fresh v4 installs use
+the registry and graph store directly.
+
+Android graph responses carry exact immutable package metadata, sources,
+sidecars, per-Experience state resources, reviewed grants, and the
+authority-owned appearance generation. Graph actions are checked against the
+active graph identity, stable grant decision, immutable capability request,
+provider action schema, expected state generation, state size, and shared
+Experience state invariant. All affected Experience states replace one durable
+composition document before provider effects execute. Appearance writes use a
+separately provisioned bounded capability and generation compare-and-swap.
+
+The Android GPUI host now starts one Luau VM per resolved graph Instance.
+Mounts are clipped and rendered at host-owned bounds. Node IDs, assets, native
+text sessions, pointer surfaces and capture, semantic bounds, focus targets,
+and input shadow state are namespaced by Instance ID. Events are routed back to
+the owning graph node with the namespace removed. Child failure renders a
+bounded placeholder. Provider models are filtered by the intersection of the
+revision request and reviewed stable grant, and only the registry-selected
+role reaches the runtime. Graph state and effects commit through the authority;
+failed commits restore the prior in-memory snapshot. Appearance generations
+are polled and applied without changing revision identity. A first v4 boot is
+confirmed after a rendered frame. A rejected startup graph is rolled back
+before the app aborts, preventing a repeated bad-candidate boot loop.
+
+Samsung and Cuttlefish product definitions now install
+`default.package.json` and the `stock.theme` sidecar with the Stock source,
+start the authority with that complete package, and publish revision and API
+format 4. `ro.sos.legacy_revision_read=3` describes the remaining rollback
+reader. Staging and Samsung target-files inspection compare both new artifacts
+with repository sources.
+
+**Evidence:** `cargo test -j1 -p android-authority-protocol -p
+android-system-authority` passed 24 unit, integration, wire-fixture, and doc
+tests. The new authority cases cover pending migration across restart,
+presentation confirmation, rollback to v3 across restart, per-Experience graph
+state persistence, and appearance persistence. `cargo ndk -t arm64-v8a -P 31
+check -j1 -p sos-experience --features aosp-system` and the corresponding
+`--no-default-features --features core-native` check both passed. `cargo fmt
+--all`, `git diff --check`, and `bash -n tools/a33xctl tools/aospctl` passed.
+
+**Failures and decision:** A direct `cargo check --target
+aarch64-linux-android` could not locate `aarch64-linux-android-clang`. This was
+a host invocation error, not a source or target failure. Re-running through
+the repository's cargo-ndk path supplied the pinned NDK compiler and both
+Android feature sets passed. The regular source-swap authoring entry point is
+explicitly rejected while a v4 graph is active because installing a bare
+source would recreate singleton v3 ownership.
+
+**Remaining risks and next gate:** This is compile and authority fault-path
+evidence, not an Android hardware verdict. Finish the packaged v4 Android
+authoring and staged graph-activation API, add Android-side graph fixture
+coverage, build and install the resulting ARM64 product, then run restart,
+rollback, IME, accessibility, grant isolation, child-failure, appearance, and
+composition acceptance on the Samsung target.

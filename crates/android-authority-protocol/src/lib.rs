@@ -1,7 +1,14 @@
 use std::io::{BufRead, BufReader, Read, Write};
 
-use experience_ir::{ProviderRequest, ProviderResponse, StateEnvelope, MAX_STATE_BYTES};
+use experience_ir::{
+    ProviderEffect, ProviderRequest, ProviderResponse, StateEnvelope, MAX_STATE_BYTES,
+};
+use experience_package::{
+    AppearanceProfile, ExperienceId, GraphNodeId, InstanceId, PackageMetadata, ResolvedGraph,
+    RevisionId,
+};
 use serde::{Deserialize, Serialize};
+use service_protocol::{AppearanceResource, ExperienceStateResource, GrantDecisionResource};
 
 pub const REVISION_ADDRESS: &str = "127.0.0.1:47778";
 pub const CORE_PROVIDER_SOCKET: &str = "/data/misc/sos/provider.sock";
@@ -67,10 +74,75 @@ pub struct RevisionAssetWire {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+pub struct GraphRevisionWire {
+    pub revision_id: String,
+    pub source: String,
+    pub assets: Vec<RevisionAssetWire>,
+    pub package: PackageMetadata,
+    pub state: ExperienceStateResource,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+pub struct GraphBundle {
+    pub graph_id: String,
+    pub graph: ResolvedGraph,
+    pub revisions: Vec<GraphRevisionWire>,
+    pub appearance: AppearanceResource,
+    #[serde(default)]
+    pub grants: Vec<GrantDecisionResource>,
+    #[serde(default)]
+    pub migration_pending: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+pub struct GraphStateUpdateWire {
+    pub node_id: GraphNodeId,
+    pub instance_id: InstanceId,
+    pub experience_id: ExperienceId,
+    pub revision_id: RevisionId,
+    pub expected_revision: u64,
+    pub state: serde_json::Value,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+pub struct GraphEffectWire {
+    pub node_id: GraphNodeId,
+    pub instance_id: InstanceId,
+    pub revision_id: RevisionId,
+    pub effect: ProviderEffect,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(tag = "action", rename_all = "snake_case")]
 pub enum RevisionRequest {
     Current {
         request_id: u64,
+    },
+    CurrentGraph {
+        request_id: u64,
+    },
+    ConfirmGraph {
+        request_id: u64,
+        graph_id: String,
+    },
+    RollbackGraph {
+        request_id: u64,
+        failed_graph_id: String,
+    },
+    CommitGraphAction {
+        request_id: u64,
+        graph_id: String,
+        updates: Vec<GraphStateUpdateWire>,
+        effects: Vec<GraphEffectWire>,
+    },
+    CurrentAppearance {
+        request_id: u64,
+    },
+    UpdateAppearance {
+        request_id: u64,
+        expected_generation: u64,
+        capability: String,
+        profile: AppearanceProfile,
     },
     Install {
         request_id: u64,
@@ -98,6 +170,12 @@ impl RevisionRequest {
     pub fn request_id(&self) -> u64 {
         match self {
             Self::Current { request_id }
+            | Self::CurrentGraph { request_id }
+            | Self::ConfirmGraph { request_id, .. }
+            | Self::RollbackGraph { request_id, .. }
+            | Self::CommitGraphAction { request_id, .. }
+            | Self::CurrentAppearance { request_id }
+            | Self::UpdateAppearance { request_id, .. }
             | Self::Install { request_id, .. }
             | Self::Activate { request_id, .. }
             | Self::FallbackToStock { request_id, .. } => *request_id,
@@ -141,6 +219,12 @@ pub struct RevisionResponse {
     pub stock_trusted: bool,
     #[serde(default)]
     pub fallback_performed: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub graph: Option<GraphBundle>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub appearance: Option<AppearanceResource>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub states: Vec<ExperienceStateResource>,
     pub error: Option<String>,
 }
 

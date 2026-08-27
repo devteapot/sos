@@ -283,6 +283,22 @@ prebuilt_etc {
 }
 
 prebuilt_etc {
+    name: "sos-default-package",
+    src: "prebuilts/default.package.json",
+    filename: "default.package.json",
+    sub_dir: "sos",
+    system_ext_specific: true,
+}
+
+prebuilt_etc {
+    name: "sos-stock-theme",
+    src: "prebuilts/stock-theme.luau",
+    filename: "stock-theme.luau",
+    sub_dir: "sos/modules",
+    system_ext_specific: true,
+}
+
+prebuilt_etc {
     name: "sos-core-app-manifest",
     src: "core/core-apps.json",
     filename: "core-apps.json",

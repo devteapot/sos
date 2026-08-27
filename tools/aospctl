@@ -148,10 +148,16 @@ stage_sos() {
     "$AOSP_OVERLAY_DESTINATION/prebuilts/x86_64/sos-android-system-authority"
   install -m 0644 "$SOS_ROOT/experiences/default.luau" \
     "$AOSP_OVERLAY_DESTINATION/prebuilts/default.luau"
+  install -m 0644 "$SOS_ROOT/experiences/default.package.json" \
+    "$AOSP_OVERLAY_DESTINATION/prebuilts/default.package.json"
+  install -m 0644 "$SOS_ROOT/experiences/modules/stock-theme.luau" \
+    "$AOSP_OVERLAY_DESTINATION/prebuilts/stock-theme.luau"
   sha256sum \
     "$AOSP_OVERLAY_DESTINATION/prebuilts/SosShell.apk" \
     "$AOSP_OVERLAY_DESTINATION/prebuilts/x86_64/sos-android-system-authority" \
-    "$AOSP_OVERLAY_DESTINATION/prebuilts/default.luau"
+    "$AOSP_OVERLAY_DESTINATION/prebuilts/default.luau" \
+    "$AOSP_OVERLAY_DESTINATION/prebuilts/default.package.json" \
+    "$AOSP_OVERLAY_DESTINATION/prebuilts/stock-theme.luau"
 }
 
 build_sos() {

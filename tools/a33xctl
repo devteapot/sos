@@ -299,6 +299,8 @@ stage_sos() {
   local agent_example_primary="$SOS_ROOT/experiences/default.luau"
   local agent_example_secondary="$SOS_ROOT/experiences/timeflow.luau"
   local bootstrap="$SOS_ROOT/experiences/default.luau"
+  local bootstrap_package="$SOS_ROOT/experiences/default.package.json"
+  local stock_theme="$SOS_ROOT/experiences/modules/stock-theme.luau"
   [[ -f "$LINEAGE_ROOT/build/envsetup.sh" ]] || fail "run init and sync first"
   [[ -f "$apk" ]] || \
     fail "ARM64 SOS APK missing; run ./tools/sosctl m1-build --abi arm64-v8a --home"
@@ -310,7 +312,8 @@ stage_sos() {
   [[ -f "$agent_runner" ]] || fail "shared Pi runner missing; run npm run build in services/sos-agent"
   [[ -f "$agent_api" && -f "$agent_example_primary" && -f "$agent_example_secondary" ]] || \
     fail "Android Pi prompt documents are missing"
-  [[ -f "$bootstrap" ]] || fail "SOS bootstrap experience missing"
+  [[ -f "$bootstrap" && -f "$bootstrap_package" && -f "$stock_theme" ]] || \
+    fail "SOS v4 bootstrap package is incomplete"
   [[ "$LINEAGE_SOS_OVERLAY_DESTINATION" == "$LINEAGE_ROOT/device/sos/a33x" ]] || \
     fail "refusing to stage outside the managed a33x SOS destination"
   unzip -Z1 "$apk" | grep -Fx lib/arm64-v8a/libsos_experience.so >/dev/null || \
@@ -354,6 +357,10 @@ stage_sos() {
     "$LINEAGE_SOS_OVERLAY_DESTINATION/prebuilts/sos-agent/example-secondary.luau"
   install -m 0644 "$bootstrap" \
     "$LINEAGE_SOS_OVERLAY_DESTINATION/prebuilts/default.luau"
+  install -m 0644 "$bootstrap_package" \
+    "$LINEAGE_SOS_OVERLAY_DESTINATION/prebuilts/default.package.json"
+  install -m 0644 "$stock_theme" \
+    "$LINEAGE_SOS_OVERLAY_DESTINATION/prebuilts/stock-theme.luau"
   sha256sum \
     "$LINEAGE_SOS_OVERLAY_DESTINATION/prebuilts/SosShell.apk" \
     "$LINEAGE_SOS_OVERLAY_DESTINATION/prebuilts/arm64/libsos_core_experience.so" \
@@ -364,7 +371,9 @@ stage_sos() {
     "$LINEAGE_SOS_OVERLAY_DESTINATION/prebuilts/sos-agent/experience-api.md" \
     "$LINEAGE_SOS_OVERLAY_DESTINATION/prebuilts/sos-agent/example-primary.luau" \
     "$LINEAGE_SOS_OVERLAY_DESTINATION/prebuilts/sos-agent/example-secondary.luau" \
-    "$LINEAGE_SOS_OVERLAY_DESTINATION/prebuilts/default.luau"
+    "$LINEAGE_SOS_OVERLAY_DESTINATION/prebuilts/default.luau" \
+    "$LINEAGE_SOS_OVERLAY_DESTINATION/prebuilts/default.package.json" \
+    "$LINEAGE_SOS_OVERLAY_DESTINATION/prebuilts/stock-theme.luau"
 }
 
 build_recovery() {
@@ -714,6 +723,8 @@ inspect_compat_profile() {
   local agent_example_primary="$target_files/SYSTEM_EXT/etc/sos-agent/example-primary.luau"
   local agent_example_secondary="$target_files/SYSTEM_EXT/etc/sos-agent/example-secondary.luau"
   local bootstrap="$target_files/SYSTEM_EXT/etc/sos/default.luau"
+  local bootstrap_package="$target_files/SYSTEM_EXT/etc/sos/default.package.json"
+  local stock_theme="$target_files/SYSTEM_EXT/etc/sos/modules/stock-theme.luau"
   local init_rc="$target_files/SYSTEM_EXT/etc/init/sos-authority.rc"
   local properties="$target_files/SYSTEM_EXT/etc/build.prop"
   local seapp_contexts="$target_files/SYSTEM_EXT/etc/selinux/system_ext_seapp_contexts"
@@ -723,7 +734,8 @@ inspect_compat_profile() {
   local artifact
   for artifact in \
     "$apk" "$authority" "$node" "$node_cxx" "$agent_runner" "$agent_api" \
-    "$agent_example_primary" "$agent_example_secondary" "$bootstrap" "$init_rc" "$properties" \
+    "$agent_example_primary" "$agent_example_secondary" "$bootstrap" \
+    "$bootstrap_package" "$stock_theme" "$init_rc" "$properties" \
     "$seapp_contexts" "$file_contexts" "$privapp_permissions"; do
     [[ -f "$artifact" ]] || fail "SOS target-files artifact missing: $artifact"
     stat --printf='%n %s bytes\n' "$artifact"
@@ -1079,6 +1091,10 @@ inspect_compat_profile() {
     fail "packaged Android Pi secondary example differs from repository source"
   cmp -s "$bootstrap" "$SOS_ROOT/experiences/default.luau" || \
     fail "packaged SOS bootstrap differs from the repository source"
+  cmp -s "$bootstrap_package" "$SOS_ROOT/experiences/default.package.json" || \
+    fail "packaged SOS v4 manifest differs from the repository source"
+  cmp -s "$stock_theme" "$SOS_ROOT/experiences/modules/stock-theme.luau" || \
+    fail "packaged SOS Stock theme differs from the repository source"
   grep -Fx 'ro.sos.authority=on-device' "$properties"
   grep -Fx 'ro.sos.home=dev.sos.experience' "$properties"
   grep -E "^ro\\.system_ext\\.build\\.version\\.incremental=sos\\.${build_profile}\\.[0-9a-f]{12}\\.[0-9a-f]{12}$" \
@@ -1086,8 +1102,9 @@ inspect_compat_profile() {
   grep -Fx 'ro.sos.profile=compat' "$properties"
   grep -Fx "ro.sos.compat.stage=$expected_stage" "$properties"
   grep -Fx "ro.sos.ui_owner=$expected_owner" "$properties"
-  grep -Fx 'ro.sos.revision_format=3' "$properties"
-  grep -Fx 'ro.sos.experience_api=3' "$properties"
+  grep -Fx 'ro.sos.revision_format=4' "$properties"
+  grep -Fx 'ro.sos.experience_api=4' "$properties"
+  grep -Fx 'ro.sos.legacy_revision_read=3' "$properties"
   grep -Fx \
     'user=_app isPrivApp=true seinfo=platform name=dev.sos.experience domain=priv_app type=privapp_data_file levelFrom=all' \
     "$seapp_contexts"
@@ -1131,12 +1148,15 @@ inspect_core() {
   local file_contexts="$target_files/SYSTEM_EXT/etc/selinux/system_ext_file_contexts"
   local system_ext_policy="$target_files/SYSTEM_EXT/etc/selinux/system_ext_sepolicy.cil"
   local authority="$target_files/SYSTEM_EXT/bin/sos-authority"
+  local bootstrap_package="$target_files/SYSTEM_EXT/etc/sos/default.package.json"
+  local stock_theme="$target_files/SYSTEM_EXT/etc/sos/modules/stock-theme.luau"
   local system_ui="$target_files/SYSTEM_EXT/priv-app/SystemUI/SystemUI.apk"
   local launcher="$target_files/SYSTEM_EXT/priv-app/Launcher3QuickStep/Launcher3QuickStep.apk"
   local artifact
   for artifact in \
     "$probe" "$init_rc" "$host" "$host_runtime" "$host_init_rc" \
     "$properties" "$file_contexts" "$system_ext_policy" "$authority" \
+    "$bootstrap_package" "$stock_theme" \
     "$system_ui" "$launcher"; do
     [[ -f "$artifact" ]] || fail "SOS Core shadow-stage artifact missing: $artifact"
     stat --printf='%n %s bytes\n' "$artifact"
@@ -1205,8 +1225,13 @@ inspect_core() {
   grep -Fx 'ro.sos.authority=on-device' "$properties"
   grep -Fx 'ro.sos.profile=core' "$properties"
   grep -Fx 'ro.sos.ui_owner=android-shadow' "$properties"
-  grep -Fx 'ro.sos.revision_format=3' "$properties"
-  grep -Fx 'ro.sos.experience_api=3' "$properties"
+  cmp -s "$bootstrap_package" "$SOS_ROOT/experiences/default.package.json" || \
+    fail "SOS Core v4 manifest differs from the repository source"
+  cmp -s "$stock_theme" "$SOS_ROOT/experiences/modules/stock-theme.luau" || \
+    fail "SOS Core Stock theme differs from the repository source"
+  grep -Fx 'ro.sos.revision_format=4' "$properties"
+  grep -Fx 'ro.sos.experience_api=4' "$properties"
+  grep -Fx 'ro.sos.legacy_revision_read=3' "$properties"
   grep -E '^ro\.system_ext\.build\.version\.incremental=sos\.shadow\.[0-9a-f]{12}\.[0-9a-f]{12}$' \
     "$properties" || fail "SOS Core build does not carry a content-derived fingerprint"
   grep -Fx \
@@ -1257,6 +1282,8 @@ inspect_core_stage() {
   local agent_api="$target_files/SYSTEM_EXT/etc/sos-agent/experience-api.md"
   local agent_example_primary="$target_files/SYSTEM_EXT/etc/sos-agent/example-primary.luau"
   local agent_example_secondary="$target_files/SYSTEM_EXT/etc/sos-agent/example-secondary.luau"
+  local bootstrap_package="$target_files/SYSTEM_EXT/etc/sos/default.package.json"
+  local stock_theme="$target_files/SYSTEM_EXT/etc/sos/modules/stock-theme.luau"
   local system_ext_policy="$target_files/SYSTEM_EXT/etc/selinux/system_ext_sepolicy.cil"
   local bridge_apk="$target_files/SYSTEM_EXT/priv-app/SosFrameworkBridge/SosFrameworkBridge.apk"
   local core_platform="$target_files/SYSTEM_EXT/bin/sos-core-platform"
@@ -1268,7 +1295,8 @@ inspect_core_stage() {
   for artifact in \
     "$host" "$host_runtime" "$host_init_rc" "$properties" "$authority" \
     "$node" "$agent_runner" "$agent_api" "$agent_example_primary" \
-    "$agent_example_secondary" "$system_ext_policy"; do
+    "$agent_example_secondary" "$bootstrap_package" "$stock_theme" \
+    "$system_ext_policy"; do
     [[ -f "$artifact" ]] || fail "SOS $stage artifact missing: $artifact"
     stat --printf='%n %s bytes\n' "$artifact"
     sha256sum "$artifact"
@@ -1345,6 +1373,10 @@ inspect_core_stage() {
     fail "SOS $stage packaged Pi primary example differs from repository source"
   cmp -s "$agent_example_secondary" "$SOS_ROOT/experiences/timeflow.luau" || \
     fail "SOS $stage packaged Pi secondary example differs from repository source"
+  cmp -s "$bootstrap_package" "$SOS_ROOT/experiences/default.package.json" || \
+    fail "SOS $stage packaged v4 manifest differs from repository source"
+  cmp -s "$stock_theme" "$SOS_ROOT/experiences/modules/stock-theme.luau" || \
+    fail "SOS $stage packaged Stock theme differs from repository source"
   [[ ! -e "$target_files/SYSTEM_EXT/etc/sos-agent/android-runner.cjs" ]] || \
     fail "SOS $stage retained the superseded Android-only Pi runner"
   grep -F '(allow sos_core_host sos_node_exec (file (' "$system_ext_policy" | \
@@ -1364,7 +1396,9 @@ inspect_core_stage() {
   grep -Fx "ro.sos.lifecycle=$expected_lifecycle" "$properties"
   grep -Fx 'ro.sos.profile=core' "$properties"
   grep -Fx 'ro.sos.disable_user_apk_install=true' "$properties"
-  grep -Fx 'ro.sos.revision_format=3' "$properties"
+  grep -Fx 'ro.sos.revision_format=4' "$properties"
+  grep -Fx 'ro.sos.experience_api=4' "$properties"
+  grep -Fx 'ro.sos.legacy_revision_read=3' "$properties"
   unzip -p "$target_files/SYSTEM/framework/services.jar" 'classes*.dex' | strings | \
     grep -F 'SOS Core product policy prevents user APK installation' >/dev/null || \
     fail "SOS $stage framework does not enforce the Core APK-install policy"

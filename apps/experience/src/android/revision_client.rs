@@ -14,19 +14,33 @@ use android_authority_protocol::CORE_REVISION_SOCKET;
 #[cfg(not(feature = "core-native"))]
 use android_authority_protocol::REVISION_ADDRESS;
 use android_authority_protocol::{
-    request_revision_over_stream, RevisionAssetWire, RevisionRequest, RevisionResponse,
+    request_revision_over_stream, GraphEffectWire, GraphStateUpdateWire, RevisionAssetWire,
+    RevisionRequest, RevisionResponse,
 };
 use runtime_luau::{RevisionAsset, RevisionAssetInput};
 use serde_json::Value as JsonValue;
+use service_protocol::{AppearanceResource, ExperienceStateResource};
 
 static NEXT_REQUEST_ID: AtomicU64 = AtomicU64::new(1);
 
 pub(super) fn current_with_retry() -> Result<RevisionResponse, String> {
+    current_request_with_retry(false)
+}
+
+pub(super) fn current_graph_with_retry() -> Result<RevisionResponse, String> {
+    current_request_with_retry(true)
+}
+
+fn current_request_with_retry(graph: bool) -> Result<RevisionResponse, String> {
     let mut last_error = String::new();
     for _ in 0..100 {
-        match request(RevisionRequest::Current {
-            request_id: allocate_request_id(),
-        }) {
+        let request_id = allocate_request_id();
+        let current = if graph {
+            RevisionRequest::CurrentGraph { request_id }
+        } else {
+            RevisionRequest::Current { request_id }
+        };
+        match request(current) {
             Ok(response) => return Ok(response),
             Err(error) => last_error = error,
         }
@@ -35,6 +49,42 @@ pub(super) fn current_with_retry() -> Result<RevisionResponse, String> {
     Err(format!(
         "on-device revision authority was unavailable for 5 seconds: {last_error}"
     ))
+}
+
+pub(super) fn confirm_graph(graph_id: String) -> Result<RevisionResponse, String> {
+    request(RevisionRequest::ConfirmGraph {
+        request_id: allocate_request_id(),
+        graph_id,
+    })
+}
+
+pub(super) fn rollback_graph(failed_graph_id: String) -> Result<RevisionResponse, String> {
+    request(RevisionRequest::RollbackGraph {
+        request_id: allocate_request_id(),
+        failed_graph_id,
+    })
+}
+
+pub(super) fn commit_graph_action(
+    graph_id: String,
+    updates: Vec<GraphStateUpdateWire>,
+    effects: Vec<GraphEffectWire>,
+) -> Result<Vec<ExperienceStateResource>, String> {
+    request(RevisionRequest::CommitGraphAction {
+        request_id: allocate_request_id(),
+        graph_id,
+        updates,
+        effects,
+    })
+    .map(|response| response.states)
+}
+
+pub(super) fn current_appearance() -> Result<AppearanceResource, String> {
+    request(RevisionRequest::CurrentAppearance {
+        request_id: allocate_request_id(),
+    })?
+    .appearance
+    .ok_or_else(|| "appearance response omitted its resource".into())
 }
 
 pub(super) fn install(

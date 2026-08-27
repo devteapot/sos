@@ -7,5 +7,7 @@ publish = false
 
 [dependencies]
 experience-ir.workspace = true
+experience-package.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+service-protocol.workspace = true

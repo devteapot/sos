@@ -10,7 +10,7 @@ mod provider_client;
 mod revision_client;
 
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::{BTreeMap, BTreeSet, HashMap, VecDeque},
     fs,
     path::PathBuf,
     sync::{
@@ -34,6 +34,7 @@ use experience_ir::{
     HitRegion, Interaction, Justify, PaintOp, ProviderEffect, Scene, SceneEvent, SceneNode,
     StateEnvelope, TextContent, MAX_AGENT_MESSAGES, MAX_AGENT_MESSAGE_BYTES,
 };
+use experience_package::{ExperienceRole, GraphNodeId, InstanceId, PackageMetadata, RevisionId};
 use gpui::{
     canvas, div, img, prelude::*, px, relative, rgb, Animation as GpuiAnimation, AnimationExt as _,
     AnyElement, App, Application, Context, Entity, MouseButton, Render, ScrollHandle, SharedString,
@@ -45,6 +46,11 @@ use gpui_mobile::android::{jni, SharedPlatform};
 #[cfg(not(feature = "core-native"))]
 use gpui_mobile::packages::deeplink;
 use runtime_luau::{CandidateTimings, RuntimeWorker, WorkerReady, WorkerResult};
+#[cfg(feature = "aosp-system")]
+use runtime_luau::{
+    GraphRevisionInput, GraphRuntimeSnapshot, GraphRuntimeWorker, GraphWorkerResult,
+    RuntimeInstanceStatus,
+};
 use serde_json::{json, Value as JsonValue};
 use sha2::{Digest, Sha256};
 #[cfg(feature = "core-native")]
@@ -169,6 +175,29 @@ struct GestureSession {
     last_at: Instant,
     click_count: usize,
     moved: bool,
+}
+
+#[cfg(feature = "aosp-system")]
+#[derive(Clone, Debug)]
+struct AndroidGraphRevision {
+    package: PackageMetadata,
+    allowed_capabilities: BTreeSet<String>,
+    state_revision: u64,
+}
+
+#[cfg(feature = "aosp-system")]
+struct ActiveAndroidGraph {
+    graph_id: String,
+    worker: GraphRuntimeWorker,
+    snapshot: GraphRuntimeSnapshot,
+    revisions: BTreeMap<RevisionId, AndroidGraphRevision>,
+    appearance_generation: u64,
+}
+
+#[derive(Clone, Debug)]
+struct GraphOwner {
+    node_id: GraphNodeId,
+    instance_id: InstanceId,
 }
 
 #[cfg(not(feature = "core-native"))]
@@ -401,7 +430,13 @@ pub unsafe extern "C" fn sos_core_provider_acceptance_probe(mode: *const c_char)
 
 struct ExperienceHost {
     model: ExperienceModel,
-    worker: RuntimeWorker,
+    worker: Option<RuntimeWorker>,
+    #[cfg(feature = "aosp-system")]
+    active_graph: Option<ActiveAndroidGraph>,
+    #[cfg(feature = "aosp-system")]
+    pending_graph_previous: Option<(u64, GraphRuntimeSnapshot)>,
+    #[cfg(feature = "aosp-system")]
+    pending_graph_confirmation: Option<String>,
     scene: Scene,
     state: JsonValue,
     remote_state_revision: Option<u64>,
@@ -431,6 +466,8 @@ struct ExperienceHost {
     #[cfg(feature = "aosp-system")]
     revision_assets: Vec<runtime_luau::RevisionAssetInput>,
     accessibility_dirty: bool,
+    #[cfg(feature = "aosp-system")]
+    node_owners: HashMap<String, GraphOwner>,
 }
 
 impl ExperienceHost {
@@ -445,10 +482,18 @@ impl ExperienceHost {
             return;
         }
         let active = native_input::active_input_id();
+        #[cfg(feature = "aosp-system")]
+        let semantic_scene = self
+            .active_graph
+            .as_ref()
+            .map(|graph| composed_android_graph_scene(&graph.snapshot))
+            .unwrap_or_else(|| self.scene.clone());
+        #[cfg(not(feature = "aosp-system"))]
+        let semantic_scene = self.scene.clone();
         let bounds = self
             .inputs
             .iter()
-            .filter(|(id, _)| find_text_session(&self.scene.root, id).is_some())
+            .filter(|(id, _)| find_text_session(&semantic_scene.root, id).is_some())
             .filter_map(|(id, input)| input.read(cx).bounds().map(|bounds| (id.as_str(), bounds)));
         if text_tap_outcome(
             active.as_deref(),
@@ -464,13 +509,21 @@ impl ExperienceHost {
 
     fn new(cx: &mut Context<Self>) -> Self {
         #[cfg(feature = "aosp-system")]
-        let authority_current = revision_client::current_with_retry()
+        let authority_current = revision_client::current_graph_with_retry()
             .unwrap_or_else(|error| panic!("system revision authority is required: {error}"));
         #[cfg(feature = "aosp-system")]
-        let system_revision_id = authority_current
-            .revision_id
-            .clone()
-            .unwrap_or_else(|| panic!("system revision authority omitted current revision id"));
+        let system_revision_id = authority_current.graph.as_ref().map_or_else(
+            || {
+                authority_current.revision_id.clone().unwrap_or_else(|| {
+                    panic!("system revision authority omitted current revision id")
+                })
+            },
+            |bundle| {
+                bundle.graph.nodes[&bundle.graph.root]
+                    .revision_id
+                    .to_string()
+            },
+        );
         let mut model = match provider_client::snapshot() {
             Ok(model) => {
                 #[cfg(feature = "core-native")]
@@ -521,6 +574,10 @@ impl ExperienceHost {
                 model.agent.activity = "Deterministic fake provider ready".into();
             }
         }
+        #[cfg(feature = "aosp-system")]
+        if let Some(bundle) = &authority_current.graph {
+            model.appearance = bundle.appearance.profile.clone();
+        }
         #[cfg(not(feature = "aosp-system"))]
         let (state, remote_state_revision, state_schema_version, remote_source_sha256) =
             match provider_client::load_state() {
@@ -549,31 +606,69 @@ impl ExperienceHost {
             };
         #[cfg(feature = "aosp-system")]
         let (state, remote_state_revision, state_schema_version) = {
-            let provider_state = provider_client::load_state().unwrap_or_else(|error| {
-                panic!("system provider/state authority is required: {error}")
-            });
-            let revision_state = authority_current
-                .state
-                .clone()
-                .unwrap_or_else(|| panic!("system revision authority omitted current state"));
-            if provider_state != revision_state {
-                panic!("revision and provider/state authority disagree at startup");
+            if let Some(bundle) = &authority_current.graph {
+                let root = &bundle.graph.nodes[&bundle.graph.root];
+                let revision = bundle
+                    .revisions
+                    .iter()
+                    .find(|revision| revision.revision_id == root.revision_id.as_str())
+                    .unwrap_or_else(|| panic!("system graph omitted its root revision"));
+                (
+                    revision.state.resource.state.clone(),
+                    Some(revision.state.resource.revision),
+                    revision.state.resource.schema_version,
+                )
+            } else {
+                let provider_state = provider_client::load_state().unwrap_or_else(|error| {
+                    panic!("system provider/state authority is required: {error}")
+                });
+                let revision_state = authority_current
+                    .state
+                    .clone()
+                    .unwrap_or_else(|| panic!("system revision authority omitted current state"));
+                if provider_state != revision_state {
+                    panic!("revision and provider/state authority disagree at startup");
+                }
+                (
+                    revision_state.state,
+                    Some(revision_state.revision),
+                    revision_state.schema_version,
+                )
             }
-            (
-                revision_state.state,
-                Some(revision_state.revision),
-                revision_state.schema_version,
-            )
         };
         #[cfg(not(feature = "aosp-system"))]
         let source = recover_committed_source(remote_source_sha256.as_deref());
         #[cfg(feature = "aosp-system")]
-        let source = authority_current
-            .source
-            .clone()
-            .unwrap_or_else(|| panic!("system revision authority omitted current source"));
+        let source = authority_current.graph.as_ref().map_or_else(
+            || {
+                authority_current
+                    .source
+                    .clone()
+                    .unwrap_or_else(|| panic!("system revision authority omitted current source"))
+            },
+            |bundle| {
+                let root = &bundle.graph.nodes[&bundle.graph.root];
+                bundle
+                    .revisions
+                    .iter()
+                    .find(|revision| revision.revision_id == root.revision_id.as_str())
+                    .map(|revision| revision.source.clone())
+                    .unwrap_or_else(|| panic!("system graph omitted root source"))
+            },
+        );
         #[cfg(feature = "aosp-system")]
-        let revision_assets = revision_client::inputs(authority_current.assets);
+        let revision_assets = authority_current.graph.as_ref().map_or_else(
+            || revision_client::inputs(authority_current.assets.clone()),
+            |bundle| {
+                let root = &bundle.graph.nodes[&bundle.graph.root];
+                bundle
+                    .revisions
+                    .iter()
+                    .find(|revision| revision.revision_id == root.revision_id.as_str())
+                    .map(|revision| revision_client::inputs(revision.assets.clone()))
+                    .unwrap_or_default()
+            },
+        );
         #[cfg(not(feature = "aosp-system"))]
         let (worker, ready) = RuntimeWorker::spawn(
             source.clone(),
@@ -583,17 +678,56 @@ impl ExperienceHost {
         )
         .expect("runtime worker thread must start");
         #[cfg(feature = "aosp-system")]
-        let (worker, ready) = RuntimeWorker::spawn_with_assets(
-            source.clone(),
-            model.clone(),
-            state.clone(),
-            state_schema_version,
-            revision_assets.clone(),
-        )
-        .expect("runtime worker thread must start");
+        let legacy_spawned = authority_current.graph.is_none().then(|| {
+            RuntimeWorker::spawn_with_assets(
+                source.clone(),
+                model.clone(),
+                state.clone(),
+                state_schema_version,
+                revision_assets.clone(),
+            )
+            .expect("runtime worker thread must start")
+        });
+        #[cfg(not(feature = "aosp-system"))]
         let results = worker.results();
+        #[cfg(feature = "aosp-system")]
+        let (worker, ready, active_graph, pending_graph_confirmation) = if let Some(bundle) =
+            authority_current.graph.clone()
+        {
+            let migration_pending = bundle.migration_pending;
+            let graph_id = bundle.graph_id.clone();
+            let graph = match start_android_graph_runtime(bundle, &model) {
+                Ok(graph) => graph,
+                Err(error) => {
+                    let rollback = revision_client::rollback_graph(graph_id.clone());
+                    log::error!(
+                            "system_graph_runtime_rejected graph_id={graph_id} error={error} rollback_ok={}",
+                            rollback.is_ok()
+                        );
+                    std::process::abort();
+                }
+            };
+            let results = graph.worker.results();
+            Self::attach_graph_channels(results, cx);
+            (
+                None,
+                None,
+                Some(graph),
+                migration_pending.then_some(graph_id),
+            )
+        } else {
+            let (worker, ready) = legacy_spawned.expect("legacy runtime must be present");
+            (Some(worker), Some(ready), None, None)
+        };
+        #[cfg(feature = "aosp-system")]
+        let results = worker.as_ref().map(RuntimeWorker::results);
         let (agent_updates, agent_results) = async_channel::unbounded();
+        #[cfg(not(feature = "aosp-system"))]
         Self::attach_worker_channels(ready, results, cx);
+        #[cfg(feature = "aosp-system")]
+        if let (Some(ready), Some(results)) = (ready, results) {
+            Self::attach_worker_channels(ready, results, cx);
+        }
         #[cfg(feature = "aosp-system")]
         Self::attach_provider_poll(cx);
         #[cfg(not(feature = "aosp-system"))]
@@ -604,11 +738,46 @@ impl ExperienceHost {
             "runtime_worker_spawned ui_thread={:?}",
             thread::current().id()
         );
+        #[cfg(feature = "aosp-system")]
+        let initial_scene = active_graph
+            .as_ref()
+            .and_then(|graph| {
+                graph
+                    .snapshot
+                    .instances
+                    .get(&graph.snapshot.root)
+                    .and_then(|instance| instance.scene.clone())
+            })
+            .unwrap_or_else(loading_scene);
 
         Self {
             model,
-            worker,
-            scene: loading_scene(),
+            worker: {
+                #[cfg(feature = "aosp-system")]
+                {
+                    worker
+                }
+                #[cfg(not(feature = "aosp-system"))]
+                {
+                    Some(worker)
+                }
+            },
+            #[cfg(feature = "aosp-system")]
+            active_graph,
+            #[cfg(feature = "aosp-system")]
+            pending_graph_previous: None,
+            #[cfg(feature = "aosp-system")]
+            pending_graph_confirmation,
+            scene: {
+                #[cfg(feature = "aosp-system")]
+                {
+                    initial_scene
+                }
+                #[cfg(not(feature = "aosp-system"))]
+                {
+                    loading_scene()
+                }
+            },
             state,
             remote_state_revision,
             state_schema_version,
@@ -637,6 +806,8 @@ impl ExperienceHost {
             #[cfg(feature = "aosp-system")]
             revision_assets,
             accessibility_dirty: true,
+            #[cfg(feature = "aosp-system")]
+            node_owners: HashMap::new(),
         }
     }
 
@@ -671,26 +842,188 @@ impl ExperienceHost {
     }
 
     #[cfg(feature = "aosp-system")]
+    fn attach_graph_channels(
+        results: async_channel::Receiver<GraphWorkerResult>,
+        cx: &mut Context<Self>,
+    ) {
+        cx.spawn(async move |this, cx| {
+            while let Ok(result) = results.recv().await {
+                if this
+                    .update(cx, |this, cx| {
+                        this.handle_graph_result(result, cx);
+                        cx.notify();
+                    })
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        })
+        .detach();
+    }
+
+    #[cfg(feature = "aosp-system")]
+    fn handle_graph_result(&mut self, result: GraphWorkerResult, cx: &mut Context<Self>) {
+        match result {
+            GraphWorkerResult::ActionCompleted {
+                request_id,
+                outcome,
+            } => {
+                let Some((pending_id, previous)) = self.pending_graph_previous.take() else {
+                    self.action_in_flight = false;
+                    self.status = Some(("Graph action lost its rollback snapshot".into(), false));
+                    return;
+                };
+                if pending_id != request_id {
+                    self.action_in_flight = false;
+                    self.status = Some(("Graph action response was out of order".into(), false));
+                    return;
+                }
+                let Some(graph) = self.active_graph.as_ref() else {
+                    self.action_in_flight = false;
+                    self.status =
+                        Some(("Graph action completed after graph removal".into(), false));
+                    return;
+                };
+                let (updates, effects, agent_effects) =
+                    match android_graph_action_wire(graph, &previous, &outcome) {
+                        Ok(wire) => wire,
+                        Err(error) => {
+                            graph.worker.restore(request_id, previous.clone()).ok();
+                            self.install_graph_snapshot(previous);
+                            self.action_in_flight = false;
+                            self.status = Some((format!("Graph result rejected: {error}"), false));
+                            self.dispatch_pending_input_event(cx);
+                            return;
+                        }
+                    };
+                match revision_client::commit_graph_action(graph.graph_id.clone(), updates, effects)
+                {
+                    Ok(states) => {
+                        if let Some(active) = self.active_graph.as_mut() {
+                            for state in states {
+                                for (revision_id, revision) in &mut active.revisions {
+                                    if revision.package.experience_id == state.experience_id
+                                        && revision_id.as_str() == state.resource.revision_id
+                                    {
+                                        revision.state_revision = state.resource.revision;
+                                    }
+                                }
+                            }
+                        }
+                        self.install_graph_snapshot(outcome.snapshot);
+                        self.execute_agent_effects(agent_effects);
+                        self.status = None;
+                        log::info!("android_graph_action_committed request_id={request_id}");
+                    }
+                    Err(error) => {
+                        if let Some(active) = self.active_graph.as_ref() {
+                            active.worker.restore(request_id, previous.clone()).ok();
+                        }
+                        self.install_graph_snapshot(previous);
+                        self.status = Some((format!("Graph state commit failed: {error}"), false));
+                        log::warn!(
+                            "android_graph_action_commit_rejected request_id={request_id} error={error}"
+                        );
+                    }
+                }
+                self.action_in_flight = false;
+                self.dispatch_pending_input_event(cx);
+            }
+            GraphWorkerResult::Refreshed {
+                request_id,
+                snapshot,
+            } => {
+                self.install_graph_snapshot(snapshot);
+                self.status = None;
+                log::info!("android_graph_refreshed request_id={request_id}");
+            }
+            GraphWorkerResult::Rejected { request_id, error } => {
+                self.pending_graph_previous = None;
+                self.action_in_flight = false;
+                self.status = Some((format!("Graph operation rejected: {error}"), false));
+                log::warn!(
+                    "android_graph_operation_rejected request_id={request_id} error={error}"
+                );
+                self.dispatch_pending_input_event(cx);
+            }
+        }
+    }
+
+    #[cfg(feature = "aosp-system")]
+    fn install_graph_snapshot(&mut self, snapshot: GraphRuntimeSnapshot) {
+        assets::install_graph(
+            snapshot
+                .instances
+                .values()
+                .map(|instance| instance.assets.as_slice()),
+        );
+        let root = snapshot.instances.get(&snapshot.root);
+        if let Some(scene) = root.and_then(|instance| instance.scene.clone()) {
+            self.scene = scene;
+        }
+        if let Some(state) = root.map(|instance| instance.state.clone()) {
+            self.state = state;
+        }
+        self.input_state_shadow.retain(|key, value| {
+            let Some((instance_id, state_key)) = key.split_once("::") else {
+                return true;
+            };
+            snapshot
+                .instances
+                .values()
+                .find(|instance| instance.instance_id.as_str() == instance_id)
+                .and_then(|instance| instance.state.get(state_key))
+                .and_then(JsonValue::as_str)
+                != Some(value.as_str())
+        });
+        self.node_owners.clear();
+        self.accessibility_dirty = true;
+        if let Some(graph) = self.active_graph.as_mut() {
+            graph.snapshot = snapshot;
+        }
+    }
+
+    #[cfg(feature = "aosp-system")]
     fn attach_provider_poll(cx: &mut Context<Self>) {
         let executor = cx.background_executor().clone();
         cx.spawn(async move |this, cx| loop {
             executor.timer(Duration::from_secs(2)).await;
             let snapshot = provider_client::snapshot();
+            let appearance = revision_client::current_appearance();
             if this
-                .update(cx, |this, cx| match snapshot {
-                    Ok(mut snapshot) => {
-                        // Agent credentials and conversation remain in the
-                        // resident app adapter; the system provider authority
-                        // remains canonical for every system fact.
-                        snapshot.agent = this.model.agent.clone();
-                        if snapshot == this.model {
-                            return;
+                .update(cx, |this, cx| {
+                    if let Ok(appearance) = appearance {
+                        if appearance.profile.generation != this.model.appearance.generation {
+                            this.model.appearance = appearance.profile.clone();
+                            let request_id = this.allocate_request_id();
+                            if let Some(graph) = this.active_graph.as_mut() {
+                                graph.appearance_generation = appearance.profile.generation;
+                                if let Err(error) = graph
+                                    .worker
+                                    .apply_appearance(request_id, appearance.profile)
+                                {
+                                    log::warn!("android_appearance_apply_failed error={error}");
+                                }
+                            }
                         }
-                        this.model = snapshot;
-                        this.refresh_model_from_authority();
-                        cx.notify();
                     }
-                    Err(error) => log::warn!("android_provider_poll_failed error={error}"),
+                    match snapshot {
+                        Ok(mut snapshot) => {
+                            // Agent credentials and conversation remain in the
+                            // resident app adapter; the system provider authority
+                            // remains canonical for every system fact.
+                            snapshot.agent = this.model.agent.clone();
+                            snapshot.appearance = this.model.appearance.clone();
+                            if snapshot == this.model {
+                                return;
+                            }
+                            this.model = snapshot;
+                            this.refresh_model_from_authority();
+                            cx.notify();
+                        }
+                        Err(error) => log::warn!("android_provider_poll_failed error={error}"),
+                    }
                 })
                 .is_err()
             {
@@ -771,9 +1104,33 @@ impl ExperienceHost {
 
     fn refresh_model_from_authority(&mut self) {
         let request_id = self.allocate_request_id();
-        if let Err(error) =
-            self.worker
-                .refresh_model(request_id, self.model.clone(), self.state.clone())
+        #[cfg(feature = "aosp-system")]
+        if let Some(graph) = self.active_graph.as_ref() {
+            for (offset, (node_id, instance)) in graph.snapshot.instances.iter().enumerate() {
+                let revision = &graph.revisions[&instance.revision_id];
+                let model = filter_android_graph_model(
+                    &self.model,
+                    revision.package.role,
+                    &revision.allowed_capabilities,
+                );
+                let refresh_id = request_id.wrapping_add(offset as u64);
+                if let Err(error) = graph
+                    .worker
+                    .refresh_model(refresh_id, node_id.clone(), model)
+                {
+                    log::warn!(
+                        "android_graph_model_refresh_start_failed node_id={} error={error}",
+                        node_id
+                    );
+                }
+            }
+            return;
+        }
+        let Some(worker) = self.worker.as_ref() else {
+            log::warn!("android_model_refresh_start_failed error=runtime_unavailable");
+            return;
+        };
+        if let Err(error) = worker.refresh_model(request_id, self.model.clone(), self.state.clone())
         {
             log::warn!("android_model_refresh_start_failed error={error}");
         }
@@ -839,7 +1196,7 @@ impl ExperienceHost {
                     ) {
                         Ok((worker, ready)) => {
                             let results = worker.results();
-                            self.worker = worker;
+                            self.worker = Some(worker);
                             Self::attach_worker_channels(ready, results, cx);
                         }
                         Err(error) => {
@@ -877,6 +1234,37 @@ impl ExperienceHost {
             log::warn!("runtime_worker_restart_rejected reason=runtime_busy");
             return;
         }
+        #[cfg(feature = "aosp-system")]
+        if self.active_graph.is_some() {
+            let response = match revision_client::current_graph_with_retry() {
+                Ok(response) => response,
+                Err(error) => {
+                    self.status = Some((format!("Graph restart failed: {error}"), false));
+                    return;
+                }
+            };
+            let Some(bundle) = response.graph else {
+                self.status = Some((
+                    "Graph restart resolved to the legacy recovery artifact".into(),
+                    false,
+                ));
+                return;
+            };
+            match start_android_graph_runtime(bundle, &self.model) {
+                Ok(graph) => {
+                    let results = graph.worker.results();
+                    let snapshot = graph.snapshot.clone();
+                    self.active_graph = Some(graph);
+                    self.install_graph_snapshot(snapshot);
+                    self.status = Some(("Restarted v4 experience graph".into(), true));
+                    Self::attach_graph_channels(results, cx);
+                }
+                Err(error) => {
+                    self.status = Some((format!("Graph restart failed: {error}"), false));
+                }
+            }
+            return;
+        }
         #[cfg(not(feature = "aosp-system"))]
         let spawned = RuntimeWorker::spawn(
             self.source.clone(),
@@ -895,7 +1283,7 @@ impl ExperienceHost {
         match spawned {
             Ok((worker, ready)) => {
                 let results = worker.results();
-                self.worker = worker;
+                self.worker = Some(worker);
                 self.status = Some(("Restarting Luau worker…".into(), true));
                 Self::attach_worker_channels(ready, results, cx);
                 log::info!(
@@ -910,17 +1298,7 @@ impl ExperienceHost {
         }
     }
 
-    fn dispatch(&mut self, action: String, cx: &mut Context<Self>) {
-        self.dispatch_event(
-            SceneEvent {
-                action,
-                ..Default::default()
-            },
-            cx,
-        );
-    }
-
-    fn dispatch_event(&mut self, event: SceneEvent, cx: &mut Context<Self>) {
+    fn dispatch_event(&mut self, mut event: SceneEvent, cx: &mut Context<Self>) {
         let revision_activation_pending = self.revision_activation_pending
             || self
                 .candidates
@@ -944,9 +1322,49 @@ impl ExperienceHost {
             event.target.as_deref().unwrap_or("none")
         );
         self.action_in_flight = true;
-        if let Err(error) =
-            self.worker
-                .action(request_id, self.model.clone(), self.state.clone(), event)
+        #[cfg(feature = "aosp-system")]
+        if let Some(graph) = self.active_graph.as_ref() {
+            let owner = event
+                .target
+                .as_ref()
+                .and_then(|target| {
+                    self.node_owners
+                        .get(target)
+                        .cloned()
+                        .or_else(|| graph_owner_for_target(&graph.snapshot, target))
+                })
+                .unwrap_or_else(|| graph_owner(&graph.snapshot, &graph.snapshot.root));
+            if let Some(target) = &mut event.target {
+                let prefix = format!("{}::", owner.instance_id);
+                if let Some(local) = target.strip_prefix(&prefix) {
+                    *target = local.to_owned();
+                }
+            }
+            self.pending_graph_previous = Some((request_id, graph.snapshot.clone()));
+            let event = match serde_json::to_value(event) {
+                Ok(event) => event,
+                Err(error) => {
+                    self.pending_graph_previous = None;
+                    self.action_in_flight = false;
+                    self.status = Some((format!("Action could not encode: {error}"), false));
+                    return;
+                }
+            };
+            if let Err(error) = graph.worker.action(request_id, owner.node_id, event) {
+                self.pending_graph_previous = None;
+                self.action_in_flight = false;
+                self.status = Some((format!("Graph action could not start: {error}"), false));
+                cx.notify();
+            }
+            return;
+        }
+        let Some(worker) = self.worker.as_ref() else {
+            self.action_in_flight = false;
+            self.status = Some(("Action could not start: runtime unavailable".into(), false));
+            cx.notify();
+            return;
+        };
+        if let Err(error) = worker.action(request_id, self.model.clone(), self.state.clone(), event)
         {
             self.action_in_flight = false;
             self.status = Some((format!("Action could not start: {error}"), false));
@@ -961,14 +1379,20 @@ impl ExperienceHost {
         value: String,
         cx: &mut Context<Self>,
     ) {
-        if !self.state.is_object() {
-            self.state = json!({});
-        }
-        if let Some(object) = self.state.as_object_mut() {
-            object.insert(state_key.clone(), JsonValue::String(value.clone()));
+        #[cfg(feature = "aosp-system")]
+        let graph_active = self.active_graph.is_some();
+        #[cfg(not(feature = "aosp-system"))]
+        let graph_active = false;
+        if !graph_active {
+            if !self.state.is_object() {
+                self.state = json!({});
+            }
+            if let Some(object) = self.state.as_object_mut() {
+                object.insert(state_key.clone(), JsonValue::String(value.clone()));
+            }
+            persist_state(&self.state);
         }
         self.input_state_shadow.insert(state_key, value.clone());
-        persist_state(&self.state);
         log::info!(
             "native_text_changed node_id={} bytes={} marked_safe=true",
             node_id,
@@ -1032,7 +1456,15 @@ impl ExperienceHost {
                 .find_map(|child| scroll_parent(child, target, parent))
         }
 
-        let Some(scroll_id) = scroll_parent(&self.scene.root, node_id, None) else {
+        #[cfg(feature = "aosp-system")]
+        let scene = self
+            .active_graph
+            .as_ref()
+            .map(|graph| composed_android_graph_scene(&graph.snapshot))
+            .unwrap_or_else(|| self.scene.clone());
+        #[cfg(not(feature = "aosp-system"))]
+        let scene = self.scene.clone();
+        let Some(scroll_id) = scroll_parent(&scene.root, node_id, None) else {
             return;
         };
         let Some(target) = accessibility::bounds(node_id) else {
@@ -1088,12 +1520,13 @@ impl ExperienceHost {
     pub(super) fn scene_surface_down(
         &mut self,
         surface_id: String,
-        region: HitRegion,
+        mut region: HitRegion,
         x: f32,
         y: f32,
         platform_click_count: usize,
         cx: &mut Context<Self>,
     ) {
+        region.id = self.scoped_graph_target(&surface_id, &region.id);
         let now = Instant::now();
         let press = region.press_action.clone();
         let target = region.id.clone();
@@ -1150,6 +1583,8 @@ impl ExperienceHost {
             }) else {
                 return;
             };
+            let mut region = region.clone();
+            region.id = self.scoped_graph_target(&surface_id, &region.id);
             let now = Instant::now();
             self.surface_gestures.insert(
                 surface_id.clone(),
@@ -1206,6 +1641,14 @@ impl ExperienceHost {
                 cx,
             );
         }
+    }
+
+    fn scoped_graph_target(&self, surface_id: &str, local_target: &str) -> String {
+        #[cfg(feature = "aosp-system")]
+        if let Some(owner) = self.node_owners.get(surface_id) {
+            return format!("{}::{local_target}", owner.instance_id);
+        }
+        local_target.to_owned()
     }
 
     pub(super) fn scene_surface_up(
@@ -1338,6 +1781,13 @@ impl ExperienceHost {
         candidate_source: String,
         from_verified_agent: bool,
     ) {
+        if self.worker.is_none() {
+            self.status = Some((
+                "This host accepts only packaged v4 authoring targets".into(),
+                false,
+            ));
+            return;
+        }
         if self.stress.is_some()
             || self.action_in_flight
             || self
@@ -1362,14 +1812,19 @@ impl ExperienceHost {
             thread::current().id(),
             candidate_source.len()
         );
-        if let Err(error) = self.worker.prepare_candidate(
-            request_id,
-            candidate_source,
-            self.model.clone(),
-            self.state.clone(),
-            self.state_schema_version,
-            submitted_at,
-        ) {
+        if let Err(error) = self
+            .worker
+            .as_ref()
+            .expect("legacy worker")
+            .prepare_candidate(
+                request_id,
+                candidate_source,
+                self.model.clone(),
+                self.state.clone(),
+                self.state_schema_version,
+                submitted_at,
+            )
+        {
             self.candidates.remove(&request_id);
             self.pending_agent_activations.remove(&request_id);
             self.status = Some((format!("Candidate could not start: {error}"), false));
@@ -1387,6 +1842,17 @@ impl ExperienceHost {
     }
 
     fn start_stress(&mut self, request: StressRequest) {
+        if self.worker.is_none() {
+            log::warn!(
+                "stress_failed run_id={} reason=v4_graph_active",
+                request.run_id
+            );
+            self.status = Some((
+                "Legacy source-swap stress is disabled for v4 graphs".into(),
+                false,
+            ));
+            return;
+        }
         if self.stress.is_some() || !self.candidates.is_empty() || self.action_in_flight {
             log::warn!(
                 "stress_failed run_id={} reason=runtime_busy",
@@ -1444,14 +1910,19 @@ impl ExperienceHost {
         };
         let request_id = self.allocate_request_id();
         self.candidates.insert(request_id, CandidatePurpose::Stress);
-        if let Err(error) = self.worker.prepare_candidate(
-            request_id,
-            source,
-            self.model.clone(),
-            self.state.clone(),
-            self.state_schema_version,
-            Instant::now(),
-        ) {
+        if let Err(error) = self
+            .worker
+            .as_ref()
+            .expect("legacy worker")
+            .prepare_candidate(
+                request_id,
+                source,
+                self.model.clone(),
+                self.state.clone(),
+                self.state_schema_version,
+                Instant::now(),
+            )
+        {
             self.candidates.remove(&request_id);
             self.fail_stress(format!("worker unavailable: {error}"));
         }
@@ -1469,7 +1940,11 @@ impl ExperienceHost {
                 ..
             } => {
                 let Some(purpose) = self.candidates.get(&request_id).copied() else {
-                    let _ = self.worker.discard_candidate(request_id);
+                    let _ = self
+                        .worker
+                        .as_ref()
+                        .expect("legacy worker")
+                        .discard_candidate(request_id);
                     return;
                 };
                 #[cfg(not(feature = "aosp-system"))]
@@ -1489,7 +1964,11 @@ impl ExperienceHost {
                         timings.worker_total_us
                     );
                     let Some(expected_revision) = self.remote_state_revision else {
-                        let _ = self.worker.discard_candidate(request_id);
+                        let _ = self
+                            .worker
+                            .as_ref()
+                            .expect("legacy worker")
+                            .discard_candidate(request_id);
                         self.candidates.remove(&request_id);
                         self.pending_agent_activations.remove(&request_id);
                         self.status = Some((
@@ -1508,7 +1987,11 @@ impl ExperienceHost {
                         state,
                     };
                     if let Err(error) = write_state_envelope(CANDIDATE_STATE_FILE, &envelope) {
-                        let _ = self.worker.discard_candidate(request_id);
+                        let _ = self
+                            .worker
+                            .as_ref()
+                            .expect("legacy worker")
+                            .discard_candidate(request_id);
                         self.candidates.remove(&request_id);
                         self.pending_agent_activations.remove(&request_id);
                         self.status =
@@ -1528,7 +2011,11 @@ impl ExperienceHost {
                             Ok(revision_id) => revision_id,
                             Err(error) => {
                                 let _ = fs::remove_file(file_path(CANDIDATE_STATE_FILE));
-                                let _ = self.worker.discard_candidate(request_id);
+                                let _ = self
+                                    .worker
+                                    .as_ref()
+                                    .expect("legacy worker")
+                                    .discard_candidate(request_id);
                                 self.candidates.remove(&request_id);
                                 self.pending_agent_activations.remove(&request_id);
                                 self.status =
@@ -1546,7 +2033,11 @@ impl ExperienceHost {
                             Ok(stage_id) => stage_id,
                             Err(error) => {
                                 let _ = fs::remove_file(file_path(CANDIDATE_STATE_FILE));
-                                let _ = self.worker.discard_candidate(request_id);
+                                let _ = self
+                                    .worker
+                                    .as_ref()
+                                    .expect("legacy worker")
+                                    .discard_candidate(request_id);
                                 self.candidates.remove(&request_id);
                                 self.pending_agent_activations.remove(&request_id);
                                 self.status =
@@ -1572,7 +2063,12 @@ impl ExperienceHost {
                             "Candidate staged; activating scene before system commit…".into(),
                             true,
                         ));
-                        if let Err(error) = self.worker.commit_candidate(request_id) {
+                        if let Err(error) = self
+                            .worker
+                            .as_ref()
+                            .expect("legacy worker")
+                            .commit_candidate(request_id)
+                        {
                             self.candidates.remove(&request_id);
                             self.pending_authority_activations.remove(&request_id);
                             self.pending_agent_activations.remove(&request_id);
@@ -1599,7 +2095,11 @@ impl ExperienceHost {
                             Ok(stage_id) => stage_id,
                             Err(error) => {
                                 let _ = fs::remove_file(file_path(CANDIDATE_STATE_FILE));
-                                let _ = self.worker.discard_candidate(request_id);
+                                let _ = self
+                                    .worker
+                                    .as_ref()
+                                    .expect("legacy worker")
+                                    .discard_candidate(request_id);
                                 self.candidates.remove(&request_id);
                                 self.pending_agent_activations.remove(&request_id);
                                 self.status =
@@ -1622,7 +2122,11 @@ impl ExperienceHost {
                             Err(error) => {
                                 let _ = provider_client::abort_state(stage_id);
                                 let _ = fs::remove_file(file_path(CANDIDATE_STATE_FILE));
-                                let _ = self.worker.discard_candidate(request_id);
+                                let _ = self
+                                    .worker
+                                    .as_ref()
+                                    .expect("legacy worker")
+                                    .discard_candidate(request_id);
                                 self.candidates.remove(&request_id);
                                 self.pending_agent_activations.remove(&request_id);
                                 self.status =
@@ -1645,7 +2149,12 @@ impl ExperienceHost {
                         committed.revision,
                         committed.source_sha256
                     );
-                        if let Err(error) = self.worker.commit_candidate(request_id) {
+                        if let Err(error) = self
+                            .worker
+                            .as_ref()
+                            .expect("legacy worker")
+                            .commit_candidate(request_id)
+                        {
                             self.candidates.remove(&request_id);
                             self.pending_agent_activations.remove(&request_id);
                             self.source = source;
@@ -1661,7 +2170,12 @@ impl ExperienceHost {
                         return;
                     }
                 }
-                if let Err(error) = self.worker.commit_candidate(request_id) {
+                if let Err(error) = self
+                    .worker
+                    .as_ref()
+                    .expect("legacy worker")
+                    .commit_candidate(request_id)
+                {
                     self.candidates.remove(&request_id);
                     self.pending_agent_activations.remove(&request_id);
                     if purpose == CandidatePurpose::Stress {
@@ -2059,11 +2573,19 @@ impl ExperienceHost {
                 )
             })
             .collect::<HashMap<_, _>>();
-        match accessibility::publish(&self.scene, &text, &scroll) {
+        #[cfg(feature = "aosp-system")]
+        let semantic_scene = self
+            .active_graph
+            .as_ref()
+            .map(|graph| composed_android_graph_scene(&graph.snapshot))
+            .unwrap_or_else(|| self.scene.clone());
+        #[cfg(not(feature = "aosp-system"))]
+        let semantic_scene = self.scene.clone();
+        match accessibility::publish(&semantic_scene, &text, &scroll) {
             Ok(bytes) => log::info!(
                 "accessibility_published bytes={} semantics={}",
                 bytes,
-                count_semantics(&self.scene)
+                count_semantics(&semantic_scene)
             ),
             Err(error) => log::warn!("accessibility_publish_failed error={error}"),
         }
@@ -2270,6 +2792,37 @@ impl ExperienceHost {
     }
 
     #[cfg(feature = "aosp-system")]
+    fn confirm_presented_graph(&mut self, graph_id: String) {
+        let confirmed = revision_client::confirm_graph(graph_id.clone()).or_else(|error| {
+            log::warn!("android_graph_confirmation_ambiguous graph_id={graph_id} error={error}");
+            let current = revision_client::current_graph_with_retry()?;
+            match current.graph {
+                Some(ref bundle) if bundle.graph_id == graph_id && !bundle.migration_pending => {
+                    Ok(current)
+                }
+                _ => Err(error),
+            }
+        });
+        match confirmed {
+            Ok(response)
+                if response.graph.as_ref().is_some_and(|bundle| {
+                    bundle.graph_id == graph_id && !bundle.migration_pending
+                }) =>
+            {
+                log::info!("android_graph_presented graph_id={graph_id} confirmed=true");
+            }
+            Ok(_) | Err(_) => {
+                let rollback = revision_client::rollback_graph(graph_id.clone());
+                log::error!(
+                    "android_graph_confirmation_failed graph_id={graph_id} rollback_ok={}",
+                    rollback.is_ok()
+                );
+                std::process::abort();
+            }
+        }
+    }
+
+    #[cfg(feature = "aosp-system")]
     fn restore_authority_revision(
         &mut self,
         current: android_authority_protocol::RevisionResponse,
@@ -2299,7 +2852,7 @@ impl ExperienceHost {
         )
         .map_err(|error| format!("last known-good worker could not start: {error}"))?;
         let results = worker.results();
-        self.worker = worker;
+        self.worker = Some(worker);
         Self::attach_worker_channels(ready, results, cx);
         self.scene = loading_scene();
         self.source = source;
@@ -2411,10 +2964,19 @@ impl ExperienceHost {
         &mut self,
         node: &SceneNode,
         path: SharedString,
+        owner: Option<GraphOwner>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let element_id = node.id.clone().unwrap_or_else(|| path.to_string());
+        let local_id = node.id.clone().unwrap_or_else(|| path.to_string());
+        let element_id = owner.as_ref().map_or_else(
+            || local_id.clone(),
+            |owner| format!("{}::{local_id}", owner.instance_id),
+        );
+        #[cfg(feature = "aosp-system")]
+        if let Some(owner) = &owner {
+            self.node_owners.insert(element_id.clone(), owner.clone());
+        }
         let mut element = div();
         match node.layout.flow {
             Flow::Overlay => {}
@@ -2547,10 +3109,65 @@ impl ExperienceHost {
                     .child("Application surfaces are unavailable on this host"),
             );
         }
+        #[cfg(feature = "aosp-system")]
+        if let Some(Content::ExperienceMount(mount)) = &node.content {
+            element = element.overflow_hidden();
+            let mounted = self.active_graph.as_ref().and_then(|graph| {
+                let parent = owner
+                    .as_ref()
+                    .map(|owner| &owner.node_id)
+                    .unwrap_or(&graph.snapshot.root);
+                graph
+                    .snapshot
+                    .instances
+                    .iter()
+                    .find(|(_, instance)| {
+                        instance.parent.as_ref() == Some(parent)
+                            && instance.dependency.as_ref().map(|alias| alias.as_str())
+                                == Some(mount.dependency.as_str())
+                    })
+                    .map(|(node_id, instance)| {
+                        (
+                            GraphOwner {
+                                node_id: node_id.clone(),
+                                instance_id: instance.instance_id.clone(),
+                            },
+                            instance.scene.clone(),
+                            instance.status.clone(),
+                        )
+                    })
+            });
+            match mounted {
+                Some((child_owner, Some(scene), RuntimeInstanceStatus::Ready)) => {
+                    element = element.child(self.render_node(
+                        &scene.root,
+                        SharedString::from(format!("mount-{}", child_owner.node_id)),
+                        Some(child_owner),
+                        window,
+                        cx,
+                    ));
+                }
+                Some((_, _, RuntimeInstanceStatus::Failed(error))) => {
+                    element = element.child(android_mount_fallback(&format!(
+                        "Experience unavailable: {error}"
+                    )));
+                }
+                _ => element = element.child(android_mount_fallback("Experience unavailable")),
+            }
+        }
         if let Some(Content::TextSession(input)) = &node.content {
+            let state_key = owner.as_ref().map_or_else(
+                || input.state_key.clone(),
+                |owner| format!("{}::{}", owner.instance_id, input.state_key),
+            );
+            let displayed_value = self
+                .input_state_shadow
+                .get(&state_key)
+                .cloned()
+                .unwrap_or_else(|| input.value.clone());
             self.input_state_shadow
-                .entry(input.state_key.clone())
-                .or_insert_with(|| input.value.clone());
+                .entry(state_key.clone())
+                .or_insert_with(|| displayed_value.clone());
             let mut created = false;
             let native = if let Some(native) = self.inputs.get(&element_id) {
                 native.clone()
@@ -2560,8 +3177,8 @@ impl ExperienceHost {
                 let native = cx.new(|input_cx| {
                     NativeTextInput::new(
                         element_id.clone(),
-                        input.state_key.clone(),
-                        input.value.clone(),
+                        state_key.clone(),
+                        displayed_value.clone(),
                         input.placeholder.clone(),
                         input.submit_action.clone(),
                         host,
@@ -2576,8 +3193,8 @@ impl ExperienceHost {
                 || self.pending_focus_restore.as_deref() == Some(element_id.as_str());
             native.update(cx, |native, native_cx| {
                 native.sync(
-                    &input.state_key,
-                    &input.value,
+                    &state_key,
+                    &displayed_value,
                     &input.placeholder,
                     input.submit_action.as_deref(),
                     window,
@@ -2624,7 +3241,7 @@ impl ExperienceHost {
         }
         for (index, child) in node.children.iter().enumerate() {
             let child_path = SharedString::from(format!("{path}-{index}"));
-            element = element.child(self.render_node(child, child_path, window, cx));
+            element = element.child(self.render_node(child, child_path, owner.clone(), window, cx));
         }
         if node.layout.scroll_y {
             let ime_inset = native_input::ime_inset();
@@ -2650,10 +3267,20 @@ impl ExperienceHost {
                 .track_scroll(&handle)
                 .overflow_y_scroll();
             if let Some(action) = tap_action {
+                let target = element_id.clone();
                 scroll
                     .on_mouse_down(
                         MouseButton::Left,
-                        cx.listener(move |this, _, _, cx| this.dispatch(action.clone(), cx)),
+                        cx.listener(move |this, _, _, cx| {
+                            this.queue_input_event(
+                                SceneEvent {
+                                    action: action.clone(),
+                                    target: Some(target.clone()),
+                                    ..Default::default()
+                                },
+                                cx,
+                            )
+                        }),
                     )
                     .into_any_element()
             } else {
@@ -2661,11 +3288,21 @@ impl ExperienceHost {
             }
         } else if let Some(action) = tap_action {
             let action = action.clone();
+            let target = element_id.clone();
             element
                 .id(SharedString::from(element_id.clone()))
                 .on_mouse_down(
                     MouseButton::Left,
-                    cx.listener(move |this, _, _, cx| this.dispatch(action.clone(), cx)),
+                    cx.listener(move |this, _, _, cx| {
+                        this.queue_input_event(
+                            SceneEvent {
+                                action: action.clone(),
+                                target: Some(target.clone()),
+                                ..Default::default()
+                            },
+                            cx,
+                        )
+                    }),
                 )
                 .into_any_element()
         } else {
@@ -2898,6 +3535,14 @@ impl Render for ExperienceHost {
                 self.queue_input_event(event, cx);
             }
         }
+        #[cfg(feature = "aosp-system")]
+        let accessibility_scene = self
+            .active_graph
+            .as_ref()
+            .map(|graph| composed_android_graph_scene(&graph.snapshot))
+            .unwrap_or_else(|| self.scene.clone());
+        #[cfg(not(feature = "aosp-system"))]
+        let accessibility_scene = self.scene.clone();
         while let Some(action) = accessibility::take_action() {
             match action.kind.as_str() {
                 "click" if !action.value.is_empty() => self.queue_input_event(
@@ -2914,8 +3559,13 @@ impl Render for ExperienceHost {
                     }
                 }
                 "set_text" => {
-                    let state_key = find_text_session(&self.scene.root, &action.target)
-                        .map(|input| input.state_key.clone());
+                    let state_key = find_text_session(&accessibility_scene.root, &action.target)
+                        .map(|input| {
+                            action.target.split_once("::").map_or_else(
+                                || input.state_key.clone(),
+                                |(instance, _)| format!("{instance}::{}", input.state_key),
+                            )
+                        });
                     if let Some(state_key) = state_key {
                         if let Some(input) = self.inputs.get(&action.target).cloned() {
                             let replacement = action.value.clone();
@@ -3000,8 +3650,23 @@ impl Render for ExperienceHost {
 
         pointer_input::begin_frame();
         assets::install_fonts(window);
+        #[cfg(feature = "aosp-system")]
+        self.node_owners.clear();
         let scene = self.scene.clone();
-        let content = self.render_node(&scene.root, SharedString::from("root"), window, cx);
+        #[cfg(feature = "aosp-system")]
+        let root_owner = self
+            .active_graph
+            .as_ref()
+            .map(|graph| graph_owner(&graph.snapshot, &graph.snapshot.root));
+        #[cfg(not(feature = "aosp-system"))]
+        let root_owner = None;
+        let content = self.render_node(
+            &scene.root,
+            SharedString::from("root"),
+            root_owner,
+            window,
+            cx,
+        );
         let mut root = div()
             .flex()
             .flex_col()
@@ -3046,6 +3711,12 @@ impl Render for ExperienceHost {
                 this.frame_presented(frame, cx);
             });
         }
+        #[cfg(feature = "aosp-system")]
+        if let Some(graph_id) = self.pending_graph_confirmation.take() {
+            cx.on_next_frame(window, move |this, _, _| {
+                this.confirm_presented_graph(graph_id)
+            });
+        }
         if self.accessibility_dirty
             || accessibility::take_bounds_changed()
             || accessibility::take_state_changed()
@@ -3055,6 +3726,335 @@ impl Render for ExperienceHost {
         }
         root
     }
+}
+
+#[cfg(feature = "aosp-system")]
+fn start_android_graph_runtime(
+    bundle: android_authority_protocol::GraphBundle,
+    root_model: &ExperienceModel,
+) -> Result<ActiveAndroidGraph, String> {
+    let grants = bundle
+        .grants
+        .iter()
+        .map(|grant| (grant.experience_id.clone(), grant))
+        .collect::<BTreeMap<_, _>>();
+    let mut inputs = BTreeMap::new();
+    let mut revisions = BTreeMap::new();
+    for revision in &bundle.revisions {
+        let revision_id =
+            RevisionId::parse(revision.revision_id.clone()).map_err(|error| error.to_string())?;
+        if revision.package.experience_id != revision.state.experience_id
+            || revision.state.resource.revision_id != revision.revision_id
+        {
+            return Err(format!(
+                "graph revision `{revision_id}` has inconsistent experience state"
+            ));
+        }
+        if !revision.package.provider_capabilities.is_empty() {
+            let grant = grants
+                .get(&revision.package.experience_id)
+                .filter(|grant| grant.reviewed)
+                .ok_or_else(|| {
+                    format!(
+                        "experience `{}` has no reviewed Android grant",
+                        revision.package.experience_id
+                    )
+                })?;
+            if !revision
+                .package
+                .provider_capabilities
+                .is_subset(&grant.provider_capabilities)
+            {
+                return Err(format!(
+                    "experience `{}` requests ungranted provider capabilities",
+                    revision.package.experience_id
+                ));
+            }
+        }
+        let allowed_capabilities = revision.package.provider_capabilities.clone();
+        let mut model =
+            filter_android_graph_model(root_model, revision.package.role, &allowed_capabilities);
+        model.appearance = bundle.appearance.profile.clone();
+        inputs.insert(
+            revision_id.clone(),
+            GraphRevisionInput {
+                source: revision.source.clone(),
+                sidecars: revision_client::inputs(revision.assets.clone()),
+                model,
+                state: revision.state.resource.state.clone(),
+                state_schema_version: revision.state.resource.schema_version,
+                package: revision.package.clone(),
+            },
+        );
+        revisions.insert(
+            revision_id,
+            AndroidGraphRevision {
+                package: revision.package.clone(),
+                allowed_capabilities,
+                state_revision: revision.state.resource.revision,
+            },
+        );
+    }
+    for (node_id, node) in &bundle.graph.nodes {
+        let revision = revisions
+            .get(&node.revision_id)
+            .ok_or_else(|| format!("graph omitted revision `{}`", node.revision_id))?;
+        if revision.package.experience_id != node.experience_id
+            || !revision
+                .package
+                .contract
+                .exports
+                .contains_key(&node.export_id)
+        {
+            return Err(format!(
+                "graph node `{}` does not match its package",
+                node_id
+            ));
+        }
+    }
+    let (worker, snapshot) =
+        GraphRuntimeWorker::start(bundle.graph, inputs).map_err(|error| error.to_string())?;
+    assets::install_graph(
+        snapshot
+            .instances
+            .values()
+            .map(|instance| instance.assets.as_slice()),
+    );
+    Ok(ActiveAndroidGraph {
+        graph_id: bundle.graph_id,
+        worker,
+        snapshot,
+        revisions,
+        appearance_generation: bundle.appearance.profile.generation,
+    })
+}
+
+#[cfg(feature = "aosp-system")]
+fn filter_android_graph_model(
+    source: &ExperienceModel,
+    role: ExperienceRole,
+    capabilities: &BTreeSet<String>,
+) -> ExperienceModel {
+    let has = |capability: &str| capabilities.contains(capability);
+    let mut model = source.clone();
+    if !has("system_read") {
+        model.date.clear();
+        model.weather = experience_ir::Weather {
+            summary: String::new(),
+            temperature_c: 0,
+            high_c: 0,
+            low_c: 0,
+        };
+        model.system = experience_ir::SystemState::default();
+        model.providers.clock = experience_ir::ClockProviderState::default();
+        model.providers.power = experience_ir::PowerProviderState::default();
+        model.providers.attention = experience_ir::AttentionProviderState::default();
+    }
+    if !has("calendar_read") && !has("calendar_write") {
+        model.calendar.clear();
+    }
+    if !has("notes_read") && !has("notes_write") {
+        model.notes.clear();
+    }
+    if !has("music_read") && !has("music_control") {
+        model.music = experience_ir::Music {
+            title: String::new(),
+            artist: String::new(),
+            playing: false,
+        };
+    }
+    if !has("network_control") {
+        model.network = experience_ir::NetworkState::default();
+        model.providers.connectivity = experience_ir::ConnectivityProviderState::default();
+    }
+    if !has("audio_control") {
+        model.providers.audio = experience_ir::AudioProviderState::default();
+    }
+    if !has("application_launch") {
+        model.providers.apps = experience_ir::AppsProviderState::default();
+    }
+    model.surfaces.retain(|surface| {
+        let kind_allowed = match surface.kind {
+            experience_ir::ProviderSurfaceKind::Video => has("video_read"),
+            experience_ir::ProviderSurfaceKind::Camera => has("camera_read"),
+        };
+        kind_allowed && (!surface.protected || has("protected_surface"))
+    });
+    model
+        .providers
+        .capabilities
+        .retain(|capability| match capability {
+            experience_ir::SystemCapability::AudioSetVolume
+            | experience_ir::SystemCapability::AudioSetMuted => has("audio_control"),
+            experience_ir::SystemCapability::MediaPlayPause
+            | experience_ir::SystemCapability::MediaNext
+            | experience_ir::SystemCapability::MediaPrevious => has("music_control"),
+            experience_ir::SystemCapability::WifiConnect
+            | experience_ir::SystemCapability::WifiDisconnect => has("network_control"),
+            experience_ir::SystemCapability::AppLaunch => has("application_launch"),
+            experience_ir::SystemCapability::AttentionAcknowledge
+            | experience_ir::SystemCapability::RequestLock
+            | experience_ir::SystemCapability::RequestRestart
+            | experience_ir::SystemCapability::RequestShutdown => has("system_control"),
+        });
+    if role != ExperienceRole::Shell {
+        model.shell = experience_ir::ShellModel::default();
+        model.agent = experience_ir::AgentConversation::default();
+    }
+    model
+}
+
+#[cfg(feature = "aosp-system")]
+fn android_graph_action_wire(
+    graph: &ActiveAndroidGraph,
+    previous: &GraphRuntimeSnapshot,
+    outcome: &runtime_luau::GraphActionOutcome,
+) -> Result<
+    (
+        Vec<android_authority_protocol::GraphStateUpdateWire>,
+        Vec<android_authority_protocol::GraphEffectWire>,
+        Vec<ProviderEffect>,
+    ),
+    String,
+> {
+    let mut affected_nodes = BTreeSet::new();
+    for (node_id, instance) in &outcome.snapshot.instances {
+        let prior = previous
+            .instances
+            .get(node_id)
+            .ok_or_else(|| format!("graph result introduced unknown node `{node_id}`"))?;
+        if prior.instance_id != instance.instance_id
+            || prior.experience_id != instance.experience_id
+            || prior.revision_id != instance.revision_id
+        {
+            return Err(format!(
+                "graph result changed identity for node `{node_id}`"
+            ));
+        }
+        if prior.state != instance.state {
+            affected_nodes.insert(node_id.clone());
+        }
+    }
+    for effect in &outcome.effects {
+        let instance = outcome
+            .snapshot
+            .instances
+            .get(&effect.node_id)
+            .ok_or_else(|| format!("graph effect names unknown node `{}`", effect.node_id))?;
+        if instance.instance_id != effect.instance_id || instance.revision_id != effect.revision_id
+        {
+            return Err("graph effect identity does not match its instance".into());
+        }
+        affected_nodes.insert(effect.node_id.clone());
+    }
+    let updates = affected_nodes
+        .iter()
+        .map(|node_id| {
+            let instance = &outcome.snapshot.instances[node_id];
+            let revision = graph
+                .revisions
+                .get(&instance.revision_id)
+                .ok_or_else(|| "graph revision metadata is missing".to_owned())?;
+            Ok(android_authority_protocol::GraphStateUpdateWire {
+                node_id: node_id.clone(),
+                instance_id: instance.instance_id.clone(),
+                experience_id: instance.experience_id.clone(),
+                revision_id: instance.revision_id.clone(),
+                expected_revision: revision.state_revision,
+                state: instance.state.clone(),
+            })
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    let mut effects = Vec::new();
+    let mut agent_effects = Vec::new();
+    for effect in &outcome.effects {
+        if effect.effect.provider == "agent" {
+            agent_effects.push(effect.effect.clone());
+        } else {
+            effects.push(android_authority_protocol::GraphEffectWire {
+                node_id: effect.node_id.clone(),
+                instance_id: effect.instance_id.clone(),
+                revision_id: effect.revision_id.clone(),
+                effect: effect.effect.clone(),
+            });
+        }
+    }
+    Ok((updates, effects, agent_effects))
+}
+
+#[cfg(feature = "aosp-system")]
+fn graph_owner(snapshot: &GraphRuntimeSnapshot, node_id: &GraphNodeId) -> GraphOwner {
+    GraphOwner {
+        node_id: node_id.clone(),
+        instance_id: snapshot.instances[node_id].instance_id.clone(),
+    }
+}
+
+#[cfg(feature = "aosp-system")]
+fn graph_owner_for_target(snapshot: &GraphRuntimeSnapshot, target: &str) -> Option<GraphOwner> {
+    let (instance_id, _) = target.split_once("::")?;
+    snapshot
+        .instances
+        .iter()
+        .find(|(_, instance)| instance.instance_id.as_str() == instance_id)
+        .map(|(node_id, instance)| GraphOwner {
+            node_id: node_id.clone(),
+            instance_id: instance.instance_id.clone(),
+        })
+}
+
+#[cfg(feature = "aosp-system")]
+fn composed_android_graph_scene(snapshot: &GraphRuntimeSnapshot) -> Scene {
+    fn compose(
+        snapshot: &GraphRuntimeSnapshot,
+        owner: &GraphNodeId,
+        node: &SceneNode,
+    ) -> SceneNode {
+        let mut composed = node.clone();
+        let instance_id = &snapshot.instances[owner].instance_id;
+        composed.id = node.id.as_ref().map(|id| format!("{instance_id}::{id}"));
+        composed.children = node
+            .children
+            .iter()
+            .map(|child| compose(snapshot, owner, child))
+            .collect();
+        if let Some(Content::ExperienceMount(mount)) = &node.content {
+            composed.content = None;
+            if let Some((child_id, child)) = snapshot.instances.iter().find(|(_, instance)| {
+                instance.parent.as_ref() == Some(owner)
+                    && instance.dependency.as_ref().map(|alias| alias.as_str())
+                        == Some(mount.dependency.as_str())
+            }) {
+                if let Some(scene) = &child.scene {
+                    composed
+                        .children
+                        .push(compose(snapshot, child_id, &scene.root));
+                }
+            }
+        }
+        composed
+    }
+    let root = snapshot
+        .instances
+        .get(&snapshot.root)
+        .and_then(|instance| instance.scene.as_ref())
+        .map(|scene| compose(snapshot, &snapshot.root, &scene.root))
+        .unwrap_or_default();
+    Scene { root }
+}
+
+fn android_mount_fallback(message: &str) -> AnyElement {
+    div()
+        .size_full()
+        .flex()
+        .items_center()
+        .justify_center()
+        .overflow_hidden()
+        .bg(rgb(0x20252B))
+        .text_color(rgb(0xD5D9E0))
+        .text_size(px(13.0))
+        .child(SharedString::from(message.to_owned()))
+        .into_any_element()
 }
 
 fn find_text_session<'a>(node: &'a SceneNode, id: &str) -> Option<&'a experience_ir::TextSession> {
@@ -3199,7 +4199,7 @@ fn write_state_envelope(name: &str, envelope: &StateEnvelope) -> std::io::Result
     write_file(name, &contents)
 }
 
-#[cfg(feature = "offline-fallback")]
+#[cfg(all(feature = "offline-fallback", not(feature = "aosp-system")))]
 fn load_state() -> JsonValue {
     read_file(STATE_FILE)
         .and_then(|contents| serde_json::from_str(&contents).ok())

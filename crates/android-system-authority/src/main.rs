@@ -27,23 +27,72 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut root = None;
     let mut state_file = None;
     let mut bootstrap_source = None;
+    let mut bootstrap_package = None;
+    let mut bootstrap_assets = Vec::new();
+    let mut appearance_writer_file = None;
     let mut args = env::args().skip(1);
     while let Some(argument) = args.next() {
         match argument.as_str() {
             "--root" => root = args.next().map(PathBuf::from),
             "--state-file" => state_file = args.next().map(PathBuf::from),
             "--bootstrap-source" => bootstrap_source = args.next().map(PathBuf::from),
+            "--bootstrap-package" => bootstrap_package = args.next().map(PathBuf::from),
+            "--appearance-writer-file" => appearance_writer_file = args.next().map(PathBuf::from),
+            "--bootstrap-asset" => {
+                let id = args
+                    .next()
+                    .ok_or("--bootstrap-asset requires ID KIND PATH")?;
+                let kind = args
+                    .next()
+                    .ok_or("--bootstrap-asset requires ID KIND PATH")?;
+                let path = args
+                    .next()
+                    .map(PathBuf::from)
+                    .ok_or("--bootstrap-asset requires ID KIND PATH")?;
+                bootstrap_assets.push((id, kind, path));
+            }
             _ => return Err(format!("unexpected argument: {argument}").into()),
         }
     }
     let root = root.ok_or("--root requires a path")?;
     let state_file = state_file.ok_or("--state-file requires a path")?;
     let bootstrap_source = bootstrap_source.ok_or("--bootstrap-source requires a path")?;
-    let authority = Arc::new(Mutex::new(AndroidSystemAuthority::open(
-        root,
-        state_file,
-        &fs::read(bootstrap_source)?,
-    )?));
+    let bootstrap_source = fs::read(bootstrap_source)?;
+    let mut authority = if let Some(package_path) = bootstrap_package {
+        let package: experience_package::PackageMetadata =
+            serde_json::from_slice(&fs::read(package_path)?)?;
+        let assets = bootstrap_assets
+            .into_iter()
+            .map(|(id, kind, path)| {
+                Ok(revision_supervisor::RevisionAssetInput {
+                    id,
+                    kind,
+                    bytes: fs::read(path)?,
+                })
+            })
+            .collect::<Result<Vec<_>, std::io::Error>>()?;
+        AndroidSystemAuthority::open_v4(
+            root,
+            state_file,
+            revision_supervisor::RevisionPackageInput {
+                revision: revision_supervisor::RevisionInput {
+                    source: bootstrap_source,
+                    state: serde_json::json!({}),
+                    schema_version: 1,
+                    experience_api_version: experience_ir::EXPERIENCE_API_VERSION_V4,
+                    assets,
+                },
+                package,
+            },
+        )?
+    } else {
+        AndroidSystemAuthority::open(root, state_file, &bootstrap_source)?
+    };
+    if let Some(path) = appearance_writer_file {
+        let capability = fs::read_to_string(path)?;
+        authority.configure_appearance_writer(capability.trim())?;
+    }
+    let authority = Arc::new(Mutex::new(authority));
     let provider = TcpListener::bind(PROVIDER_ADDRESS)?;
     let revisions = TcpListener::bind(REVISION_ADDRESS)?;
     match fs::remove_file(CORE_PROVIDER_SOCKET) {

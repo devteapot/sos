@@ -99,8 +99,10 @@ name = "android-authority-protocol"
 version = "0.1.0"
 dependencies = [
  "experience-ir",
+ "experience-package",
  "serde",
  "serde_json",
+ "service-protocol",
 ]
 
 [[package]]
@@ -130,6 +132,7 @@ dependencies = [
  "revision-supervisor",
  "serde",
  "serde_json",
+ "service-protocol",
  "tempfile",
 ]
 
