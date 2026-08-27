@@ -15145,3 +15145,35 @@ either repair.
 Install it once through the authorized automatic Recovery path, require Stock
 Mobile to remain unobscured after the reveal interval, then begin the ordered
 non-root composition campaign. The Android physical milestone remains open.
+
+## 2026-08-27: Seal the owner-guarded Stock Mobile Compat candidate
+
+**Goal / build:** Produce the exact replacement for the Compat chrome race.
+Clean source `af57c0fed7202d384fb588fe3116f405dc7d89b5` built Compat 1 in
+237.19 seconds with 2,978,244 KiB peak RSS. Its immutable product identity is
+`sos.compat1.af57c0fed720.332e773ac9ad`. The compiled APK contains the
+owner-aware delayed-reveal guard, while the product retains the live physical
+viewport boundary, independent Stock Mobile package and appearance sidecar,
+and non-root authority audit protocol.
+
+**Offline evidence:** `./tools/a33xctl inspect-compat1` passed in 19.70 seconds
+with 47,800 KiB peak RSS. It verified the new owner-visibility marker, Stock
+Mobile identity and phone-native source contract, host-owned ordinary-root
+controls, signed authority reference composition, package and boot-chain
+signatures, API/package v4, and the bounded rollback-only v3 reader. The
+29,148-byte inspection log has SHA-256
+`360317aa4a90f888cf3fa470f05b821ad6a58b18e0829233fb9710c234d6b053`.
+
+The sealed OTA at
+`.cache/evidence/android-v4-af57c0f/compat1/lineage-23.0-20260827-UNOFFICIAL-sos_compat_a33x-af57c0f.zip`
+is 1,067,697,350 bytes with SHA-256
+`0049a6eff5ca1b5810dd3c2e89894d6e5b04a90aa50fa86e694b6aeecb4af402`.
+Its complete ZIP integrity check passed in 4.50 seconds. The finalized
+seven-file manifest is 627 bytes with SHA-256
+`dcc763d2ebab8ab23d8b5f19cc9120a1dc385d28b519c4f9b69e586d9fe95ee5`;
+independent verification passes.
+
+**Decision / next gate:** This exact OTA is the only candidate authorized for
+the next replacement transfer. Reverify it at the physical boundary, install
+it once, prove the Stock owner remains unobscured beyond the delayed-reveal
+interval, and only then initialize a new ordered composition campaign.
