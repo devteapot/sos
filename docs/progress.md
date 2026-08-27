@@ -13274,3 +13274,44 @@ Framework using only input devices present in the prepared inventory and an
 actual Dashboard composition graph. Then complete the Samsung v4 composition,
 IME, accessibility, grant, child-failure, appearance, restart and rollback
 campaign.
+
+## 2026-08-27: Create missing parent directories during live deployment
+
+**Goal:** Deploy the complete v4 Linux stack to the Framework development-live
+target without relying on directories introduced only by newer base images.
+
+**Changed:** `linux-live-deploy` now creates the root-owned parent directory for
+every exact component destination before installing that component. This
+includes the revision-local Stock module directory and also makes selective
+deployment independent of which sibling component happened to run first. The
+mock deployment requires the module-directory creation command explicitly.
+
+**Physical experiment and evidence:** The Framework at `192.168.1.132`
+reported `Laptop 12 (13th Gen Intel Core)`, Fedora 44, kernel
+`6.19.10-300.fc44.x86_64`, boot ID
+`9b1818f2-c6c3-4829-8109-c9b3320a02a3`, active GDM and SSH, and
+`LiveOS_rootfs`. No internal NVMe filesystem was mounted. The prior SOS login
+was still a singleton session with no active graph; it was terminated cleanly
+before deployment and all SOS processes exited.
+
+Release builds from clean source `c217b8fdd58e…` completed and the deployer
+transferred the v4 executables and package inputs. Installation then stopped at
+`/usr/share/sos/experiences/modules/stock-theme.luau` because that older live
+image did not contain the parent `modules` directory. It did not start SOS,
+touch boot configuration, or mount the internal disk. The failed deploy ended
+before emitting an accepted deployment record.
+
+After the fix, shell syntax passes and `tests/linux-live-image-test.sh` reports
+`linux_live_image_host_tests=PASS`, including the explicit missing-parent
+contract.
+
+**Failures and decision:** Precreating the module directory manually would make
+this target pass while leaving the reusable incremental deployer dependent on
+base-image age. Parent creation is now part of the exact root installation
+transaction. The partially updated target remains at GDM and must not launch
+SOS until the complete redeployment verifies every installed digest.
+
+**Remaining risks and next gate:** Commit the deployment fix, redeploy every v4
+component, verify the target manifest and start a fresh Framework graph
+campaign. The mutable development-live result remains diagnostic and physical
+integrated input still requires an owner at the laptop.

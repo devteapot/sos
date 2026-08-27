@@ -104,6 +104,7 @@ printf '%s\n' \
   '    ;;' \
   '  "set -euo pipefail;"*)' \
   '    stage="$(cat "$TEST_DEPLOY_STATE")"' \
+  '    [[ "$command" == *"sudo install -d -o root -g root -m 0755 '\''/usr/share/sos/experiences/modules'\'';"* ]]' \
   '    mkdir -p "$TEST_DEPLOY_REMOTE/usr/local/libexec/sos" "$TEST_DEPLOY_REMOTE/usr/local/lib/systemd/user" "$TEST_DEPLOY_REMOTE/usr/share/doc/sos" "$TEST_DEPLOY_REMOTE/usr/share/sos/experiences/modules" "$TEST_DEPLOY_REMOTE/etc/xdg"' \
   '    for source in "$stage"/sos-*; do cp -- "$source" "$TEST_DEPLOY_REMOTE/usr/local/libexec/sos/$(basename "$source")"; done' \
   '    [[ ! -f "$stage/linux-hardware-gate" ]] || cp -- "$stage/linux-hardware-gate" "$TEST_DEPLOY_REMOTE/usr/local/libexec/sos/"' \
