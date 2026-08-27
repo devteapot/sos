@@ -15396,3 +15396,33 @@ exact Compat OTA containing reusable listeners, install it once, and start a
 fresh artifact-bound campaign. Require the replacement authority to serve a
 valid audit snapshot while HOME remains exact before authoring and v4-to-v4
 rollback.
+
+## 2026-08-27: Seal the restartable-authority Compat candidate
+
+**Goal / build:** Produce the exact replacement containing reusable authority
+listeners and the audit-ready recovery gate. Clean source
+`b89f779d4067f82d9fd4c6ed785578c16ed48111` built Compat 1 successfully in
+257.47 seconds with 2,978,416 KiB peak RSS. Its immutable product identity is
+`sos.compat1.b89f779d4067.a7a7e01f504a`.
+
+**Offline evidence:** `./tools/a33xctl inspect-compat1` passed in 19.72 seconds
+with 48,248 KiB peak RSS. The packaged 1,924,616-byte authority has SHA-256
+`e71befb9aab7dd75ec1379d0dd38ea4d2fa9adef1ad1316990d216956cfd2b2f`.
+The inspector reverified the userdebug-only recovery property and compiled
+permission, Stock Mobile, Experience API and package format v4, signed
+reference graph, host-owned controls, SELinux ownership, APK signatures,
+VINTF, AVB, and the boot-chain image graph. The exact 1,067,728,950-byte OTA
+at
+`.cache/evidence/android-v4-b89f779/compat1/lineage-23.0-20260827-UNOFFICIAL-sos_compat_a33x-b89f779.zip`
+has SHA-256
+`fa9dcd4bde19faf544ce168bd93f2e36f3043b85277b7ceefba1df816a8260fe`.
+Its complete ZIP test passed in 4.83 seconds. The finalized eight-file offline
+manifest is 712 bytes with SHA-256
+`462e2939bbc468fcfdfbcc86adb0421831ba30cf75ec97620014d84a161fe668`;
+independent verification passes.
+
+**Decision / next gate:** Install only this digest, start a new physical
+campaign root bound to this artifact and revision, and require authority PID
+replacement plus a valid post-restart audit snapshot while HOME remains exact.
+Only after that gate may the campaign advance to Stock authoring and exact
+v4-to-v4 rollback.
