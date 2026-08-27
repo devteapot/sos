@@ -2283,9 +2283,9 @@ audit_v4_composition_campaign() {
     ([.states[] | .revision_id] | unique | length >= 4)
   ' "$evidence_root/stages/recovered/composition.json" >/dev/null || \
     fail "child event, durable state, parent liveness, or Experience isolation evidence is missing"
-  dashboard_generation="$(jq -er '.appearance.profile.generation' \
+  dashboard_generation="$(jq -er '.appearance.generation' \
     "$evidence_root/stages/dashboard/composition.json")"
-  appearance_generation="$(jq -er '.appearance.profile.generation' \
+  appearance_generation="$(jq -er '.appearance.generation' \
     "$evidence_root/stages/appearance/composition.json")"
   [[ "$dashboard_generation" =~ ^[0-9]+$ && "$appearance_generation" =~ ^[0-9]+$ && \
     "$appearance_generation" -gt "$dashboard_generation" ]] || \
@@ -2305,7 +2305,7 @@ audit_v4_composition_campaign() {
   for stage in host-restart authority-restart; do
     jq -e --argjson generation "$appearance_generation" '
       .presented_experience == "sos.example.dashboard" and
-      .appearance.profile.generation == $generation and
+      .appearance.generation == $generation and
       .states["sos.example.agenda"].state.selected == "Design review" and
       .states["sos.example.dashboard"].state.opened == "Design review"
     ' "$evidence_root/stages/$stage/composition.json" >/dev/null || \

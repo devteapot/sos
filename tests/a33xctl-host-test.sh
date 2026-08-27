@@ -87,6 +87,8 @@ grep -F 'if (chrome != null && !experienceOwnerVisible)' \
 grep -F 'owner_visibility=guarded' \
   "$repo_root/apps/experience/android/gradle/app/src/main/java/dev/gpui/mobile/SosCompatChromeService.java" \
   >/dev/null
+grep -F 'log_android_graph_status_transitions(&graph.snapshot, &snapshot);' \
+  "$repo_root/apps/experience/src/android.rs" >/dev/null
 grep -F 'sos://mobile/navigate/' "$repo_root/apps/experience/src/android.rs" >/dev/null
 ! grep -F 'SosCompatWorkspaceActivity' \
   "$repo_root/apps/experience/android/gradle/app/src/main/AndroidManifest.xml" >/dev/null

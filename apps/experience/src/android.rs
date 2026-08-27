@@ -1047,6 +1047,9 @@ impl ExperienceHost {
                     .values()
                     .filter(|instance| matches!(instance.status, RuntimeInstanceStatus::Failed(_)))
                     .count();
+                if let Some(graph) = self.active_graph.as_ref() {
+                    log_android_graph_status_transitions(&graph.snapshot, &snapshot);
+                }
                 self.install_graph_snapshot(snapshot);
                 if self
                     .pending_graph_viewport

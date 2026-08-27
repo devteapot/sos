@@ -15177,3 +15177,55 @@ independent verification passes.
 the next replacement transfer. Reverify it at the physical boundary, install
 it once, prove the Stock owner remains unobscured beyond the delayed-reveal
 interval, and only then initialize a new ordered composition campaign.
+
+## 2026-08-27: Accept the Stock frame and reject incomplete recovery evidence
+
+**Goal / physical evidence:** Install the owner-guarded `af57c0f` candidate and
+begin the complete ordered campaign. The sealed 1,067,697,350-byte OTA with
+SHA-256 `0049a6eff5ca1b5810dd3c2e89894d6e5b04a90aa50fa86e694b6aeecb4af402`
+was reverified at the device boundary. Automatic Recovery entry took 29.44
+seconds, the one transfer took 81.40 seconds and exited 0 with `Total xfer:
+1.00x`, and exact-product readiness took 109.73 seconds without manual input.
+The phone reached `sos.compat1.af57c0fed720.332e773ac9ad`, boot-complete v4
+Compat, live authority and HOME processes, and Enforcing SELinux.
+
+Stock Mobile passed the repaired frame gate. Two owner-focus callbacks logged
+the Compat chrome hidden after its reveal deadline, and neither the screenshot
+nor accessibility tree contains the fixed Back/Apps/Attention/Exit drawer. The
+175,069-byte screenshot at
+`.cache/evidence/android-v4-af57c0f-physical/compat1/install/first-stock.png`
+has SHA-256
+`47ecbef033a30726b7c107178f7a434306af434e6327e904c9e1adf9344eb299`.
+The independent phone-native top and bottom bars fit the full panel and remain
+clear of the display cutout.
+
+Dashboard then presented as a three-Instance graph. A real touch on the
+host-owned Theme control advanced authority appearance generation from 0 to 1,
+rerendered the complete graph with zero failed instances, and did not change
+any Experience revision ID. Agenda's `open_first` event durably set its own
+`selected` state and Dashboard's separately keyed `opened` state to `Design
+review`. Both the deliberate update exception and execution timeout left the
+parent ready and preserved those states. Captured evidence is retained under
+`.cache/evidence/android-v4-af57c0f-physical/compat1/composition/`, but the
+campaign is not a PASS.
+
+**Failures / changed:** The real authority snapshot exposed an audit-fixture
+mismatch: `AppearanceResource` is serialized with a flattened profile, while
+the shell audit and mock expected `.appearance.profile.generation`. The audit
+and fixture now use the actual `.appearance.generation` wire shape, and the
+complete mock campaign passes.
+
+The failed Agenda instance recovered on an authority model refresh before its
+explicit recovery event ran, but the host logged status transitions only for
+action completions. The refresh branch therefore installed a healthy snapshot
+without the required failed-to-ready evidence. The host now compares the old
+and refreshed snapshots through the same status-transition logger before
+installation. Focused `sos-experience` tests pass 20 tests, and the full A33x
+mock campaign passes in 7.97 seconds with 5,212 KiB peak RSS.
+
+**Decision / next gate:** Rebuild and inspect one superseding exact Compat OTA.
+Repeat the automatic install and start a new campaign root. Require explicit
+Agenda recovery markers after both containment failures before continuing to
+IME, restart, authoring, and rollback. The `af57c0f` product remains accepted
+for Stock layout, Compat chrome ownership, Dashboard composition, appearance,
+and failure containment only.
