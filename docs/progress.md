@@ -15097,3 +15097,51 @@ device boundary, install it once, then require exact-product readiness and the
 complete ordered non-root composition campaign. Offline evidence does not
 close the physical cutout, touch, composition, restart, recovery, or rollback
 gates.
+
+## 2026-08-27: Reject the corrected viewport candidate for a Compat chrome race
+
+**Goal / physical evidence:** Install the sealed `7da25e9` candidate and judge
+the first real Stock Mobile frame before beginning the ordered campaign. Serial
+`RFCT50EGFCN` was the only device and no competing transfer was active. The
+1,067,674,864-byte OTA was reverified at the device boundary with SHA-256
+`2a3c91d3c784cdf04cd3dc79b76520b017d53fb61a7545016b96e0a57ad74945`.
+Automatic Recovery entry took 29.54 seconds; the single 82.52-second transfer
+exited 0 with `Total xfer: 1.00x`. Automatic reboot and the complete Compat
+readiness predicate took 99.69 seconds. The phone reached exact identity
+`sos.compat1.7da25e9c8a6c.b93bb9eb8875`, boot complete, API/package v4,
+Compat stage 1, SOS HOME ownership, live authority and HOME processes, and
+Enforcing SELinux without manual Recovery input.
+
+The native boundary reported the real viewport as 384x853 logical pixels at
+2.813 scale with a 31-logical-pixel safe top, matching the 1080x2400 panel and
+88-physical-pixel cutout. Stock now begins below that cutout and fills the
+phone. The 187,340-byte first-frame screenshot at
+`.cache/evidence/android-v4-7da25e9-physical/compat1/install/first-stock.png`
+has SHA-256
+`06439806ee2889e670f1f775d5c450cab31ca975f7e9eb858227a174a96b4004`.
+
+**Rejected result / root cause:** The first frame still exposed the fixed
+Compat Back, Apps, Attention, and Exit drawer above Stock Mobile, obscuring the
+right side of the source-owned interface. This was not persisted Experience
+state. The service logged `compat_chrome_visibility=hidden owner=stock-mobile`,
+then its later `onStartCommand()` unconditionally scheduled a reveal after 750
+ms. The 180-byte focused service log has SHA-256
+`a048d83c3b42ced177655bf75cdc2d5fb566bc9f3553e153e5d6c177a5dae7f4`.
+The `7da25e9` image is therefore accepted only for the viewport boundary and
+rejected as a Stock Mobile composition candidate.
+
+**Changed / verification:** Delayed reveal now checks the current owner, and
+service start hides immediately whenever Stock Mobile owns focus. The compiled
+artifact marker and source host gate require this owner-aware guard. The real
+release APK compiles successfully, and the complete mock Compat/Core staged
+campaign passes in 7.92 seconds with 5,012 KiB peak RSS. That gate also exposed
+that a failed stage capture could leave its hidden temporary directory because
+the EXIT trap outlived a function-local path. Capture cleanup now owns a
+process-scope exact temporary path, clears it after atomic rename, and the
+failed-capture regression passes. No device state was changed while making
+either repair.
+
+**Decision / next gate:** Build and inspect one superseding exact Compat OTA.
+Install it once through the authorized automatic Recovery path, require Stock
+Mobile to remain unobscured after the reveal interval, then begin the ordered
+non-root composition campaign. The Android physical milestone remains open.

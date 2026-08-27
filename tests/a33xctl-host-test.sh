@@ -81,6 +81,12 @@ grep -F 'SosCompatChromeService.this, "controls")' \
 grep -F 'compat_chrome_visibility=hidden owner=stock-mobile' \
   "$repo_root/apps/experience/android/gradle/app/src/main/java/dev/gpui/mobile/SosCompatChromeService.java" \
   >/dev/null
+grep -F 'if (chrome != null && !experienceOwnerVisible)' \
+  "$repo_root/apps/experience/android/gradle/app/src/main/java/dev/gpui/mobile/SosCompatChromeService.java" \
+  >/dev/null
+grep -F 'owner_visibility=guarded' \
+  "$repo_root/apps/experience/android/gradle/app/src/main/java/dev/gpui/mobile/SosCompatChromeService.java" \
+  >/dev/null
 grep -F 'sos://mobile/navigate/' "$repo_root/apps/experience/src/android.rs" >/dev/null
 ! grep -F 'SosCompatWorkspaceActivity' \
   "$repo_root/apps/experience/android/gradle/app/src/main/AndroidManifest.xml" >/dev/null

@@ -47,7 +47,7 @@ public final class SosCompatChromeService extends Service {
     private WindowManager windowManager;
     private ChromeView chrome;
     private final Runnable transitionReveal = () -> {
-        if (chrome != null) {
+        if (chrome != null && !experienceOwnerVisible) {
             chrome.setVisibility(View.VISIBLE);
             chrome.invalidate();
         }
@@ -113,7 +113,11 @@ public final class SosCompatChromeService extends Service {
     public int onStartCommand(Intent intent, int flags, int startId) {
         if (chrome == null) installChrome();
         setAndroidNavigationDisabled(true);
-        redrawAfterTransition(APP_TRANSITION_REVEAL_MS);
+        if (experienceOwnerVisible) {
+            hideForExperienceOwner();
+        } else {
+            redrawAfterTransition(APP_TRANSITION_REVEAL_MS);
+        }
         return START_STICKY;
     }
 
@@ -159,7 +163,8 @@ public final class SosCompatChromeService extends Service {
                 redrawAfterTransition(APP_TRANSITION_REVEAL_MS);
             }
             Log.i(TAG, "compat_chrome_ready renderer=sos-fixed-software-text"
-                    + " transition_reveal=atomic controls=back,apps,attention,exit");
+                    + " transition_reveal=atomic controls=back,apps,attention,exit"
+                    + " owner_visibility=guarded");
         } catch (ReflectiveOperationException | RuntimeException error) {
             ready = false;
             Log.e(TAG, "compat_chrome_failed", error);

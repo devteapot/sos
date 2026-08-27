@@ -952,6 +952,9 @@ inspect_compat_profile() {
     unzip -p "$apk" 'classes*.dex' | strings | \
       grep -F 'transition_reveal=atomic controls=back,apps,attention,exit' >/dev/null || \
       fail "native Compat chrome can expose a partially rendered transition frame"
+    unzip -p "$apk" 'classes*.dex' | strings | \
+      grep -F 'owner_visibility=guarded' >/dev/null || \
+      fail "native Compat chrome reveal is not guarded by the current surface owner"
     local ime_bridge_marker
     for ime_bridge_marker in \
       'ime_activate focus_requested=' \
@@ -2063,7 +2066,10 @@ capture_v4_composition_stage() {
   [[ ! -e "$final_stage_root" ]] || fail "v4 composition stage already exists: $stage"
   stage_root="$(mktemp -d "$evidence_root/stages/.$stage.capture.XXXXXX")"
   chmod 0700 -- "$stage_root"
-  trap 'rm -rf -- "$stage_root"' EXIT
+  A33XCTL_CAPTURE_TEMP_ROOT="$stage_root"
+  trap 'if [[ -n "${A33XCTL_CAPTURE_TEMP_ROOT:-}" ]]; then
+    rm -rf -- "$A33XCTL_CAPTURE_TEMP_ROOT"
+  fi' EXIT
 
   export A33XCTL_CAPTURE_STAGE="$stage"
   export A33XCTL_CAPTURE_PRODUCT="$product"
@@ -2114,9 +2120,11 @@ capture_v4_composition_stage() {
     "$started_ns" "$finished_ns" "$((finished_ns - started_ns))" \
     >>"$stage_root/stage.env"
   mv -- "$stage_root" "$final_stage_root"
+  A33XCTL_CAPTURE_TEMP_ROOT=
   trap - EXIT
   stage_root="$final_stage_root"
-  unset A33XCTL_CAPTURE_STAGE A33XCTL_CAPTURE_PRODUCT A33XCTL_CAPTURE_REVISION
+  unset A33XCTL_CAPTURE_STAGE A33XCTL_CAPTURE_PRODUCT A33XCTL_CAPTURE_REVISION \
+    A33XCTL_CAPTURE_TEMP_ROOT
   printf 'v4_composition_stage=CAPTURED\nproduct=%s\nserial=%s\nrevision=%s\nstage=%s\nroot=%s\n' \
     "$product" "$serial" "$expected_revision" "$stage" "$evidence_root"
 }
