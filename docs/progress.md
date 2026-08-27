@@ -15484,3 +15484,34 @@ authority-only checkpoint, require either an audit-ready replacement or the
 new exact `android_system_authority_failed` log. Fix only that observed startup
 cause before authoring and v4-to-v4 rollback; do not add `SO_REUSEPORT` or make
 another socket-based inference.
+
+## 2026-08-27: Seal the authority-diagnostic Compat candidate
+
+**Goal / build:** Produce the exact replacement that exposes authority startup
+failures through Android `logd` without changing the restart actuator or
+durable registry. Clean source `dcbe6109b7ef0efcf70407f4a2ec08be2a5abdc4`
+built Compat 1 successfully in 239.21 seconds with 2,978,392 KiB peak RSS. Its
+immutable product identity is
+`sos.compat1.dcbe6109b7ef.88b08470bdbf`.
+
+**Offline evidence:** The strengthened `./tools/a33xctl inspect-compat1` gate
+passed in 19.71 seconds with 48,720 KiB peak RSS. In addition to Stock Mobile,
+v4 composition, policy, signature, VINTF, PIT, AVB, and boot-chain checks, it
+verified that the packaged 1,927,968-byte authority links `liblog.so` and
+contains both the fatal marker and reference-install startup boundary. That
+binary has SHA-256
+`5a99ef96ee47e820c0b7723a19216b946b15f7a8397f5a22bd3bc810d39d3ecd`.
+The exact 1,067,694,920-byte OTA at
+`.cache/evidence/android-v4-dcbe610/compat1/lineage-23.0-20260827-UNOFFICIAL-sos_compat_a33x-dcbe610.zip`
+has SHA-256
+`99dbed3ed79d8e0e12f4807f04f87a8bcde624f210ffb7cd2120d62b617729d3`.
+Its complete ZIP test passed in 4.53 seconds. The finalized eight-file offline
+manifest is 712 bytes with SHA-256
+`5f5e62660436f9e1334a298312f0ad90c44fdb18f238bd331470a800af65f978`;
+independent verification passes.
+
+**Decision / next gate:** This digest is the only authorized replacement.
+Reverify it at the device boundary, install it once through automatic Recovery,
+and start a fresh campaign. Require the authority-only restart either to serve
+an audit snapshot or to emit its exact contextual fatal cause while HOME stays
+live; do not advance to authoring on a transient PID.
