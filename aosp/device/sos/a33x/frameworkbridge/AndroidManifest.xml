@@ -4,6 +4,9 @@
     <permission
         android:name="dev.sos.permission.REPORT_HOME_HEARTBEAT"
         android:protectionLevel="signature" />
+    <permission
+        android:name="dev.sos.permission.REPORT_ADB_CONSENT"
+        android:protectionLevel="signature" />
     <uses-permission android:name="android.permission.ACCESS_KEYGUARD_SECURE_STORAGE" />
     <uses-permission android:name="android.permission.INTERACT_ACROSS_USERS_FULL" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
@@ -29,14 +32,15 @@
         android:label="SOS trusted framework bridge"
         android:persistent="true"
         android:supportsRtl="false">
-        <activity
-            android:name=".SosAdbConfirmationActivity"
+        <receiver
+            android:name=".SosAdbConsentReceiver"
             android:directBootAware="true"
-            android:excludeFromRecents="true"
             android:exported="true"
-            android:finishOnCloseSystemDialogs="true"
-            android:permission="android.permission.MANAGE_DEBUGGING"
-            android:theme="@android:style/Theme.Material.NoActionBar" />
+            android:permission="dev.sos.permission.REPORT_ADB_CONSENT">
+            <intent-filter>
+                <action android:name="dev.sos.action.ADB_CONSENT_RESULT" />
+            </intent-filter>
+        </receiver>
         <service
             android:name=".SosProviderNotificationListenerService"
             android:directBootAware="true"

@@ -14771,3 +14771,104 @@ RSS; USB remained the same booted `04e8:685d` endpoint. No OTA bytes or device
 commands were sent. The next retry may use either the fixed lock surface's
 Volume Up+Down recovery chord after a Side off/wake cycle, or the established
 Side+Volume Down then immediate Side+Volume Up boot sequence.
+
+## 2026-08-27: Bake and mount the revision 7c414374 development-live ISO
+
+**Goal / environment:** Build the newest clean Linux development-live image
+available to the bake, preserve private Wi-Fi autoconnect and password access,
+then replace the PiKVM virtual media without booting or writing an installed
+disk. The checksum-pinned Fedora 44 source ISO was 2,851,612,672 bytes with
+SHA-256 `1620295f6a00c27c3208f0c00b8ece4eab1ec69b9002152d97488bf26a426ddf`;
+its signed checksum verified against Fedora 44 primary-key fingerprint
+`36F612DCF27F7D1A48A835E4DBFCF71C6D9F90A6`. The rootless doctor passed.
+
+**Build evidence:** The worktree advanced from `cfe4ebb` to clean revision
+`7c414374e450733c6541e1e88a70dbe94c15c1bc` before source identity capture.
+The staged install metadata, rootfs check, image sidecar, and final filename all
+agree on `7c414374e450`. The 1:03:37 rootless bake passed rootfs validation,
+EROFS repack, ISO replay, and the embedded Fedora media check. The private
+inputs remained mode 0600 and were removed after the finalized bake. The ISO
+is `artifacts/development-live-7c41437/sos-development-live-7c414374e450.iso`,
+3,057,975,296 bytes, SHA-256
+`e2f5c5e9dd6315558e515dfdc25293b0db56e540c700175127f0fe1b4a5b3fad`.
+Its identity records `development-live`, `promotion_eligible=false`,
+`wifi_autoconnect=true`, and `network_credentials_embedded=true`.
+
+**PiKVM evidence / decision:** PiKVM at `192.168.1.47` first reported the old
+`28cf8ff` ISO connected read-only. It disconnected that drive before upload.
+The first multipart request failed immediately with HTTP 400 and transferred
+no image bytes; the documented binary-body request then uploaded the exact ISO
+in 2:15.96. PiKVM reported the stored image complete and non-writable at the
+expected byte size. A full 1:34.78 API read-back produced the same SHA-256 as
+the local artifact. Final state selects the exact `7c414374` image with
+`connected=true`, `cdrom=true`, `rw=false`, and `writable=false`. ATX remains
+retired because earlier calibration proved its telemetry unreliable. The
+inspected console frame was black, so target power and boot state are not
+claimed. No HID, ATX, installer, boot-order, internal-disk, or target SSH
+mutation occurred.
+
+**Remaining risk / next gate:** This accepts the image build and read-only
+PiKVM mount only. The ISO embeds a network credential and must remain private.
+Physical boot still requires an observed one-time firmware selection because
+remote ATX and the boot-menu window remain unreliable. After boot, verify the
+live overlay identity, Wi-Fi, SSH, SOS session, and that every internal NVMe
+partition remains unmounted before claiming a physical runtime result. Raw
+build, upload, read-back, MSD-state, and console evidence is under
+`.cache/evidence/pikvm-live-7c41437/`.
+
+## 2026-08-27: Reject bridge-owned ADB UI and split consent presentation from privilege
+
+**Goal / physical evidence:** Install and exercise the superseding
+`f19c430` Compat candidate's trusted ADB consent surface. Recovery exposed the
+durably group-owned `18d1:d001` sideload endpoint. The candidate manifest and
+artifact digest passed immediately before one transfer. The exact
+1,067,659,231-byte OTA, SHA-256
+`d91704446867ca51b95d392a6b1f4a7056e9247d2b8d9280e7fdaf73e758b4e2`,
+transferred once with `Total xfer: 1.00x` and exit 0 in 87.21 seconds. The
+4,456-byte finalized log at
+`.cache/evidence/android-v4-f19c430-physical/compat1/install/sideload.log`
+has SHA-256
+`3ef939c00174eee4a59534d39a84a6df649d05c44cb918f6af5fceef2369dec0`.
+Recovery returned to its main menu, the user selected reboot, and the new
+Compat product re-enumerated as the expected `04e8:685d` ADB-only gadget.
+
+**Failure / diagnosis:** The bridge-owned consent Activity did not become
+visible. Five fresh authorization checks after restarting the host ADB server
+and ten more after a physical USB reset all remained `unauthorized`. Offline
+inspection reconfirmed that the installed candidate compiled both overlay
+resources to the intended component and included the enabled, exported,
+direct-boot-aware bridge Activity with `MANAGE_DEBUGGING`; this rules out a
+stale package or source-only manifest assumption but does not prove that the
+shared-system-UID Activity reached presentation. The first `usbreset` attempt
+passed the full device-node path, which Fedora's implementation rejected as
+“No such device found.” Retrying its required `001/094` syntax succeeded and
+did not change the result. No authorization, wipe, or second OTA transfer
+occurred. The `f19c430` physical candidate is rejected.
+
+**Changed / decision:** Presentation now lives in the already proven,
+platform-signed SOS HOME package, while privilege stays in the headless
+framework bridge. Android's custom ADB confirmation resources name the fixed
+`SosAdbConfirmationActivity` in `dev.sos.experience`. That Activity is not
+Luau-visible, validates bounded owner/unlock/key/fingerprint input, suppresses
+untrusted overlays, keeps the display awake, and offers Deny, Allow once, and
+Always allow. It sends only an explicit result to a bridge receiver protected
+by the new signature permission `dev.sos.permission.REPORT_ADB_CONSENT`; the
+receiver alone calls `IAdbManager`. The framework membrane returns to its
+package-only SOS HOME exception, and the bridge exposes no Activity. The
+artifact inspector now verifies the compiled HOME Activity, permission and
+overlay binding, headless bridge receiver, signature boundary, consent markers,
+and framework membrane. `tests/a33xctl-host-test.sh`, Bash parsing, patch
+reverse-application, and `git diff --check` pass.
+
+The first public-SDK Java compile rejected `UsbManager.ACTION_USB_STATE` and
+`USB_CONNECTED`, which exist in the platform build API used by the earlier
+bridge implementation but not in Android's application stubs. The HOME
+surface now binds the stable framework action and boolean-extra strings
+locally; it does not acquire a hidden-API dependency. The repeated release
+Java compile passes.
+
+**Open risks / next gate:** Build, inspect, and seal this second superseding
+Compat candidate before another Recovery entry. Its first physical gate is
+visible denial, followed by session-only and persistent authorization of the
+known workstation key. The complete v4 composition campaign remains pending;
+the bounded v3 reader remains only for that reversible migration gate.

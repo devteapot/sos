@@ -860,6 +860,26 @@ inspect_compat_profile() {
     grep -F '="dev.sos.permission.REPORT_HOME_HEARTBEAT"' \
       <<<"$manifest_dump" >/dev/null || \
       fail "SOS Compat 1 omitted its signed HOME-health boundary"
+    grep -F '="dev.sos.permission.REPORT_ADB_CONSENT"' \
+      <<<"$manifest_dump" >/dev/null || \
+      fail "SOS Compat 1 HOME omitted its signed ADB-consent result boundary"
+    grep -F '="android.permission.HIDE_OVERLAY_WINDOWS"' \
+      <<<"$manifest_dump" >/dev/null || \
+      fail "SOS Compat 1 ADB consent surface cannot suppress untrusted overlays"
+    local home_adb_consent_activity
+    home_adb_consent_activity="$(grep -F -A12 \
+      '="dev.gpui.mobile.SosAdbConfirmationActivity"' <<<"$manifest_dump")"
+    [[ -n "$home_adb_consent_activity" ]] || \
+      fail "SOS Compat 1 HOME omitted its ADB consent surface"
+    grep -F ':enabled' <<<"$home_adb_consent_activity" | grep -F '=true' >/dev/null || \
+      fail "SOS Compat 1 ADB consent surface is disabled"
+    grep -F ':directBootAware' <<<"$home_adb_consent_activity" | grep -F '=true' >/dev/null || \
+      fail "SOS Compat 1 ADB consent surface is not direct-boot-aware"
+    grep -F ':exported' <<<"$home_adb_consent_activity" | grep -F '=true' >/dev/null || \
+      fail "SOS Compat 1 ADB consent surface cannot be reached by system_server"
+    grep -F '="android.permission.MANAGE_DEBUGGING"' \
+      <<<"$home_adb_consent_activity" >/dev/null || \
+      fail "SOS Compat 1 ADB consent surface lacks its system_server boundary"
     grep -F 'E: queries' <<<"$manifest_dump" >/dev/null || \
       fail "SOS Compat 1 omitted its launcher-only package visibility query"
     grep -F -A8 'E: queries' <<<"$manifest_dump" | \
@@ -993,8 +1013,8 @@ inspect_compat_profile() {
       grep -F 'SOS Compat blocked Android system Activity:' >/dev/null || \
       fail "native Compat framework omitted its Android system-Activity block"
     unzip -p "$services_jar" 'classes*.dex' | strings | \
-      grep -F 'dev.sos.frameworkbridge.SosAdbConfirmationActivity' >/dev/null || \
-      fail "native Compat framework membrane blocks its trusted ADB consent surface"
+      grep -F 'dev.sos.experience' >/dev/null || \
+      fail "native Compat framework membrane blocks SOS HOME system surfaces"
     unzip -p "$services_jar" 'classes*.dex' | strings | \
       grep -F 'SOS Compat blocked redirected Android system Activity:' >/dev/null || \
       fail "native Compat framework omitted its post-redirection Activity block"
@@ -1035,20 +1055,23 @@ inspect_compat_profile() {
       --file AndroidManifest.xml "$bridge_apk")"
     grep -F 'package="dev.sos.frameworkbridge"' <<<"$bridge_manifest" >/dev/null || \
       fail "native Compat packaged the wrong framework bridge"
-    [[ "$(grep -Fc 'E: activity' <<<"$bridge_manifest")" == 1 ]] || \
-      fail "native Compat framework bridge must expose only its trusted ADB consent Activity"
-    local adb_consent_activity
-    adb_consent_activity="$(grep -F -A12 \
-      '=".SosAdbConfirmationActivity"' <<<"$bridge_manifest")"
-    [[ -n "$adb_consent_activity" ]] || \
-      fail "native Compat framework bridge omitted its trusted ADB consent Activity"
-    grep -F ':directBootAware' <<<"$adb_consent_activity" | grep -F '=true' >/dev/null || \
-      fail "native Compat ADB consent surface is not direct-boot-aware"
-    grep -F ':exported' <<<"$adb_consent_activity" | grep -F '=true' >/dev/null || \
-      fail "native Compat ADB consent surface cannot be reached by system_server"
-    grep -F '="android.permission.MANAGE_DEBUGGING"' \
-      <<<"$adb_consent_activity" >/dev/null || \
-      fail "native Compat ADB consent surface lacks its signature permission boundary"
+    [[ "$(grep -Fc 'E: activity' <<<"$bridge_manifest")" == 0 ]] || \
+      fail "native Compat framework bridge must remain headless"
+    grep -F '="dev.sos.permission.REPORT_ADB_CONSENT"' \
+      <<<"$bridge_manifest" >/dev/null || \
+      fail "native Compat framework bridge omitted its signed ADB-consent permission"
+    local adb_consent_receiver
+    adb_consent_receiver="$(grep -F -A12 \
+      '=".SosAdbConsentReceiver"' <<<"$bridge_manifest")"
+    [[ -n "$adb_consent_receiver" ]] || \
+      fail "native Compat framework bridge omitted its ADB consent receiver"
+    grep -F ':directBootAware' <<<"$adb_consent_receiver" | grep -F '=true' >/dev/null || \
+      fail "native Compat ADB consent receiver is not direct-boot-aware"
+    grep -F ':exported' <<<"$adb_consent_receiver" | grep -F '=true' >/dev/null || \
+      fail "native Compat ADB consent receiver cannot receive the HOME result"
+    grep -F '="dev.sos.permission.REPORT_ADB_CONSENT"' \
+      <<<"$adb_consent_receiver" >/dev/null || \
+      fail "native Compat ADB consent receiver lacks its signature boundary"
     grep -F '="android.permission.MANAGE_DEBUGGING"' <<<"$bridge_manifest" >/dev/null || \
       fail "native Compat framework bridge cannot answer the ADB service"
     grep -F '<permission name="android.permission.MANAGE_DEBUGGING" />' \
@@ -1082,15 +1105,23 @@ inspect_compat_profile() {
       grep -F 'framework_bridge_home_start result=user-locked' >/dev/null || \
       fail "native Compat framework bridge can initialize HOME before CE unlock"
     for consent_marker in \
-      'sos_adb_confirmation state=shown owner=true' \
+      'framework_adb_consent action=' \
+      'allow-once' \
+      'always-allow' \
+      'deny'; do
+      unzip -p "$bridge_apk" 'classes*.dex' | strings | \
+        grep -F "$consent_marker" >/dev/null || \
+        fail "native Compat ADB consent receiver omitted marker: $consent_marker"
+    done
+    for consent_marker in \
+      'sos_adb_confirmation state=shown owner=true renderer=sos-home' \
       'Allow once' \
       'Always allow this computer' \
       'Deny connection' \
-      'reason=user-locked' \
-      'reason=non-owner'; do
-      unzip -p "$bridge_apk" 'classes*.dex' | strings | \
+      'dev.sos.action.ADB_CONSENT_RESULT'; do
+      unzip -p "$apk" 'classes*.dex' | strings | \
         grep -F "$consent_marker" >/dev/null || \
-        fail "native Compat ADB consent surface omitted marker: $consent_marker"
+        fail "SOS HOME ADB consent surface omitted marker: $consent_marker"
     done
     local framework_overlay_resources
     framework_overlay_resources="$(container out/host/linux-x86/bin/aapt2 dump resources \
@@ -1102,7 +1133,7 @@ inspect_compat_profile() {
         fail "native Compat framework overlay omitted ADB consent binding: $overlay_resource"
     done
     unzip -p "$framework_overlay" resources.arsc | strings | \
-      grep -F 'dev.sos.frameworkbridge/.SosAdbConfirmationActivity' >/dev/null || \
+      grep -F 'dev.sos.experience/dev.gpui.mobile.SosAdbConfirmationActivity' >/dev/null || \
       fail "native Compat framework overlay points ADB consent outside SOS"
     unzip -p "$apk" 'classes*.dex' | strings | \
       grep -Fx 'deepseek/deepseek-v4-flash-0731' >/dev/null || \

@@ -9,27 +9,48 @@ test_root="$(mktemp -d /tmp/sos-a33xctl-host-test.XXXXXX)"
 trap 'rm -rf -- "$test_root"' EXIT
 
 adb_manifest="$repo_root/aosp/device/sos/a33x/frameworkbridge/AndroidManifest.xml"
-adb_activity="$repo_root/aosp/device/sos/a33x/frameworkbridge/src/dev/sos/frameworkbridge/SosAdbConfirmationActivity.java"
+adb_receiver="$repo_root/aosp/device/sos/a33x/frameworkbridge/src/dev/sos/frameworkbridge/SosAdbConsentReceiver.java"
+adb_home_manifest="$repo_root/apps/experience/android/gradle/app/src/main/AndroidManifest.xml"
+adb_activity="$repo_root/apps/experience/android/gradle/app/src/main/java/dev/gpui/mobile/SosAdbConfirmationActivity.java"
 adb_overlay="$repo_root/aosp/device/sos/a33x/overlays/compat1/framework/res/values/config.xml"
 adb_permissions="$repo_root/aosp/device/sos/a33x/permissions/privapp-permissions-sos.xml"
 activity_policy="$repo_root/aosp/patches/a33x-lineage-23.0/0004-frameworks-base-enforce-sos-core-install-policy.patch"
 usb_rules="$repo_root/tools/a33x/70-sos-a33x-usb.rules.in"
-grep -F 'android:name=".SosAdbConfirmationActivity"' "$adb_manifest" >/dev/null
-grep -F 'android:permission="android.permission.MANAGE_DEBUGGING"' "$adb_manifest" >/dev/null
+grep -F 'android:name="dev.sos.permission.REPORT_ADB_CONSENT"' "$adb_manifest" >/dev/null
+grep -F 'android:protectionLevel="signature"' "$adb_manifest" >/dev/null
+grep -F 'android:name=".SosAdbConsentReceiver"' "$adb_manifest" >/dev/null
+grep -F 'android:permission="dev.sos.permission.REPORT_ADB_CONSENT"' \
+  "$adb_manifest" >/dev/null
+grep -F 'android:name="dev.gpui.mobile.SosAdbConfirmationActivity"' \
+  "$adb_home_manifest" >/dev/null
+grep -F 'android:permission="android.permission.MANAGE_DEBUGGING"' \
+  "$adb_home_manifest" >/dev/null
+grep -F 'android:name="dev.sos.permission.REPORT_ADB_CONSENT"' \
+  "$adb_home_manifest" >/dev/null
+grep -F 'android:name="android.permission.HIDE_OVERLAY_WINDOWS"' \
+  "$adb_home_manifest" >/dev/null
 grep -F '<permission name="android.permission.MANAGE_DEBUGGING" />' \
   "$adb_permissions" >/dev/null
-[[ "$(grep -Fc 'dev.sos.frameworkbridge/.SosAdbConfirmationActivity' "$adb_overlay")" == 2 ]]
-grep -F 'dev.sos.frameworkbridge.SosAdbConfirmationActivity' "$activity_policy" >/dev/null
+[[ "$(grep -Fc 'dev.sos.experience/dev.gpui.mobile.SosAdbConfirmationActivity' \
+  "$adb_overlay")" == 2 ]]
+grep -F '!"dev.sos.experience".equals(activityInfo.packageName)' "$activity_policy" >/dev/null
+! grep -F 'dev.sos.frameworkbridge.SosAdbConfirmationActivity' "$activity_policy" >/dev/null
 for marker in \
-  'SYSTEM_FLAG_HIDE_NON_SYSTEM_OVERLAY_WINDOWS' \
+  'setHideOverlayWindows(true)' \
   'users.isAdminUser()' \
   'users.isUserUnlocked()' \
-  'adb.allowDebugging(alwaysAllow, key)' \
-  'adbManager().denyDebugging()' \
+  'sendBroadcast(result)' \
   '"Allow once"' \
   '"Always allow this computer"' \
   '"Deny connection"'; do
   grep -F "$marker" "$adb_activity" >/dev/null
+done
+for marker in \
+  'IAdbManager' \
+  'allowDebugging(DECISION_ALWAYS_ALLOW.equals(decision), key)' \
+  'adbManager().denyDebugging()' \
+  'framework_adb_consent action='; do
+  grep -F "$marker" "$adb_receiver" >/dev/null
 done
 for identity in '04e8.*685d' '04e8.*6860' '18d1.*d001'; do
   grep -E "$identity" "$usb_rules" >/dev/null
