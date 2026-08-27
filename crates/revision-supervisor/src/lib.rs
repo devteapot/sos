@@ -22,7 +22,10 @@ pub use graph_supervisor::{
 };
 pub use host::{ExperienceHost, HostCommand};
 pub use reference::{install_reference_composition, ReferenceComposition};
-pub use registry::{ExperienceRecord, ExperienceRegistry, STOCK_SHELL_EXPERIENCE_ID};
+pub use registry::{
+    is_pinned_stock_experience, ExperienceRecord, ExperienceRegistry, STOCK_MOBILE_EXPERIENCE_ID,
+    STOCK_SHELL_EXPERIENCE_ID,
+};
 pub use reverse_index::{ReverseDependencyData, ReverseDependencyIndex};
 pub use store::{
     AssetIdentity, DurableState, FileIdentity, RevisionAssetInput, RevisionInput, RevisionManifest,

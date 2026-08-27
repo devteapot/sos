@@ -892,10 +892,10 @@ agent_generate_script() {
   transcript="$ARTIFACT_DIR/agent-$run_id.jsonl"
   final_message="$ARTIFACT_DIR/agent-$run_id-final.txt"
   mkdir -p "$(dirname "$target")"
-  cp "$SOS_ROOT/experiences/default.luau" "$target"
-  prompt="You are performing a single-shot SOS Stock Shell mutation. Read docs/experience-api.md and the existing experiences. Implement this request: $request
+  cp "$SOS_ROOT/experiences/mobile.luau" "$target"
+  prompt="You are performing a single-shot SOS Stock Mobile mutation. Read docs/experience-api.md and the existing experiences. Implement this request: $request
 
-Edit only .cache/agent-candidates/android-stock-agent.luau. Do not edit any other file. The file is a complete Experience API v4 Stock Shell module. Keep its main export, stock.theme import, validation branches, and at least one text_session whose submit_action is agent_submit. Calculate custom spatial geometry and drag/drop behavior in Luau when the request needs it. Do not run validation or edit again after changing the file; the outer harness performs the single authoritative validation attempt."
+Edit only .cache/agent-candidates/android-stock-agent.luau. Do not edit any other file. The file is a complete Experience API v4 Stock Mobile module. Keep its main export, mobile.theme import, validation branches, touch-first full-screen navigation, and at least one text_session whose submit_action is agent_submit. Calculate custom spatial geometry and gesture behavior in Luau when the request needs it. Do not run validation or edit again after changing the file; the outer harness performs the single authoritative validation attempt."
 
   info "running headless Codex with gpt-5.6-luna / medium reasoning"
   (
@@ -911,7 +911,7 @@ Edit only .cache/agent-candidates/android-stock-agent.luau. Do not edit any othe
   )
   [[ -f "$target" ]] || fail "agent did not create $target"
   validate_script "$target" \
-    --module "stock.theme=$SOS_ROOT/experiences/modules/stock-theme.luau"
+    --module "mobile.theme=$SOS_ROOT/experiences/modules/mobile-theme.luau"
   info "generated source: $target"
   info "agent transcript: $transcript"
 }
@@ -919,7 +919,10 @@ Edit only .cache/agent-candidates/android-stock-agent.luau. Do not edit any othe
 agent_apply_script() {
   local source_path="${1:-}"
   [[ -n "$source_path" ]] || fail "usage: ./tools/sosctl agent-apply <experience.luau>"
-  if grep -F 'require("stock.theme")' "$source_path" >/dev/null; then
+  if grep -F 'require("mobile.theme")' "$source_path" >/dev/null; then
+    validate_script "$source_path" \
+      --module "mobile.theme=$SOS_ROOT/experiences/modules/mobile-theme.luau"
+  elif grep -F 'require("stock.theme")' "$source_path" >/dev/null; then
     validate_script "$source_path" \
       --module "stock.theme=$SOS_ROOT/experiences/modules/stock-theme.luau"
   else

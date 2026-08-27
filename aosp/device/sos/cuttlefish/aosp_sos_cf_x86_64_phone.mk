@@ -15,9 +15,9 @@ PRODUCT_PACKAGES += \
     SosShell \
     SosFrameworkOverlay \
     sos-android-system-authority \
-    sos-default-experience \
-    sos-default-package \
-    sos-stock-theme
+    sos-mobile-experience \
+    sos-mobile-package \
+    sos-mobile-theme
 
 SYSTEM_EXT_PRIVATE_SEPOLICY_DIRS += \
     device/sos/cuttlefish/sepolicy/system_ext/private

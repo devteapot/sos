@@ -34,7 +34,7 @@ use crate::android_agent_contract::{
 use crate::android_agent_contract::{pi_timeout_seconds, OPENROUTER_MODEL};
 #[cfg(feature = "core-native")]
 use crate::core_credential::{CeremonySnapshot, CredentialState};
-use crate::{deterministic_stock_agent_candidate, STOCK_THEME_MODULE};
+use crate::{deterministic_mobile_agent_candidate, MOBILE_THEME_MODULE};
 
 #[cfg(not(feature = "core-native"))]
 const HELPER_CLASS: &str = "dev.gpui.mobile.GpuiAgent";
@@ -356,7 +356,7 @@ fn run_prompt(
         status.provider
     );
     let faux_candidate = if status.provider == "fake" {
-        Some(deterministic_stock_agent_candidate(current_source))
+        Some(deterministic_mobile_agent_candidate(current_source))
     } else {
         None
     };
@@ -411,9 +411,9 @@ fn validate_candidate(source: &str, model: &ExperienceModel) -> Result<(), Strin
     let runtime = runtime_luau::LuauRuntime::compile_with_assets(
         source,
         vec![runtime_luau::RevisionAssetInput {
-            id: "stock.theme".into(),
+            id: "mobile.theme".into(),
             kind: "luau".into(),
-            bytes: STOCK_THEME_MODULE.as_bytes().to_vec(),
+            bytes: MOBILE_THEME_MODULE.as_bytes().to_vec(),
         }],
     )
     .map_err(|_| {

@@ -49,7 +49,10 @@ mod window_space;
 pub use linux::run as run_linux_host;
 
 pub const DEFAULT_EXPERIENCE: &str = include_str!("../../../experiences/default.luau");
+pub const MOBILE_EXPERIENCE: &str = include_str!("../../../experiences/mobile.luau");
 pub const STOCK_THEME_MODULE: &str = include_str!("../../../experiences/modules/stock-theme.luau");
+pub const MOBILE_THEME_MODULE: &str =
+    include_str!("../../../experiences/modules/mobile-theme.luau");
 
 const STOCK_AGENT_VARIANT_ORIGINAL: &str = "Make Stock Base yours";
 const STOCK_AGENT_VARIANT_ALTERNATE: &str = "Shape Stock Base around your day";
@@ -66,17 +69,38 @@ pub fn deterministic_stock_agent_candidate(current_source: &str) -> String {
     }
 }
 
+const MOBILE_AGENT_VARIANT_ORIGINAL: &str = "Make Stock Mobile yours";
+const MOBILE_AGENT_VARIANT_ALTERNATE: &str = "Shape Stock Mobile around your day";
+
+pub fn deterministic_mobile_agent_candidate(current_source: &str) -> String {
+    if current_source.contains(MOBILE_AGENT_VARIANT_ALTERNATE) {
+        MOBILE_EXPERIENCE.to_owned()
+    } else {
+        MOBILE_EXPERIENCE.replacen(
+            MOBILE_AGENT_VARIANT_ORIGINAL,
+            MOBILE_AGENT_VARIANT_ALTERNATE,
+            1,
+        )
+    }
+}
+
 #[cfg(not(target_os = "android"))]
 fn compile_built_in(source: &str) -> Result<runtime_luau::LuauRuntime, runtime_luau::RuntimeError> {
-    let sidecars = source
-        .contains("require(\"stock.theme\")")
-        .then(|| runtime_luau::RevisionAssetInput {
+    let sidecars = if source.contains("require(\"stock.theme\")") {
+        vec![runtime_luau::RevisionAssetInput {
             id: "stock.theme".into(),
             kind: "luau".into(),
             bytes: STOCK_THEME_MODULE.as_bytes().to_vec(),
-        })
-        .into_iter()
-        .collect();
+        }]
+    } else if source.contains("require(\"mobile.theme\")") {
+        vec![runtime_luau::RevisionAssetInput {
+            id: "mobile.theme".into(),
+            kind: "luau".into(),
+            bytes: MOBILE_THEME_MODULE.as_bytes().to_vec(),
+        }]
+    } else {
+        Vec::new()
+    };
     runtime_luau::LuauRuntime::compile_with_assets(source, sidecars)
 }
 
@@ -91,6 +115,22 @@ pub fn validate_embedded_experience() -> Result<usize, String> {
 
 #[cfg(test)]
 mod tests {
+    fn scene_contains_id(node: &experience_ir::SceneNode, id: &str) -> bool {
+        node.id.as_deref() == Some(id)
+            || node
+                .children
+                .iter()
+                .any(|child| scene_contains_id(child, id))
+    }
+
+    fn scene_contains_action(node: &experience_ir::SceneNode, action: &str) -> bool {
+        node.interaction.tap_action.as_deref() == Some(action)
+            || node
+                .children
+                .iter()
+                .any(|child| scene_contains_action(child, action))
+    }
+
     fn scene_contains_agent_composer(node: &experience_ir::SceneNode) -> bool {
         matches!(
             &node.content,
@@ -471,6 +511,35 @@ mod tests {
     }
 
     #[test]
+    fn embedded_mobile_experience_is_phone_native_and_valid() {
+        let runtime = super::compile_built_in(super::MOBILE_EXPERIENCE).unwrap();
+        let mut model = providers_fake::snapshot();
+        model.shell.experiences = vec![experience_ir::ShellExperience {
+            experience_id: "sos.example.dashboard".into(),
+            title: "Dashboard".into(),
+        }];
+        let initial = runtime.initial_state();
+        let scene = runtime.render(&model, &initial).unwrap();
+        assert!(scene_contains_id(&scene.root, "stock-mobile-root"));
+        assert!(scene_contains_id(&scene.root, "mobile-top-bar"));
+        assert!(scene_contains_id(&scene.root, "mobile-bottom-navigation"));
+        assert!(!scene_contains_id(&scene.root, "shell-top-bar"));
+        assert!(scene_contains_action(&scene.root, "navigate_apps"));
+
+        let apps = runtime
+            .render(&model, &serde_json::json!({"screen": "apps"}))
+            .unwrap();
+        assert!(scene_contains_id(&apps.root, "mobile-app-launcher"));
+        assert!(scene_contains_action(&apps.root, "experience_present_1"));
+
+        let agent = runtime
+            .render(&model, &serde_json::json!({"screen": "agent"}))
+            .unwrap();
+        assert!(scene_contains_id(&agent.root, "mobile-agent-prompt"));
+        assert!(scene_contains_agent_composer(&agent.root));
+    }
+
+    #[test]
     fn deterministic_stock_agent_candidate_retains_the_shell_contract() {
         let first = super::deterministic_stock_agent_candidate(super::DEFAULT_EXPERIENCE);
         assert_ne!(first.trim(), super::DEFAULT_EXPERIENCE.trim());
@@ -489,5 +558,15 @@ mod tests {
             let scene = runtime.render(&providers_fake::snapshot(), &state).unwrap();
             assert!(scene_contains_agent_composer(&scene.root));
         }
+    }
+
+    #[test]
+    fn deterministic_mobile_agent_candidate_retains_the_mobile_contract() {
+        let first = super::deterministic_mobile_agent_candidate(super::MOBILE_EXPERIENCE);
+        assert!(first.contains(super::MOBILE_AGENT_VARIANT_ALTERNATE));
+        assert!(first.contains("require(\"mobile.theme\")"));
+        assert!(first.contains("stock-mobile-root"));
+        let second = super::deterministic_mobile_agent_candidate(&first);
+        assert_eq!(second, super::MOBILE_EXPERIENCE);
     }
 }

@@ -1,0 +1,47 @@
+{
+  "format_version": 4,
+  "experience_id": "sos.stock.mobile",
+  "role": "shell",
+  "provider_capabilities": [
+    "application_launch",
+    "audio_control",
+    "calendar_read",
+    "calendar_write",
+    "network_control",
+    "notes_read",
+    "notes_write",
+    "music_read",
+    "music_control",
+    "system_read",
+    "system_control",
+    "video_read",
+    "camera_read",
+    "protected_surface",
+    "appearance_write"
+  ],
+  "contract": {
+    "contract_version": 1,
+    "exports": {
+      "main": {
+        "properties": {
+          "type": "record",
+          "fields": {}
+        },
+        "events": {},
+        "viewport": {
+          "min_width": 320,
+          "min_height": 480,
+          "max_width": 1440,
+          "max_height": 3200
+        },
+        "appearance_abi": 1,
+        "accepts_container_appearance": false
+      }
+    }
+  },
+  "dependencies": {},
+  "derivation": {
+    "kind": "original",
+    "parents": []
+  }
+}

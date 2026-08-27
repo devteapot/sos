@@ -146,18 +146,22 @@ stage_sos() {
   install -m 0644 "$apk" "$AOSP_OVERLAY_DESTINATION/prebuilts/SosShell.apk"
   install -m 0755 "$authority" \
     "$AOSP_OVERLAY_DESTINATION/prebuilts/x86_64/sos-android-system-authority"
-  install -m 0644 "$SOS_ROOT/experiences/default.luau" \
-    "$AOSP_OVERLAY_DESTINATION/prebuilts/default.luau"
-  install -m 0644 "$SOS_ROOT/experiences/default.package.json" \
-    "$AOSP_OVERLAY_DESTINATION/prebuilts/default.package.json"
-  install -m 0644 "$SOS_ROOT/experiences/modules/stock-theme.luau" \
-    "$AOSP_OVERLAY_DESTINATION/prebuilts/stock-theme.luau"
-  sha256sum \
-    "$AOSP_OVERLAY_DESTINATION/prebuilts/SosShell.apk" \
-    "$AOSP_OVERLAY_DESTINATION/prebuilts/x86_64/sos-android-system-authority" \
+  rm -f -- \
     "$AOSP_OVERLAY_DESTINATION/prebuilts/default.luau" \
     "$AOSP_OVERLAY_DESTINATION/prebuilts/default.package.json" \
     "$AOSP_OVERLAY_DESTINATION/prebuilts/stock-theme.luau"
+  install -m 0644 "$SOS_ROOT/experiences/mobile.luau" \
+    "$AOSP_OVERLAY_DESTINATION/prebuilts/mobile.luau"
+  install -m 0644 "$SOS_ROOT/experiences/mobile.package.json" \
+    "$AOSP_OVERLAY_DESTINATION/prebuilts/mobile.package.json"
+  install -m 0644 "$SOS_ROOT/experiences/modules/mobile-theme.luau" \
+    "$AOSP_OVERLAY_DESTINATION/prebuilts/mobile-theme.luau"
+  sha256sum \
+    "$AOSP_OVERLAY_DESTINATION/prebuilts/SosShell.apk" \
+    "$AOSP_OVERLAY_DESTINATION/prebuilts/x86_64/sos-android-system-authority" \
+    "$AOSP_OVERLAY_DESTINATION/prebuilts/mobile.luau" \
+    "$AOSP_OVERLAY_DESTINATION/prebuilts/mobile.package.json" \
+    "$AOSP_OVERLAY_DESTINATION/prebuilts/mobile-theme.luau"
 }
 
 build_sos() {
@@ -316,7 +320,7 @@ verify_sos() {
       -a android.intent.action.MAIN -c android.intent.category.HOME | tail -n 1 | tr -d '\r')"
     authority_pid="$(adb_command shell pidof sos-authority 2>/dev/null | tr -d '\r' || true)"
     first_home_pid="$(adb_command shell pidof dev.sos.experience 2>/dev/null | tr -d '\r' || true)"
-    stock_graph="$(android_graph_pointer sos.stock.shell || true)"
+    stock_graph="$(android_graph_pointer sos.stock.mobile || true)"
     logs="$(adb_command logcat -d -s 'sos-experience:I' '*:S')"
     if [[ "$home" == "dev.sos.experience/.SosHomeActivity" || \
       "$home" == "dev.sos.experience/dev.sos.experience.SosHomeActivity" ]] && \

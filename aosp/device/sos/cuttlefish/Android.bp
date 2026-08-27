@@ -27,25 +27,25 @@ cc_prebuilt_binary {
 }
 
 prebuilt_etc {
-    name: "sos-default-experience",
-    src: "prebuilts/default.luau",
-    filename: "default.luau",
+    name: "sos-mobile-experience",
+    src: "prebuilts/mobile.luau",
+    filename: "mobile.luau",
     sub_dir: "sos",
     system_ext_specific: true,
 }
 
 prebuilt_etc {
-    name: "sos-default-package",
-    src: "prebuilts/default.package.json",
-    filename: "default.package.json",
+    name: "sos-mobile-package",
+    src: "prebuilts/mobile.package.json",
+    filename: "mobile.package.json",
     sub_dir: "sos",
     system_ext_specific: true,
 }
 
 prebuilt_etc {
-    name: "sos-stock-theme",
-    src: "prebuilts/stock-theme.luau",
-    filename: "stock-theme.luau",
+    name: "sos-mobile-theme",
+    src: "prebuilts/mobile-theme.luau",
+    filename: "mobile-theme.luau",
     sub_dir: "sos/modules",
     system_ext_specific: true,
 }

@@ -69,7 +69,7 @@ use crate::assets::{self, SosAssets, ALBUM_ASSET};
 use crate::graph_scene::composed_graph_scene;
 use crate::pointer_input;
 use crate::scene_surface;
-use crate::{deterministic_stock_agent_candidate, DEFAULT_EXPERIENCE};
+use crate::{deterministic_mobile_agent_candidate, MOBILE_EXPERIENCE};
 use native_input::NativeTextInput;
 
 static FILES_DIR: OnceLock<PathBuf> = OnceLock::new();
@@ -85,6 +85,8 @@ static EXPERIENCE_LIFECYCLE_REQUEST: OnceLock<Mutex<Option<AndroidExperienceLife
 #[cfg(feature = "aosp-system")]
 static REFERENCE_GRAPH_EVENT_REQUEST: OnceLock<Mutex<Option<AndroidReferenceGraphEvent>>> =
     OnceLock::new();
+#[cfg(not(feature = "core-native"))]
+static MOBILE_NAVIGATION_REQUEST: OnceLock<Mutex<Option<String>>> = OnceLock::new();
 #[cfg(feature = "aosp-system")]
 const ANDROID_SYSTEM_THEME_ID: &str = "android-system-theme";
 #[cfg(feature = "aosp-system")]
@@ -289,6 +291,17 @@ fn android_main(app: android_activity::AndroidApp) {
             queue_android_experience_lifecycle(experience_id, true);
         } else if let Some(path) = url.strip_prefix("sos://experience/event/") {
             queue_android_reference_graph_event(path);
+        } else if let Some(screen) = url.strip_prefix("sos://mobile/navigate/") {
+            if matches!(screen, "home" | "apps" | "agent" | "controls") {
+                *MOBILE_NAVIGATION_REQUEST
+                    .get_or_init(|| Mutex::new(None))
+                    .lock()
+                    .expect("mobile navigation request lock") = Some(screen.into());
+                log::info!("stock_mobile_navigation_requested screen={screen}");
+                request_host_frame();
+            } else {
+                log::warn!("stock_mobile_navigation_rejected screen={screen}");
+            }
         } else if url.starts_with("sos://stress") {
             match parse_stress_request(url) {
                 Some(request) => {
@@ -1260,7 +1273,7 @@ impl ExperienceHost {
                     self.submit_reload(cx);
                 }
             }
-            Err(error) if self.source.trim() != DEFAULT_EXPERIENCE.trim() => {
+            Err(error) if self.source.trim() != MOBILE_EXPERIENCE.trim() => {
                 #[cfg(feature = "aosp-system")]
                 {
                     let fallback =
@@ -1282,7 +1295,7 @@ impl ExperienceHost {
                     log::error!(
                         "active source rejected at startup: {error}; using embedded source"
                     );
-                    self.source = DEFAULT_EXPERIENCE.to_owned();
+                    self.source = MOBILE_EXPERIENCE.to_owned();
                     match RuntimeWorker::spawn(
                         self.source.clone(),
                         self.model.clone(),
@@ -2385,7 +2398,7 @@ impl ExperienceHost {
             return;
         }
 
-        let alternate_source = deterministic_stock_agent_candidate(&self.source);
+        let alternate_source = deterministic_mobile_agent_candidate(&self.source);
         let rss_start_kb = current_rss_kb().unwrap_or_default();
         log::info!(
             "stress_started run_id={} total={} rss_start_kb={}",
@@ -4168,6 +4181,54 @@ impl Render for ExperienceHost {
                 _ => log::warn!("unsupported accessibility action kind={}", action.kind),
             }
         }
+        #[cfg(not(feature = "core-native"))]
+        let mobile_navigation = MOBILE_NAVIGATION_REQUEST
+            .get_or_init(|| Mutex::new(None))
+            .lock()
+            .expect("mobile navigation request lock")
+            .take();
+        #[cfg(not(feature = "core-native"))]
+        if let Some(screen) = mobile_navigation {
+            #[cfg(feature = "aosp-system")]
+            let mobile_navigation_busy =
+                self.action_in_flight || self.pending_graph_confirmation.is_some();
+            #[cfg(not(feature = "aosp-system"))]
+            let mobile_navigation_busy = self.action_in_flight;
+            if mobile_navigation_busy {
+                *MOBILE_NAVIGATION_REQUEST
+                    .get_or_init(|| Mutex::new(None))
+                    .lock()
+                    .expect("mobile navigation request lock") = Some(screen);
+                cx.notify();
+            } else {
+                #[cfg(feature = "aosp-system")]
+                if self.presented_ordinary_experience().is_some() {
+                    *MOBILE_NAVIGATION_REQUEST
+                        .get_or_init(|| Mutex::new(None))
+                        .lock()
+                        .expect("mobile navigation request lock") = Some(screen);
+                    self.activate_android_system_control(AndroidSystemControl::Home, cx);
+                } else {
+                    self.queue_input_event(
+                        SceneEvent {
+                            action: format!("navigate_{screen}"),
+                            target: Some("stock-mobile-root".into()),
+                            ..Default::default()
+                        },
+                        cx,
+                    );
+                }
+                #[cfg(not(feature = "aosp-system"))]
+                self.queue_input_event(
+                    SceneEvent {
+                        action: format!("navigate_{screen}"),
+                        target: Some("stock-mobile-root".into()),
+                        ..Default::default()
+                    },
+                    cx,
+                );
+            }
+        }
         if RELOAD_REQUESTED.swap(false, Ordering::AcqRel) {
             let revision_busy = self
                 .candidates
@@ -4668,7 +4729,7 @@ fn validate_android_candidate_exports(
         && !android_shell_has_agent_composer(runtime, model, state)?
     {
         return Err(
-            "Stock Shell candidates must retain a text_session that submits agent_submit".into(),
+            "Stock Mobile candidates must retain a text_session that submits agent_submit".into(),
         );
     }
     let mut appearance_model = model.clone();
@@ -4731,7 +4792,7 @@ fn android_shell_has_agent_composer(
         let mut branch = state.clone();
         let object = branch
             .as_object_mut()
-            .ok_or_else(|| "Stock Shell state must be a record".to_owned())?;
+            .ok_or_else(|| "Stock Mobile state must be a record".to_owned())?;
         object.insert(key.into(), JsonValue::String(value.into()));
         let scene = runtime
             .render(model, &branch)
@@ -5098,7 +5159,7 @@ fn runtime_asset_inputs(
 
 #[cfg(not(feature = "aosp-system"))]
 fn recover_committed_source(remote_source_sha256: Option<&str>) -> String {
-    let active = read_file(ACTIVE_FILE).unwrap_or_else(|| DEFAULT_EXPERIENCE.to_owned());
+    let active = read_file(ACTIVE_FILE).unwrap_or_else(|| MOBILE_EXPERIENCE.to_owned());
     let Some(remote_source_sha256) = remote_source_sha256.filter(|hash| !hash.is_empty()) else {
         return active;
     };

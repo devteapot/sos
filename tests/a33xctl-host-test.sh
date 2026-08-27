@@ -16,6 +16,10 @@ adb_overlay="$repo_root/aosp/device/sos/a33x/overlays/compat1/framework/res/valu
 adb_permissions="$repo_root/aosp/device/sos/a33x/permissions/privapp-permissions-sos.xml"
 activity_policy="$repo_root/aosp/patches/a33x-lineage-23.0/0004-frameworks-base-enforce-sos-core-install-policy.patch"
 usb_rules="$repo_root/tools/a33x/70-sos-a33x-usb.rules.in"
+mobile_source="$repo_root/experiences/mobile.luau"
+mobile_package="$repo_root/experiences/mobile.package.json"
+mobile_theme="$repo_root/experiences/modules/mobile-theme.luau"
+android_authority_rc="$repo_root/aosp/device/sos/a33x/sos-authority.rc"
 grep -F 'android:name="dev.sos.permission.REPORT_ADB_CONSENT"' "$adb_manifest" >/dev/null
 grep -F 'android:protectionLevel="signature"' "$adb_manifest" >/dev/null
 grep -F 'android:name=".SosAdbConsentReceiver"' "$adb_manifest" >/dev/null
@@ -57,6 +61,30 @@ for identity in '04e8.*685d' '04e8.*6860' '18d1.*d001'; do
 done
 [[ "$(grep -Fc 'MODE:="0660"' "$usb_rules")" == 3 ]]
 [[ "$(grep -Fc 'GROUP:="@SOS_USB_GROUP@"' "$usb_rules")" == 3 ]]
+jq -e '.format_version == 4 and .experience_id == "sos.stock.mobile" and .role == "shell"' \
+  "$mobile_package" >/dev/null
+for marker in stock-mobile-root mobile-top-bar mobile-bottom-navigation mobile-app-launcher; do
+  grep -F "$marker" "$mobile_source" >/dev/null
+done
+! grep -F 'kind = "window_space"' "$mobile_source" >/dev/null
+grep -F 'touch = {' "$mobile_theme" >/dev/null
+grep -F -- '--bootstrap-source /system_ext/etc/sos/mobile.luau' \
+  "$android_authority_rc" >/dev/null
+grep -F -- '--bootstrap-asset mobile.theme luau' "$android_authority_rc" >/dev/null
+grep -F 'SosCompatChromeService.this, "apps")' \
+  "$repo_root/apps/experience/android/gradle/app/src/main/java/dev/gpui/mobile/SosCompatChromeService.java" \
+  >/dev/null
+grep -F 'SosCompatChromeService.this, "controls")' \
+  "$repo_root/apps/experience/android/gradle/app/src/main/java/dev/gpui/mobile/SosCompatChromeService.java" \
+  >/dev/null
+grep -F 'compat_chrome_visibility=hidden owner=stock-mobile' \
+  "$repo_root/apps/experience/android/gradle/app/src/main/java/dev/gpui/mobile/SosCompatChromeService.java" \
+  >/dev/null
+grep -F 'sos://mobile/navigate/' "$repo_root/apps/experience/src/android.rs" >/dev/null
+! grep -F 'SosCompatWorkspaceActivity' \
+  "$repo_root/apps/experience/android/gradle/app/src/main/AndroidManifest.xml" >/dev/null
+! grep -F 'SosAttentionActivity' \
+  "$repo_root/apps/experience/android/gradle/app/src/main/AndroidManifest.xml" >/dev/null
 
 A33XCTL_ADB="$mock_adb" "$ctl" inspect-core1-readiness \
   --serial MOCKSERIAL \

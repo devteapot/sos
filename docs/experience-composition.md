@@ -283,7 +283,8 @@ Only a caller holding the authority's `appearance-write` capability may
 advance that snapshot. Linux persists only the separately provisioned
 capability digest and rejects missing or mismatched credentials. Android binds
 the equivalent `appearance_write` package request and reviewed decision to the
-stable registry-authorized Stock Shell; an ordinary presented root cannot
+platform's stable pinned Stock identity (`sos.stock.mobile` on Android and
+`sos.stock.shell` on Linux); an ordinary presented root cannot
 acquire it. Both paths bind the exact current generation, and Android also
 binds the exact presented graph. Android's revision port is an administrative
 host boundary restricted by SELinux to the fixed Core host or the
@@ -367,7 +368,7 @@ The implementation is split so the contracts do not depend on GPUI or Linux:
 - retiring an ordinary Experience moves its complete registry record into the
   recoverable `retired-experiences` archive. Retired records disappear from the
   launch catalog without deleting revisions or derivation history. The pinned
-  Stock Shell cannot be retired;
+  neither pinned platform Stock experience can be retired;
 - fresh Linux v4 boot creates only Experience registry and graph pointers and
   bootstraps authority state per Experience. The singleton pointer exists only
   when an imported v3 rollback artifact already owns it;
@@ -489,7 +490,7 @@ the presence of a commit with a matching title.
 | --- | --- | --- |
 | 0. Wire model | Closed. `experience-package` owns canonical identities, schemas, contracts, graph limits, and canonical JSON. | Closed by the shared Rust, Linux, Android-authority, and TypeScript fixture plus canonical/oversize rejection and deterministic mutation/property campaigns. |
 | 1. Package format v4 | Closed. Complete package metadata, derivation, contracts, dependencies, hashes, and deterministic revision identity ship in the platform-neutral crate and revision store. | Closed by corruption, digest, signature, legacy-read, sidecar, deterministic identity, and state-migration tests. |
-| 2. Experience registry | Closed. Stable records have independent current/previous pointers; Stock Shell is reserved and pinned; retirement is recoverable. | Closed by independent-history, retirement, legacy import, restart, and atomic-pointer tests. |
+| 2. Experience registry | Closed. Stable records have independent current/previous pointers; Stock Shell and Stock Mobile are distinct reserved pinned identities; retirement is recoverable. | Closed by independent-history, both platform legacy-import targets, pinned-retirement rejection, restart, and atomic-pointer tests. |
 | 3. State and appearance authority | Closed. Durable state is Experience-owned; appearance and grants are separately versioned capability resources; graph state promotes as one batch. | Closed by restart, locked-revision state, appearance-without-revision, grant, stale writer, idempotence, and all promotion-fault tests. |
 | 4. Experience API v4 | Closed. Named exports, typed properties/events, viewports, appearance context, and `experience_mount` are the only authoring target. | Closed by export/scenario, schema, viewport, mount, appearance, and v3 rejection/rollback-reader tests. |
 | 5. Dependency resolver | Closed. Exact aliases, revisions, exports, contract digests, roles, grants, limits, and content-addressed graphs are validated before preparation. | Closed by missing, stale, cyclic, incompatible, unreviewed-flow, depth, and aggregate-instance tests. |

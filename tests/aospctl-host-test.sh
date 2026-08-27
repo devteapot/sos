@@ -11,6 +11,13 @@ cleanup() {
 }
 trap cleanup EXIT
 
+jq -e '.experience_id == "sos.stock.mobile" and .role == "shell"' \
+  "$repo_root/experiences/mobile.package.json" >/dev/null
+grep -F 'src: "prebuilts/mobile.luau"' \
+  "$repo_root/aosp/device/sos/cuttlefish/Android.bp" >/dev/null
+! grep -F 'prebuilts/default.luau' \
+  "$repo_root/aosp/device/sos/cuttlefish/Android.bp" >/dev/null
+
 state_root="$test_root/state"
 aosp_root="$test_root/aosp"
 mock_bin="$test_root/bin"
@@ -52,7 +59,7 @@ grep -Fx 'activated_experience=sos.example.dashboard' \
   "$test_root/verdict.txt" >/dev/null
 grep -Fx 'adb_reverse=none' "$test_root/verdict.txt" >/dev/null
 
-grep -F $'shell\treadlink\t/data/misc/sos/revisions/active/sos.stock.shell/current' \
+grep -F $'shell\treadlink\t/data/misc/sos/revisions/active/sos.stock.mobile/current' \
   "$state_root/requests.tsv" >/dev/null
 grep -F $'shell\treadlink\t/data/misc/sos/revisions/active/sos.example.dashboard/current' \
   "$state_root/requests.tsv" >/dev/null

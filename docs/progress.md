@@ -14872,3 +14872,75 @@ Compat candidate before another Recovery entry. Its first physical gate is
 visible denial, followed by session-only and persistent authorization of the
 known workstation key. The complete v4 composition campaign remains pending;
 the bounded v3 reader remains only for that reversible migration gate.
+
+## 2026-08-27: Split Android into a first-class Stock Mobile experience
+
+**Goal:** Stop treating the phone as a responsive rendering of the Linux Stock
+Shell. Mobile application lifecycle, full-screen presentation, launcher
+information architecture, touch geometry, safe compact chrome, and vertical
+viewport use are experience semantics and require an independent identity.
+
+**Changed:** Added the pinned `sos.stock.mobile` v4 package, a new Luau source,
+and the revision-local `mobile.theme` sidecar. Stock Mobile has its own top bar,
+bottom navigation, large touch targets, vertically scrolling Today, Apps,
+Agent, and Controls screens, a source-owned launcher for registered SOS
+Experiences and compatible applications, and full-screen root lifecycle
+effects. It contains no desktop `window_space`, window list, command rail,
+floating/tiling policy, hover interaction, or shell overlay. Linux retains
+`sos.stock.shell`, `default.luau`, and `stock.theme` unchanged.
+
+The duplicate Java-owned Compat workspace and attention screens were removed.
+The fixed Compat chrome now stays hidden while Stock Mobile owns focus and is
+shown only over a selected foreign Android application. Its Apps and Attention
+buttons return through a bounded `sos://mobile/navigate/{apps,controls}` handoff;
+the native host restores Stock Mobile first when another Experience owns the
+root, then dispatches the corresponding source-defined navigation action.
+Staging also deletes obsolete Linux Stock Shell prebuilts, and artifact
+inspection rejects their presence in an Android product image.
+
+The registry now reserves and prevents retirement of both platform Stock IDs
+while preserving separate current/previous pointers. Legacy migration accepts
+an explicit reserved target, so Linux imports old state under Stock Shell and
+Android imports it under Stock Mobile. The Android authority derives its
+active/recovery identity from its immutable bootstrap, requires exactly
+`sos.stock.mobile` for v4 products, keys state and grants to that ID, returns to
+it after dismissing an ordinary root, and accepts appearance writes only from
+that exact pinned identity. Existing Android Stock Shell records from rejected
+development candidates remain dormant and untouched rather than being
+silently rekeyed. The Android host's deterministic authoring seed, candidate
+module validator, A33x and Cuttlefish products, init command, agent example,
+artifact inspectors, composition audit, and mock gates now use Mobile source,
+package, theme, and identity. Android product images no longer package the
+Linux default source.
+
+**Evidence / failures:** Focused `revision-supervisor`,
+`android-system-authority`, and `sos-experience` suites pass 95 tests with one
+explicit performance campaign ignored. The new runtime test renders Today,
+Apps, and Agent branches, finds the mobile top and bottom bars and full-screen
+Experience launch action, requires the agent composer, and rejects accidental
+desktop chrome. `runtime-luau` validates the default, launcher, agent, and
+controls scenarios (73/30/31/50 nodes respectively), including the one mobile
+text session. The checked-in package now passes the Rust package validator as
+the reserved Stock Mobile Shell contract. Both the A33x and AOSP/Cuttlefish
+host suites pass after their state/grant fixtures moved to `sos.stock.mobile`;
+Bash parsing, Rust formatting, and `git diff --check` pass. A release ARM64
+Compat APK build completed in 11.26 seconds and its DEX contains the mobile
+navigation and Stock-owner chrome-hiding markers while omitting both deleted
+Java screen classes.
+
+The first integrated test compile failed only because the new Rust test
+referenced helper functions scoped inside an older test; moving reusable scene
+predicates to module scope fixed it. The first repeated A33x host test then
+failed because its new static checks used `repo` instead of the existing
+`repo_root`; correcting the variable made both host gates pass. Neither failure
+changed product behavior.
+
+**Decision / next gate:** Platform Stock identity is part of the v4 wire and
+registry model, not a theme or viewport switch. Build the second superseding
+Compat OTA with Stock Mobile and the HOME-owned ADB consent repair, inspect its
+compiled bootstrap identity and source/theme absence/presence invariants, then
+install it once. Physical acceptance must show that the phone fits its panel,
+the launcher and navigation are touch-first, ordinary experiences and
+compatible applications occupy the full root, and returning Home restores
+Stock Mobile. Real cutout/inset behavior and orientation remain hardware gates;
+desktop tests do not close them.

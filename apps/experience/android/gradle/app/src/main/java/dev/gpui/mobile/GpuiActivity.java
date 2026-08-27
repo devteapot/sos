@@ -74,7 +74,7 @@ public class GpuiActivity extends NativeActivity {
         super.onWindowFocusChanged(hasFocus);
         if (hasFocus) {
             configureSosWindow();
-            SosCompatChromeService.ownerFocused(this);
+            SosCompatChromeService.experienceOwnerFocused(this);
         }
     }
 

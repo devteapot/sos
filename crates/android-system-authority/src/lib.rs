@@ -17,7 +17,8 @@ use experience_ir::{
 use experience_package::{AppearanceProfile, ExperienceId, ExportId, ResolvedGraph};
 use revision_supervisor::{
     DurableState, ExperienceRegistry, GraphResolver, GraphStore, RevisionAssetInput, RevisionInput,
-    RevisionPackageInput, RevisionStore, VerifiedRevision, STOCK_SHELL_EXPERIENCE_ID,
+    RevisionPackageInput, RevisionStore, VerifiedRevision, STOCK_MOBILE_EXPERIENCE_ID,
+    STOCK_SHELL_EXPERIENCE_ID,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -103,6 +104,7 @@ pub struct AndroidSystemAuthority {
     state: StateService,
     staged_effects: HashMap<u64, Vec<SystemAction>>,
     providers: SystemProviderRegistry,
+    stock_experience_id: ExperienceId,
     stock_revision_id: String,
     state_file: PathBuf,
     journal_file: PathBuf,
@@ -331,6 +333,14 @@ impl AndroidSystemAuthority {
             ExperienceRegistry::open(revisions.clone()).map_err(|error| error.to_string())?;
         let resolver = GraphResolver::new(revisions.clone());
         let graphs = GraphStore::open(&revision_root).map_err(|error| error.to_string())?;
+        let stock_experience_id = stock
+            .package
+            .as_ref()
+            .map_or_else(
+                || ExperienceId::parse(STOCK_SHELL_EXPERIENCE_ID),
+                |package| Ok(package.experience_id.clone()),
+            )
+            .map_err(|error| error.to_string())?;
         let mut authority = Self {
             revisions,
             registry,
@@ -339,6 +349,7 @@ impl AndroidSystemAuthority {
             state: StateService::new(initial),
             staged_effects: HashMap::new(),
             providers: SystemProviderRegistry::android(),
+            stock_experience_id,
             stock_revision_id: stock.manifest.revision_id,
             state_file,
             journal_file,
@@ -369,11 +380,12 @@ impl AndroidSystemAuthority {
             .as_ref()
             .ok_or_else(|| "Android v4 bootstrap lacks package metadata".to_owned())?;
         let stock_id =
-            ExperienceId::parse(STOCK_SHELL_EXPERIENCE_ID).map_err(|error| error.to_string())?;
+            ExperienceId::parse(STOCK_MOBILE_EXPERIENCE_ID).map_err(|error| error.to_string())?;
         if package.experience_id != stock_id
+            || self.stock_experience_id != stock_id
             || package.role != experience_package::ExperienceRole::Shell
         {
-            return Err("Android v4 bootstrap is not the reserved Stock Shell".into());
+            return Err("Android v4 bootstrap is not the reserved Stock Mobile experience".into());
         }
         if self
             .registry
@@ -383,7 +395,7 @@ impl AndroidSystemAuthority {
         {
             if previous_singleton.is_some_and(|revision| revision.package.is_none()) {
                 self.registry
-                    .migrate_legacy_current()
+                    .migrate_legacy_current_as(&stock_id)
                     .map_err(|error| error.to_string())?;
             } else {
                 self.registry
@@ -847,10 +859,11 @@ impl AndroidSystemAuthority {
     }
 
     fn active_experience_id(&self) -> Result<ExperienceId, String> {
-        self.composition.presented_experience.clone().map_or_else(
-            || ExperienceId::parse(STOCK_SHELL_EXPERIENCE_ID).map_err(|error| error.to_string()),
-            Ok,
-        )
+        Ok(self
+            .composition
+            .presented_experience
+            .clone()
+            .unwrap_or_else(|| self.stock_experience_id.clone()))
     }
 
     fn current_graph_response(&mut self, request_id: u64) -> Result<RevisionResponse, String> {
@@ -909,7 +922,7 @@ impl AndroidSystemAuthority {
             if experience_id != &active_id {
                 return Err("dismiss request does not name the presented Experience".into());
             }
-            ExperienceId::parse(STOCK_SHELL_EXPERIENCE_ID).map_err(|error| error.to_string())?
+            self.stock_experience_id.clone()
         } else {
             let active_record = self
                 .registry
@@ -984,10 +997,9 @@ impl AndroidSystemAuthority {
                 .insert(experience_id.clone(), state.clone());
         }
         if pending.presentation_only {
-            let stock_id = ExperienceId::parse(STOCK_SHELL_EXPERIENCE_ID)
-                .map_err(|error| error.to_string())?;
-            target_composition.presented_experience =
-                (pending.experience_id != stock_id).then(|| pending.experience_id.clone());
+            target_composition.presented_experience = (pending.experience_id
+                != self.stock_experience_id)
+                .then(|| pending.experience_id.clone());
         }
         self.activate_graph_durably(GraphActivationJournal {
             experience_id: pending.experience_id,
@@ -1475,8 +1487,10 @@ impl AndroidSystemAuthority {
             .get(writer_experience_id)
             .map_err(|error| error.to_string())?
             .ok_or_else(|| "appearance writer is not registered".to_owned())?;
-        if record.role != experience_package::ExperienceRole::Shell {
-            return Err("only the registry-authorized shell may write appearance".into());
+        if writer_experience_id != &self.stock_experience_id
+            || record.role != experience_package::ExperienceRole::Shell
+        {
+            return Err("only the platform's pinned Stock experience may write appearance".into());
         }
         let package = self
             .registry
@@ -2072,7 +2086,7 @@ mod tests {
             },
             package: PackageMetadata {
                 format_version: PACKAGE_FORMAT_VERSION,
-                experience_id: ExperienceId::parse(STOCK_SHELL_EXPERIENCE_ID).unwrap(),
+                experience_id: ExperienceId::parse(STOCK_MOBILE_EXPERIENCE_ID).unwrap(),
                 role: ExperienceRole::Shell,
                 provider_capabilities: BTreeSet::from(["appearance_write".into()]),
                 contract: ExperienceContract {
@@ -2103,6 +2117,22 @@ mod tests {
                 state_migration: None,
             },
         }
+    }
+
+    #[test]
+    fn checked_in_stock_mobile_package_is_valid_and_reserved() {
+        let package: PackageMetadata =
+            serde_json::from_str(include_str!("../../../experiences/mobile.package.json")).unwrap();
+        package.validate().unwrap();
+        assert_eq!(package.experience_id.as_str(), STOCK_MOBILE_EXPERIENCE_ID);
+        assert_eq!(package.role, ExperienceRole::Shell);
+        assert!(package.provider_capabilities.contains("appearance_write"));
+        assert_eq!(
+            package.contract.exports[&ExportId::parse("main").unwrap()]
+                .viewport
+                .min_width,
+            320
+        );
     }
 
     fn install_and_stage(authority: &mut AndroidSystemAuthority, source: &str) -> (String, u64) {
@@ -2321,7 +2351,7 @@ mod tests {
         });
         assert!(confirmed.ok, "{:?}", confirmed.error);
         assert_eq!(restarted.active_experience_id().unwrap(), dashboard_id);
-        let stock_id = ExperienceId::parse(STOCK_SHELL_EXPERIENCE_ID).unwrap();
+        let stock_id = ExperienceId::parse(STOCK_MOBILE_EXPERIENCE_ID).unwrap();
         let mut profile = restarted.composition.appearance.profile.clone();
         profile.generation = 1;
         profile.scheme = experience_package::ColorScheme::Light;
@@ -2349,7 +2379,7 @@ mod tests {
         assert!(denied_appearance
             .error
             .unwrap()
-            .contains("authorized shell"));
+            .contains("pinned Stock experience"));
 
         let media_id = ExperienceId::parse("sos.example.media").unwrap();
         let denied = restarted.dispatch_revision(RevisionRequest::PresentExperience {
@@ -2387,8 +2417,61 @@ mod tests {
         assert!(confirmed.ok, "{:?}", confirmed.error);
         assert_eq!(
             accepted.active_experience_id().unwrap().as_str(),
-            STOCK_SHELL_EXPERIENCE_ID
+            STOCK_MOBILE_EXPERIENCE_ID
         );
+    }
+
+    #[test]
+    fn stock_mobile_migration_coexists_with_an_older_android_stock_shell_record() {
+        let temporary = tempfile::tempdir().unwrap();
+        let revision_root = temporary.path().join("revisions");
+        let state_file = temporary.path().join("provider.json");
+        let legacy_source = "return { api_version = 3, legacy = true }";
+        drop(
+            AndroidSystemAuthority::open(&revision_root, &state_file, legacy_source.as_bytes())
+                .unwrap(),
+        );
+        let revisions = RevisionStore::open(&revision_root).unwrap();
+        let registry = ExperienceRegistry::open(revisions).unwrap();
+        let old_shell = registry.migrate_legacy_current().unwrap().unwrap();
+        assert_eq!(old_shell.experience_id.as_str(), STOCK_SHELL_EXPERIENCE_ID);
+
+        let source = r#"
+            return { api_version = 4, exports = { main = {
+                render = function() return { id = "mobile" } end,
+                update = function(_, state) return { state = state } end,
+            } } }
+        "#;
+        let mut authority =
+            AndroidSystemAuthority::open_v4(&revision_root, &state_file, stock_v4(source)).unwrap();
+        let pending = authority
+            .dispatch_revision(RevisionRequest::CurrentGraph { request_id: 301 })
+            .graph
+            .unwrap();
+        assert!(pending.migration_pending);
+        let confirmed = authority.dispatch_revision(RevisionRequest::ConfirmGraph {
+            request_id: 302,
+            graph_id: pending.graph_id,
+        });
+        assert!(confirmed.ok, "{:?}", confirmed.error);
+        assert_eq!(
+            authority.active_experience_id().unwrap().as_str(),
+            STOCK_MOBILE_EXPERIENCE_ID
+        );
+        assert!(authority
+            .registry
+            .get(&ExperienceId::parse(STOCK_SHELL_EXPERIENCE_ID).unwrap())
+            .unwrap()
+            .is_some());
+        assert!(authority
+            .registry
+            .get(&ExperienceId::parse(STOCK_MOBILE_EXPERIENCE_ID).unwrap())
+            .unwrap()
+            .is_some());
+        assert!(authority
+            .composition
+            .states
+            .contains_key(&ExperienceId::parse(STOCK_MOBILE_EXPERIENCE_ID).unwrap()));
     }
 
     #[test]
@@ -2464,7 +2547,7 @@ mod tests {
         assert_eq!(
             authority
                 .registry
-                .current(&ExperienceId::parse(STOCK_SHELL_EXPERIENCE_ID).unwrap())
+                .current(&ExperienceId::parse(STOCK_MOBILE_EXPERIENCE_ID).unwrap())
                 .unwrap()
                 .unwrap()
                 .manifest

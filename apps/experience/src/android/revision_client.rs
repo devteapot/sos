@@ -142,7 +142,7 @@ pub(super) fn set_experience_appearance(
     profile: AppearanceProfile,
 ) -> Result<AppearanceResource, String> {
     let writer_experience_id =
-        ExperienceId::parse("sos.stock.shell").map_err(|error| error.to_string())?;
+        ExperienceId::parse("sos.stock.mobile").map_err(|error| error.to_string())?;
     request(RevisionRequest::SetExperienceAppearance {
         request_id: allocate_request_id(),
         expected_graph_id,

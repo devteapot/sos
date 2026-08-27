@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 use crate::{Error, Result, RevisionStore, VerifiedRevision};
 
 pub const STOCK_SHELL_EXPERIENCE_ID: &str = "sos.stock.shell";
+pub const STOCK_MOBILE_EXPERIENCE_ID: &str = "sos.stock.mobile";
 const REGISTRY_FORMAT_VERSION: u32 = 1;
 static REGISTRY_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
@@ -67,7 +68,19 @@ impl ExperienceRegistry {
     pub fn migrate_legacy_current(&self) -> Result<Option<ExperienceRecord>> {
         let stock_id = ExperienceId::parse(STOCK_SHELL_EXPERIENCE_ID)
             .map_err(|error| Error::InvalidRegistry(error.to_string()))?;
-        if let Some(record) = self.get(&stock_id)? {
+        self.migrate_legacy_current_as(&stock_id)
+    }
+
+    pub fn migrate_legacy_current_as(
+        &self,
+        stock_id: &ExperienceId,
+    ) -> Result<Option<ExperienceRecord>> {
+        if !is_pinned_stock_experience(stock_id) {
+            return Err(Error::InvalidRegistry(format!(
+                "legacy migration target `{stock_id}` is not a reserved Stock experience"
+            )));
+        }
+        if let Some(record) = self.get(stock_id)? {
             return Ok(Some(record));
         }
         let Some(revision) = self.store.current()? else {
@@ -81,7 +94,7 @@ impl ExperienceRegistry {
         self.create_record(
             ExperienceRecord {
                 format_version: REGISTRY_FORMAT_VERSION,
-                experience_id: stock_id,
+                experience_id: stock_id.clone(),
                 role: ExperienceRole::Shell,
                 accepts_legacy_revisions: true,
             },
@@ -125,9 +138,9 @@ impl ExperienceRegistry {
     }
 
     pub fn retire(&self, experience_id: &ExperienceId) -> Result<bool> {
-        if experience_id.as_str() == STOCK_SHELL_EXPERIENCE_ID {
+        if is_pinned_stock_experience(experience_id) {
             return Err(Error::InvalidRegistry(
-                "the pinned Stock Shell experience cannot be retired".into(),
+                "a pinned Stock experience cannot be retired".into(),
             ));
         }
         if self.get(experience_id)?.is_none() {
@@ -303,6 +316,13 @@ impl ExperienceRegistry {
     }
 }
 
+pub fn is_pinned_stock_experience(experience_id: &ExperienceId) -> bool {
+    matches!(
+        experience_id.as_str(),
+        STOCK_SHELL_EXPERIENCE_ID | STOCK_MOBILE_EXPERIENCE_ID
+    )
+}
+
 fn write_synced(path: &Path, bytes: &[u8], mode: u32) -> Result<()> {
     let mut file = OpenOptions::new().write(true).create_new(true).open(path)?;
     file.write_all(bytes)?;
@@ -468,6 +488,41 @@ mod tests {
     }
 
     #[test]
+    fn android_legacy_current_can_migrate_to_the_distinct_stock_mobile_record() {
+        let directory = TempDir::new().unwrap();
+        let store = RevisionStore::open(directory.path()).unwrap();
+        let legacy = store
+            .install(RevisionInput {
+                source: b"legacy-mobile".to_vec(),
+                state: json!({}),
+                schema_version: 1,
+                experience_api_version: 3,
+                assets: vec![],
+            })
+            .unwrap()
+            .manifest
+            .revision_id;
+        store.set_current(&legacy).unwrap();
+        let registry = ExperienceRegistry::open(store).unwrap();
+        let mobile = ExperienceId::parse(STOCK_MOBILE_EXPERIENCE_ID).unwrap();
+        let record = registry
+            .migrate_legacy_current_as(&mobile)
+            .unwrap()
+            .unwrap();
+        assert_eq!(record.experience_id, mobile);
+        assert!(record.accepts_legacy_revisions);
+        assert_eq!(
+            registry
+                .current(&record.experience_id)
+                .unwrap()
+                .unwrap()
+                .manifest
+                .revision_id,
+            legacy
+        );
+    }
+
+    #[test]
     fn ordinary_experience_retirement_is_recoverable_and_removes_it_from_listing() {
         let directory = TempDir::new().unwrap();
         let store = RevisionStore::open(directory.path()).unwrap();
@@ -490,6 +545,11 @@ mod tests {
         let stock = ExperienceId::parse(STOCK_SHELL_EXPERIENCE_ID).unwrap();
         assert!(matches!(
             registry.retire(&stock),
+            Err(Error::InvalidRegistry(message)) if message.contains("cannot be retired")
+        ));
+        let mobile = ExperienceId::parse(STOCK_MOBILE_EXPERIENCE_ID).unwrap();
+        assert!(matches!(
+            registry.retire(&mobile),
             Err(Error::InvalidRegistry(message)) if message.contains("cannot be retired")
         ));
     }

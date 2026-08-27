@@ -84,7 +84,7 @@ case "$command_name" in
         ;;
       readlink)
         case "${1:-}" in
-          /data/misc/sos/revisions/active/sos.stock.shell/current)
+          /data/misc/sos/revisions/active/sos.stock.mobile/current)
             printf '/data/misc/sos/revisions/graphs/stock-graph.json\n'
             ;;
           /data/misc/sos/revisions/active/sos.example.dashboard/current)
@@ -100,7 +100,7 @@ case "$command_name" in
         if [[ "$(<"$state_root/mode")" == dashboard ]]; then
           printf '{"presented_experience":"sos.example.dashboard"}\n'
         else
-          printf '{"presented_experience":"sos.stock.shell"}\n'
+          printf '{"presented_experience":"sos.stock.mobile"}\n'
         fi
         ;;
       ps)

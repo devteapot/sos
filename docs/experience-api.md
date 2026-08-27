@@ -50,7 +50,8 @@ authoring feedback loop; the Rust decoder remains the runtime authority.
 
 Large revisions may package sandboxed revision-local Luau modules as manifest
 sidecars with `kind = "luau"`. Module IDs are namespaced, for example
-`stock.theme`, and the entry source loads one with `require("stock.theme")`.
+`stock.theme` on Linux and `mobile.theme` on Android, and the entry source
+loads its own module with `require`.
 The loader has no filesystem, package search path, network, or host-module
 fallback. It caches one evaluation per VM and rejects missing modules, cycles,
 non-UTF-8/empty/oversized source, `nil` results, reserved `sos.*` names, and
@@ -62,6 +63,9 @@ empty list removes them. Local validation accepts repeatable module arguments:
 ```sh
 ./tools/sosctl validate experiences/default.luau \
   --module stock.theme=experiences/modules/stock-theme.luau --json
+
+./tools/sosctl validate experiences/mobile.luau \
+  --module mobile.theme=experiences/modules/mobile-theme.luau --json
 ```
 
 ## Experience composition status
@@ -285,10 +289,10 @@ Wayland/X11 handles, application IDs, PIDs, commands, or desktop files. A stale
 selection is rejected. Map, unmap, title, focus, output-layout, and resize
 changes push a fresh model into the accepted revision without activation.
 
-## Stock Shell is a replaceable revision
+## Platform Stock experiences are replaceable revisions
 
-The default [`experiences/default.luau`](../experiences/default.luau) exercises
-this contract as the product integration target. Its top bar, status
+Linux [`experiences/default.luau`](../experiences/default.luau) exercises this
+contract as a desktop integration target. Its top bar, status
 contributions, command center, application-region policy, agent FAB/rail,
 Home, Agenda, Notes, Media, Attention, System, Apps and Agent workspaces,
 unavailable states, responsive layout and inline SVG mark are declared in
@@ -299,6 +303,15 @@ remain fixed. The one structural exception is the native-backed
 but never owns its application surfaces. See
 [`stock-experience.md`](stock-experience.md) for its surface and recovery
 status.
+
+Android uses the independent `sos.stock.mobile` package in
+[`experiences/mobile.luau`](../experiences/mobile.luau). Its mobile top bar,
+bottom navigation, touch geometry, vertically scrolling screens, app launcher,
+and agent flow are authored separately. Applications and ordinary SOS
+Experiences replace the presented root and fill the phone viewport. Stock
+Mobile has no `window_space`, command rail, hover surface, tiling policy, or
+desktop window model. Sharing the provider and appearance ABIs does not merge
+the two Stock identities or their durable resources.
 
 `render` returns the root scene node. `update` may mutate and return state, or
 return a typed effect envelope:

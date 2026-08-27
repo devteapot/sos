@@ -1,4 +1,4 @@
-# System Providers v1 + Stock Shell
+# System Providers v1 + platform Stock experiences
 
 ## Scope
 
@@ -110,10 +110,11 @@ acceptance evidence; it has no action mode.
 
 ## Stock trust and fallback
 
-[`default.luau`](../experiences/default.luau) is the substantial Stock Shell
-revision described in [`stock-experience.md`](stock-experience.md). Android
-stages that exact source at `/system_ext/etc/sos/default.luau`; AVB and the
-signed OTA protect it as system content. At every authority start, its
+[`default.luau`](../experiences/default.luau) is the Linux Stock Shell revision
+described in [`stock-experience.md`](stock-experience.md). Android instead
+stages the independent [`mobile.luau`](../experiences/mobile.luau) package at
+`/system_ext/etc/sos/mobile.luau`; AVB and the signed OTA protect it as system
+content. At every authority start, the platform Stock package's
 content-addressed revision is installed and pinned independently from the
 mutable current pointer. Revision responses identify that pinned stock revision
 and its trusted provenance.
@@ -126,7 +127,7 @@ revision, and then lets the supervisor restart the host. A failure of the stock
 revision itself is not recursively retried; it escalates to the fixed native
 Recovery path.
 
-Linux currently installs the same source read-only and content-addresses the
+Linux installs its desktop source read-only and content-addresses the
 activated user revision, but the development-live session does not provision a
 system-owned stock pin or release verification key. Its optional manifest HMAC
 mode is not equivalent to the Android release-signing boundary. A signed,

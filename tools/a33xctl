@@ -74,6 +74,14 @@ check_android_composition_authority() {
   local authority="$1" init_rc="$2" marker
   grep -F -- '--install-reference-composition' "$init_rc" >/dev/null || \
     fail "SOS authority does not install the signed reference composition"
+  grep -F -- '--bootstrap-source /system_ext/etc/sos/mobile.luau' "$init_rc" >/dev/null || \
+    fail "SOS authority does not boot the Stock Mobile source"
+  grep -F -- '--bootstrap-package /system_ext/etc/sos/mobile.package.json' "$init_rc" >/dev/null || \
+    fail "SOS authority does not boot the Stock Mobile package"
+  grep -F -- '--bootstrap-asset mobile.theme luau /system_ext/etc/sos/modules/mobile-theme.luau' \
+    "$init_rc" >/dev/null || fail "SOS authority does not bind the Stock Mobile theme"
+  grep -aF 'sos.stock.mobile' "$authority" >/dev/null || \
+    fail "SOS authority omitted the reserved Stock Mobile identity"
   for marker in \
     sos.example.agenda \
     sos.example.media \
@@ -83,6 +91,36 @@ check_android_composition_authority() {
       fail "SOS authority omitted reference Experience $marker"
   done
   info "SOS authority signed reference composition markers passed"
+}
+
+check_android_stock_mobile() {
+  [[ "$#" -eq 3 ]] || \
+    fail "usage: check_android_stock_mobile SOURCE PACKAGE THEME"
+  local source="$1" package="$2" theme="$3"
+  jq -e '
+    .format_version == 4 and
+    .experience_id == "sos.stock.mobile" and
+    .role == "shell" and
+    .contract.exports.main.viewport.min_width == 320 and
+    .contract.exports.main.viewport.min_height == 480 and
+    (.provider_capabilities | index("appearance_write") != null)
+  ' "$package" >/dev/null || fail "Android Stock Mobile package contract is invalid"
+  grep -F 'require("mobile.theme")' "$source" >/dev/null || \
+    fail "Android Stock Mobile source omitted its revision-local theme"
+  for marker in \
+    'stock-mobile-root' \
+    'mobile-top-bar' \
+    'mobile-bottom-navigation' \
+    'mobile-app-launcher' \
+    'experience_present_'; do
+    grep -F "$marker" "$source" >/dev/null || \
+      fail "Android Stock Mobile source omitted phone-native marker: $marker"
+  done
+  ! grep -F 'kind = "window_space"' "$source" >/dev/null || \
+    fail "Android Stock Mobile source contains the desktop window-space primitive"
+  grep -F 'touch = {' "$theme" >/dev/null || \
+    fail "Android Stock Mobile theme omitted touch geometry"
+  info "Android Stock Mobile identity and phone-native source contract passed"
 }
 
 check_android_v4_system_controls() {
@@ -358,10 +396,10 @@ stage_sos() {
   local node_cxx="$SOS_ROOT/artifacts/sos-node-libc++_shared.so"
   local agent_runner="$SOS_ROOT/services/sos-agent/dist/agent-runner.cjs"
   local agent_api="$SOS_ROOT/docs/experience-api.md"
-  local agent_example_primary="$SOS_ROOT/experiences/default.luau"
-  local bootstrap="$SOS_ROOT/experiences/default.luau"
-  local bootstrap_package="$SOS_ROOT/experiences/default.package.json"
-  local stock_theme="$SOS_ROOT/experiences/modules/stock-theme.luau"
+  local agent_example_primary="$SOS_ROOT/experiences/mobile.luau"
+  local bootstrap="$SOS_ROOT/experiences/mobile.luau"
+  local bootstrap_package="$SOS_ROOT/experiences/mobile.package.json"
+  local stock_theme="$SOS_ROOT/experiences/modules/mobile-theme.luau"
   [[ -f "$LINEAGE_ROOT/build/envsetup.sh" ]] || fail "run init and sync first"
   [[ -f "$apk" ]] || \
     fail "ARM64 SOS APK missing; run ./tools/sosctl m1-build --abi arm64-v8a --home"
@@ -414,13 +452,17 @@ stage_sos() {
     "$LINEAGE_SOS_OVERLAY_DESTINATION/prebuilts/sos-agent/experience-api.md"
   install -m 0644 "$agent_example_primary" \
     "$LINEAGE_SOS_OVERLAY_DESTINATION/prebuilts/sos-agent/example-primary.luau"
-  rm -f -- "$LINEAGE_SOS_OVERLAY_DESTINATION/prebuilts/sos-agent/example-secondary.luau"
-  install -m 0644 "$bootstrap" \
-    "$LINEAGE_SOS_OVERLAY_DESTINATION/prebuilts/default.luau"
-  install -m 0644 "$bootstrap_package" \
-    "$LINEAGE_SOS_OVERLAY_DESTINATION/prebuilts/default.package.json"
-  install -m 0644 "$stock_theme" \
+  rm -f -- \
+    "$LINEAGE_SOS_OVERLAY_DESTINATION/prebuilts/sos-agent/example-secondary.luau" \
+    "$LINEAGE_SOS_OVERLAY_DESTINATION/prebuilts/default.luau" \
+    "$LINEAGE_SOS_OVERLAY_DESTINATION/prebuilts/default.package.json" \
     "$LINEAGE_SOS_OVERLAY_DESTINATION/prebuilts/stock-theme.luau"
+  install -m 0644 "$bootstrap" \
+    "$LINEAGE_SOS_OVERLAY_DESTINATION/prebuilts/mobile.luau"
+  install -m 0644 "$bootstrap_package" \
+    "$LINEAGE_SOS_OVERLAY_DESTINATION/prebuilts/mobile.package.json"
+  install -m 0644 "$stock_theme" \
+    "$LINEAGE_SOS_OVERLAY_DESTINATION/prebuilts/mobile-theme.luau"
   sha256sum \
     "$LINEAGE_SOS_OVERLAY_DESTINATION/prebuilts/SosShell.apk" \
     "$LINEAGE_SOS_OVERLAY_DESTINATION/prebuilts/arm64/libsos_core_experience.so" \
@@ -430,9 +472,9 @@ stage_sos() {
     "$LINEAGE_SOS_OVERLAY_DESTINATION/prebuilts/sos-agent/agent-runner.cjs" \
     "$LINEAGE_SOS_OVERLAY_DESTINATION/prebuilts/sos-agent/experience-api.md" \
     "$LINEAGE_SOS_OVERLAY_DESTINATION/prebuilts/sos-agent/example-primary.luau" \
-    "$LINEAGE_SOS_OVERLAY_DESTINATION/prebuilts/default.luau" \
-    "$LINEAGE_SOS_OVERLAY_DESTINATION/prebuilts/default.package.json" \
-    "$LINEAGE_SOS_OVERLAY_DESTINATION/prebuilts/stock-theme.luau"
+    "$LINEAGE_SOS_OVERLAY_DESTINATION/prebuilts/mobile.luau" \
+    "$LINEAGE_SOS_OVERLAY_DESTINATION/prebuilts/mobile.package.json" \
+    "$LINEAGE_SOS_OVERLAY_DESTINATION/prebuilts/mobile-theme.luau"
 }
 
 build_recovery() {
@@ -780,9 +822,9 @@ inspect_compat_profile() {
   local agent_runner="$target_files/SYSTEM_EXT/etc/sos-agent/agent-runner.cjs"
   local agent_api="$target_files/SYSTEM_EXT/etc/sos-agent/experience-api.md"
   local agent_example_primary="$target_files/SYSTEM_EXT/etc/sos-agent/example-primary.luau"
-  local bootstrap="$target_files/SYSTEM_EXT/etc/sos/default.luau"
-  local bootstrap_package="$target_files/SYSTEM_EXT/etc/sos/default.package.json"
-  local stock_theme="$target_files/SYSTEM_EXT/etc/sos/modules/stock-theme.luau"
+  local bootstrap="$target_files/SYSTEM_EXT/etc/sos/mobile.luau"
+  local bootstrap_package="$target_files/SYSTEM_EXT/etc/sos/mobile.package.json"
+  local stock_theme="$target_files/SYSTEM_EXT/etc/sos/modules/mobile-theme.luau"
   local init_rc="$target_files/SYSTEM_EXT/etc/init/sos-authority.rc"
   local properties="$target_files/SYSTEM_EXT/etc/build.prop"
   local seapp_contexts="$target_files/SYSTEM_EXT/etc/selinux/system_ext_seapp_contexts"
@@ -844,9 +886,7 @@ inspect_compat_profile() {
   if [[ "$profile" == compat1 ]]; then
     for component in \
       dev.gpui.mobile.SosCompatChromeService \
-      dev.gpui.mobile.SosCompatWorkspaceActivity \
       dev.gpui.mobile.SosAttentionListenerService \
-      dev.gpui.mobile.SosAttentionActivity \
       dev.gpui.mobile.SosSystemAttentionReceiver; do
       grep -F "=\"$component\"" <<<"$manifest_dump" >/dev/null || \
         fail "SOS Compat 1 component missing: $component"
@@ -900,8 +940,15 @@ inspect_compat_profile() {
       grep -F 'Ldev/gpui/mobile/SosVisibleIdentity;' >/dev/null || \
       fail "native Compat omitted its SOS-owned visible identity policy"
     unzip -p "$apk" 'classes*.dex' | strings | \
-      grep -F 'Open a compatible application. SOS remains in control.' >/dev/null || \
-      fail "native Compat workspace copy exposes its Android substrate"
+      grep -F 'sos://mobile/navigate/' >/dev/null || \
+      fail "native Compat controls cannot navigate the Stock Mobile launcher"
+    unzip -p "$apk" 'classes*.dex' | strings | \
+      grep -F 'compat_chrome_visibility=hidden owner=stock-mobile' >/dev/null || \
+      fail "native Compat chrome can cover the Stock Mobile owner"
+    if unzip -p "$apk" 'classes*.dex' | strings | \
+      grep -E 'SosCompatWorkspaceActivity|SosAttentionActivity' >/dev/null; then
+      fail "native Compat retained a Java-owned launcher or attention screen"
+    fi
     unzip -p "$apk" 'classes*.dex' | strings | \
       grep -F 'transition_reveal=atomic controls=back,apps,attention,exit' >/dev/null || \
       fail "native Compat chrome can expose a partially rendered transition frame"
@@ -1219,16 +1266,21 @@ inspect_compat_profile() {
   check_agent_runner_contract "$agent_runner"
   cmp -s "$agent_api" "$SOS_ROOT/docs/experience-api.md" || \
     fail "packaged Android Pi API document differs from repository source"
-  cmp -s "$agent_example_primary" "$SOS_ROOT/experiences/default.luau" || \
+  cmp -s "$agent_example_primary" "$SOS_ROOT/experiences/mobile.luau" || \
     fail "packaged Android Pi primary example differs from repository source"
   [[ ! -e "$target_files/SYSTEM_EXT/etc/sos-agent/example-secondary.luau" ]] || \
     fail "packaged Android product retained a secondary Pi example"
-  cmp -s "$bootstrap" "$SOS_ROOT/experiences/default.luau" || \
+  [[ ! -e "$target_files/SYSTEM_EXT/etc/sos/default.luau" && \
+    ! -e "$target_files/SYSTEM_EXT/etc/sos/default.package.json" && \
+    ! -e "$target_files/SYSTEM_EXT/etc/sos/modules/stock-theme.luau" ]] || \
+    fail "packaged Android product retained the Linux Stock Shell bootstrap"
+  cmp -s "$bootstrap" "$SOS_ROOT/experiences/mobile.luau" || \
     fail "packaged SOS bootstrap differs from the repository source"
-  cmp -s "$bootstrap_package" "$SOS_ROOT/experiences/default.package.json" || \
+  cmp -s "$bootstrap_package" "$SOS_ROOT/experiences/mobile.package.json" || \
     fail "packaged SOS v4 manifest differs from the repository source"
-  cmp -s "$stock_theme" "$SOS_ROOT/experiences/modules/stock-theme.luau" || \
-    fail "packaged SOS Stock theme differs from the repository source"
+  cmp -s "$stock_theme" "$SOS_ROOT/experiences/modules/mobile-theme.luau" || \
+    fail "packaged SOS Stock Mobile theme differs from the repository source"
+  check_android_stock_mobile "$bootstrap" "$bootstrap_package" "$stock_theme"
   check_android_composition_authority "$authority" "$init_rc"
   grep -Fx 'ro.sos.authority=on-device' "$properties"
   grep -Fx 'ro.sos.home=dev.sos.experience' "$properties"
@@ -1284,8 +1336,9 @@ inspect_core() {
   local system_ext_policy="$target_files/SYSTEM_EXT/etc/selinux/system_ext_sepolicy.cil"
   local authority="$target_files/SYSTEM_EXT/bin/sos-authority"
   local authority_init_rc="$target_files/SYSTEM_EXT/etc/init/sos-authority.rc"
-  local bootstrap_package="$target_files/SYSTEM_EXT/etc/sos/default.package.json"
-  local stock_theme="$target_files/SYSTEM_EXT/etc/sos/modules/stock-theme.luau"
+  local bootstrap="$target_files/SYSTEM_EXT/etc/sos/mobile.luau"
+  local bootstrap_package="$target_files/SYSTEM_EXT/etc/sos/mobile.package.json"
+  local stock_theme="$target_files/SYSTEM_EXT/etc/sos/modules/mobile-theme.luau"
   local system_ui="$target_files/SYSTEM_EXT/priv-app/SystemUI/SystemUI.apk"
   local launcher="$target_files/SYSTEM_EXT/priv-app/Launcher3QuickStep/Launcher3QuickStep.apk"
   local artifact
@@ -1293,7 +1346,7 @@ inspect_core() {
     "$probe" "$init_rc" "$host" "$host_runtime" "$host_init_rc" \
     "$properties" "$file_contexts" "$system_ext_policy" "$authority" \
     "$authority_init_rc" \
-    "$bootstrap_package" "$stock_theme" \
+    "$bootstrap" "$bootstrap_package" "$stock_theme" \
     "$system_ui" "$launcher"; do
     [[ -f "$artifact" ]] || fail "SOS Core shadow-stage artifact missing: $artifact"
     stat --printf='%n %s bytes\n' "$artifact"
@@ -1362,10 +1415,17 @@ inspect_core() {
   grep -Fx 'ro.sos.authority=on-device' "$properties"
   grep -Fx 'ro.sos.profile=core' "$properties"
   grep -Fx 'ro.sos.ui_owner=android-shadow' "$properties"
-  cmp -s "$bootstrap_package" "$SOS_ROOT/experiences/default.package.json" || \
+  cmp -s "$bootstrap" "$SOS_ROOT/experiences/mobile.luau" || \
+    fail "SOS Core shadow bootstrap differs from the Stock Mobile source"
+  cmp -s "$bootstrap_package" "$SOS_ROOT/experiences/mobile.package.json" || \
     fail "SOS Core v4 manifest differs from the repository source"
-  cmp -s "$stock_theme" "$SOS_ROOT/experiences/modules/stock-theme.luau" || \
-    fail "SOS Core Stock theme differs from the repository source"
+  cmp -s "$stock_theme" "$SOS_ROOT/experiences/modules/mobile-theme.luau" || \
+    fail "SOS Core Stock Mobile theme differs from the repository source"
+  [[ ! -e "$target_files/SYSTEM_EXT/etc/sos/default.luau" && \
+    ! -e "$target_files/SYSTEM_EXT/etc/sos/default.package.json" && \
+    ! -e "$target_files/SYSTEM_EXT/etc/sos/modules/stock-theme.luau" ]] || \
+    fail "SOS Core shadow retained the Linux Stock Shell bootstrap"
+  check_android_stock_mobile "$bootstrap" "$bootstrap_package" "$stock_theme"
   check_android_composition_authority "$authority" "$authority_init_rc"
   grep -Fx 'ro.sos.revision_format=4' "$properties"
   grep -Fx 'ro.sos.experience_api=4' "$properties"
@@ -1420,8 +1480,9 @@ inspect_core_stage() {
   local agent_runner="$target_files/SYSTEM_EXT/etc/sos-agent/agent-runner.cjs"
   local agent_api="$target_files/SYSTEM_EXT/etc/sos-agent/experience-api.md"
   local agent_example_primary="$target_files/SYSTEM_EXT/etc/sos-agent/example-primary.luau"
-  local bootstrap_package="$target_files/SYSTEM_EXT/etc/sos/default.package.json"
-  local stock_theme="$target_files/SYSTEM_EXT/etc/sos/modules/stock-theme.luau"
+  local bootstrap="$target_files/SYSTEM_EXT/etc/sos/mobile.luau"
+  local bootstrap_package="$target_files/SYSTEM_EXT/etc/sos/mobile.package.json"
+  local stock_theme="$target_files/SYSTEM_EXT/etc/sos/modules/mobile-theme.luau"
   local system_ext_policy="$target_files/SYSTEM_EXT/etc/selinux/system_ext_sepolicy.cil"
   local bridge_apk="$target_files/SYSTEM_EXT/priv-app/SosFrameworkBridge/SosFrameworkBridge.apk"
   local core_platform="$target_files/SYSTEM_EXT/bin/sos-core-platform"
@@ -1434,7 +1495,7 @@ inspect_core_stage() {
     "$host" "$host_runtime" "$host_init_rc" "$properties" "$authority" \
     "$authority_init_rc" \
     "$node" "$agent_runner" "$agent_api" "$agent_example_primary" \
-    "$bootstrap_package" "$stock_theme" \
+    "$bootstrap" "$bootstrap_package" "$stock_theme" \
     "$system_ext_policy"; do
     [[ -f "$artifact" ]] || fail "SOS $stage artifact missing: $artifact"
     stat --printf='%n %s bytes\n' "$artifact"
@@ -1509,14 +1570,21 @@ inspect_core_stage() {
     fail "SOS $stage packaged Pi runner differs from the shared built bundle"
   cmp -s "$agent_api" "$SOS_ROOT/docs/experience-api.md" || \
     fail "SOS $stage packaged Pi API document differs from repository source"
-  cmp -s "$agent_example_primary" "$SOS_ROOT/experiences/default.luau" || \
+  cmp -s "$agent_example_primary" "$SOS_ROOT/experiences/mobile.luau" || \
     fail "SOS $stage packaged Pi primary example differs from repository source"
   [[ ! -e "$target_files/SYSTEM_EXT/etc/sos-agent/example-secondary.luau" ]] || \
     fail "SOS $stage retained a secondary Pi example"
-  cmp -s "$bootstrap_package" "$SOS_ROOT/experiences/default.package.json" || \
+  [[ ! -e "$target_files/SYSTEM_EXT/etc/sos/default.luau" && \
+    ! -e "$target_files/SYSTEM_EXT/etc/sos/default.package.json" && \
+    ! -e "$target_files/SYSTEM_EXT/etc/sos/modules/stock-theme.luau" ]] || \
+    fail "SOS $stage retained the Linux Stock Shell bootstrap"
+  cmp -s "$bootstrap" "$SOS_ROOT/experiences/mobile.luau" || \
+    fail "SOS $stage bootstrap differs from the Stock Mobile source"
+  cmp -s "$bootstrap_package" "$SOS_ROOT/experiences/mobile.package.json" || \
     fail "SOS $stage packaged v4 manifest differs from repository source"
-  cmp -s "$stock_theme" "$SOS_ROOT/experiences/modules/stock-theme.luau" || \
-    fail "SOS $stage packaged Stock theme differs from repository source"
+  cmp -s "$stock_theme" "$SOS_ROOT/experiences/modules/mobile-theme.luau" || \
+    fail "SOS $stage packaged Stock Mobile theme differs from repository source"
+  check_android_stock_mobile "$bootstrap" "$bootstrap_package" "$stock_theme"
   check_android_composition_authority "$authority" "$authority_init_rc"
   [[ ! -e "$target_files/SYSTEM_EXT/etc/sos-agent/android-runner.cjs" ]] || \
     fail "SOS $stage retained the superseded Android-only Pi runner"
@@ -2151,7 +2219,7 @@ audit_v4_composition_campaign() {
     . as $root |
     $root.format_version == 1 and
     $root.presented_experience == "sos.example.dashboard" and
-    (["sos.stock.shell", "sos.example.agenda", "sos.example.media",
+    (["sos.stock.mobile", "sos.example.agenda", "sos.example.media",
       "sos.example.dashboard", "sos.example.agenda-media-remix"]
       | all(. as $id | $root.states[$id] != null and $root.grants[$id] != null))
   ' "$evidence_root/stages/dashboard/composition.json" >/dev/null || \
@@ -2159,7 +2227,7 @@ audit_v4_composition_campaign() {
   jq -e '
     . as $root |
     ($root.grants | to_entries | all(.value.reviewed == true and .value.experience_id == .key)) and
-    ($root.grants["sos.stock.shell"].provider_capabilities | index("appearance_write") != null) and
+    ($root.grants["sos.stock.mobile"].provider_capabilities | index("appearance_write") != null) and
     ($root.grants["sos.example.agenda"].provider_capabilities | length == 0) and
     ($root.grants["sos.example.dashboard"].provider_capabilities | length == 0) and
     ($root.grants["sos.example.media"].provider_capabilities | sort == ["music_control", "music_read"]) and
@@ -2201,11 +2269,11 @@ audit_v4_composition_campaign() {
     ' "$evidence_root/stages/$stage/composition.json" >/dev/null || \
       fail "v4 graph, state, or appearance did not survive $stage"
   done
-  original_stock_revision="$(jq -er '.states["sos.stock.shell"].revision_id' \
+  original_stock_revision="$(jq -er '.states["sos.stock.mobile"].revision_id' \
     "$evidence_root/stages/dashboard/composition.json")"
-  authored_stock_revision="$(jq -er '.states["sos.stock.shell"].revision_id' \
+  authored_stock_revision="$(jq -er '.states["sos.stock.mobile"].revision_id' \
     "$evidence_root/stages/authored/composition.json")"
-  rollback_stock_revision="$(jq -er '.states["sos.stock.shell"].revision_id' \
+  rollback_stock_revision="$(jq -er '.states["sos.stock.mobile"].revision_id' \
     "$evidence_root/stages/rollback/composition.json")"
   [[ "$original_stock_revision" != "$authored_stock_revision" && \
     "$rollback_stock_revision" == "$original_stock_revision" ]] || \

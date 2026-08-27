@@ -12,9 +12,9 @@ PRODUCT_PACKAGES += \
     sos-agent-runner \
     sos-agent-experience-api \
     sos-agent-example-primary \
-    sos-default-experience \
-    sos-default-package \
-    sos-stock-theme
+    sos-mobile-experience \
+    sos-mobile-package \
+    sos-mobile-theme
 
 SYSTEM_EXT_PUBLIC_SEPOLICY_DIRS += \
     device/sos/a33x/sepolicy/system_ext/public

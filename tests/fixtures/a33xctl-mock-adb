@@ -61,14 +61,14 @@ if [[ -n "${A33XCTL_CAPTURE_STAGE:-}" ]]; then
     cat <<EOF
 {"format_version":1,"presented_experience":$mock_presented,
  "states":{
-  "sos.stock.shell":{"revision":1,"revision_id":"$mock_stock_revision","schema_version":1,"source_sha256":"aa","state":{}},
+  "sos.stock.mobile":{"revision":1,"revision_id":"$mock_stock_revision","schema_version":1,"source_sha256":"aa","state":{}},
   "sos.example.agenda":{"revision":2,"revision_id":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","schema_version":1,"source_sha256":"bb","state":{"selected":$mock_selected}},
   "sos.example.media":{"revision":3,"revision_id":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","schema_version":1,"source_sha256":"cc","state":{"playing":false}},
   "sos.example.dashboard":{"revision":4,"revision_id":"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd","schema_version":1,"source_sha256":"dd","state":{"opened":$mock_opened,"acceptance_pings":$mock_pings}},
   "sos.example.agenda-media-remix":{"revision":5,"revision_id":"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee","schema_version":1,"source_sha256":"ee","state":{}}},
  "appearance":{"profile":{"generation":$mock_generation}},
  "grants":{
-  "sos.stock.shell":{"generation":1,"reviewed":true,"experience_id":"sos.stock.shell","provider_capabilities":["appearance_write"],"data_flows":{}},
+  "sos.stock.mobile":{"generation":1,"reviewed":true,"experience_id":"sos.stock.mobile","provider_capabilities":["appearance_write"],"data_flows":{}},
   "sos.example.agenda":{"generation":1,"reviewed":true,"experience_id":"sos.example.agenda","provider_capabilities":[],"data_flows":{}},
   "sos.example.media":{"generation":1,"reviewed":true,"experience_id":"sos.example.media","provider_capabilities":["music_read","music_control"],"data_flows":{}},
   "sos.example.dashboard":{"generation":1,"reviewed":true,"experience_id":"sos.example.dashboard","provider_capabilities":[],"data_flows":{"agenda":{"experience_id":"sos.example.agenda"},"media":{"experience_id":"sos.example.media"}}},

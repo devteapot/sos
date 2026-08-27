@@ -91,6 +91,9 @@ The Compat visible-output invariant is exact: a frame may contain SOS or the
 contents of one explicitly selected compatible non-system Android app, and
 nothing else. Package visibility is limited to exported launcher Activities;
 legacy targets that require Android's permission-review ceremony are excluded.
+SOS HOME is the independent `sos.stock.mobile` v4 experience, with a
+phone-native top bar, bottom navigation, touch-first launcher, and full-screen
+root presentation. Android never boots or adapts Linux `sos.stock.shell`.
 Stock keyguard, status/navigation bars, notification/quick-settings shade,
 Settings, permission and install dialogs, chooser/file picker, IME settings or
 setup Activities, setup, dialer/emergency UI, crash/ANR dialogs, and Recovery

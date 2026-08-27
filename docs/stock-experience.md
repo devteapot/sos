@@ -1,10 +1,14 @@
-# Stock experience
+# Stock experiences
 
 Date: 2026-08-27
 
-Stock Shell is the product's substantial default experience and the
-integration target for the System Providers ABI. It is the reserved, pinned
-Shell-role Experience API v4 package whose source lives in
+SOS has platform-specific pinned Stock experiences. They share the Experience
+API, System Providers ABI, semantic appearance snapshot, and Shell role, but
+they do not share an Experience ID, durable state, revision history, source,
+layout, or product semantics.
+
+Stock Shell is the Linux default and desktop integration target. It is the
+reserved, pinned `sos.stock.shell` Experience API v4 package whose source lives in
 [`experiences/default.luau`](../experiences/default.luau), not a fixed Rust UI
 or catalog of native widgets. The supervisor resolves and activates its graph
 through the same content-addressed registry path used by other v4 experiences.
@@ -18,7 +22,31 @@ No Wayland object, socket, PID, desktop-file path, or arbitrary geometry
 authority crosses into the revision. Android renders these Linux integration
 primitives as explicit unavailable surfaces.
 
-## Product surface
+## Stock Mobile product surface
+
+Android boots the separate pinned `sos.stock.mobile` package from
+[`experiences/mobile.luau`](../experiences/mobile.luau) and
+[`experiences/mobile.package.json`](../experiences/mobile.package.json). It is
+not a responsive branch or adapted revision of Stock Shell. It defines a
+phone-native top bar, large touch targets, a bottom navigation model, a
+source-owned full-screen application launcher, vertically scrolling content,
+and a mobile agent surface. Registry experiences and compatible Android
+applications open as independent full-screen roots; there is no desktop
+window region, floating/tiled policy, command rail, hover UI, or window list.
+
+Stock Mobile owns its own history, state, appearance-write grant, authoring
+target, recovery pointer, and `mobile.theme` sidecar. Android's immutable
+bootstrap and agent example package only this mobile source. Linux continues
+to package Stock Shell and `stock.theme`. Shared semantic appearance values
+can keep both products in one design language without sharing style code or
+information architecture.
+
+The Shell role here is an authority role: it may present another registered
+Experience and write reviewed system appearance. It does not imply desktop
+shell chrome. Dismissing an Android top-level Experience returns to Stock
+Mobile, while Linux returns to Stock Shell.
+
+## Stock Shell product surface
 
 The initial stock revision is a complete source-defined shell with:
 
@@ -117,7 +145,7 @@ publishes global accessibility preferences and semantic appearance tokens as
 authority-owned data. A mounted child may accept a bounded container override,
 but a parent never injects style code or repaints the child scene.
 
-## Responsive contract
+## Stock Shell responsive contract
 
 The root and shell body measure against the complete logical output. The top
 bar remains fixed, the application region grows, and opening the 390-pixel

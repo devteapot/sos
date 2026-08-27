@@ -197,26 +197,6 @@
         />
 
         <activity
-            android:name="dev.gpui.mobile.SosCompatWorkspaceActivity"
-            android:directBootAware="false"
-            android:enabled="${sosCompatEnabled}"
-            android:excludeFromRecents="true"
-            android:exported="false"
-            android:launchMode="singleTask"
-            android:theme="@style/GpuiTheme"
-        />
-
-        <activity
-            android:name="dev.gpui.mobile.SosAttentionActivity"
-            android:directBootAware="false"
-            android:enabled="${sosCompatEnabled}"
-            android:excludeFromRecents="true"
-            android:exported="false"
-            android:launchMode="singleTask"
-            android:theme="@style/GpuiTheme"
-        />
-
-        <activity
             android:name="dev.gpui.mobile.SosAdbConfirmationActivity"
             android:directBootAware="true"
             android:enabled="${sosCompatEnabled}"
