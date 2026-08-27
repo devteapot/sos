@@ -15570,3 +15570,32 @@ KiB peak RSS.
 candidate, install it once, and repeat the ordered campaign. At authority
 recovery, use the emitted raw step to determine the implementation change; do
 not infer which syscall returned errno 111 and do not advance to authoring.
+
+## 2026-08-27: Seal the raw-step authority diagnostic candidate
+
+**Goal / build:** Package the exact authority binary that identifies socket
+creation, `SO_REUSEADDR`, bind, and listen as separate fatal boundaries. Clean
+source `0f519dd1a318ccd71b71d208c176d9d9dea09ee0` built Compat 1 successfully
+in 242.22 seconds with 2,978,888 KiB peak RSS. The immutable product identity
+is `sos.compat1.0f519dd1a318.967ed8346550`.
+
+**Offline evidence:** `./tools/a33xctl inspect-compat1` passed in 19.72 seconds
+with 47,912 KiB peak RSS. It verified the OTA signature, VINTF, PIT and AVB
+limits, boot chain, v4 and Stock Mobile contracts, Android authority markers,
+and all four compiled raw socket-step labels. The packaged 1,930,032-byte
+authority has SHA-256
+`88b9a5a05b9fdf41e4a9dbfb8b7f12f9e05bfb84246a42d05926d52c0dad9e97`.
+The exact 1,067,731,695-byte OTA at
+`.cache/evidence/android-v4-0f519dd/compat1/lineage-23.0-20260827-UNOFFICIAL-sos_compat_a33x-0f519dd.zip`
+has SHA-256
+`3891b536043aa7e150bb630f22e848c14af7767aef113c721253b63cb6e08a39`.
+Its complete ZIP test passed in 4.52 seconds. The finalized eight-file offline
+manifest is 712 bytes with SHA-256
+`f2e3eb1d36ec6ba16fdfffc3bdc251c2b76599d2601ce01472b558fc9fb38276`;
+independent verification passes.
+
+**Decision / next gate:** Reverify this digest at the device boundary, install
+it once through automatic Recovery, and run a fresh artifact-bound campaign.
+The authority restart must either become audit-ready or report the exact raw
+socket operation returning errno 111. No authoring or rollback claim follows
+from this diagnostic artifact alone.
