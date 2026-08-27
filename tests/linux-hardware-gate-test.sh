@@ -32,6 +32,44 @@ SOS_AGENT_MAIN="$test_root/agent-runner.cjs" \
   "$test_login" --if-needed >"$test_root/offline-ready.txt"
 grep -F 'sos_agent_login_ready provider=faux' "$test_root/offline-ready.txt" >/dev/null
 
+test_gate_bin="$test_root/gate-bin"
+test_gate_evidence="$test_root/gate-inhibitor-evidence"
+test_gate_state="$test_root/gate-inhibitor-state.txt"
+mkdir -p "$test_gate_bin" "$test_gate_evidence/environment"
+for test_binary in sudo systemctl systemd-inhibit systemd-run sleep; do
+  ln -s "$test_repo_root/tests/fixtures/linux-login-component-mock.py" \
+    "$test_gate_bin/$test_binary"
+done
+(
+  export PATH="$test_gate_bin:$PATH"
+  export SOS_TEST_GATE_INHIBITOR_STATE="$test_gate_state"
+  export SOS_TEST_GATE_SYSTEMD_RUN_ARGS_FILE="$test_root/gate-systemd-run-arguments.txt"
+  # shellcheck source=../tools/linux-hardware-gate
+  source "$test_gate"
+  hardware_gate_start_awake_inhibitor "$test_gate_evidence"
+  grep -Fx active "$test_gate_state" >/dev/null
+  hardware_gate_collect_cleanup_unit="$hardware_gate_awake_unit"
+  hardware_gate_collect_cleanup
+  grep -Fx inactive "$test_gate_state" >/dev/null
+  hardware_gate_start_awake_inhibitor "$test_gate_evidence"
+  hardware_gate_stop_awake_inhibitor "$test_gate_evidence" "$hardware_gate_awake_unit"
+)
+grep -Fx -- '--unit=sos-linux-hardware-gate-awake.service' \
+  "$test_root/gate-systemd-run-arguments.txt" >/dev/null
+grep -Fx -- '--property=CollectMode=inactive-or-failed' \
+  "$test_root/gate-systemd-run-arguments.txt" >/dev/null
+grep -Fx -- '/usr/bin/systemd-inhibit' \
+  "$test_root/gate-systemd-run-arguments.txt" >/dev/null
+grep -Fx -- '--what=idle:sleep:handle-lid-switch' \
+  "$test_root/gate-systemd-run-arguments.txt" >/dev/null
+grep -Fx -- '--mode=block' "$test_root/gate-systemd-run-arguments.txt" >/dev/null
+grep -Fx -- '/usr/bin/sleep' "$test_root/gate-systemd-run-arguments.txt" >/dev/null
+grep -F 'SOS Linux hardware gate' \
+  "$test_gate_evidence/environment/gate-inhibitor-prepared.txt" >/dev/null
+grep -F 'sleep:idle:handle-lid-switch' \
+  "$test_gate_evidence/gate-inhibitor-before-release.txt" >/dev/null
+grep -Fx 'state=inactive' "$test_gate_evidence/gate-inhibitor-release.txt" >/dev/null
+
 test_evidence="$test_root/evidence"
 mkdir -p "$test_evidence/environment"
 test_boot_id=12345678-1234-1234-1234-123456789abc
@@ -69,8 +107,18 @@ printf '2222\n' >"$test_evidence/current-revision.txt"
 printf '2222\n' >"$test_evidence/authority-revision.txt"
 printf '{}\n' >"$test_evidence/authority.json"
 printf 'active\n' >"$test_evidence/display-manager-active.txt"
+printf '%s\n' \
+  'SOS Linux hardware gate 0 root 123 systemd-inhibit sleep:idle:handle-lid-switch Prepared physical acceptance campaign block' \
+  >"$test_evidence/environment/gate-inhibitor-prepared.txt"
+cp -- "$test_evidence/environment/gate-inhibitor-prepared.txt" \
+  "$test_evidence/gate-inhibitor-before-release.txt"
+printf '%s\n' \
+  'unit=sos-linux-hardware-gate-awake.service' \
+  'state=inactive' >"$test_evidence/gate-inhibitor-release.txt"
 "$test_gate" audit --evidence-dir "$test_evidence" >"$test_root/pass-audit.txt"
 grep -Fx "criterion=same_boot result=PASS boot_id=$test_boot_id" \
+  "$test_root/pass-audit.txt" >/dev/null
+grep -Fx 'criterion=gate_awake_inhibitor result=PASS' \
   "$test_root/pass-audit.txt" >/dev/null
 grep -Fx \
   'linux_hardware_gate_result=PASS evidence=drm_page_flip physical_input=keyboard,touchpad,touchscreen' \
@@ -90,6 +138,17 @@ fi
 grep -Fx 'criterion=touchscreen_input result=FAIL' "$test_root/fail-audit.txt" >/dev/null
 printf '%s\n' \
   'observed native compositor input input_class="touch"' >>"$test_evidence/journal-user.txt"
+
+rm -- "$test_evidence/gate-inhibitor-release.txt"
+if "$test_gate" audit --evidence-dir "$test_evidence" >"$test_root/inhibitor-fail-audit.txt"; then
+  printf 'error: audit accepted evidence without awake-inhibitor release proof\n' >&2
+  exit 1
+fi
+grep -Fx 'criterion=gate_awake_inhibitor result=FAIL' \
+  "$test_root/inhibitor-fail-audit.txt" >/dev/null
+printf '%s\n' \
+  'unit=sos-linux-hardware-gate-awake.service' \
+  'state=inactive' >"$test_evidence/gate-inhibitor-release.txt"
 
 printf '%s\n' \
   'libinput device added device_id="event99" device_name="Synthetic Gate Touch"' \

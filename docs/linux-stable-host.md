@@ -175,6 +175,13 @@ GNOME session's stored preferences. A future trusted suspend action must first
 release this session-owned inhibitor as part of its fixed native ceremony;
 generated Luau cannot remove or bypass it.
 
+The physical acceptance harness owns the earlier GDM gap separately. Its
+`prepare` command starts a root transient block inhibitor before logout, and
+`collect` verifies and releases it after the fallback display manager returns.
+This keeps a remotely observed campaign reachable while no SOS session exists;
+it does not make the SOS launcher or generated code responsible for GDM power
+policy.
+
 For a credential- and network-independent first hardware gate, install with
 `./tools/install-linux-login-session install --offline`. This configures the
 same resident runner with the installed Stock source. A prompt traverses the

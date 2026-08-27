@@ -13787,3 +13787,79 @@ integrated Framework input and live Dashboard composition evidence, and return
 cleanly to GDM. Then install only the preserved Compat 1 OTA on serial
 `RFCT50EGFCN`, complete its physical campaign, and advance to the preserved
 Core 1 OTA. Generate manifests only after each evidence directory is final.
+
+## 2026-08-27: Fix Linux appearance-grant startup schema skew
+
+**Goal:** Diagnose the Framework SOS login that returned to GDM and repair the
+earliest failed runtime boundary before another physical attempt.
+
+**Failure evidence:** The exact `ed88d33` deployment authenticated through GDM,
+initialized both DRM outputs, and reached a nonempty recovery page flip. It
+then started the provider, authority, supervisor, permanent host, offline agent,
+and authoring broker. At monotonic timestamp `110121.424685`, the host rejected
+Stock's reviewed `appearance_write` capability as an unknown
+`providers-linux::Capability` variant. The host exited, the supervisor and
+session followed, and GDM returned. The failure happened before the first Stock
+frame, so no input or composition interaction was attempted.
+
+The finalized same-boot result is
+`.cache/evidence/linux-framework-ed88d33-startup-fail/`. Its campaign wall time
+is 1,083,931,528,324 ns and its verdict is `DIAGNOSTIC_FAIL
+promotion_eligible=false`. The directory contains 38 manifested files and is
+1,218,361 bytes. `evidence-manifest.tsv` is 3,597 bytes with SHA-256
+`45acc4906d040b13e2bbf328881d0389c773ec5c89749e4b4e2e8909dfa42c94`;
+independent verification passed. `journal-user.txt` is 18,016 bytes with
+SHA-256
+`3a339d83fb9651f9f8d3c3d4c02049c79f2f287e51634f0691c8923eda8338d7`.
+`journal-kernel.txt` is 4,015 bytes with SHA-256
+`8d5e52d076039ab0d6405f574ce9ca5232abf9fa386870e5ba22ba2be039f786`.
+`verdict.txt` is 1,128 bytes with SHA-256
+`1e241179d1f049d64f7e259308ce2fcf05b4e6e8eaad10ae90e8237b28dbf019`.
+The gate passed same-boot identity, recovery page flip, direct compositor,
+offline agent start, prepared input inventory, one host launch, GDM fallback,
+and kernel fault scrutiny. It correctly failed session readiness, input,
+activation, durable agreement, clean logout, and process-failure criteria.
+
+**Changed:** `providers-linux::Capability` now includes `AppearanceWrite`. The
+variant only decodes an authority-owned grant; it adds no Linux provider
+operation. A regression test loads the shipped Stock v4 package and requires
+every declared provider capability to decode through the Linux host type. This
+closes the exact package-to-host schema boundary that escaped the earlier graph
+and Android tests.
+
+The laptop also lost network access while it waited at GDM. The existing
+launcher inhibitor starts only after GDM launches SOS, so it correctly protects
+an active SOS session but cannot protect the prepared-login interval. The Linux
+hardware gate now starts the root transient unit
+`sos-linux-hardware-gate-awake.service` at the end of `prepare`. Its logind block
+inhibitor covers `idle`, `sleep`, and `handle-lid-switch`. `collect` requires
+that exact recorded unit, captures its inhibitor row, and releases it before
+manifest generation; its exit trap releases the unit after an earlier
+collection failure. Preparation refuses a second active owner. The gate does
+not change persistent GNOME or GDM power settings. The final audit now requires
+the exact prepared inhibitor row, the row immediately before release, and the
+recorded inactive unit after release as the `gate_awake_inhibitor` criterion.
+
+**Inhibitor experiment:** A user-manager transient unit was rejected by logind
+with `Failed to inhibit: Access denied` because a noninteractive desktop user
+cannot acquire this block inhibitor. That approach was removed. The root-owned
+transient unit then registered successfully as PID 863940 with
+`sleep:idle:handle-lid-switch`, reason `Prepared physical acceptance campaign`,
+and mode `block`; it remains active on the Framework while the fixed deployment
+is prepared.
+
+**Verification:** All 18 `providers-linux` tests pass. The `sos-experience`
+library passes 18 tests, `sos-linux-session --all-targets` passes 20 tests, and
+`revision-supervisor --all-targets` passes 49 tests with only the explicit
+desktop composition metric ignored. The latter includes the reference graph,
+activation journal, tracked update, restart, and host lifecycle cases.
+`tests/linux-hardware-gate-test.sh` executes normal inhibitor release and the
+early-failure cleanup path and passes. `tests/linux-login-session-test.sh` and
+`tests/linux-live-image-test.sh` also pass. Shell syntax, Rust formatting, and
+diff whitespace checks pass; `shellcheck` is not installed on this development
+host.
+
+**Decision and next gate:** The failed run is retained and cannot be promoted.
+Commit and deploy the decoder fix, prepare a new same-boot directory from that
+exact clean revision, and make one fresh physical login attempt. The Framework
+integrated-input and live Dashboard composition criteria remain open.

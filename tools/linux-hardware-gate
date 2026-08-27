@@ -12,6 +12,8 @@ hardware_gate_development_metadata=/usr/share/doc/sos/development-deployment.env
 hardware_gate_development_manifest=/usr/share/doc/sos/development-deployment-manifest.tsv
 hardware_gate_session_entry=/usr/share/wayland-sessions/sos.desktop
 hardware_gate_state_home="${XDG_STATE_HOME:-$HOME/.local/state}"
+hardware_gate_awake_unit=sos-linux-hardware-gate-awake.service
+hardware_gate_collect_cleanup_unit=""
 
 hardware_gate_fail() {
   printf 'error: %s\n' "$*" >&2
@@ -31,6 +33,72 @@ hardware_gate_usage() {
 
 hardware_gate_require_command() {
   command -v "$1" >/dev/null 2>&1 || hardware_gate_fail "required command not found: $1"
+}
+
+hardware_gate_start_awake_inhibitor() {
+  local evidence_dir="$1" inhibitor_list="" attempt inhibitor_registered=false
+  if sudo systemctl is-active --quiet "$hardware_gate_awake_unit"; then
+    hardware_gate_fail "another prepared Linux hardware gate already owns $hardware_gate_awake_unit"
+  fi
+  sudo systemd-run --quiet \
+    --unit="$hardware_gate_awake_unit" \
+    --property=CollectMode=inactive-or-failed \
+    /usr/bin/systemd-inhibit \
+      --what=idle:sleep:handle-lid-switch \
+      --who='SOS Linux hardware gate' \
+      --why='Prepared physical acceptance campaign' \
+      --mode=block \
+      /usr/bin/sleep infinity
+  for ((attempt = 1; attempt <= 20; attempt++)); do
+    if ! sudo systemctl is-active --quiet "$hardware_gate_awake_unit"; then
+      hardware_gate_fail "Linux hardware gate awake inhibitor exited during startup"
+    fi
+    inhibitor_list="$(COLUMNS=1000 systemd-inhibit --list --no-pager --no-legend)"
+    if grep -F 'SOS Linux hardware gate' <<<"$inhibitor_list" \
+      | grep -F 'sleep:idle:handle-lid-switch' \
+      | grep -F 'Prepared physical acceptance campaign' \
+      | grep -F 'block' >/dev/null; then
+      inhibitor_registered=true
+      break
+    fi
+    sleep 0.05
+  done
+  if [[ "$inhibitor_registered" != true ]]; then
+    sudo systemctl stop "$hardware_gate_awake_unit"
+    hardware_gate_fail "logind did not register the Linux hardware gate awake inhibitor"
+  fi
+  printf '%s\n' "$inhibitor_list" >"$evidence_dir/environment/gate-inhibitor-prepared.txt"
+}
+
+hardware_gate_collect_cleanup() {
+  if [[ -n "$hardware_gate_collect_cleanup_unit" ]] \
+    && sudo systemctl is-active --quiet "$hardware_gate_collect_cleanup_unit"; then
+    sudo systemctl stop "$hardware_gate_collect_cleanup_unit"
+  fi
+}
+
+hardware_gate_stop_awake_inhibitor() {
+  local evidence_dir="$1" unit="$2" inhibitor_list attempt
+  [[ "$unit" == "$hardware_gate_awake_unit" ]] || \
+    hardware_gate_fail "recorded Linux hardware gate awake unit is invalid: $unit"
+  sudo systemctl is-active --quiet "$unit" || \
+    hardware_gate_fail "prepared Linux hardware gate awake inhibitor is not active"
+  inhibitor_list="$(COLUMNS=1000 systemd-inhibit --list --no-pager --no-legend)"
+  grep -F 'SOS Linux hardware gate' <<<"$inhibitor_list" \
+    | grep -F 'sleep:idle:handle-lid-switch' \
+    | grep -F 'Prepared physical acceptance campaign' \
+    | grep -F 'block' >"$evidence_dir/gate-inhibitor-before-release.txt" || \
+    hardware_gate_fail "prepared Linux hardware gate awake inhibitor is not registered"
+  sudo systemctl stop "$unit"
+  for ((attempt = 1; attempt <= 20; attempt++)); do
+    if ! sudo systemctl is-active --quiet "$unit"; then
+      printf 'unit=%s\nstate=inactive\n' "$unit" \
+        >"$evidence_dir/gate-inhibitor-release.txt"
+      return 0
+    fi
+    sleep 0.05
+  done
+  hardware_gate_fail "Linux hardware gate awake inhibitor did not stop"
 }
 
 hardware_gate_metadata_value() {
@@ -391,7 +459,7 @@ hardware_gate_capture_drm() {
 hardware_gate_prepare() {
   hardware_gate_parse_dir_options "$@"
   for command in cut journalctl jq libinput lscpu lspci loginctl python3 readlink realpath \
-    sed sha256sum stat sudo systemctl systemd-detect-virt tr uname; do
+    sed sha256sum stat sudo systemctl systemd-detect-virt systemd-inhibit systemd-run tr uname; do
     hardware_gate_require_command "$command"
   done
   [[ "$(id -u)" -ne 0 ]] || hardware_gate_fail "run the physical gate as the desktop user, not root"
@@ -577,6 +645,7 @@ hardware_gate_prepare() {
     "campaign_class=$campaign_class" \
     "not_installed_product=$not_installed_product" \
     'promotion_eligible=false' \
+    "gate_inhibitor_unit=$hardware_gate_awake_unit" \
     "user_uid=$(id -u)" \
     "state_home=$hardware_gate_state_home" \
     "product_name=$product" \
@@ -603,6 +672,7 @@ hardware_gate_prepare() {
       'Collect on this same boot and copy the evidence directory off before reboot.' \
       >>"$evidence_dir/instructions.txt"
   fi
+  hardware_gate_start_awake_inhibitor "$evidence_dir"
   touch "$evidence_dir/prepared"
   printf 'linux_hardware_gate_prepared evidence_dir=%s revision=%s product=%s agent_mode=%s boot_kind=%s\n' \
     "$evidence_dir" "$source_revision" "$product" "$installed_mode" "$boot_kind"
@@ -698,6 +768,27 @@ hardware_gate_audit_dir() {
   fi
   hardware_gate_criterion_pattern clean_logout \
     'linux_login_session_stopped reason=user_logout' "$journal"
+
+  local inhibitor_prepared="$evidence_dir/environment/gate-inhibitor-prepared.txt"
+  local inhibitor_before_release="$evidence_dir/gate-inhibitor-before-release.txt"
+  local inhibitor_release="$evidence_dir/gate-inhibitor-release.txt"
+  if [[ -f "$inhibitor_prepared" && -f "$inhibitor_before_release" \
+    && -f "$inhibitor_release" ]] \
+    && grep -F 'SOS Linux hardware gate' "$inhibitor_prepared" \
+      | grep -F 'sleep:idle:handle-lid-switch' \
+      | grep -F 'Prepared physical acceptance campaign' \
+      | grep -F 'block' >/dev/null \
+    && grep -F 'SOS Linux hardware gate' "$inhibitor_before_release" \
+      | grep -F 'sleep:idle:handle-lid-switch' \
+      | grep -F 'Prepared physical acceptance campaign' \
+      | grep -F 'block' >/dev/null \
+    && grep -Fx "unit=$hardware_gate_awake_unit" "$inhibitor_release" >/dev/null \
+    && grep -Fx 'state=inactive' "$inhibitor_release" >/dev/null; then
+    printf 'criterion=gate_awake_inhibitor result=PASS\n'
+  else
+    printf 'criterion=gate_awake_inhibitor result=FAIL\n'
+    hardware_gate_audit_failed=true
+  fi
 
   presentation_count="$(grep -c 'presented armed shell revision.*evidence="drm_page_flip"' "$journal" || true)"
   presentation_revisions="$(
@@ -810,12 +901,14 @@ hardware_gate_collect() {
   hardware_gate_parse_dir_options "$@"
   [[ -z "$hardware_gate_expected_product" ]] || \
     hardware_gate_fail "--expect-product is accepted only by prepare"
-  for command in cut diff find journalctl jq loginctl python3 realpath sed sha256sum sort stat sudo systemctl tr; do
+  for command in cut diff find journalctl jq loginctl python3 realpath sed sha256sum sort stat \
+    sudo systemctl systemd-inhibit tr; do
     hardware_gate_require_command "$command"
   done
   [[ "${XDG_CURRENT_DESKTOP:-}" != SOS ]] || \
     hardware_gate_fail "return to the fallback desktop before collecting evidence"
   local evidence_dir cursor user_uid state_home started_ns finished_ns duration_ns
+  local gate_inhibitor_unit
   local prepared_boot_kind current_boot_kind prepared_boot_id current_boot_id
   evidence_dir="$(hardware_gate_resolve_existing_dir "$hardware_gate_requested_dir")"
   [[ -f "$evidence_dir/prepared" ]] || hardware_gate_fail "campaign was not prepared"
@@ -835,6 +928,13 @@ hardware_gate_collect() {
     [[ "$current_boot_kind" == development-live ]] || \
       hardware_gate_fail "development-live evidence must be collected on the same live overlay boot"
   fi
+  gate_inhibitor_unit="$(hardware_gate_metadata_value "$evidence_dir/campaign.env" gate_inhibitor_unit)"
+  [[ "$gate_inhibitor_unit" == "$hardware_gate_awake_unit" ]] || \
+    hardware_gate_fail "campaign has no valid Linux hardware gate awake inhibitor"
+  sudo systemctl is-active --quiet "$gate_inhibitor_unit" || \
+    hardware_gate_fail "prepared Linux hardware gate awake inhibitor is not active"
+  hardware_gate_collect_cleanup_unit="$gate_inhibitor_unit"
+  trap hardware_gate_collect_cleanup EXIT
 
   # The redirects intentionally run as the evidence owner; only journal access needs sudo.
   # shellcheck disable=SC2024
@@ -866,6 +966,10 @@ hardware_gate_collect() {
     "boot_id=$current_boot_id" \
     "finished_monotonic_ns=$finished_ns" \
     "duration_ns=$duration_ns" >"$evidence_dir/collection.env"
+
+  hardware_gate_stop_awake_inhibitor "$evidence_dir" "$gate_inhibitor_unit"
+  hardware_gate_collect_cleanup_unit=""
+  trap - EXIT
 
   local audit_status=0
   set +e

@@ -144,6 +144,15 @@ development-live pin preserves the baked image identity but permits an exact,
 hashed overlay deployment whose source dirty state is recorded. It then prints
 the operator steps:
 
+Preparation also starts the root-owned transient unit
+`sos-linux-hardware-gate-awake.service`. Its logind block inhibitor covers
+`idle`, `sleep`, and `handle-lid-switch` while the machine waits at GDM, which
+is before the normal SOS-session inhibitor exists. Preparation refuses a
+second active owner. Collection requires the recorded unit to remain active,
+captures its exact inhibitor record, and stops it before finalizing evidence.
+An early collection failure also stops the unit. This is gate lifecycle state,
+not a change to the workstation's stored GNOME or GDM power settings.
+
 1. Log out and choose **SOS** from GDM.
 2. Confirm the compositor recovery view and generated experience appear.
 3. Exercise the physical keyboard, touchpad motion and click, and touchscreen.
@@ -161,7 +170,8 @@ Collection first requires the exact kernel boot ID recorded by preparation so
 journal cursors and monotonic timestamps can never span a reboot. It then reads
 only the prepared journal interval for the login UID plus the kernel journal,
 captures durable revision/authority agreement and the restored display-manager
-state, and records the matching boot ID again. It finalizes `verdict.txt`,
+state, verifies and releases the prepared awake inhibitor, and records the
+matching boot ID again. It finalizes `verdict.txt`,
 measures campaign wall time from same-boot monotonic timestamps, generates
 `evidence-manifest.tsv`, and independently verifies every path, byte size, and
 SHA-256. Manifest paths use bytewise `C` ordering, independent of the locale on

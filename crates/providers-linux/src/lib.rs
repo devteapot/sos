@@ -26,6 +26,7 @@ use thiserror::Error;
 #[serde(rename_all = "snake_case")]
 pub enum Capability {
     ApplicationLaunch,
+    AppearanceWrite,
     AudioControl,
     CalendarRead,
     CalendarWrite,
@@ -856,6 +857,22 @@ mod tests {
             .unwrap()
             .grants
             .contains(&Capability::MusicControl));
+    }
+
+    #[test]
+    fn stock_package_capabilities_are_decodable_by_linux_host() {
+        let package: experience_package::PackageMetadata =
+            serde_json::from_str(include_str!("../../../experiences/default.package.json"))
+                .unwrap();
+        let capabilities = package
+            .provider_capabilities
+            .into_iter()
+            .map(|capability| {
+                serde_json::from_value::<Capability>(serde_json::Value::String(capability))
+            })
+            .collect::<Result<BTreeSet<_>, _>>()
+            .unwrap();
+        assert!(capabilities.contains(&Capability::AppearanceWrite));
     }
 
     #[test]
