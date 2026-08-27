@@ -5,6 +5,185 @@ set -euo pipefail
 [[ "$#" -ge 3 && "$1" == -s && "$2" == MOCKSERIAL ]] || exit 64
 shift 2
 
+if [[ -n "${A33XCTL_CAPTURE_STAGE:-}" ]]; then
+  mock_stage="$A33XCTL_CAPTURE_STAGE"
+  mock_product="${A33XCTL_CAPTURE_PRODUCT:?}"
+  mock_revision="${A33XCTL_CAPTURE_REVISION:?}"
+  mock_generation=0
+  mock_selected=null
+  mock_opened=null
+  mock_pings=0
+  mock_presented='"sos.example.dashboard"'
+  mock_stock_revision=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+  case "$mock_stage" in
+    stock) mock_presented=null ;;
+    dashboard) ;;
+    appearance|child-failure|child-timeout)
+      mock_generation=2
+      ;;
+    recovered|ime-accessibility|host-restart|authority-restart)
+      mock_generation=2
+      mock_selected='"Design review"'
+      mock_opened='"Design review"'
+      mock_pings=2
+      ;;
+    authored)
+      mock_generation=2
+      mock_selected='"Design review"'
+      mock_opened='"Design review"'
+      mock_pings=2
+      mock_presented=null
+      mock_stock_revision=ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+      ;;
+    rollback)
+      mock_generation=2
+      mock_selected='"Design review"'
+      mock_opened='"Design review"'
+      mock_pings=2
+      mock_presented=null
+      ;;
+    *) exit 66 ;;
+  esac
+  mock_authority_pid=300
+  case "$mock_stage" in
+    authority-restart|authored|rollback) mock_authority_pid=400 ;;
+  esac
+  mock_home_pid=100
+  mock_core_host_pids='500 501'
+  case "$mock_stage" in
+    host-restart|authority-restart|authored|rollback)
+      mock_home_pid=200
+      mock_core_host_pids='500 502'
+      ;;
+  esac
+
+  mock_composition() {
+    cat <<EOF
+{"format_version":1,"presented_experience":$mock_presented,
+ "states":{
+  "sos.stock.shell":{"revision":1,"revision_id":"$mock_stock_revision","schema_version":1,"source_sha256":"aa","state":{}},
+  "sos.example.agenda":{"revision":2,"revision_id":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","schema_version":1,"source_sha256":"bb","state":{"selected":$mock_selected}},
+  "sos.example.media":{"revision":3,"revision_id":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","schema_version":1,"source_sha256":"cc","state":{"playing":false}},
+  "sos.example.dashboard":{"revision":4,"revision_id":"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd","schema_version":1,"source_sha256":"dd","state":{"opened":$mock_opened,"acceptance_pings":$mock_pings}},
+  "sos.example.agenda-media-remix":{"revision":5,"revision_id":"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee","schema_version":1,"source_sha256":"ee","state":{}}},
+ "appearance":{"profile":{"generation":$mock_generation}},
+ "grants":{
+  "sos.stock.shell":{"generation":1,"reviewed":true,"experience_id":"sos.stock.shell","provider_capabilities":["appearance_write"],"data_flows":{}},
+  "sos.example.agenda":{"generation":1,"reviewed":true,"experience_id":"sos.example.agenda","provider_capabilities":[],"data_flows":{}},
+  "sos.example.media":{"generation":1,"reviewed":true,"experience_id":"sos.example.media","provider_capabilities":["music_read","music_control"],"data_flows":{}},
+  "sos.example.dashboard":{"generation":1,"reviewed":true,"experience_id":"sos.example.dashboard","provider_capabilities":[],"data_flows":{"agenda":{"experience_id":"sos.example.agenda"},"media":{"experience_id":"sos.example.media"}}},
+  "sos.example.agenda-media-remix":{"generation":1,"reviewed":true,"experience_id":"sos.example.agenda-media-remix","provider_capabilities":[],"data_flows":{}}}}
+EOF
+  }
+
+  mock_logcat() {
+    printf '%s\n' \
+      '08-27 14:00:00.000 I sos-core-host: core1_experience_start ce_available=false native_synthetic_password=false de_storage=true' \
+      '08-27 14:00:00.100 I sos-experience: SOS experience window is live frame_padding=none' \
+      '08-27 14:00:01.000 I sos-experience: android_graph_runtime_ready graph_id=graph-dashboard root_experience=sos.example.dashboard instances=3' \
+      '08-27 14:00:02.000 I sos-experience: android_graph_runtime_ready graph_id=graph-dashboard root_experience=sos.example.dashboard instances=3' \
+      '08-27 14:00:03.000 I sos-experience: android_graph_runtime_ready graph_id=graph-dashboard root_experience=sos.example.dashboard instances=3' \
+      '08-27 14:00:04.000 I sos-experience: android_graph_runtime_ready graph_id=graph-dashboard root_experience=sos.example.dashboard instances=3' \
+      '08-27 14:00:05.000 I sos-experience: android_graph_presented graph_id=graph-dashboard confirmed=true' \
+      '08-27 14:00:06.000 I sos-experience: android_reference_graph_event_dispatched experience_id=sos.example.agenda action=open_first' \
+      '08-27 14:00:07.000 I sos-experience: android_reference_graph_event_dispatched experience_id=sos.example.agenda action=acceptance_update_fail' \
+      '08-27 14:00:08.000 W sos-experience: android_graph_instance_failed node_id=agenda instance_id=i-agenda experience_id=sos.example.agenda root_ready=true error=reference Agenda update failure' \
+      '08-27 14:00:09.000 I sos-experience: android_graph_instance_recovered node_id=agenda instance_id=i-agenda experience_id=sos.example.agenda root_ready=true' \
+      '08-27 14:00:10.000 I sos-experience: android_reference_graph_event_dispatched experience_id=sos.example.agenda action=acceptance_timeout' \
+      '08-27 14:00:11.000 W sos-experience: android_graph_instance_failed node_id=agenda instance_id=i-agenda experience_id=sos.example.agenda root_ready=true error=execution deadline exceeded' \
+      '08-27 14:00:12.000 I sos-experience: android_graph_instance_recovered node_id=agenda instance_id=i-agenda experience_id=sos.example.agenda root_ready=true' \
+      '08-27 14:00:13.000 I sos-experience: android_reference_graph_event_dispatched experience_id=sos.example.dashboard action=acceptance_ping' \
+      '08-27 14:00:14.000 I sos-experience: android_appearance_write_committed graph_id=graph-dashboard generation=2 scheme=Dark' \
+      '08-27 14:00:15.000 I sos-experience: android_graph_refreshed request_id=8 appearance_generation=2 failed_instances=0' \
+      '08-27 14:00:16.000 I sos-experience: android_system_control action=appearance_toggle' \
+      '08-27 14:00:17.000 I sos-experience: accessibility_published bytes=1400 semantics=7' \
+      '08-27 14:00:18.000 I GpuiPlatformView: Accessibility tree updated: nodes=7' \
+      '08-27 14:00:19.000 I sos-experience: scene_pointer phase=down id=1 count=1 pressure=1.000' \
+      '08-27 14:00:20.000 I sos-experience: scene_pointer phase=up id=1 count=1 pressure=0.000' \
+      '08-27 14:00:21.000 I sos-experience: compat_ime_focus_transition from=none to=i-agenda::agenda-input epoch=3 lifecycle=active' \
+      '08-27 14:00:22.000 I sos-experience: compat_ime_blur_resolved node_id=i-agenda::agenda-input epoch=4 outcome=deactivate lifecycle=inactive' \
+      '08-27 14:00:23.000 I sos-experience: core_input_touch action=down id=1 x=120 y=400' \
+      '08-27 14:00:24.000 I sos-experience: core_input_touch action=up id=1 x=120 y=400' \
+      '08-27 14:00:25.000 I sos-experience: core_native_software_keyboard node=i-agenda::agenda-input visible=true' \
+      '08-27 14:00:26.000 I sos-experience: core_native_software_keyboard node=i-agenda::agenda-input visible=false' \
+      '08-27 14:00:27.000 I sos-experience: android_system_control action=dismiss_experience experience_id=sos.example.dashboard' \
+      '08-27 14:00:28.000 I sos-experience: android_v4_candidate_staged graph_id=graph-candidate source_sha256=ffff' \
+      '08-27 14:00:29.000 I sos-experience: android_agent_activation_commit request_id=9 graph_id=graph-candidate phase=committed authority=system-graph' \
+      '08-27 14:00:30.000 I sos-experience: android_system_control action=rollback_graph' \
+      '08-27 14:00:31.000 I sos-experience: android_graph_rollback_presented graph_id=graph-previous'
+  }
+
+  case "$*" in
+    'shell getprop ro.build.version.incremental') printf '%s\r\n' "$mock_revision" ;;
+    'shell getprop ro.sos.experience_api') printf '4\r\n' ;;
+    'shell getprop ro.sos.revision_format') printf '4\r\n' ;;
+    'shell getprop ro.sos.legacy_revision_read') printf '3\r\n' ;;
+    'shell getprop ro.sos.profile')
+      [[ "$mock_product" == compat1 ]] && printf 'compat\r\n' || printf 'core\r\n'
+      ;;
+    'shell getprop ro.sos.ui_owner')
+      [[ "$mock_product" == compat1 ]] && printf 'native-sos-android-runtime\r\n' || printf 'native-sos-no-zygote\r\n'
+      ;;
+    'shell getprop ro.sos.core.stage')
+      [[ "$mock_product" == compat1 ]] && printf 'compat\r\n' || printf '1\r\n'
+      ;;
+    'shell getprop ro.sos.lifecycle') printf 'active\r\n' ;;
+    'shell getprop ro.sos.compat.stage')
+      [[ "$mock_product" == compat1 ]] && printf '1\r\n' || printf '\r\n'
+      ;;
+    'shell getprop ro.sos.providers')
+      [[ "$mock_product" == core1 ]] && printf 'core-native\r\n' || printf 'android\r\n'
+      ;;
+    'shell getprop ro.zygote')
+      [[ "$mock_product" == core1 ]] && printf 'no_zygote\r\n' || printf 'zygote64\r\n'
+      ;;
+    'shell getprop sys.boot_completed')
+      [[ "$mock_product" == compat1 ]] && printf '1\r\n' || printf '\r\n'
+      ;;
+    'shell getprop init.svc.sos_authority') printf 'running\r\n' ;;
+    'shell getprop init.svc.sos_core_host') printf 'running\r\n' ;;
+    'shell getprop init.svc.sos_core_platform') printf 'running\r\n' ;;
+    'shell getenforce') printf 'Enforcing\r\n' ;;
+    'shell ps -AZ')
+      if [[ "$mock_product" == compat1 ]]; then
+        printf '%s\n' \
+          "u:r:sos_authority:s0 root $mock_authority_pid 1 sos-authority" \
+          "u:r:priv_app:s0 u0_a45 $mock_home_pid 1 dev.sos.experience"
+      else
+        printf '%s\n' \
+          "u:r:sos_authority:s0 root $mock_authority_pid 1 sos-authority" \
+          'u:r:sos_core_host:s0 root 500 1 sos-core-host' \
+          "u:r:sos_core_host:s0 root ${mock_core_host_pids##* } 500 sos-core-host" \
+          'u:r:sos_core_platform:s0 root 600 1 sos-core-platform'
+      fi
+      ;;
+    'shell dumpsys SurfaceFlinger --list')
+      [[ "$mock_product" == compat1 ]] && printf 'dev.sos.experience/SosHomeActivity\r\n' || printf 'SOS Core Experience\r\n'
+      ;;
+    'logcat -d -b all -v threadtime') mock_logcat ;;
+    'shell cat /data/misc/sos/provider-state.composition.json') mock_composition ;;
+    'exec-out screencap -p') printf '\211PNG\r\n\032\nmock-screen' ;;
+    'shell cat /proc/meminfo') printf 'MemTotal: 6000000 kB\nMemAvailable: 4000000 kB\n' ;;
+    'shell pidof sos-authority') printf '%s\r\n' "$mock_authority_pid" ;;
+    'shell pidof dev.sos.experience') printf '%s\r\n' "$mock_home_pid" ;;
+    'shell pidof sos-core-host') printf '%s\r\n' "$mock_core_host_pids" ;;
+    'shell pidof sos-core-platform') printf '600\r\n' ;;
+    'shell dumpsys meminfo dev.sos.experience') printf 'TOTAL PSS: 120000\n' ;;
+    'shell dumpsys meminfo') printf 'Total RAM: 6000000K\nUsed RAM: 2000000K\n' ;;
+    'shell cat /proc/500/status'|'shell cat /proc/501/status'|'shell cat /proc/502/status')
+      printf 'Name:\tsos-core-host\nVmRSS:\t64000 kB\n'
+      ;;
+    'shell uiautomator dump /dev/tty')
+      printf '<hierarchy><node text="Dashboard"/><node content-desc="Open first agenda item"/><node content-desc="Agenda child text input"/><node content-desc="Today · appearance %s"/><node content-desc="Change system theme"/><node content-desc="Roll back Experience graph"/><node content-desc="Return to Stock"/></hierarchy>\n' "$mock_generation"
+      ;;
+    *)
+      printf 'unexpected v4 mock adb arguments: %s\n' "$*" >&2
+      exit 65
+      ;;
+  esac
+  exit 0
+fi
+
 case "$*" in
   'shell getprop ro.build.version.incremental') printf '%s\r\n' 'sos.core1.test.revision' ;;
   'shell getprop ro.sos.core.stage') printf '1\r\n' ;;

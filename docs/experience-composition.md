@@ -414,7 +414,14 @@ The implementation is split so the contracts do not depend on GPUI or Linux:
   Experiences. Stock receives their bounded registry catalog, a
   `shell.present_experience` action stages the selected exact graph, and a
   frame confirmation durably selects that top-level Experience. Dismissal
-  stages and confirms Stock through the same path; and
+  stages and confirms Stock through the same path. Because an independently
+  presented root replaces the Stock scene, the Android host supplies a small
+  fixed system-control strip: `Home` returns an ordinary root to Stock,
+  `Theme` advances the Stock-authorized appearance resource, and `Rollback`
+  stages the retained graph. These controls are host-owned administrative
+  affordances, not nodes or authority available to ordinary Experience code.
+  Fixed host IDs also publish them through the bounded accessibility bridge;
+  and
 - child update or render failures become a failed child Instance with no
   emitted effects or child events. The mount receives the host-owned
   unavailable placeholder while the root and siblings remain operational.
@@ -424,9 +431,10 @@ reference package set. `sos-revision-supervisor install-composition-demo
 --root DIR` installs their revisions, registry records, independently
 launchable `main` graphs, the resolved Dashboard graph, and lineage metadata.
 The reference Dashboard and Agenda also publish ordinary semantic controls for
-the physical acceptance campaign: a parent liveness action and child update or
-timeout failures. They travel through the same namespaced input and runtime
-paths as product actions; no diagnostic backdoor enters the Experience API.
+the physical acceptance campaign: a parent liveness action, child update or
+timeout failures, and a mounted Agenda text session. They travel through the
+same namespaced pointer, text, IME, accessibility, and runtime paths as product
+actions; no diagnostic backdoor enters the Experience API.
 Android embeds the same source/package constructor in its signed authority and
 installs it idempotently without resetting later registry revisions on
 authority restart.
@@ -436,8 +444,41 @@ platform-neutral. The scene regression uses duplicate raw node IDs in the
 Dashboard and Agenda Instances, mounts the healthy Agenda child, withholds the
 failed Media child, and requires every resulting ID to remain unique and
 Instance-prefixed. Android has compile, unit, restart-fault, top-level
-presentation, appearance, and child-containment evidence for the graph path.
-It does not yet have a physical-device composition verdict.
+presentation, appearance, child-containment, and campaign-auditor evidence for
+the graph path. It does not yet have a physical-device composition verdict.
+
+`tools/a33xctl capture-v4-composition-stage` records the physical campaign in
+this fixed order:
+
+1. `stock` records the migrated v4 Stock graph.
+2. `dashboard` records the three-Instance locked composition after opening the
+   first Agenda item.
+3. `appearance` records a live authority generation change without a revision
+   change.
+4. `child-failure` records the unavailable Agenda mount while Dashboard and
+   Media remain live.
+5. `child-timeout` records the same containment after parent-driven recovery
+   and a bounded child deadline.
+6. `recovered` records the second parent-driven recovery and durable child
+   event state.
+7. `ime-accessibility` records physical focus, text, IME, pointer, and semantic
+   routing through the Instance-prefixed Agenda input.
+8. `host-restart` records host recovery with the authority PID unchanged.
+9. `authority-restart` records authority recovery with the host PID unchanged.
+10. `authored` records Stock after its resident agent activates a different v4
+    Stock revision.
+11. `rollback` records the original v4 Stock revision restored through the
+    host control.
+
+Each checkpoint binds the exact product revision, device serial, artifact
+path, byte size and SHA-256, monotonic host timing, SELinux state, processes,
+surfaces, authority JSON, screenshot, complete logs, memory, and the
+product-appropriate accessibility or readiness snapshot. The final
+`audit-v4-composition-campaign` command rejects missing or reordered stages,
+identity drift, stale state, merged grants, revision changes during appearance,
+uncontained failures, missing recovery, non-namespaced IME evidence, coupled
+process restarts, non-v4 authoring or rollback, and altered artifacts. A pass
+creates and independently verifies a complete evidence manifest.
 
 ## Milestone closure matrix
 
@@ -457,7 +498,7 @@ the presence of a commit with a matching title.
 | 8. Graph activation and recovery | Closed. Graph prepare, present, confirm, discard/finalize, journal, authority promotion, and multi-root pointer movement are durable operations. | Closed by every durable cut-point, presentation rollback, power-loss simulation, multi-root fault, restart, and Framework recovery evidence. |
 | 9. Fork, remix, and authoring | Closed. Explicit targets, exact parents, derivation provenance, candidate contracts, migration binding, and fresh grants are enforced. | Closed by self-contained remix, exact-parent, replacement, state-migration, provenance, and no-inherited-grant tests. |
 | 10. Tracked dependencies | Closed. The persistent reverse index resolves every affected locked/tracked root into one activation set. | Closed by compatible tracked advance, locked pinning, inactive/presented multi-root, atomic state, rollback, and restart tests. |
-| 11. Android parity | Implementation closed. Android authority and hosts use the shared package, registry, graph, state, appearance, grant, namespace, and activation model; exact Compat/Core candidates are sealed. | **Physical gate open.** Compile/offline/restart-fault evidence passes, but the SM-A336B composition, input, IME, accessibility, appearance, containment, restart, and rollback campaign has not run on the cleaned candidates. |
+| 11. Android parity | Implementation closed. Android authority and hosts use the shared package, registry, graph, state, appearance, grant, namespace, activation, system-control, and physical-campaign model. | **Physical gate open.** Compile/offline/restart-fault and campaign-auditor evidence passes, but the SM-A336B composition, input, IME, accessibility, appearance, containment, restart, authoring, and v4 rollback campaign has not run on final rebuilt candidates. |
 | 12. Stock migration and hardening | Implementation closed. Stock uses semantic appearance tokens and v4 exports; registry launch replaces singleton ownership; the retired secondary product is absent; optional Linux process isolation works. | Code and offline exit conditions are closed. Installed Linux promotion and Android physical hardening remain product-acceptance gates, not missing v4 architecture. |
 
 All active built-ins, signed references, resident-agent examples, and new
@@ -555,7 +596,7 @@ Because the target was Fedora development-live, the verdict is deliberately
 `DIAGNOSTIC_PASS promotion_eligible=false`; it closes the Framework composition
 and integrated-input question but not an installed-product promotion gate.
 
-Fresh Compat 1 and Core 1 candidates were then built from exact cleanup source
+Compat 1 and Core 1 candidates were built from exact cleanup source
 `884ab4e0036e621f51ba0a3a6c147a5c591da81e`. Both offline inspectors pass the
 v4 product, graph, signature, AVB, ownership, and retired-secondary-absence
 gates. Their sealed OTAs have SHA-256
@@ -564,10 +605,15 @@ and `0b0ce039e306c42292cd67eb6be19f15ee753f7ab2ff6b4059247210af4f17fb`;
 their deterministic target-files archives have SHA-256
 `e8dc8d7d41ddbfe7d6459cc63d4f7290bc9f6e147914382aca1f504d0261a4f2`
 and `49ba5c7ace4df8bcd22605f2334da0fa34229b7fd227bf1f657b7f8785a1b863`.
-This supersedes the earlier Android candidates that still carried the retired
+This superseded the earlier Android candidates that still carried the retired
 secondary agent input. Their independently verified 17-file evidence manifest
 has SHA-256
 `a8f056b6d8c77d56b2ed6b4f297802b5b726a3f4200573ab43859114690f7b93`.
+Those cleanup artifacts are themselves now superseded by the shared Android
+scene transform, mounted-child IME fixture, and host-owned navigation,
+appearance, rollback, and evidence-campaign additions. They remain historical
+offline evidence; final candidates must be rebuilt from the new exact source
+before installation.
 
 The remaining physical composition gate is the Samsung SM-A336B campaign for
 Compat and Core: composition, input, IME, accessibility, appearance, grants,

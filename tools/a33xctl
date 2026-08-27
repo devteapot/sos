@@ -85,6 +85,22 @@ check_android_composition_authority() {
   info "SOS authority signed reference composition markers passed"
 }
 
+check_android_v4_system_controls() {
+  [[ "$#" -eq 1 ]] || fail "usage: check_android_v4_system_controls RUNTIME"
+  local runtime="$1" marker
+  for marker in \
+    'android_system_control action=appearance_toggle' \
+    'android_system_control action=dismiss_experience experience_id=' \
+    'android_system_control action=rollback_graph' \
+    'Change system theme' \
+    'Roll back Experience graph' \
+    'Return to Stock'; do
+    grep -aF "$marker" "$runtime" >/dev/null || \
+      fail "Android v4 runtime omitted host-owned system control: $marker"
+  done
+  info "Android v4 host-owned system controls passed"
+}
+
 soong_module_block() {
   [[ "$#" -eq 2 ]] || fail "internal usage: soong_module_block <type> <name>"
   local module_type="$1" module_name="$2"
@@ -909,6 +925,7 @@ inspect_compat_profile() {
     strings "$host_runtime" | grep -F \
       'SOS experience window is live frame_padding=none' >/dev/null || \
       fail "native Compat GPUI runtime still reserves Android-style frame bands"
+    check_android_v4_system_controls "$host_runtime"
     file "$marker" | grep -F 'ARM aarch64' >/dev/null || \
       fail "native Compat UI-removal marker is not AArch64"
     [[ ! -e "$core_marker" ]] || \
@@ -1328,6 +1345,7 @@ inspect_core_stage() {
   strings "$host_runtime" | grep -F \
     'SOS experience window is live frame_padding=none' >/dev/null || \
     fail "SOS $stage GPUI runtime still reserves Android-style frame bands"
+  check_android_v4_system_controls "$host_runtime"
   readelf -Ws "$host_runtime" | grep -F ' sos_core_main' >/dev/null || \
     fail "SOS $stage GPUI runtime does not export sos_core_main"
   strings "$host_runtime" | grep -F \
@@ -1723,6 +1741,511 @@ inspect_core1_readiness() {
   info "Core 1 readiness inspection passed without Android boot-complete predicates"
 }
 
+validate_v4_composition_product() {
+  [[ "$#" -eq 1 ]] || fail "internal usage: validate_v4_composition_product PRODUCT"
+  case "$1" in
+    compat1|core1) ;;
+    *) fail "v4 composition product must be compat1 or core1" ;;
+  esac
+}
+
+v4_composition_stage_previous() {
+  [[ "$#" -eq 1 ]] || fail "internal usage: v4_composition_stage_previous STAGE"
+  case "$1" in
+    stock) printf '\n' ;;
+    dashboard) printf 'stock\n' ;;
+    appearance) printf 'dashboard\n' ;;
+    child-failure) printf 'appearance\n' ;;
+    child-timeout) printf 'child-failure\n' ;;
+    recovered) printf 'child-timeout\n' ;;
+    ime-accessibility) printf 'recovered\n' ;;
+    host-restart) printf 'ime-accessibility\n' ;;
+    authority-restart) printf 'host-restart\n' ;;
+    authored) printf 'authority-restart\n' ;;
+    rollback) printf 'authored\n' ;;
+    *) fail "unknown v4 composition stage: $1" ;;
+  esac
+}
+
+v4_campaign_json_value() {
+  [[ "$#" -eq 2 ]] || fail "internal usage: v4_campaign_json_value FILE FIELD"
+  jq -er --arg field "$2" '.[$field] | strings' "$1"
+}
+
+write_v4_stage_properties() {
+  [[ "$#" -eq 2 ]] || fail "internal usage: write_v4_stage_properties SERIAL OUTPUT"
+  local serial="$1" output="$2" property value
+  : >"$output"
+  for property in \
+    ro.build.version.incremental \
+    ro.sos.experience_api \
+    ro.sos.revision_format \
+    ro.sos.legacy_revision_read \
+    ro.sos.profile \
+    ro.sos.ui_owner \
+    ro.sos.core.stage \
+    ro.sos.compat.stage \
+    ro.sos.providers \
+    ro.zygote \
+    sys.boot_completed \
+    init.svc.sos_authority \
+    init.svc.sos_core_host \
+    init.svc.sos_core_platform; do
+    value="$(device_property "$serial" "$property")"
+    [[ "$value" != *$'\n'* && "$value" != *$'\r'* ]] || \
+      fail "device property contains a line break: $property"
+    printf '%s=%s\n' "$property" "$value" >>"$output"
+  done
+}
+
+host_monotonic_ns() {
+  [[ "$#" -eq 0 ]] || fail "internal usage: host_monotonic_ns"
+  awk '{ printf "%.0f\n", $1 * 1000000000 }' /proc/uptime
+}
+
+capture_v4_composition_stage() {
+  [[ "$#" -eq 12 && "$1" == --product && "$3" == --serial && \
+    "$5" == --expected-revision && "$7" == --artifact && \
+    "${9}" == --root && "${11}" == --stage ]] || \
+    fail "usage: ./tools/a33xctl capture-v4-composition-stage --product compat1|core1 --serial SERIAL --expected-revision REVISION --artifact OTA --root DIR --stage STAGE"
+  local product="$2" serial="$4" expected_revision="$6" artifact="$8"
+  local evidence_root="${10}" stage="${12}" previous campaign_file stage_root
+  local artifact_bytes artifact_sha started_ns finished_ns enforcing
+  local authority_pid home_pid core_host_pids platform_pid
+  validate_v4_composition_product "$product"
+  validate_device_identity "$serial" "$expected_revision"
+  previous="$(v4_composition_stage_previous "$stage")"
+  require_command jq
+  require_command sha256sum
+  require_command stat
+  artifact="$(realpath -e "$artifact")"
+  [[ -f "$artifact" ]] || fail "v4 composition artifact is not a file: $artifact"
+  artifact_bytes="$(stat -c %s "$artifact")"
+  artifact_sha="$(sha256sum "$artifact" | awk '{print $1}')"
+
+  if [[ ! -e "$evidence_root" ]]; then
+    [[ "$stage" == stock ]] || fail "the stock stage must initialize a v4 composition campaign"
+    mkdir -m 0700 -- "$evidence_root"
+    evidence_root="$(realpath -e "$evidence_root")"
+    mkdir -m 0700 -- "$evidence_root/stages"
+    jq -n \
+      --arg product "$product" \
+      --arg serial "$serial" \
+      --arg expected_revision "$expected_revision" \
+      --arg artifact "$artifact" \
+      --arg artifact_sha256 "$artifact_sha" \
+      --argjson artifact_bytes "$artifact_bytes" \
+      '{format_version: 1, product: $product, serial: $serial,
+        expected_revision: $expected_revision, artifact: $artifact,
+        artifact_bytes: $artifact_bytes, artifact_sha256: $artifact_sha256}' \
+      >"$evidence_root/campaign.json"
+  else
+    evidence_root="$(realpath -e "$evidence_root")"
+  fi
+  campaign_file="$evidence_root/campaign.json"
+  [[ -f "$campaign_file" ]] || fail "v4 composition campaign metadata is missing"
+  [[ "$(v4_campaign_json_value "$campaign_file" product)" == "$product" ]] || \
+    fail "v4 composition product changed during the campaign"
+  [[ "$(v4_campaign_json_value "$campaign_file" serial)" == "$serial" ]] || \
+    fail "v4 composition serial changed during the campaign"
+  [[ "$(v4_campaign_json_value "$campaign_file" expected_revision)" == "$expected_revision" ]] || \
+    fail "v4 composition revision changed during the campaign"
+  [[ "$(v4_campaign_json_value "$campaign_file" artifact)" == "$artifact" ]] || \
+    fail "v4 composition artifact path changed during the campaign"
+  [[ "$(v4_campaign_json_value "$campaign_file" artifact_sha256)" == "$artifact_sha" ]] || \
+    fail "v4 composition artifact content changed during the campaign"
+  [[ "$(jq -er '.artifact_bytes | numbers' "$campaign_file")" == "$artifact_bytes" ]] || \
+    fail "v4 composition artifact size changed during the campaign"
+  if [[ -n "$previous" ]]; then
+    [[ -d "$evidence_root/stages/$previous" ]] || \
+      fail "v4 composition stage $stage requires completed stage $previous"
+  fi
+  stage_root="$evidence_root/stages/$stage"
+  [[ ! -e "$stage_root" ]] || fail "v4 composition stage already exists: $stage"
+  mkdir -m 0700 -- "$stage_root"
+
+  export A33XCTL_CAPTURE_STAGE="$stage"
+  export A33XCTL_CAPTURE_PRODUCT="$product"
+  export A33XCTL_CAPTURE_REVISION="$expected_revision"
+  started_ns="$(host_monotonic_ns)"
+  write_v4_stage_properties "$serial" "$stage_root/properties.env"
+  enforcing="$(adb_readonly "$serial" shell getenforce | tr -d '\r\n')"
+  printf 'selinux=%s\n' "$enforcing" >"$stage_root/security.env"
+  adb_readonly "$serial" shell ps -AZ >"$stage_root/processes.txt"
+  adb_readonly "$serial" shell dumpsys SurfaceFlinger --list >"$stage_root/surfaces.txt"
+  adb_readonly "$serial" logcat -d -b all -v threadtime >"$stage_root/logcat.txt"
+  adb_readonly "$serial" shell cat /data/misc/sos/provider-state.composition.json \
+    | tr -d '\r' >"$stage_root/composition.json"
+  adb_readonly "$serial" exec-out screencap -p >"$stage_root/screen.png"
+  adb_readonly "$serial" shell cat /proc/meminfo >"$stage_root/meminfo.txt"
+  authority_pid="$(adb_readonly "$serial" shell pidof sos-authority | tr -d '\r\n')"
+  if [[ "$product" == compat1 ]]; then
+    home_pid="$(adb_readonly "$serial" shell pidof dev.sos.experience | tr -d '\r\n')"
+    printf 'authority_pid=%s\nhome_pid=%s\n' "$authority_pid" "$home_pid" \
+      >"$stage_root/pids.env"
+    adb_readonly "$serial" shell dumpsys meminfo dev.sos.experience \
+      >"$stage_root/runtime-memory.txt"
+    adb_readonly "$serial" shell uiautomator dump /dev/tty \
+      >"$stage_root/accessibility.xml"
+  else
+    core_host_pids="$(adb_readonly "$serial" shell pidof sos-core-host | \
+      tr -d '\r' | tr ' ' '\n' | sed '/^$/d' | sort -n | paste -sd ' ' -)"
+    platform_pid="$(adb_readonly "$serial" shell pidof sos-core-platform | tr -d '\r\n')"
+    printf 'authority_pid=%s\ncore_host_pids=%s\nplatform_pid=%s\n' \
+      "$authority_pid" "$core_host_pids" "$platform_pid" >"$stage_root/pids.env"
+    : >"$stage_root/runtime-memory.txt"
+    local core_pid
+    for core_pid in $core_host_pids; do
+      printf 'pid=%s\n' "$core_pid" >>"$stage_root/runtime-memory.txt"
+      adb_readonly "$serial" shell cat "/proc/$core_pid/status" \
+        >>"$stage_root/runtime-memory.txt"
+    done
+    inspect_core1_readiness --serial "$serial" --expected-revision "$expected_revision" \
+      >"$stage_root/readiness.txt"
+  fi
+  finished_ns="$(host_monotonic_ns)"
+  printf 'stage=%s\nproduct=%s\nserial=%s\nrevision=%s\nartifact_sha256=%s\n' \
+    "$stage" "$product" "$serial" "$expected_revision" "$artifact_sha" \
+    >"$stage_root/stage.env"
+  printf 'started_ns=%s\nfinished_ns=%s\nduration_ns=%s\n' \
+    "$started_ns" "$finished_ns" "$((finished_ns - started_ns))" \
+    >>"$stage_root/stage.env"
+  unset A33XCTL_CAPTURE_STAGE A33XCTL_CAPTURE_PRODUCT A33XCTL_CAPTURE_REVISION
+  printf 'v4_composition_stage=CAPTURED\nproduct=%s\nserial=%s\nrevision=%s\nstage=%s\nroot=%s\n' \
+    "$product" "$serial" "$expected_revision" "$stage" "$evidence_root"
+}
+
+v4_stage_property() {
+  [[ "$#" -eq 2 ]] || fail "internal usage: v4_stage_property FILE PROPERTY"
+  awk -F= -v property="$2" '$1 == property { sub(/^[^=]*=/, ""); print; found = 1; exit }
+    END { if (!found) exit 1 }' "$1"
+}
+
+v4_stage_pid() {
+  [[ "$#" -eq 2 ]] || fail "internal usage: v4_stage_pid FILE FIELD"
+  v4_stage_property "$1" "$2"
+}
+
+require_v4_log_pattern() {
+  [[ "$#" -eq 3 ]] || fail "internal usage: require_v4_log_pattern LOG PATTERN MESSAGE"
+  grep -Eq "$2" "$1" || fail "$3"
+}
+
+audit_v4_stage_common() {
+  [[ "$#" -eq 5 ]] || fail "internal usage: audit_v4_stage_common ROOT STAGE PRODUCT SERIAL REVISION"
+  local evidence_root="$1" stage="$2" product="$3" serial="$4" expected_revision="$5"
+  local stage_root="$evidence_root/stages/$stage" png_magic
+  for required in properties.env security.env processes.txt surfaces.txt logcat.txt \
+    composition.json screen.png meminfo.txt runtime-memory.txt pids.env stage.env; do
+    [[ -s "$stage_root/$required" ]] || fail "v4 composition stage $stage lacks $required"
+  done
+  jq -e . "$stage_root/composition.json" >/dev/null || \
+    fail "v4 composition stage $stage has invalid authority JSON"
+  [[ "$(v4_stage_property "$stage_root/properties.env" ro.build.version.incremental)" == "$expected_revision" ]] || \
+    fail "v4 composition stage $stage has the wrong product revision"
+  [[ "$(v4_stage_property "$stage_root/stage.env" stage)" == "$stage" && \
+    "$(v4_stage_property "$stage_root/stage.env" product)" == "$product" && \
+    "$(v4_stage_property "$stage_root/stage.env" serial)" == "$serial" && \
+    "$(v4_stage_property "$stage_root/stage.env" revision)" == "$expected_revision" && \
+    "$(v4_stage_property "$stage_root/stage.env" artifact_sha256)" == \
+      "$(v4_campaign_json_value "$evidence_root/campaign.json" artifact_sha256)" ]] || \
+    fail "v4 composition stage $stage identity is not bound to its campaign"
+  [[ "$(v4_stage_property "$stage_root/properties.env" ro.sos.experience_api)" == 4 ]] || \
+    fail "v4 composition stage $stage does not report Experience API v4"
+  [[ "$(v4_stage_property "$stage_root/properties.env" ro.sos.revision_format)" == 4 ]] || \
+    fail "v4 composition stage $stage does not report package format v4"
+  [[ "$(v4_stage_property "$stage_root/properties.env" ro.sos.legacy_revision_read)" == 3 ]] || \
+    fail "v4 composition stage $stage changed the bounded rollback reader"
+  grep -Fx 'selinux=Enforcing' "$stage_root/security.env" >/dev/null || \
+    fail "v4 composition stage $stage is not SELinux Enforcing"
+  png_magic="$(head -c 8 "$stage_root/screen.png" | od -An -tx1 | tr -d ' \n')"
+  [[ "$png_magic" == 89504e470d0a1a0a ]] || \
+    fail "v4 composition stage $stage screenshot is not PNG"
+  grep -F 'sos-authority' "$stage_root/processes.txt" >/dev/null || \
+    fail "v4 composition stage $stage lacks the authority process"
+  if grep -Eiq '(Fatal signal.*sos|ANR in dev\.sos|native_gpui_failed|android_authority_fatal|system_revision_activation_failed)' \
+    "$stage_root/logcat.txt"; then
+    fail "v4 composition stage $stage contains a relevant crash or ANR"
+  fi
+  if [[ "$product" == compat1 ]]; then
+    [[ "$(v4_stage_property "$stage_root/properties.env" ro.sos.profile)" == compat && \
+      "$(v4_stage_property "$stage_root/properties.env" ro.sos.compat.stage)" == 1 && \
+      "$(v4_stage_property "$stage_root/properties.env" ro.sos.ui_owner)" == native-sos-android-runtime && \
+      "$(v4_stage_property "$stage_root/properties.env" sys.boot_completed)" == 1 ]] || \
+      fail "v4 composition stage $stage is not ready Compat 1"
+    grep -F 'dev.sos.experience' "$stage_root/processes.txt" >/dev/null || \
+      fail "v4 composition stage $stage lacks the Compat HOME process"
+    grep -Eq 'SosHomeActivity|dev\.sos\.experience' "$stage_root/surfaces.txt" || \
+      fail "v4 composition stage $stage lacks the Compat HOME surface"
+    [[ -s "$stage_root/accessibility.xml" ]] || \
+      fail "v4 composition stage $stage lacks the Android accessibility tree"
+    grep -F 'TOTAL PSS:' "$stage_root/runtime-memory.txt" >/dev/null || \
+      fail "v4 composition stage $stage lacks Compat runtime memory evidence"
+    if grep -Ei 'avc:[[:space:]]*denied.*scontext=u:r:(sos_authority|priv_app):s0' \
+      "$stage_root/logcat.txt" >/dev/null; then
+      fail "v4 composition stage $stage contains a relevant enforcing AVC"
+    fi
+  else
+    [[ "$(v4_stage_property "$stage_root/properties.env" ro.sos.profile)" == core && \
+      "$(v4_stage_property "$stage_root/properties.env" ro.sos.core.stage)" == 1 && \
+      "$(v4_stage_property "$stage_root/properties.env" ro.sos.providers)" == core-native && \
+      "$(v4_stage_property "$stage_root/properties.env" ro.sos.ui_owner)" == native-sos-no-zygote && \
+      "$(v4_stage_property "$stage_root/properties.env" ro.zygote)" == no_zygote ]] || \
+      fail "v4 composition stage $stage is not ready Core 1"
+    grep -F 'sos-core-host' "$stage_root/processes.txt" >/dev/null || \
+      fail "v4 composition stage $stage lacks the Core supervisor and child"
+    grep -F 'SOS Core Experience' "$stage_root/surfaces.txt" >/dev/null || \
+      fail "v4 composition stage $stage lacks the Core Experience surface"
+    grep -Fx 'core1_readiness=PASS' "$stage_root/readiness.txt" >/dev/null || \
+      fail "v4 composition stage $stage failed Core readiness"
+    [[ "$(grep -c '^VmRSS:' "$stage_root/runtime-memory.txt")" -ge 2 ]] || \
+      fail "v4 composition stage $stage lacks per-process Core runtime memory evidence"
+  fi
+  [[ "$(v4_campaign_json_value "$evidence_root/campaign.json" serial)" == "$serial" ]] || \
+    fail "v4 composition serial changed while auditing stage $stage"
+}
+
+audit_v4_composition_campaign() {
+  [[ "$#" -eq 2 && "$1" == --root ]] || \
+    fail "usage: ./tools/a33xctl audit-v4-composition-campaign --root DIR"
+  local evidence_root campaign_file product serial expected_revision artifact artifact_sha artifact_bytes stage final_log
+  local control_label
+  local stage_started stage_finished previous_finished=0 campaign_started campaign_finished
+  local dashboard_generation appearance_generation runtime_ready_count failed_count recovered_count
+  local original_stock_revision authored_stock_revision rollback_stock_revision
+  local dashboard_authority host_authority restarted_authority authored_authority rollback_authority
+  local dashboard_host restarted_host authority_stage_host authored_host rollback_host common_core_pids
+  evidence_root="$(realpath -e "$2")"
+  campaign_file="$evidence_root/campaign.json"
+  [[ -f "$campaign_file" ]] || fail "v4 composition campaign metadata is missing"
+  product="$(v4_campaign_json_value "$campaign_file" product)"
+  serial="$(v4_campaign_json_value "$campaign_file" serial)"
+  expected_revision="$(v4_campaign_json_value "$campaign_file" expected_revision)"
+  artifact="$(v4_campaign_json_value "$campaign_file" artifact)"
+  artifact_sha="$(v4_campaign_json_value "$campaign_file" artifact_sha256)"
+  artifact_bytes="$(jq -er '.artifact_bytes | numbers' "$campaign_file")"
+  validate_v4_composition_product "$product"
+  [[ -f "$artifact" && "$(stat -c %s "$artifact")" == "$artifact_bytes" && \
+    "$(sha256sum "$artifact" | awk '{print $1}')" == "$artifact_sha" ]] || \
+    fail "v4 composition campaign artifact is missing or changed"
+  for stage in stock dashboard appearance child-failure child-timeout recovered \
+    ime-accessibility host-restart authority-restart authored rollback; do
+    [[ -d "$evidence_root/stages/$stage" ]] || \
+      fail "v4 composition campaign lacks stage $stage"
+    audit_v4_stage_common "$evidence_root" "$stage" "$product" "$serial" "$expected_revision"
+    stage_started="$(v4_stage_property "$evidence_root/stages/$stage/stage.env" started_ns)"
+    stage_finished="$(v4_stage_property "$evidence_root/stages/$stage/stage.env" finished_ns)"
+    [[ "$stage_started" =~ ^[0-9]+$ && "$stage_finished" =~ ^[0-9]+$ && \
+      "$stage_started" -ge "$previous_finished" && "$stage_finished" -ge "$stage_started" ]] || \
+      fail "v4 composition stage $stage has invalid or non-monotonic timing evidence"
+    [[ "$stage" == stock ]] && campaign_started="$stage_started"
+    previous_finished="$stage_finished"
+    campaign_finished="$stage_finished"
+  done
+
+  jq -e '
+    . as $root |
+    $root.format_version == 1 and
+    $root.presented_experience == "sos.example.dashboard" and
+    (["sos.stock.shell", "sos.example.agenda", "sos.example.media",
+      "sos.example.dashboard", "sos.example.agenda-media-remix"]
+      | all(. as $id | $root.states[$id] != null and $root.grants[$id] != null))
+  ' "$evidence_root/stages/dashboard/composition.json" >/dev/null || \
+    fail "Dashboard stage lacks independent v4 state and grant resources"
+  jq -e '
+    . as $root |
+    ($root.grants | to_entries | all(.value.reviewed == true and .value.experience_id == .key)) and
+    ($root.grants["sos.stock.shell"].provider_capabilities | index("appearance_write") != null) and
+    ($root.grants["sos.example.agenda"].provider_capabilities | length == 0) and
+    ($root.grants["sos.example.dashboard"].provider_capabilities | length == 0) and
+    ($root.grants["sos.example.media"].provider_capabilities | sort == ["music_control", "music_read"]) and
+    ($root.grants["sos.example.dashboard"].data_flows | keys | sort == ["agenda", "media"])
+  ' "$evidence_root/stages/recovered/composition.json" >/dev/null || \
+    fail "v4 composition grants are missing, merged, or not independently reviewed"
+  jq -e '
+    .states["sos.example.agenda"].state.selected == "Design review" and
+    .states["sos.example.dashboard"].state.opened == "Design review" and
+    .states["sos.example.dashboard"].state.acceptance_pings >= 2 and
+    ([.states[] | .revision_id] | unique | length >= 4)
+  ' "$evidence_root/stages/recovered/composition.json" >/dev/null || \
+    fail "child event, durable state, parent liveness, or Experience isolation evidence is missing"
+  dashboard_generation="$(jq -er '.appearance.profile.generation' \
+    "$evidence_root/stages/dashboard/composition.json")"
+  appearance_generation="$(jq -er '.appearance.profile.generation' \
+    "$evidence_root/stages/appearance/composition.json")"
+  [[ "$dashboard_generation" =~ ^[0-9]+$ && "$appearance_generation" =~ ^[0-9]+$ && \
+    "$appearance_generation" -gt "$dashboard_generation" ]] || \
+    fail "appearance generation did not advance"
+  cmp -s \
+    <(jq -S -c '.states | with_entries(.value = .value.revision_id)' \
+      "$evidence_root/stages/dashboard/composition.json") \
+    <(jq -S -c '.states | with_entries(.value = .value.revision_id)' \
+      "$evidence_root/stages/appearance/composition.json") || \
+    fail "appearance propagation changed an Experience revision"
+  cmp -s \
+    <(jq -S -c '.states["sos.example.media"]' \
+      "$evidence_root/stages/dashboard/composition.json") \
+    <(jq -S -c '.states["sos.example.media"]' \
+      "$evidence_root/stages/appearance/composition.json") || \
+    fail "custom Media state changed during appearance propagation"
+  for stage in host-restart authority-restart; do
+    jq -e --argjson generation "$appearance_generation" '
+      .presented_experience == "sos.example.dashboard" and
+      .appearance.profile.generation == $generation and
+      .states["sos.example.agenda"].state.selected == "Design review" and
+      .states["sos.example.dashboard"].state.opened == "Design review"
+    ' "$evidence_root/stages/$stage/composition.json" >/dev/null || \
+      fail "v4 graph, state, or appearance did not survive $stage"
+  done
+  original_stock_revision="$(jq -er '.states["sos.stock.shell"].revision_id' \
+    "$evidence_root/stages/dashboard/composition.json")"
+  authored_stock_revision="$(jq -er '.states["sos.stock.shell"].revision_id' \
+    "$evidence_root/stages/authored/composition.json")"
+  rollback_stock_revision="$(jq -er '.states["sos.stock.shell"].revision_id' \
+    "$evidence_root/stages/rollback/composition.json")"
+  [[ "$original_stock_revision" != "$authored_stock_revision" && \
+    "$rollback_stock_revision" == "$original_stock_revision" ]] || \
+    fail "Stock did not activate and roll back between two v4 revisions"
+  jq -s -e 'all(.[]; .presented_experience == null)' \
+    "$evidence_root/stages/authored/composition.json" \
+    "$evidence_root/stages/rollback/composition.json" >/dev/null || \
+    fail "Stock authoring or rollback left another top-level Experience presented"
+
+  final_log="$evidence_root/stages/rollback/logcat.txt"
+  require_v4_log_pattern "$final_log" \
+    'android_graph_runtime_ready .*root_experience=sos\.example\.dashboard instances=3' \
+    "Dashboard did not start as a three-Instance graph"
+  require_v4_log_pattern "$final_log" 'android_graph_presented .*confirmed=true' \
+    "Dashboard lacks rendered-frame confirmation"
+  for stage in open_first acceptance_update_fail acceptance_timeout; do
+    require_v4_log_pattern "$final_log" \
+      "android_reference_graph_event_dispatched experience_id=sos\\.example\\.agenda action=$stage" \
+      "Agenda reference action $stage was not dispatched"
+  done
+  require_v4_log_pattern "$final_log" \
+    'android_reference_graph_event_dispatched experience_id=sos\.example\.dashboard action=acceptance_ping' \
+    "parent liveness action was not dispatched"
+  require_v4_log_pattern "$final_log" \
+    'android_graph_instance_failed .*experience_id=sos\.example\.agenda root_ready=true .*reference Agenda update failure' \
+    "Agenda update failure was not contained"
+  failed_count="$(grep -Ec 'android_graph_instance_failed .*experience_id=sos\.example\.agenda root_ready=true' "$final_log")"
+  [[ "$failed_count" -ge 2 ]] || fail "Agenda timeout did not become a contained child failure"
+  recovered_count="$(grep -Ec 'android_graph_instance_recovered .*experience_id=sos\.example\.agenda root_ready=true' "$final_log")"
+  [[ "$recovered_count" -ge 2 ]] || fail "Agenda did not recover after both child failures"
+  require_v4_log_pattern "$final_log" \
+    "android_appearance_write_committed .*generation=$appearance_generation" \
+    "authority appearance commit is missing"
+  require_v4_log_pattern "$final_log" \
+    "android_graph_refreshed .*appearance_generation=$appearance_generation failed_instances=0" \
+    "appearance did not reach the healthy complete graph"
+  runtime_ready_count="$(grep -Ec 'android_graph_runtime_ready .*root_experience=sos\.example\.dashboard instances=3' "$final_log")"
+  [[ "$runtime_ready_count" -ge 2 ]] || \
+    fail "host recovery did not restore Dashboard"
+  require_v4_log_pattern "$final_log" 'android_system_control action=appearance_toggle' \
+    "host-owned appearance control was not used"
+  require_v4_log_pattern "$final_log" 'android_system_control action=dismiss_experience experience_id=sos\.example\.dashboard' \
+    "host-owned Home control did not dismiss Dashboard"
+  require_v4_log_pattern "$final_log" 'android_v4_candidate_staged graph_id=' \
+    "Stock v4 authoring candidate was not staged"
+  require_v4_log_pattern "$final_log" \
+    'android_agent_activation_commit .*phase=committed authority=system-graph' \
+    "Stock v4 authoring candidate lacks authority commit evidence"
+  require_v4_log_pattern "$final_log" 'android_system_control action=rollback_graph' \
+    "host-owned rollback control was not used"
+  require_v4_log_pattern "$final_log" 'android_graph_rollback_presented graph_id=' \
+    "v4 graph rollback lacks presentation evidence"
+  require_v4_log_pattern "$final_log" 'accessibility_published bytes=[1-9][0-9]* semantics=[1-9][0-9]*' \
+    "composed accessibility semantics were not published"
+  require_v4_log_pattern "$final_log" 'scene_pointer phase=down' \
+    "physical pointer down did not reach the namespaced scene"
+  require_v4_log_pattern "$final_log" 'scene_pointer phase=up' \
+    "physical pointer up did not reach the namespaced scene"
+
+  dashboard_authority="$(v4_stage_pid "$evidence_root/stages/dashboard/pids.env" authority_pid)"
+  host_authority="$(v4_stage_pid "$evidence_root/stages/host-restart/pids.env" authority_pid)"
+  restarted_authority="$(v4_stage_pid "$evidence_root/stages/authority-restart/pids.env" authority_pid)"
+  authored_authority="$(v4_stage_pid "$evidence_root/stages/authored/pids.env" authority_pid)"
+  rollback_authority="$(v4_stage_pid "$evidence_root/stages/rollback/pids.env" authority_pid)"
+  [[ "$dashboard_authority" =~ ^[0-9]+$ && "$host_authority" == "$dashboard_authority" && \
+    "$host_authority" != "$restarted_authority" && \
+    "$restarted_authority" == "$authored_authority" && \
+    "$authored_authority" == "$rollback_authority" ]] || \
+    fail "authority PID evidence does not isolate host and authority recovery"
+  if [[ "$product" == compat1 ]]; then
+    require_v4_log_pattern "$final_log" \
+      'compat_ime_focus_transition .*to=i-[^ ]+::agenda-input .*lifecycle=active' \
+      "Compat IME did not focus the namespaced mounted Agenda input"
+    require_v4_log_pattern "$final_log" \
+      'compat_ime_blur_resolved node_id=i-[^ ]+::agenda-input .*outcome=deactivate lifecycle=inactive' \
+      "Compat mounted Agenda IME outside-blur routing is missing"
+    require_v4_log_pattern "$final_log" \
+      'GpuiPlatformView.*Accessibility tree updated: nodes=[1-9][0-9]*' \
+      "Compat virtual accessibility tree did not reach Android"
+    grep -F 'Dashboard' "$evidence_root/stages/dashboard/accessibility.xml" >/dev/null || \
+      fail "Compat accessibility tree omits Dashboard"
+    grep -F 'Open first agenda item' "$evidence_root/stages/dashboard/accessibility.xml" >/dev/null || \
+      fail "Compat accessibility tree omits the namespaced Agenda action"
+    grep -F 'Agenda child text input' "$evidence_root/stages/dashboard/accessibility.xml" >/dev/null || \
+      fail "Compat accessibility tree omits the mounted Agenda text field"
+    for control_label in 'Change system theme' 'Roll back Experience graph' 'Return to Stock'; do
+      grep -F "$control_label" "$evidence_root/stages/dashboard/accessibility.xml" >/dev/null || \
+        fail "Compat accessibility tree omits host control: $control_label"
+    done
+    grep -F "Today · appearance $appearance_generation" \
+      "$evidence_root/stages/appearance/accessibility.xml" >/dev/null || \
+      fail "Compat accessibility tree did not receive mounted appearance data"
+    dashboard_host="$(v4_stage_pid "$evidence_root/stages/dashboard/pids.env" home_pid)"
+    restarted_host="$(v4_stage_pid "$evidence_root/stages/host-restart/pids.env" home_pid)"
+    authority_stage_host="$(v4_stage_pid "$evidence_root/stages/authority-restart/pids.env" home_pid)"
+    authored_host="$(v4_stage_pid "$evidence_root/stages/authored/pids.env" home_pid)"
+    rollback_host="$(v4_stage_pid "$evidence_root/stages/rollback/pids.env" home_pid)"
+    [[ "$dashboard_host" =~ ^[0-9]+$ && "$restarted_host" =~ ^[0-9]+$ && \
+      "$dashboard_host" != "$restarted_host" && "$restarted_host" == "$authority_stage_host" && \
+      "$authority_stage_host" == "$authored_host" && "$authored_host" == "$rollback_host" ]] || \
+      fail "Compat HOME PID evidence does not isolate host recovery"
+  else
+    require_v4_log_pattern "$final_log" 'core_input_touch action=down' \
+      "Core physical touchscreen down is missing"
+    require_v4_log_pattern "$final_log" 'core_input_touch action=up' \
+      "Core physical touchscreen up is missing"
+    require_v4_log_pattern "$final_log" \
+      'core_native_software_keyboard node=i-[^ ]+::agenda-input visible=true' \
+      "Core native IME did not open for the namespaced mounted Agenda input"
+    require_v4_log_pattern "$final_log" \
+      'core_native_software_keyboard node=i-[^ ]+::agenda-input visible=false' \
+      "Core native IME did not close for the namespaced mounted Agenda input"
+    dashboard_host="$(v4_stage_pid "$evidence_root/stages/dashboard/pids.env" core_host_pids)"
+    restarted_host="$(v4_stage_pid "$evidence_root/stages/host-restart/pids.env" core_host_pids)"
+    authority_stage_host="$(v4_stage_pid "$evidence_root/stages/authority-restart/pids.env" core_host_pids)"
+    authored_host="$(v4_stage_pid "$evidence_root/stages/authored/pids.env" core_host_pids)"
+    rollback_host="$(v4_stage_pid "$evidence_root/stages/rollback/pids.env" core_host_pids)"
+    [[ "$dashboard_host" != "$restarted_host" && "$restarted_host" == "$authority_stage_host" && \
+      "$authority_stage_host" == "$authored_host" && "$authored_host" == "$rollback_host" ]] || \
+      fail "Core child PID evidence does not isolate host recovery"
+    for stage in dashboard host-restart authority-restart authored rollback; do
+      [[ "$(v4_stage_pid "$evidence_root/stages/$stage/pids.env" core_host_pids)" =~ \
+        ^[0-9]+\ [0-9]+$ ]] || fail "Core stage $stage lacks two normalized host PIDs"
+    done
+    common_core_pids="$(comm -12 \
+      <(tr ' ' '\n' <<<"$dashboard_host" | sed '/^$/d' | sort -u) \
+      <(tr ' ' '\n' <<<"$restarted_host" | sed '/^$/d' | sort -u))"
+    [[ -n "$common_core_pids" ]] || \
+      fail "Core supervisor did not survive child recovery"
+  fi
+
+  printf 'v4_composition_campaign=PASS\nproduct=%s\nserial=%s\nrevision=%s\n' \
+    "$product" "$serial" "$expected_revision" >"$evidence_root/verdict.txt"
+  printf 'appearance_generation=%s\ncontained_failures=%s\nrecoveries=%s\n' \
+    "$appearance_generation" "$failed_count" "$recovered_count" >>"$evidence_root/verdict.txt"
+  printf 'campaign_elapsed_ns=%s\n' "$((campaign_finished - campaign_started))" \
+    >>"$evidence_root/verdict.txt"
+  evidence_manifest_generate --root "$evidence_root" --output "$evidence_root/manifest.tsv" >/dev/null
+  evidence_manifest_verify --root "$evidence_root" --manifest "$evidence_root/manifest.tsv" >/dev/null
+  cat "$evidence_root/verdict.txt"
+  printf 'manifest=%s\n' "$evidence_root/manifest.tsv"
+  info "v4 composition physical campaign passed with an independently verified manifest"
+}
+
 evidence_path_is_temporary() {
   [[ "$#" -eq 1 ]] || fail "internal usage: evidence_path_is_temporary <path>"
   case "${1##*/}" in
@@ -1876,6 +2399,11 @@ commands:
                     verify the non-shipping trusted provider probe is present
   inspect-core1-readiness --serial SERIAL --expected-revision REVISION
                     read-only exact-product Core 1 readiness snapshot
+  capture-v4-composition-stage --product compat1|core1 --serial SERIAL
+                    --expected-revision REVISION --artifact OTA --root DIR --stage STAGE
+                    capture one ordered physical v4 composition checkpoint
+  audit-v4-composition-campaign --root DIR
+                    judge all physical v4 checkpoints and seal their manifest
   evidence-manifest-generate --root DIR --output MANIFEST
                     atomically record finalized evidence path/size/SHA-256
   evidence-manifest-verify --root DIR --manifest MANIFEST
@@ -1922,6 +2450,8 @@ case "$command" in
   inspect-core1) inspect_core1 "$@" ;;
   inspect-core1-provider-probe) inspect_core1_provider_probe "$@" ;;
   inspect-core1-readiness) inspect_core1_readiness "$@" ;;
+  capture-v4-composition-stage) capture_v4_composition_stage "$@" ;;
+  audit-v4-composition-campaign) audit_v4_composition_campaign "$@" ;;
   evidence-manifest-generate) evidence_manifest_generate "$@" ;;
   evidence-manifest-verify) evidence_manifest_verify "$@" ;;
   -h|--help|help|'') usage ;;

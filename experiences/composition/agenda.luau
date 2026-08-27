@@ -35,6 +35,20 @@ local function summary(model: ExperienceModel, state: ExperienceState, propertie
                 interaction = { tap_action = "acceptance_timeout" },
                 semantics = { role = "button", label = "Trigger child timeout" },
             },
+            {
+                id = "agenda-input",
+                layout = { height = 42, padding = 8 },
+                content = {
+                    kind = "text_session", state_key = "draft", value = state.draft or "",
+                    placeholder = "Type inside mounted Agenda",
+                },
+                paint = {{ kind = "fill_bounds", color = 0x374151ff, radius = 10 }},
+                semantics = {
+                    role = "text_field", label = "Agenda child text input",
+                    value = state.draft or "",
+                    hint = "Exercises mounted Experience input and IME ownership",
+                },
+            },
         },
     }
 end
@@ -51,6 +65,8 @@ local function updateSummary(_model: ExperienceModel, state: ExperienceState, ev
             effects = {},
             events = {{ event = "open", payload = { item = "Design review" } }},
         }
+    elseif event.action == "text_changed" then
+        state.draft = event.value or ""
     elseif event.action == "acceptance_fail" then
         state.acceptance_failure = true
     elseif event.action == "acceptance_recover" then

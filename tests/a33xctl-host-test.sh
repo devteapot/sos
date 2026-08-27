@@ -20,6 +20,39 @@ if A33XCTL_ADB="$mock_adb" "$ctl" inspect-core1-readiness \
   exit 1
 fi
 
+printf 'compat artifact\n' >"$test_root/compat.ota.zip"
+printf 'core artifact\n' >"$test_root/core.ota.zip"
+for product in compat1 core1; do
+  revision="sos.$product.test.revision"
+  artifact="$test_root/${product%1}.ota.zip"
+  campaign="$test_root/$product-campaign"
+  for stage in stock dashboard appearance child-failure child-timeout recovered \
+    ime-accessibility host-restart authority-restart authored rollback; do
+    A33XCTL_ADB="$mock_adb" "$ctl" capture-v4-composition-stage \
+      --product "$product" \
+      --serial MOCKSERIAL \
+      --expected-revision "$revision" \
+      --artifact "$artifact" \
+      --root "$campaign" \
+      --stage "$stage" \
+      >"$test_root/$product-$stage.out"
+  done
+  "$ctl" audit-v4-composition-campaign --root "$campaign" \
+    >"$test_root/$product-audit.out"
+  grep -Fx 'v4_composition_campaign=PASS' "$test_root/$product-audit.out" >/dev/null
+  "$ctl" evidence-manifest-verify --root "$campaign" \
+    --manifest "$campaign/manifest.tsv" >/dev/null
+done
+
+cp -a "$test_root/compat1-campaign" "$test_root/bad-pid-campaign"
+sed -i 's/^authority_pid=400$/authority_pid=300/' \
+  "$test_root/bad-pid-campaign/stages/authority-restart/pids.env"
+if "$ctl" audit-v4-composition-campaign \
+  --root "$test_root/bad-pid-campaign" >/dev/null 2>&1; then
+  printf 'non-isolated authority recovery unexpectedly passed\n' >&2
+  exit 1
+fi
+
 mkdir "$test_root/evidence"
 printf 'bravo\n' >"$test_root/evidence/b.txt"
 printf 'alpha\n' >"$test_root/evidence/a.txt"

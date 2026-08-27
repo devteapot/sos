@@ -14512,3 +14512,64 @@ one composition implementation for all hosts. Rebuild and inspect the exact
 Android candidates after this source change, then run the physical Compat and
 Core campaign when the SM-A336B exposes an authorized recovery or Android
 transport.
+
+## 2026-08-27: Make Android v4 composition physically auditable
+
+**Goal:** Close the missing procedure and user-reachable control surface for
+the physical Compat/Core composition gate. The result must judge the complete
+v4 graph, not a boot screenshot or a collection of unbound adb transcripts.
+
+**Changed:** The AOSP Android host now owns a fixed `Theme`, `Rollback`, and
+conditional `Home` strip above Experience content. It advances appearance
+through the registry-authorized Stock identity, stages rollback through the
+authority, and returns an independently presented ordinary root to Stock
+through the normal lifecycle graph. Ordinary Luau receives neither those
+actions nor their authority. Fixed host IDs expose the controls through the
+Compat virtual accessibility tree and prevent Experience nodes from spoofing
+their actions.
+The mounted Agenda reference export now includes a text
+session so physical IME evidence names the child Instance instead of an
+unrelated Stock field. `tools/a33xctl` adds ordered
+`capture-v4-composition-stage` and `audit-v4-composition-campaign` commands for
+Stock, locked Dashboard, appearance, child update failure, child timeout,
+recovery, mounted IME/accessibility, independent host and authority restart,
+v4 Stock authoring, and v4-to-v4 rollback. Every checkpoint binds the exact
+product, serial, revision and artifact digest and captures monotonic timing,
+SELinux, processes, surfaces, authority state/grants, screenshot, logs,
+per-process memory, and product readiness or accessibility. The final audit
+checks state/grant isolation, structured child events, failure containment,
+appearance without revision churn, namespaced IME, independent PID recovery,
+authoring and rollback revisions, then generates and verifies its manifest.
+
+**Failure / decision:** The existing Android deep links were Compat-only, so
+Core had no user-reachable appearance, dismissal, or rollback path after an
+ordinary Experience replaced Stock. A proposed worker-restart checkpoint
+would also have required a test-only Core backdoor. The campaign instead uses
+shipping host controls and independently restarts the real host child and
+authority. The first audit draft treated generic Stock IME logs as composition
+evidence; the mounted Agenda input and Instance-prefixed log requirements
+replace that shortcut. PID sets are normalized before comparison, Core memory
+comes from each `/proc/<pid>/status`, and audit is offline-repeatable rather
+than depending on the device still being attached.
+
+**Evidence:** `tests/a33xctl-host-test.sh` passes complete mock Compat and Core
+campaigns, independently verifies both manifests, and rejects a campaign in
+which the authority changes during host-only recovery; its measured wall time
+is 6.92 seconds with 4,900 KiB peak host RSS. Bash parsing and `git diff
+--check` pass. Focused `revision-supervisor`, `runtime-luau`, and
+`sos-experience` suites pass 100 tests; the one explicit performance campaign
+remains intentionally ignored. The `linux-host` profile separately passes 38
+library tests plus its process-boundary integration test. ARM64 release checks
+pass for plain `gate-strict`, Compat `aosp-system`, and Core `core-native`.
+The complete a33xctl, aospctl, Linux login/live-image/hardware, and PiKVM
+six-script host set passes in 14.14 seconds with 708,684 KiB peak host RSS.
+
+**Remaining risk / next gate:** The previous `884ab4e` cleanup artifacts are
+superseded by these source changes. Build, inspect, and seal final exact Compat
+and Core artifacts, then run the staged campaign on SM-A336B serial
+`RFCT50EGFCN`. The phone still needs an authorized Android or Recovery
+transport before installation: at 2026-08-27T17:09:06+02:00, adb still reports
+`no permissions` and USB ID `04e8:685d` still reports Download Mode. Retain the
+bounded v3 rollback reader until the physical campaign has migrated Stock and
+proved rollback between two v4 revisions; only then remove it and rebuild the
+final no-v3 products.

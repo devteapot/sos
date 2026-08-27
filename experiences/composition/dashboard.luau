@@ -28,7 +28,7 @@ local function renderDashboard(model: ExperienceModel, state: ExperienceState, _
             },
             {
                 id = "agenda-slot",
-                layout = { width = 440, height = 180, clip_bounds = true },
+                layout = { width = 440, height = 230, clip_bounds = true },
                 content = {
                     kind = "experience_mount",
                     dependency = "agenda",

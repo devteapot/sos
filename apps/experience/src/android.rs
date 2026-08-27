@@ -34,6 +34,8 @@ use experience_ir::{
     HitRegion, Interaction, Justify, PaintOp, ProviderEffect, Scene, SceneEvent, SceneNode,
     StateEnvelope, TextContent, MAX_AGENT_MESSAGES, MAX_AGENT_MESSAGE_BYTES,
 };
+#[cfg(feature = "aosp-system")]
+use experience_ir::{SemanticRole, Semantics};
 use experience_package::{
     canonical_sha256, ExperienceId, ExperienceRole, GraphNodeId, InstanceId, PackageMetadata,
     RevisionId, StateMigrationRecord, StateMigrationSource,
@@ -83,6 +85,12 @@ static EXPERIENCE_LIFECYCLE_REQUEST: OnceLock<Mutex<Option<AndroidExperienceLife
 #[cfg(feature = "aosp-system")]
 static REFERENCE_GRAPH_EVENT_REQUEST: OnceLock<Mutex<Option<AndroidReferenceGraphEvent>>> =
     OnceLock::new();
+#[cfg(feature = "aosp-system")]
+const ANDROID_SYSTEM_THEME_ID: &str = "android-system-theme";
+#[cfg(feature = "aosp-system")]
+const ANDROID_SYSTEM_ROLLBACK_ID: &str = "android-system-rollback";
+#[cfg(feature = "aosp-system")]
+const ANDROID_SYSTEM_HOME_ID: &str = "android-system-home";
 #[cfg(feature = "core-native")]
 static CORE_PLATFORM: OnceLock<Mutex<Option<Arc<AndroidPlatform>>>> = OnceLock::new();
 #[cfg(feature = "core-native")]
@@ -215,6 +223,14 @@ struct ActiveAndroidGraph {
 enum AndroidExperienceLifecycle {
     Present(ExperienceId),
     Dismiss(ExperienceId),
+}
+
+#[cfg(feature = "aosp-system")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AndroidSystemControl {
+    Theme,
+    Rollback,
+    Home,
 }
 
 #[cfg(feature = "aosp-system")]
@@ -2155,6 +2171,64 @@ impl ExperienceHost {
     }
 
     #[cfg(feature = "aosp-system")]
+    fn presented_ordinary_experience(&self) -> Option<ExperienceId> {
+        let graph = self.active_graph.as_ref()?;
+        let root = graph.snapshot.instances.get(&graph.snapshot.root)?;
+        let revision = graph.revisions.get(&root.revision_id)?;
+        (revision.package.role != ExperienceRole::Shell).then(|| root.experience_id.clone())
+    }
+
+    #[cfg(feature = "aosp-system")]
+    fn activate_android_system_control(
+        &mut self,
+        control: AndroidSystemControl,
+        cx: &mut Context<Self>,
+    ) {
+        match control {
+            AndroidSystemControl::Theme => {
+                if self.action_in_flight || self.pending_graph_confirmation.is_some() {
+                    self.status = Some(("A graph action is already active".into(), false));
+                } else if let Err(error) = self.toggle_authority_appearance() {
+                    self.status = Some((format!("Appearance write failed: {error}"), false));
+                } else {
+                    log::info!("android_system_control action=appearance_toggle");
+                }
+            }
+            AndroidSystemControl::Rollback => {
+                log::info!("android_system_control action=rollback_graph");
+                self.rollback_active_graph(cx);
+            }
+            AndroidSystemControl::Home => {
+                let Some(experience_id) = self.presented_ordinary_experience() else {
+                    self.status = Some(("No ordinary v4 Experience is presented".into(), false));
+                    cx.notify();
+                    return;
+                };
+                let Some(graph_id) = self
+                    .active_graph
+                    .as_ref()
+                    .map(|graph| graph.graph_id.clone())
+                else {
+                    self.status = Some(("No v4 graph is active".into(), false));
+                    cx.notify();
+                    return;
+                };
+                log::info!(
+                    "android_system_control action=dismiss_experience experience_id={experience_id}"
+                );
+                if let Err(error) = self.stage_lifecycle_graph(
+                    graph_id,
+                    AndroidExperienceLifecycle::Dismiss(experience_id),
+                    cx,
+                ) {
+                    self.status = Some((format!("Experience dismissal failed: {error}"), false));
+                }
+            }
+        }
+        cx.notify();
+    }
+
+    #[cfg(feature = "aosp-system")]
     fn toggle_authority_appearance(&mut self) -> Result<(), String> {
         let graph_id = self
             .active_graph
@@ -3016,11 +3090,20 @@ impl ExperienceHost {
             })
             .collect::<HashMap<_, _>>();
         #[cfg(feature = "aosp-system")]
-        let semantic_scene = self
-            .active_graph
-            .as_ref()
-            .map(|graph| composed_graph_scene(&graph.snapshot))
-            .unwrap_or_else(|| self.scene.clone());
+        let semantic_scene = {
+            let mut scene = self
+                .active_graph
+                .as_ref()
+                .map(|graph| composed_graph_scene(&graph.snapshot))
+                .unwrap_or_else(|| self.scene.clone());
+            if self.active_graph.is_some() {
+                append_android_system_control_semantics(
+                    &mut scene,
+                    self.presented_ordinary_experience().is_some(),
+                );
+            }
+            scene
+        };
         #[cfg(not(feature = "aosp-system"))]
         let semantic_scene = self.scene.clone();
         match accessibility::publish(&semantic_scene, &text, &scroll) {
@@ -3996,6 +4079,25 @@ impl Render for ExperienceHost {
         #[cfg(not(feature = "aosp-system"))]
         let accessibility_scene = self.scene.clone();
         while let Some(action) = accessibility::take_action() {
+            #[cfg(feature = "aosp-system")]
+            if action.kind == "click" {
+                let control = match (action.target.as_str(), action.value.as_str()) {
+                    (ANDROID_SYSTEM_THEME_ID, "android_system_theme") => {
+                        Some(AndroidSystemControl::Theme)
+                    }
+                    (ANDROID_SYSTEM_ROLLBACK_ID, "android_system_rollback") => {
+                        Some(AndroidSystemControl::Rollback)
+                    }
+                    (ANDROID_SYSTEM_HOME_ID, "android_system_home") => {
+                        Some(AndroidSystemControl::Home)
+                    }
+                    _ => None,
+                };
+                if let Some(control) = control {
+                    self.activate_android_system_control(control, cx);
+                    continue;
+                }
+            }
             match action.kind.as_str() {
                 "click" if !action.value.is_empty() => self.queue_input_event(
                     SceneEvent {
@@ -4238,6 +4340,68 @@ impl Render for ExperienceHost {
                     .text_size(px(12.0))
                     .child(SharedString::from(message.clone())),
             );
+        }
+        #[cfg(feature = "aosp-system")]
+        if self.active_graph.is_some() {
+            let ordinary_root = self.presented_ordinary_experience().is_some();
+            let control = |id: &'static str, label: &'static str| {
+                div()
+                    .id(SharedString::from(id))
+                    .h(px(34.0))
+                    .px(px(12.0))
+                    .rounded(px(10.0))
+                    .bg(rgb(0x17211B))
+                    .text_color(rgb(0xFFFFFF))
+                    .text_size(px(12.0))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(label)
+                    .child(
+                        canvas(
+                            move |bounds, _, _| accessibility::record_bounds(id, bounds),
+                            |_, _, _, _| {},
+                        )
+                        .absolute()
+                        .size_full(),
+                    )
+            };
+            let theme = control(ANDROID_SYSTEM_THEME_ID, "Theme").on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _, window, cx| {
+                    window.prevent_default();
+                    cx.stop_propagation();
+                    this.activate_android_system_control(AndroidSystemControl::Theme, cx);
+                }),
+            );
+            let rollback = control(ANDROID_SYSTEM_ROLLBACK_ID, "Rollback").on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _, window, cx| {
+                    window.prevent_default();
+                    cx.stop_propagation();
+                    this.activate_android_system_control(AndroidSystemControl::Rollback, cx);
+                }),
+            );
+            let mut controls = div()
+                .absolute()
+                .top(px(12.0))
+                .right(px(12.0))
+                .flex()
+                .gap(px(8.0))
+                .child(theme)
+                .child(rollback);
+            if ordinary_root {
+                let home = control(ANDROID_SYSTEM_HOME_ID, "Home").on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|this, _, window, cx| {
+                        window.prevent_default();
+                        cx.stop_propagation();
+                        this.activate_android_system_control(AndroidSystemControl::Home, cx);
+                    }),
+                );
+                controls = controls.child(home);
+            }
+            root = root.child(controls);
         }
         #[cfg(feature = "core-native")]
         if agent::credential_snapshot().visible {
@@ -5020,6 +5184,43 @@ fn current_rss_kb() -> Option<u64> {
     let status = fs::read_to_string("/proc/self/status").ok()?;
     let line = status.lines().find(|line| line.starts_with("VmRSS:"))?;
     line.split_whitespace().nth(1)?.parse().ok()
+}
+
+#[cfg(feature = "aosp-system")]
+fn append_android_system_control_semantics(scene: &mut Scene, ordinary_root: bool) {
+    let control = |id: &str, label: &str, action: &str| SceneNode {
+        id: Some(id.into()),
+        interaction: Interaction {
+            tap_action: Some(action.into()),
+            ..Default::default()
+        },
+        semantics: Some(Semantics {
+            role: SemanticRole::Button,
+            label: label.into(),
+            value: None,
+            hint: Some("SOS system control".into()),
+        }),
+        ..Default::default()
+    };
+    scene.root.children.extend([
+        control(
+            ANDROID_SYSTEM_THEME_ID,
+            "Change system theme",
+            "android_system_theme",
+        ),
+        control(
+            ANDROID_SYSTEM_ROLLBACK_ID,
+            "Roll back Experience graph",
+            "android_system_rollback",
+        ),
+    ]);
+    if ordinary_root {
+        scene.root.children.push(control(
+            ANDROID_SYSTEM_HOME_ID,
+            "Return to Stock",
+            "android_system_home",
+        ));
+    }
 }
 
 fn count_semantics(scene: &Scene) -> usize {
