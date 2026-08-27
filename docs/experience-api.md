@@ -473,7 +473,9 @@ content = {
     },
 }
 
-content = { kind = "application_surface", title = "SOS Home" }
+-- API v3 rollback compatibility only; v4 uses a registry-presented ordinary
+-- Experience for an independent top-level.
+content = { kind = "application_surface", title = "Legacy SOS Home" }
 ```
 
 `text_session` is a host-owned editing session and requires a stable node ID.
@@ -560,18 +562,17 @@ surface origin. Luau can persist that anchor or change the source-defined
 layout, but cannot address or reposition another surface. Android renders an
 unavailable placeholder.
 
-`application_surface` moves its complete subtree out of the shell window and
-into a separate normal GPUI/XDG toplevel. It requires a stable ID and a bounded
-non-empty title, and validation currently admits at most one. The compositor
-classifies the toplevel as `NativeApplication` and applies the same window-space
-placement, clipping, focus, unmap, and reflow policy used for compatibility
-clients. The base shell does not paint that subtree beneath the application.
-This first cut is still hosted by the shell revision's permanent process;
-independent native-app revision processes and lifecycle supervision remain a
-separate application-runtime layer. Android renders an unavailable placeholder.
-External application windows are observed and controlled through
-`model.shell.windows`; `application_surface` still means the one source-owned
-GPUI application subtree, not an arbitrary external window.
+`application_surface` is a bounded API v3 rollback compatibility primitive. It
+moves one subtree from a retained legacy shell revision into a normal GPUI/XDG
+toplevel, but does not create an Experience identity or isolation boundary.
+New v4 packages cannot rely on it for application lifecycle. Stock instead
+receives the registry's bounded ordinary-role catalog in
+`model.shell.experiences` and emits `shell.present_experience` with a stable
+Experience ID. The supervisor boots that Experience's exact current graph in
+an independent host process, and the host authenticates only the
+`NativeApplication` compositor role. `shell.dismiss_experience` terminates the
+independent host; an ordinary Experience may dismiss only itself. Android
+retains the legacy unavailable placeholder until the v3 reader is removed.
 
 ### Paint and interaction
 
@@ -712,8 +713,9 @@ Before presentation the host enforces, among other checks:
   and effect payloads;
 - unique IDs and stable IDs for interactive, animated, semantic, and
   text-session nodes;
-- at most one keyed `window_space`, `shell_overlay`, and
-  `application_surface`, with their primitive-specific geometry/title bounds;
+- at most one keyed `window_space` and `shell_overlay` in Shell-role v4 scenes,
+  plus at most one bounded `application_surface` only on the v3 compatibility
+  reader;
 - a 16 MiB VM limit and fixed render/update time budgets;
 - at most 64 revision assets, 4 MiB each and 16 MiB total, with checks repeated
   by the supervisor and runtime.

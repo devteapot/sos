@@ -8,6 +8,9 @@ use std::{
     time::Duration,
 };
 
+use experience_host_protocol::{
+    ExperienceLifecycleOperation, TopLevelExperience, MAX_LAUNCHABLE_EXPERIENCES,
+};
 use experience_package::{ExperienceId, ResolvedGraph, MAX_GRAPH_INSTANCES};
 use provider_state_service::{state_sha256, ServiceClient};
 use serde::{Deserialize, Serialize};
@@ -175,10 +178,12 @@ impl ExperienceGraphSupervisor {
         self.validate_graph_grants(&graph)?;
         self.validate_live_instance_budget(std::iter::once((root_experience_id, &graph)))?;
         let mut host = ExperienceHost::launch(self.host_command.clone(), self.host_timeout)?;
+        let launchable_experiences = self.launchable_experiences()?;
         host.boot_graph(
             &graph_id,
             self.graphs.snapshot_path(&graph_id)?,
             self.revisions.root().to_path_buf(),
+            launchable_experiences,
         )?;
         let pid = host.id();
         self.hosts.insert(root_experience_id.clone(), host);
@@ -239,11 +244,13 @@ impl ExperienceGraphSupervisor {
                 "experience registry and active graph root disagree".into(),
             ));
         }
+        let launchable_experiences = self.launchable_experiences()?;
         let host_prepared = if let Some(host) = self.hosts.get_mut(root_experience_id) {
             host.prepare_graph(
                 graph_id,
                 self.graphs.snapshot_path(graph_id)?,
                 self.revisions.root().to_path_buf(),
+                launchable_experiences,
             )?;
             true
         } else if allow_unpresented {
@@ -778,13 +785,58 @@ impl ExperienceGraphSupervisor {
 
     pub fn poll(&mut self) -> Result<Option<(String, u32, u32)>> {
         let roots = self.hosts.keys().cloned().collect::<Vec<_>>();
+        let mut lifecycle = Vec::new();
         for root in roots {
             let host = self.hosts.get_mut(&root).expect("presented host exists");
+            lifecycle.extend(
+                host.take_lifecycle_requests()?
+                    .into_iter()
+                    .map(|request| (root.clone(), request)),
+            );
             let Some(status) = host.try_wait()? else {
                 continue;
             };
             let failed_pid = host.id();
             return self.restart_after_exit(&root, status, failed_pid).map(Some);
+        }
+        for (emitter, request) in lifecycle {
+            let emitter_record = self.registry.get(&emitter)?.ok_or_else(|| {
+                Error::InvalidGraph(format!("unknown lifecycle emitter `{emitter}`"))
+            })?;
+            let target = ExperienceId::parse(request.experience_id)
+                .map_err(|error| Error::InvalidGraph(error.to_string()))?;
+            let target_record = self.registry.get(&target)?.ok_or_else(|| {
+                Error::InvalidGraph(format!("unknown lifecycle target `{target}`"))
+            })?;
+            if target_record.role == experience_package::ExperienceRole::Shell {
+                return Err(Error::InvalidGraph(
+                    "a shell experience cannot be presented as an application".into(),
+                ));
+            }
+            match request.operation {
+                ExperienceLifecycleOperation::Present => {
+                    if emitter_record.role != experience_package::ExperienceRole::Shell {
+                        return Err(Error::InvalidGraph(format!(
+                            "ordinary experience `{emitter}` cannot present another experience"
+                        )));
+                    }
+                    if !self.hosts.contains_key(&target) && self.boot(&target)?.is_none() {
+                        return Err(Error::InvalidGraph(format!(
+                            "experience `{target}` has no launchable current graph"
+                        )));
+                    }
+                }
+                ExperienceLifecycleOperation::Dismiss => {
+                    if emitter_record.role != experience_package::ExperienceRole::Shell
+                        && emitter != target
+                    {
+                        return Err(Error::InvalidGraph(format!(
+                            "ordinary experience `{emitter}` cannot dismiss `{target}`"
+                        )));
+                    }
+                    self.dismiss(&target)?;
+                }
+            }
         }
         Ok(None)
     }
@@ -865,15 +917,53 @@ impl ExperienceGraphSupervisor {
         self.validate_root(root, &graph)?;
         self.validate_live_instance_budget(std::iter::once((root, &graph)))?;
         let mut host = ExperienceHost::launch(self.host_command.clone(), self.host_timeout)?;
+        let launchable_experiences = self.launchable_experiences()?;
         host.boot_graph(
             &graph_id,
             self.graphs.snapshot_path(&graph_id)?,
             self.revisions.root().to_path_buf(),
+            launchable_experiences,
         )?;
         let pid = host.id();
         self.hosts.insert(root.clone(), host);
         self.active_graphs.insert(root.clone(), graph_id.clone());
         Ok((graph_id, previous_pid, pid))
+    }
+
+    fn launchable_experiences(&self) -> Result<Vec<TopLevelExperience>> {
+        let experience_ids = self
+            .registry
+            .list()?
+            .into_iter()
+            .filter(|record| record.role != experience_package::ExperienceRole::Shell)
+            .filter_map(|record| {
+                self.graphs
+                    .current(&record.experience_id)
+                    .transpose()
+                    .map(|current| current.map(|_| record.experience_id))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        if experience_ids.len() > MAX_LAUNCHABLE_EXPERIENCES {
+            return Err(Error::InvalidGraph(format!(
+                "registry exposes {} launchable experiences; limit is {MAX_LAUNCHABLE_EXPERIENCES}",
+                experience_ids.len()
+            )));
+        }
+        Ok(experience_ids
+            .into_iter()
+            .map(|experience_id| {
+                let title = experience_id
+                    .as_str()
+                    .rsplit('.')
+                    .next()
+                    .unwrap_or(experience_id.as_str())
+                    .replace(['-', '_'], " ");
+                TopLevelExperience {
+                    experience_id: experience_id.to_string(),
+                    title,
+                }
+            })
+            .collect())
     }
 
     fn validate_registry_candidate(

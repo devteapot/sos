@@ -27,6 +27,7 @@ const EVENT_POLL_INTERVAL: Duration = Duration::from_millis(20);
 pub enum ControlCommand {
     Register {
         pid: u32,
+        role: ControlClientRole,
         events: mpsc::Sender<CompositorEvent>,
         reply: mpsc::Sender<std::result::Result<(), String>>,
     },
@@ -70,6 +71,12 @@ pub enum ControlCommand {
     Disconnected {
         pid: u32,
     },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ControlClientRole {
+    Shell,
+    NativeApplication,
 }
 
 pub struct ControlSocketGuard(PathBuf);
@@ -150,20 +157,27 @@ fn serve_shell_connection(
     let mut reader = BufReader::new(stream.try_clone()?);
     let request =
         read_request(&mut reader)?.context("control client closed before registration")?;
-    let CompositorRequest::RegisterShell {
-        request_id,
-        token,
-        pid,
-    } = request
-    else {
-        write_event(
-            &mut stream,
-            &CompositorEvent::Rejected {
-                request_id: request.request_id(),
-                error: "first compositor request must register the shell".into(),
-            },
-        )?;
-        return Ok(());
+    let (request_id, token, pid, role) = match request {
+        CompositorRequest::RegisterShell {
+            request_id,
+            token,
+            pid,
+        } => (request_id, token, pid, ControlClientRole::Shell),
+        CompositorRequest::RegisterApplication {
+            request_id,
+            token,
+            pid,
+        } => (request_id, token, pid, ControlClientRole::NativeApplication),
+        request => {
+            write_event(
+                &mut stream,
+                &CompositorEvent::Rejected {
+                    request_id: request.request_id(),
+                    error: "first compositor request must register a trusted client".into(),
+                },
+            )?;
+            return Ok(());
+        }
     };
     if token != shell_token || pid != peer_pid {
         write_event(
@@ -178,7 +192,12 @@ fn serve_shell_connection(
 
     let (events, event_rx) = mpsc::channel();
     let (reply, reply_rx) = mpsc::channel();
-    commands.send(ControlCommand::Register { pid, events, reply })?;
+    commands.send(ControlCommand::Register {
+        pid,
+        role,
+        events,
+        reply,
+    })?;
     match reply_rx.recv_timeout(CONTROL_TIMEOUT)? {
         Ok(()) => write_event(
             &mut stream,
@@ -192,7 +211,11 @@ fn serve_shell_connection(
             return Ok(());
         }
     }
-    tracing::info!(pid, "authenticated SOS shell control connection");
+    tracing::info!(
+        pid,
+        ?role,
+        "authenticated SOS compositor control connection"
+    );
     stream.set_read_timeout(Some(EVENT_POLL_INTERVAL))?;
 
     let result = loop {
@@ -324,11 +347,14 @@ fn serve_shell_connection(
                 };
                 write_event(&mut stream, &event)?;
             }
-            Ok(Some(CompositorRequest::RegisterShell { request_id, .. })) => write_event(
+            Ok(Some(
+                CompositorRequest::RegisterShell { request_id, .. }
+                | CompositorRequest::RegisterApplication { request_id, .. },
+            )) => write_event(
                 &mut stream,
                 &CompositorEvent::Rejected {
                     request_id,
-                    error: "shell is already registered on this connection".into(),
+                    error: "client is already registered on this connection".into(),
                 },
             )?,
             Ok(None) => break Ok(()),

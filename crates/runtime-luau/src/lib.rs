@@ -1736,6 +1736,8 @@ fn decode_effects(table: Option<Table>, lua: &Lua) -> Result<Vec<ProviderEffect>
                 | ("attention", "acknowledge")
                 | ("shell", "focus_window")
                 | ("shell", "close_window")
+                | ("shell", "present_experience")
+                | ("shell", "dismiss_experience")
         ) {
             return Err(RuntimeError::Invalid(format!(
                 "provider action is not allowed: {provider}.{action}"

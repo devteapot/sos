@@ -615,12 +615,23 @@ local function system_workspace(providers: SystemProviders): SceneNode
     return group("column", { gap = 10 }, rows, nil, 0, "workspace-system")
 end
 
-local function apps_workspace(providers: SystemProviders): SceneNode
+local function apps_workspace(model: ExperienceModel, providers: SystemProviders): SceneNode
     local rows: {SceneNode} = {
         heading("Applications", "Only provider-approved, compatible launch targets appear here.",
             "apps-heading"),
     }
     local applications = providers.apps.compatible
+    for index, experience in ipairs(model.shell.experiences or {}) do
+        if index > 32 then break end
+        table.insert(rows, group("row", {
+            padding = 12, justify = "between", align = "center", gap = 8,
+        }, {
+            text(experience.title, 15, ink),
+            text("OPEN EXPERIENCE", 10, moss),
+        }, white, 15, "experience-" .. tostring(index),
+            "experience_present_" .. tostring(index),
+            "Open " .. experience.title))
+    end
     if not providers_available(providers) then
         table.insert(rows, empty_state("apps-unavailable", "Application provider unavailable",
             "Launching is disabled, but the rest of Stock Base remains usable."))
@@ -734,7 +745,7 @@ local function render_workspace(model: ExperienceModel, state: ExperienceState, 
     if active == "media" then return media_workspace(model, providers) end
     if active == "attention" then return attention_workspace(providers) end
     if active == "system" then return system_workspace(providers) end
-    if active == "apps" then return apps_workspace(providers) end
+    if active == "apps" then return apps_workspace(model, providers) end
     if active == "agent" then return agent_workspace(model, state, "workspace") end
     return home_workspace(model, state, providers)
 end
@@ -852,6 +863,17 @@ local function command_center(
             }),
             group("row", { gap = 5 }, controls),
         }, white, 12, "shell-window-" .. tostring(index)))
+    end
+    for index, experience in ipairs(model.shell.experiences or {}) do
+        if index > 32 then break end
+        table.insert(rows, group("row", {
+            padding = 11, justify = "between", align = "center", gap = 8,
+        }, {
+            text(experience.title, 13, ink),
+            text("OPEN EXPERIENCE", 9, moss),
+        }, white, 12, "command-experience-" .. tostring(index),
+            "experience_present_" .. tostring(index),
+            "Open " .. experience.title))
     end
     if not providers_available(providers) then
         table.insert(rows, empty_state("command-apps-unavailable", "Applications unavailable",
@@ -985,34 +1007,14 @@ local function shell_window_space(model: ExperienceModel, state: ExperienceState
         },
         paint = {{ kind = "fill_bounds", color = paper, radius = 0 }},
         semantics = { role = "scroll_area", label = "Application window space" },
-    }
-end
-
-local function stock_application(model: ExperienceModel, state: ExperienceState, providers: SystemProviders): SceneNode
-    local workspace = active_workspace(state)
-    local chrome = group("row", { justify = "between", align = "center", gap = 12 }, {
-        text("SOS NATIVE EXPERIENCE", 9, moss),
-        text(string.upper(workspace), 9, muted),
-    }, panel, 10, "stock-application-chrome")
-    chrome.interaction = { surface_drag = true }
-    return {
-        id = "stock-application-surface",
-        layout = {
-            flow = "column", program = { measure_width = 1, measure_height = 1 },
-            padding = 18, gap = 14,
-        },
-        content = { kind = "application_surface", title = "SOS " .. workspace },
-        paint = {{ kind = "fill_bounds", color = paper, radius = 0 }},
-        semantics = { role = "scroll_area", label = "SOS " .. workspace .. " experience" },
         children = {
-            chrome,
-            group("column", { scroll_y = true, gap = 14, grow = true }, {
+            group("column", { scroll_y = true, padding = 18, gap = 14, grow = true }, {
                 render_workspace(model, state, providers),
                 group("row", { justify = "between", gap = 12 }, {
-                    text("SOURCE-DEFINED APPLICATION SURFACE", 9, muted),
+                    text("STOCK SHELL WORKSPACE", 9, muted),
                     text("SYSTEM PROVIDERS ABI " .. tostring(providers.abi_version or 0), 9, muted),
                 }),
-            }, nil, 0, "stock-content-frame"),
+            }, nil, 0, "stock-workspace-frame"),
         },
     }
 end
@@ -1027,7 +1029,6 @@ local function render(model: ExperienceModel, state: ExperienceState): SceneNode
             shell_rail(model, state, providers),
         }, nil, 0, "shell-body"),
         agent_overlay(model, state),
-        stock_application(model, state, providers),
     }, paper, 0, "stock-experience-root")
 end
 
@@ -1189,6 +1190,13 @@ local function update(
     local application = app_index and providers.apps.compatible[app_index] or nil
     if application then
         return provider_effect("apps", "launch", { app_id = application.id }, state)
+    end
+    local experience_index = tonumber(string.match(action, "^experience_present_(%d+)$"))
+    local experience = experience_index and model.shell.experiences[experience_index] or nil
+    if experience then
+        return provider_effect("shell", "present_experience", {
+            experience_id = experience.experience_id,
+        }, state)
     end
     local status_widgets: {ApplicationStatusWidget} = providers.apps.status_widgets or {}
     local widget_index = tonumber(string.match(action, "^shell_app_widget_(%d+)$"))

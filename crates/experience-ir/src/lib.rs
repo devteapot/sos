@@ -71,8 +71,18 @@ pub struct ShellModel {
     pub outputs: Vec<ShellOutput>,
     #[serde(default)]
     pub windows: Vec<ShellWindow>,
+    /// Registry-selected top-level experiences. Only a registry-authorized
+    /// shell receives this catalog; ordinary experiences receive an empty list.
+    #[serde(default)]
+    pub experiences: Vec<ShellExperience>,
     #[serde(default)]
     pub capabilities: Vec<ShellCapability>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ShellExperience {
+    pub experience_id: String,
+    pub title: String,
 }
 
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]

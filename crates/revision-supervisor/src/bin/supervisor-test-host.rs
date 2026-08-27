@@ -1,13 +1,29 @@
 use std::{
-    fs,
+    env, fs,
     io::{self, BufRead, Write},
     process, thread,
     time::Duration,
 };
 
-use revision_supervisor::{HostEvent, HostRequest};
+use revision_supervisor::{ExperienceLifecycleOperation, HostEvent, HostRequest};
 
 fn main() {
+    let mut arguments = env::args().skip(1);
+    let mut lifecycle = None;
+    while let Some(argument) = arguments.next() {
+        if argument == "--emit-present-from" || argument == "--emit-dismiss-from" {
+            let emitter = arguments.next().expect("missing lifecycle emitter");
+            let target = arguments.next().expect("missing lifecycle target");
+            let operation = if argument == "--emit-present-from" {
+                ExperienceLifecycleOperation::Present
+            } else {
+                ExperienceLifecycleOperation::Dismiss
+            };
+            lifecycle = Some((emitter, target, operation));
+        } else {
+            panic!("unknown test-host argument: {argument}");
+        }
+    }
     let stdin = io::stdin();
     let mut prepared: Option<(String, String)> = None;
     let mut quiesced_revision: Option<String> = None;
@@ -57,6 +73,19 @@ fn main() {
                         request_id,
                         graph_id,
                     });
+                    if let Some((emitter, target, operation)) = &lifecycle {
+                        let graph: experience_package::ResolvedGraph = serde_json::from_slice(
+                            &fs::read(&graph_path).expect("read test graph"),
+                        )
+                        .expect("decode test graph");
+                        if graph.nodes[&graph.root].experience_id.as_str() == emitter {
+                            emit(HostEvent::ExperienceLifecycleRequested {
+                                request_id: 1_u64 << 63,
+                                experience_id: target.clone(),
+                                operation: *operation,
+                            });
+                        }
+                    }
                 }
             }
             HostRequest::Prepare {

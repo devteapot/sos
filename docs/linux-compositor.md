@@ -19,10 +19,10 @@ permanent sos-experience-host PID
     | authenticated bounded control protocol
     | register / quiesce / arm / configure bounded shell surfaces
     |
-    | Luau -> Scene ABI v3 -> retained GPUI
+    | Luau -> Experience API v4 graph -> retained GPUI
     v
 authenticated GPUI surfaces
-    | shell + shell overlay + native application
+    | shell + shell overlay + independently hosted native applications
 sos-compositor (Smithay 0.7.0)
     | one shell + one overlay + bounded native/compatibility toplevels
     | shared focus/input/activation policy
@@ -30,10 +30,11 @@ sos-compositor (Smithay 0.7.0)
     `-- libseat + udev + DRM/GBM + libinput -> KMS output
 ```
 
-Luau still sees only the versioned Scene and provider capabilities. Its keyed
-`window_space`, `shell_overlay`, and `application_surface` nodes describe
-bounded composition intent. Only the trusted host converts measured bounds
-into compositor geometry or opens the corresponding GPUI/XDG surface. Luau
+Luau still sees only the versioned Scene and provider capabilities. Shell-role
+`window_space` and `shell_overlay` nodes describe bounded composition intent;
+ordinary-role v4 graph roots open independently supervised GPUI/XDG surfaces.
+Only the trusted hosts convert measured bounds into compositor geometry or
+authenticate the corresponding surface. Luau
 never receives a Wayland object, socket, file descriptor, surface identity,
 PID, or arbitrary placement operation.
 `compositor-control-protocol` is a separate bounded newline-JSON ABI between
@@ -42,9 +43,10 @@ the trusted permanent host and compositor.
 The compositor creates a mode-0600 control socket in a caller-owned mode-0700
 runtime directory. A client must present the launch token and a PID equal to
 the socket's `SO_PEERCRED` PID before opening its GPUI Wayland connection. The
-compositor records that PID as trusted. Its first XDG toplevel is the shell,
-its second is the one topmost shell overlay, and subsequent trusted toplevels
-are `NativeApplication`; other Wayland client PIDs are compatibility clients.
+compositor records the Shell host PID as trusted shell authority. Each ordinary
+v4 host separately registers its own peer-credential PID as
+`NativeApplication` but receives no shell-control methods. Other Wayland client
+PIDs are compatibility clients.
 This is a development-session authenticator. A
 production session must also isolate service users/credentials so another
 same-UID process cannot inspect launch credentials.

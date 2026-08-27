@@ -53,11 +53,17 @@ type ShellWindow = {
     capabilities: {"focus" | "close"},
 }
 
+type ShellExperience = {
+    experience_id: string,
+    title: string,
+}
+
 type ShellModel = {
     abi_version: number,
     canvas: ShellCanvas,
     outputs: {ShellOutput},
     windows: {ShellWindow},
+    experiences: {ShellExperience},
     capabilities: {"window_focus" | "window_close"},
 }
 

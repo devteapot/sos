@@ -13,7 +13,7 @@ pub use coordinator::{
     ActivationJournal, CoordinatedSupervisor, CoordinationError, CoordinationEvent,
     CoordinatorFaultPoint, JournalPhase,
 };
-pub use experience_host_protocol::{HostEvent, HostRequest};
+pub use experience_host_protocol::{ExperienceLifecycleOperation, HostEvent, HostRequest};
 pub use graph::{GraphResolver, GraphStore};
 pub use graph_supervisor::{
     ExperienceAdvance, ExperienceGraphAdvance, ExperienceGraphSupervisor,

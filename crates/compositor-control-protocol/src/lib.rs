@@ -132,6 +132,11 @@ pub enum CompositorRequest {
         token: String,
         pid: u32,
     },
+    RegisterApplication {
+        request_id: u64,
+        token: String,
+        pid: u32,
+    },
     QuiesceInput {
         request_id: u64,
         revision_id: String,
@@ -191,6 +196,7 @@ impl CompositorRequest {
     pub fn request_id(&self) -> u64 {
         match self {
             Self::RegisterShell { request_id, .. }
+            | Self::RegisterApplication { request_id, .. }
             | Self::QuiesceInput { request_id, .. }
             | Self::ResumeInput { request_id, .. }
             | Self::ArmPresentation { request_id, .. }

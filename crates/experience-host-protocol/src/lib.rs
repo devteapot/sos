@@ -2,6 +2,21 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+pub const MAX_LAUNCHABLE_EXPERIENCES: usize = 64;
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct TopLevelExperience {
+    pub experience_id: String,
+    pub title: String,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ExperienceLifecycleOperation {
+    Present,
+    Dismiss,
+}
+
 /// Protocol spoken over a permanent experience host's stdin and stdout.
 ///
 /// Stdout is reserved for newline-delimited serialized [`HostEvent`] values.
@@ -20,6 +35,8 @@ pub enum HostRequest {
         graph_id: String,
         graph_path: PathBuf,
         revision_root: PathBuf,
+        #[serde(default)]
+        launchable_experiences: Vec<TopLevelExperience>,
     },
     Prepare {
         request_id: u64,
@@ -32,6 +49,8 @@ pub enum HostRequest {
         graph_id: String,
         graph_path: PathBuf,
         revision_root: PathBuf,
+        #[serde(default)]
+        launchable_experiences: Vec<TopLevelExperience>,
     },
     QuiesceInput {
         request_id: u64,
@@ -98,6 +117,11 @@ impl HostRequest {
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(tag = "event", rename_all = "snake_case")]
 pub enum HostEvent {
+    ExperienceLifecycleRequested {
+        request_id: u64,
+        experience_id: String,
+        operation: ExperienceLifecycleOperation,
+    },
     Prepared {
         request_id: u64,
         revision_id: String,
@@ -160,7 +184,8 @@ pub enum HostEvent {
 impl HostEvent {
     pub fn request_id(&self) -> u64 {
         match self {
-            Self::Prepared { request_id, .. }
+            Self::ExperienceLifecycleRequested { request_id, .. }
+            | Self::Prepared { request_id, .. }
             | Self::GraphPrepared { request_id, .. }
             | Self::InputQuiesced { request_id, .. }
             | Self::GraphInputQuiesced { request_id, .. }

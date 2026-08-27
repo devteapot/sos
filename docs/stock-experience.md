@@ -1,17 +1,16 @@
 # Stock experience
 
-Date: 2026-08-26
+Date: 2026-08-27
 
 Stock Shell is the product's substantial default experience and the
-integration target for the System Providers ABI. It is a privileged but
-replaceable Scene ABI v3 module in
+integration target for the System Providers ABI. It is the reserved, pinned
+Shell-role Experience API v4 package whose source lives in
 [`experiences/default.luau`](../experiences/default.luau), not a fixed Rust UI
-or catalog of native widgets. The permanent host compiles, validates, installs,
-and activates it through the same content-addressed revision path used by
-agent-authored experiences.
+or catalog of native widgets. The supervisor resolves and activates its graph
+through the same content-addressed registry path used by other v4 experiences.
 
-Privilege is narrow and structural. One source node may declare each of
-`window_space`, `shell_overlay`, and `application_surface`. The Linux host
+Privilege is narrow and structural. One Shell-role source node may declare
+each of `window_space` and `shell_overlay`. The Linux host
 reports only bounded geometry and a closed policy over its authenticated
 compositor connection. The compositor—not Luau—continues to own surface
 identity, mapping, focus, activation, stacking, input, movement, and lifecycle.
@@ -40,9 +39,9 @@ The initial stock revision is a complete source-defined shell with:
 - a command center for workspaces, application launch, window policy, and the
   current bounded `model.shell.windows` list. Each row renders only the
   compositor-advertised focus/close controls for its opaque window ID; and
-- one source-defined native application surface, managed in the same window
-  space as compatibility clients, whose current revision exposes eight
-  workspaces:
+- one source-defined workspace inside the shell graph, plus registry-discovered
+  independently supervised v4 Experiences that Stock can present into the
+  compositor's application window space. The current Stock workspace exposes:
 
 - Home, with workspace navigation, provider status, agenda, notes, media,
   attention, system-control, application, and agent entry points;
@@ -75,25 +74,25 @@ Existing desktop applications are not rewritten or wrapped in CLI calls. The
 Linux applications provider discovers eligible freedesktop entries and
 launches their normal Wayland/XWayland processes through a strict `gio launch`
 argument vector. Those surfaces are compositor clients placed within the
-declared window space. Source-native SOS content uses `application_surface` to
-open a separate GPUI/XDG toplevel that the compositor classifies as
-`NativeApplication`, so it tiles, focuses, clips, unmaps, and reflows beside
-ordinary applications instead of being embedded in the shell window.
+declared window space. An independently presented ordinary-role v4 Experience
+runs in its own host process, authenticates as `NativeApplication` without
+receiving shell control, and opens a GPUI/XDG toplevel. The compositor tiles,
+focuses, clips, unmaps, and reflows it beside ordinary applications instead of
+embedding it in Stock.
 Stock observes those independent toplevels through the typed shell model. The
 model distinguishes native and compatibility windows, marks current focus, and
 contains no application ID, process identity, executable, or protocol handle.
 Its actions are closed `shell.focus_window` and `shell.close_window` effects;
 the compositor re-resolves an opaque ID and rejects stale selections.
 
-This is a native-window coexistence boundary, not experience composition. The
-stock shell and its one active native application surface still come from the
-same revision and host process. They do not have separate source identities,
-state namespaces, grants, activation, or recovery. Independent application
-revision supervision remains future work for Stock's application window. The
-separate API v4 host-owned `experience_mount` contract is implemented for
-embedded live composition as defined in
-[`experience-composition.md`](experience-composition.md); Stock has not yet
-been repackaged as a v4 graph root.
+Top-level launch and embedded composition are deliberately distinct. A launch
+is a registry lifecycle request from the Shell role and preserves the target's
+independent Experience ID, state, grants, graph activation, and recovery. An
+`experience_mount` is host-owned composition inside one graph and is bounded
+by the declared dependency contract described in
+[`experience-composition.md`](experience-composition.md). The old
+`application_surface` node remains decodable only for retained API v3 rollback
+revisions; checked-in v4 Stock does not emit it.
 
 SOS-native applications may additionally publish a bounded `status_widgets`
 contribution through the trusted applications provider: an ID, visible

@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+
 use anyhow::{bail, Result};
 use compositor_control_protocol::{
     ShellOverlayConfiguration, WindowLayoutMode, WindowSpaceConfiguration, WindowSpaceGeometry,
@@ -41,6 +43,7 @@ pub struct QueuedRevision {
 #[derive(Debug, Default)]
 pub struct SurfacePolicy {
     shell_pid: Option<u32>,
+    native_application_pids: BTreeSet<u32>,
     shell_mapped: bool,
     shell_overlay_mapped: bool,
     compatibility_mapped: usize,
@@ -73,9 +76,24 @@ impl SurfacePolicy {
         }
     }
 
+    pub fn register_native_application(&mut self, pid: u32) -> Result<()> {
+        if pid == 0 || self.shell_pid == Some(pid) {
+            bail!("native application PID is invalid or owns the shell");
+        }
+        self.native_application_pids.insert(pid);
+        Ok(())
+    }
+
+    pub fn unregister_client(&mut self, pid: u32) {
+        self.unregister_shell(pid);
+        self.native_application_pids.remove(&pid);
+    }
+
     pub fn classify(&self, pid: u32) -> ClientRole {
         if self.shell_pid == Some(pid) {
             ClientRole::Shell
+        } else if self.native_application_pids.contains(&pid) {
+            ClientRole::NativeApplication
         } else {
             ClientRole::Compatibility
         }
@@ -535,6 +553,17 @@ mod tests {
         assert_eq!(policy.classify(42), ClientRole::Compatibility);
         assert!(policy.arm(42, 1, REVISION.into()).is_err());
         assert!(policy.register_shell(42).is_err());
+    }
+
+    #[test]
+    fn authenticated_application_pid_is_native_without_receiving_shell_authority() {
+        let mut policy = SurfacePolicy::default();
+        policy.register_shell(41).unwrap();
+        policy.register_native_application(42).unwrap();
+        assert_eq!(policy.classify(42), ClientRole::NativeApplication);
+        assert!(policy.arm(42, 1, REVISION.into()).is_err());
+        policy.unregister_client(42);
+        assert_eq!(policy.classify(42), ClientRole::Compatibility);
     }
 
     #[test]

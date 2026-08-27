@@ -84,6 +84,10 @@ fn install(store: &RevisionStore, source: &str) -> String {
 }
 
 fn graph(revision_id: &str) -> ResolvedGraph {
+    graph_for(&ExperienceId::parse("dashboard").unwrap(), revision_id)
+}
+
+fn graph_for(experience_id: &ExperienceId, revision_id: &str) -> ResolvedGraph {
     let root = GraphNodeId::parse("root").unwrap();
     ResolvedGraph {
         format_version: GRAPH_FORMAT_VERSION,
@@ -91,7 +95,7 @@ fn graph(revision_id: &str) -> ResolvedGraph {
         nodes: BTreeMap::from([(
             root,
             ResolvedGraphNode {
-                experience_id: ExperienceId::parse("dashboard").unwrap(),
+                experience_id: experience_id.clone(),
                 revision_id: RevisionId::parse(revision_id).unwrap(),
                 export_id: ExportId::parse("main").unwrap(),
                 parent: None,
@@ -99,6 +103,93 @@ fn graph(revision_id: &str) -> ResolvedGraph {
             },
         )]),
     }
+}
+
+#[test]
+fn registry_shell_lifecycle_request_presents_an_independent_experience() {
+    let directory = TempDir::new().unwrap();
+    let store = RevisionStore::open(directory.path()).unwrap();
+    let registry = ExperienceRegistry::open(store.clone()).unwrap();
+    let graphs = GraphStore::open(store.root()).unwrap();
+    let shell_id = ExperienceId::parse("sos.stock.shell").unwrap();
+    let application_id = ExperienceId::parse("sos.timeflow").unwrap();
+
+    let mut shell_package = package();
+    shell_package.experience_id = shell_id.clone();
+    shell_package.role = ExperienceRole::Shell;
+    let shell_revision = store
+        .install_package(RevisionPackageInput {
+            revision: RevisionInput {
+                source: b"shell".to_vec(),
+                state: json!({}),
+                schema_version: 1,
+                experience_api_version: 4,
+                assets: vec![],
+            },
+            package: shell_package,
+        })
+        .unwrap()
+        .manifest
+        .revision_id;
+    registry
+        .create(&shell_id, ExperienceRole::Shell, &shell_revision)
+        .unwrap();
+    let shell_graph = graphs
+        .install(&graph_for(&shell_id, &shell_revision))
+        .unwrap();
+    graphs.set_current(&shell_id, &shell_graph).unwrap();
+
+    let mut application_package = package();
+    application_package.experience_id = application_id.clone();
+    let application_revision = store
+        .install_package(RevisionPackageInput {
+            revision: RevisionInput {
+                source: b"application".to_vec(),
+                state: json!({}),
+                schema_version: 1,
+                experience_api_version: 4,
+                assets: vec![],
+            },
+            package: application_package,
+        })
+        .unwrap()
+        .manifest
+        .revision_id;
+    registry
+        .create(
+            &application_id,
+            ExperienceRole::Ordinary,
+            &application_revision,
+        )
+        .unwrap();
+    let application_graph = graphs
+        .install(&graph_for(&application_id, &application_revision))
+        .unwrap();
+    graphs
+        .set_current(&application_id, &application_graph)
+        .unwrap();
+
+    let command = HostCommand::with_args(
+        host_executable(),
+        vec![
+            "--emit-present-from".into(),
+            shell_id.to_string(),
+            application_id.to_string(),
+        ],
+    );
+    let mut supervisor =
+        ExperienceGraphSupervisor::new(store, registry, graphs, command, Duration::from_secs(2));
+    supervisor.boot(&shell_id).unwrap();
+    for _ in 0..200 {
+        supervisor.poll().unwrap();
+        if supervisor.presented_graphs().contains_key(&application_id) {
+            break;
+        }
+        thread::sleep(Duration::from_millis(5));
+    }
+    assert!(supervisor.presented_graphs().contains_key(&application_id));
+    assert_eq!(supervisor.presented_graphs().len(), 2);
+    supervisor.shutdown().unwrap();
 }
 
 fn start_authority(

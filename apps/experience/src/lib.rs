@@ -172,6 +172,10 @@ mod tests {
             experience_ir::SystemCapability::AudioSetVolume,
             experience_ir::SystemCapability::AppLaunch,
         ];
+        stock_model.shell.experiences = vec![experience_ir::ShellExperience {
+            experience_id: "org.sos.timeflow".into(),
+            title: "Timeflow".into(),
+        }];
         assert_eq!(runtime.assets().len(), 1);
         let stock_scene = runtime
             .render(&stock_model, &runtime.initial_state())
@@ -190,7 +194,7 @@ mod tests {
         assert!(contains_wrapping_layout(&stock_scene.root));
         let home_grid = node_by_id(&stock_scene.root, "home-responsive-grid").unwrap();
         assert!(home_grid.layout.wrap);
-        let content_frame = node_by_id(&stock_scene.root, "stock-content-frame").unwrap();
+        let content_frame = node_by_id(&stock_scene.root, "stock-workspace-frame").unwrap();
         assert!(content_frame.layout.scroll_y);
         let command_state = runtime
             .update(
@@ -204,6 +208,7 @@ mod tests {
             .unwrap();
         let command_scene = runtime.render(&stock_model, &command_state).unwrap();
         assert!(contains_id(&command_scene.root, "shell-command-center"));
+        assert!(contains_action(&command_scene.root, "experience_present_1"));
         for workspace in [
             "home",
             "agenda",
@@ -336,6 +341,23 @@ mod tests {
         assert_eq!(outcome.effects[0].provider, "audio");
         assert_eq!(outcome.effects[0].action, "adjust_volume");
         assert_eq!(outcome.effects[0].payload["delta"], 10);
+
+        let launch = runtime
+            .update_with_effects(
+                &stock_model,
+                &runtime.initial_state(),
+                &experience_ir::SceneEvent {
+                    action: "experience_present_1".into(),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(launch.effects[0].provider, "shell");
+        assert_eq!(launch.effects[0].action, "present_experience");
+        assert_eq!(
+            launch.effects[0].payload["experience_id"],
+            "org.sos.timeflow"
+        );
 
         let note = runtime
             .update_with_effects(

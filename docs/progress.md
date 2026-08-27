@@ -12653,3 +12653,57 @@ and Linux grant enforcement at the desktop-test boundary. Finish Stock's
 top-level launch migration and optional worker-process isolation, then port the
 registry, graph protocol, authority resources, and Instance-scoped routing to
 Android before either physical acceptance campaign.
+
+## 2026-08-27: Launch independent v4 Experiences from the Stock registry
+
+**Goal:** Remove Stock's same-revision application subtree and make an
+ordinary SOS application a separately identified, supervised, and
+compositor-contained v4 Experience.
+
+**Changed:** Graph boot and preparation now carry a bounded registry catalog
+of ordinary-role Experiences. The typed Shell model exposes their stable IDs
+and labels, and Stock emits closed `present_experience` lifecycle effects from
+its command center and Applications workspace. The Linux graph host accepts
+those effects only from a registry-authorized Shell package. The supervisor
+then resolves and boots the target's exact current graph in its own permanent
+host process; dismissal is restricted to the Shell or the ordinary Experience
+itself. Eight live graph instances remain the global runtime limit, while the
+non-live catalog is separately bounded to 64 entries.
+
+The compositor control protocol now distinguishes authenticated Shell and
+`NativeApplication` registrations. An ordinary graph host proves its own PID
+with the existing peer-credential/token handshake but receives no quiesce,
+presentation-fence, window-space, overlay, or window-control authority. Its XDG
+toplevel participates in native application placement and containment. Closing
+that window requests supervised dismissal instead of triggering crash restart,
+and disconnecting an ordinary host no longer releases a Shell-owned input
+quiesce. Checked-in Stock paints its workspace inside the shell and contains no
+`application_surface`; that node remains only in the API v3 rollback reader.
+
+**Evidence:** `cargo test -p compositor-control-protocol` passed 2 tests;
+`cargo test -p sos-compositor` passed 27, including distinct authenticated
+native application classification; `cargo test -p revision-supervisor --test
+graph_supervisor` passed 14, including registry launch into an independent
+host; `cargo test -p runtime-luau` passed 31, including rejection of the legacy
+application primitive from every v4 graph role; and `cargo test -p
+sos-experience --features linux-host --lib --
+--test-threads=1` passed 35, including the native registration handshake and
+Stock's typed stable-ID launch effect. `cargo check --workspace --all-targets`,
+Rust formatting, `git diff --check`, and an explicit check that
+`experiences/default.luau` contains no `application_surface` passed.
+
+**Failures and decision:** The first Stock assertion looked for the registry
+action on the Home workspace, although the product intentionally exposes it in
+Applications and the command center; the corrected test opens the command
+center before asserting the action and separately checks its typed effect. The
+standalone `sosctl typecheck/validate experiences/default.luau` route is not
+accepted as evidence because that utility still typechecks the entry source
+without its revision-local `stock.theme` module. Package-aware Rust compilation
+and validation use the real sidecar and pass.
+
+**Remaining risks and next gate:** Independently presented v4 roots are now
+separate host processes, while mounted graph children still share a process
+with one Luau VM per Instance. Add the optional per-instance worker-process
+deployment without changing the VM API, then close equivalent Android graph,
+state, appearance, input, IME, accessibility, grant, activation, and recovery
+behavior before the two physical acceptance campaigns.

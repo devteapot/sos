@@ -1036,9 +1036,9 @@ fn validate_scene_authority(
                     "ordinary experience emitted shell-only content".into(),
                 ));
             }
-            Some(Content::ApplicationSurface(_)) if mounted => {
+            Some(Content::ApplicationSurface(_)) => {
                 return Err(RuntimeError::Invalid(
-                    "mounted experience emitted a native application surface".into(),
+                    "v4 experience emitted the v3-only application_surface primitive".into(),
                 ));
             }
             _ => {}
@@ -1432,7 +1432,7 @@ mod tests {
     }
 
     #[test]
-    fn scene_authority_rejects_shell_content_and_mounted_application_surfaces() {
+    fn scene_authority_rejects_shell_content_and_v3_application_surfaces() {
         let shell_content = Scene {
             root: SceneNode {
                 content: Some(Content::WindowSpace(experience_ir::WindowSpaceContent {
@@ -1461,12 +1461,16 @@ mod tests {
                 ..Default::default()
             },
         };
-        assert!(
-            validate_scene_authority(&application, ExperienceRole::Ordinary, true)
+        for (role, mounted) in [
+            (ExperienceRole::Ordinary, false),
+            (ExperienceRole::Ordinary, true),
+            (ExperienceRole::Shell, false),
+        ] {
+            assert!(validate_scene_authority(&application, role, mounted)
                 .unwrap_err()
                 .to_string()
-                .contains("native application surface")
-        );
+                .contains("v3-only application_surface"));
+        }
     }
 
     #[test]

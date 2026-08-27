@@ -15,11 +15,13 @@ use compositor_control_protocol::{
     ShellOverlayConfiguration, ShellStateSnapshot, WindowControlAction,
     WindowLayoutMode as CompositorWindowLayoutMode, WindowSpaceConfiguration, WindowSpaceGeometry,
 };
-use experience_host_protocol::{HostEvent, HostRequest};
+use experience_host_protocol::{
+    ExperienceLifecycleOperation, HostEvent, HostRequest, TopLevelExperience,
+};
 use experience_ir::{
     AgentMessage, AgentMessageRole, Align, AnimationKind, AppearanceProfile, Content,
     EdgePlacement, ExperienceModel, Flow, HitRegion, Interaction, Justify, PaintOp, Scene,
-    SceneEvent, SceneNode, ShellCanvas, ShellCapability, ShellModel, ShellOutput,
+    SceneEvent, SceneNode, ShellCanvas, ShellCapability, ShellExperience, ShellModel, ShellOutput,
     ShellOverlayContent, ShellWindow, ShellWindowCapability, ShellWindowKind, WindowLayoutMode,
     WindowSpaceContent, EXPERIENCE_API_VERSION, EXPERIENCE_API_VERSION_V4, MAX_AGENT_MESSAGES,
     MAX_AGENT_MESSAGE_BYTES, SHELL_MODEL_ABI_VERSION,
@@ -52,7 +54,7 @@ use sha2::{Digest, Sha256};
 
 use crate::agent_bridge::{self, AgentUpdate};
 use crate::assets::{self, SosAssets, ALBUM_ASSET};
-use crate::compositor_fence::{CompositorFence, FenceEvent};
+use crate::compositor_fence::{CompositorFence, FenceEvent, NativeApplicationRegistration};
 use crate::linux_accessibility::{self, Action as AccessibilityAction};
 use crate::linux_input::{self, NativeTextInput};
 use crate::pointer_input;
@@ -316,6 +318,7 @@ struct PreparedGraph {
     graph_id: String,
     graph: ActiveGraph,
     root_revision: LoadedRevision,
+    launchable_experiences: Vec<ShellExperience>,
 }
 
 struct GraphPrepareResult {
@@ -381,6 +384,7 @@ struct GraphActionCommitOutcome {
     authoritative: BTreeMap<ExperienceId, StateResource>,
     agent_prompt: Option<String>,
     shell_controls: Vec<(String, WindowControlAction)>,
+    lifecycle_requests: Vec<(ExperienceId, ExperienceLifecycleOperation)>,
 }
 
 #[derive(Clone, Debug)]
@@ -434,39 +438,60 @@ pub fn run() -> Result<()> {
     let accessibility =
         linux_accessibility::start_from_environment().map_err(|error| anyhow::anyhow!(error))?;
     let (first_request, reader) = read_first_request()?;
-    let (request_id, revision, loaded_graph, presentation_id) = match first_request {
-        HostRequest::Boot {
-            request_id,
-            revision_id,
-            revision_path,
-            experience_api_version,
-        } => {
-            let revision = load_revision(&revision_id, &revision_path, experience_api_version)?;
-            (request_id, revision, None, revision_id)
-        }
-        HostRequest::BootGraph {
-            request_id,
-            graph_id,
-            graph_path,
-            revision_root,
-        } => {
-            let graph = load_graph(&graph_id, &graph_path, &revision_root)?;
-            let root = graph
-                .graph
-                .nodes
-                .get(&graph.graph.root)
-                .context("resolved graph root is missing")?;
-            let revision = graph
-                .revisions
-                .get(&root.revision_id)
-                .context("resolved graph root revision is missing")?
-                .revision
-                .clone();
-            (request_id, revision, Some(graph), graph_id)
-        }
-        _ => bail!("the first host request must be boot or boot_graph"),
+    let (request_id, revision, loaded_graph, presentation_id, launchable_experiences) =
+        match first_request {
+            HostRequest::Boot {
+                request_id,
+                revision_id,
+                revision_path,
+                experience_api_version,
+            } => {
+                let revision = load_revision(&revision_id, &revision_path, experience_api_version)?;
+                (request_id, revision, None, revision_id, Vec::new())
+            }
+            HostRequest::BootGraph {
+                request_id,
+                graph_id,
+                graph_path,
+                revision_root,
+                launchable_experiences,
+            } => {
+                let graph = load_graph(&graph_id, &graph_path, &revision_root)?;
+                let root = graph
+                    .graph
+                    .nodes
+                    .get(&graph.graph.root)
+                    .context("resolved graph root is missing")?;
+                let revision = graph
+                    .revisions
+                    .get(&root.revision_id)
+                    .context("resolved graph root revision is missing")?
+                    .revision
+                    .clone();
+                (
+                    request_id,
+                    revision,
+                    Some(graph),
+                    graph_id,
+                    launchable_experiences,
+                )
+            }
+            _ => bail!("the first host request must be boot or boot_graph"),
+        };
+    let root_is_shell = loaded_graph.as_ref().is_none_or(|graph| {
+        let node = &graph.graph.nodes[&graph.graph.root];
+        graph.revisions[&node.revision_id].package.role == experience_package::ExperienceRole::Shell
+    });
+    let compositor_fence = if root_is_shell {
+        CompositorFence::from_environment()?
+    } else {
+        None
     };
-    let compositor_fence = CompositorFence::from_environment()?;
+    let native_application_registration = if root_is_shell {
+        None
+    } else {
+        NativeApplicationRegistration::from_environment()?
+    };
     if let Some(fence) = &compositor_fence {
         fence
             .quiesce_input(request_id, &presentation_id)
@@ -486,6 +511,9 @@ pub fn run() -> Result<()> {
             package.provider_capabilities.clone(),
         )
     });
+    let top_level_experience_id = (!root_is_shell)
+        .then(|| root_grant_identity.as_ref().map(|(id, _)| id.clone()))
+        .flatten();
     let graph_mode = loaded_graph.is_some();
     let (mut model, provider_updates, provider_access) = start_provider_updates(
         &revision.revision_id,
@@ -496,6 +524,9 @@ pub fn run() -> Result<()> {
             .then_some(options.service_socket.as_deref())
             .flatten(),
     )?;
+    if root_is_shell {
+        model.shell.experiences = shell_experiences(launchable_experiences);
+    }
     let (appearance, appearance_updates) =
         start_appearance_updates(options.service_socket.as_deref());
     model.appearance = appearance;
@@ -555,7 +586,7 @@ pub fn run() -> Result<()> {
             .map_or("none".into(), |path| path.display().to_string())
     );
 
-    let windowed = options.windowed;
+    let windowed = options.windowed || !root_is_shell;
     gpui_platform::application()
         .with_assets(SosAssets)
         .run(move |cx: &mut App| {
@@ -575,7 +606,17 @@ pub fn run() -> Result<()> {
                     app_id: Some("dev.sos.experience".into()),
                     ..Default::default()
                 },
-                move |_, cx| {
+                move |window, cx| {
+                    if let Some(experience_id) = top_level_experience_id.clone() {
+                        window.on_window_should_close(cx, move |_, _| {
+                            emit(&HostEvent::ExperienceLifecycleRequested {
+                                request_id: 1_u64 << 63,
+                                experience_id: experience_id.to_string(),
+                                operation: ExperienceLifecycleOperation::Dismiss,
+                            });
+                            false
+                        });
+                    }
                     let entity = cx.new(|cx| {
                         LinuxExperienceHost::new(
                             model,
@@ -592,6 +633,7 @@ pub fn run() -> Result<()> {
                             accessibility,
                             options.service_socket,
                             compositor_fence,
+                            native_application_registration,
                             touch_wakes,
                             active_graph,
                             cx,
@@ -858,6 +900,7 @@ pub(super) struct LinuxExperienceHost {
     active_source_sha256: String,
     service_socket: Option<PathBuf>,
     compositor_fence: Option<CompositorFence>,
+    _native_application_registration: Option<NativeApplicationRegistration>,
     last_window_space: Option<WindowSpaceConfiguration>,
     last_shell_overlay: Option<ShellOverlayConfiguration>,
     last_shell_overlay_anchor_local: Option<(i32, i32)>,
@@ -931,6 +974,7 @@ impl LinuxExperienceHost {
         accessibility: Option<linux_accessibility::Service>,
         service_socket: Option<PathBuf>,
         compositor_fence: Option<CompositorFence>,
+        native_application_registration: Option<NativeApplicationRegistration>,
         touch_wakes: async_channel::Receiver<()>,
         active_graph: Option<ActiveGraph>,
         cx: &mut Context<Self>,
@@ -999,6 +1043,7 @@ impl LinuxExperienceHost {
             active_source_sha256: revision.source_sha256,
             service_socket,
             compositor_fence,
+            _native_application_registration: native_application_registration,
             last_window_space: None,
             last_shell_overlay: None,
             last_shell_overlay_anchor_local: None,
@@ -1719,7 +1764,9 @@ impl LinuxExperienceHost {
                 eprintln!("sos_shell_overlay_rejected error={error}");
             }
             FenceEvent::ShellStateChanged(state) => {
+                let experiences = std::mem::take(&mut self.model.shell.experiences);
                 self.model.shell = shell_model(state);
+                self.model.shell.experiences = experiences;
                 self.request_model_refresh(self.model.clone(), cx);
             }
             FenceEvent::WindowControlRejected(error) => {
@@ -1824,6 +1871,7 @@ impl LinuxExperienceHost {
                 graph_id,
                 graph_path,
                 revision_root,
+                launchable_experiences,
             } => {
                 if self.preparing.is_some()
                     || self.prepared.is_some()
@@ -1838,7 +1886,11 @@ impl LinuxExperienceHost {
                 }
                 self.preparing_graph = Some((request_id, graph_id.clone()));
                 self.status = Some(("Preparing experience graph…".into(), true));
-                let model = self.model.clone();
+                let launchable_experiences = shell_experiences(launchable_experiences);
+                let mut model = self.model.clone();
+                if self.compositor_fence.is_some() {
+                    model.shell.experiences = launchable_experiences.clone();
+                }
                 let provider_access = self.provider_access.clone();
                 let service_socket = self.service_socket.clone();
                 let sender = self.graph_preparations.clone();
@@ -1870,6 +1922,7 @@ impl LinuxExperienceHost {
                                     provider_frames: inputs.provider_frames,
                                 },
                                 root_revision,
+                                launchable_experiences,
                             })
                         })()
                         .map_err(|error| error.to_string());
@@ -2027,6 +2080,9 @@ impl LinuxExperienceHost {
                 self.active_revision_id = prepared.root_revision.revision_id.clone();
                 self.active_source_sha256 = prepared.root_revision.source_sha256;
                 self.state_schema_version = prepared.root_revision.schema_version;
+                if self.compositor_fence.is_some() {
+                    self.model.shell.experiences = prepared.launchable_experiences;
+                }
                 let candidate_snapshot = prepared.graph.snapshot.clone();
                 self.rollback_graph = self.active_graph.replace(prepared.graph);
                 self.install_graph_snapshot(candidate_snapshot, cx);
@@ -2575,6 +2631,13 @@ impl LinuxExperienceHost {
                             self.status =
                                 Some((format!("Window action could not start: {error}"), false));
                         }
+                    }
+                    for (experience_id, operation) in committed.lifecycle_requests {
+                        emit(&HostEvent::ExperienceLifecycleRequested {
+                            request_id: result.request_id,
+                            experience_id: experience_id.to_string(),
+                            operation,
+                        });
                     }
                 }
             }
@@ -4665,6 +4728,7 @@ fn commit_graph_action(
         BTreeMap::<InstanceId, (RevisionId, Vec<experience_ir::ProviderEffect>)>::new();
     let mut agent_prompt = None;
     let mut shell_controls = Vec::new();
+    let mut lifecycle_requests = Vec::new();
     for graph_effect in &outcome.effects {
         let instance = &outcome.snapshot.instances[&graph_effect.node_id];
         let package = &revisions
@@ -4697,6 +4761,25 @@ fn commit_graph_action(
                     "ordinary experience `{}` cannot issue shell effects",
                     package.experience_id
                 ));
+            }
+            let lifecycle_operation = match effect.action.as_str() {
+                "present_experience" => Some(ExperienceLifecycleOperation::Present),
+                "dismiss_experience" => Some(ExperienceLifecycleOperation::Dismiss),
+                _ => None,
+            };
+            if let Some(operation) = lifecycle_operation {
+                if lifecycle_requests.len() >= 1 {
+                    return Err("one graph interaction may emit only one lifecycle request".into());
+                }
+                let experience_id = effect
+                    .payload
+                    .get("experience_id")
+                    .and_then(JsonValue::as_str)
+                    .ok_or_else(|| "shell lifecycle effect omitted experience_id".to_owned())?;
+                let experience_id = ExperienceId::parse(experience_id)
+                    .map_err(|error| format!("invalid lifecycle Experience ID: {error}"))?;
+                lifecycle_requests.push((experience_id, operation));
+                continue;
             }
             let operation = match effect.action.as_str() {
                 "focus_window" => WindowControlAction::Focus,
@@ -4852,6 +4935,7 @@ fn commit_graph_action(
         authoritative,
         agent_prompt,
         shell_controls,
+        lifecycle_requests,
     })
 }
 
@@ -4907,8 +4991,19 @@ fn shell_model(snapshot: ShellStateSnapshot) -> ShellModel {
                 .collect(),
             })
             .collect(),
+        experiences: Vec::new(),
         capabilities: vec![ShellCapability::WindowFocus, ShellCapability::WindowClose],
     }
+}
+
+fn shell_experiences(experiences: Vec<TopLevelExperience>) -> Vec<ShellExperience> {
+    experiences
+        .into_iter()
+        .map(|experience| ShellExperience {
+            experience_id: experience.experience_id,
+            title: experience.title,
+        })
+        .collect()
 }
 
 fn inherit_live_model_channels(candidate: &mut ExperienceModel, live: &ExperienceModel) {

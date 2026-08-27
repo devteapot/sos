@@ -1,4 +1,5 @@
 use std::{
+    collections::VecDeque,
     io::{BufRead, BufReader, Write},
     path::PathBuf,
     process::{Child, ChildStdin, Command, ExitStatus, Stdio},
@@ -7,7 +8,9 @@ use std::{
     time::Duration,
 };
 
-use experience_host_protocol::{HostEvent, HostRequest};
+use experience_host_protocol::{
+    ExperienceLifecycleOperation, HostEvent, HostRequest, TopLevelExperience,
+};
 
 use crate::{Error, Result, VerifiedRevision};
 
@@ -40,6 +43,13 @@ pub struct ExperienceHost {
     events: Receiver<std::result::Result<HostEvent, String>>,
     timeout: Duration,
     next_request_id: u64,
+    pending_lifecycle: VecDeque<ExperienceLifecycleRequest>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ExperienceLifecycleRequest {
+    pub experience_id: String,
+    pub operation: ExperienceLifecycleOperation,
 }
 
 impl ExperienceHost {
@@ -77,6 +87,7 @@ impl ExperienceHost {
             events: events_rx,
             timeout,
             next_request_id: 1,
+            pending_lifecycle: VecDeque::new(),
         })
     }
 
@@ -90,6 +101,26 @@ impl ExperienceHost {
 
     pub fn try_wait(&mut self) -> Result<Option<ExitStatus>> {
         Ok(self.child.try_wait()?)
+    }
+
+    pub fn take_lifecycle_requests(&mut self) -> Result<Vec<ExperienceLifecycleRequest>> {
+        while let Ok(event) = self.events.try_recv() {
+            match event {
+                Ok(HostEvent::ExperienceLifecycleRequested {
+                    experience_id,
+                    operation,
+                    ..
+                }) => self
+                    .pending_lifecycle
+                    .push_back(ExperienceLifecycleRequest {
+                        experience_id,
+                        operation,
+                    }),
+                Ok(_) => return Err(Error::InvalidHostEvent),
+                Err(error) => return Err(Error::HostProtocol(error)),
+            }
+        }
+        Ok(self.pending_lifecycle.drain(..).collect())
     }
 
     pub fn boot(&mut self, revision: &VerifiedRevision) -> Result<()> {
@@ -109,6 +140,7 @@ impl ExperienceHost {
         graph_id: &str,
         graph_path: PathBuf,
         revision_root: PathBuf,
+        launchable_experiences: Vec<TopLevelExperience>,
     ) -> Result<()> {
         let request_id = self.request_id();
         let event = self.call(HostRequest::BootGraph {
@@ -116,6 +148,7 @@ impl ExperienceHost {
             graph_id: graph_id.into(),
             graph_path,
             revision_root,
+            launchable_experiences,
         })?;
         expect_graph_presented(event, request_id, graph_id)
     }
@@ -144,6 +177,7 @@ impl ExperienceHost {
         graph_id: &str,
         graph_path: PathBuf,
         revision_root: PathBuf,
+        launchable_experiences: Vec<TopLevelExperience>,
     ) -> Result<()> {
         let request_id = self.request_id();
         let event = self.call(HostRequest::PrepareGraph {
@@ -151,6 +185,7 @@ impl ExperienceHost {
             graph_id: graph_id.into(),
             graph_path,
             revision_root,
+            launchable_experiences,
         })?;
         match event {
             HostEvent::GraphPrepared {
@@ -310,20 +345,34 @@ impl ExperienceHost {
         serde_json::to_writer(&mut self.input, &request)?;
         self.input.write_all(b"\n")?;
         self.input.flush()?;
-        match self.events.recv_timeout(self.timeout) {
-            Ok(Ok(event)) if event.request_id() == request.request_id() => Ok(event),
-            Ok(Ok(_)) => Err(Error::InvalidHostEvent),
-            Ok(Err(error)) => Err(Error::HostProtocol(error)),
-            Err(RecvTimeoutError::Timeout) => {
-                if let Some(status) = self.child.try_wait()? {
-                    Err(Error::HostExited(status))
-                } else {
-                    Err(Error::HostTimeout(self.timeout))
+        let deadline = std::time::Instant::now() + self.timeout;
+        loop {
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            match self.events.recv_timeout(remaining) {
+                Ok(Ok(HostEvent::ExperienceLifecycleRequested {
+                    experience_id,
+                    operation,
+                    ..
+                })) => self
+                    .pending_lifecycle
+                    .push_back(ExperienceLifecycleRequest {
+                        experience_id,
+                        operation,
+                    }),
+                Ok(Ok(event)) if event.request_id() == request.request_id() => return Ok(event),
+                Ok(Ok(_)) => return Err(Error::InvalidHostEvent),
+                Ok(Err(error)) => return Err(Error::HostProtocol(error)),
+                Err(RecvTimeoutError::Timeout) => {
+                    return if let Some(status) = self.child.try_wait()? {
+                        Err(Error::HostExited(status))
+                    } else {
+                        Err(Error::HostTimeout(self.timeout))
+                    };
                 }
-            }
-            Err(RecvTimeoutError::Disconnected) => {
-                let status = self.child.wait()?;
-                Err(Error::HostExited(status))
+                Err(RecvTimeoutError::Disconnected) => {
+                    let status = self.child.wait()?;
+                    return Err(Error::HostExited(status));
+                }
             }
         }
     }
