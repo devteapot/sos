@@ -296,7 +296,7 @@ XDG_RUNTIME_DIR="$vm_runtime_dir" WAYLAND_DISPLAY=wayland-sos \
   weston-simple-shm >"$vm_run_dir/compatibility.log" 2>&1 &
 vm_compatibility_pid=$!
 for _ in {1..500}; do
-  if grep -Eq 'mapped compositor-managed XDG toplevel role=Compatibility x=[0-9]+ y=[0-9]+' \
+  if grep -Eq 'registered compositor-managed XDG toplevel role=Compatibility x=[0-9]+ y=[0-9]+' \
       "$vm_run_dir/compositor.log"; then
     break
   fi
@@ -305,6 +305,8 @@ for _ in {1..500}; do
   fi
   sleep 0.01
 done
+grep -Eq 'registered compositor-managed XDG toplevel role=Compatibility x=[0-9]+ y=[0-9]+' \
+  "$vm_run_dir/compositor.log"
 
 vm_current_revision="$(
   target/debug/sos-revision-supervisor status --root "$vm_revision_root"
@@ -328,7 +330,7 @@ grep -q "authenticated SOS shell control connection pid=$vm_restarted_pid" \
 grep -q 'HostRestarted' "$vm_run_dir/session.log"
 grep -q 'accepted Wayland client.*role=Compatibility' "$vm_run_dir/compositor.log"
 grep -q 'configured shell window space' "$vm_run_dir/compositor.log"
-grep -Eq 'mapped compositor-managed XDG toplevel role=Compatibility x=[0-9]+ y=[0-9]+' \
+grep -Eq 'registered compositor-managed XDG toplevel role=Compatibility x=[0-9]+ y=[0-9]+' \
   "$vm_run_dir/compositor.log"
 
 SOS_LINUX_REVISION_ROOT="$vm_revision_root" ./tools/sosctl linux-stop >/dev/null

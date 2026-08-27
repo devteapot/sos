@@ -18,13 +18,13 @@ mkdir -p "$test_home" "$test_state"
 HOME="$test_home" \
 XDG_STATE_HOME="$test_state" \
 SOS_AGENT_MAIN="$test_root/agent-runner.cjs" \
-SOS_AGENT_FAKE_SOURCE="$test_repo_root/experiences/daily-flow.luau" \
+SOS_AGENT_FAKE_SOURCE="$test_repo_root/experiences/default.luau" \
   "$test_login" --offline >"$test_root/offline-login.txt"
 test_config="$test_state/sos/agent/config.env"
 [[ "$(stat -c %a "$test_config")" == 600 ]]
 grep -Fx 'SOS_AGENT_PROVIDER=openai-codex' "$test_config" >/dev/null
 grep -Fx 'SOS_AGENT_MODEL=faux' "$test_config" >/dev/null
-grep -Fx "SOS_AGENT_FAKE_SOURCE=$test_repo_root/experiences/daily-flow.luau" \
+grep -Fx "SOS_AGENT_FAKE_SOURCE=$test_repo_root/experiences/default.luau" \
   "$test_config" >/dev/null
 HOME="$test_home" \
 XDG_STATE_HOME="$test_state" \
@@ -33,7 +33,7 @@ SOS_AGENT_MAIN="$test_root/agent-runner.cjs" \
 grep -F 'sos_agent_login_ready provider=faux' "$test_root/offline-ready.txt" >/dev/null
 
 test_evidence="$test_root/evidence"
-mkdir "$test_evidence"
+mkdir -p "$test_evidence/environment"
 test_boot_id=12345678-1234-1234-1234-123456789abc
 test_other_boot_id=87654321-4321-4321-4321-cba987654321
 printf '%s\n' \
@@ -57,9 +57,17 @@ printf '%s\n' \
   'presented armed shell revision revision_id="1111" evidence="drm_page_flip"' \
   'presented armed shell revision revision_id="2222" evidence="drm_page_flip"' \
   'linux_login_session_stopped reason=user_logout' >"$test_evidence/journal-user.txt"
+printf '%s\n' \
+  'Device:                  Integrated Keyboard' \
+  'Capabilities:            keyboard' \
+  'Device:                  Integrated Touchpad' \
+  'Capabilities:            pointer gesture' \
+  'Device:                  Integrated Touchscreen' \
+  'Capabilities:            touch' >"$test_evidence/environment/libinput.txt"
 : >"$test_evidence/journal-kernel.txt"
 printf '2222\n' >"$test_evidence/current-revision.txt"
 printf '2222\n' >"$test_evidence/authority-revision.txt"
+printf '{}\n' >"$test_evidence/authority.json"
 printf 'active\n' >"$test_evidence/display-manager-active.txt"
 "$test_gate" audit --evidence-dir "$test_evidence" >"$test_root/pass-audit.txt"
 grep -Fx "criterion=same_boot result=PASS boot_id=$test_boot_id" \
@@ -83,6 +91,18 @@ grep -Fx 'criterion=touchscreen_input result=FAIL' "$test_root/fail-audit.txt" >
 printf '%s\n' \
   'observed native compositor input input_class="touch"' >>"$test_evidence/journal-user.txt"
 
+printf '%s\n' \
+  'libinput device added device_id="event99" device_name="Synthetic Gate Touch"' \
+  >>"$test_evidence/journal-user.txt"
+if "$test_gate" audit --evidence-dir "$test_evidence" \
+  >"$test_root/unexpected-input-device-audit.txt"; then
+  printf 'error: audit accepted an input device absent from the preparation inventory\n' >&2
+  exit 1
+fi
+grep -Fx 'criterion=input_device_inventory result=FAIL unexpected_devices=1' \
+  "$test_root/unexpected-input-device-audit.txt" >/dev/null
+sed -i '/Synthetic Gate Touch/d' "$test_evidence/journal-user.txt"
+
 printf 'boot_id=%s\n' "$test_other_boot_id" >"$test_evidence/collection.env"
 if "$test_gate" audit --evidence-dir "$test_evidence" >"$test_root/cross-boot-audit.txt"; then
   printf 'error: audit accepted evidence collected after a different kernel boot\n' >&2
@@ -93,8 +113,11 @@ grep -Fx \
   "$test_root/cross-boot-audit.txt" >/dev/null
 printf 'boot_id=%s\n' "$test_boot_id" >"$test_evidence/collection.env"
 
-"$test_gate" finalize-manifest --evidence-dir "$test_evidence"
-"$test_gate" verify-manifest --evidence-dir "$test_evidence" \
+LC_ALL=en_US.UTF-8 \
+  "$test_gate" finalize-manifest --evidence-dir "$test_evidence"
+cut -f 1 "$test_evidence/evidence-manifest.tsv" | LC_ALL=C sort -c
+LC_ALL=C.UTF-8 \
+  "$test_gate" verify-manifest --evidence-dir "$test_evidence" \
   >"$test_root/manifest-pass.txt"
 grep -F 'evidence_manifest_verified=PASS' "$test_root/manifest-pass.txt" >/dev/null
 printf 'tampered\n' >>"$test_evidence/current-revision.txt"

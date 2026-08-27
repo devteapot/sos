@@ -34,7 +34,7 @@ touch "$test_root/agent-runner.cjs"
 printf '%s\n' \
   'SOS_AGENT_PROVIDER=openai-codex' \
   'SOS_AGENT_MODEL=faux' \
-  "SOS_AGENT_FAKE_SOURCE=$test_repo_root/experiences/daily-flow.luau" \
+  "SOS_AGENT_FAKE_SOURCE=$test_repo_root/experiences/timeflow.luau" \
   >"$test_state/sos/agent/config.env"
 chmod 0600 "$test_state/sos/agent/config.env"
 
@@ -57,7 +57,7 @@ grep -F 'sos_login_agent_started' "$test_root/offline-session.txt" >/dev/null
 [[ "$(stat -c %a "$test_state/sos/output.json")" == 600 ]]
 grep -Fx '{}' "$test_state/sos/output.json" >/dev/null
 grep -Fx -- '--fake-source' "$test_root/agent-arguments.txt" >/dev/null
-grep -Fx "$test_repo_root/experiences/daily-flow.luau" "$test_root/agent-arguments.txt" >/dev/null
+grep -Fx "$test_repo_root/experiences/timeflow.luau" "$test_root/agent-arguments.txt" >/dev/null
 grep -Fx "SOS_LINUX_PROVIDER_ROOT=$test_state/sos/providers" \
   "$test_root/session-environment.txt" >/dev/null
 grep -Fx "SOS_PROVIDER_GRANTS=$test_state/sos/provider-grants.json" \

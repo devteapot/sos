@@ -9,7 +9,11 @@ local function renderDashboard(model: ExperienceModel, state: ExperienceState, _
         layout = { flow = "column", gap = 16, padding = 20 },
         paint = {{ kind = "fill_bounds", color = 0x111827ff }},
         children = {
-            { id = "heading", content = { kind = "text", value = "Dashboard", size = 28, color = 0xf9fafbff } },
+            {
+                id = "heading",
+                content = { kind = "text", value = "Dashboard", size = 28, color = 0xf9fafbff },
+                semantics = { role = "header", label = "Dashboard" },
+            },
             { id = "opened", content = { kind = "text", value = opened, size = 14, color = 0x9ca3afff } },
             {
                 id = "agenda-slot",

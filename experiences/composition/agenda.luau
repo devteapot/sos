@@ -9,7 +9,11 @@ local function summary(model: ExperienceModel, state: ExperienceState, propertie
         layout = { flow = "column", gap = 8, padding = 12, width = context.viewport.width, height = context.viewport.height },
         paint = {{ kind = "fill_bounds", color = 0x1f2937ff, radius = 14 }},
         children = {
-            { id = "agenda-title", content = { kind = "text", value = title, size = 18, color = 0xf8fafcff } },
+            {
+                id = "agenda-title",
+                content = { kind = "text", value = title, size = 18, color = 0xf8fafcff },
+                semantics = { role = "header", label = title },
+            },
             {
                 id = "agenda-open",
                 content = { kind = "text", value = "Selected: " .. selected, size = 14, color = 0xcbd5e1ff },

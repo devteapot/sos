@@ -269,7 +269,7 @@ node "$sos_login_agent_main" serve \
   --state "$sos_login_agent_state_dir/messages.json" \
   --api-doc /usr/share/doc/sos/experience-api.md \
   --example /usr/share/sos/experiences/default.luau \
-  --example-secondary /usr/share/sos/experiences/daily-flow.luau \
+  --example-secondary /usr/share/sos/experiences/timeflow.luau \
   "${sos_login_agent_arguments[@]}" &
 sos_login_agent_pid=$!
 sos_login_wait_for_socket "$sos_login_agent_socket" \

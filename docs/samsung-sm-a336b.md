@@ -490,8 +490,8 @@ The combined follow-up adds one resident Android experience agent without
 changing the authority boundary. Its deterministic fake and OpenAI provider
 both produce a complete bounded Luau proposal, which must still compile,
 render, validate, stage, visibly present, and commit through the same on-device
-revision transaction proven above. The fake alternates Daily Flow and
-Timeflow, and both now retain the SOS network and agent surfaces.
+revision transaction proven above. The fake alternates Stock and Timeflow,
+and both retain the SOS network and agent controls.
 
 Credential setup is a trusted Android password dialog, not a Luau field. The
 API key is AES-GCM encrypted with a non-exportable Android Keystore alias; only
@@ -611,7 +611,7 @@ an independent HOME-process restart.
 
 The first native-Pi OTA was 1,277,021,382 bytes, SHA-256
 `a515008d154bf1d0e2599d45bd3fb5c7b08781bb8bb602af7bdc56150edbf974`.
-Its deterministic Pi path activated updated Daily Flow revision
+Its deterministic Pi path activated the legacy alternate revision
 `3839f95c7dc6e44efad083bbd06cd41bf3efe57dedf70044b3d0ac9dd6d10c14`.
 The owner then completed Codex device authorization, and a prompt submitted
 through the phone's Luau composer ran real Pi and visibly replaced HOME with a

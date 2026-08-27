@@ -12027,3 +12027,370 @@ device gate with the Android NDK available. The current Stock shell remains an
 API v3 top-level experience rather than a packaged v4 graph root. External
 provider side effects are revision-authorized, but provider-wide idempotency or
 compensation across a host crash remains future work.
+
+## 2026-08-27: Accept composition and stable-host behavior in the Linux VM
+
+**Goal:** Close the non-physical Linux loop for appearance, live composition,
+the permanent host, compositor presentation, resident authoring, and packaged
+boot recovery. Keep physical claims separate and leave the Framework target in
+its existing development-live classification.
+
+**Changed:** Added `tools/linux-compositor/verify-composition-nested`, which
+installs the reference Agenda, Media, Dashboard, and Remix packages into a
+disposable store and exercises a real graph supervisor, Linux host, and nested
+Smithay compositor. It asserts Dashboard and child semantics, namespaced child
+input and events, appearance generation, custom-child styling, unchanged host
+PID across graph activation, exact graph recovery after host death, and three
+compositor submit fences. Raw evidence preservation now fails the gate if its
+destination is not new and writable.
+
+The Linux host now creates `shell_overlay` and `application_surface` auxiliary
+windows only while the active Scene contains those nodes. Reconciliation is
+deferred until the current GPUI entity update completes. Revision handoff and
+asynchronous model-refresh completion also re-merge the newest host-owned
+agent, shell, and appearance channels, preventing an older worker snapshot from
+erasing a resident-agent completion or appearance generation.
+
+The direct compositor now distinguishes DRM access loss during a seat
+transition from fatal rendering errors. Smithay `DeviceInactive` and
+permission-denied frame errors pause submissions until libseat activation;
+other errors still stop the compositor. The boot verifier records and restores
+the selected memory-sleep mode, explicitly selects `s2idle`, supports focused
+agent and lifecycle stops, and prints agent/service diagnostics on a semantic
+completion failure. Nested and direct verifiers now check the current
+registration/mapping log split, and the nested pointer probe targets trusted
+shell chrome rather than an application surface. The session verifier waits
+for a responsive supervisor socket and terminates the exact session PID on a
+failed graceful stop. `linux-live-deploy` cleanup now remains safe under
+`set -u` when the first SSH connection fails.
+
+Reference composition semantics now identify the Dashboard root, Agenda
+appearance generation, and Media title explicitly, making the cross-experience
+assertions independent of incidental text.
+
+**Evidence:** Evidence is under
+`artifacts/linux-composition-acceptance-20260826/` (generated, not committed).
+The composition gate passed in 1.544 seconds with graph
+`f09068511e1c9d2c160fcc55583e9d347024fbf4a6ca2fa53ff2492a983ab287`,
+activation PID 13140, recovered PID 13305, appearance generation 1, child event
+`agenda.open`, and `nested_backend_submit`. The focused auxiliary-window gate
+passed in 11.848 seconds (PID 6989, 152 suppressed compositor events), and the
+complete nested gate passed in 10.888 seconds with activation PID 11324,
+recovered PID 11985, revision `578c1f5a…`, native input/accessibility/IME,
+conditional auxiliary surfaces, compatibility coexistence, and three exact
+submit fences.
+
+The Debian 13 direct-DRM gate passed in 22.198 seconds on kernel
+`6.12.101+deb13-amd64`, activating revision `250b1573…` in PID 14478 and
+recovering it in PID 14797 with VBlank-backed `drm_page_flip` evidence. The
+focused packaged lifecycle gate passed in 43.902 seconds with the same lifecycle
+PID across logind VT pause/resume, `s2idle` freezer suspend/resume, and output
+remove/reconnect. The focused resident-agent gate passed in 43.009 seconds with
+text-session input, typed `agent.prompt`, exact context/validate/submit tools,
+Timeflow activation in the same host, a visible assistant completion, and DRM
+evidence.
+
+The final `tools/linux-vm/verify-boot-session` campaign passed in 57.952 seconds.
+It reported session 1, lifecycle PIDs 878/1877/2146, host PIDs
+1005/1764/1957, two intended systemd restarts, separated service identities,
+revision `578c1f5a…`, and `drm_page_flip`. It rebooted back to
+`graphical.target`; GDM and seatd were active and the disposable SOS install
+tree was absent. The 33 direct-compositor tests and 33 Linux-host tests passed,
+including the new live-channel handoff regression. Every acceptance run used
+deterministic fixtures or the faux Pi provider, so external model-weighted cost
+was zero.
+
+**Failures and rejected approaches:** The first composition evidence-retention
+attempt found an existing destination after the behavior had passed; cleanup
+incorrectly preserved status 0, so cleanup failure now overrides success. The
+first auxiliary-window implementation mutated GPUI windows reentrantly and was
+replaced by deferred reconciliation. Early broad nested reruns clicked a valid
+application instead of shell chrome and expected coordinates on the later map
+log rather than the registration log; the probes were made explicit. The first
+boot lifecycle assertion counted only `s2idle` while the guest selected `deep`;
+after the verifier began selecting the intended mode, an immediate VT switch
+exposed the real pre-pause DRM `EACCES` race. Treating every rendering error as
+transient was rejected in favor of the two typed seat-transition errors.
+
+Two agent reruns then activated Timeflow but lost the final assistant message.
+Preserving live channels only at candidate commit was insufficient: an older
+in-flight model-render result could still overwrite them. Re-merging at both
+commit boundaries fixed the race, after which the focused and complete gates
+passed. The physical redeploy attempt did not reach the target: ping failed,
+SSH returned `No route to host`, and unauthenticated PiKVM status returned HTTP
+401. No physical result is inferred from those failures.
+
+**Decision:** Accept the composition and Linux stable-host milestones at
+virtual-device scope. The reference graph has real host/compositor evidence,
+and the packaged direct session has a complete cold-boot, resident-agent,
+lifecycle, recovery, and restoration pass. Keep the physical result open: the
+previous Framework deployment is a mutable, dirty `development-live`
+diagnostic build, and the final host/compositor fixes were not deployed after
+the target became unreachable.
+
+**Remaining risks / next gate:** Power on the Framework 12, redeploy the final
+`compositor` and `experience-host` artifacts, then run the physical hardware
+gate from the fallback desktop and select SOS at GDM. Collect visible panel,
+pointer/touch, suspend, hotplug, GPU, latency, thermal, clean logout, and
+fallback evidence through an authenticated PiKVM session or an owner at the
+machine. A development-live run can be only `DIAGNOSTIC_PASS`; installed-product
+promotion still requires a clean revision-matched image. Android graph-host
+integration remains separate.
+
+## 2026-08-27: Prepare the Framework 12 composition diagnostic
+
+**Goal:** Deploy the accepted Linux host/compositor fixes to the physical
+Framework Laptop 12 and prepare the same-boot development-live hardware gate
+without promoting mutable live evidence to an installed-product result.
+
+**Changed:** Deployed the release `sos-compositor` and
+`sos-experience-host` built from Git object `dcc9e2fc7ab9…`, then redeployed
+those binaries together with the corrected `linux-hardware-gate`. The final
+deployment is `20260826T224212Z-dcc9e2fc7ab9-2314801`, records a dirty source
+tree, and remains `promotion_eligible=false`. The offline agent configuration
+had drifted to `default.luau`; its mode-0600 original was preserved as
+`config.env.pre-composition-gate`, and the configured source was restored to
+the installed `daily-flow.luau` whose SHA-256
+`09ccddca90f6d0a94ea8fbbb86204bbf8522123d2f73f21becfe964a2851a693`
+matches the baked install manifest.
+
+The physical gate's output-config validator was stale relative to the direct
+compositor. It now accepts the documented `layout` and `input_outputs` fields,
+keeps the closed key set, permits only mirror/extend, limits mappings to 32,
+and applies the compositor's nonempty printable 128-byte bounds to both device
+and connector names. A source guard makes that validator directly testable
+without running a hardware campaign.
+
+**Evidence:** The target reported Fedora 44, kernel
+`6.19.10-300.fc44.x86_64`, bare metal, active GDM, and product `Laptop 12 (13th
+Gen Intel Core)`. Focused validator tests passed `{}`, the target's four-device
+mirror mapping, and rejection cases for an unknown layout, empty names, 33
+mappings, a 129-byte name, and a control character. `bash -n` and
+`git diff --check` passed. The final three-component development deployment
+passed in 18.647 seconds; its local evidence is under
+`artifacts/linux-live-deploy/20260826T224212Z-dcc9e2fc7ab9-2314801/`.
+
+Hardware preparation then passed at
+`/home/liveuser/framework12-composition-20260827` with exact revision
+`dcc9e2fc7ab90d919afa63a9a1291a565717d505`, offline agent mode, and
+`boot_kind=development-live`. Preparation captured the current same-boot
+journal cursor and hardware/install identity before any SOS login.
+
+**Failures and decision:** The first preparation stopped before evidence
+creation because the offline source setting named `default.luau`. The second
+stopped after nine preflight files because the gate rejected the compositor's
+valid mirror/input mapping. That partial directory has no `prepared` marker and
+was preserved as
+`/home/liveuser/framework12-composition-20260827-failed-output-config`.
+Changing the target configuration to fit a stale gate or bypassing validation
+was rejected; the gate now checks the actual bounded compositor schema.
+
+**Physical run and evidence:** A final clean campaign on the same boot started
+at monotonic 69,977,359,677,901 ns and collected after 735,685,634,926 ns. The
+recovery view reached a DP-1 DRM page flip, revision `e2af4edc…` reached both
+panel outputs, and the semantic Stock composer submitted "Compose a calmer
+daily flow" through `agent.prompt`. Context, validation, and submission tools
+activated revision `6b3341ee…` at a DP-1 page flip. Supervisor host-proxy PID
+534023 stayed constant, the journal recorded one experience-host launch at PID
+534029, and the durable authority agreed with `6b3341ee…`. The session exited
+through `Ctrl+Alt+Backspace`, GDM returned, and GNOME session 246 started on
+`tty4`.
+
+The target's original auditor printed `DIAGNOSTIC_PASS` for all criteria with
+two presentations, two revision IDs, and one host launch. Its finalized 38-file
+nested manifest is 3,595 bytes with SHA-256
+`dad5cb62ab857ae76a2fc691f09e3954d9ffc4cbdb2feff1273ddae8bca18eff`;
+target and controller verification both passed. The raw target evidence and
+controller records are under
+`artifacts/linux-framework12-composition-20260827/`.
+The finalized top-level manifest lists 128 files, is 13,972 bytes, has SHA-256
+`99731b64bbfb386a8184f32dfe34d6e01bbf397509a8a2f4445761ad8e86964d`,
+and passed independent verification after every controller record was final.
+
+**Failures, correction, and decision:** The first collection correctly failed
+because SOS had never been entered. Its evidence was preserved as the
+skipped-session attempt. Independent copying then found that manifest order
+depended on locale: the Fedora target accepted `authority.json` before
+`authority-revision.txt`, while bytewise controller verification rejected it.
+Generation and verification now force `LC_ALL=C`; the host test generates under
+`en_US.UTF-8`, verifies under `C.UTF-8`, and checks bytewise order.
+
+Remote GDM password input reached PAM but failed authentication, so that helper
+was retired. A bounded autologin attempt initially selected GNOME because GDM
+reads AccountsService `Session`, not `XSession`; the exact GDM config was
+restored and the uncollected attempt was archived. Setting `Session=sos` fixed
+the focused reproduction. A later semantic check also needed to wait for the
+post-`set_value` snapshot before submission. These attempts did not enter the
+final journal cursor.
+
+The final campaign did contain remote uinput. Journal markers for relative
+pointer, pointer button, and touch followed devices named `SOS Remote
+Diagnostic ...`, and the touch was explicitly reported as ambiguously routed.
+The old auditor had no provenance check and therefore mislabeled those classes
+as physical input. It now compares every session-added input device with the
+libinput inventory captured at preparation. The corrected controller audit
+fails this campaign with `input_device_inventory unexpected_devices=4` and
+`DIAGNOSTIC_FAIL`. Keep the DRM, one-host lifecycle, authoring, durable-state,
+and reversible-session results as development diagnostics, but reject the
+physical-input claim. Supervisor status also recorded `active_graph: null`, so
+this run does not close physical composition even though it exercised the final
+graph-capable host and compositor binaries.
+
+The stricter gate, compositor, and host were left installed together as
+development deployment `20260826T231654Z-dcc9e2fc7ab9-2319572`, which passed in
+24.700 seconds and remains dirty and promotion-ineligible. Temporary uinput,
+semantic-client, and autologin files were removed after exact GDM-config
+restoration. The final target state is the writable live overlay with active
+GDM, GNOME on `tty4`, no SOS process, `Session=gnome`, empty `XSession`, and no
+mounted internal NVMe partition.
+
+**Next gate:** Run a fresh campaign with an owner at the Framework for the
+integrated keyboard, touchpad, and touchscreen, without hot-added input devices.
+Separately add a selectable-session graph root and physically boot the Dashboard
+with its Agenda and Media mounts; require child-event, appearance, graph
+recovery, and DRM evidence. Development-live can still produce only a
+non-promotion diagnostic. An installed-product result requires a clean,
+revision-matched immutable image.
+
+## 2026-08-27: Remove the legacy Daily Flow experience
+
+**Goal and cause:** Remove the old alternate experience and its instrumented
+agent panel from every active product path. The August 26 change had made Stock
+the default offline source, but the physical hardware gate still required the
+old developer fixture. During the August 27 campaign that stale assertion was
+mistaken for target drift, so the target config was changed back and a faux
+prompt activated the obsolete experience. This was a gate and packaging bug,
+not experience composition.
+
+**Changed:** Deleted both legacy Luau sources. Linux now packages Stock and
+Timeflow, uses Timeflow only as the resident agent's secondary prompt example,
+and requires Stock as the deterministic offline source. The compositor's
+native-input and accessibility checks now activate a test-only stateful fixture
+with no agent UI. VM, authoring, login-session, live-image, faux-agent, Android
+stress, README, and current design documentation references now use Stock,
+Timeflow, the Android spatial candidate, or that test fixture. The installer
+reconciles its previous manifest and removes packaged experience files that no
+longer appear in the new manifest. Development-live deployment can now update
+the agent-login helper, Timeflow, and both installed operator documents along
+with the existing session components.
+
+**Host evidence:** `rg` found no case-insensitive legacy name outside this
+historical ledger and ignored generated artifacts. `cargo fmt --all`,
+`git diff --check`, shell syntax checks, and validation of
+`tests/fixtures/linux-stateful-experience.luau` passed; the fixture compiled to
+16 nodes with one input, one image, one animation, and six semantic nodes.
+`cargo test -p sos-experience --lib` passed 16 tests, and the focused
+`sos-linux-session` authoring test passed. The login-session, hardware-gate,
+and live-image host tests all reported `PASS`. `tools/linux-agent-e2e` traversed
+context, validation, and submission, then changed revision
+`82f5ddab…` to Timeflow revision `d5db162f…`. No model request ran, so model and
+model-weighted cost were zero. The complete nested compositor command stopped
+before setup because `weston` is not installed on this workstation; no nested
+result is claimed. Crate-scoped
+`cargo clippy -p sos-experience --lib --no-deps -- -D warnings` passed. The
+dependency-wide form stopped on pre-existing
+`derivable_impls` and `too_many_arguments` lints in `service-protocol` and
+`experience-ir`; those unrelated composition changes were left untouched.
+
+**Physical cleanup:** The Framework was reachable but an SOS session was still
+active with the old source as both current revision and faux-provider input.
+The running supervisor activated installed Stock revision `82f5ddab…` in the
+same host PID 551202. The private mode-0600 offline config was rewritten to
+`/usr/share/sos/experiences/default.luau`, then the session shut down cleanly.
+The old installed source was 15,676 bytes with SHA-256
+`09ccddca90f6d0a94ea8fbbb86204bbf8522123d2f73f21becfe964a2851a693`.
+It, five inactive revisions containing the old root, and the eight-message
+agent transcript containing a complete copy of that source were removed. The
+final target scan found no old source or path under the executable directory,
+installed experiences and current operator docs, or mutable user state. GDM
+was active, no SOS process remained, and no internal NVMe partition was
+mounted.
+
+Final same-boot deployment
+`20260826T234429Z-dcc9e2fc7ab9-2333753` updated six root-owned files in
+7,520,181,781 ns and remains dirty and promotion-ineligible. Its ignored
+evidence directory is
+`artifacts/linux-live-deploy/20260826T234429Z-dcc9e2fc7ab9-2333753/`.
+The 661-byte deployment manifest has SHA-256
+`29619bdd9a594df5bc4b3985e6e49d1be568fb1e96f9ba9163326b9a61b72ebb`;
+the 278-byte metadata has SHA-256
+`c127adb6d120a1f2929a6ca4e2d0cd73ff9731ea0fdc8bd5b974a7cb3dc185c4`;
+the 149-byte result has SHA-256
+`392372eb35419e6d2bc4420eb4d4e6639779f678cc3b3db77f5fbf1b61e9ae8f`.
+
+**Failures and decision:** Direct removal of immutable revision directories
+first prompted and then failed because their contents were read-only. The
+attempt was stopped, the five exact inactive directories were checked against
+the current Stock revision, made owner-writable, and removed. Accept the source,
+runtime, packaging, tests, and current-boot cleanup. Do not call the existing
+development ISO clean: its immutable install manifest truthfully records the
+old baked file, and a reboot discards the mutable overlay changes.
+
+**Next gate:** Build a clean revision-matched development image, verify its
+installed manifest and root filesystem contain only Stock and Timeflow, boot it
+on the Framework, and repeat the Stock no-op faux prompt plus the physical
+composition and input gates. Run the complete nested compositor regression on
+a host with Weston before that image gate.
+
+## 2026-08-27: Repair the GDM login bounce after revision cleanup
+
+**Goal and cause:** Restore the physical SOS login after the Daily Flow cleanup
+made GDM return immediately to its login page. Two attempts failed before the
+provider socket existed, at journal monotonic times 72,911 and 72,915 seconds,
+with `linux_session_failed` reporting `No such file or directory`. GDM and the
+compositor were downstream of the failure. The cleanup had removed revision
+`579f946f…` but left `previous` pointing to that absent directory. The session
+runner reads both `current` and optional `previous` when it creates recovery
+status, so the dangling rollback pointer aborted startup even though `current`
+still named valid Stock revision `82f5ddab…`.
+
+**Changed:** Removed only the invalid `previous` pointer on the live target and
+kept the current Stock pointer unchanged. `RevisionStore::previous` now treats
+a pointer whose revision directory no longer exists as unavailable. It still
+validates the pointer shape and fully verifies any revision that does exist, so
+a malformed pointer or corrupt rollback revision is not silently accepted. A
+regression test removes the first of two installed revisions, asserts that
+`previous()` returns `None`, and asserts that the second current revision still
+verifies.
+
+**Host evidence:** `cargo test -p revision-supervisor` passed 7 unit, 10
+coordinator, 3 graph-supervisor, and 16 supervisor tests, including the new
+dangling-pointer case. The five focused `sos-linux-session` system-session
+tests passed. `cargo clippy -p revision-supervisor -p sos-linux-session
+--all-targets --no-deps -- -D warnings`, `cargo fmt --all`, and
+`git diff --check` passed. The first version of the regression fixture could
+not delete the mode-0555 immutable revision as an ordinary user; the test now
+models the privileged cleanup explicitly by making that exact fixture
+directory owner-writable before removal.
+
+**Physical evidence:** Development-live deployment
+`20260826T235443Z-dcc9e2fc7ab9-2341916` installed the hardened session binary
+in 11,385,200,513 ns. The installed 1,888,336-byte binary has SHA-256
+`a32ef434b02eaa5fed52b2d68c578f219f94d65e218d65fcefa633a2bdb4e88a`.
+The ignored evidence directory is
+`artifacts/linux-live-deploy/20260826T235443Z-dcc9e2fc7ab9-2341916/`: its
+114-byte manifest has SHA-256
+`aeebf8d422a9df522f12c8e24c00aeda43a714f42fadf90d13abdf6fd5482170`,
+its 278-byte metadata has SHA-256
+`1f4b8eec40ff2f0ad471ad4ca589f878bdc8d31afce630693227bb367db2ec50`,
+and its 83-byte result has SHA-256
+`d19cd9f031bdba8b91759ef3a1a3ce9b9afc4938ae096c9b49fa8cccb0e4d425`.
+
+A bounded GDM autologin used the already selected SOS session. PAM opened
+physical session 258 at monotonic 73,343.919 seconds. Stock produced real
+non-recovery DRM page flips on `eDP-1` and `DP-1` at 73,347.310 and 73,347.326
+seconds, and `linux_system_session_ready` followed at 73,347.349 seconds: 3.430
+seconds after session open. The supervisor, durable authority, and rendered
+frame all agreed on Stock revision `82f5ddab…` and source SHA-256 `9f09372f…`.
+The provider continued publishing through 73,387.318 seconds with the complete
+session process set alive. The exact pre-test GDM config was then restored with
+SHA-256 `87d6cc7eecc23565f361c46581b0fecf219eeef3791f088ea6e62943a1e66e36`;
+GDM returned active, the temporary backup was absent, no SOS process remained,
+and neither internal NVMe partition was mounted.
+
+**Decision and next gate:** The current-boot GDM bounce is fixed and the
+physical login-to-Stock path passes. This does not promote the dirty mutable
+deployment or replace the previously required physical input and composition
+campaigns. Bake the guard and Daily Flow removal into a clean image, reboot the
+Framework from that image, and repeat manual SOS login plus the remaining
+physical gates.

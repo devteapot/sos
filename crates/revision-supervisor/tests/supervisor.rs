@@ -85,6 +85,26 @@ fn installs_verified_read_only_luau_revisions_without_native_payloads() {
 }
 
 #[test]
+fn dangling_previous_pointer_is_treated_as_unavailable() {
+    let directory = TempDir::new().unwrap();
+    let store = RevisionStore::open(directory.path()).unwrap();
+    let first = install(&store, "return { revision = 1 }");
+    let second = install(&store, "return { revision = 2 }");
+    store.set_current(&first).unwrap();
+    store.set_current(&second).unwrap();
+
+    let first_directory = directory.path().join("revisions").join(&first);
+    fs::set_permissions(&first_directory, fs::Permissions::from_mode(0o755)).unwrap();
+    fs::remove_dir_all(first_directory).unwrap();
+
+    assert!(store.previous().unwrap().is_none());
+    assert_eq!(
+        store.current().unwrap().unwrap().manifest.revision_id,
+        second
+    );
+}
+
+#[test]
 fn installs_content_addressed_revision_sidecars_and_rejects_drift() {
     let directory = TempDir::new().unwrap();
     let store = RevisionStore::open(directory.path()).unwrap();

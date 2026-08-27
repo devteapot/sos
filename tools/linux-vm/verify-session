@@ -22,7 +22,10 @@ vm_session_pid=""
 
 cleanup_vm_gate() {
   if [[ -n "$vm_session_pid" ]] && kill -0 "$vm_session_pid" 2>/dev/null; then
-    SOS_LINUX_REVISION_ROOT="$vm_revision_root" ./tools/sosctl linux-stop >/dev/null 2>&1 || true
+    if ! SOS_LINUX_REVISION_ROOT="$vm_revision_root" \
+      ./tools/sosctl linux-stop >/dev/null 2>&1; then
+      kill -TERM "$vm_session_pid" 2>/dev/null || true
+    fi
     wait "$vm_session_pid" 2>/dev/null || true
   fi
   if [[ -n "$vm_weston_pid" ]] && kill -0 "$vm_weston_pid" 2>/dev/null; then
@@ -73,7 +76,10 @@ SOS_LINUX_REVISION_ROOT="$vm_revision_root" \
   ./tools/sosctl linux-run --windowed >"$vm_run_dir/session.log" 2>&1 &
 vm_session_pid=$!
 for _ in {1..1200}; do
-  if [[ -S "$vm_revision_root/run/supervisor.sock" && -S "$vm_revision_root/run/provider-state.sock" ]]; then
+  if [[ -S "$vm_revision_root/run/supervisor.sock" \
+    && -S "$vm_revision_root/run/provider-state.sock" ]] \
+    && target/debug/sos-revision-supervisor daemon-status \
+      --root "$vm_revision_root" >/dev/null 2>&1; then
     break
   fi
   kill -0 "$vm_session_pid" 2>/dev/null || {
@@ -82,10 +88,12 @@ for _ in {1..1200}; do
   }
   sleep 0.01
 done
+target/debug/sos-revision-supervisor daemon-status \
+  --root "$vm_revision_root" >/dev/null
 
 vm_status_before="$(SOS_LINUX_REVISION_ROOT="$vm_revision_root" ./tools/sosctl linux-status)"
 vm_pid_before="$(sed -n 's/.*"host_pid":\([0-9][0-9]*\).*/\1/p' <<<"$vm_status_before")"
-vm_activation="$(SOS_LINUX_REVISION_ROOT="$vm_revision_root" ./tools/sosctl linux-script experiences/daily-flow.luau)"
+vm_activation="$(SOS_LINUX_REVISION_ROOT="$vm_revision_root" ./tools/sosctl linux-script experiences/timeflow.luau)"
 vm_status_after="$(SOS_LINUX_REVISION_ROOT="$vm_revision_root" ./tools/sosctl linux-status)"
 vm_pid_after="$(sed -n 's/.*"host_pid":\([0-9][0-9]*\).*/\1/p' <<<"$vm_status_after")"
 [[ -n "$vm_pid_before" && "$vm_pid_before" == "$vm_pid_after" ]]

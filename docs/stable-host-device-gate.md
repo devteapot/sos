@@ -72,7 +72,7 @@ authority hash.
 
 ## Platform and provider regression evidence
 
-The dark daily-flow revision republished six semantics. `uiautomator` exposed
+The dark alternate revision republished six semantics. `uiautomator` exposed
 the expected coarse window description containing the heading, weather status,
 album image, playback button, Unicode note field, and editing status. This
 confirms the existing summary bridge, not per-element TalkBack navigation.

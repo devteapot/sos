@@ -761,7 +761,7 @@ live_image_check_rootfs() {
     "$live_image_harness" \
     /usr/local/libexec/sos-agent/dist/agent-runner.cjs \
     /usr/share/wayland-sessions/sos.desktop \
-    /usr/share/sos/experiences/daily-flow.luau \
+    /usr/share/sos/experiences/timeflow.luau \
     /usr/share/doc/sos/install-metadata.env \
     /usr/share/doc/sos/install-manifest.tsv \
     "$live_image_development_access" \

@@ -117,8 +117,8 @@ node "$test_agent_package/dist/agent-runner.cjs" serve \
   --authoring-socket "$test_authoring_socket" \
   --api-doc "$test_repo_root/docs/experience-api.md" \
   --example "$test_repo_root/experiences/default.luau" \
-  --example-secondary "$test_repo_root/experiences/daily-flow.luau" \
-  --fake-source "$test_repo_root/experiences/daily-flow.luau" \
+  --example-secondary "$test_repo_root/experiences/timeflow.luau" \
+  --fake-source "$test_repo_root/experiences/timeflow.luau" \
   >"$test_root/agent.log" 2>&1 &
 test_agent_pid=$!
 wait_for_socket "$test_agent_socket" "$test_agent_pid" "Pi agent"
@@ -126,7 +126,7 @@ wait_for_socket "$test_agent_socket" "$test_agent_pid" "Pi agent"
 printf '==> prompting Pi faux provider through the public agent socket\n'
 node "$test_agent_package/dist/agent-runner.cjs" prompt \
   --socket "$test_agent_socket" \
-  --request "Turn this into a calm daily flow"
+  --request "Turn this into a compact timeline"
 
 test_status="$("$test_bin_root/sos-revision-supervisor" daemon-status --root "$test_revision_root")"
 test_active_revision="$(printf '%s' "$test_status" | sed -n 's/.*"active_revision":"\([0-9a-f]*\)".*/\1/p')"

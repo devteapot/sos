@@ -8,7 +8,11 @@ local function renderMedia(model: ExperienceModel, state: ExperienceState, _prop
         layout = { flow = "column", gap = 8, padding = 12, width = context.viewport.width, height = context.viewport.height },
         paint = {{ kind = "fill_bounds", color = 0x241c32ff, radius = 14 }},
         children = {
-            { id = "media-title", content = { kind = "text", value = model.music.title, size = 18, color = 0xfff7edff } },
+            {
+                id = "media-title",
+                content = { kind = "text", value = model.music.title, size = 18, color = 0xfff7edff },
+                semantics = { role = "header", label = model.music.title },
+            },
             {
                 id = "media-toggle",
                 content = { kind = "text", value = label, size = 14, color = 0xf0abfcff },

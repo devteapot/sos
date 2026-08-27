@@ -1271,7 +1271,7 @@ linux_agent_run() {
     --credentials "$LINUX_AGENT_CREDENTIALS"
     --api-doc "$SOS_ROOT/docs/experience-api.md"
     --example "$SOS_ROOT/experiences/default.luau"
-    --example-secondary "$SOS_ROOT/experiences/daily-flow.luau"
+    --example-secondary "$SOS_ROOT/experiences/timeflow.luau"
   )
   if [[ -n "$fake_source" ]]; then
     arguments+=(--fake-source "$fake_source")

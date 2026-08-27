@@ -122,9 +122,9 @@ session with:
 Replace only the experience while the same process and APK remain alive:
 
 ```sh
-./tools/sosctl validate experiences/daily-flow-agent.luau
+./tools/sosctl validate experiences/android-exit-agent.luau
 ./tools/sosctl script experiences/timeflow.luau
-./tools/sosctl agent-apply experiences/daily-flow-agent.luau
+./tools/sosctl agent-apply experiences/android-exit-agent.luau
 ./tools/sosctl rollback
 ./tools/sosctl worker-restart
 ./tools/sosctl stress 10000
@@ -146,7 +146,7 @@ From another terminal, inspect or replace the active revision without
 replacing the process or window:
 
 ```sh
-./tools/sosctl linux-script experiences/daily-flow.luau
+./tools/sosctl linux-script experiences/timeflow.luau
 ./tools/sosctl linux-status
 ./tools/sosctl linux-stop
 ```
@@ -168,7 +168,7 @@ Run the resident-agent path deterministically without a model call:
 
 ```sh
 ./tools/sosctl linux-agent-test
-./tools/sosctl linux-agent-run --fake experiences/daily-flow.luau
+./tools/sosctl linux-agent-run --fake experiences/timeflow.luau
 ```
 
 For a subscription-backed live model, authenticate with Pi's headless Codex

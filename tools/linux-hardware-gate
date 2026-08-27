@@ -104,6 +104,38 @@ hardware_gate_capture_optional() {
   printf '%s\n' "$status" >"$output.status"
 }
 
+hardware_gate_validate_output_config() {
+  local path="$1"
+  jq -e '
+    type == "object"
+    and ((keys - ["mode", "rotation", "scale", "layout", "input_outputs"]) | length == 0)
+    and (.mode == null or (.mode | type == "string" and test("^[1-9][0-9]*x[1-9][0-9]*$")))
+    and (.rotation == null or (.rotation == 0 or .rotation == 90 or .rotation == 180 or .rotation == 270))
+    and (.scale == null or (.scale | type == "number" and . >= 1 and . <= 4))
+    and (.layout == null or .layout == "mirror" or .layout == "extend")
+    and (
+      .input_outputs == null
+      or (
+        .input_outputs
+        | type == "object"
+          and length <= 32
+          and all(
+            to_entries[];
+            (.key
+              | utf8bytelength >= 1
+                and utf8bytelength <= 128
+                and (test("[[:cntrl:]]") | not))
+            and (.value
+              | type == "string"
+                and utf8bytelength >= 1
+                and utf8bytelength <= 128
+                and (test("[[:cntrl:]]") | not))
+          )
+      )
+    )
+  ' "$path" >/dev/null
+}
+
 hardware_gate_sysroot_path() {
   local sysroot="$1" path="$2"
   printf '%s%s\n' "$sysroot" "$path"
@@ -401,8 +433,8 @@ hardware_gate_prepare() {
   if [[ "$installed_mode" == offline ]]; then
     local fake_source
     fake_source="$(sed -n 's/^SOS_AGENT_FAKE_SOURCE=//p' "$agent_config" | tail -n 1)"
-    [[ "$fake_source" == /usr/share/sos/experiences/daily-flow.luau && -r "$fake_source" ]] || \
-      hardware_gate_fail "physical gate requires the installed deterministic offline source"
+    [[ "$fake_source" == /usr/share/sos/experiences/default.luau && -r "$fake_source" ]] || \
+      hardware_gate_fail "physical gate requires the installed Stock offline source"
   else
     [[ -s "$hardware_gate_state_home/sos/agent/auth.json" ]] || \
       hardware_gate_fail "live selectable-session credentials are missing"
@@ -459,13 +491,8 @@ hardware_gate_prepare() {
     && -O "$hardware_gate_state_home/sos/output.json" \
     && -r "$hardware_gate_state_home/sos/output.json" ]] || \
     hardware_gate_fail "selectable-session output configuration is missing"
-  jq -e '
-    type == "object"
-    and ((keys - ["mode", "rotation", "scale"]) | length == 0)
-    and (.mode == null or (.mode | type == "string" and test("^[1-9][0-9]*x[1-9][0-9]*$")))
-    and (.rotation == null or (.rotation == 0 or .rotation == 90 or .rotation == 180 or .rotation == 270))
-    and (.scale == null or (.scale | type == "number" and . >= 1 and . <= 4))
-  ' "$hardware_gate_state_home/sos/output.json" >/dev/null || \
+  hardware_gate_validate_output_config \
+    "$hardware_gate_state_home/sos/output.json" || \
     hardware_gate_fail "selectable-session output configuration is invalid"
   cp -- "$hardware_gate_state_home/sos/output.json" "$evidence_dir/environment/output.json"
 
@@ -581,8 +608,8 @@ hardware_gate_audit_dir() {
   local evidence_dir="$1"
   local journal="$evidence_dir/journal-user.txt"
   [[ -f "$evidence_dir/campaign.env" && -f "$evidence_dir/collection.env" \
-    && -f "$journal" ]] || \
-    hardware_gate_fail "campaign, collection, or collected session journal is missing"
+    && -f "$journal" && -f "$evidence_dir/environment/libinput.txt" ]] || \
+    hardware_gate_fail "campaign, collection, input inventory, or collected session journal is missing"
   hardware_gate_audit_failed=false
   local agent_mode current_revision authority_revision presentation_count presentation_revisions
   local boot_kind campaign_class prepared_boot_id collected_boot_id
@@ -624,6 +651,26 @@ hardware_gate_audit_dir() {
     'observed native compositor input input_class="pointer_button"' "$journal"
   hardware_gate_criterion_pattern touchscreen_input \
     'observed native compositor input input_class="touch"' "$journal"
+  local input_inventory unexpected_input_devices unexpected_input_count
+  input_inventory="$(sed -n 's/^Device:[[:space:]]*//p' \
+    "$evidence_dir/environment/libinput.txt")"
+  unexpected_input_devices="$({
+    sed -n 's/.*libinput device added .*device_name="\([^"]*\)".*/\1/p' "$journal" \
+      | LC_ALL=C sort -u \
+      | while IFS= read -r device_name; do
+          if ! grep -Fxq -- "$device_name" <<<"$input_inventory"; then
+            printf '%s\n' "$device_name"
+          fi
+        done
+  })"
+  unexpected_input_count="$(sed '/^$/d' <<<"$unexpected_input_devices" | wc -l)"
+  if [[ -n "$input_inventory" && "$unexpected_input_count" -eq 0 ]]; then
+    printf 'criterion=input_device_inventory result=PASS\n'
+  else
+    printf 'criterion=input_device_inventory result=FAIL unexpected_devices=%s\n' \
+      "$unexpected_input_count"
+    hardware_gate_audit_failed=true
+  fi
   hardware_gate_criterion_pattern clean_logout \
     'linux_login_session_stopped reason=user_logout' "$journal"
 
@@ -701,7 +748,8 @@ hardware_gate_generate_manifest() {
     after="$(stat -c '%s:%Y' "$path")"
     [[ "$before" == "$after" ]] || hardware_gate_fail "evidence changed while hashing: $relative"
     printf '%s\t%s\t%s\n' "$relative" "$bytes" "$digest" >>"$temporary"
-  done < <(find "$evidence_dir" -type f ! -name '.evidence-manifest.tsv.*' -print0 | sort -z)
+  done < <(find "$evidence_dir" -type f ! -name '.evidence-manifest.tsv.*' -print0 \
+    | LC_ALL=C sort -z)
   [[ -s "$temporary" ]] || hardware_gate_fail "evidence directory contains no finalized files"
   mv -- "$temporary" "$manifest"
 }
@@ -714,7 +762,7 @@ hardware_gate_verify_manifest_dir() {
   diff -u \
     <(cut -f 1 "$manifest") \
     <(find "$evidence_dir" -type f ! -name evidence-manifest.tsv \
-      ! -name '.evidence-manifest.tsv.*' -printf '%P\n' | sort) >/dev/null || \
+      ! -name '.evidence-manifest.tsv.*' -printf '%P\n' | LC_ALL=C sort) >/dev/null || \
     hardware_gate_fail "evidence manifest paths are missing, extra, or unsorted"
   while IFS=$'\t' read -r path bytes digest; do
     [[ -n "$path" && "$path" != /* && "$path" != *'..'* ]] || \
@@ -806,6 +854,10 @@ hardware_gate_collect() {
   printf 'measured_wall_time_ns=%s evidence_dir=%s\n' "$duration_ns" "$evidence_dir"
   return "$audit_status"
 }
+
+if [[ "${BASH_SOURCE[0]}" != "$0" ]]; then
+  return 0
+fi
 
 [[ "$#" -ge 1 ]] || {
   hardware_gate_usage >&2

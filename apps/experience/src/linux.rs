@@ -452,43 +452,8 @@ pub fn run() -> Result<()> {
                         cx.quit();
                         return;
                     };
-                    let overlay_host = host_entity.clone();
-                    let overlay_bounds = Bounds {
-                        origin: point(px(0.), px(0.)),
-                        size: size(px(72.), px(72.)),
-                    };
-                    let overlay = cx.open_window(
-                        WindowOptions {
-                            window_bounds: Some(WindowBounds::Windowed(overlay_bounds)),
-                            titlebar: None,
-                            focus: false,
-                            kind: WindowKind::Normal,
-                            is_movable: true,
-                            is_resizable: false,
-                            window_background: WindowBackgroundAppearance::Transparent,
-                            window_decorations: Some(WindowDecorations::Client),
-                            app_id: Some("dev.sos.experience.overlay".into()),
-                            ..Default::default()
-                        },
-                        move |_, cx| cx.new(|cx| ShellOverlayView::new(overlay_host, cx)),
-                    );
-                    if let Err(error) = overlay {
-                        eprintln!("sos_experience_overlay_failed error={error}");
-                        cx.quit();
-                        return;
-                    }
-                    let application_bounds = Bounds::centered(None, size(px(900.), px(700.)), cx);
-                    let application = cx.open_window(
-                        WindowOptions {
-                            window_bounds: Some(WindowBounds::Windowed(application_bounds)),
-                            titlebar: None,
-                            app_id: Some("dev.sos.experience.application".into()),
-                            ..Default::default()
-                        },
-                        move |_, cx| cx.new(|cx| ApplicationSurfaceView::new(host_entity, cx)),
-                    );
-                    if let Err(error) = application {
-                        eprintln!("sos_experience_application_surface_failed error={error}");
+                    if let Err(error) = sync_auxiliary_windows(&host_entity, cx) {
+                        eprintln!("sos_experience_auxiliary_surface_failed error={error:#}");
                         cx.quit();
                         return;
                     }
@@ -651,6 +616,82 @@ impl Render for ApplicationSurfaceView {
     }
 }
 
+fn sync_auxiliary_windows(host: &Entity<LinuxExperienceHost>, cx: &mut App) -> Result<()> {
+    let (needs_overlay, needs_application) = host.read_with(cx, |host, _| {
+        (
+            shell_overlay_node(&host.scene.root).is_some(),
+            application_surface_node(&host.scene.root).is_some(),
+        )
+    });
+    let windows = cx.windows();
+    let overlay_window = windows
+        .iter()
+        .copied()
+        .find(|handle| handle.downcast::<ShellOverlayView>().is_some());
+    let application_window = windows
+        .iter()
+        .copied()
+        .find(|handle| handle.downcast::<ApplicationSurfaceView>().is_some());
+
+    match (needs_overlay, overlay_window) {
+        (true, None) => {
+            let host = host.clone();
+            let overlay_bounds = Bounds {
+                origin: point(px(0.), px(0.)),
+                size: size(px(72.), px(72.)),
+            };
+            cx.open_window(
+                WindowOptions {
+                    window_bounds: Some(WindowBounds::Windowed(overlay_bounds)),
+                    titlebar: None,
+                    focus: false,
+                    kind: WindowKind::Normal,
+                    is_movable: true,
+                    is_resizable: false,
+                    window_background: WindowBackgroundAppearance::Transparent,
+                    window_decorations: Some(WindowDecorations::Client),
+                    app_id: Some("dev.sos.experience.overlay".into()),
+                    ..Default::default()
+                },
+                move |_, cx| cx.new(|cx| ShellOverlayView::new(host, cx)),
+            )?;
+            eprintln!("sos_experience_overlay_opened");
+        }
+        (false, Some(handle)) => {
+            handle
+                .update(cx, |_, window, _| window.remove_window())
+                .context("close obsolete shell overlay window")?;
+            eprintln!("sos_experience_overlay_closed");
+        }
+        _ => {}
+    }
+
+    match (needs_application, application_window) {
+        (true, None) => {
+            let host = host.clone();
+            let application_bounds = Bounds::centered(None, size(px(900.), px(700.)), cx);
+            cx.open_window(
+                WindowOptions {
+                    window_bounds: Some(WindowBounds::Windowed(application_bounds)),
+                    titlebar: None,
+                    app_id: Some("dev.sos.experience.application".into()),
+                    ..Default::default()
+                },
+                move |_, cx| cx.new(|cx| ApplicationSurfaceView::new(host, cx)),
+            )?;
+            eprintln!("sos_experience_application_surface_opened");
+        }
+        (false, Some(handle)) => {
+            handle
+                .update(cx, |_, window, _| window.remove_window())
+                .context("close obsolete application surface window")?;
+            eprintln!("sos_experience_application_surface_closed");
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
 pub(super) struct LinuxExperienceHost {
     model: ExperienceModel,
     worker: RuntimeWorker,
@@ -701,6 +742,23 @@ pub(super) struct LinuxExperienceHost {
 }
 
 impl LinuxExperienceHost {
+    fn scene_changed(&mut self, cx: &mut Context<Self>) {
+        let host = cx.weak_entity();
+        cx.defer(move |cx| {
+            let Some(host) = host.upgrade() else {
+                return;
+            };
+            if let Err(error) = sync_auxiliary_windows(&host, cx) {
+                eprintln!("sos_experience_auxiliary_surface_failed error={error:#}");
+                host.update(cx, |host, cx| {
+                    host.status =
+                        Some((format!("Auxiliary surface update failed: {error}"), false));
+                    cx.notify();
+                });
+            }
+        });
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn new(
         model: ExperienceModel,
@@ -947,13 +1005,13 @@ impl LinuxExperienceHost {
                 let Some(service_socket) = self.service_socket.clone() else {
                     self.action_in_flight = false;
                     if outcome.effects.is_empty() {
-                        self.install_graph_snapshot(outcome.snapshot);
+                        self.install_graph_snapshot(outcome.snapshot, cx);
                         self.status = None;
                     } else {
                         if let Some(graph) = &self.active_graph {
                             graph.worker.restore(request_id, previous.clone()).ok();
                         }
-                        self.install_graph_snapshot(previous);
+                        self.install_graph_snapshot(previous, cx);
                         self.status = Some((
                             "Graph provider effects require --service-socket".into(),
                             false,
@@ -989,7 +1047,7 @@ impl LinuxExperienceHost {
                 request_id,
                 snapshot,
             } => {
-                self.install_graph_snapshot(snapshot);
+                self.install_graph_snapshot(snapshot, cx);
                 self.status = None;
                 eprintln!("sos_graph_refreshed request_id={request_id}");
             }
@@ -1002,7 +1060,7 @@ impl LinuxExperienceHost {
         }
     }
 
-    fn install_graph_snapshot(&mut self, snapshot: GraphRuntimeSnapshot) {
+    fn install_graph_snapshot(&mut self, snapshot: GraphRuntimeSnapshot, cx: &mut Context<Self>) {
         assets::install_graph(
             snapshot
                 .instances
@@ -1020,6 +1078,7 @@ impl LinuxExperienceHost {
         if let Some(graph) = &mut self.active_graph {
             graph.snapshot = snapshot;
         }
+        self.scene_changed(cx);
     }
 
     fn attach_provider_updates(
@@ -1522,8 +1581,7 @@ impl LinuxExperienceHost {
                     },
                     None => (self.model.clone(), Vec::new()),
                 };
-                candidate_model.agent = self.model.agent.clone();
-                candidate_model.shell = self.model.shell.clone();
+                inherit_live_model_channels(&mut candidate_model, &self.model);
                 if let Err(error) = self.worker.prepare_candidate_with_assets(
                     request_id,
                     revision.source.clone(),
@@ -1754,7 +1812,7 @@ impl LinuxExperienceHost {
                 self.state_schema_version = prepared.root_revision.schema_version;
                 let candidate_snapshot = prepared.graph.snapshot.clone();
                 self.rollback_graph = self.active_graph.replace(prepared.graph);
-                self.install_graph_snapshot(candidate_snapshot);
+                self.install_graph_snapshot(candidate_snapshot, cx);
                 if let (Some(access), Some(graph)) = (&self.provider_access, &self.active_graph) {
                     access.activate_graph(
                         graph
@@ -1897,7 +1955,7 @@ impl LinuxExperienceHost {
                     self.active_source_sha256 = restored_root.source_sha256.clone();
                     self.state_schema_version = restored_root.schema_version;
                     self.active_graph = Some(restored);
-                    self.install_graph_snapshot(restored_snapshot);
+                    self.install_graph_snapshot(restored_snapshot, cx);
                     if let (Some(access), Some(graph)) = (&self.provider_access, &self.active_graph)
                     {
                         access.activate_graph(
@@ -2035,10 +2093,17 @@ impl LinuxExperienceHost {
                 assets::install(&revision_assets);
                 assets::install_provider_frames(&commit.revision.provider_frames);
                 self.scene = scene;
+                self.scene_changed(cx);
                 self.state = state;
                 self.state_schema_version = state_schema_version;
                 self.active_revision_id = revision_id;
-                self.model = commit.revision.model;
+                let mut committed_model = commit.revision.model;
+                // Preparing a candidate and receiving resident-agent, shell, or
+                // appearance updates happen independently. Re-merge these live
+                // host channels at the commit boundary so a revision switch
+                // cannot restore their older prepare-time values.
+                inherit_live_model_channels(&mut committed_model, &self.model);
+                self.model = committed_model;
                 if let Some(access) = &self.provider_access {
                     access.activate(&self.active_revision_id);
                 }
@@ -2068,15 +2133,21 @@ impl LinuxExperienceHost {
                 scene,
                 worker_us,
             } => {
-                let Some((expected, model)) = self.provider_refresh.take() else {
+                let Some((expected, mut model)) = self.provider_refresh.take() else {
                     return;
                 };
                 if expected != request_id {
                     self.provider_refresh = Some((expected, model));
                     return;
                 }
+                // The worker rendered an immutable request snapshot. Agent,
+                // compositor, and appearance events may have advanced while it
+                // was rendering, so that snapshot must not become their new
+                // authority when its result returns.
+                inherit_live_model_channels(&mut model, &self.model);
                 self.model = model;
                 self.scene = scene;
+                self.scene_changed(cx);
                 self.status = None;
                 eprintln!(
                     "sos_provider_model_refreshed request_id={request_id} worker_us={worker_us} revision_id={}",
@@ -2125,6 +2196,7 @@ impl LinuxExperienceHost {
                         self.state = state;
                         merge_input_state_shadow(&mut self.state, &self.input_state_shadow);
                         self.scene = scene;
+                        self.scene_changed(cx);
                         self.status = None;
                     } else {
                         self.status =
@@ -2200,6 +2272,7 @@ impl LinuxExperienceHost {
                     self.state = authoritative.state;
                     merge_input_state_shadow(&mut self.state, &self.input_state_shadow);
                     self.scene = result.scene;
+                    self.scene_changed(cx);
                     self.status = None;
                     eprintln!(
                         "sos_action_committed request_id={} authority_revision={}",
@@ -2261,13 +2334,13 @@ impl LinuxExperienceHost {
                             .restore(result.request_id, result.previous.clone())
                             .ok();
                     }
-                    self.install_graph_snapshot(result.previous);
+                    self.install_graph_snapshot(result.previous, cx);
                     self.status = Some((
                         "Authority returned unexpected graph interaction state".into(),
                         false,
                     ));
                 } else {
-                    self.install_graph_snapshot(result.outcome.snapshot);
+                    self.install_graph_snapshot(result.outcome.snapshot, cx);
                     self.status = None;
                     eprintln!(
                         "sos_graph_action_committed request_id={} experiences={}",
@@ -2297,7 +2370,7 @@ impl LinuxExperienceHost {
                         .restore(result.request_id, result.previous.clone())
                         .ok();
                 }
-                self.install_graph_snapshot(result.previous);
+                self.install_graph_snapshot(result.previous, cx);
                 self.status = Some((format!("Graph state/effect commit failed: {error}"), false));
                 eprintln!(
                     "sos_graph_action_commit_rejected request_id={} error={error}",
@@ -4517,6 +4590,12 @@ fn shell_model(snapshot: ShellStateSnapshot) -> ShellModel {
     }
 }
 
+fn inherit_live_model_channels(candidate: &mut ExperienceModel, live: &ExperienceModel) {
+    candidate.agent = live.agent.clone();
+    candidate.shell = live.shell.clone();
+    candidate.appearance = live.appearance.clone();
+}
+
 fn truncate_agent_text(mut text: String) -> String {
     if text.len() <= MAX_AGENT_MESSAGE_BYTES {
         return text;
@@ -4811,6 +4890,30 @@ mod tests {
             model.capabilities,
             vec![ShellCapability::WindowFocus, ShellCapability::WindowClose]
         );
+    }
+
+    #[test]
+    fn revision_handoff_preserves_live_agent_shell_and_appearance_channels() {
+        let mut candidate = providers_fake::snapshot();
+        candidate.greeting = "candidate content".into();
+        let mut live = providers_fake::snapshot();
+        live.greeting = "old content".into();
+        live.agent.available = true;
+        live.agent.activity = "Ready".into();
+        push_agent_message(
+            &mut live,
+            AgentMessageRole::Assistant,
+            "The candidate experience is active.".into(),
+        );
+        live.shell.canvas.width = 2560;
+        live.appearance.generation = 17;
+
+        inherit_live_model_channels(&mut candidate, &live);
+
+        assert_eq!(candidate.greeting, "candidate content");
+        assert_eq!(candidate.agent, live.agent);
+        assert_eq!(candidate.shell, live.shell);
+        assert_eq!(candidate.appearance, live.appearance);
     }
 
     fn start_service(

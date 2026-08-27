@@ -83,6 +83,10 @@ the preferred panel mode, scale 1.0, and rotation 0. A bounded override may set
 
 Automatic tablet rotation is not part of the first gate. Finalize this file
 before preparing evidence; the harness records its exact contents.
+The same bounded file may set `"layout"` to `"mirror"` or `"extend"` and may
+map at most 32 exact, printable libinput device names to printable connector
+names through `"input_outputs"`. The gate validates the same keys and limits as
+the direct compositor, including the 128-byte limit on each name.
 
 ### Development-live remix, same-boot diagnostics
 
@@ -160,7 +164,8 @@ captures durable revision/authority agreement and the restored display-manager
 state, and records the matching boot ID again. It finalizes `verdict.txt`,
 measures campaign wall time from same-boot monotonic timestamps, generates
 `evidence-manifest.tsv`, and independently verifies every path, byte size, and
-SHA-256.
+SHA-256. Manifest paths use bytewise `C` ordering, independent of the locale on
+the target or the audit machine.
 
 On development-live, use the baked harness for collection:
 
@@ -182,6 +187,9 @@ becoming a SKIP:
 - preparation and collection come from the same kernel boot;
 - real libinput events are observed for keyboard, relative pointer, pointer
   button, and touchscreen;
+- every input device added during SOS was already present in the libinput
+  inventory captured at preparation, so a hot-added uinput helper cannot satisfy
+  a physical-input criterion;
 - at least two distinct revisions reach compositor-owned DRM page flips,
   proving boot plus one transactional authoring activation, while the permanent
   experience host has exactly one launch and no restart;

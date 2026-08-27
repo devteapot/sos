@@ -48,11 +48,10 @@ Android object, filesystem, network, or raw pointer.
 
 ### 2. Stable keyed state through generated rewrites
 
-[`daily-flow.luau`](../experiences/daily-flow.luau) is a light chronological
-screen and [`daily-flow-agent.luau`](../experiences/daily-flow-agent.luau) is a
-structurally different dark orbital composition. Both use stable
-`id = "note-draft"` and `state_key = "draft"` boundaries while freely changing
-the surrounding hierarchy.
+The runtime preserves keyed state across structurally different revisions.
+The checked-in Android spatial candidate and the test-only Linux stateful
+fixture both use the stable `id = "note-draft"` and `state_key = "draft"`
+boundary while changing the surrounding hierarchy.
 
 Native input entities are cached by stable ID. Rust immediately shadows and
 persists text mutations, then coalesces typed events for the Luau worker. A
@@ -72,8 +71,8 @@ accepted GPUI tree remains visible.
 ### 4. Reproducible agent and stress controls
 
 ```sh
-./tools/sosctl validate experiences/daily-flow-agent.luau
-./tools/sosctl agent-apply experiences/daily-flow-agent.luau
+./tools/sosctl validate experiences/android-exit-agent.luau
+./tools/sosctl agent-apply experiences/android-exit-agent.luau
 ./tools/sosctl rollback
 ./tools/sosctl worker-restart
 ./tools/sosctl stress 10000
@@ -81,8 +80,8 @@ accepted GPUI tree remains visible.
 
 `agent-apply` performs local compile/evaluate/IR validation, transfers only
 source, waits for the on-device accepted/rejected result, captures a screenshot,
-and reports the accepted source SHA-256. `stress` alternates the two structural
-experiences and waits for a GPUI post-render callback after every candidate.
+and reports the accepted source SHA-256. `stress` alternates Stock and Timeflow
+and waits for a GPUI post-render callback after every candidate.
 
 ## Physical-device evidence — 2026-08-08
 

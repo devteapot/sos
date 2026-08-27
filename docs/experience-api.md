@@ -206,7 +206,7 @@ model.agent = {
     configuration_actions = {},
     messages = {
         { role = "user", text = "Make this calmer" },
-        { role = "assistant", text = "I changed the daily flow." },
+        { role = "assistant", text = "I changed the layout." },
     },
 }
 ```

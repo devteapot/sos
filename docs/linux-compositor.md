@@ -166,7 +166,7 @@ On a Linux development machine with Xvfb, Weston, and
 The verifier builds the locked graph and creates only disposable state. It
 runs Weston's X11 backend in Xvfb, runs `sos-compositor` through its Smithay
 winit backend, boots the coordinated Linux session inside that compositor,
-activates `daily-flow.luau`, kills the exact host PID, waits for supervisor
+activates the test-only stateful fixture, kills the exact host PID, waits for supervisor
 recovery, and maps `weston-simple-shm` as the compatibility client. It requires:
 
 - unchanged PID across the normal Luau activation;
@@ -194,6 +194,29 @@ Expected leading output:
 ```text
 linux_nested_compositor_passed activation_pid=... restarted_pid=... revision_id=... evidence=nested_backend_submit
 ```
+
+The composition-specific companion gate is:
+
+```sh
+./tools/linux-compositor/verify-composition-nested
+```
+
+It installs the Agenda, Media, Dashboard, and Remix reference packages into a
+disposable graph store, activates the resolved Dashboard graph through the
+durable graph supervisor, and inspects the composed semantic tree. It requires
+separate parent/child ownership, namespaced editable state, child-event
+routing, appearance propagation without forcing the custom Media visual
+system, the same host PID across graph activation, exact graph recovery after
+host death, and three `nested_backend_submit` fences. Its raw logs and stores
+can be retained with `SOS_COMPOSITION_EVIDENCE_DIR`.
+
+The host now creates the trusted shell overlay and application auxiliary GPUI
+windows only when the active Scene contains their corresponding content. It
+reconciles those windows after the current GPUI entity update finishes, so a
+revision can add or remove either surface without a reentrant entity update or
+leaving a transparent input surface behind. Set
+`SOS_NESTED_AUXILIARY_ONLY=1` on the broader nested verifier for the focused
+open/close check.
 
 The gate passes both on the ARM64 Ubuntu 24.04 development host and inside the
 reference Debian 13.6 ARM64 KVM guest. The Debian run activated revision
@@ -285,6 +308,17 @@ before-promotion authority failure. Both paths require `keys=1 buttons=1
 touches=2` at quiesce and suppressed releases after presentation or abort.
 Revision `250b1573…` activated in PID 8641 and recovered after the exact host
 kill in PID 8888 with DRM page-flip evidence.
+
+Seat revocation may make a KMS commit return `EACCES` just before libseat
+delivers `PauseSession`. The direct renderer treats only Smithay's explicit
+inactive-device or permission-denied DRM errors as that transition: it stops
+submitting, waits for the seat event, and resumes on `ActivateSession`. Other
+render failures remain fatal. The boot verifier selects `s2idle` explicitly,
+restores the prior `/sys/power/mem_sleep` selection on every exit, and proves
+that the same compositor owner survives VT pause/activation, the kernel freezer
+suspend test, and connector remove/reconnect. This avoids both a false failure
+on machines whose default is `deep` and a real crash in the DRM-master
+revocation race.
 
 Activation quiescing includes touch. Existing contacts receive one
 `wl_touch.cancel`, their physical motion/release is suppressed across either a

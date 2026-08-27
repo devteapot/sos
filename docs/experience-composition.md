@@ -2,12 +2,13 @@
 
 Date: 2026-08-26
 
-Status: implemented contract and Linux reference path. Package format v4,
-Experience API v4, the registry and graph resolver, isolated graph runtime,
-authority-owned appearance, graph state transactions, derivation and
-composition authoring, and the Linux host path are implemented. API v3 remains
-available for legacy single-experience revisions. Physical Linux acceptance
-and Android host integration remain open and are listed below.
+Status: implemented contract and Linux reference path with nested-Wayland and
+direct-DRM VM acceptance. Package format v4, Experience API v4, the registry
+and graph resolver, isolated graph runtime, authority-owned appearance, graph
+state transactions, derivation and composition authoring, and the Linux host
+path are implemented. API v3 remains available for legacy single-experience
+revisions. Physical Linux acceptance and Android host integration remain open
+and are listed below.
 
 ## Decision
 
@@ -376,7 +377,8 @@ does not yet consume a resolved graph. No Android composition claim is made.
 
 ## Acceptance status
 
-Desktop tests complete the code-level parts of the first gate:
+Desktop tests and the explicit Linux VM campaign complete the non-physical
+parts of the first gate:
 
 1. Agenda and Media publish independent `main` and `summary` exports.
 2. Dashboard mounts both summaries through exact locked aliases.
@@ -393,7 +395,36 @@ Desktop tests complete the code-level parts of the first gate:
 8. Graph pointers, revision-specific states, appearance, and provenance all
    survive authority or supervisor reopen tests.
 
-This is not physical acceptance. Real pointer/text routing, accessibility
-focus, compositor clipping and presentation latency still require the SOS
-Linux acceptance workflow. Android graph loading, rendering, authoring, and
-physical-device recovery remain a separate platform milestone.
+`tools/linux-compositor/verify-composition-nested` additionally installed the
+reference packages into a disposable Debian 13 graph store and presented graph
+`f09068511e1c9d2c160fcc55583e9d347024fbf4a6ca2fa53ff2492a983ab287`
+through the real Linux host and Smithay nested compositor. The accepted run
+proved the Dashboard root and both mounted child semantics, namespaced Agenda
+input and `agenda.open` event routing, appearance generation 1 in the
+inheriting child, the custom Media result, unchanged host PID 13140 across
+activation, host recovery in PID 13305, and compositor-owned
+`nested_backend_submit` evidence. It completed in 1.544 seconds.
+
+The broader nested gate then passed pointer/text and accessibility routing,
+clipping, conditional shell auxiliary-window lifecycle, compatibility-window
+coexistence, exact presentation fences, and host recovery. The direct-DRM VM
+gate passed the corresponding page-flip boundary, and the cold-boot gate passed
+resident-agent authoring, VT pause/resume, `s2idle` freezer recovery, output
+hotplug, separated identities, process recovery, and reboot restoration.
+
+The final host and compositor binaries have since run on the Framework 12. A
+2026-08-27 development-live diagnostic proved the recovery view and two
+single-revision shells through physical DRM page flips, one permanent host
+launch, resident authoring, durable authority agreement, and clean return to
+GDM. It did not boot the reference graph: supervisor status recorded
+`active_graph: null` before and after the authoring transaction. Its pointer and
+touch observations also came from hot-added uinput devices, so the corrected
+auditor rejects the physical-input claim.
+
+Physical live-composition acceptance therefore remains open. It must boot the
+Dashboard graph on the Framework, observe both independently owned mounted
+children, dispatch a namespaced child event, apply appearance data, and retain
+the graph across a physical host restart without synthetic input standing in
+for integrated hardware. Panel latency, suspend, GPU recovery, thermals, and
+power evidence remain separate gates. Android graph loading, rendering,
+authoring, and physical-device recovery remain a separate platform milestone.

@@ -1292,7 +1292,7 @@ mod tests {
         let candidate = validate_candidate(
             &store,
             &authority(&store),
-            include_str!("../../../experiences/daily-flow.luau").into(),
+            include_str!("../../../experiences/timeflow.luau").into(),
             None,
         )
         .unwrap();

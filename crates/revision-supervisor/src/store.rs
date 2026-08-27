@@ -353,6 +353,12 @@ impl RevisionStore {
             .ok()
             .and_then(|value| value.to_str())
             .ok_or_else(|| Error::InvalidPointer(target.clone()))?;
+        let revision_path = self.revision_path(revision_id)?;
+        match fs::symlink_metadata(&revision_path) {
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error.into()),
+        }
         self.verify(revision_id).map(Some)
     }
 

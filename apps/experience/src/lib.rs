@@ -44,15 +44,12 @@ pub use linux::run as run_linux_host;
 
 pub const DEFAULT_EXPERIENCE: &str = include_str!("../../../experiences/default.luau");
 pub const TIMEFLOW_EXPERIENCE: &str = include_str!("../../../experiences/timeflow.luau");
-pub const DAILY_FLOW_EXPERIENCE: &str = include_str!("../../../experiences/daily-flow.luau");
-pub const DAILY_FLOW_AGENT_EXPERIENCE: &str =
-    include_str!("../../../experiences/daily-flow-agent.luau");
 
 pub fn deterministic_agent_candidate(current_source: &str) -> &'static str {
-    if current_source.trim() == DAILY_FLOW_EXPERIENCE.trim() {
-        TIMEFLOW_EXPERIENCE
+    if current_source.trim() == TIMEFLOW_EXPERIENCE.trim() {
+        DEFAULT_EXPERIENCE
     } else {
-        DAILY_FLOW_EXPERIENCE
+        TIMEFLOW_EXPERIENCE
     }
 }
 
@@ -274,11 +271,7 @@ mod tests {
         assert!(contains_id(&agent_panel_scene.root, "shell-rail-agent"));
         assert!(contains_id(&agent_panel_scene.root, "panel-agent-prompt"));
         assert!(experience_ir::validate_scene(&agent_panel_scene).is_ok());
-        for source in [
-            super::DEFAULT_EXPERIENCE,
-            super::TIMEFLOW_EXPERIENCE,
-            super::DAILY_FLOW_EXPERIENCE,
-        ] {
+        for source in [super::DEFAULT_EXPERIENCE, super::TIMEFLOW_EXPERIENCE] {
             let runtime = runtime_luau::LuauRuntime::compile(source).unwrap();
             let model = providers_fake::snapshot();
             let state = if source == super::DEFAULT_EXPERIENCE {
@@ -412,47 +405,33 @@ mod tests {
         assert!(experience_ir::validate_scene(&timeflow_scene).unwrap() > 15);
         assert!(contains_action(&timeflow_scene.root, "toggle_music"));
 
-        for source in [
-            super::DAILY_FLOW_EXPERIENCE,
-            super::DAILY_FLOW_AGENT_EXPERIENCE,
-        ] {
-            let runtime = runtime_luau::LuauRuntime::compile(source).unwrap();
-            let scene = runtime
-                .render(&providers_fake::snapshot(), &runtime.initial_state())
-                .unwrap();
-            assert!(experience_ir::validate_scene(&scene).unwrap() > 15);
-            assert!(contains_action(&scene.root, "toggle_music"));
-        }
-
-        for source in [super::TIMEFLOW_EXPERIENCE, super::DAILY_FLOW_EXPERIENCE] {
-            let runtime = runtime_luau::LuauRuntime::compile(source).unwrap();
-            let model = providers_fake::snapshot();
-            let state = runtime.initial_state();
-            let scene = runtime.render(&model, &state).unwrap();
-            assert!(contains_agent_composer(&scene.root));
-            let outcome = runtime
-                .update_with_effects(
-                    &model,
-                    &state,
-                    &experience_ir::SceneEvent {
-                        action: "agent_submit".into(),
-                        target: Some("agent-prompt".into()),
-                        value: Some("Make this calmer".into()),
-                        ..Default::default()
-                    },
-                )
-                .unwrap();
-            assert_eq!(outcome.effects.len(), 1);
-            assert_eq!(outcome.effects[0].provider, "agent");
-            assert_eq!(outcome.effects[0].action, "prompt");
-            assert_eq!(outcome.effects[0].payload["prompt"], "Make this calmer");
-        }
+        let runtime = runtime_luau::LuauRuntime::compile(super::TIMEFLOW_EXPERIENCE).unwrap();
+        let model = providers_fake::snapshot();
+        let state = runtime.initial_state();
+        let scene = runtime.render(&model, &state).unwrap();
+        assert!(contains_agent_composer(&scene.root));
+        let outcome = runtime
+            .update_with_effects(
+                &model,
+                &state,
+                &experience_ir::SceneEvent {
+                    action: "agent_submit".into(),
+                    target: Some("agent-prompt".into()),
+                    value: Some("Make this calmer".into()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(outcome.effects.len(), 1);
+        assert_eq!(outcome.effects[0].provider, "agent");
+        assert_eq!(outcome.effects[0].action, "prompt");
+        assert_eq!(outcome.effects[0].payload["prompt"], "Make this calmer");
     }
 
     #[test]
     fn deterministic_agent_candidate_is_complete_and_visibly_alternates() {
         let first = super::deterministic_agent_candidate(super::TIMEFLOW_EXPERIENCE);
-        assert_eq!(first.trim(), super::DAILY_FLOW_EXPERIENCE.trim());
+        assert_eq!(first.trim(), super::DEFAULT_EXPERIENCE.trim());
         let second = super::deterministic_agent_candidate(first);
         assert_eq!(second.trim(), super::TIMEFLOW_EXPERIENCE.trim());
 
