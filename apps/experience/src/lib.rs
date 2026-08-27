@@ -568,5 +568,21 @@ mod tests {
         assert!(first.contains("stock-mobile-root"));
         let second = super::deterministic_mobile_agent_candidate(&first);
         assert_eq!(second, super::MOBILE_EXPERIENCE);
+
+        for source in [&first, &second] {
+            let runtime = super::compile_built_in(source).unwrap();
+            assert_eq!(
+                runtime.api_version(),
+                experience_ir::EXPERIENCE_API_VERSION_V4
+            );
+            assert_eq!(runtime.export_ids().unwrap(), vec!["main"]);
+            let scene = runtime
+                .render(
+                    &providers_fake::snapshot(),
+                    &serde_json::json!({"screen": "agent"}),
+                )
+                .unwrap();
+            assert!(scene_contains_agent_composer(&scene.root));
+        }
     }
 }

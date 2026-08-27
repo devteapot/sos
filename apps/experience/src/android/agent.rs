@@ -29,6 +29,7 @@ use zeroize::{Zeroize, Zeroizing};
 
 use crate::android_agent_contract::{
     expected_model, model_is_exact, reconciled_request_error, verified_action_sequence,
+    STOCK_AGENT_COMPOSER_STATE_SELECTORS,
 };
 #[cfg(feature = "core-native")]
 use crate::android_agent_contract::{pi_timeout_seconds, OPENROUTER_MODEL};
@@ -434,7 +435,7 @@ fn validate_candidate(source: &str, model: &ExperienceModel) -> Result<(), Strin
         .map_err(|_| {
             "The agent candidate scene is invalid. [validation/invalid_candidate]".to_owned()
         })?;
-    if !has_shell_agent_composer(&runtime, model)? {
+    if !has_stock_agent_composer(&runtime, model)? {
         return Err(
             "The agent candidate removed the Stock agent composer. [validation/invalid_candidate]"
                 .into(),
@@ -451,11 +452,11 @@ fn has_agent_composer(node: &SceneNode) -> bool {
     ) || node.children.iter().any(has_agent_composer)
 }
 
-fn has_shell_agent_composer(
+fn has_stock_agent_composer(
     runtime: &runtime_luau::LuauRuntime,
     model: &ExperienceModel,
 ) -> Result<bool, String> {
-    for (key, value) in [("active_workspace", "agent"), ("shell_panel", "agent")] {
+    for (key, value) in STOCK_AGENT_COMPOSER_STATE_SELECTORS {
         let mut state = runtime.initial_state();
         let object = state.as_object_mut().ok_or_else(|| {
             "The Stock shell state is not a record. [validation/invalid_candidate]".to_owned()

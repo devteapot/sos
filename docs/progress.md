@@ -15809,3 +15809,63 @@ ordered composition and recovery stage, require non-overlapping prompt and
 provider virtual bounds, focus from a point inside the published prompt, a
 successful faux context/validate/submit sequence, a committed distinct v4
 Stock Mobile revision, and real-control rollback to the original v4 revision.
+
+## 2026-08-28: Reject the first Mobile authoring candidate at its Stock selector
+
+**Goal / physical evidence:** Install the exact `4dbe4a2` Compat candidate and
+run the complete Android v4 composition campaign through phone-native Stock
+Mobile authoring. Device-boundary verification retained the sealed
+1,067,526,493-byte OTA and SHA-256
+`e848a36734077572447dd0fe7fba88be4b24e2c198085dc65888b9e858a34bf9`.
+The first transition used generic Recovery instead of automatic sideload and
+timed out after 300.01 seconds with no OTA bytes transferred. Selecting Apply
+from ADB entered the intended state; the only sideload then completed in 87.30
+seconds with `Total xfer: 1.00x`, and exact-product readiness took 194.13
+seconds. The installed identity was
+`sos.compat1.4dbe4a2eb316.9dd7e158b5e9`; SELinux was Enforcing, authority PID
+947 and HOME PID 1468 were live, and PermissionMonitor retained traffic mask
+12 for appId 1000. The 129,658-byte post-install Stock Mobile screenshot has
+SHA-256
+`046646a7b174f41215f24d69cf27c522af64c05437548c23333c545e5aec25e3`.
+
+The fresh campaign under
+`.cache/evidence/android-v4-4dbe4a2-physical/compat1/composition/` passed Stock,
+three-Instance Dashboard composition, separately keyed Agenda and Dashboard
+state, physical appearance propagation from generation 7 to 8, child exception
+and time-budget containment, both explicit child recoveries, parent liveness,
+mounted accessibility, and namespaced IME focus and blur. HOME-only recovery
+changed PID 1468 to 3586 in 303 ms while authority PID 947 remained exact.
+Authority-only recovery passed in 0.30 seconds, changed PID 947 to 3763, kept
+HOME PID 3586, and served a valid audit snapshot. A real Return to Stock touch
+dismissed Dashboard. The corrected authoring prompt published bounds
+`[12,748][991,911]`, wholly above the provider row beginning at y=978, and a
+touch inside those exact bounds focused the namespaced `mobile-agent-prompt`.
+
+**Failure / cause:** Samsung IME touch input submitted the non-empty prompt
+`Blue`. The trusted bridge started `provider=fake model=faux`; the bundled
+runner returned `prompt_complete` after 819 ms, proving the fake-to-faux wire
+translation. Trusted validation then rejected the deterministic Mobile source
+with `stage=validation category=invalid_candidate`, so no candidate was staged
+or committed and no `authored`, `rollback`, or campaign manifest was created.
+The finalized 3,927,182-byte failure log at
+`.cache/evidence/android-v4-4dbe4a2-physical/compat1/authoring-validation-failure/logcat.txt`
+has SHA-256
+`643a421a28767fc9e92aee327b4fb51a1829f5da46bf386cee1fb6e150532ca2`;
+the 173,783-byte screenshot has SHA-256
+`72c027bc453b88c6d9bdcad01f948d1c270ccf1caa7c184d33589de8496b5a10`.
+
+The validator's agent-composer preservation probe covered desktop Stock state
+selectors `active_workspace="agent"` and `shell_panel="agent"` but omitted
+phone-native Stock Mobile's `screen="agent"`. The valid candidate therefore
+rendered its home branch during this check and was falsely rejected. The
+preservation contract now declares all three selectors and Android validation
+uses that closed list. The deterministic Mobile regression renders both
+alternating candidates under `screen="agent"` and requires the composer.
+
+**Verification / decision / next gate:** Formatting and diff checks are clean.
+All five focused Android agent-contract tests pass in 2.10 seconds, and the
+Mobile candidate regression passes in 0.24 seconds. The complete A33x host
+fixture passes in 7.95 seconds with 5,004 KiB peak RSS. Reject this physical
+campaign at authoring. Commit and seal one replacement Compat OTA, reinstall
+it once, and repeat every ordered physical stage before accepting authored
+activation or v4-to-v4 rollback.
