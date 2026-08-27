@@ -8,7 +8,8 @@ live_image_identity_path=/usr/share/doc/sos/image-identity.env
 live_image_offline_source=/usr/share/sos/experiences/default.luau
 live_image_harness=/usr/local/libexec/sos/linux-hardware-gate
 live_image_development_access=/usr/share/doc/sos/development-access.env
-live_image_ssh_config=/etc/ssh/sshd_config.d/60-sos-development-live.conf
+live_image_development_authorized_key=/usr/share/sos/development-authorized-key
+live_image_ssh_config=/etc/ssh/sshd_config.d/00-sos-development-live.conf
 live_image_livesys_hook=/var/lib/livesys/livesys-session-extra
 live_image_networkmanager_profile=/etc/NetworkManager/system-connections/60-sos-development-live.nmconnection
 live_image_build_image="${SOS_LIVE_IMAGE_BUILD_IMAGE:-localhost/sos-linux-live-build:fedora-44}"
@@ -32,10 +33,10 @@ live_image_usage() {
     '  tools/linux-live-image format-identity [identity fields...]' \
     '  tools/linux-live-image write-offline-user-state --home-root DIR' \
     '  tools/linux-live-image check-networkmanager-profile --profile-file FILE' \
-    '  tools/linux-live-image configure-development-access --root DIR --password-file FILE [--networkmanager-profile-file FILE]' \
+    '  tools/linux-live-image configure-development-access --root DIR --password-file FILE [--ssh-authorized-key-file FILE] [--networkmanager-profile-file FILE]' \
     '  tools/linux-live-image check-payload --payload FILE' \
     '  tools/linux-live-image check-rootfs --root DIR' \
-    '  tools/linux-live-image bake --source-iso ISO --source-sha256 SHA256 --output-dir DIR --liveuser-password-file FILE [--networkmanager-profile-file FILE]'
+    '  tools/linux-live-image bake --source-iso ISO --source-sha256 SHA256 --output-dir DIR --liveuser-password-file FILE [--ssh-authorized-key-file FILE] [--networkmanager-profile-file FILE]'
 }
 
 live_image_require_command() {
@@ -198,7 +199,7 @@ live_image_doctor() {
   local command
   for command in awk basename cargo cmp dirname find firewall-offline-cmd getfattr \
     git install mount mountpoint node npm pkg-config python3 realpath rsync rustc sha256sum \
-    sort stat sudo umount openssl; do
+    sort stat sudo umount openssl ssh-keygen; do
     live_image_require_command "$command"
   done
   local missing=()
@@ -251,7 +252,7 @@ live_image_format_identity() {
   local payload_relpath="" payload_bytes="" payload_sha256=""
   local container_format="" baked_at_utc=""
   local output_iso_filename="" output_iso_bytes="" output_iso_sha256=""
-  local wifi_autoconnect=false
+  local wifi_autoconnect=false ssh_authorized_key_fingerprint=none
   while [[ "$#" -gt 0 ]]; do
     case "$1" in
       --source-revision) source_revision="$2"; shift 2 ;;
@@ -274,6 +275,7 @@ live_image_format_identity() {
       --output-iso-bytes) output_iso_bytes="$2"; shift 2 ;;
       --output-iso-sha256) output_iso_sha256="$2"; shift 2 ;;
       --wifi-autoconnect) wifi_autoconnect="$2"; shift 2 ;;
+      --ssh-authorized-key-fingerprint) ssh_authorized_key_fingerprint="$2"; shift 2 ;;
       *) live_image_fail "unexpected identity field: $1" ;;
     esac
   done
@@ -305,6 +307,13 @@ live_image_format_identity() {
   [[ "$source_dirty" == false ]] || live_image_fail "live images require a clean source revision"
   [[ "$wifi_autoconnect" == true || "$wifi_autoconnect" == false ]] || \
     live_image_fail "Wi-Fi autoconnect identity must be true or false"
+  local ssh_authorized_key_embedded=false ssh_password_authentication=true
+  if [[ "$ssh_authorized_key_fingerprint" != none ]]; then
+    [[ "$ssh_authorized_key_fingerprint" =~ ^SHA256:[A-Za-z0-9+/]{43}$ ]] || \
+      live_image_fail "SSH authorized-key fingerprint must be none or an OpenSSH SHA-256 fingerprint"
+    ssh_authorized_key_embedded=true
+    ssh_password_authentication=false
+  fi
   [[ -n "$baked_at_utc" ]] || baked_at_utc="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   [[ "$baked_at_utc" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] || \
     live_image_fail "baked timestamp must be UTC in YYYY-MM-DDTHH:MM:SSZ form"
@@ -316,6 +325,9 @@ live_image_format_identity() {
     'promotion_eligible=false' \
     'mutable_runtime=true' \
     'ssh_enabled=true' \
+    "ssh_authorized_key_embedded=$ssh_authorized_key_embedded" \
+    "ssh_authorized_key_fingerprint=$ssh_authorized_key_fingerprint" \
+    "ssh_password_authentication=$ssh_password_authentication" \
     "wifi_autoconnect=$wifi_autoconnect" \
     "network_credentials_embedded=$wifi_autoconnect" \
     "image_format=$image_format" \
@@ -389,6 +401,53 @@ live_image_read_development_password() {
     live_image_fail "liveuser password must be non-empty and contain no colon or carriage return"
   [[ "${#password}" -le 128 ]] || live_image_fail "liveuser password exceeds 128 characters"
   printf '%s' "$password"
+}
+
+live_image_read_development_ssh_public_key() {
+  local public_key_file="$1" public_key="" extra=""
+  [[ -f "$public_key_file" && ! -L "$public_key_file" && -r "$public_key_file" ]] || \
+    live_image_fail "SSH public-key file must be a readable regular file, not a symlink"
+  exec 9<"$public_key_file"
+  IFS= read -r public_key <&9 || [[ -n "$public_key" ]] || \
+    live_image_fail "SSH public-key file is empty"
+  if IFS= read -r extra <&9; then
+    live_image_fail "SSH public-key file must contain exactly one line"
+  fi
+  exec 9<&-
+  [[ -n "$public_key" && "$public_key" != *$'\r'* && "${#public_key}" -le 8192 ]] || \
+    live_image_fail "SSH public key must be non-empty, contain no carriage return, and fit in 8192 characters"
+  [[ "$public_key" == ssh-ed25519\ * ]] || \
+    live_image_fail "development-live accepts only an Ed25519 SSH public key"
+  local key_fields key_blob
+  key_fields="${public_key#ssh-ed25519 }"
+  key_blob="${key_fields%%[[:space:]]*}"
+  [[ "$key_blob" =~ ^[A-Za-z0-9+/]+={0,2}$ ]] || \
+    live_image_fail "SSH public key does not contain a valid base64 key blob"
+  printf 'ssh-ed25519 %s' "$key_blob"
+}
+
+live_image_ssh_public_key_fingerprint() {
+  local public_key="$1" temporary fingerprint=""
+  live_image_require_command ssh-keygen
+  temporary="$(mktemp -t sos-development-ssh-key.XXXXXX)"
+  printf '%s\n' "$public_key" >"$temporary"
+  fingerprint="$(ssh-keygen -lf "$temporary" -E sha256 2>/dev/null | awk 'NR == 1 { print $2 }')" || true
+  rm -f -- "$temporary"
+  [[ "$fingerprint" =~ ^SHA256:[A-Za-z0-9+/]{43}$ ]] || \
+    live_image_fail "SSH public-key file does not contain a valid Ed25519 public key"
+  printf '%s\n' "$fingerprint"
+}
+
+live_image_validate_sshd_include_order() {
+  local sshd_config="$1" first_directive
+  [[ -f "$sshd_config" && ! -L "$sshd_config" && -r "$sshd_config" ]] || \
+    live_image_fail "development rootfs is missing a readable sshd_config"
+  first_directive="$(awk '
+    /^[[:space:]]*($|#)/ { next }
+    { $1=$1; print; exit }
+  ' "$sshd_config")"
+  [[ "$first_directive" == 'Include /etc/ssh/sshd_config.d/*.conf' ]] || \
+    live_image_fail "sshd_config must load its drop-ins before other directives"
 }
 
 live_image_networkmanager_value() {
@@ -489,7 +548,8 @@ live_image_check_networkmanager_profile() {
 }
 
 live_image_configure_development_access() {
-  local root="" password_file="" networkmanager_profile_file=""
+  local root="" password_file="" ssh_authorized_key_file=""
+  local networkmanager_profile_file=""
   while [[ "$#" -gt 0 ]]; do
     case "$1" in
       --root)
@@ -502,6 +562,11 @@ live_image_configure_development_access() {
         password_file="$(live_image_absolute_leaf_path "$2")"
         shift 2
         ;;
+      --ssh-authorized-key-file)
+        [[ "$#" -ge 2 ]] || live_image_fail "--ssh-authorized-key-file requires a file"
+        ssh_authorized_key_file="$(live_image_absolute_leaf_path "$2")"
+        shift 2
+        ;;
       --networkmanager-profile-file)
         [[ "$#" -ge 2 ]] || live_image_fail "--networkmanager-profile-file requires a file"
         networkmanager_profile_file="$(live_image_absolute_leaf_path "$2")"
@@ -512,8 +577,12 @@ live_image_configure_development_access() {
   done
   [[ -n "$root" && -d "$root" && -n "$password_file" ]] || \
     live_image_fail "configure-development-access requires --root DIR and --password-file FILE"
-  local password
+  local password ssh_authorized_key="" ssh_authorized_key_fingerprint=none
   password="$(live_image_read_development_password "$password_file")"
+  if [[ -n "$ssh_authorized_key_file" ]]; then
+    ssh_authorized_key="$(live_image_read_development_ssh_public_key "$ssh_authorized_key_file")"
+    ssh_authorized_key_fingerprint="$(live_image_ssh_public_key_fingerprint "$ssh_authorized_key")"
+  fi
   local wifi_autoconnect=false
   if [[ -n "$networkmanager_profile_file" ]]; then
     live_image_validate_networkmanager_profile "$networkmanager_profile_file"
@@ -533,20 +602,30 @@ live_image_configure_development_access() {
     live_image_fail "source image already owns the livesys session-extra hook"
   [[ -f "$root/usr/lib/systemd/system/sshd.service" ]] || \
     live_image_fail "development rootfs is missing openssh-server"
+  live_image_validate_sshd_include_order "$root/etc/ssh/sshd_config"
   [[ -x "$root/usr/bin/systemctl" ]] || \
     live_image_fail "development rootfs is missing systemctl"
   [[ -d "$root/usr/lib/firewalld" ]] || \
     live_image_fail "development rootfs is missing firewalld defaults"
   [[ -f "$root/usr/lib/systemd/system/NetworkManager.service" ]] || \
     live_image_fail "development rootfs is missing NetworkManager"
+  if [[ -n "$ssh_authorized_key" ]]; then
+    [[ -x "$root/usr/sbin/restorecon" ]] || \
+      live_image_fail "development rootfs is missing restorecon for SSH key labeling"
+  fi
   [[ ! -e "$root$live_image_networkmanager_profile" \
     && ! -L "$root$live_image_networkmanager_profile" ]] || \
     live_image_fail "source image already owns the SOS development network profile"
+  [[ ! -e "$root$live_image_development_authorized_key" \
+    && ! -L "$root$live_image_development_authorized_key" ]] || \
+    live_image_fail "source image already owns the SOS development authorized key"
+  [[ ! -e "$root$live_image_ssh_config" && ! -L "$root$live_image_ssh_config" ]] || \
+    live_image_fail "source image already owns the SOS development SSH policy"
   [[ ! -e "$root/etc/systemd/system/multi-user.target.wants/sshd.service" \
     && ! -L "$root/etc/systemd/system/multi-user.target.wants/sshd.service" ]] || \
     live_image_fail "source image already enables sshd before liveuser provisioning"
 
-  local password_hash ssh_config livesys_hook access_metadata
+  local password_hash ssh_config livesys_hook access_metadata authorized_key=""
   password_hash="$(printf '%s\n' "$password" | openssl passwd -6 -stdin)"
   unset password
   [[ "$password_hash" =~ ^\$6\$[^:[:space:]]+$ ]] || \
@@ -554,15 +633,38 @@ live_image_configure_development_access() {
   ssh_config="$(mktemp -t sos-development-sshd.XXXXXX)"
   livesys_hook="$(mktemp -t sos-development-livesys.XXXXXX)"
   access_metadata="$(mktemp -t sos-development-access.XXXXXX)"
-  printf '%s\n' \
-    'PasswordAuthentication yes' \
-    'PermitRootLogin no' \
-    'AllowUsers liveuser' >"$ssh_config"
+  if [[ -n "$ssh_authorized_key" ]]; then
+    printf '%s\n' \
+      'PubkeyAuthentication yes' \
+      'AuthorizedKeysFile .ssh/authorized_keys' \
+      'AuthenticationMethods publickey' \
+      'PasswordAuthentication no' \
+      'KbdInteractiveAuthentication no' \
+      'StrictModes yes' \
+      'PermitRootLogin no' \
+      'AllowUsers liveuser' >"$ssh_config"
+    authorized_key="$(mktemp -t sos-development-authorized-key.XXXXXX)"
+    printf '%s %s\n' \
+      'no-agent-forwarding,no-port-forwarding,no-X11-forwarding' \
+      "$ssh_authorized_key" >"$authorized_key"
+  else
+    printf '%s\n' \
+      'PasswordAuthentication yes' \
+      'PermitRootLogin no' \
+      'AllowUsers liveuser' >"$ssh_config"
+  fi
   {
     printf '%s\n' \
       '#!/usr/bin/sh' \
       '# SOS development-live customization, sourced by Fedora livesys-main.'
     printf "usermod --password '%s' liveuser || exit 1\n" "$password_hash"
+    if [[ -n "$ssh_authorized_key" ]]; then
+      printf '%s\n' \
+        'test -d /home/liveuser || exit 1' \
+        'install -d -o liveuser -g liveuser -m 0700 /home/liveuser/.ssh || exit 1' \
+        'install -o liveuser -g liveuser -m 0600 /usr/share/sos/development-authorized-key /home/liveuser/.ssh/authorized_keys || exit 1' \
+        '/usr/sbin/restorecon -RF /home/liveuser/.ssh || exit 1'
+    fi
     printf '%s\n' \
       'passwd --lock root >/dev/null || exit 1' \
       "cat > /etc/gdm/custom.conf <<'SOS_DEVELOPMENT_GDM' || exit 1" \
@@ -572,11 +674,21 @@ live_image_configure_development_access() {
       'systemctl enable --now sshd.service >/dev/null || exit 1'
   } >"$livesys_hook"
   unset password_hash
+  local ssh_authorized_key_embedded=false ssh_password_authentication=true
+  local ssh_authorized_key_options=none
+  if [[ -n "$ssh_authorized_key" ]]; then
+    ssh_authorized_key_embedded=true
+    ssh_password_authentication=false
+    ssh_authorized_key_options=no-agent-forwarding,no-port-forwarding,no-X11-forwarding
+  fi
   printf '%s\n' \
     'image_kind=development-live' \
     'ssh_enabled=true' \
     'ssh_user=liveuser' \
-    'password_authentication=true' \
+    "ssh_authorized_key_embedded=$ssh_authorized_key_embedded" \
+    "ssh_authorized_key_fingerprint=$ssh_authorized_key_fingerprint" \
+    "ssh_authorized_key_options=$ssh_authorized_key_options" \
+    "password_authentication=$ssh_password_authentication" \
     'root_login=false' \
     'root_account_locked=true' \
     'host_keys=generated_at_boot' \
@@ -591,7 +703,12 @@ live_image_configure_development_access() {
   sudo install -d -o root -g root -m 0755 \
     "$root/etc/ssh/sshd_config.d" \
     "$root/var/lib/livesys" \
+    "$root/usr/share/sos" \
     "$root/usr/share/doc/sos"
+  if [[ -n "$authorized_key" ]]; then
+    sudo install -o root -g root -m 0644 \
+      "$authorized_key" "$root$live_image_development_authorized_key"
+  fi
   if [[ "$wifi_autoconnect" == true ]]; then
     sudo install -d -o root -g root -m 0700 \
       "$root/etc/NetworkManager/system-connections"
@@ -608,8 +725,10 @@ live_image_configure_development_access() {
     --default-config "$root/usr/lib/firewalld" \
     --service=ssh >/dev/null
   rm -f -- "$ssh_config" "$livesys_hook" "$access_metadata"
-  printf 'linux_live_image_development_access=PASS root=%s ssh_user=liveuser autologin=false wifi_autoconnect=%s\n' \
-    "$root" "$wifi_autoconnect"
+  [[ -z "$authorized_key" ]] || rm -f -- "$authorized_key"
+  printf 'linux_live_image_development_access=PASS root=%s ssh_user=liveuser autologin=false wifi_autoconnect=%s ssh_authorized_key_embedded=%s ssh_authorized_key_fingerprint=%s\n' \
+    "$root" "$wifi_autoconnect" "$ssh_authorized_key_embedded" \
+    "$ssh_authorized_key_fingerprint"
 }
 
 live_image_symlink_basename() {
@@ -646,6 +765,7 @@ live_image_check_rootfs() {
     /usr/share/doc/sos/install-metadata.env \
     /usr/share/doc/sos/install-manifest.tsv \
     "$live_image_development_access" \
+    /etc/ssh/sshd_config \
     "$live_image_ssh_config" \
     "$live_image_livesys_hook" \
     "$live_image_display_defaults" \
@@ -655,6 +775,13 @@ live_image_check_rootfs() {
     [[ -f "$(live_image_target "$path")" ]] || \
       live_image_fail "baked live rootfs is missing $path"
   done
+  live_image_validate_sshd_include_order "$(live_image_target /etc/ssh/sshd_config)"
+  local first_ssh_dropin
+  first_ssh_dropin="$(find "$(live_image_target /etc/ssh/sshd_config.d)" \
+    -mindepth 1 -maxdepth 1 \( -type f -o -type l \) -name '*.conf' \
+    -printf '%f\n' | LC_ALL=C sort | sed -n '1p')"
+  [[ "$first_ssh_dropin" == "$(basename "$live_image_ssh_config")" ]] || \
+    live_image_fail "development SSH policy must be the first sshd drop-in"
   [[ -e "$(live_image_target /usr/lib/systemd/system/gdm.service)" \
     || -e "$(live_image_target /usr/sbin/gdm)" \
     || -e "$(live_image_target /usr/bin/gdm)" ]] || \
@@ -688,6 +815,26 @@ live_image_check_rootfs() {
     live_image_fail "development image must permit measured runtime mutation"
   [[ "$(live_image_metadata_value "$identity" ssh_enabled)" == true ]] || \
     live_image_fail "development image identity must declare SSH access"
+  local ssh_authorized_key_embedded ssh_authorized_key_fingerprint
+  local ssh_password_authentication
+  ssh_authorized_key_embedded="$(live_image_metadata_value \
+    "$identity" ssh_authorized_key_embedded)"
+  ssh_authorized_key_fingerprint="$(live_image_metadata_value \
+    "$identity" ssh_authorized_key_fingerprint)"
+  ssh_password_authentication="$(live_image_metadata_value \
+    "$identity" ssh_password_authentication)"
+  [[ "$ssh_authorized_key_embedded" == true \
+    || "$ssh_authorized_key_embedded" == false ]] || \
+    live_image_fail "development image identity must classify its SSH authorized key"
+  if [[ "$ssh_authorized_key_embedded" == true ]]; then
+    [[ "$ssh_authorized_key_fingerprint" =~ ^SHA256:[A-Za-z0-9+/]{43}$ \
+      && "$ssh_password_authentication" == false ]] || \
+      live_image_fail "key-authenticated development SSH identity is inconsistent"
+  else
+    [[ "$ssh_authorized_key_fingerprint" == none \
+      && "$ssh_password_authentication" == true ]] || \
+      live_image_fail "password-authenticated development SSH identity is inconsistent"
+  fi
   local wifi_autoconnect
   wifi_autoconnect="$(live_image_metadata_value "$identity" wifi_autoconnect)"
   [[ "$wifi_autoconnect" == true || "$wifi_autoconnect" == false ]] || \
@@ -727,10 +874,37 @@ live_image_check_rootfs() {
       "existing liveuser is missing offline agent config" \
       "existing liveuser does not pin the stock shell source"
   fi
-  live_image_require_exact_line "$(live_image_target "$live_image_ssh_config")" \
-    'PasswordAuthentication yes' \
-    'development SSH configuration is missing' \
-    'development SSH configuration does not enable password authentication'
+  if [[ "$ssh_authorized_key_embedded" == true ]]; then
+    live_image_require_exact_line "$(live_image_target "$live_image_ssh_config")" \
+      'PubkeyAuthentication yes' \
+      'development SSH configuration is missing' \
+      'development SSH configuration does not enable public-key authentication'
+    live_image_require_exact_line "$(live_image_target "$live_image_ssh_config")" \
+      'AuthorizedKeysFile .ssh/authorized_keys' \
+      'development SSH configuration is missing' \
+      'development SSH configuration does not use the provisioned authorized-key path'
+    live_image_require_exact_line "$(live_image_target "$live_image_ssh_config")" \
+      'AuthenticationMethods publickey' \
+      'development SSH configuration is missing' \
+      'development SSH configuration does not require public-key authentication'
+    live_image_require_exact_line "$(live_image_target "$live_image_ssh_config")" \
+      'PasswordAuthentication no' \
+      'development SSH configuration is missing' \
+      'development SSH configuration does not disable password authentication'
+    live_image_require_exact_line "$(live_image_target "$live_image_ssh_config")" \
+      'KbdInteractiveAuthentication no' \
+      'development SSH configuration is missing' \
+      'development SSH configuration does not disable keyboard-interactive authentication'
+    live_image_require_exact_line "$(live_image_target "$live_image_ssh_config")" \
+      'StrictModes yes' \
+      'development SSH configuration is missing' \
+      'development SSH configuration does not enforce authorized-key ownership and modes'
+  else
+    live_image_require_exact_line "$(live_image_target "$live_image_ssh_config")" \
+      'PasswordAuthentication yes' \
+      'development SSH configuration is missing' \
+      'development SSH configuration does not enable password authentication'
+  fi
   live_image_require_exact_line "$(live_image_target "$live_image_ssh_config")" \
     'PermitRootLogin no' \
     'development SSH configuration is missing' \
@@ -743,6 +917,18 @@ live_image_check_rootfs() {
     'host_keys=generated_at_boot' \
     'development access metadata is missing' \
     'development access metadata does not require per-boot SSH host keys'
+  live_image_require_exact_line "$(live_image_target "$live_image_development_access")" \
+    "ssh_authorized_key_embedded=$ssh_authorized_key_embedded" \
+    'development access metadata is missing' \
+    'development access metadata does not match authorized-key identity'
+  live_image_require_exact_line "$(live_image_target "$live_image_development_access")" \
+    "ssh_authorized_key_fingerprint=$ssh_authorized_key_fingerprint" \
+    'development access metadata is missing' \
+    'development access metadata does not match the authorized-key fingerprint'
+  live_image_require_exact_line "$(live_image_target "$live_image_development_access")" \
+    "password_authentication=$ssh_password_authentication" \
+    'development access metadata is missing' \
+    'development access metadata does not match SSH password policy'
   live_image_require_exact_line "$(live_image_target "$live_image_development_access")" \
     'liveuser_provisioning=livesys-session-extra' \
     'development access metadata is missing' \
@@ -759,6 +945,57 @@ live_image_check_rootfs() {
     "network_credentials_embedded=$wifi_autoconnect" \
     'development access metadata is missing' \
     'development access metadata does not match network credential identity'
+  local installed_authorized_key ssh_authorized_key_options
+  installed_authorized_key="$(live_image_target "$live_image_development_authorized_key")"
+  ssh_authorized_key_options=no-agent-forwarding,no-port-forwarding,no-X11-forwarding
+  if [[ "$ssh_authorized_key_embedded" == true ]]; then
+    live_image_require_exact_line "$(live_image_target "$live_image_development_access")" \
+      "ssh_authorized_key_options=$ssh_authorized_key_options" \
+      'development access metadata is missing' \
+      'development access metadata does not restrict the authorized key'
+    [[ -f "$installed_authorized_key" && ! -L "$installed_authorized_key" ]] || \
+      live_image_fail "development image is missing its declared SSH authorized key"
+    [[ -x "$(live_image_target /usr/sbin/restorecon)" ]] || \
+      live_image_fail "key-authenticated development image is missing restorecon"
+    [[ "$(sudo stat -c '%U:%G:%a' "$installed_authorized_key")" \
+      == root:root:644 ]] || \
+      live_image_fail "development authorized key must be root-owned mode 0644"
+    local authorized_key_line canonical_authorized_key actual_key_fingerprint
+    authorized_key_line="$(sed -n '1p' "$installed_authorized_key")"
+    [[ "$(wc -l <"$installed_authorized_key")" -eq 1 \
+      && "$authorized_key_line" == "$ssh_authorized_key_options"\ ssh-ed25519\ * ]] || \
+      live_image_fail "development authorized key is missing its required restrictions"
+    canonical_authorized_key="${authorized_key_line#"$ssh_authorized_key_options "}"
+    actual_key_fingerprint="$(live_image_ssh_public_key_fingerprint "$canonical_authorized_key")"
+    [[ "$actual_key_fingerprint" == "$ssh_authorized_key_fingerprint" ]] || \
+      live_image_fail "development authorized-key fingerprint does not match image identity"
+    live_image_require_exact_line "$(live_image_target "$live_image_livesys_hook")" \
+      'test -d /home/liveuser || exit 1' \
+      'development livesys hook is missing' \
+      'development livesys hook does not require the provisioned liveuser home'
+    live_image_require_exact_line "$(live_image_target "$live_image_livesys_hook")" \
+      'install -d -o liveuser -g liveuser -m 0700 /home/liveuser/.ssh || exit 1' \
+      'development livesys hook is missing' \
+      'development livesys hook does not create the liveuser SSH directory'
+    live_image_require_exact_line "$(live_image_target "$live_image_livesys_hook")" \
+      'install -o liveuser -g liveuser -m 0600 /usr/share/sos/development-authorized-key /home/liveuser/.ssh/authorized_keys || exit 1' \
+      'development livesys hook is missing' \
+      'development livesys hook does not provision the authorized key'
+    live_image_require_exact_line "$(live_image_target "$live_image_livesys_hook")" \
+      '/usr/sbin/restorecon -RF /home/liveuser/.ssh || exit 1' \
+      'development livesys hook is missing' \
+      'development livesys hook does not label the authorized key'
+  else
+    live_image_require_exact_line "$(live_image_target "$live_image_development_access")" \
+      'ssh_authorized_key_options=none' \
+      'development access metadata is missing' \
+      'development access metadata declares unexpected authorized-key restrictions'
+    [[ ! -e "$installed_authorized_key" && ! -L "$installed_authorized_key" ]] || \
+      live_image_fail "development image embeds an undeclared SSH authorized key"
+    ! sudo grep -F "$live_image_development_authorized_key" \
+      "$(live_image_target "$live_image_livesys_hook")" >/dev/null || \
+      live_image_fail "password-authenticated image provisions an undeclared SSH authorized key"
+  fi
   local installed_network_profile
   installed_network_profile="$(live_image_target "$live_image_networkmanager_profile")"
   if [[ "$wifi_autoconnect" == true ]]; then
@@ -1110,7 +1347,7 @@ live_image_write_identity_file() {
 
 live_image_rootless_bake() {
   local source_iso="" source_sha256="" output_dir="" liveuser_password_file=""
-  local networkmanager_profile_file=""
+  local ssh_authorized_key_file="" networkmanager_profile_file=""
   while [[ "$#" -gt 0 ]]; do
     case "$1" in
       --source-iso)
@@ -1133,6 +1370,11 @@ live_image_rootless_bake() {
         liveuser_password_file="$(live_image_absolute_leaf_path "$2")"
         shift 2
         ;;
+      --ssh-authorized-key-file)
+        [[ "$#" -ge 2 ]] || live_image_fail "--ssh-authorized-key-file requires a file"
+        ssh_authorized_key_file="$(live_image_absolute_leaf_path "$2")"
+        shift 2
+        ;;
       --networkmanager-profile-file)
         [[ "$#" -ge 2 ]] || live_image_fail "--networkmanager-profile-file requires a file"
         networkmanager_profile_file="$(live_image_absolute_leaf_path "$2")"
@@ -1146,6 +1388,11 @@ live_image_rootless_bake() {
     live_image_fail "bake requires --source-iso ISO, --source-sha256 SHA256, --output-dir DIR, and --liveuser-password-file FILE"
   live_image_validate_sha256 "source ISO SHA-256" "$source_sha256"
   live_image_read_development_password "$liveuser_password_file" >/dev/null
+  if [[ -n "$ssh_authorized_key_file" ]]; then
+    local ssh_authorized_key
+    ssh_authorized_key="$(live_image_read_development_ssh_public_key "$ssh_authorized_key_file")"
+    live_image_ssh_public_key_fingerprint "$ssh_authorized_key" >/dev/null
+  fi
   if [[ -n "$networkmanager_profile_file" ]]; then
     live_image_validate_networkmanager_profile "$networkmanager_profile_file"
   fi
@@ -1175,6 +1422,9 @@ live_image_rootless_bake() {
     --env SOS_LIVE_IMAGE_BUILD_MODE=rootless-podman
     --env "SOS_LIVE_IMAGE_BUILD_IMAGE_ID=$build_image_id"
   )
+  if [[ -n "$ssh_authorized_key_file" ]]; then
+    container_args+=(--volume "$ssh_authorized_key_file:$ssh_authorized_key_file:ro")
+  fi
   if [[ -n "$networkmanager_profile_file" ]]; then
     container_args+=(--volume "$networkmanager_profile_file:$networkmanager_profile_file:ro")
   fi
@@ -1186,6 +1436,9 @@ live_image_rootless_bake() {
     --output-dir "$output_dir"
     --liveuser-password-file "$liveuser_password_file"
   )
+  if [[ -n "$ssh_authorized_key_file" ]]; then
+    container_args+=(--ssh-authorized-key-file "$ssh_authorized_key_file")
+  fi
   if [[ -n "$networkmanager_profile_file" ]]; then
     container_args+=(--networkmanager-profile-file "$networkmanager_profile_file")
   fi
@@ -1194,7 +1447,7 @@ live_image_rootless_bake() {
 
 live_image_bake() {
   local source_iso="" source_sha256="" output_dir="" liveuser_password_file=""
-  local networkmanager_profile_file=""
+  local ssh_authorized_key_file="" networkmanager_profile_file=""
   local build_mode="${SOS_LIVE_IMAGE_BUILD_MODE:-native-sudo}"
   local build_image_id="${SOS_LIVE_IMAGE_BUILD_IMAGE_ID:-none}"
   while [[ "$#" -gt 0 ]]; do
@@ -1219,6 +1472,11 @@ live_image_bake() {
         liveuser_password_file="$(live_image_absolute_leaf_path "$2")"
         shift 2
         ;;
+      --ssh-authorized-key-file)
+        [[ "$#" -ge 2 ]] || live_image_fail "--ssh-authorized-key-file requires a file"
+        ssh_authorized_key_file="$(live_image_absolute_leaf_path "$2")"
+        shift 2
+        ;;
       --networkmanager-profile-file)
         [[ "$#" -ge 2 ]] || live_image_fail "--networkmanager-profile-file requires a file"
         networkmanager_profile_file="$(live_image_absolute_leaf_path "$2")"
@@ -1231,6 +1489,12 @@ live_image_bake() {
     && -n "$liveuser_password_file" ]] || \
     live_image_fail "bake requires --source-iso ISO, --source-sha256 SHA256, --output-dir DIR, and --liveuser-password-file FILE"
   live_image_read_development_password "$liveuser_password_file" >/dev/null
+  local ssh_authorized_key_fingerprint=none
+  if [[ -n "$ssh_authorized_key_file" ]]; then
+    local ssh_authorized_key
+    ssh_authorized_key="$(live_image_read_development_ssh_public_key "$ssh_authorized_key_file")"
+    ssh_authorized_key_fingerprint="$(live_image_ssh_public_key_fingerprint "$ssh_authorized_key")"
+  fi
   local wifi_autoconnect=false
   if [[ -n "$networkmanager_profile_file" ]]; then
     live_image_validate_networkmanager_profile "$networkmanager_profile_file"
@@ -1292,6 +1556,11 @@ live_image_bake() {
       --networkmanager-profile-file "$networkmanager_profile_file"
     )
   fi
+  if [[ -n "$ssh_authorized_key_file" ]]; then
+    development_access_args+=(
+      --ssh-authorized-key-file "$ssh_authorized_key_file"
+    )
+  fi
   live_image_configure_development_access "${development_access_args[@]}"
 
   local base_name base_bytes base_sha baked_at
@@ -1313,6 +1582,7 @@ live_image_bake() {
     --base-iso-sha256 "$base_sha" \
     --payload-relpath "$payload_relpath" \
     --container-format "$container_format" \
+    --ssh-authorized-key-fingerprint "$ssh_authorized_key_fingerprint" \
     --wifi-autoconnect "$wifi_autoconnect" \
     --baked-at-utc "$baked_at"
   live_image_validate_rootfs_policy "$live_image_rootfs"
@@ -1339,6 +1609,7 @@ live_image_bake() {
     --payload-bytes "$payload_bytes" \
     --payload-sha256 "$payload_sha" \
     --container-format "$container_format" \
+    --ssh-authorized-key-fingerprint "$ssh_authorized_key_fingerprint" \
     --wifi-autoconnect "$wifi_autoconnect" \
     --baked-at-utc "$baked_at"
 
@@ -1372,14 +1643,16 @@ live_image_bake() {
     --payload-bytes "$payload_bytes" \
     --payload-sha256 "$payload_sha" \
     --container-format "$container_format" \
+    --ssh-authorized-key-fingerprint "$ssh_authorized_key_fingerprint" \
     --wifi-autoconnect "$wifi_autoconnect" \
     --baked-at-utc "$baked_at" \
     --output-iso-filename "$(basename -- "$output_iso")" \
     --output-iso-bytes "$output_bytes" \
     --output-iso-sha256 "$output_sha"
   sudo rm -r -- "$work"
-  printf 'linux_live_image_baked=PASS iso=%s bytes=%s sha256=%s boot_kind=development-live promotion_eligible=false not_installed_product=true wifi_autoconnect=%s\n' \
-    "$output_iso" "$output_bytes" "$output_sha" "$wifi_autoconnect"
+  printf 'linux_live_image_baked=PASS iso=%s bytes=%s sha256=%s boot_kind=development-live promotion_eligible=false not_installed_product=true wifi_autoconnect=%s ssh_authorized_key_fingerprint=%s\n' \
+    "$output_iso" "$output_bytes" "$output_sha" "$wifi_autoconnect" \
+    "$ssh_authorized_key_fingerprint"
 }
 
 [[ "$#" -ge 1 ]] || {

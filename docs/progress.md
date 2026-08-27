@@ -11807,3 +11807,71 @@ multi-module revision through context → validation report → submission. True
 scrolling navigation, minimize/maximize/fullscreen policy, independent
 application revisions/lifecycle, per-output shell surfaces, and the physical
 portrait/tablet responsive gate remain open.
+
+## 2026-08-27: Add key-authenticated SSH to development-live
+
+**Goal:** Let the private Fedora development ISO trust one explicit developer
+Ed25519 public key so the Framework deployment loop can use SSH without a
+remote password. Keep the local recovery password, per-boot SSH host keys, and
+the non-promotable development-live boundary.
+
+**Changed:** `tools/linux-live-image bake` and
+`configure-development-access` now accept an optional
+`--ssh-authorized-key-file`. They reject symlinks, multiple lines, malformed
+keys, and every key type except Ed25519. The bake strips the input comment,
+records the OpenSSH SHA-256 fingerprint in all image identity records, and
+stages a root-owned restricted key. Fedora's post-user-creation `livesys` hook
+copies that key to `liveuser` with mode 0600, restores its SELinux label, and
+still starts SSH only as its final action. Key-authenticated images require
+public-key authentication and disable password and keyboard-interactive SSH;
+the password hash remains available to GDM and the local console. Agent, port,
+and X11 forwarding are disabled on the authorized-key entry. Omitting the new
+option preserves the previous remote password path.
+
+The rootless Fedora build container now includes OpenSSH key tools. Rootfs
+validation binds the staged key to the identity fingerprint, checks its owner,
+mode, restrictions, boot provisioning, and SSH policy, and rejects undeclared
+keys. The SOS policy uses the first SSH drop-in, and validation rejects a base
+configuration that could assign authentication settings before loading it. The
+current development machine's
+`/home/carlid/.ssh/id_ed25519.pub` validated as a 256-bit Ed25519 key with
+fingerprint `SHA256:53ddO6+sXQRlT4FrWSspHZtRsH424/cDB2yj2nAWcq4`.
+
+**Host evidence:** `bash tests/linux-live-image-test.sh` passed with
+`linux_live_image_host_tests=PASS` in 1.95 seconds and 30,240 KiB maximum RSS.
+It covers key-only and password fallback identities, invalid type and encoding,
+symlink and multi-key rejection, forwarding restrictions, fingerprint
+tampering, SSH drop-in precedence, boot-hook order, and rootfs validation.
+`./tools/linux-live-image rootless-test` rebuilt the pinned Fedora 44
+environment and passed owner,
+hardlink, ACL, capability, portable-xattr, and SELinux-regeneration checks in
+88.68 seconds with 258,992 KiB maximum RSS. The resulting local build image is
+`localhost/sos-linux-live-build:fedora-44`, 1,629,356,944 bytes, image ID
+`sha256:f38110bd652e853e71dd7e8de3056e48c7aa9f455a996fec963e63322b1ddadc`,
+from source parent `72846b325d88861de6487ede6db89b16fa3f5f57` plus the listed working-tree
+changes. An in-container check found `/usr/bin/ssh-keygen`. A disposable Fedora
+44 `openssh-server` inspection confirmed that the first active server directive
+is `Include /etc/ssh/sshd_config.d/*.conf` and that Fedora's supplied drop-ins
+start at `40-redhat-crypto-policies.conf`, so the SOS `00-` policy takes
+precedence. A host `sshd -T` parse resolved `AuthenticationMethods publickey`,
+`PasswordAuthentication no`, `KbdInteractiveAuthentication no`,
+`AuthorizedKeysFile .ssh/authorized_keys`, `StrictModes yes`, root login off,
+and only `liveuser` allowed. Both shell syntax checks and `git diff --check`
+passed. ShellCheck was unavailable. No model provider ran, so model and
+model-weighted cost were zero.
+
+**Failures and rejected approaches:** The tests rejected RSA, a structurally
+invalid Ed25519 key, a symlink input, a two-key file, and a valid replacement
+key whose fingerprint did not match image identity. Automatic discovery of a
+developer key under a home directory was rejected because it would make the
+bake machine-dependent and hide which access authority entered the artifact.
+A reusable baked SSH host private key remains forbidden; it would give every
+copy the same host identity.
+
+**Decision / next gate:** Keep the public key optional and explicit, and use
+the current machine's Ed25519 public key for the next private development ISO.
+No ISO or physical acceptance claim was produced in this change. After the
+source has a clean revision, rebuild with `--ssh-authorized-key-file
+/home/carlid/.ssh/id_ed25519.pub`, boot it on the Framework through the normal
+disk-protected workflow, verify public-key login and remote password rejection,
+and confirm that local password recovery still works.

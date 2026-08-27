@@ -36,6 +36,7 @@ RUN dnf -q -y install --setopt=install_weak_deps=False \
         make \
         mesa-libgbm-devel \
         nodejs24-npm \
+        openssh \
         openssl \
         openssl-devel \
         patch \
