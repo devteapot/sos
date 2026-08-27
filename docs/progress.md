@@ -15869,3 +15869,34 @@ fixture passes in 7.95 seconds with 5,004 KiB peak RSS. Reject this physical
 campaign at authoring. Commit and seal one replacement Compat OTA, reinstall
 it once, and repeat every ordered physical stage before accepting authored
 activation or v4-to-v4 rollback.
+
+## 2026-08-28: Seal the phone-native authoring-selector candidate
+
+**Goal / build:** Package the exact Stock Mobile preservation-selector fix for
+one new physical campaign. Clean source
+`70236932142d2851e49b44c08233f307b8617395` built Compat 1 successfully in
+235.75 seconds with 2,978,440 KiB peak RSS. Its immutable product identity is
+`sos.compat1.70236932142d.26b3686ac23e`.
+
+**Offline evidence:** The complete Compat inspector passed in 19.98 seconds
+with 47,956 KiB peak RSS and again from the evidence seal in 19.72 seconds with
+47,688 KiB peak RSS. It verified the whole-package signature, AVB chain,
+VINTF, PIT ceilings, Android v4 and Stock Mobile contracts, agent runner,
+authority, host-owned system controls, framework bridge, and packaged source
+identities. The packaged 41,832,637-byte `SosShell.apk` has SHA-256
+`d35c74c6d6fe031407ae02d92300cbb376e50d929df9be43eae6deffc8a94295`.
+The exact 1,067,691,022-byte OTA at
+`.cache/evidence/android-v4-7023693/compat1/lineage-23.0-20260827-UNOFFICIAL-sos_compat_a33x-7023693.zip`
+has SHA-256
+`d24e9629f848c58e362ec05843d197775e0846b4c086f62ad5b462f572b646ac`.
+Its independent complete ZIP test passed in 4.52 seconds with 2,956 KiB peak
+RSS. The finalized seven-file manifest is 643 bytes with SHA-256
+`3685cbedd776a8eb3c3f6110c9f8f70ba08b2b6c01c1ab6a38cb9d6fe03e4887`;
+independent verification passes.
+
+**Decision / next gate:** This digest is the only authorized replacement.
+Reverify it at the live device boundary, enter automatic sideload Recovery,
+install it once, and start a fresh ordered campaign. Require successful
+phone-native authoring, a distinct committed Stock Mobile v4 revision, and
+real-control rollback to the original v4 revision before removing the v3 read
+compatibility path.
