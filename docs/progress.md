@@ -15426,3 +15426,61 @@ campaign root bound to this artifact and revision, and require authority PID
 replacement plus a valid post-restart audit snapshot while HOME remains exact.
 Only after that gate may the campaign advance to Stock authoring and exact
 v4-to-v4 rollback.
+
+## 2026-08-27: Reject the b89 authority restart and instrument its true startup boundary
+
+**Goal / physical evidence:** Install the exact restartable-authority Compat
+candidate and judge the complete ordered v4 campaign on the Samsung SM-A336B.
+Automatic Recovery entry took 29.54 seconds, the only sideload took 81.53
+seconds with `Total xfer: 1.00x`, and exact-product readiness took 109.16
+seconds. The installed identity was
+`sos.compat1.b89f779d4067.a7a7e01f504a`; initial authority PID 939 and HOME PID
+1529 were live under Enforcing SELinux. Stock Mobile remained unobscured, and
+the 175,650-byte screenshot has SHA-256
+`bf802ad84f0573004037ae225a688b0c64a351524c06254221cb0b102fa3ec93`.
+
+Dashboard again presented three independent Instances. Appearance advanced
+from generation 3 to 4 without revision changes. Both deliberate Agenda
+failures were contained and explicitly recovered, the two acceptance pings and
+separately keyed state survived, namespaced IME focus/blur and all expected
+semantics passed, and HOME-only recovery changed PID 1529 to 3713 while
+authority PID 939 remained exact. These stages are retained under
+`.cache/evidence/android-v4-b89f779-physical/compat1/composition/`, but the
+campaign is rejected at `authority-restart`: the bounded command exited 1 after
+20.21 seconds because no replacement daemon became audit-ready. HOME PID 3713
+survived while init repeatedly observed authority status 1. The finalized
+4,547,951-byte lifecycle log has SHA-256
+`8aa738f06a79d689915cc9bb41d112919fce0a366ac3560fd1876f1a92d985eb`.
+
+**Corrected diagnosis:** The preceding TIME-WAIT inference was wrong. A tiny
+ARM64 probe run as the same unprivileged Android shell identity closed a live
+loopback connection and immediately rebound the exact address successfully,
+both with only `SO_REUSEADDR` and with `SO_REUSEPORT`. Its 80-byte result at
+`.cache/evidence/android-v4-b89f779-physical/compat1/composition/android-kernel-rebind-probe.txt`
+has SHA-256
+`78e3b83f08d1f5df64754bfe1c8aef73eff4ee426c9a0e6871254be6bfabecd5`.
+The reusable-listener change remains harmless and tested, but neither the
+2,210-byte socket snapshot nor TIME-WAIT explains this restart failure. The
+current init service discards stderr, so the 4.5 MiB system log cannot expose
+the process's actual startup error. A cold reboot recovered authority PID 944,
+HOME PID 1464, and the durable graph in 127.53 seconds; the 95-byte result has
+SHA-256
+`70c497db53a1b3ef777ba46c92147813a70f02d87f30b78960ce5ac77fcb6f9e`.
+
+**Changed / verification:** Fatal authority startup failures now go directly
+to Android `logd` with tag `sos-authority`. Every fallible startup boundary has
+context, including v4 authority open, reference-composition installation,
+loopback listener bind, and Core Unix-socket replacement. Package inspection
+requires the `liblog.so` dependency, fatal marker, and reference-install
+boundary so a stale binary cannot satisfy this diagnostic gate. All 27
+authority unit, binary, wire, and documentation tests pass in 0.58 seconds with
+366,176 KiB peak RSS. A linked ARM64/API 31 release build passes in 13.97
+seconds with 857,044 KiB peak RSS and carries the expected `liblog.so`
+dependency.
+
+**Decision / next gate:** Build and inspect one exact instrumented Compat OTA,
+then install it once and begin a fresh artifact-bound campaign. At the
+authority-only checkpoint, require either an audit-ready replacement or the
+new exact `android_system_authority_failed` log. Fix only that observed startup
+cause before authoring and v4-to-v4 rollback; do not add `SO_REUSEPORT` or make
+another socket-based inference.

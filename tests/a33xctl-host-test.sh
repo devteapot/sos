@@ -21,6 +21,7 @@ mobile_source="$repo_root/experiences/mobile.luau"
 mobile_package="$repo_root/experiences/mobile.package.json"
 mobile_theme="$repo_root/experiences/modules/mobile-theme.luau"
 android_authority_rc="$repo_root/aosp/device/sos/a33x/sos-authority.rc"
+android_authority_main="$repo_root/crates/android-system-authority/src/main.rs"
 grep -F 'android:name="dev.sos.permission.REPORT_ADB_CONSENT"' "$adb_manifest" >/dev/null
 grep -F 'android:protectionLevel="signature"' "$adb_manifest" >/dev/null
 grep -F 'android:name=".SosAdbConsentReceiver"' "$adb_manifest" >/dev/null
@@ -72,6 +73,9 @@ grep -F 'touch = {' "$mobile_theme" >/dev/null
 grep -F -- '--bootstrap-source /system_ext/etc/sos/mobile.luau' \
   "$android_authority_rc" >/dev/null
 grep -F -- '--bootstrap-asset mobile.theme luau' "$android_authority_rc" >/dev/null
+grep -F '__android_log_write(ANDROID_LOG_ERROR' "$android_authority_main" >/dev/null
+grep -F 'install reference composition failed: {error}' \
+  "$android_authority_main" >/dev/null
 grep -F 'SosCompatChromeService.this, "apps")' \
   "$repo_root/apps/experience/android/gradle/app/src/main/java/dev/gpui/mobile/SosCompatChromeService.java" \
   >/dev/null

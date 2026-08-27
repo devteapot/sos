@@ -86,6 +86,12 @@ check_android_composition_authority() {
     fail "SOS authority recovery trigger does not restart only the authority"
   grep -F '    setprop sys.sos.authority_recovery_probe 0' "$init_rc" >/dev/null || \
     fail "SOS authority recovery trigger is not one-shot"
+  readelf -d "$authority" | grep -F 'Shared library: [liblog.so]' >/dev/null || \
+    fail "SOS authority cannot publish fatal startup failures to Android logd"
+  grep -aF 'android_system_authority_failed error=' "$authority" >/dev/null || \
+    fail "SOS authority omitted its fatal startup marker"
+  grep -aF 'install reference composition failed: ' "$authority" >/dev/null || \
+    fail "SOS authority omitted its reference-install startup boundary"
   grep -aF 'sos.stock.mobile' "$authority" >/dev/null || \
     fail "SOS authority omitted the reserved Stock Mobile identity"
   for marker in \

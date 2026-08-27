@@ -9,6 +9,9 @@ use std::{
     thread,
 };
 
+#[cfg(target_os = "android")]
+use std::ffi::CString;
+
 use android_authority_protocol::{
     read_provider_request, read_revision_request, write_provider_response, write_revision_response,
     RevisionResponse, CORE_PROVIDER_SOCKET, CORE_REVISION_SOCKET, REVISION_ADDRESS,
@@ -17,10 +20,37 @@ use android_system_authority::AndroidSystemAuthority;
 
 const PROVIDER_ADDRESS: &str = "127.0.0.1:47777";
 
+#[cfg(target_os = "android")]
+const ANDROID_LOG_ERROR: libc::c_int = 6;
+
+#[cfg(target_os = "android")]
+#[link(name = "log")]
+unsafe extern "C" {
+    fn __android_log_write(
+        priority: libc::c_int,
+        tag: *const libc::c_char,
+        text: *const libc::c_char,
+    ) -> libc::c_int;
+}
+
 fn main() {
     if let Err(error) = run() {
-        eprintln!("android_system_authority_failed error={error}");
+        report_fatal(&fatal_message(error.as_ref()));
         std::process::exit(1);
+    }
+}
+
+fn fatal_message(error: &dyn std::error::Error) -> String {
+    format!("android_system_authority_failed error={error}")
+}
+
+fn report_fatal(message: &str) {
+    eprintln!("{message}");
+    #[cfg(target_os = "android")]
+    if let (Ok(tag), Ok(text)) = (CString::new("sos-authority"), CString::new(message)) {
+        unsafe {
+            __android_log_write(ANDROID_LOG_ERROR, tag.as_ptr(), text.as_ptr());
+        }
     }
 }
 
@@ -60,17 +90,38 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let root = root.ok_or("--root requires a path")?;
     let state_file = state_file.ok_or("--state-file requires a path")?;
     let bootstrap_source = bootstrap_source.ok_or("--bootstrap-source requires a path")?;
-    let bootstrap_source = fs::read(bootstrap_source)?;
+    let bootstrap_source = fs::read(&bootstrap_source).map_err(|error| {
+        format!(
+            "read bootstrap source {} failed: {error}",
+            bootstrap_source.display()
+        )
+    })?;
     let mut authority = if let Some(package_path) = bootstrap_package {
         let package: experience_package::PackageMetadata =
-            serde_json::from_slice(&fs::read(package_path)?)?;
+            serde_json::from_slice(&fs::read(&package_path).map_err(|error| {
+                format!(
+                    "read bootstrap package {} failed: {error}",
+                    package_path.display()
+                )
+            })?)
+            .map_err(|error| {
+                format!(
+                    "decode bootstrap package {} failed: {error}",
+                    package_path.display()
+                )
+            })?;
         let assets = bootstrap_assets
             .into_iter()
             .map(|(id, kind, path)| {
                 Ok(revision_supervisor::RevisionAssetInput {
                     id,
                     kind,
-                    bytes: fs::read(path)?,
+                    bytes: fs::read(&path).map_err(|error| {
+                        io::Error::new(
+                            error.kind(),
+                            format!("read bootstrap asset {} failed: {error}", path.display()),
+                        )
+                    })?,
                 })
             })
             .collect::<Result<Vec<_>, std::io::Error>>()?;
@@ -87,32 +138,56 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 },
                 package,
             },
-        )?
+        )
+        .map_err(|error| format!("open v4 authority failed: {error}"))?
     } else {
-        AndroidSystemAuthority::open(root, state_file, &bootstrap_source)?
+        AndroidSystemAuthority::open(root, state_file, &bootstrap_source)
+            .map_err(|error| format!("open legacy authority failed: {error}"))?
     };
     if install_reference_composition {
-        authority.install_reference_composition()?;
+        authority
+            .install_reference_composition()
+            .map_err(|error| format!("install reference composition failed: {error}"))?;
     }
     if let Some(path) = appearance_writer_file {
-        let capability = fs::read_to_string(path)?;
-        authority.configure_appearance_writer(capability.trim())?;
+        let capability = fs::read_to_string(&path).map_err(|error| {
+            format!("read appearance writer {} failed: {error}", path.display())
+        })?;
+        authority
+            .configure_appearance_writer(capability.trim())
+            .map_err(|error| format!("configure appearance writer failed: {error}"))?;
     }
     let authority = Arc::new(Mutex::new(authority));
-    let provider = bind_reusable_tcp(PROVIDER_ADDRESS)?;
-    let revisions = bind_reusable_tcp(REVISION_ADDRESS)?;
+    let provider = bind_reusable_tcp(PROVIDER_ADDRESS)
+        .map_err(|error| format!("bind provider listener {PROVIDER_ADDRESS} failed: {error}"))?;
+    let revisions = bind_reusable_tcp(REVISION_ADDRESS)
+        .map_err(|error| format!("bind revision listener {REVISION_ADDRESS} failed: {error}"))?;
     match fs::remove_file(CORE_PROVIDER_SOCKET) {
         Ok(()) => {}
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => return Err(error.into()),
+        Err(error) => {
+            return Err(format!(
+                "remove core provider socket {CORE_PROVIDER_SOCKET} failed: {error}"
+            )
+            .into())
+        }
     }
-    let core_provider = UnixListener::bind(CORE_PROVIDER_SOCKET)?;
+    let core_provider = UnixListener::bind(CORE_PROVIDER_SOCKET).map_err(|error| {
+        format!("bind core provider listener {CORE_PROVIDER_SOCKET} failed: {error}")
+    })?;
     match fs::remove_file(CORE_REVISION_SOCKET) {
         Ok(()) => {}
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => return Err(error.into()),
+        Err(error) => {
+            return Err(format!(
+                "remove core revision socket {CORE_REVISION_SOCKET} failed: {error}"
+            )
+            .into())
+        }
     }
-    let core_revisions = UnixListener::bind(CORE_REVISION_SOCKET)?;
+    let core_revisions = UnixListener::bind(CORE_REVISION_SOCKET).map_err(|error| {
+        format!("bind core revision listener {CORE_REVISION_SOCKET} failed: {error}")
+    })?;
     println!(
         "android_system_authority_listening provider={} revision={} core_provider={} core_revision={}",
         PROVIDER_ADDRESS, REVISION_ADDRESS, CORE_PROVIDER_SOCKET, CORE_REVISION_SOCKET
@@ -274,7 +349,20 @@ mod tests {
     use android_provider_acceptance::{run_probe, ProbeStatus};
     use experience_ir::{ProviderRequest, ProviderResponse};
 
-    use super::{bind_reusable_tcp, handle_provider, handle_revision, AndroidSystemAuthority};
+    use super::{
+        bind_reusable_tcp, fatal_message, handle_provider, handle_revision, AndroidSystemAuthority,
+    };
+
+    #[test]
+    fn fatal_message_preserves_startup_context() {
+        let error = std::io::Error::other(
+            "install reference composition failed: reference registry incomplete",
+        );
+        assert_eq!(
+            fatal_message(&error),
+            "android_system_authority_failed error=install reference composition failed: reference registry incomplete"
+        );
+    }
 
     #[test]
     fn tcp_listener_rebinds_immediately_after_a_live_connection() {
