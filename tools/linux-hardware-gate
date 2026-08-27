@@ -413,6 +413,7 @@ hardware_gate_verify_development_deployment() {
       /usr/local/libexec/sos/sos-linux-provider-probe|\
       /usr/local/libexec/sos/sos-login-session|\
       /usr/local/libexec/sos/sos-agent-login|\
+      /usr/local/libexec/sos-agent/dist/agent-runner.cjs|\
       /usr/local/lib/systemd/user/sos-session.target|\
       /usr/local/lib/systemd/user/sos-session-shutdown.target|\
       /usr/local/libexec/sos/linux-hardware-gate|\

@@ -108,9 +108,10 @@ printf '%s\n' \
   '    [[ "$command" == *"sudo rm -f -- '\''/usr/share/sos/experiences/daily-flow.luau'\'';"* ]]' \
   '    [[ "$command" == *"sudo rm -f -- '\''/usr/share/sos/experiences/timeflow.luau'\'';"* ]]' \
   '    [[ "$command" == *"sudo rm -f -- '\''/usr/share/sos/experiences/timeflow.package.json'\'';"* ]]' \
-  '    mkdir -p "$TEST_DEPLOY_REMOTE/usr/local/libexec/sos" "$TEST_DEPLOY_REMOTE/usr/local/lib/systemd/user" "$TEST_DEPLOY_REMOTE/usr/share/doc/sos" "$TEST_DEPLOY_REMOTE/usr/share/sos/experiences/modules" "$TEST_DEPLOY_REMOTE/etc/xdg"' \
+  '    mkdir -p "$TEST_DEPLOY_REMOTE/usr/local/libexec/sos" "$TEST_DEPLOY_REMOTE/usr/local/libexec/sos-agent/dist" "$TEST_DEPLOY_REMOTE/usr/local/lib/systemd/user" "$TEST_DEPLOY_REMOTE/usr/share/doc/sos" "$TEST_DEPLOY_REMOTE/usr/share/sos/experiences/modules" "$TEST_DEPLOY_REMOTE/etc/xdg"' \
   '    for source in "$stage"/sos-*; do cp -- "$source" "$TEST_DEPLOY_REMOTE/usr/local/libexec/sos/$(basename "$source")"; done' \
   '    [[ ! -f "$stage/linux-hardware-gate" ]] || cp -- "$stage/linux-hardware-gate" "$TEST_DEPLOY_REMOTE/usr/local/libexec/sos/"' \
+  '    [[ ! -f "$stage/agent-runner.cjs" ]] || cp -- "$stage/agent-runner.cjs" "$TEST_DEPLOY_REMOTE/usr/local/libexec/sos-agent/dist/"' \
   '    [[ ! -f "$stage/sos-session.target" ]] || cp -- "$stage/sos-session.target" "$TEST_DEPLOY_REMOTE/usr/local/lib/systemd/user/"' \
   '    [[ ! -f "$stage/sos-session-shutdown.target" ]] || cp -- "$stage/sos-session-shutdown.target" "$TEST_DEPLOY_REMOTE/usr/local/lib/systemd/user/"' \
   '    [[ ! -f "$stage/default.luau" ]] || cp -- "$stage/default.luau" "$TEST_DEPLOY_REMOTE/usr/share/sos/experiences/"' \
@@ -159,6 +160,7 @@ SOS_DEVELOPMENT_DEPLOY_ARTIFACTS_DIR="$test_root/deploy-artifacts" \
     --component provider-probe \
     --component login-session \
     --component agent-login \
+    --component agent-runtime \
     --component session-target \
     --component session-shutdown-target \
     --component hardware-gate \
@@ -190,13 +192,16 @@ cmp -s \
   "$test_deploy_remote/etc/xdg/monitors.xml"
 [[ -f "$test_deploy_remote/usr/local/lib/systemd/user/sos-session.target" ]]
 [[ -f "$test_deploy_remote/usr/local/lib/systemd/user/sos-session-shutdown.target" ]]
+cmp -s \
+  "$test_repo_root/services/sos-agent/dist/agent-runner.cjs" \
+  "$test_deploy_remote/usr/local/libexec/sos-agent/dist/agent-runner.cjs"
 test_deployment_metadata="$test_deploy_remote/usr/share/doc/sos/development-deployment.env"
 test_deployment_manifest="$test_deploy_remote/usr/share/doc/sos/development-deployment-manifest.tsv"
 grep -Fx 'image_kind=development-live' "$test_deployment_metadata" >/dev/null
 grep -Fx 'promotion_eligible=false' "$test_deployment_metadata" >/dev/null
 grep -Fx 'retired_baked_artifacts=/usr/share/sos/experiences/daily-flow.luau:/usr/share/sos/experiences/timeflow.luau:/usr/share/sos/experiences/timeflow.package.json' \
   "$test_deployment_metadata" >/dev/null
-[[ "$(wc -l <"$test_deployment_manifest")" -eq 15 ]]
+[[ "$(wc -l <"$test_deployment_manifest")" -eq 16 ]]
 while IFS=$'\t' read -r test_path test_bytes test_sha; do
   [[ "$(stat -c %s "$test_deploy_remote$test_path")" == "$test_bytes" ]]
   [[ "$(sha256sum "$test_deploy_remote$test_path" | cut -d ' ' -f 1)" == "$test_sha" ]]

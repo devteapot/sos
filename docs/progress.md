@@ -14078,3 +14078,28 @@ rejected because the next full deployment would silently recreate the same
 source/runtime skew. Run the agent and live-image host suites, commit the
 change, deploy the exact clean revision, and repeat the PiKVM login. The full
 Dashboard composition and physical acceptance gates remain open.
+
+## 2026-08-27: Admit the agent bundle to the development gate allowlist
+
+**Goal / physical preflight failure:** Deploy the resident-agent correction
+and prepare a new exact Framework campaign. Clean revision
+`418cb925952164b84d55b397d1d6a1288edc42b5` deployed as
+`20260827T121856Z-418cb9259521-3380427` in 68,434,256,933 ns. Its manifest and
+the target both recorded the corrected runner at 1,890,551 bytes with SHA-256
+`c98c35fefede6b9c5d53f5b01021e63ed7ccd790470db5c3f02a186305ae4b58`.
+Before SOS login, `prepare` rejected that new manifest entry as an unsafe
+development deployment path. No new campaign directory, graphical session, or
+acceptance result was created. A separate root-owned handoff inhibitor remains
+active while the exact-revision campaign is rotated.
+
+**Root cause / changed / decision:** The deploy tool and manifest now owned the
+agent bundle, but the hardware gate's closed allowlist still named only the
+previous deployment components. Add exactly
+`/usr/local/libexec/sos-agent/dist/agent-runner.cjs`; do not widen the rule to
+the complete agent tree. The live-deployment fixture now builds, stages,
+installs, hashes, and compares this component and requires the 16-entry
+selected-component manifest. The hardware-gate fixture requires the exact
+allowlist entry. Bash parsing, both complete host suites, and the Git
+whitespace check passed in an ordered 4.359-second campaign. Commit and
+redeploy all default components from one clean revision, then prepare and
+execute the PiKVM campaign. Physical composition remains the next gate.

@@ -12,6 +12,8 @@ test_cleanup() {
 }
 trap test_cleanup EXIT
 
+grep -F '/usr/local/libexec/sos-agent/dist/agent-runner.cjs|\' "$test_gate" >/dev/null
+
 test_home="$test_root/home"
 test_state="$test_root/state"
 mkdir -p "$test_home" "$test_state"
