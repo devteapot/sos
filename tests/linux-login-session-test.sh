@@ -86,6 +86,7 @@ grep -Fx -- "$test_bin/sos-linux-session" "$test_root/inhibit-arguments.txt" >/d
 [[ "$(stat -c %a "$test_state/sos/provider-grants.json")" == 600 ]]
 grep -F '"application_launch"' "$test_state/sos/provider-grants.json" >/dev/null
 grep -F '"network_control"' "$test_state/sos/provider-grants.json" >/dev/null
+[[ ! -e "$test_state/sos/revisions/mock-current" ]]
 if grep -Fx -- '--credentials' "$test_root/agent-arguments.txt" >/dev/null; then
   printf 'error: offline selectable session passed a credential path to the faux agent\n' >&2
   exit 1

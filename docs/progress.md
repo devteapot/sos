@@ -13017,3 +13017,51 @@ bootstrap, bootstrap-graph, and experience-status through the active v4 path.
 Debian 13 KVM guest, run the direct gate once with a fresh evidence directory,
 copy the finalized artifact set back to the host, verify its manifest, and
 record the verdict. VM evidence still cannot close Framework hardware claims.
+
+## 2026-08-27: Remove the singleton pointer from fresh Linux v4 boot
+
+**Goal:** Resolve the first rewritten direct-DRM failure and make stable
+Experience registry state the only active ownership path in a fresh Linux v4
+session.
+
+**Changed:** The development launcher now installs and registers packaged Stock
+and Timeflow independently, creates no global `current` pointer, bootstraps both
+graphs into per-Experience authority state, provisions a private grant-review
+capability, and reviews each exact trusted graph before starting the graph
+supervisor. The Linux session CLI exposes graph-authority bootstrap and trusted
+graph grant review for this path.
+
+The installed selectable session now distinguishes migration from fresh boot.
+An existing v3 singleton is imported without moving its pointer. A fresh store
+creates only v4 Experience and graph pointers. In graph mode the system session
+does not bootstrap global authority state; it initializes and reviews exact
+Stock and Timeflow graphs. The direct verifier compares registry and authority
+state for `sos.stock.shell` and asserts that a fresh run never creates the
+legacy pointer.
+
+**Evidence:** The first VM attempt is retained at
+`.cache/evidence/linux-v4-69d58d7/attempt1`. Its nine finalized files total
+25,511 bytes. `SHA256SUMS` is 990 bytes with SHA-256
+`a304ffb23e2d9e6025245b8dec03905094e10ccd4646a85e4365fb4fa279709a`.
+`result.json` records FAIL after 52.738361068 monotonic seconds. The compositor
+completed its recovery DRM page flip, then the graph supervisor rejected Stock
+because the authority had no grant decision for `sos.stock.shell`.
+
+After the fix, `cargo test -j1 -p sos-linux-session --all-targets` passed 19
+tests, including a fresh graph-authority bootstrap that leaves
+`RevisionStore::current()` absent and a migration case that leaves an existing
+v3 pointer unchanged. Shell syntax, `git diff --check`, and
+`tests/linux-login-session-test.sh` passed. The selectable-session fixture now
+also asserts that fresh v4 startup creates no mock singleton pointer.
+
+**Failures and decision:** The failed attempt showed that package and graph
+installation alone is insufficient: graph boot correctly fails closed until
+the authority has both exact per-Experience state and a reviewed stable grant.
+Keeping the old global bootstrap merely to make this path start would preserve
+the ownership model v4 is replacing, so the launcher now uses the graph
+authority APIs directly.
+
+**Remaining risks and next gate:** Commit and synchronize the fix, then rerun
+only the direct-DRM phase with a new evidence directory. This is the second
+end-to-end attempt for the same objective; another failure triggers the runtime
+debug circuit breaker before any further complete rerun.

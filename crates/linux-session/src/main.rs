@@ -5,8 +5,9 @@ use std::{
 
 use anyhow::{bail, Context as _, Result};
 use sos_linux_session::{
-    bootstrap_authority, review_revision_grants, run_host_proxy, run_system_session,
-    shutdown_authority, stage_revision, BootstrapOutcome, ServiceIdentity, SessionIdentityMode,
+    bootstrap_authority, bootstrap_graph_authority, review_revision_grants,
+    review_trusted_graph_grants, run_host_proxy, run_system_session, shutdown_authority,
+    stage_revision, BootstrapOutcome, GraphBootstrapOutcome, ServiceIdentity, SessionIdentityMode,
     SystemSessionOptions,
 };
 
@@ -51,6 +52,25 @@ fn run() -> Result<()> {
                 ),
             }
         }
+        "bootstrap-graph" => {
+            options.ensure_only(&["--root", "--experience", "--service-socket", "--timeout-ms"])?;
+            let root = PathBuf::from(options.required("--root")?);
+            let experience_id =
+                experience_package::ExperienceId::parse(options.required("--experience")?)?;
+            let service_socket = PathBuf::from(options.required("--service-socket")?);
+            match bootstrap_graph_authority(&root, &experience_id, &service_socket, timeout)? {
+                GraphBootstrapOutcome::Initialized {
+                    transaction_id,
+                    graph_id,
+                    experience_count,
+                } => println!(
+                    "graph_authority_initialized transaction_id={transaction_id} graph_id={graph_id} experience_count={experience_count}"
+                ),
+                GraphBootstrapOutcome::AlreadyBound { graph_id } => {
+                    println!("graph_authority_already_bound graph_id={graph_id}")
+                }
+            }
+        }
         "stage" => {
             options.ensure_only(&["--root", "--revision", "--service-socket", "--timeout-ms"])?;
             let root = PathBuf::from(options.required("--root")?);
@@ -75,24 +95,38 @@ fn run() -> Result<()> {
                 "--timeout-ms",
             ])?;
             let capability_path = PathBuf::from(options.required("--capability-file")?);
-            let metadata = fs::metadata(&capability_path)?;
-            if !metadata.is_file()
-                || metadata.permissions().mode() & 0o077 != 0
-                || metadata.len() == 0
-                || metadata.len() > 257
-            {
-                bail!("grant capability file must be a private 1 to 256 byte regular file");
-            }
-            let capability = fs::read_to_string(capability_path)?;
-            let capability = capability.trim_end_matches(['\r', '\n']);
+            let capability = read_private_capability(&capability_path)?;
             let decision = review_revision_grants(
                 PathBuf::from(options.required("--root")?).as_path(),
                 options.required("--revision")?,
                 PathBuf::from(options.required("--service-socket")?).as_path(),
-                capability,
+                &capability,
                 timeout,
             )?;
             println!("{}", serde_json::to_string(&decision)?);
+        }
+        "review-graph-grants" => {
+            options.ensure_only(&[
+                "--root",
+                "--experience",
+                "--revision",
+                "--service-socket",
+                "--capability-file",
+                "--timeout-ms",
+            ])?;
+            let capability_path = PathBuf::from(options.required("--capability-file")?);
+            let capability = read_private_capability(&capability_path)?;
+            let experience_id =
+                experience_package::ExperienceId::parse(options.required("--experience")?)?;
+            let reviewed = review_trusted_graph_grants(
+                PathBuf::from(options.required("--root")?).as_path(),
+                &experience_id,
+                options.required("--revision")?,
+                PathBuf::from(options.required("--service-socket")?).as_path(),
+                &capability,
+                timeout,
+            )?;
+            println!("reviewed={reviewed}");
         }
         "run" | "run-user" => {
             let shared_login_user = command == "run-user";
@@ -191,6 +225,23 @@ fn absolute_environment_path(name: &str) -> Result<PathBuf> {
     Ok(path)
 }
 
+fn read_private_capability(path: &PathBuf) -> Result<String> {
+    let metadata = fs::metadata(path)?;
+    if !metadata.is_file()
+        || metadata.permissions().mode() & 0o077 != 0
+        || metadata.len() == 0
+        || metadata.len() > 257
+    {
+        bail!("grant capability file must be a private 1 to 256 byte regular file");
+    }
+    let capability = fs::read_to_string(path)?;
+    let capability = capability.trim_end_matches(['\r', '\n']).to_owned();
+    if capability.is_empty() || capability.len() > 256 {
+        bail!("grant capability file must contain 1 to 256 bytes");
+    }
+    Ok(capability)
+}
+
 struct Options(BTreeMap<String, String>);
 
 impl Options {
@@ -230,5 +281,5 @@ impl Options {
 }
 
 fn usage() -> &'static str {
-    "usage:\n  sos-linux-session bootstrap --root DIR --service-socket PATH [--timeout-ms N]\n  sos-linux-session stage --root DIR --revision ID --service-socket PATH [--timeout-ms N]\n  sos-linux-session shutdown --service-socket PATH [--timeout-ms N]\n  sos-linux-session review-grants --root DIR --revision ID --service-socket PATH --capability-file FILE [--timeout-ms N]\n  sos-linux-session run --root DIR --runtime-dir DIR --authority-file FILE --shell-token-file FILE --trusted-stock-revision ID --trusted-timeflow-revision ID --agent-socket PATH --compositor FILE --provider FILE --supervisor FILE --host FILE --compositor-user USER --provider-user USER --supervisor-user USER --host-user USER [--timeout-ms N]\n  sos-linux-session run-user --root DIR --runtime-dir DIR --authority-file FILE --shell-token-file FILE --trusted-stock-revision ID --trusted-timeflow-revision ID --agent-socket PATH --compositor FILE --provider FILE --supervisor FILE --host FILE [--timeout-ms N]"
+    "usage:\n  sos-linux-session bootstrap --root DIR --service-socket PATH [--timeout-ms N]\n  sos-linux-session bootstrap-graph --root DIR --experience ID --service-socket PATH [--timeout-ms N]\n  sos-linux-session stage --root DIR --revision ID --service-socket PATH [--timeout-ms N]\n  sos-linux-session shutdown --service-socket PATH [--timeout-ms N]\n  sos-linux-session review-grants --root DIR --revision ID --service-socket PATH --capability-file FILE [--timeout-ms N]\n  sos-linux-session review-graph-grants --root DIR --experience ID --revision ID --service-socket PATH --capability-file FILE [--timeout-ms N]\n  sos-linux-session run --root DIR --runtime-dir DIR --authority-file FILE --shell-token-file FILE --trusted-stock-revision ID --trusted-timeflow-revision ID --agent-socket PATH --compositor FILE --provider FILE --supervisor FILE --host FILE --compositor-user USER --provider-user USER --supervisor-user USER --host-user USER [--timeout-ms N]\n  sos-linux-session run-user --root DIR --runtime-dir DIR --authority-file FILE --shell-token-file FILE --trusted-stock-revision ID --trusted-timeflow-revision ID --agent-socket PATH --compositor FILE --provider FILE --supervisor FILE --host FILE [--timeout-ms N]"
 }

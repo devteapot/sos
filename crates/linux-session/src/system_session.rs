@@ -28,8 +28,8 @@ use revision_supervisor::{GraphStore, RevisionStore, STOCK_SHELL_EXPERIENCE_ID};
 use signal_hook::consts::{SIGHUP, SIGINT, SIGTERM};
 
 use crate::{
-    bootstrap_authority, bootstrap_graph_authority, review_revision_grants,
-    review_trusted_graph_grants, shutdown_authority, stage_revision,
+    bootstrap_authority, bootstrap_graph_authority, review_trusted_graph_grants,
+    shutdown_authority, stage_revision,
 };
 
 const POLL_INTERVAL: Duration = Duration::from_millis(20);
@@ -483,43 +483,50 @@ fn start_and_monitor(
         stopping,
         processes.provider.as_mut().unwrap(),
     )?;
-    let bootstrap = bootstrap_authority(
-        &options.revision_root,
-        &provider_socket,
-        options.startup_timeout,
-    )?;
-    println!("linux_system_session_authority outcome={bootstrap:?}");
     if graph_mode {
-        let graph_bootstrap = bootstrap_graph_authority(
-            &options.revision_root,
-            &stock_experience_id,
-            &provider_socket,
-            options.startup_timeout,
-        )?;
-        println!("linux_system_session_graph_authority outcome={graph_bootstrap:?}");
         let capability = grant_capability
             .as_deref()
             .context("v4 graph mode requires a grant-review capability")?;
-        let reviewed = review_trusted_graph_grants(
+        let timeflow_experience_id = ExperienceId::parse("sos.timeflow")
+            .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+        for (experience_id, trusted_revision) in [
+            (
+                &stock_experience_id,
+                options.trusted_stock_revision.as_str(),
+            ),
+            (
+                &timeflow_experience_id,
+                options.trusted_timeflow_revision.as_str(),
+            ),
+        ] {
+            let graph_bootstrap = bootstrap_graph_authority(
+                &options.revision_root,
+                experience_id,
+                &provider_socket,
+                options.startup_timeout,
+            )?;
+            println!(
+                "linux_system_session_graph_authority experience_id={experience_id} outcome={graph_bootstrap:?}"
+            );
+            let reviewed = review_trusted_graph_grants(
+                &options.revision_root,
+                experience_id,
+                trusted_revision,
+                &provider_socket,
+                capability,
+                options.startup_timeout,
+            )?;
+            println!(
+                "linux_system_session_grants experience_id={experience_id} reviewed={reviewed}"
+            );
+        }
+    } else {
+        let bootstrap = bootstrap_authority(
             &options.revision_root,
-            &stock_experience_id,
-            &options.trusted_stock_revision,
             &provider_socket,
-            capability,
             options.startup_timeout,
         )?;
-        println!("linux_system_session_grants reviewed={reviewed}");
-        let timeflow = review_revision_grants(
-            &options.revision_root,
-            &options.trusted_timeflow_revision,
-            &provider_socket,
-            capability,
-            options.startup_timeout,
-        )?;
-        println!(
-            "linux_system_session_grants experience_id={} generation={}",
-            timeflow.experience_id, timeflow.generation
-        );
+        println!("linux_system_session_authority outcome={bootstrap:?}");
     }
 
     processes.host_launcher = Some(HostLauncher::start(

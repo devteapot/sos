@@ -138,6 +138,18 @@ report_direct_gate_failure() {
 }
 trap 'report_direct_gate_failure "$LINENO"' ERR
 
+authority_experience_revision() {
+  local vm_experience_id="$1"
+  python3 - "$vm_revision_root/authority.json" "$vm_experience_id" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as authority_file:
+    authority = json.load(authority_file)
+print(authority["experiences"][sys.argv[2]]["revision_id"])
+PY
+}
+
 cargo build --locked \
   -p sos-compositor --features direct-backend --bin sos-compositor
 cargo build --locked \
@@ -323,8 +335,9 @@ fi
 [[ "$vm_abort_status" -ne 0 ]]
 wait "$vm_input_pid"
 vm_input_pid=""
-[[ "$(target/debug/sos-revision-supervisor status --root "$vm_revision_root")" == \
-  "$(sed -n 's/.*"revision_id": "\([0-9a-f]*\)".*/\1/p' "$vm_revision_root/authority.json" | head -1)" ]]
+[[ "$(target/debug/sos-revision-supervisor experience-status \
+    --root "$vm_revision_root" --experience sos.stock.shell)" == \
+  "$(authority_experience_revision sos.stock.shell)" ]]
 [[ "$(grep -c 'detached focused input for revision quiesce keys=1 buttons=1 touches=2' "$vm_run_dir/compositor.log")" -ge 2 ]]
 [[ "$(grep -c 'suppressed key held across activation.*released=true' "$vm_run_dir/compositor.log")" -ge 2 ]]
 [[ "$(grep -c 'suppressed release for button held across activation' "$vm_run_dir/compositor.log")" -ge 2 ]]
@@ -365,13 +378,12 @@ grep -Eq 'registered compositor-managed XDG toplevel role=Compatibility x=[0-9]+
   "$vm_run_dir/compositor.log"
 
 vm_current_revision="$(
-  target/debug/sos-revision-supervisor status --root "$vm_revision_root"
+  target/debug/sos-revision-supervisor experience-status \
+    --root "$vm_revision_root" --experience sos.stock.shell
 )"
-vm_authority_revision="$(
-  sed -n 's/.*"revision_id": "\([0-9a-f]*\)".*/\1/p' \
-    "$vm_revision_root/authority.json" | head -1
-)"
+vm_authority_revision="$(authority_experience_revision sos.stock.shell)"
 [[ "$vm_current_revision" == "$vm_authority_revision" ]]
+[[ ! -e "$vm_revision_root/current" ]]
 [[ "$(grep -c 'evidence=drm_page_flip' "$vm_run_dir/session.log")" -eq 3 ]]
 if grep -qE 'evidence=(gpui_next_frame|nested_backend_submit)' "$vm_run_dir/session.log"; then
   printf 'error: host used weaker presentation evidence in direct mode\n' >&2

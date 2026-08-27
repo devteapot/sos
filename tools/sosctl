@@ -41,6 +41,7 @@ LINUX_SESSION="$SOS_ROOT/target/debug/sos-linux-session"
 LINUX_AGENT_AUTHORING="$SOS_ROOT/target/debug/sos-agent-authoring"
 LINUX_PROVIDER_SOCKET="$LINUX_REVISION_ROOT/run/provider-state.sock"
 LINUX_AUTHORITY_FILE="$LINUX_REVISION_ROOT/authority.json"
+LINUX_GRANT_CAPABILITY_FILE="$LINUX_REVISION_ROOT/grant-review.capability"
 LINUX_AGENT_ROOT="$CACHE_ROOT/linux-agent"
 LINUX_AGENT_SOCKET="$LINUX_AGENT_ROOT/agent.sock"
 LINUX_AGENT_AUTHORING_SOCKET="$LINUX_AGENT_ROOT/authoring.sock"
@@ -1136,10 +1137,12 @@ linux_run() {
   build_linux_session
   mkdir -p "$LINUX_REVISION_ROOT"
 
-  local current_revision
-  current_revision="$($LINUX_SUPERVISOR status --root "$LINUX_REVISION_ROOT")"
+  local current_revision current_graph timeflow_revision timeflow_graph
+  current_revision="$($LINUX_SUPERVISOR experience-status \
+    --root "$LINUX_REVISION_ROOT" \
+    --experience sos.stock.shell)"
   if [[ "$current_revision" == "none" ]]; then
-    info "installing the initial content-addressed Luau revision"
+    info "installing the initial packaged Stock Experience"
     current_revision="$($LINUX_SUPERVISOR install-package \
       --root "$LINUX_REVISION_ROOT" \
       --source "$SOS_ROOT/experiences/default.luau" \
@@ -1147,21 +1150,54 @@ linux_run() {
       --schema 1 \
       --package "$SOS_ROOT/experiences/default.package.json" \
       --asset "stock.theme:luau:$SOS_ROOT/experiences/modules/stock-theme.luau")"
-    "$LINUX_SUPERVISOR" bootstrap \
-      --root "$LINUX_REVISION_ROOT" \
-      --revision "$current_revision" >/dev/null
+  fi
+  current_graph="$($LINUX_SUPERVISOR graph-status \
+    --root "$LINUX_REVISION_ROOT" \
+    --experience sos.stock.shell)"
+  if [[ "$current_graph" == "none" ]]; then
     "$LINUX_SUPERVISOR" bootstrap-graph \
       --root "$LINUX_REVISION_ROOT" \
       --experience sos.stock.shell \
       --revision "$current_revision" >/dev/null
   fi
 
+  timeflow_revision="$($LINUX_SUPERVISOR experience-status \
+    --root "$LINUX_REVISION_ROOT" \
+    --experience sos.timeflow)"
+  if [[ "$timeflow_revision" == "none" ]]; then
+    info "installing the initial packaged Timeflow Experience"
+    timeflow_revision="$($LINUX_SUPERVISOR install-package \
+      --root "$LINUX_REVISION_ROOT" \
+      --source "$SOS_ROOT/experiences/timeflow.luau" \
+      --state "$SOS_ROOT/tests/fixtures/empty-state.json" \
+      --schema 1 \
+      --package "$SOS_ROOT/experiences/timeflow.package.json")"
+  fi
+  timeflow_graph="$($LINUX_SUPERVISOR graph-status \
+    --root "$LINUX_REVISION_ROOT" \
+    --experience sos.timeflow)"
+  if [[ "$timeflow_graph" == "none" ]]; then
+    "$LINUX_SUPERVISOR" bootstrap-graph \
+      --root "$LINUX_REVISION_ROOT" \
+      --experience sos.timeflow \
+      --revision "$timeflow_revision" >/dev/null
+  fi
+
+  if [[ ! -f "$LINUX_GRANT_CAPABILITY_FILE" ]]; then
+    local capability_temporary="$LINUX_GRANT_CAPABILITY_FILE.$$"
+    (umask 077; od -An -N32 -tx1 /dev/urandom | tr -d ' \n' >"$capability_temporary")
+    mv -n -- "$capability_temporary" "$LINUX_GRANT_CAPABILITY_FILE"
+    rm -f -- "$capability_temporary"
+  fi
+  chmod 0600 "$LINUX_GRANT_CAPABILITY_FILE"
+
   [[ ! -e "$LINUX_PROVIDER_SOCKET" ]] || \
     fail "provider socket already exists: $LINUX_PROVIDER_SOCKET"
   info "starting provider/state authority"
   "$LINUX_PROVIDER_SERVICE" \
     --socket "$LINUX_PROVIDER_SOCKET" \
-    --state-file "$LINUX_AUTHORITY_FILE" &
+    --state-file "$LINUX_AUTHORITY_FILE" \
+    --grant-capability-file "$LINUX_GRANT_CAPABILITY_FILE" &
   local provider_pid=$!
   local supervisor_pid=""
   LINUX_CLEANUP_SUPERVISOR_PID=""
@@ -1170,9 +1206,22 @@ linux_run() {
   trap 'exit 130' INT
   trap 'exit 143' TERM
   wait_for_linux_socket "$LINUX_PROVIDER_SOCKET" "$provider_pid" "provider/state authority"
-  "$LINUX_SESSION" bootstrap \
-    --root "$LINUX_REVISION_ROOT" \
-    --service-socket "$LINUX_PROVIDER_SOCKET"
+  for experience_binding in \
+    "sos.stock.shell:$current_revision" \
+    "sos.timeflow:$timeflow_revision"; do
+    local experience_id="${experience_binding%%:*}"
+    local trusted_revision="${experience_binding#*:}"
+    "$LINUX_SESSION" bootstrap-graph \
+      --root "$LINUX_REVISION_ROOT" \
+      --experience "$experience_id" \
+      --service-socket "$LINUX_PROVIDER_SOCKET"
+    "$LINUX_SESSION" review-graph-grants \
+      --root "$LINUX_REVISION_ROOT" \
+      --experience "$experience_id" \
+      --revision "$trusted_revision" \
+      --service-socket "$LINUX_PROVIDER_SOCKET" \
+      --capability-file "$LINUX_GRANT_CAPABILITY_FILE"
+  done
 
   info "starting permanent Linux graph host at revision $current_revision"
   local arguments=(

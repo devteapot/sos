@@ -348,6 +348,9 @@ The implementation is split so the contracts do not depend on GPUI or Linux:
   limits, canonical JSON, and content digests;
 - revision manifest v4 hashes `package.json`, while the experience registry
   keeps stable per-experience current and previous pointers;
+- fresh Linux v4 boot creates only Experience registry and graph pointers and
+  bootstraps authority state per Experience. The singleton pointer exists only
+  when an imported v3 rollback artifact already owns it;
 - the graph resolver rejects missing exports, changed contract digests,
   undeclared grants, shell children, cycles, excessive depth, and excessive VM
   counts, then stores the exact canonical graph snapshot;
