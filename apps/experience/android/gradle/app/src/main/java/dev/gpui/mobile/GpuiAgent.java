@@ -60,7 +60,6 @@ public final class GpuiAgent {
     private static final String RUNNER = "/system_ext/etc/sos-agent/agent-runner.cjs";
     private static final String API_DOC = "/system_ext/etc/sos-agent/experience-api.md";
     private static final String EXAMPLE_PRIMARY = "/system_ext/etc/sos-agent/example-primary.luau";
-    private static final String EXAMPLE_SECONDARY = "/system_ext/etc/sos-agent/example-secondary.luau";
 
     private static final int MAX_PROCESS_BYTES = 2 * 1024 * 1024;
     private static final int MAX_SOURCE_BYTES = 256 * 1024;
@@ -558,8 +557,7 @@ public final class GpuiAgent {
     private static Process startPi() throws Exception {
         Process process = new ProcessBuilder(NODE, RUNNER, "stdio",
                 "--api-doc", API_DOC,
-                "--example", EXAMPLE_PRIMARY,
-                "--example-secondary", EXAMPLE_SECONDARY).start();
+                "--example", EXAMPLE_PRIMARY).start();
         Log.i(TAG, "android_agent_child_start executable=sos-node");
         return process;
     }

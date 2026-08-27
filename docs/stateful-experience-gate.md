@@ -80,8 +80,10 @@ accepted GPUI tree remains visible.
 
 `agent-apply` performs local compile/evaluate/IR validation, transfers only
 source, waits for the on-device accepted/rejected result, captures a screenshot,
-and reports the accepted source SHA-256. `stress` alternates Stock and Timeflow
-and waits for a GPUI post-render callback after every candidate.
+and reports the accepted source SHA-256. The legacy `stress` harness alternates
+two complete Stock revisions and waits for a GPUI post-render callback after
+every candidate. Active v4 graphs reject that source-swap harness; composition
+stress uses graph activation instead.
 
 ## Physical-device evidence — 2026-08-08
 

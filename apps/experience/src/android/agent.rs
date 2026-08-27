@@ -636,8 +636,6 @@ fn run_core_pi(
             "/system_ext/etc/sos-agent/experience-api.md",
             "--example",
             "/system_ext/etc/sos-agent/example-primary.luau",
-            "--example-secondary",
-            "/system_ext/etc/sos-agent/example-secondary.luau",
         ])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

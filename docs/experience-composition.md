@@ -2,8 +2,10 @@
 
 Date: 2026-08-26
 
-Status: physical acceptance in progress. The Debian direct-DRM v4 graph gate
-passes; Framework integrated-input and Android device acceptance remain open.
+Status: implementation closure and physical acceptance in progress. The Debian
+direct-DRM v4 graph gate and an exact Framework development-live composition
+diagnostic pass; installed Linux promotion and Android device acceptance remain
+open.
 Package format v4, Experience API v4, the registry and graph resolver, isolated graph runtime, authority-owned
 appearance, graph state and activation transactions, derivation and
 composition authoring, and the Linux and Android host paths are implemented.
@@ -506,20 +508,22 @@ authoring, VT pause/resume, `s2idle` freezer recovery, output hotplug, separated
 identities, process recovery, and reboot restoration. Those runs predate the
 v4-only boot rewrite and remain host evidence, not v4 composition acceptance.
 
-The final host and compositor binaries have since run on the Framework 12. A
-2026-08-27 development-live diagnostic proved the recovery view and two
-single-revision shells through physical DRM page flips, one permanent host
-launch, resident authoring, durable authority agreement, and clean return to
-GDM. It did not boot the reference graph: supervisor status recorded
-`active_graph: null` before and after the authoring transaction. Its pointer and
-touch observations also came from hot-added uinput devices, so the corrected
-auditor rejects the physical-input claim.
+The exact `4f93f50e9e55` host and compositor binaries have since completed that
+missing Framework 12 campaign. Stock presented locked Dashboard with independent
+Agenda and Media mounts. Namespaced child input, authority appearance generation
+2, update-failure and timeout containment, Dashboard renderer recovery, durable
+state, Stock v4 authoring, dismissal, physical DRM page flips, integrated
+keyboard, touchpad motion and button, touchscreen contact, and clean GDM logout
+all passed. The 87-file evidence manifest is independently verified and has
+SHA-256 `0be17dc236149c9755c93b755314f8950e52a2199be20eb1cd08f9dcbbd7e800`.
+Because the target was Fedora development-live, the verdict is deliberately
+`DIAGNOSTIC_PASS promotion_eligible=false`; it closes the Framework composition
+and integrated-input question but not an installed-product promotion gate.
 
-Physical live-composition acceptance therefore remains open. The Linux gate
-must boot the Dashboard graph on the Framework, observe both independently
-owned mounted children, dispatch a namespaced child event, apply appearance
-data, and retain the graph across a physical host restart without synthetic
-input standing in for integrated hardware. The Android gate must repeat the
-composition, input, IME, accessibility, appearance, grant, child-failure,
-restart, and rollback campaign on the SM-A336B. Panel latency, suspend, GPU
-recovery, thermals, and power evidence remain separate gates.
+The remaining physical composition gate is the Samsung SM-A336B campaign for
+Compat and Core: composition, input, IME, accessibility, appearance, grants,
+child failure, restart, rollback, and exact evidence manifests. The device is
+currently exposed only through Samsung Download Mode without an authorized ADB
+or recovery transport, so no physical mutation has been attempted. Installed
+Linux promotion, panel latency, suspend, GPU recovery, thermals, and power
+evidence remain separate product gates.

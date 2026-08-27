@@ -108,20 +108,21 @@ not GPUI, restarts the authority itself.
 
 `verify-sos` checks the x86-64 package ABI, exact HOME resolution, a live
 authority PID, enforcing SELinux with the expected app/daemon domains, an empty
-`adb reverse --list`, and the durable current pointer. It submits the tracked
-Timeflow probe, requires presentation to change that pointer without changing
-the permanent GPUI PID, kills the authority and requires init to recover it
-without changing GPUI or the revision, then kills only the GPUI HOME PID.
-Android must produce a different HOME PID while the recovered authority PID and
-activated revision remain unchanged.
+`adb reverse --list`, and the Stock v4 graph pointer. It presents the signed
+Dashboard reference graph through the registry lifecycle API, requires the
+composition authority and confirmed graph to change without replacing the
+permanent GPUI PID, kills the authority and requires init to recover it without
+changing GPUI or the active graph, then kills only the GPUI HOME PID. Android
+must produce a different HOME PID while the recovered authority PID and
+Dashboard graph remain unchanged.
 
-On the final clean 2026-08-15 run, `verify-sos` resolved
+On the final clean legacy-revision campaign on 2026-08-15, `verify-sos` resolved
 `dev.sos.experience/.SosHomeActivity`, reported ABI `x86_64`, enforcing
 `sos_shell_app` and `sos_authority` domains, and `adb_reverse=none`. The
-Timeflow revision changed the durable pointer without replacing GPUI; killing
+secondary revision changed the durable pointer without replacing GPUI; killing
 the authority changed PID 781 to 5302 without replacing HOME, then killing HOME
 changed PID 3446 to 5388 without replacing the recovered authority. A captured
-720x1280 frame was also visually inspected as the rendered Timeflow HOME. Exact
+720x1280 frame was also visually inspected as the rendered secondary HOME. Exact
 revision and artifact identities remain in [`progress.md`](progress.md).
 
 ## Boundary and remaining gates

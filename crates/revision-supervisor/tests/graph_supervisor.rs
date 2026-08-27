@@ -112,7 +112,7 @@ fn registry_shell_lifecycle_request_presents_an_independent_experience() {
     let registry = ExperienceRegistry::open(store.clone()).unwrap();
     let graphs = GraphStore::open(store.root()).unwrap();
     let shell_id = ExperienceId::parse("sos.stock.shell").unwrap();
-    let application_id = ExperienceId::parse("sos.timeflow").unwrap();
+    let application_id = ExperienceId::parse("sos.example.notes").unwrap();
 
     let mut shell_package = package();
     shell_package.experience_id = shell_id.clone();

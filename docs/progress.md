@@ -14302,3 +14302,52 @@ Compat and Core acceptance, including exact revision readiness, composition,
 properties/events, grants, appearance, restart/rollback, IME, accessibility,
 input containment, and final evidence manifests, remains open until an
 authorized Android or recovery transport exists.
+
+## 2026-08-27: Remove the retired secondary Experience from v4 product inputs
+
+**Goal:** Close the audit gap between the v4 registry/graph architecture and
+the artifacts actually shipped to Android. Stock must be the sole resident
+agent example, and the Cuttlefish product gate must exercise v4 graph
+presentation rather than the legacy singleton revision pointer.
+
+**Failure / root cause:** Linux had already retired the former secondary
+Experience from its catalog, but its source and package remained checked in and
+were still copied into every Compat and Core artifact as a second Pi prompt
+example. Both Android agent launchers passed that file to the runner. The AOSP
+`verify-sos` path also pushed it as a candidate and judged activation through
+`/data/misc/sos/revisions/current`, bypassing the registry and graph authority.
+The previously preserved `4f93f50` Android packages therefore remain valid
+offline evidence for that revision but are superseded for final physical
+acceptance.
+
+**Changed:** Deleted the retired source and package; removed the secondary
+prebuilt module, product package, stage input, inspector expectation, Java and
+Core launcher arguments, and runner option. The deterministic fake agent now
+generates a visibly distinct revision of Stock while preserving its v4 package
+and `stock.theme` sidecar. The legacy source-swap stress helper likewise uses
+Stock revisions only and remains rejected whenever a v4 graph is active.
+`aospctl verify-sos` now reads content-addressed graph pointers, presents the
+signed `sos.example.dashboard` graph through the lifecycle API, requires the
+composition authority and rendered-frame confirmation to agree, and preserves
+that graph across independent authority and HOME process recovery. Current
+documentation and authoring examples now point to Stock-v4 or the signed
+reference composition. Linux keeps only bounded removal tombstones for old
+installed registry records and baked files; they do not package or present the
+retired Experience.
+
+**Evidence:** `cargo test --locked -p sos-experience` passes all 17 tests;
+`cargo test --locked -p revision-supervisor --test graph_supervisor` passes all
+15 graph lifecycle, journal, tracked-update, authority, and state tests. The
+shared agent build passes all 19 TypeScript tests, including its one-example
+prompt contract. `tests/a33xctl-host-test.sh`,
+`tests/linux-login-session-test.sh`, and `tests/linux-live-image-test.sh` each
+report PASS. `bash -n tools/aospctl tools/a33xctl`, Rust formatting, and Git
+whitespace checks pass. No Android device command was issued while the Samsung
+remained in unauthorized Download Mode.
+
+**Decision / next gate:** Active product and authoring paths are v4-only; API
+v3 remains only as the bounded activation/rollback reader required for pinned
+recovery artifacts. Build and inspect fresh exact Compat 1 and Core 1 packages
+from this cleanup revision, then run their physical campaigns when an
+authorized transport is available. Remove the v3 reader only after those
+recovery artifacts have migrated and successfully rolled back.

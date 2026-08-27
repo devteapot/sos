@@ -43,19 +43,10 @@ mod window_space;
 pub use linux::run as run_linux_host;
 
 pub const DEFAULT_EXPERIENCE: &str = include_str!("../../../experiences/default.luau");
-pub const TIMEFLOW_EXPERIENCE: &str = include_str!("../../../experiences/timeflow.luau");
 pub const STOCK_THEME_MODULE: &str = include_str!("../../../experiences/modules/stock-theme.luau");
 
 const STOCK_AGENT_VARIANT_ORIGINAL: &str = "Make Stock Base yours";
 const STOCK_AGENT_VARIANT_ALTERNATE: &str = "Shape Stock Base around your day";
-
-pub fn deterministic_agent_candidate(current_source: &str) -> &'static str {
-    if current_source.trim() == TIMEFLOW_EXPERIENCE.trim() {
-        DEFAULT_EXPERIENCE
-    } else {
-        TIMEFLOW_EXPERIENCE
-    }
-}
 
 pub fn deterministic_stock_agent_candidate(current_source: &str) -> String {
     if current_source.contains(STOCK_AGENT_VARIANT_ALTERNATE) {
@@ -197,8 +188,8 @@ mod tests {
             experience_ir::SystemCapability::AppLaunch,
         ];
         stock_model.shell.experiences = vec![experience_ir::ShellExperience {
-            experience_id: "org.sos.timeflow".into(),
-            title: "Timeflow".into(),
+            experience_id: "sos.example.dashboard".into(),
+            title: "Dashboard".into(),
         }];
         assert_eq!(runtime.assets().len(), 1);
         let stock_scene = runtime
@@ -299,6 +290,25 @@ mod tests {
             .unwrap();
         let agent_scene = runtime.render(&stock_model, &agent_state).unwrap();
         assert!(contains_agent_composer(&agent_scene.root));
+        let agent_outcome = runtime
+            .update_with_effects(
+                &stock_model,
+                &agent_state,
+                &experience_ir::SceneEvent {
+                    action: "agent_submit".into(),
+                    target: Some("agent-prompt".into()),
+                    value: Some("Make this calmer".into()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(agent_outcome.effects.len(), 1);
+        assert_eq!(agent_outcome.effects[0].provider, "agent");
+        assert_eq!(agent_outcome.effects[0].action, "prompt");
+        assert_eq!(
+            agent_outcome.effects[0].payload["prompt"],
+            "Make this calmer"
+        );
         let agent_panel_state = runtime
             .update(
                 &stock_model,
@@ -313,23 +323,19 @@ mod tests {
         assert!(contains_id(&agent_panel_scene.root, "shell-rail-agent"));
         assert!(contains_id(&agent_panel_scene.root, "panel-agent-prompt"));
         assert!(experience_ir::validate_scene(&agent_panel_scene).is_ok());
-        for source in [super::DEFAULT_EXPERIENCE, super::TIMEFLOW_EXPERIENCE] {
+        for source in [super::DEFAULT_EXPERIENCE] {
             let runtime = super::compile_built_in(source).unwrap();
             let model = providers_fake::snapshot();
-            let state = if source == super::DEFAULT_EXPERIENCE {
-                runtime
-                    .update(
-                        &model,
-                        &runtime.initial_state(),
-                        &experience_ir::SceneEvent {
-                            action: "navigate_agent".into(),
-                            ..Default::default()
-                        },
-                    )
-                    .unwrap()
-            } else {
-                runtime.initial_state()
-            };
+            let state = runtime
+                .update(
+                    &model,
+                    &runtime.initial_state(),
+                    &experience_ir::SceneEvent {
+                        action: "navigate_agent".into(),
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
             let scene = runtime.render(&model, &state).unwrap();
             for action in [
                 "agent_configure_openai",
@@ -380,7 +386,7 @@ mod tests {
         assert_eq!(launch.effects[0].action, "present_experience");
         assert_eq!(
             launch.effects[0].payload["experience_id"],
-            "org.sos.timeflow"
+            "sos.example.dashboard"
         );
 
         let note = runtime
@@ -456,51 +462,6 @@ mod tests {
             "system-providers-unavailable"
         ));
         assert!(!contains_action(&unavailable_scene.root, "audio_volume_up"));
-
-        let timeflow = runtime_luau::LuauRuntime::compile(super::TIMEFLOW_EXPERIENCE).unwrap();
-        let timeflow_scene = timeflow
-            .render(&providers_fake::snapshot(), &timeflow.initial_state())
-            .unwrap();
-        assert!(experience_ir::validate_scene(&timeflow_scene).unwrap() > 15);
-        assert!(contains_action(&timeflow_scene.root, "toggle_music"));
-
-        let runtime = runtime_luau::LuauRuntime::compile(super::TIMEFLOW_EXPERIENCE).unwrap();
-        let model = providers_fake::snapshot();
-        let state = runtime.initial_state();
-        let scene = runtime.render(&model, &state).unwrap();
-        assert!(contains_agent_composer(&scene.root));
-        let outcome = runtime
-            .update_with_effects(
-                &model,
-                &state,
-                &experience_ir::SceneEvent {
-                    action: "agent_submit".into(),
-                    target: Some("agent-prompt".into()),
-                    value: Some("Make this calmer".into()),
-                    ..Default::default()
-                },
-            )
-            .unwrap();
-        assert_eq!(outcome.effects.len(), 1);
-        assert_eq!(outcome.effects[0].provider, "agent");
-        assert_eq!(outcome.effects[0].action, "prompt");
-        assert_eq!(outcome.effects[0].payload["prompt"], "Make this calmer");
-    }
-
-    #[test]
-    fn deterministic_agent_candidate_is_complete_and_visibly_alternates() {
-        let first = super::deterministic_agent_candidate(super::TIMEFLOW_EXPERIENCE);
-        assert_eq!(first.trim(), super::DEFAULT_EXPERIENCE.trim());
-        let second = super::deterministic_agent_candidate(first);
-        assert_eq!(second.trim(), super::TIMEFLOW_EXPERIENCE.trim());
-
-        for source in [first, second] {
-            let runtime = super::compile_built_in(source).unwrap();
-            let scene = runtime
-                .render(&providers_fake::snapshot(), &runtime.initial_state())
-                .unwrap();
-            assert!(experience_ir::validate_scene(&scene).unwrap() > 15);
-        }
     }
 
     #[test]

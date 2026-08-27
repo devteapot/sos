@@ -12,7 +12,6 @@ PRODUCT_PACKAGES += \
     sos-agent-runner \
     sos-agent-experience-api \
     sos-agent-example-primary \
-    sos-agent-example-secondary \
     sos-default-experience \
     sos-default-package \
     sos-stock-theme

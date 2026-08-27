@@ -65,7 +65,7 @@ use crate::android_interaction_contract::{text_tap_outcome, TextTapOutcome};
 use crate::assets::{self, SosAssets, ALBUM_ASSET};
 use crate::pointer_input;
 use crate::scene_surface;
-use crate::{DEFAULT_EXPERIENCE, TIMEFLOW_EXPERIENCE};
+use crate::{deterministic_stock_agent_candidate, DEFAULT_EXPERIENCE};
 use native_input::NativeTextInput;
 
 static FILES_DIR: OnceLock<PathBuf> = OnceLock::new();
@@ -2310,11 +2310,7 @@ impl ExperienceHost {
             return;
         }
 
-        let alternate_source = if self.source.trim() == TIMEFLOW_EXPERIENCE.trim() {
-            DEFAULT_EXPERIENCE.to_owned()
-        } else {
-            TIMEFLOW_EXPERIENCE.to_owned()
-        };
+        let alternate_source = deterministic_stock_agent_candidate(&self.source);
         let rss_start_kb = current_rss_kb().unwrap_or_default();
         log::info!(
             "stress_started run_id={} total={} rss_start_kb={}",

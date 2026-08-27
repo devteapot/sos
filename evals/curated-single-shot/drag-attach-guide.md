@@ -26,6 +26,5 @@ frozen raw `drag_attach` baseline. It is not a production prompt or skill.
 - Keep IDs unique, numbers finite, and all tables within the limits documented
   in `docs/experience-api.md`.
 
-Use `experiences/android-exit-agent.luau` as the closest contract example and
-`experiences/timeflow.luau` as a second geometry example. Invent a distinct
-composition; do not copy either experience wholesale.
+Use `experiences/android-exit-agent.luau` as the closest geometry and contract
+example. Invent a distinct composition; do not copy the experience wholesale.

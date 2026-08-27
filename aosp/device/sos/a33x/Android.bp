@@ -267,14 +267,6 @@ prebuilt_etc {
 }
 
 prebuilt_etc {
-    name: "sos-agent-example-secondary",
-    src: "prebuilts/sos-agent/example-secondary.luau",
-    filename: "example-secondary.luau",
-    sub_dir: "sos-agent",
-    system_ext_specific: true,
-}
-
-prebuilt_etc {
     name: "sos-default-experience",
     src: "prebuilts/default.luau",
     filename: "default.luau",

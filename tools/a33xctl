@@ -314,7 +314,6 @@ stage_sos() {
   local agent_runner="$SOS_ROOT/services/sos-agent/dist/agent-runner.cjs"
   local agent_api="$SOS_ROOT/docs/experience-api.md"
   local agent_example_primary="$SOS_ROOT/experiences/default.luau"
-  local agent_example_secondary="$SOS_ROOT/experiences/timeflow.luau"
   local bootstrap="$SOS_ROOT/experiences/default.luau"
   local bootstrap_package="$SOS_ROOT/experiences/default.package.json"
   local stock_theme="$SOS_ROOT/experiences/modules/stock-theme.luau"
@@ -327,7 +326,7 @@ stage_sos() {
   [[ -x "$node" ]] || fail "Android ARM64 Node missing; run ./tools/build-android-node"
   [[ -f "$node_cxx" ]] || fail "Android Node libc++ runtime missing; run ./tools/build-android-node"
   [[ -f "$agent_runner" ]] || fail "shared Pi runner missing; run npm run build in services/sos-agent"
-  [[ -f "$agent_api" && -f "$agent_example_primary" && -f "$agent_example_secondary" ]] || \
+  [[ -f "$agent_api" && -f "$agent_example_primary" ]] || \
     fail "Android Pi prompt documents are missing"
   [[ -f "$bootstrap" && -f "$bootstrap_package" && -f "$stock_theme" ]] || \
     fail "SOS v4 bootstrap package is incomplete"
@@ -370,8 +369,7 @@ stage_sos() {
     "$LINEAGE_SOS_OVERLAY_DESTINATION/prebuilts/sos-agent/experience-api.md"
   install -m 0644 "$agent_example_primary" \
     "$LINEAGE_SOS_OVERLAY_DESTINATION/prebuilts/sos-agent/example-primary.luau"
-  install -m 0644 "$agent_example_secondary" \
-    "$LINEAGE_SOS_OVERLAY_DESTINATION/prebuilts/sos-agent/example-secondary.luau"
+  rm -f -- "$LINEAGE_SOS_OVERLAY_DESTINATION/prebuilts/sos-agent/example-secondary.luau"
   install -m 0644 "$bootstrap" \
     "$LINEAGE_SOS_OVERLAY_DESTINATION/prebuilts/default.luau"
   install -m 0644 "$bootstrap_package" \
@@ -387,7 +385,6 @@ stage_sos() {
     "$LINEAGE_SOS_OVERLAY_DESTINATION/prebuilts/sos-agent/agent-runner.cjs" \
     "$LINEAGE_SOS_OVERLAY_DESTINATION/prebuilts/sos-agent/experience-api.md" \
     "$LINEAGE_SOS_OVERLAY_DESTINATION/prebuilts/sos-agent/example-primary.luau" \
-    "$LINEAGE_SOS_OVERLAY_DESTINATION/prebuilts/sos-agent/example-secondary.luau" \
     "$LINEAGE_SOS_OVERLAY_DESTINATION/prebuilts/default.luau" \
     "$LINEAGE_SOS_OVERLAY_DESTINATION/prebuilts/default.package.json" \
     "$LINEAGE_SOS_OVERLAY_DESTINATION/prebuilts/stock-theme.luau"
@@ -738,7 +735,6 @@ inspect_compat_profile() {
   local agent_runner="$target_files/SYSTEM_EXT/etc/sos-agent/agent-runner.cjs"
   local agent_api="$target_files/SYSTEM_EXT/etc/sos-agent/experience-api.md"
   local agent_example_primary="$target_files/SYSTEM_EXT/etc/sos-agent/example-primary.luau"
-  local agent_example_secondary="$target_files/SYSTEM_EXT/etc/sos-agent/example-secondary.luau"
   local bootstrap="$target_files/SYSTEM_EXT/etc/sos/default.luau"
   local bootstrap_package="$target_files/SYSTEM_EXT/etc/sos/default.package.json"
   local stock_theme="$target_files/SYSTEM_EXT/etc/sos/modules/stock-theme.luau"
@@ -751,7 +747,7 @@ inspect_compat_profile() {
   local artifact
   for artifact in \
     "$apk" "$authority" "$node" "$node_cxx" "$agent_runner" "$agent_api" \
-    "$agent_example_primary" "$agent_example_secondary" "$bootstrap" \
+    "$agent_example_primary" "$bootstrap" \
     "$bootstrap_package" "$stock_theme" "$init_rc" "$properties" \
     "$seapp_contexts" "$file_contexts" "$privapp_permissions"; do
     [[ -f "$artifact" ]] || fail "SOS target-files artifact missing: $artifact"
@@ -1104,8 +1100,8 @@ inspect_compat_profile() {
     fail "packaged Android Pi API document differs from repository source"
   cmp -s "$agent_example_primary" "$SOS_ROOT/experiences/default.luau" || \
     fail "packaged Android Pi primary example differs from repository source"
-  cmp -s "$agent_example_secondary" "$SOS_ROOT/experiences/timeflow.luau" || \
-    fail "packaged Android Pi secondary example differs from repository source"
+  [[ ! -e "$target_files/SYSTEM_EXT/etc/sos-agent/example-secondary.luau" ]] || \
+    fail "packaged Android product retained a secondary Pi example"
   cmp -s "$bootstrap" "$SOS_ROOT/experiences/default.luau" || \
     fail "packaged SOS bootstrap differs from the repository source"
   cmp -s "$bootstrap_package" "$SOS_ROOT/experiences/default.package.json" || \
@@ -1303,7 +1299,6 @@ inspect_core_stage() {
   local agent_runner="$target_files/SYSTEM_EXT/etc/sos-agent/agent-runner.cjs"
   local agent_api="$target_files/SYSTEM_EXT/etc/sos-agent/experience-api.md"
   local agent_example_primary="$target_files/SYSTEM_EXT/etc/sos-agent/example-primary.luau"
-  local agent_example_secondary="$target_files/SYSTEM_EXT/etc/sos-agent/example-secondary.luau"
   local bootstrap_package="$target_files/SYSTEM_EXT/etc/sos/default.package.json"
   local stock_theme="$target_files/SYSTEM_EXT/etc/sos/modules/stock-theme.luau"
   local system_ext_policy="$target_files/SYSTEM_EXT/etc/selinux/system_ext_sepolicy.cil"
@@ -1318,7 +1313,7 @@ inspect_core_stage() {
     "$host" "$host_runtime" "$host_init_rc" "$properties" "$authority" \
     "$authority_init_rc" \
     "$node" "$agent_runner" "$agent_api" "$agent_example_primary" \
-    "$agent_example_secondary" "$bootstrap_package" "$stock_theme" \
+    "$bootstrap_package" "$stock_theme" \
     "$system_ext_policy"; do
     [[ -f "$artifact" ]] || fail "SOS $stage artifact missing: $artifact"
     stat --printf='%n %s bytes\n' "$artifact"
@@ -1394,8 +1389,8 @@ inspect_core_stage() {
     fail "SOS $stage packaged Pi API document differs from repository source"
   cmp -s "$agent_example_primary" "$SOS_ROOT/experiences/default.luau" || \
     fail "SOS $stage packaged Pi primary example differs from repository source"
-  cmp -s "$agent_example_secondary" "$SOS_ROOT/experiences/timeflow.luau" || \
-    fail "SOS $stage packaged Pi secondary example differs from repository source"
+  [[ ! -e "$target_files/SYSTEM_EXT/etc/sos-agent/example-secondary.luau" ]] || \
+    fail "SOS $stage retained a secondary Pi example"
   cmp -s "$bootstrap_package" "$SOS_ROOT/experiences/default.package.json" || \
     fail "SOS $stage packaged v4 manifest differs from repository source"
   cmp -s "$stock_theme" "$SOS_ROOT/experiences/modules/stock-theme.luau" || \
