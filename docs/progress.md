@@ -14451,3 +14451,37 @@ cleaned recovery artifacts migrate and roll back successfully may the bounded
 v3 reader be removed. Installed Linux promotion remains a separate physical
 product gate; the Framework development-live composition diagnostic is already
 green.
+
+## 2026-08-27: Add a v4 Cuttlefish lifecycle verifier regression
+
+**Goal:** Exercise the rewritten `aospctl verify-sos` contract after removal of
+the retired secondary Experience. The verifier must use stable Experience graph
+pointers, present the signed Dashboard graph, bind authority state to confirmed
+rendering, and distinguish authority recovery from HOME recovery.
+
+**Changed:** Added a stateful explicit-serial adb fixture and
+`tests/aospctl-host-test.sh`. The fixture models booted x86-64 SOS HOME,
+enforcing SELinux domains, Stock and Dashboard content-addressed graph
+pointers, composition authority state, confirmed graph logs, init-owned
+authority recovery, and Android-owned HOME recovery. The positive case proves
+Stock-to-Dashboard presentation without replacing the permanent GPUI process,
+then preserves Dashboard through both independent restarts. It records every
+transport command and rejects any query of `/data/misc/sos/revisions/current`.
+The negative case deliberately changes the authority PID during HOME-only
+recovery and requires the verifier to fail closed.
+
+**Evidence:** `tests/aospctl-host-test.sh` reports
+`aospctl_host_test=PASS`. Bash parsing passes for the verifier, fixture, and
+test. The complete six-script AOSP, a33x, Linux login/live-image/hardware, and
+PiKVM host set passed in 7,212,432,794 ns. No physical adb command is routed
+through this regression: its adb binary is an explicit temporary path and its
+serial is the Cuttlefish loopback endpoint.
+
+**Failure / decision / next gate:** A real Cuttlefish rerun is unavailable on
+this workstation because `~/dev/aosp-sos` is absent and the development volume
+has 306 GiB free, below the harness's enforced 400 GiB source/build floor. Do
+not delete unrelated data or weaken that resource gate. Retain the host
+regression and run the real product when a provisioned AOSP workspace is
+available. This improves Android lifecycle evidence but cannot replace the
+still-open SM-A336B physical campaign; the phone remains in Download Mode and
+requires its established physical key restart before Compat installation.

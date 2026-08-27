@@ -125,6 +125,16 @@ changed PID 3446 to 5388 without replacing the recovered authority. A captured
 720x1280 frame was also visually inspected as the rendered secondary HOME. Exact
 revision and artifact identities remain in [`progress.md`](progress.md).
 
+The current v4 verifier no longer installs or presents a secondary source and
+never reads the singleton revision pointer. Its host regression runs the exact
+command against a stateful Cuttlefish transport model: Stock starts from its
+per-Experience graph pointer, Dashboard presents through the registry deep
+link, the composition authority and confirmed-frame logs agree, authority and
+HOME recover independently, and the Dashboard graph survives both restarts.
+The negative case changes the authority PID during HOME-only recovery and must
+be rejected. This closes regression coverage for the verifier itself; it does
+not replace a booted Cuttlefish or physical-device verdict.
+
 ## Boundary and remaining gates
 
 This is an Android system-product spike, not the final SOS compositor. Android
