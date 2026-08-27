@@ -41,6 +41,7 @@ LINUX_SESSION="$SOS_ROOT/target/debug/sos-linux-session"
 LINUX_AGENT_AUTHORING="$SOS_ROOT/target/debug/sos-agent-authoring"
 LINUX_PROVIDER_SOCKET="$LINUX_REVISION_ROOT/run/provider-state.sock"
 LINUX_AUTHORITY_FILE="$LINUX_REVISION_ROOT/authority.json"
+LINUX_APPEARANCE_CAPABILITY_FILE="$LINUX_REVISION_ROOT/appearance-write.capability"
 LINUX_GRANT_CAPABILITY_FILE="$LINUX_REVISION_ROOT/grant-review.capability"
 LINUX_AGENT_ROOT="$CACHE_ROOT/linux-agent"
 LINUX_AGENT_SOCKET="$LINUX_AGENT_ROOT/agent.sock"
@@ -1176,13 +1177,18 @@ linux_run() {
       --experience sos.timeflow >/dev/null
   fi
 
-  if [[ ! -f "$LINUX_GRANT_CAPABILITY_FILE" ]]; then
-    local capability_temporary="$LINUX_GRANT_CAPABILITY_FILE.$$"
-    (umask 077; od -An -N32 -tx1 /dev/urandom | tr -d ' \n' >"$capability_temporary")
-    mv -n -- "$capability_temporary" "$LINUX_GRANT_CAPABILITY_FILE"
-    rm -f -- "$capability_temporary"
-  fi
-  chmod 0600 "$LINUX_GRANT_CAPABILITY_FILE"
+  local capability_file capability_temporary
+  for capability_file in \
+    "$LINUX_APPEARANCE_CAPABILITY_FILE" \
+    "$LINUX_GRANT_CAPABILITY_FILE"; do
+    if [[ ! -f "$capability_file" ]]; then
+      capability_temporary="$capability_file.$$"
+      (umask 077; od -An -N32 -tx1 /dev/urandom | tr -d ' \n' >"$capability_temporary")
+      mv -n -- "$capability_temporary" "$capability_file"
+      rm -f -- "$capability_temporary"
+    fi
+    chmod 0600 "$capability_file"
+  done
 
   [[ ! -e "$LINUX_PROVIDER_SOCKET" ]] || \
     fail "provider socket already exists: $LINUX_PROVIDER_SOCKET"
@@ -1190,6 +1196,7 @@ linux_run() {
   "$LINUX_PROVIDER_SERVICE" \
     --socket "$LINUX_PROVIDER_SOCKET" \
     --state-file "$LINUX_AUTHORITY_FILE" \
+    --appearance-capability-file "$LINUX_APPEARANCE_CAPABILITY_FILE" \
     --grant-capability-file "$LINUX_GRANT_CAPABILITY_FILE" &
   local provider_pid=$!
   local supervisor_pid=""

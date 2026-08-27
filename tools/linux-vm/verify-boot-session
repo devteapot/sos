@@ -220,6 +220,9 @@ sudo chmod 0400 /etc/sos/shell-token
 sudo sh -c 'umask 027; od -An -N32 -tx1 /dev/urandom | tr -d " \n" > /var/lib/sos/grant-review.capability'
 sudo chown sos-compositor:sos-ipc /var/lib/sos/grant-review.capability
 sudo chmod 0640 /var/lib/sos/grant-review.capability
+sudo sh -c 'umask 027; od -An -N32 -tx1 /dev/urandom | tr -d " \n" > /var/lib/sos/appearance-write.capability'
+sudo chown sos-compositor:sos-ipc /var/lib/sos/appearance-write.capability
+sudo chmod 0640 /var/lib/sos/appearance-write.capability
 sudo sh -c 'printf "%s\n" \
   "SOS_AGENT_PROVIDER=openai-codex" \
   "SOS_AGENT_MODEL=gpt-5.6-sol" \

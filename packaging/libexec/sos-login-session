@@ -59,6 +59,7 @@ sos_login_state_dir="$sos_login_state_home/sos"
 sos_login_revision_root="$sos_login_state_dir/revisions"
 sos_login_authority_file="$sos_login_state_dir/provider/authority.json"
 sos_login_token_file="$sos_login_state_dir/shell-token"
+sos_login_appearance_capability_file="$sos_login_state_dir/appearance-write.capability"
 sos_login_grant_capability_file="$sos_login_state_dir/grant-review.capability"
 sos_login_trusted_stock_file="$sos_login_state_dir/trusted-stock-revision"
 sos_login_output_config="$sos_login_state_dir/output.json"
@@ -112,6 +113,14 @@ if [[ ! -f "$sos_login_token_file" ]]; then
   rm -f -- "$sos_login_token_tmp"
 fi
 chmod 0600 "$sos_login_token_file"
+if [[ ! -f "$sos_login_appearance_capability_file" ]]; then
+  sos_login_appearance_tmp="$sos_login_state_dir/.appearance-write.$$"
+  od -An -N32 -tx1 /dev/urandom | tr -d ' \n' >"$sos_login_appearance_tmp"
+  chmod 0600 "$sos_login_appearance_tmp"
+  mv -n -- "$sos_login_appearance_tmp" "$sos_login_appearance_capability_file"
+  rm -f -- "$sos_login_appearance_tmp"
+fi
+chmod 0600 "$sos_login_appearance_capability_file"
 if [[ ! -f "$sos_login_grant_capability_file" ]]; then
   sos_login_grant_tmp="$sos_login_state_dir/.grant-review.$$"
   od -An -N32 -tx1 /dev/urandom | tr -d ' \n' >"$sos_login_grant_tmp"

@@ -67,6 +67,10 @@ grep -Fx 'retired=true experience_id=sos.timeflow' \
 [[ ! -e "$test_state/sos/revisions/mock-experience-sos.timeflow" ]]
 [[ "$(stat -c %a "$test_state/sos/output.json")" == 600 ]]
 grep -Fx '{}' "$test_state/sos/output.json" >/dev/null
+[[ "$(stat -c %a "$test_state/sos/appearance-write.capability")" == 600 ]]
+[[ "$(wc -c <"$test_state/sos/appearance-write.capability")" == 64 ]]
+[[ "$(stat -c %a "$test_state/sos/grant-review.capability")" == 600 ]]
+[[ "$(wc -c <"$test_state/sos/grant-review.capability")" == 64 ]]
 grep -Fx -- '--fake-source' "$test_root/agent-arguments.txt" >/dev/null
 grep -Fx "$test_repo_root/experiences/default.luau" "$test_root/agent-arguments.txt" >/dev/null
 if grep -Fx -- '--example-secondary' "$test_root/agent-arguments.txt" >/dev/null; then

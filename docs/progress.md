@@ -14088,9 +14088,10 @@ and prepare a new exact Framework campaign. Clean revision
 the target both recorded the corrected runner at 1,890,551 bytes with SHA-256
 `c98c35fefede6b9c5d53f5b01021e63ed7ccd790470db5c3f02a186305ae4b58`.
 Before SOS login, `prepare` rejected that new manifest entry as an unsafe
-development deployment path. No new campaign directory, graphical session, or
-acceptance result was created. A separate root-owned handoff inhibitor remains
-active while the exact-revision campaign is rotated.
+development deployment path. It created only the partial preflight directory
+`/home/liveuser/framework12-v4-composition-418cb92`; no campaign environment,
+graphical session, or acceptance result was created. A separate root-owned
+handoff inhibitor remains active while the exact-revision campaign is rotated.
 
 **Root cause / changed / decision:** The deploy tool and manifest now owned the
 agent bundle, but the hardware gate's closed allowlist still named only the
@@ -14103,3 +14104,51 @@ allowlist entry. Bash parsing, both complete host suites, and the Git
 whitespace check passed in an ordered 4.359-second campaign. Commit and
 redeploy all default components from one clean revision, then prepare and
 execute the PiKVM campaign. Physical composition remains the next gate.
+
+## 2026-08-27: Provision the Linux appearance authority at every launch path
+
+**Goal / physical diagnosis:** Continue the exact Framework v4 composition
+campaign through the first unsupported authority operation. Clean revision
+`c7558102e7049f4321434a1156ba0414c547a88c` deployed as
+`20260827T122511Z-c7558102e704-3386411` in 74,809,654,404 ns. PiKVM selected
+SOS at GDM, entered the login, and captured Stock and the composed Dashboard
+without local console handling. Locked graph
+`9a49ec819b8d0c83fa45566f16925498dbb95bd882bfc87d6b92526603e637f7`
+mounted independent Agenda and Media instances. Agenda's structured child
+event reached Dashboard in 33,807,189 ns. A forced child update failure left
+the parent responsive and durable Agenda state intact; a forced timeout was
+contained in 22,046,197 ns and recovered in 112,470,695 ns. Killing Dashboard
+renderer PID 903265 left shell renderer PID 900864 alive and produced proxy
+PID 908497 plus renderer PID 908502 with both child mounts and durable state
+restored.
+
+**Failure / root cause:** Live appearance propagation could not start because
+the selectable login provisioned only `grant-review.capability`. The system
+session already had a least-privilege path that copies an existing
+`appearance-write.capability` into a provider-only runtime credential, but no
+selectable, development, or direct-VM launcher created the source capability.
+The live provider therefore started without `--appearance-capability-file`.
+An attempted Media action also failed atomically because no MPRIS player was
+active; authority and Dashboard state remained unchanged, which is the
+expected provider-boundary behavior rather than a product defect.
+
+**Changed / decision:** Provision a persistent random 32-byte appearance-write
+capability beside the authority state for the selectable session and
+development runner, with mode 0600. Pass it only to the provider authority.
+The direct-system VM setup creates the equivalent `sos-compositor:sos-ipc`
+0640 capability so the existing per-role credential copy can restrict runtime
+access. Keep appearance authority separate from grant review instead of
+reusing one bearer secret across two powers. The selectable-session regression
+asserts both capability files are exactly 64 hexadecimal bytes at mode 0600.
+
+**Verification:** All 20 Linux session tests pass, including graph-authority
+binding and the shared v4 wire fixture. The selectable-session, complete live
+image, and hardware-gate host suites report PASS. Bash parsing passes for all
+four changed launch and test scripts; Rust formatting and Git whitespace checks
+also pass.
+
+**Remaining risks and next gate:** Commit and redeploy one exact clean revision.
+A fresh Framework campaign must mutate appearance through the authority socket,
+prove generation propagation without revision changes, and repeat composition,
+containment, renderer recovery, Stock revision activation, physical input,
+clean logout, manifest verification, and evidence collection.
