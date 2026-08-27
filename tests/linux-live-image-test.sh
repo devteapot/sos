@@ -192,6 +192,9 @@ if grep -E 'libinput-devel|mesa-libgbm-devel|libseat-devel' "$test_root/doctor.t
   exit 1
 fi
 
+test_ssh_key="$test_root/development-ssh-key"
+ssh-keygen -q -t ed25519 -N '' -C sos-development-test -f "$test_ssh_key"
+test_ssh_fingerprint="$(ssh-keygen -lf "$test_ssh_key.pub" -E sha256 | awk '{ print $2 }')"
 "$test_image" format-identity \
   --source-revision "$test_revision" \
   --source-dirty false \
@@ -207,6 +210,7 @@ fi
   --payload-bytes 1024 \
   --payload-sha256 0000000000000000000000000000000000000000000000000000000000000002 \
   --container-format erofs-rootfs \
+  --ssh-authorized-key-fingerprint "$test_ssh_fingerprint" \
   --wifi-autoconnect true \
   --baked-at-utc 2026-08-23T00:00:00Z \
   --output-iso-filename sos-development-live-abcdef123456.iso \
@@ -220,6 +224,9 @@ for test_key in \
   promotion_eligible=false \
   mutable_runtime=true \
   ssh_enabled=true \
+  ssh_authorized_key_embedded=true \
+  ssh_authorized_key_fingerprint="$test_ssh_fingerprint" \
+  ssh_password_authentication=false \
   wifi_autoconnect=true \
   network_credentials_embedded=true \
   fedora_release=44 \
@@ -249,6 +256,12 @@ done
   >"$test_root/identity-no-wifi.env"
 grep -Fx 'wifi_autoconnect=false' "$test_root/identity-no-wifi.env" >/dev/null
 grep -Fx 'network_credentials_embedded=false' \
+  "$test_root/identity-no-wifi.env" >/dev/null
+grep -Fx 'ssh_authorized_key_embedded=false' \
+  "$test_root/identity-no-wifi.env" >/dev/null
+grep -Fx 'ssh_authorized_key_fingerprint=none' \
+  "$test_root/identity-no-wifi.env" >/dev/null
+grep -Fx 'ssh_password_authentication=true' \
   "$test_root/identity-no-wifi.env" >/dev/null
 grep -Fx 'build_mode=native-sudo' "$test_root/identity-no-wifi.env" >/dev/null
 grep -Fx 'build_image_id=none' "$test_root/identity-no-wifi.env" >/dev/null
@@ -431,6 +444,10 @@ printf '%s\n' \
   '  printf "root:root:700\\n"' \
   '  exit 0' \
   'fi' \
+  'if [[ "${1:-}" == stat && "$*" == *"/usr/share/sos/development-authorized-key" ]]; then' \
+  '  printf "root:root:644\\n"' \
+  '  exit 0' \
+  'fi' \
   'if [[ "${1:-}" == stat && "$*" == *"/etc/NetworkManager/system-connections/60-sos-development-live.nmconnection" ]]; then' \
   '  if [[ "$*" == *"%U:%G:%a"* ]]; then printf "root:root:600\\n"; else printf "600\\n"; fi' \
   '  exit 0' \
@@ -514,6 +531,7 @@ mkdir -p \
   "$test_rootfs/usr/local/libexec/sos" \
   "$test_rootfs/usr/local/libexec/sos-agent/dist" \
   "$test_rootfs/usr/bin" \
+  "$test_rootfs/usr/sbin" \
   "$test_rootfs/usr/libexec/livesys" \
   "$test_rootfs/usr/share/wayland-sessions" \
   "$test_rootfs/usr/share/sos/experiences" \
@@ -540,6 +558,10 @@ cp -- "$test_repo_root/packaging/xdg/framework12-pikvm-monitors.xml" \
 : >"$test_rootfs/usr/lib/systemd/system/NetworkManager.service"
 : >"$test_rootfs/usr/bin/systemctl"
 chmod 0755 "$test_rootfs/usr/bin/systemctl"
+: >"$test_rootfs/usr/sbin/restorecon"
+chmod 0755 "$test_rootfs/usr/sbin/restorecon"
+printf '%s\n' 'Include /etc/ssh/sshd_config.d/*.conf' \
+  >"$test_rootfs/etc/ssh/sshd_config"
 printf '%s\n' \
   'root:x:0:0:root:/root:/bin/bash' >"$test_rootfs/etc/passwd"
 printf '%s\n' \
@@ -635,6 +657,80 @@ if PATH="$test_root/bin:$PATH" TEST_FIREWALL_LOG="$test_root/firewall.log" \
 fi
 grep -F 'NetworkManager profile must enable autoconnect' \
   "$test_root/configure-disabled-network-profile.txt" >/dev/null
+printf '%s\n' 'ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQ invalid' \
+  >"$test_root/rsa-public-key.pub"
+if PATH="$test_root/bin:$PATH" TEST_FIREWALL_LOG="$test_root/firewall.log" \
+  "$test_image" configure-development-access \
+    --root "$test_rootfs" \
+    --password-file "$test_root/liveuser-password" \
+    --ssh-authorized-key-file "$test_root/rsa-public-key.pub" \
+    >"$test_root/configure-rsa-public-key.txt" 2>&1; then
+  printf 'error: development access accepted a non-Ed25519 SSH public key\n' >&2
+  exit 1
+fi
+grep -F 'accepts only an Ed25519 SSH public key' \
+  "$test_root/configure-rsa-public-key.txt" >/dev/null
+printf '%s\n' 'ssh-ed25519 AAAA invalid' >"$test_root/invalid-public-key.pub"
+if PATH="$test_root/bin:$PATH" TEST_FIREWALL_LOG="$test_root/firewall.log" \
+  "$test_image" configure-development-access \
+    --root "$test_rootfs" \
+    --password-file "$test_root/liveuser-password" \
+    --ssh-authorized-key-file "$test_root/invalid-public-key.pub" \
+    >"$test_root/configure-invalid-public-key.txt" 2>&1; then
+  printf 'error: development access accepted an invalid Ed25519 SSH public key\n' >&2
+  exit 1
+fi
+grep -F 'does not contain a valid Ed25519 public key' \
+  "$test_root/configure-invalid-public-key.txt" >/dev/null
+ln -s development-ssh-key.pub "$test_root/symlink-public-key.pub"
+if PATH="$test_root/bin:$PATH" TEST_FIREWALL_LOG="$test_root/firewall.log" \
+  "$test_image" configure-development-access \
+    --root "$test_rootfs" \
+    --password-file "$test_root/liveuser-password" \
+    --ssh-authorized-key-file "$test_root/symlink-public-key.pub" \
+    >"$test_root/configure-symlink-public-key.txt" 2>&1; then
+  printf 'error: development access accepted a symlink SSH public-key file\n' >&2
+  exit 1
+fi
+grep -F 'readable regular file, not a symlink' \
+  "$test_root/configure-symlink-public-key.txt" >/dev/null
+test_public_key_line="$(awk '{ print $1 " " $2 }' "$test_ssh_key.pub")"
+printf '%s\n%s\n' "$test_public_key_line" "$test_public_key_line" \
+  >"$test_root/two-line-public-key.pub"
+if PATH="$test_root/bin:$PATH" TEST_FIREWALL_LOG="$test_root/firewall.log" \
+  "$test_image" configure-development-access \
+    --root "$test_rootfs" \
+    --password-file "$test_root/liveuser-password" \
+    --ssh-authorized-key-file "$test_root/two-line-public-key.pub" \
+    >"$test_root/configure-two-line-public-key.txt" 2>&1; then
+  printf 'error: development access accepted multiple SSH public keys\n' >&2
+  exit 1
+fi
+grep -F 'SSH public-key file must contain exactly one line' \
+  "$test_root/configure-two-line-public-key.txt" >/dev/null
+test_password_rootfs="$test_root/password-rootfs"
+cp -a -- "$test_rootfs" "$test_password_rootfs"
+cp -- "$test_root/identity-no-wifi.env" \
+  "$test_password_rootfs/usr/share/doc/sos/image-identity.env"
+PATH="$test_root/bin:$PATH" TEST_FIREWALL_LOG="$test_root/firewall.log" \
+  "$test_image" configure-development-access \
+    --root "$test_password_rootfs" \
+    --password-file "$test_root/liveuser-password" \
+    >"$test_root/configure-password-access.txt"
+grep -Fx 'PasswordAuthentication yes' \
+  "$test_password_rootfs/etc/ssh/sshd_config.d/00-sos-development-live.conf" >/dev/null
+grep -Fx 'ssh_authorized_key_embedded=false' \
+  "$test_password_rootfs/usr/share/doc/sos/development-access.env" >/dev/null
+grep -Fx 'ssh_authorized_key_fingerprint=none' \
+  "$test_password_rootfs/usr/share/doc/sos/development-access.env" >/dev/null
+grep -Fx 'password_authentication=true' \
+  "$test_password_rootfs/usr/share/doc/sos/development-access.env" >/dev/null
+[[ ! -e "$test_password_rootfs/usr/share/sos/development-authorized-key" ]]
+PATH="$test_root/bin:$PATH" \
+  "$test_image" check-rootfs --root "$test_password_rootfs" \
+  >"$test_root/check-password-rootfs.txt"
+grep -F 'linux_live_image_rootfs_checked=PASS' \
+  "$test_root/check-password-rootfs.txt" >/dev/null
 mkdir -p "$test_rootfs/etc/systemd/system/multi-user.target.wants"
 ln -s /usr/lib/systemd/system/sshd.service \
   "$test_rootfs/etc/systemd/system/multi-user.target.wants/sshd.service"
@@ -654,15 +750,30 @@ PATH="$test_root/bin:$PATH" TEST_FIREWALL_LOG="$test_root/firewall.log" \
   "$test_image" configure-development-access \
     --root "$test_rootfs" \
     --password-file "$test_root/liveuser-password" \
+    --ssh-authorized-key-file "$test_ssh_key.pub" \
     --networkmanager-profile-file "$test_network_profile" \
     >"$test_root/configure-development-access.txt"
 grep -F 'linux_live_image_development_access=PASS' \
   "$test_root/configure-development-access.txt" >/dev/null
 grep -F 'wifi_autoconnect=true' \
   "$test_root/configure-development-access.txt" >/dev/null
+grep -F "ssh_authorized_key_fingerprint=$test_ssh_fingerprint" \
+  "$test_root/configure-development-access.txt" >/dev/null
 grep -F -- '--service=ssh' "$test_root/firewall.log" >/dev/null
+grep -Fx 'PubkeyAuthentication yes' \
+  "$test_rootfs/etc/ssh/sshd_config.d/00-sos-development-live.conf" >/dev/null
+grep -Fx 'AuthorizedKeysFile .ssh/authorized_keys' \
+  "$test_rootfs/etc/ssh/sshd_config.d/00-sos-development-live.conf" >/dev/null
+grep -Fx 'AuthenticationMethods publickey' \
+  "$test_rootfs/etc/ssh/sshd_config.d/00-sos-development-live.conf" >/dev/null
+grep -Fx 'PasswordAuthentication no' \
+  "$test_rootfs/etc/ssh/sshd_config.d/00-sos-development-live.conf" >/dev/null
+grep -Fx 'KbdInteractiveAuthentication no' \
+  "$test_rootfs/etc/ssh/sshd_config.d/00-sos-development-live.conf" >/dev/null
+grep -Fx 'StrictModes yes' \
+  "$test_rootfs/etc/ssh/sshd_config.d/00-sos-development-live.conf" >/dev/null
 grep -Fx 'PermitRootLogin no' \
-  "$test_rootfs/etc/ssh/sshd_config.d/60-sos-development-live.conf" >/dev/null
+  "$test_rootfs/etc/ssh/sshd_config.d/00-sos-development-live.conf" >/dev/null
 test_livesys_hook="$test_rootfs/var/lib/livesys/livesys-session-extra"
 [[ "$(stat -c %a "$test_livesys_hook")" == 700 ]]
 sh -n "$test_livesys_hook"
@@ -670,16 +781,35 @@ grep -Fx "usermod --password '\$6\$development-salt\$development-hash' liveuser 
   "$test_livesys_hook" >/dev/null
 grep -Fx 'passwd --lock root >/dev/null || exit 1' "$test_livesys_hook" >/dev/null
 grep -Fx 'AutomaticLoginEnable=False' "$test_livesys_hook" >/dev/null
+grep -Fx 'install -d -o liveuser -g liveuser -m 0700 /home/liveuser/.ssh || exit 1' \
+  "$test_livesys_hook" >/dev/null
+grep -Fx 'install -o liveuser -g liveuser -m 0600 /usr/share/sos/development-authorized-key /home/liveuser/.ssh/authorized_keys || exit 1' \
+  "$test_livesys_hook" >/dev/null
+grep -Fx '/usr/sbin/restorecon -RF /home/liveuser/.ssh || exit 1' \
+  "$test_livesys_hook" >/dev/null
 grep -Fx "cat > /etc/gdm/custom.conf <<'SOS_DEVELOPMENT_GDM' || exit 1" \
   "$test_livesys_hook" >/dev/null
 grep -Fx 'systemctl enable --now sshd.service >/dev/null || exit 1' \
   "$test_livesys_hook" >/dev/null
 grep -Fx 'ssh_activation=livesys-session-extra-final-action' \
   "$test_rootfs/usr/share/doc/sos/development-access.env" >/dev/null
+grep -Fx 'ssh_authorized_key_embedded=true' \
+  "$test_rootfs/usr/share/doc/sos/development-access.env" >/dev/null
+grep -Fx "ssh_authorized_key_fingerprint=$test_ssh_fingerprint" \
+  "$test_rootfs/usr/share/doc/sos/development-access.env" >/dev/null
+grep -Fx 'ssh_authorized_key_options=no-agent-forwarding,no-port-forwarding,no-X11-forwarding' \
+  "$test_rootfs/usr/share/doc/sos/development-access.env" >/dev/null
+grep -Fx 'password_authentication=false' \
+  "$test_rootfs/usr/share/doc/sos/development-access.env" >/dev/null
 grep -Fx 'wifi_autoconnect=true' \
   "$test_rootfs/usr/share/doc/sos/development-access.env" >/dev/null
 grep -Fx 'network_credentials_embedded=true' \
   "$test_rootfs/usr/share/doc/sos/development-access.env" >/dev/null
+test_installed_authorized_key="$test_rootfs/usr/share/sos/development-authorized-key"
+[[ "$(stat -c %a "$test_installed_authorized_key")" == 644 ]]
+grep -Fx \
+  "no-agent-forwarding,no-port-forwarding,no-X11-forwarding $test_public_key_line" \
+  "$test_installed_authorized_key" >/dev/null
 test_installed_network_profile="$test_rootfs/etc/NetworkManager/system-connections/60-sos-development-live.nmconnection"
 [[ "$(stat -c %a "$test_installed_network_profile")" == 600 ]]
 grep -Fx 'ssid=Test Network' "$test_installed_network_profile" >/dev/null
@@ -714,6 +844,35 @@ grep -F 'linux_live_image_rootfs_checked=PASS' "$test_root/check-pass.txt" >/dev
 grep -F 'boot_kind=development-live' "$test_root/check-pass.txt" >/dev/null
 grep -F 'promotion_eligible=false' "$test_root/check-pass.txt" >/dev/null
 grep -F 'not_installed_product=true' "$test_root/check-pass.txt" >/dev/null
+
+: >"$test_rootfs/etc/ssh/sshd_config.d/00-earlier-policy.conf"
+if PATH="$test_root/bin:$PATH" \
+  "$test_image" check-rootfs --root "$test_rootfs" \
+  >"$test_root/check-ssh-dropin-precedence.txt" 2>&1; then
+  printf 'error: check-rootfs accepted an earlier SSH policy drop-in\n' >&2
+  exit 1
+fi
+grep -F 'development SSH policy must be the first sshd drop-in' \
+  "$test_root/check-ssh-dropin-precedence.txt" >/dev/null
+rm -f -- "$test_rootfs/etc/ssh/sshd_config.d/00-earlier-policy.conf"
+
+cp -- "$test_installed_authorized_key" "$test_root/installed-authorized-key.saved"
+ssh-keygen -q -t ed25519 -N '' -C sos-development-other \
+  -f "$test_root/other-development-ssh-key"
+test_other_public_key_line="$(awk '{ print $1 " " $2 }' \
+  "$test_root/other-development-ssh-key.pub")"
+printf '%s %s\n' \
+  'no-agent-forwarding,no-port-forwarding,no-X11-forwarding' \
+  "$test_other_public_key_line" >"$test_installed_authorized_key"
+if PATH="$test_root/bin:$PATH" \
+  "$test_image" check-rootfs --root "$test_rootfs" \
+  >"$test_root/check-authorized-key-fingerprint.txt" 2>&1; then
+  printf 'error: check-rootfs accepted the wrong SSH authorized key\n' >&2
+  exit 1
+fi
+grep -F 'authorized-key fingerprint does not match image identity' \
+  "$test_root/check-authorized-key-fingerprint.txt" >/dev/null
+cp -- "$test_root/installed-authorized-key.saved" "$test_installed_authorized_key"
 
 cp -- "$test_installed_network_profile" "$test_root/installed-network-profile.saved"
 sed -i 's/^psk=.*/psk=/' "$test_installed_network_profile"
@@ -846,6 +1005,7 @@ grep -F 'installed artifact is not readable:' "$test_install" >/dev/null
 "$test_image" 2>"$test_root/image-usage.txt" || true
 grep -F -- '--source-sha256 SHA256' "$test_root/image-usage.txt" >/dev/null
 grep -F -- '--liveuser-password-file FILE' "$test_root/image-usage.txt" >/dev/null
+grep -F -- '--ssh-authorized-key-file FILE' "$test_root/image-usage.txt" >/dev/null
 grep -F -- '--networkmanager-profile-file FILE' "$test_root/image-usage.txt" >/dev/null
 grep -F -- 'check-networkmanager-profile --profile-file FILE' \
   "$test_root/image-usage.txt" >/dev/null
@@ -885,6 +1045,8 @@ grep -F 'security.capability' \
   "$test_repo_root/tools/linux-live/skip-selinux-xattr.c" >/dev/null
 grep -F 'FROM registry.fedoraproject.org/fedora@sha256:' \
   "$test_repo_root/tools/linux-live/Containerfile" >/dev/null
+grep -E '^[[:space:]]+openssh \\' \
+  "$test_repo_root/tools/linux-live/Containerfile" >/dev/null
 grep -F 'linux_live_image_rootless_metadata_test=PASS' \
   "$test_repo_root/tools/linux-live/rootless-metadata-test" >/dev/null
 
@@ -899,6 +1061,10 @@ grep -F 'promotion_eligible=false' "$test_repo_root/docs/linux-live-image.md" >/
 grep -F 'future `release`' "$test_repo_root/docs/linux-live-image.md" >/dev/null
 grep -F 'tools/linux-live-deploy' "$test_repo_root/docs/linux-live-image.md" >/dev/null
 grep -F 'network_credentials_embedded=true' \
+  "$test_repo_root/docs/linux-live-image.md" >/dev/null
+grep -F 'ssh_authorized_key_embedded=true' \
+  "$test_repo_root/docs/linux-live-image.md" >/dev/null
+grep -F -- '--ssh-authorized-key-file' \
   "$test_repo_root/docs/linux-live-image.md" >/dev/null
 grep -F "target is not a mutable, non-promotable development-live image" \
   "$test_deploy" >/dev/null
