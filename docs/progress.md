@@ -15327,3 +15327,72 @@ Reverify it at the device boundary, install it once through automatic Recovery,
 repeat the complete ordered campaign, and require the authority PID to change
 while the recovered HOME PID remains exact. Authoring and rollback remain open
 until that campaign passes.
+
+## 2026-08-27: Reject transient authority recovery and make its listeners restartable
+
+**Goal / physical evidence:** Install the bounded-recovery candidate and run
+the ordered Compat v4 campaign far enough to judge independent host and
+authority recovery. Recovery entry took 29.64 seconds, the single exact OTA
+transfer took 81.54 seconds with `Total xfer: 1.00x`, and exact boot readiness
+took 107.69 seconds. The installed identity was
+`sos.compat1.0f15bf98f78c.3ec21b65cb07`; SELinux was Enforcing. The distinct
+Stock Mobile frame remained unobscured. Its 175,754-byte screenshot at
+`.cache/evidence/android-v4-0f15bf9-physical/compat1/install/stock-mobile.png`
+has SHA-256
+`df382f446ba3d4d737993a4e0da1e4f9b042a93f3bdc9d84bc0a72f73a315a79`.
+
+Dashboard again ran as three Instances. A real Theme touch advanced appearance
+from generation 2 to 3 without revision churn. The Agenda update exception and
+time-budget violation were contained and recovered; parent liveness, separately
+keyed state and grants, mounted accessibility, and namespaced IME focus/blur
+passed. The first IME attempt used Android's reported virtual-node rectangle
+and missed the renderer hit target; the previously measured renderer coordinate
+`(500,900)` focused the expected `i-...::agenda-input`. Preserve this as an
+accessibility/hit-test alignment risk. HOME-only recovery changed PID 1480 to
+5025, kept authority PID 935, and restored Dashboard, state, and appearance.
+The accepted stages through `host-restart` are under
+`.cache/evidence/android-v4-0f15bf9-physical/compat1/composition/`; the campaign
+is not a PASS and has no sealed verdict.
+
+**Failures / diagnosis:** Lineage's hardened userdebug configuration sets
+`PRODUCT_NOT_DEBUGGABLE_IN_USERDEBUG := true`, so the initial actuator guard
+incorrectly rejected the genuine `ro.build.type=userdebug` product because
+`ro.debuggable=0`. The guard now follows the same `userdebug|eng` boundary as
+the compiled SELinux macro and still rejects `user`. After that correction,
+the old actuator check observed transient authority PID 5366 and reported PASS,
+but the process exited within 93 ms. The subsequent authority snapshot rejected
+the stage, and init then repeated status-1 exits while HOME PID 5025 survived.
+The finalized 5,104,827-byte lifecycle log has SHA-256
+`d71a00651a96a5eff573cdd161cbb44eba3409a1a165e833860d465b2167f13a`.
+A cold reboot recovered unmodified durable state, authority PID 944, and HOME
+PID 1469 in 127.82 seconds; the 121-byte result has SHA-256
+`98a0a9d9cdc9eb74549bf54d28de55cacc72312b4e0dcd85948b1962b25991b0`.
+
+An audit request against the recovered daemon exposed many server-side
+`TIME-WAIT` sockets for both `127.0.0.1:47777` and `:47778` while the original
+listeners remained live. The 10,026-byte socket snapshot has SHA-256
+`c2f04cde88a7ee6f0aabd04f85dd102ac757a7753973d61db4afbe0188a15fce`.
+The daemon used plain `TcpListener::bind`, so init could not immediately bind
+replacement listeners after killing an authority with active provider and
+revision clients. A local full-daemon reproduction was rejected as evidence:
+the workstation's resident `providerd` already owned port 47777, causing the
+probe to kill its test authority during reference installation and produce an
+unrelated incomplete-registry error.
+
+**Changed / verification:** Authority loopback listeners now set
+`SO_REUSEADDR` before bind and retain close-on-exec. A unit test opens a live
+connection, closes the listener, and immediately rebinds the exact address.
+`restart-v4-authority` now requires a valid authority audit snapshot after PID
+replacement, in addition to exact revision/build type, running service, stable
+HOME PID, and one-shot property reset; a transient PID can no longer pass.
+All 26 authority unit, binary, wire, and doc tests pass. The complete A33x host
+fixture passes in 8.09 seconds with 5,088 KiB peak RSS, including hardened
+userdebug acceptance, user rejection, and audit readiness. The Android ARM64
+release check passes in 4.37 seconds with 419,116 KiB peak RSS.
+
+**Decision / next gate:** The `0f15bf9` campaign is rejected at authority
+recovery despite all earlier accepted checkpoints. Build and inspect one new
+exact Compat OTA containing reusable listeners, install it once, and start a
+fresh artifact-bound campaign. Require the replacement authority to serve a
+valid audit snapshot while HOME remains exact before authoring and v4-to-v4
+rollback.

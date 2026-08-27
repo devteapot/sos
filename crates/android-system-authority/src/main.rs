@@ -1,7 +1,8 @@
 use std::{
     env, fs,
-    io::{Read, Write},
-    net::TcpListener,
+    io::{self, Read, Write},
+    net::{SocketAddrV4, TcpListener},
+    os::fd::{AsRawFd, FromRawFd, OwnedFd},
     os::unix::net::UnixListener,
     path::PathBuf,
     sync::{Arc, Mutex},
@@ -98,8 +99,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         authority.configure_appearance_writer(capability.trim())?;
     }
     let authority = Arc::new(Mutex::new(authority));
-    let provider = TcpListener::bind(PROVIDER_ADDRESS)?;
-    let revisions = TcpListener::bind(REVISION_ADDRESS)?;
+    let provider = bind_reusable_tcp(PROVIDER_ADDRESS)?;
+    let revisions = bind_reusable_tcp(REVISION_ADDRESS)?;
     match fs::remove_file(CORE_PROVIDER_SOCKET) {
         Ok(()) => {}
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
@@ -129,6 +130,58 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         .name("sos-core-revision-authority".into())
         .spawn(move || serve_core_revisions(core_revisions, core_authority))?;
     serve_revisions(revisions, authority)
+}
+
+fn bind_reusable_tcp(address: &str) -> io::Result<TcpListener> {
+    let address = address
+        .parse::<SocketAddrV4>()
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
+    let raw_fd = unsafe {
+        libc::socket(
+            libc::AF_INET,
+            libc::SOCK_STREAM | libc::SOCK_CLOEXEC,
+            libc::IPPROTO_TCP,
+        )
+    };
+    if raw_fd < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let fd = unsafe { OwnedFd::from_raw_fd(raw_fd) };
+    let enabled: libc::c_int = 1;
+    let result = unsafe {
+        libc::setsockopt(
+            fd.as_raw_fd(),
+            libc::SOL_SOCKET,
+            libc::SO_REUSEADDR,
+            (&enabled as *const libc::c_int).cast(),
+            std::mem::size_of_val(&enabled) as libc::socklen_t,
+        )
+    };
+    if result < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let socket_address = libc::sockaddr_in {
+        sin_family: libc::AF_INET as libc::sa_family_t,
+        sin_port: address.port().to_be(),
+        sin_addr: libc::in_addr {
+            s_addr: u32::from_ne_bytes(address.ip().octets()),
+        },
+        sin_zero: [0; 8],
+    };
+    let result = unsafe {
+        libc::bind(
+            fd.as_raw_fd(),
+            (&socket_address as *const libc::sockaddr_in).cast(),
+            std::mem::size_of_val(&socket_address) as libc::socklen_t,
+        )
+    };
+    if result < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    if unsafe { libc::listen(fd.as_raw_fd(), libc::SOMAXCONN) } < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(TcpListener::from(fd))
 }
 
 fn serve_provider(listener: TcpListener, authority: Arc<Mutex<AndroidSystemAuthority>>) {
@@ -211,7 +264,7 @@ fn handle_revision<S: Read + Write>(
 mod tests {
     use std::{
         io::{Read as _, Write as _},
-        net::Shutdown,
+        net::{Shutdown, TcpStream},
         os::unix::net::UnixStream,
         sync::{Arc, Mutex},
         thread,
@@ -221,7 +274,22 @@ mod tests {
     use android_provider_acceptance::{run_probe, ProbeStatus};
     use experience_ir::{ProviderRequest, ProviderResponse};
 
-    use super::{handle_provider, handle_revision, AndroidSystemAuthority};
+    use super::{bind_reusable_tcp, handle_provider, handle_revision, AndroidSystemAuthority};
+
+    #[test]
+    fn tcp_listener_rebinds_immediately_after_a_live_connection() {
+        let first = bind_reusable_tcp("127.0.0.1:0").unwrap();
+        let address = first.local_addr().unwrap();
+        let client = thread::spawn(move || TcpStream::connect(address).unwrap());
+        let (server, _) = first.accept().unwrap();
+        server.shutdown(Shutdown::Both).unwrap();
+        drop(server);
+        drop(client.join().unwrap());
+        drop(first);
+
+        let rebound = bind_reusable_tcp(&address.to_string()).unwrap();
+        assert_eq!(rebound.local_addr().unwrap(), address);
+    }
 
     fn test_authority() -> (tempfile::TempDir, Arc<Mutex<AndroidSystemAuthority>>) {
         let temporary = tempfile::tempdir().unwrap();

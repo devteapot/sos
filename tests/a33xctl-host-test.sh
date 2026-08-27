@@ -107,6 +107,32 @@ if A33XCTL_ADB="$mock_adb" "$ctl" inspect-core1-readiness \
   exit 1
 fi
 
+authority_recovery_state="$test_root/authority-recovered"
+A33XCTL_ADB="$mock_adb" \
+  A33XCTL_NC="$mock_nc" \
+  A33XCTL_MOCK_AUTHORITY_RECOVERY=1 \
+  A33XCTL_MOCK_AUTHORITY_RECOVERY_STATE="$authority_recovery_state" \
+  "$ctl" restart-v4-authority \
+    --serial MOCKSERIAL \
+    --expected-revision sos.compat1.test.revision \
+    >"$test_root/authority-recovery.out"
+grep -Fx 'v4_authority_recovery=PASS' "$test_root/authority-recovery.out" >/dev/null
+grep -Fx 'build_type=userdebug' "$test_root/authority-recovery.out" >/dev/null
+grep -Fx 'authority_pid_before=300' "$test_root/authority-recovery.out" >/dev/null
+grep -Fx 'authority_pid_after=400' "$test_root/authority-recovery.out" >/dev/null
+rm -f -- "$authority_recovery_state"
+if A33XCTL_ADB="$mock_adb" \
+  A33XCTL_NC="$mock_nc" \
+  A33XCTL_MOCK_AUTHORITY_RECOVERY=1 \
+  A33XCTL_MOCK_AUTHORITY_RECOVERY_STATE="$authority_recovery_state" \
+  A33XCTL_MOCK_BUILD_TYPE=user \
+  "$ctl" restart-v4-authority \
+    --serial MOCKSERIAL \
+    --expected-revision sos.compat1.test.revision >/dev/null 2>&1; then
+  printf 'user authority recovery unexpectedly passed\n' >&2
+  exit 1
+fi
+
 printf 'compat artifact\n' >"$test_root/compat.ota.zip"
 printf 'core artifact\n' >"$test_root/core.ota.zip"
 failed_campaign="$test_root/failed-capture-campaign"

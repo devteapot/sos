@@ -5,6 +5,35 @@ set -euo pipefail
 [[ "$#" -ge 3 && "$1" == -s && "$2" == MOCKSERIAL ]] || exit 64
 shift 2
 
+if [[ "${A33XCTL_MOCK_AUTHORITY_RECOVERY:-}" == 1 ]]; then
+  recovery_state="${A33XCTL_MOCK_AUTHORITY_RECOVERY_STATE:?}"
+  case "$*" in
+    'shell getprop ro.build.version.incremental')
+      printf '%s\r\n' 'sos.compat1.test.revision'
+      ;;
+    'shell getprop ro.build.type')
+      printf '%s\r\n' "${A33XCTL_MOCK_BUILD_TYPE:-userdebug}"
+      ;;
+    'shell pidof sos-authority')
+      [[ -f "$recovery_state" ]] && printf '400\r\n' || printf '300\r\n'
+      ;;
+    'shell pidof dev.sos.experience') printf '200\r\n' ;;
+    'shell getprop init.svc.sos_authority') printf 'running\r\n' ;;
+    'shell setprop sys.sos.authority_recovery_probe 1') : >"$recovery_state" ;;
+    'shell getprop sys.sos.authority_recovery_probe') printf '0\r\n' ;;
+    'forward tcp:0 tcp:47778') printf '47779\r\n' ;;
+    'forward --remove tcp:47779') ;;
+    'shell cat /data/misc/sos/provider-state.composition.json')
+      printf '{"format_version":1}\n'
+      ;;
+    *)
+      printf 'unexpected authority-recovery mock adb arguments: %s\n' "$*" >&2
+      exit 65
+      ;;
+  esac
+  exit 0
+fi
+
 if [[ -n "${A33XCTL_CAPTURE_STAGE:-}" ]]; then
   mock_stage="$A33XCTL_CAPTURE_STAGE"
   mock_product="${A33XCTL_CAPTURE_PRODUCT:?}"

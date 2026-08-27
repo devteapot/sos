@@ -1843,40 +1843,49 @@ validate_device_identity() {
 restart_v4_authority() {
   [[ "$#" -eq 4 && "$1" == --serial && "$3" == --expected-revision ]] || \
     fail "usage: ./tools/a33xctl restart-v4-authority --serial SERIAL --expected-revision REVISION"
-  local serial="$2" expected_revision="$4" revision debuggable
-  local old_authority new_authority old_host new_host service
+  local serial="$2" expected_revision="$4" revision build_type
+  local old_authority new_authority old_host new_host service recovery_snapshot audit_ready=0
   validate_device_identity "$serial" "$expected_revision"
   revision="$(device_property "$serial" ro.build.version.incremental)"
-  debuggable="$(device_property "$serial" ro.debuggable)"
+  build_type="$(device_property "$serial" ro.build.type)"
   [[ "$revision" == "$expected_revision" ]] || \
     fail "authority recovery revision mismatch: expected $expected_revision, found $revision"
-  [[ "$debuggable" == 1 ]] || \
-    fail "authority recovery probe is available only on a debuggable physical gate product"
+  [[ "$build_type" == userdebug || "$build_type" == eng ]] || \
+    fail "authority recovery probe is available only on a userdebug or eng physical gate product"
   old_authority="$(adb_readonly "$serial" shell pidof sos-authority 2>/dev/null | tr -d '\r\n' || true)"
   old_host="$(adb_readonly "$serial" shell pidof dev.sos.experience 2>/dev/null | tr -d '\r\n' || true)"
   [[ "$old_authority" =~ ^[0-9]+$ ]] || fail "SOS authority is not live before recovery"
   [[ "$old_host" =~ ^[0-9]+$ ]] || fail "SOS HOME is not live before authority recovery"
 
   adb_readonly "$serial" shell setprop sys.sos.authority_recovery_probe 1
+  recovery_snapshot="$(mktemp /tmp/sos-authority-recovery-audit.XXXXXX)"
   new_authority=''
   for _ in {1..100}; do
     new_authority="$(adb_readonly "$serial" shell pidof sos-authority 2>/dev/null | tr -d '\r\n' || true)"
     service="$(device_property "$serial" init.svc.sos_authority)"
     if [[ "$new_authority" =~ ^[0-9]+$ && "$new_authority" != "$old_authority" && \
       "$service" == running ]]; then
-      break
+      if capture_authority_audit_snapshot "$serial" "$recovery_snapshot" \
+        >/dev/null 2>&1; then
+        audit_ready=1
+        break
+      fi
     fi
     sleep 0.1
   done
-  [[ "$new_authority" =~ ^[0-9]+$ && "$new_authority" != "$old_authority" ]] || \
-    fail "init did not recover the authority after the bounded probe"
+  if [[ ! "$new_authority" =~ ^[0-9]+$ || "$new_authority" == "$old_authority" || \
+    "$audit_ready" != 1 ]]; then
+    rm -f -- "$recovery_snapshot"
+    fail "init did not recover an audit-ready authority after the bounded probe"
+  fi
+  rm -f -- "$recovery_snapshot"
   new_host="$(adb_readonly "$serial" shell pidof dev.sos.experience 2>/dev/null | tr -d '\r\n' || true)"
   [[ "$new_host" == "$old_host" ]] || \
     fail "authority recovery replaced the SOS HOME process"
   [[ "$(device_property "$serial" sys.sos.authority_recovery_probe)" == 0 ]] || \
     fail "authority recovery probe did not reset after one use"
-  printf 'v4_authority_recovery=PASS\nserial=%s\nrevision=%s\n' \
-    "$serial" "$revision"
+  printf 'v4_authority_recovery=PASS\nserial=%s\nrevision=%s\nbuild_type=%s\n' \
+    "$serial" "$revision" "$build_type"
   printf 'authority_pid_before=%s\nauthority_pid_after=%s\nhome_pid=%s\n' \
     "$old_authority" "$new_authority" "$new_host"
 }
