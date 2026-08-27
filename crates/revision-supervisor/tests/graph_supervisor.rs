@@ -343,7 +343,7 @@ fn activation_journal_rolls_back_when_only_presentation_completed() {
 }
 
 #[test]
-fn tracked_refresh_activates_the_complete_graph_and_restarts_exactly() {
+fn tracked_child_update_activates_the_complete_graph_and_restarts_exactly() {
     let directory = TempDir::new().unwrap();
     let store = RevisionStore::open(directory.path()).unwrap();
     let reference = install_reference_composition(&store).unwrap();
@@ -371,8 +371,6 @@ fn tracked_refresh_activates_the_complete_graph_and_restarts_exactly() {
         .unwrap()
         .manifest
         .revision_id;
-    registry.set_current(&agenda_id, &new_agenda).unwrap();
-
     let old_dashboard = store.verify(&reference.dashboard_revision).unwrap();
     let mut dashboard_package = old_dashboard.package.unwrap();
     dashboard_package
@@ -402,19 +400,13 @@ fn tracked_refresh_activates_the_complete_graph_and_restarts_exactly() {
         .revision_id;
 
     let resolver = GraphResolver::new(store.clone());
-    let locked = resolver
-        .resolve_tracked(&reference.dashboard_revision, &main, &registry)
-        .unwrap();
-    assert!(locked.nodes.values().any(|node| {
-        node.experience_id == agenda_id && node.revision_id.as_str() == reference.agenda_revision
-    }));
-    let tracked = resolver
+    let initial_tracked = resolver
         .resolve_tracked(&tracked_dashboard, &main, &registry)
         .unwrap();
-    assert!(tracked.nodes.values().any(|node| {
-        node.experience_id == agenda_id && node.revision_id.as_str() == new_agenda
+    assert!(initial_tracked.nodes.values().any(|node| {
+        node.experience_id == agenda_id && node.revision_id.as_str() == reference.agenda_revision
     }));
-    let tracked_graph = graphs.install(&tracked).unwrap();
+    let initial_tracked_graph = graphs.install(&initial_tracked).unwrap();
 
     let mut supervisor = ExperienceGraphSupervisor::new(
         store.clone(),
@@ -424,10 +416,33 @@ fn tracked_refresh_activates_the_complete_graph_and_restarts_exactly() {
         Duration::from_secs(2),
     );
     supervisor.boot(&root).unwrap();
-    let prepared = supervisor.prepare(&root, &tracked_graph).unwrap();
+    let prepared = supervisor.prepare(&root, &initial_tracked_graph).unwrap();
     supervisor.commit(prepared).unwrap();
+    let (tracked_graph, _) = supervisor
+        .advance_experience(&agenda_id, &new_agenda)
+        .unwrap()
+        .unwrap();
     assert_eq!(supervisor.active_graph(), Some(tracked_graph.as_str()));
     assert_eq!(graphs.current(&root).unwrap().unwrap().0, tracked_graph);
+    assert_eq!(
+        registry
+            .current(&agenda_id)
+            .unwrap()
+            .unwrap()
+            .manifest
+            .revision_id,
+        new_agenda
+    );
+    assert!(graphs
+        .current(&root)
+        .unwrap()
+        .unwrap()
+        .1
+        .nodes
+        .values()
+        .any(|node| {
+            node.experience_id == agenda_id && node.revision_id.as_str() == new_agenda
+        }));
     assert_eq!(
         registry
             .current(&root)
@@ -449,4 +464,71 @@ fn tracked_refresh_activates_the_complete_graph_and_restarts_exactly() {
     restarted.boot(&root).unwrap();
     assert_eq!(restarted.active_graph(), Some(tracked_graph.as_str()));
     restarted.shutdown().unwrap();
+}
+
+#[test]
+fn locked_child_update_advances_only_the_child_registry_pointer() {
+    let directory = TempDir::new().unwrap();
+    let store = RevisionStore::open(directory.path()).unwrap();
+    let reference = install_reference_composition(&store).unwrap();
+    let root = ExperienceId::parse("sos.example.dashboard").unwrap();
+    let agenda_id = ExperienceId::parse("sos.example.agenda").unwrap();
+    let registry = ExperienceRegistry::open(store.clone()).unwrap();
+    let graphs = GraphStore::open(directory.path()).unwrap();
+    let old_graph = graphs.current(&root).unwrap().unwrap().0;
+    let old_agenda = store.verify(&reference.agenda_revision).unwrap();
+    let agenda_package = old_agenda.package.unwrap();
+    let agenda_source =
+        fs::read_to_string(old_agenda.directory.join(&old_agenda.manifest.source.path)).unwrap();
+    let new_agenda = store
+        .install_package(RevisionPackageInput {
+            revision: RevisionInput {
+                source: format!("{agenda_source}\n-- locked child update\n").into_bytes(),
+                state: json!({}),
+                schema_version: 1,
+                experience_api_version: 4,
+                assets: vec![],
+            },
+            package: agenda_package,
+        })
+        .unwrap()
+        .manifest
+        .revision_id;
+
+    let mut supervisor = ExperienceGraphSupervisor::new(
+        store,
+        registry.clone(),
+        graphs.clone(),
+        HostCommand::new(host_executable()),
+        Duration::from_secs(2),
+    );
+    supervisor.boot(&root).unwrap();
+    assert_eq!(
+        supervisor
+            .advance_experience(&agenda_id, &new_agenda)
+            .unwrap(),
+        None
+    );
+    assert_eq!(graphs.current(&root).unwrap().unwrap().0, old_graph);
+    assert_eq!(
+        registry
+            .current(&agenda_id)
+            .unwrap()
+            .unwrap()
+            .manifest
+            .revision_id,
+        new_agenda
+    );
+    assert!(graphs
+        .current(&root)
+        .unwrap()
+        .unwrap()
+        .1
+        .nodes
+        .values()
+        .any(|node| {
+            node.experience_id == agenda_id
+                && node.revision_id.as_str() == reference.agenda_revision
+        }));
+    supervisor.shutdown().unwrap();
 }

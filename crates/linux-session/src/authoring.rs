@@ -23,8 +23,9 @@ use nix::{
 };
 use provider_state_service::ServiceClient;
 use revision_supervisor::{
-    DurableState, ExperienceRegistry, GraphResolver, GraphStore,
+    DurableState, ExperienceRegistry, GraphResolver, GraphStore, ReverseDependencyIndex,
     RevisionAssetInput as StoreAssetInput, RevisionInput, RevisionPackageInput, RevisionStore,
+    VerifiedRevision, STOCK_SHELL_EXPERIENCE_ID,
 };
 use runtime_luau::{
     load_revision_assets, LuauRuntime, RevisionAssetInput as RuntimeAssetInput, ValidationReport,
@@ -32,15 +33,14 @@ use runtime_luau::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use service_protocol::StateResource;
-
-use crate::stage_revision;
+use service_protocol::{
+    ResourceQuery, ResourceValue, ResponsePayload, ServiceRequest, StateResource,
+};
 
 const MAX_AUTHORING_MODULES: usize = 16;
 const MAX_AUTHORING_MODULE_BYTES: usize = 1024 * 1024;
 const MAX_REQUEST_BYTES: u64 =
     ((MAX_SOURCE_BYTES + MAX_AUTHORING_MODULE_BYTES) as u64 * 8) + 64 * 1024;
-const EXPERIENCE_API_VERSION: u32 = 3;
 
 #[derive(Clone, Debug)]
 pub struct AuthoringBrokerOptions {
@@ -147,16 +147,16 @@ struct AuthoringResponse {
 }
 
 #[derive(Debug, Serialize)]
-struct SupervisorRequest<'a> {
+struct GraphSupervisorRequest<'a> {
     action: &'static str,
-    revision_id: &'a str,
-    transaction_id: &'a str,
+    graph_id: &'a str,
 }
 
 #[derive(Debug, Deserialize)]
 struct SupervisorResponse {
     ok: bool,
     active_revision: Option<String>,
+    active_graph: Option<String>,
     event: Option<String>,
     error: Option<String>,
 }
@@ -168,6 +168,13 @@ struct ValidatedCandidate {
     schema_version: u64,
     assets: Vec<StoreAssetInput>,
     validation: ValidationReport,
+    package: PackageMetadata,
+}
+
+struct ActiveAuthoringExperience {
+    graph_id: String,
+    revision: VerifiedRevision,
+    package: PackageMetadata,
 }
 
 #[derive(Debug)]
@@ -285,9 +292,8 @@ fn handle(options: &AuthoringBrokerOptions, request: AuthoringRequest) -> Result
     let store = RevisionStore::open(&options.revision_root)?;
     match request {
         AuthoringRequest::GetExperienceContext => {
-            let current = store
-                .current()?
-                .context("the Linux session has no active experience")?;
+            let active = active_authoring_experience(&store)?;
+            let current = active.revision;
             let source = fs::read_to_string(current.directory.join(&current.manifest.source.path))?;
             let durable =
                 load_durable_state(&current.directory.join(&current.manifest.state.path))?;
@@ -305,6 +311,9 @@ fn handle(options: &AuthoringBrokerOptions, request: AuthoringRequest) -> Result
                 .collect::<Result<Vec<_>>>()?;
             Ok(json!({
                 "revision_id": current.manifest.revision_id,
+                "experience_id": active.package.experience_id,
+                "graph_id": active.graph_id,
+                "package": active.package,
                 "source": source,
                 "modules": modules,
                 "schema_version": durable.schema_version,
@@ -332,57 +341,66 @@ fn handle(options: &AuthoringBrokerOptions, request: AuthoringRequest) -> Result
             }))
         }
         AuthoringRequest::ValidateExperience { source, modules } => {
-            let authority = crate::get_state(&ServiceClient::new(
-                &options.service_socket,
-                options.timeout,
-            ))?;
+            let active = active_authoring_experience(&store)?;
+            let authority = get_authority_experience_state(
+                &ServiceClient::new(&options.service_socket, options.timeout),
+                &active.package.experience_id,
+                &active.revision.manifest.revision_id,
+            )?;
             let candidate = evaluate_candidate(&store, &authority, source, modules, false)?;
             Ok(json!({
                 "valid": candidate.validation.valid,
                 "source_bytes": candidate.source.len(),
                 "module_count": candidate.assets.iter().filter(|asset| asset.kind == "luau").count(),
                 "schema_version": candidate.schema_version,
+                "experience_id": candidate.package.experience_id,
+                "package": candidate.package,
                 "report": candidate.validation,
             }))
         }
         AuthoringRequest::SubmitExperience { source, modules } => {
-            let authority = crate::get_state(&ServiceClient::new(
-                &options.service_socket,
-                options.timeout,
-            ))?;
+            let active = active_authoring_experience(&store)?;
+            let authority = get_authority_experience_state(
+                &ServiceClient::new(&options.service_socket, options.timeout),
+                &active.package.experience_id,
+                &active.revision.manifest.revision_id,
+            )?;
             let candidate = validate_candidate(&store, &authority, source, modules)?;
-            let revision = store.install(RevisionInput {
-                source: candidate.source,
-                state: candidate.state,
-                schema_version: candidate.schema_version,
-                experience_api_version: EXPERIENCE_API_VERSION,
-                assets: candidate.assets,
+            let revision = store.install_package(RevisionPackageInput {
+                revision: RevisionInput {
+                    source: candidate.source,
+                    state: candidate.state,
+                    schema_version: candidate.schema_version,
+                    experience_api_version: experience_ir::EXPERIENCE_API_VERSION_V4,
+                    assets: candidate.assets,
+                },
+                package: candidate.package,
             })?;
-            let current_id = store.current()?.map(|current| current.manifest.revision_id);
-            if current_id.as_deref() == Some(&revision.manifest.revision_id) {
+            let graph = GraphResolver::new(store.clone()).resolve(
+                &revision.manifest.revision_id,
+                &ExportId::parse("main").map_err(|error| anyhow::anyhow!(error.to_string()))?,
+            )?;
+            let graphs = GraphStore::open(store.root())?;
+            let graph_id = graphs.install(&graph)?;
+            if active.graph_id == graph_id {
                 return Ok(json!({
                     "revision_id": revision.manifest.revision_id,
-                    "active_revision": current_id,
+                    "experience_id": active.package.experience_id,
+                    "graph_id": graph_id,
+                    "active_revision": active.revision.manifest.revision_id,
+                    "active_graph": active.graph_id,
                     "activated": false,
                     "event": "already_active",
                 }));
             }
-            let transaction_id = stage_revision(
-                &options.revision_root,
-                &revision.manifest.revision_id,
-                &options.service_socket,
-                options.timeout,
-            )?;
-            let supervisor = activate(
-                &options.supervisor_socket,
-                &revision.manifest.revision_id,
-                &transaction_id,
-                options.timeout,
-            )?;
+            let supervisor =
+                activate_graph(&options.supervisor_socket, &graph_id, options.timeout)?;
             Ok(json!({
                 "revision_id": revision.manifest.revision_id,
+                "experience_id": active.package.experience_id,
+                "graph_id": graph_id,
                 "active_revision": supervisor.active_revision,
-                "transaction_id": transaction_id,
+                "active_graph": supervisor.active_graph,
                 "activated": true,
                 "event": supervisor.event,
             }))
@@ -452,6 +470,7 @@ fn handle(options: &AuthoringBrokerOptions, request: AuthoringRequest) -> Result
                 &revision.manifest.revision_id,
                 replace_existing,
             )?;
+            ReverseDependencyIndex::open(store.root()).rebuild(&store, &registry)?;
             let graph_id = if revision.package.as_ref().is_some_and(|package| {
                 package
                     .contract
@@ -535,6 +554,7 @@ fn handle(options: &AuthoringBrokerOptions, request: AuthoringRequest) -> Result
                 &revision.manifest.revision_id,
                 replace_existing,
             )?;
+            ReverseDependencyIndex::open(store.root()).rebuild(&store, &registry)?;
             let graph = GraphResolver::new(store.clone()).resolve(
                 &revision.manifest.revision_id,
                 &ExportId::parse("main").map_err(|error| anyhow::anyhow!(error.to_string()))?,
@@ -1074,6 +1094,65 @@ fn validate_candidate(
     evaluate_candidate(store, authority, source, modules, true)
 }
 
+fn active_authoring_experience(store: &RevisionStore) -> Result<ActiveAuthoringExperience> {
+    let experience_id = ExperienceId::parse(STOCK_SHELL_EXPERIENCE_ID)
+        .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+    let graphs = GraphStore::open(store.root())?;
+    let (graph_id, graph) = graphs.current(&experience_id)?.context(
+        "the active Stock experience has not migrated to a v4 graph; legacy v3 authoring is disabled",
+    )?;
+    let root = graph
+        .nodes
+        .get(&graph.root)
+        .context("the active Stock graph has no root node")?;
+    if root.experience_id != experience_id {
+        bail!("the active Stock graph root has the wrong experience identity");
+    }
+    let revision = store.verify(root.revision_id.as_str())?;
+    let package = revision
+        .package
+        .clone()
+        .context("the active authoring target is not a v4 package")?;
+    let registry = ExperienceRegistry::open(store.clone())?;
+    let registry_revision = registry
+        .current(&experience_id)?
+        .context("the active Stock registry record has no current revision")?;
+    if registry_revision.manifest.revision_id != revision.manifest.revision_id {
+        bail!("the active Stock registry and graph root disagree");
+    }
+    Ok(ActiveAuthoringExperience {
+        graph_id,
+        revision,
+        package,
+    })
+}
+
+fn get_authority_experience_state(
+    client: &ServiceClient,
+    experience_id: &ExperienceId,
+    revision_id: &str,
+) -> Result<StateResource> {
+    let response = client.call(&ServiceRequest::GetResource {
+        request_id: 40,
+        query: ResourceQuery::ExperienceStateAt {
+            experience_id: experience_id.clone(),
+            revision_id: revision_id.into(),
+        },
+    })?;
+    if !response.ok {
+        bail!(
+            "provider authority rejected the experience-state request: {:?}",
+            response.error
+        );
+    }
+    match response.payload {
+        Some(ResponsePayload::Resource {
+            value: ResourceValue::ExperienceStateAt(state),
+        }) => Ok(state.resource),
+        _ => bail!("provider authority returned the wrong experience-state payload"),
+    }
+}
+
 fn evaluate_candidate(
     store: &RevisionStore,
     authority: &StateResource,
@@ -1084,9 +1163,8 @@ fn evaluate_candidate(
     if source.len() > MAX_SOURCE_BYTES {
         bail!("experience source is larger than {MAX_SOURCE_BYTES} bytes");
     }
-    let current = store
-        .current()?
-        .context("the Linux session has no active experience")?;
+    let active = active_authoring_experience(store)?;
+    let current = active.revision;
     let durable = load_durable_state(&current.directory.join(&current.manifest.state.path))?;
     if authority.revision_id != current.manifest.revision_id
         || authority.source_sha256 != durable.source_sha256
@@ -1105,6 +1183,24 @@ fn evaluate_candidate(
         .collect();
     let runtime = LuauRuntime::compile_with_assets(&source, runtime_assets)
         .map_err(|error| anyhow::anyhow!("compile candidate experience: {error}"))?;
+    if runtime.api_version() != experience_ir::EXPERIENCE_API_VERSION_V4 {
+        bail!("new authoring submissions must use experience API v4");
+    }
+    let implemented = runtime
+        .export_ids()
+        .map_err(|error| anyhow::anyhow!(error.to_string()))?
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+    let declared = active
+        .package
+        .contract
+        .exports
+        .keys()
+        .map(ToString::to_string)
+        .collect::<std::collections::BTreeSet<_>>();
+    if implemented != declared {
+        bail!("candidate exports do not exactly match the active v4 contract");
+    }
     let state = runtime
         .migrate_state(authority.schema_version, &authority.state)
         .map_err(|error| anyhow::anyhow!("migrate candidate experience state: {error}"))?;
@@ -1133,16 +1229,12 @@ fn evaluate_candidate(
         bail!("candidate validation scenarios failed: {failures}");
     }
     if report.valid {
-        let scene = runtime
-            .render(&providers_fake::snapshot(), &state)
-            .map_err(|error| {
-                anyhow::anyhow!(
-                    "render candidate with the deterministic provider snapshot: {error}"
-                )
-            })?;
-        if !has_agent_composer(&scene.root) {
+        if active.package.role == experience_package::ExperienceRole::Shell
+            && !has_shell_agent_composer(&runtime, &state)?
+        {
             bail!("candidate must retain a Luau text_session whose submit_action is agent_submit");
         }
+        validate_export_viewports(store, &active.package, &runtime, &state)?;
     }
     Ok(ValidatedCandidate {
         source: source.into_bytes(),
@@ -1150,7 +1242,59 @@ fn evaluate_candidate(
         schema_version,
         assets,
         validation: report,
+        package: active.package,
     })
+}
+
+fn validate_export_viewports(
+    store: &RevisionStore,
+    package: &PackageMetadata,
+    runtime: &LuauRuntime,
+    state: &Value,
+) -> Result<()> {
+    let mut model = providers_fake::snapshot();
+    for (export_id, export) in &package.contract.exports {
+        let properties = export.properties.example_value();
+        for (width, height) in [
+            (export.viewport.min_width, export.viewport.min_height),
+            (export.viewport.max_width, export.viewport.max_height),
+        ] {
+            let scene = runtime
+                .render_export(
+                    export_id.as_str(),
+                    &model,
+                    state,
+                    &properties,
+                    experience_ir::ExperienceViewport {
+                        width,
+                        height,
+                        scale_milli: 1000,
+                    },
+                    None,
+                )
+                .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+            if export_id.as_str() == "main" {
+                validate_composition_mounts(store, package, &scene)?;
+            }
+        }
+        model.appearance.contrast = experience_package::Contrast::High;
+        model.appearance.reduce_motion = true;
+        runtime
+            .render_export(
+                export_id.as_str(),
+                &model,
+                state,
+                &properties,
+                experience_ir::ExperienceViewport {
+                    width: export.viewport.min_width,
+                    height: export.viewport.min_height,
+                    scale_milli: 1000,
+                },
+                None,
+            )
+            .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+    }
+    Ok(())
 }
 
 fn candidate_assets(
@@ -1209,27 +1353,38 @@ fn has_agent_composer(node: &SceneNode) -> bool {
     ) || node.children.iter().any(has_agent_composer)
 }
 
+fn has_shell_agent_composer(runtime: &LuauRuntime, state: &Value) -> Result<bool> {
+    for (key, value) in [("active_workspace", "agent"), ("shell_panel", "agent")] {
+        let mut candidate = state.clone();
+        let object = candidate
+            .as_object_mut()
+            .context("shell experience state must be a record")?;
+        object.insert(key.into(), Value::String(value.into()));
+        let scene = runtime
+            .render(&providers_fake::snapshot(), &candidate)
+            .map_err(|error| anyhow::anyhow!("render shell agent composer branch: {error}"))?;
+        if has_agent_composer(&scene.root) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 fn load_durable_state(path: &Path) -> Result<DurableState> {
     serde_json::from_slice(&fs::read(path).with_context(|| format!("read {}", path.display()))?)
         .with_context(|| format!("decode {}", path.display()))
 }
 
-fn activate(
-    socket: &Path,
-    revision_id: &str,
-    transaction_id: &str,
-    timeout: Duration,
-) -> Result<SupervisorResponse> {
+fn activate_graph(socket: &Path, graph_id: &str, timeout: Duration) -> Result<SupervisorResponse> {
     let mut stream = UnixStream::connect(socket)
         .with_context(|| format!("connect supervisor socket {}", socket.display()))?;
     stream.set_read_timeout(Some(timeout))?;
     stream.set_write_timeout(Some(timeout))?;
     serde_json::to_writer(
         &mut stream,
-        &SupervisorRequest {
-            action: "activate",
-            revision_id,
-            transaction_id,
+        &GraphSupervisorRequest {
+            action: "activate_graph",
+            graph_id,
         },
     )?;
     stream.write_all(b"\n")?;
@@ -1260,21 +1415,49 @@ mod tests {
         let temporary = TempDir::new().unwrap();
         let store = RevisionStore::open(temporary.path()).unwrap();
         let source = include_str!("../../../experiences/default.luau");
+        let package: PackageMetadata =
+            serde_json::from_str(include_str!("../../../experiences/default.package.json"))
+                .unwrap();
         let revision = store
-            .install(RevisionInput {
-                source: source.as_bytes().to_vec(),
-                state: json!({}),
-                schema_version: 1,
-                experience_api_version: EXPERIENCE_API_VERSION,
-                assets: Vec::<RevisionAssetInput>::new(),
+            .install_package(RevisionPackageInput {
+                revision: RevisionInput {
+                    source: source.as_bytes().to_vec(),
+                    state: json!({}),
+                    schema_version: 1,
+                    experience_api_version: experience_ir::EXPERIENCE_API_VERSION_V4,
+                    assets: vec![RevisionAssetInput {
+                        id: "stock.theme".into(),
+                        kind: "luau".into(),
+                        bytes: include_bytes!("../../../experiences/modules/stock-theme.luau")
+                            .to_vec(),
+                    }],
+                },
+                package,
             })
             .unwrap();
-        store.set_current(&revision.manifest.revision_id).unwrap();
+        let stock = ExperienceId::parse(STOCK_SHELL_EXPERIENCE_ID).unwrap();
+        ExperienceRegistry::open(store.clone())
+            .unwrap()
+            .create(
+                &stock,
+                experience_package::ExperienceRole::Shell,
+                &revision.manifest.revision_id,
+            )
+            .unwrap();
+        let graph = GraphResolver::new(store.clone())
+            .resolve(
+                &revision.manifest.revision_id,
+                &ExportId::parse("main").unwrap(),
+            )
+            .unwrap();
+        let graphs = GraphStore::open(store.root()).unwrap();
+        let graph_id = graphs.install(&graph).unwrap();
+        graphs.set_current(&stock, &graph_id).unwrap();
         (temporary, store)
     }
 
     fn authority(store: &RevisionStore) -> StateResource {
-        let current = store.current().unwrap().unwrap();
+        let current = active_authoring_experience(store).unwrap().revision;
         let durable =
             load_durable_state(&current.directory.join(&current.manifest.state.path)).unwrap();
         StateResource {
@@ -1292,7 +1475,7 @@ mod tests {
         let candidate = validate_candidate(
             &store,
             &authority(&store),
-            include_str!("../../../experiences/timeflow.luau").into(),
+            include_str!("../../../experiences/default.luau").into(),
             None,
         )
         .unwrap();
@@ -1306,7 +1489,8 @@ mod tests {
         let error = validate_candidate(
             &store,
             &authority(&store),
-            "return { api_version = 3, render = function() return 5 end }".into(),
+            "return { api_version = 4, exports = { main = { render = function() return 5 end } } }"
+                .into(),
             None,
         )
         .unwrap_err();
@@ -1319,10 +1503,10 @@ mod tests {
     fn validation_returns_the_structured_report_before_submission_rejects() {
         let (_temporary, store) = initialized_store();
         let source = r#"return {
-            api_version = 3,
-            render = function()
+            api_version = 4,
+            exports = { main = { render = function()
                 return { id = "root", children = {{ interaction = { tap_action = "open" } }} }
-            end,
+            end } },
         }"#;
         let evaluated =
             evaluate_candidate(&store, &authority(&store), source.into(), None, false).unwrap();
@@ -1347,8 +1531,8 @@ mod tests {
             &store,
             &authority(&store),
             r#"return {
-                api_version = 3,
-                render = function() return { id = "root" } end,
+                api_version = 4,
+                exports = { main = { render = function() return { id = "root" } end } },
             }"#
             .into(),
             None,
@@ -1363,10 +1547,10 @@ mod tests {
         let source = r#"
             local composer = require("test.composer")
             return {
-                api_version = 3,
-                render = function()
+                api_version = 4,
+                exports = { main = { render = function()
                     return { id = "root", children = { composer } }
-                end,
+                end } },
             }
         "#;
         let candidate = validate_candidate(

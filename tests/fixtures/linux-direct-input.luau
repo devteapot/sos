@@ -1,8 +1,8 @@
 return {
-    api_version = 3,
+    api_version = 4,
     state_version = 1,
 
-    render = function(_, state)
+    exports = { main = { render = function(_, state)
         return {
             id = "direct-input-surface",
             layout = {
@@ -42,5 +42,5 @@ return {
             state.phase = event.phase
         end
         return state
-    end,
+    end } },
 }

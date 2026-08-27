@@ -25,12 +25,12 @@ test("the packaged runner applies the bounded faux Pi contract", async () => {
   const api = path.join(directory, "experience-api.md");
   const primary = path.join(directory, "primary.luau");
   const secondary = path.join(directory, "secondary.luau");
-  const candidate = "return { api_version = 3, render = function() return { id = 'next' } end }";
+  const candidate = "return { api_version = 4, exports = { main = { render = function() return { id = 'next' } end } } }";
   try {
     await Promise.all([
       fs.writeFile(api, "# Test API\n"),
-      fs.writeFile(primary, "return { api_version = 3 }\n"),
-      fs.writeFile(secondary, "return { api_version = 3, alternate = true }\n"),
+      fs.writeFile(primary, "return { api_version = 4, exports = { main = {} } }\n"),
+      fs.writeFile(secondary, "return { api_version = 4, exports = { main = {} }, alternate = true }\n"),
     ]);
     const response = await exchange(
       [
@@ -47,7 +47,7 @@ test("the packaged runner applies the bounded faux Pi contract", async () => {
         action: "prompt",
         provider: "faux",
         prompt: "Make this calmer",
-        currentSource: "return { api_version = 3 }",
+        currentSource: "return { api_version = 4, exports = { main = {} } }",
         candidateSource: candidate,
       },
     );
@@ -89,7 +89,7 @@ test("the bounded OpenRouter request accepts only the campaign model", () => {
     model: PINNED_OPENROUTER_MODEL,
     credential: { type: "api_key", key: "x" },
     prompt: "Make this calmer",
-    currentSource: "return { api_version = 3 }",
+    currentSource: "return { api_version = 4, exports = { main = {} } }",
   };
   assert.equal(
     (decodeRequest(JSON.stringify(request)) as { model: string }).model,

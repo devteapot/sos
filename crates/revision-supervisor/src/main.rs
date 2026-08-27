@@ -11,9 +11,9 @@ use std::{
 use provider_state_service::ServiceClient;
 use revision_supervisor::{
     install_reference_composition, CoordinatedSupervisor, DurableState, ExperienceGraphSupervisor,
-    ExperienceRegistry, GraphResolver, GraphStore, HostCommand, RevisionAssetInput, RevisionInput,
-    RevisionPackageInput, RevisionStore, RevisionSupervisor, SupervisorEvent,
-    STOCK_SHELL_EXPERIENCE_ID,
+    ExperienceRegistry, GraphResolver, GraphStore, HostCommand, ReverseDependencyIndex,
+    RevisionAssetInput, RevisionInput, RevisionPackageInput, RevisionStore, RevisionSupervisor,
+    SupervisorEvent, STOCK_SHELL_EXPERIENCE_ID,
 };
 use serde::{Deserialize, Serialize};
 
@@ -27,6 +27,10 @@ enum ControlRequest {
     },
     ActivateGraph {
         graph_id: String,
+    },
+    AdvanceExperience {
+        experience_id: String,
+        revision_id: String,
     },
     RefreshTracked,
     Status,
@@ -62,9 +66,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
         Some("bootstrap") => bootstrap(parse_options(args.collect())?),
         Some("bootstrap-graph") => bootstrap_graph(parse_options(args.collect())?),
+        Some("resolve-graph") => resolve_graph(parse_options(args.collect())?),
         Some("graph-status") => graph_status(parse_options(args.collect())?),
         Some("activate") => control_command(parse_options(args.collect())?, "activate"),
         Some("activate-graph") => control_command(parse_options(args.collect())?, "activate-graph"),
+        Some("advance-experience") => {
+            control_command(parse_options(args.collect())?, "advance-experience")
+        }
         Some("refresh-tracked") => {
             control_command(parse_options(args.collect())?, "refresh-tracked")
         }
@@ -104,6 +112,10 @@ fn control_command(options: Options, action: &str) -> Result<(), Box<dyn std::er
         },
         "activate-graph" => ControlRequest::ActivateGraph {
             graph_id: options.required("--graph")?,
+        },
+        "advance-experience" => ControlRequest::AdvanceExperience {
+            experience_id: options.required("--experience")?,
+            revision_id: options.required("--revision")?,
         },
         "refresh-tracked" => ControlRequest::RefreshTracked,
         "status" => ControlRequest::Status,
@@ -195,6 +207,7 @@ fn migrate_stock_v4(options: Options) -> Result<(), Box<dyn std::error::Error>> 
         }
     }
     registry.set_current(&stock_id, &revision_id)?;
+    ReverseDependencyIndex::open(store.root()).rebuild(&store, &registry)?;
     let graph = GraphResolver::new(store.clone())
         .resolve(&revision_id, &experience_package::ExportId::parse("main")?)?;
     let graphs = GraphStore::open(store.root())?;
@@ -238,6 +251,7 @@ fn bootstrap_graph(options: Options) -> Result<(), Box<dyn std::error::Error>> {
     } else {
         registry.set_current(&experience_id, &revision_id)?;
     }
+    ReverseDependencyIndex::open(store.root()).rebuild(&store, &registry)?;
     let graph = GraphResolver::new(store).resolve(&revision_id, &export_id)?;
     let graphs = GraphStore::open(root)?;
     let graph_id = graphs.install(&graph)?;
@@ -254,6 +268,20 @@ fn graph_status(options: Options) -> Result<(), Box<dyn std::error::Error>> {
         Some((graph_id, _)) => println!("{graph_id}"),
         None => println!("none"),
     }
+    Ok(())
+}
+
+fn resolve_graph(options: Options) -> Result<(), Box<dyn std::error::Error>> {
+    let root = options.required("--root")?;
+    let revision_id = options.required("--revision")?;
+    let export_id = experience_package::ExportId::parse(
+        options
+            .optional("--export")
+            .unwrap_or_else(|| "main".into()),
+    )?;
+    let store = RevisionStore::open(&root)?;
+    let graph = GraphResolver::new(store.clone()).resolve(&revision_id, &export_id)?;
+    println!("{}", GraphStore::open(store.root())?.install(&graph)?);
     Ok(())
 }
 
@@ -441,6 +469,13 @@ fn serve_loop(
                             Err(error) => (failure(runtime, error.to_string()), false),
                         }
                     }
+                    Ok(ControlRequest::AdvanceExperience {
+                        experience_id,
+                        revision_id,
+                    }) => match runtime.advance_experience(&experience_id, &revision_id) {
+                        Ok(event) => (success(runtime, Some(event)), false),
+                        Err(error) => (failure(runtime, error.to_string()), false),
+                    },
                     Ok(ControlRequest::RefreshTracked) => match runtime.refresh_tracked() {
                         Ok(event) => (success(runtime, Some(event)), false),
                         Err(error) => (failure(runtime, error.to_string()), false),
@@ -549,6 +584,25 @@ impl Runtime {
         ))
     }
 
+    fn advance_experience(
+        &mut self,
+        experience_id: &str,
+        revision_id: &str,
+    ) -> Result<String, Box<dyn std::error::Error>> {
+        let Self::Graph { supervisor, .. } = self else {
+            return Err("revision supervisor is not running in graph mode".into());
+        };
+        let experience_id = experience_package::ExperienceId::parse(experience_id)?;
+        match supervisor.advance_experience(&experience_id, revision_id)? {
+            Some((graph_id, host_pid)) => Ok(format!(
+                "experience_advanced experience_id={experience_id} revision_id={revision_id} graph_id={graph_id} host_pid={host_pid}"
+            )),
+            None => Ok(format!(
+                "experience_advanced experience_id={experience_id} revision_id={revision_id} graph_id=unchanged"
+            )),
+        }
+    }
+
     fn poll(&mut self) -> Result<Option<String>, Box<dyn std::error::Error>> {
         match self {
             Self::Standalone(supervisor) => {
@@ -605,7 +659,12 @@ impl Runtime {
         match self {
             Self::Standalone(supervisor) => Ok(format!("{:?}", supervisor.restart_host()?)),
             Self::Coordinated(supervisor) => Ok(format!("{:?}", supervisor.restart_host()?)),
-            Self::Graph { .. } => Err("graph host restart is automatic".into()),
+            Self::Graph { supervisor, .. } => {
+                let (graph_id, previous_pid, host_pid) = supervisor.restart_host()?;
+                Ok(format!(
+                    "graph_host_restarted graph_id={graph_id} previous_host_pid={previous_pid} host_pid={host_pid}"
+                ))
+            }
         }
     }
 }
@@ -676,7 +735,7 @@ fn parse_options(arguments: Vec<String>) -> Result<Options, String> {
 }
 
 fn usage() -> &'static str {
-    "usage:\n  sos-revision-supervisor install --root DIR --source FILE --state FILE --schema N --api N [--asset ID:KIND:FILE ...]\n  sos-revision-supervisor install-package --root DIR --source FILE --state FILE --schema N --package FILE [--asset ID:KIND:FILE ...]\n  sos-revision-supervisor migrate-stock-v4 --root DIR --source FILE --package FILE [--asset ID:KIND:FILE ...]\n  sos-revision-supervisor install-composition-demo --root DIR\n  sos-revision-supervisor bootstrap --root DIR --revision ID\n  sos-revision-supervisor bootstrap-graph --root DIR --experience ID --revision ID [--export ID]\n  sos-revision-supervisor graph-status --root DIR --experience ID\n  sos-revision-supervisor serve --root DIR --host-executable FILE [--host-arg VALUE ...] [--root-experience ID] [--timeout-ms N] [--service-socket PATH --service-timeout-ms N]\n  sos-revision-supervisor activate --root DIR --revision ID [--transaction ID]\n  sos-revision-supervisor activate-graph --root DIR --graph ID\n  sos-revision-supervisor refresh-tracked --root DIR\n  sos-revision-supervisor daemon-status --root DIR\n  sos-revision-supervisor shutdown --root DIR\n  sos-revision-supervisor status --root DIR"
+    "usage:\n  sos-revision-supervisor install --root DIR --source FILE --state FILE --schema N --api N [--asset ID:KIND:FILE ...]\n  sos-revision-supervisor install-package --root DIR --source FILE --state FILE --schema N --package FILE [--asset ID:KIND:FILE ...]\n  sos-revision-supervisor migrate-stock-v4 --root DIR --source FILE --package FILE [--asset ID:KIND:FILE ...]\n  sos-revision-supervisor install-composition-demo --root DIR\n  sos-revision-supervisor bootstrap --root DIR --revision ID\n  sos-revision-supervisor bootstrap-graph --root DIR --experience ID --revision ID [--export ID]\n  sos-revision-supervisor resolve-graph --root DIR --revision ID [--export ID]\n  sos-revision-supervisor graph-status --root DIR --experience ID\n  sos-revision-supervisor serve --root DIR --host-executable FILE [--host-arg VALUE ...] [--root-experience ID] [--timeout-ms N] [--service-socket PATH --service-timeout-ms N]\n  sos-revision-supervisor activate --root DIR --revision ID [--transaction ID]\n  sos-revision-supervisor activate-graph --root DIR --graph ID\n  sos-revision-supervisor advance-experience --root DIR --experience ID --revision ID\n  sos-revision-supervisor refresh-tracked --root DIR\n  sos-revision-supervisor daemon-status --root DIR\n  sos-revision-supervisor restart --root DIR\n  sos-revision-supervisor shutdown --root DIR\n  sos-revision-supervisor status --root DIR"
 }
 
 fn send_control(

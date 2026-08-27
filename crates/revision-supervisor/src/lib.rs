@@ -4,6 +4,7 @@ mod graph_supervisor;
 mod host;
 mod reference;
 mod registry;
+mod reverse_index;
 mod store;
 
 use std::{path::PathBuf, process::ExitStatus, time::Duration};
@@ -16,11 +17,12 @@ pub use experience_host_protocol::{HostEvent, HostRequest};
 pub use graph::{GraphResolver, GraphStore};
 pub use graph_supervisor::{
     ExperienceGraphSupervisor, GraphActivationFaultPoint, GraphActivationJournal,
-    GraphActivationPhase, PreparedGraphActivation,
+    GraphActivationPhase, PreparedGraphActivation, RegistryPointerUpdate,
 };
 pub use host::{ExperienceHost, HostCommand};
 pub use reference::{install_reference_composition, ReferenceComposition};
 pub use registry::{ExperienceRecord, ExperienceRegistry, STOCK_SHELL_EXPERIENCE_ID};
+pub use reverse_index::{ReverseDependencyData, ReverseDependencyIndex};
 pub use store::{
     AssetIdentity, DurableState, FileIdentity, RevisionAssetInput, RevisionInput, RevisionManifest,
     RevisionPackageInput, RevisionStore, VerifiedRevision, MAX_REVISION_ASSETS,

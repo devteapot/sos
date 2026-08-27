@@ -168,4 +168,8 @@ local function update(
     return state
 end
 
-return { api_version = 3, render = render, update = update }
+return {
+    api_version = 4,
+    state_version = 1,
+    exports = { main = { render = render, update = update } },
+}

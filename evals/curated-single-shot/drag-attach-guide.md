@@ -3,9 +3,10 @@
 This is a deliberately small authoring guide for one comparison against the
 frozen raw `drag_attach` baseline. It is not a production prompt or skill.
 
-- Implement one complete Luau module with `api_version = 3`,
-  `render(model, state)`, and `update(model, state, event)`; do not modify the
-  Rust host.
+- Implement one complete Luau module with `api_version = 4` and a `main`
+  export containing `render(model, state, properties, context)` and
+  `update(model, state, event, properties, context)`; do not modify the Rust
+  host.
 - Use one scene node with explicit width/height, at least two `path` and two
   `quad` paint operations, and its own `interaction.hit_regions`. This node is
   the visual and interaction surface, not decoration behind ordinary cards.

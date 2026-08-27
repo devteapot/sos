@@ -22,7 +22,7 @@ test("a prompt reaches Pi and uses only the bounded authoring flow", async () =>
       return { activated: true, revision_id: "b".repeat(64) };
     },
   };
-  const source = "return { api_version = 3, render = function() return {} end }";
+  const source = "return { api_version = 4, exports = { main = { render = function() return {} end } } }";
   const agent = createFauxAgentRuntime(backend, "test system prompt", source);
   const server = await startAgentServer({ socketPath, agent });
 

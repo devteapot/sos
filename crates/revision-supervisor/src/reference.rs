@@ -228,6 +228,7 @@ pub fn install_reference_composition(store: &RevisionStore) -> Result<ReferenceC
             registry.set_current(id, revision)?;
         }
     }
+    crate::ReverseDependencyIndex::open(store.root()).rebuild(store, &registry)?;
     let graph = GraphResolver::new(store.clone()).resolve(&dashboard_revision, &main)?;
     let graphs = GraphStore::open(store.root())?;
     let dashboard_graph = graphs.install(&graph)?;

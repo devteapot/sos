@@ -12464,3 +12464,51 @@ migrate Android and all current fixtures, then run full fault, fuzz,
 performance, Linux physical, and Android physical campaigns. Retain the
 legacy pointer and v3 activation reader until the migrated Stock graph has
 booted, presented, restarted, and rolled back on the Framework.
+
+## 2026-08-27: Move ordinary authoring and tracked updates onto v4 graphs
+
+**Goal:** Remove the remaining new-authoring dependency on the v3 singleton
+revision protocol and implement the tracked-child update path against stable
+Experience identities.
+
+**Changed:** Linux authoring context now names the active Stock Experience,
+graph, and package. Validation accepts only API v4 candidates with the exact
+Stock export contract, reads revision-exact authority state, validates every
+scenario at the export's minimum and maximum viewports plus high-contrast
+appearance, and requires the functional agent composer in agent workspaces.
+Submission installs the immutable package, resolves a content-addressed graph,
+and uses graph activation; it no longer stages or activates a singleton v3
+revision. The resident-agent examples, authoring fixtures, Linux state/input/
+failure fixtures, deploy helper, and curated generation guide now emit API v4.
+
+The supervisor persists a canonical reverse-dependency index derived from
+current package records and rebuilds it after registry changes and recovery.
+The resolver can validate a candidate revision through an in-memory tracked
+binding override without first changing any durable pointer. The new
+`advance-experience` control operation leaves locked graphs pinned, but for an
+affected tracked root it prepares the complete candidate graph, presents it,
+commits authority state, then journals the child registry pointer and graph
+pointer as one activation. Graph restart is now an explicit supported control
+operation as well as automatic crash recovery.
+
+**Evidence:** `cargo test -p sos-linux-session --lib` passed 14 authoring and
+session tests. `npm --prefix services/sos-agent test` passed 19 tests. The
+`tools/linux-agent-e2e` campaign started at Stock revision `62374642…`,
+validated the v4 candidate across the full scenario and viewport matrix, and
+activated revision `1767e067…` through the graph protocol. `cargo test -p
+revision-supervisor` passed 39 tests, including locked child pinning, tracked
+child graph advancement, exact restart, reverse-index persistence, activation
+fault recovery, and existing legacy compatibility. `cargo check -p
+revision-supervisor --all-targets` and Rust formatting passed.
+
+**Failures and decision:** The first tracked test changed the child registry
+before graph validation, which recreated the non-atomic ordering the feature
+is meant to eliminate. The final flow keeps the current pointer untouched,
+resolves with an ephemeral candidate override, and lets the activation journal
+perform the durable switch only after presentation and authority commit.
+
+**Remaining risks and next gate:** One supervisor currently owns one presented
+root, so an update affecting multiple independently presented tracked roots is
+still rejected rather than partially committed. Generalize the activation
+unit across every affected root, then close Instance-ID namespaces, recovery
+actions, authority appearance grants, and the remaining Android parity work.

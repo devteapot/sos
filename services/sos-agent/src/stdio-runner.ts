@@ -283,7 +283,7 @@ async function catalog(): Promise<void> {
 
 async function selfTest(): Promise<void> {
   const actions: string[] = [];
-  const candidate = "return { api_version = 3, render = function() return { id = 'root' } end }";
+  const candidate = "return { api_version = 4, exports = { main = { render = function() return { id = 'root' } end } } }";
   const backend: AuthoringBackend = {
     async request(request) {
       actions.push(request.action);

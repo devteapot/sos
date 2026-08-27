@@ -33,7 +33,7 @@ M1_PROVIDER_UNIT_FILE="${SOS_ANDROID_PROVIDER_UNIT_FILE:-$CACHE_ROOT/android-pro
 M1_RUN_STARTED_PROVIDER_PID=""
 M1_RUN_ADDED_REVERSE=false
 M1_RUN_LAUNCH_COMPLETE=false
-LINUX_REVISION_ROOT="${SOS_LINUX_REVISION_ROOT:-$CACHE_ROOT/linux-revisions-v3}"
+LINUX_REVISION_ROOT="${SOS_LINUX_REVISION_ROOT:-$CACHE_ROOT/linux-revisions-v4}"
 LINUX_SUPERVISOR="$SOS_ROOT/target/debug/sos-revision-supervisor"
 LINUX_HOST="$SOS_ROOT/target/debug/sos-experience-host"
 LINUX_PROVIDER_SERVICE="$SOS_ROOT/target/debug/sos-provider-state-service"
@@ -1105,14 +1105,19 @@ linux_run() {
   current_revision="$($LINUX_SUPERVISOR status --root "$LINUX_REVISION_ROOT")"
   if [[ "$current_revision" == "none" ]]; then
     info "installing the initial content-addressed Luau revision"
-    current_revision="$($LINUX_SUPERVISOR install \
+    current_revision="$($LINUX_SUPERVISOR install-package \
       --root "$LINUX_REVISION_ROOT" \
       --source "$SOS_ROOT/experiences/default.luau" \
       --state "$SOS_ROOT/tests/fixtures/empty-state.json" \
       --schema 1 \
-      --api 3)"
+      --package "$SOS_ROOT/experiences/default.package.json" \
+      --asset "stock.theme:luau:$SOS_ROOT/experiences/modules/stock-theme.luau")"
     "$LINUX_SUPERVISOR" bootstrap \
       --root "$LINUX_REVISION_ROOT" \
+      --revision "$current_revision" >/dev/null
+    "$LINUX_SUPERVISOR" bootstrap-graph \
+      --root "$LINUX_REVISION_ROOT" \
+      --experience sos.stock.shell \
       --revision "$current_revision" >/dev/null
   fi
 
@@ -1134,12 +1139,13 @@ linux_run() {
     --root "$LINUX_REVISION_ROOT" \
     --service-socket "$LINUX_PROVIDER_SOCKET"
 
-  info "starting coordinated permanent Linux host at revision $current_revision"
+  info "starting permanent Linux graph host at revision $current_revision"
   local arguments=(
     serve
     --root "$LINUX_REVISION_ROOT"
     --host-executable "$LINUX_HOST"
     --service-socket "$LINUX_PROVIDER_SOCKET"
+    --root-experience sos.stock.shell
     --timeout-ms "$host_timeout_ms"
     --host-arg --service-socket
     --host-arg "$LINUX_PROVIDER_SOCKET"
@@ -1185,22 +1191,21 @@ linux_script() {
     fail "provider/state authority is not running; restart ./tools/sosctl linux-run"
 
   local revision_id
-  revision_id="$($LINUX_SUPERVISOR install \
+  revision_id="$($LINUX_SUPERVISOR install-package \
     --root "$LINUX_REVISION_ROOT" \
     --source "$source_file" \
     --state "$state_file" \
     --schema 1 \
-    --api 3)"
-  local transaction_id
-  transaction_id="$($LINUX_SESSION stage \
+    --package "$SOS_ROOT/experiences/default.package.json" \
+    --asset "stock.theme:luau:$SOS_ROOT/experiences/modules/stock-theme.luau")"
+  local graph_id
+  graph_id="$($LINUX_SUPERVISOR resolve-graph \
     --root "$LINUX_REVISION_ROOT" \
-    --revision "$revision_id" \
-    --service-socket "$LINUX_PROVIDER_SOCKET")"
-  info "activating Luau revision $revision_id through transaction $transaction_id"
-  "$LINUX_SUPERVISOR" activate \
+    --revision "$revision_id")"
+  info "activating Luau revision $revision_id as graph $graph_id"
+  "$LINUX_SUPERVISOR" activate-graph \
     --root "$LINUX_REVISION_ROOT" \
-    --revision "$revision_id" \
-    --transaction "$transaction_id"
+    --graph "$graph_id"
 }
 
 linux_status() {
@@ -1319,7 +1324,7 @@ Commands:
   script <file>       Transactionally load Luau source; no APK or restart.
   validate <file> [--module ID=FILE]... [--json]
                       Typecheck and validate every declared Luau scenario.
-  typecheck <file>    Check a Luau source against the API v3 type prelude.
+  typecheck <file>    Check a Luau source against the current API type prelude.
   agent-apply <file>  Validate, install, await frame, and capture screenshot.
   agent-generate <request>
                       One-shot headless Codex generation (Luna, medium).

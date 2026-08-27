@@ -5,13 +5,13 @@ long-lived experience language; Rust/GPUI is the permanent execution substrate.
 An experience revision contains source, state migrations, and eventually typed
 assets, but never a native executable.
 
-The prototype deliberately broke the original `UiNode` catalog. API version 3
+The prototype deliberately broke the original `UiNode` catalog. API version 4
 uses orthogonal scene facets so an agent can combine layout, content, paint,
-interaction, animation, and semantics on the same retained node. API version 4
-keeps those facets and adds named exports, export context, declared child
-events, and host-owned live mounts. There is no compatibility decoder for the
-catalog ABI or Scene ABI v2. Host upgrades remain separate system updates while
-the contract is intentionally fluid.
+interaction, animation, and semantics on the same retained node, and adds
+named exports, export context, declared child events, and host-owned live
+mounts. There is no compatibility decoder for the catalog ABI or Scene ABI v2.
+API v3 is read only for bounded rollback of retained revisions; it is not a
+valid target for new authoring.
 
 ## Module contract
 
@@ -19,7 +19,7 @@ Every module declares the exact scene API it emits:
 
 ```luau
 return {
-    api_version = 3,
+    api_version = 4,
     state_version = 1, -- optional; defaults to 1
     assets = { -- optional immutable, revision-scoped assets
         mark = { kind = "svg", data = "<svg ...>...</svg>" },
@@ -28,8 +28,12 @@ return {
         { name = "command_panel", state = { shell_panel = "command" } },
         { name = "agent_overlay", state = { shell_panel = "agent" } },
     },
-    render = function(model, state): SceneNode ... end,
-    update = function(model, state, event): state | UpdateEnvelope ... end, -- optional
+    exports = {
+        main = {
+            render = function(model, state, properties, context): SceneNode ... end,
+            update = function(model, state, event, properties, context): state | UpdateEnvelope ... end, -- optional
+        },
+    },
     migrate = function(from_version, state): state ... end, -- required for a state-version change
 }
 ```
@@ -63,8 +67,8 @@ empty list removes them. Local validation accepts repeatable module arguments:
 ## Experience composition status
 
 Package format v4 and Experience API v4 implement named exports and live
-mounts. API v3 remains the legacy single-experience contract and must not emit
-`experience_mount`.
+mounts. Every newly authored revision has a package contract. API v3 remains
+only as the legacy activation reader and must not emit `experience_mount`.
 
 An API v4 module returns an exact export table:
 

@@ -28,7 +28,7 @@ impl GraphResolver {
     }
 
     pub fn resolve(&self, revision_id: &str, export_id: &ExportId) -> Result<ResolvedGraph> {
-        self.resolve_inner(revision_id, export_id, None)
+        self.resolve_inner(revision_id, export_id, None, &BTreeMap::new())
     }
 
     pub fn resolve_tracked(
@@ -37,7 +37,17 @@ impl GraphResolver {
         export_id: &ExportId,
         registry: &ExperienceRegistry,
     ) -> Result<ResolvedGraph> {
-        self.resolve_inner(revision_id, export_id, Some(registry))
+        self.resolve_inner(revision_id, export_id, Some(registry), &BTreeMap::new())
+    }
+
+    pub fn resolve_tracked_with_overrides(
+        &self,
+        revision_id: &str,
+        export_id: &ExportId,
+        registry: &ExperienceRegistry,
+        overrides: &BTreeMap<ExperienceId, RevisionId>,
+    ) -> Result<ResolvedGraph> {
+        self.resolve_inner(revision_id, export_id, Some(registry), overrides)
     }
 
     fn resolve_inner(
@@ -45,6 +55,7 @@ impl GraphResolver {
         revision_id: &str,
         export_id: &ExportId,
         registry: Option<&ExperienceRegistry>,
+        overrides: &BTreeMap<ExperienceId, RevisionId>,
     ) -> Result<ResolvedGraph> {
         let root_revision = RevisionId::parse(revision_id)
             .map_err(|error| Error::InvalidGraph(error.to_string()))?;
@@ -66,6 +77,7 @@ impl GraphResolver {
             0,
             &mut stack,
             registry,
+            overrides,
         )?;
         graph
             .validate()
@@ -85,6 +97,7 @@ impl GraphResolver {
         depth: usize,
         stack: &mut Vec<RevisionId>,
         registry: Option<&ExperienceRegistry>,
+        overrides: &BTreeMap<ExperienceId, RevisionId>,
     ) -> Result<()> {
         if depth > MAX_GRAPH_DEPTH {
             return Err(Error::InvalidGraph(format!(
@@ -125,15 +138,19 @@ impl GraphResolver {
             self.validate_binding(alias, binding)?;
             let resolved_revision_id = match (binding.policy, registry) {
                 (experience_package::DependencyPolicy::Tracked, Some(registry)) => {
-                    registry
-                        .current(&binding.experience_id)?
-                        .ok_or_else(|| {
-                            Error::InvalidGraph(format!(
-                                "tracked dependency `{alias}` has no active revision"
-                            ))
-                        })?
-                        .manifest
-                        .revision_id
+                    if let Some(revision_id) = overrides.get(&binding.experience_id) {
+                        revision_id.to_string()
+                    } else {
+                        registry
+                            .current(&binding.experience_id)?
+                            .ok_or_else(|| {
+                                Error::InvalidGraph(format!(
+                                    "tracked dependency `{alias}` has no active revision"
+                                ))
+                            })?
+                            .manifest
+                            .revision_id
+                    }
                 }
                 _ => binding.revision_id.to_string(),
             };
@@ -190,6 +207,7 @@ impl GraphResolver {
                 depth + 1,
                 stack,
                 registry,
+                overrides,
             )?;
         }
         stack.pop();
@@ -297,6 +315,26 @@ impl GraphStore {
         experience_id: &ExperienceId,
     ) -> Result<Option<(String, ResolvedGraph)>> {
         self.pointer(experience_id, "previous")
+    }
+
+    pub fn active_experiences(&self) -> Result<BTreeSet<ExperienceId>> {
+        let mut experiences = BTreeSet::new();
+        for entry in fs::read_dir(self.root.join("active"))? {
+            let entry = entry?;
+            if !entry.file_type()?.is_dir() {
+                continue;
+            }
+            let name = entry
+                .file_name()
+                .into_string()
+                .map_err(|_| Error::InvalidGraph("non-UTF-8 active graph directory".into()))?;
+            let experience_id = ExperienceId::parse(name)
+                .map_err(|error| Error::InvalidGraph(error.to_string()))?;
+            if self.current(&experience_id)?.is_some() {
+                experiences.insert(experience_id);
+            }
+        }
+        Ok(experiences)
     }
 
     fn pointer(
