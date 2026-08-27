@@ -15253,3 +15253,47 @@ independent verification passes.
 **Decision / next gate:** Install only this exact OTA. Begin a fresh campaign,
 repeat the accepted Stock, Dashboard, appearance, failure, and timeout gates,
 and require two explicit recovery markers before the remaining ordered stages.
+
+## 2026-08-27: Accept composition through host recovery; add bounded authority recovery
+
+**Goal / physical evidence:** Install the recovery-observable candidate and
+advance the ordered Compat campaign through composition, containment, input,
+accessibility, and host recovery. Automatic Recovery entry took 29.54 seconds,
+the single sideload took 82.53 seconds and exited 0 with `Total xfer: 1.00x`,
+and exact-product readiness took 107.48 seconds. The installed identity is
+`sos.compat1.3693138b49af.cf58ca7e57f2`; authority PID 944 and initial HOME
+PID 1466 were live under Enforcing SELinux.
+
+Stock Mobile remained unobscured. Dashboard ran as three independent
+Instances. A real Theme touch advanced appearance to generation 2 without
+changing revisions. Agenda and Dashboard retained separately keyed `Design
+review` state; Dashboard retained two acceptance pings. The deliberate Agenda
+update exception and execution timeout each logged a contained failed Instance
+with `root_ready=true` followed by an explicit recovery of the same namespaced
+Instance. A physical tap inside the mounted Agenda field logged namespaced IME
+focus, a tap outside logged inactive blur, and Android published all 12 expected
+semantic nodes. The accepted IME stage screenshot, authority snapshot, and log
+have SHA-256 `e122692449bde35769e425543268d9ac7a0808a326b062caead032496452d170`,
+`c0e391a9370d8f5008bc0d921f4f86ad0d8a14b4d92e829b8f3ef8014cd6c171`,
+and `437cc7de142d03cd774bad0dbfb1ae7c0d54d96c3efaddd635b3cf5a62e5b582`.
+Restarting only HOME changed PID 1466 to 4314, left authority PID 944 intact,
+and restored the same three-Instance Dashboard and durable resources.
+
+**Failure / changed:** Android correctly denied both non-root `kill -9 944` and
+the broad `ctl.restart=sos_authority` property. The authority-only physical gate
+therefore lacked a safe actuator; enabling root ADB would invalidate the gate.
+The A33x product now defines one exact boolean
+`sys.sos.authority_recovery_probe` property. Only shell on userdebug/eng builds
+may set it. Init consumes value 1 by restarting only `sos_authority`, resets the
+property to 0, and leaves the experience host untouched. `a33xctl` exposes an
+exact-revision `restart-v4-authority` command that verifies debuggability, PID
+replacement, host preservation, service recovery, and one-shot reset. Package
+inspection requires the trigger and its reset. `bash -n`, the product-graph
+gate, and the complete A33x host fixture pass; the latter took 8.00 seconds.
+
+**Decision / remaining risk / next gate:** The current candidate is accepted
+through host recovery but cannot close authority recovery because it predates
+the bounded trigger. Build and inspect one superseding exact Compat OTA, install
+it once, and repeat the ordered campaign. The next candidate must pass the new
+authority-only PID gate before authoring and exact rollback. No production user
+build receives the shell property permission.

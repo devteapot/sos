@@ -80,6 +80,12 @@ check_android_composition_authority() {
     fail "SOS authority does not boot the Stock Mobile package"
   grep -F -- '--bootstrap-asset mobile.theme luau /system_ext/etc/sos/modules/mobile-theme.luau' \
     "$init_rc" >/dev/null || fail "SOS authority does not bind the Stock Mobile theme"
+  grep -Fx 'on property:sys.sos.authority_recovery_probe=1' "$init_rc" >/dev/null || \
+    fail "SOS authority omitted its userdebug-only physical recovery trigger"
+  grep -F '    restart sos_authority' "$init_rc" >/dev/null || \
+    fail "SOS authority recovery trigger does not restart only the authority"
+  grep -F '    setprop sys.sos.authority_recovery_probe 0' "$init_rc" >/dev/null || \
+    fail "SOS authority recovery trigger is not one-shot"
   grep -aF 'sos.stock.mobile' "$authority" >/dev/null || \
     fail "SOS authority omitted the reserved Stock Mobile identity"
   for marker in \
@@ -1823,6 +1829,47 @@ validate_device_identity() {
   [[ "$2" =~ ^[A-Za-z0-9._:+-]+$ ]] || fail "invalid expected revision: $2"
 }
 
+restart_v4_authority() {
+  [[ "$#" -eq 4 && "$1" == --serial && "$3" == --expected-revision ]] || \
+    fail "usage: ./tools/a33xctl restart-v4-authority --serial SERIAL --expected-revision REVISION"
+  local serial="$2" expected_revision="$4" revision debuggable
+  local old_authority new_authority old_host new_host service
+  validate_device_identity "$serial" "$expected_revision"
+  revision="$(device_property "$serial" ro.build.version.incremental)"
+  debuggable="$(device_property "$serial" ro.debuggable)"
+  [[ "$revision" == "$expected_revision" ]] || \
+    fail "authority recovery revision mismatch: expected $expected_revision, found $revision"
+  [[ "$debuggable" == 1 ]] || \
+    fail "authority recovery probe is available only on a debuggable physical gate product"
+  old_authority="$(adb_readonly "$serial" shell pidof sos-authority 2>/dev/null | tr -d '\r\n' || true)"
+  old_host="$(adb_readonly "$serial" shell pidof dev.sos.experience 2>/dev/null | tr -d '\r\n' || true)"
+  [[ "$old_authority" =~ ^[0-9]+$ ]] || fail "SOS authority is not live before recovery"
+  [[ "$old_host" =~ ^[0-9]+$ ]] || fail "SOS HOME is not live before authority recovery"
+
+  adb_readonly "$serial" shell setprop sys.sos.authority_recovery_probe 1
+  new_authority=''
+  for _ in {1..100}; do
+    new_authority="$(adb_readonly "$serial" shell pidof sos-authority 2>/dev/null | tr -d '\r\n' || true)"
+    service="$(device_property "$serial" init.svc.sos_authority)"
+    if [[ "$new_authority" =~ ^[0-9]+$ && "$new_authority" != "$old_authority" && \
+      "$service" == running ]]; then
+      break
+    fi
+    sleep 0.1
+  done
+  [[ "$new_authority" =~ ^[0-9]+$ && "$new_authority" != "$old_authority" ]] || \
+    fail "init did not recover the authority after the bounded probe"
+  new_host="$(adb_readonly "$serial" shell pidof dev.sos.experience 2>/dev/null | tr -d '\r\n' || true)"
+  [[ "$new_host" == "$old_host" ]] || \
+    fail "authority recovery replaced the SOS HOME process"
+  [[ "$(device_property "$serial" sys.sos.authority_recovery_probe)" == 0 ]] || \
+    fail "authority recovery probe did not reset after one use"
+  printf 'v4_authority_recovery=PASS\nserial=%s\nrevision=%s\n' \
+    "$serial" "$revision"
+  printf 'authority_pid_before=%s\nauthority_pid_after=%s\nhome_pid=%s\n' \
+    "$old_authority" "$new_authority" "$new_host"
+}
+
 adb_readonly() {
   [[ "$#" -ge 2 ]] || fail "internal usage: adb_readonly <serial> <arguments...>"
   local serial="$1" adb_binary="${A33XCTL_ADB:-adb}"
@@ -2615,6 +2662,8 @@ commands:
                     verify the non-shipping trusted provider probe is present
   inspect-core1-readiness --serial SERIAL --expected-revision REVISION
                     read-only exact-product Core 1 readiness snapshot
+  restart-v4-authority --serial SERIAL --expected-revision REVISION
+                    restart only the authority through the userdebug recovery probe
   capture-v4-composition-stage --product compat1|core1 --serial SERIAL
                     --expected-revision REVISION --artifact OTA --root DIR --stage STAGE
                     capture one ordered physical v4 composition checkpoint
@@ -2667,6 +2716,7 @@ case "$command" in
   inspect-core1) inspect_core1 "$@" ;;
   inspect-core1-provider-probe) inspect_core1_provider_probe "$@" ;;
   inspect-core1-readiness) inspect_core1_readiness "$@" ;;
+  restart-v4-authority) restart_v4_authority "$@" ;;
   capture-v4-composition-stage) capture_v4_composition_stage "$@" ;;
   audit-v4-composition-campaign) audit_v4_composition_campaign "$@" ;;
   evidence-manifest-generate) evidence_manifest_generate "$@" ;;
