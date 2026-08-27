@@ -13315,3 +13315,41 @@ SOS until the complete redeployment verifies every installed digest.
 component, verify the target manifest and start a fresh Framework graph
 campaign. The mutable development-live result remains diagnostic and physical
 integrated input still requires an owner at the laptop.
+
+## 2026-08-27: Keep the Framework gate allowlist aligned with v4 deployment
+
+**Goal:** Prepare the revision-pinned Framework campaign after the complete v4
+deployment without broadening the hardware gate beyond known product paths.
+
+**Changed:** The hardware gate's closed development-deployment allowlist now
+includes the exact current destinations for `sos-agent-login`, the Stock and
+Timeflow package manifests and sources, the revision-local Stock theme, current
+agent and stable-host documentation, and the bounded Framework display
+defaults. It still rejects every unlisted path. The host test pins each newly
+accepted destination so deployment and acceptance cannot drift silently.
+
+**Physical experiment and evidence:** The complete clean deployment from
+revision `f2b2b2334edd…` passed on the Framework as deployment
+`20260827T090419Z-f2b2b2334edd-2567577`. It installed and independently checked
+all component digests in 23,115,719,197 ns. Generated deployment evidence is
+under
+`.cache/evidence/framework-v4-deploy/20260827T090419Z-f2b2b2334edd-2567577/`;
+the image remains mutable `development-live` and
+`promotion_eligible=false`.
+
+The first hardware preparation then stopped before runtime launch with
+`unsafe development deployment path: /usr/local/libexec/sos/sos-agent-login`.
+This was the first of several valid v4 paths absent from the older allowlist;
+no partial campaign was accepted and SOS remained stopped at GDM. After the
+fix, `tests/linux-hardware-gate-test.sh` reports
+`linux_hardware_gate_host_tests=PASS`, and shell syntax passes.
+
+**Failures and decision:** Removing current components from the deployment
+manifest or accepting `/usr/local/libexec/sos/*` as a wildcard would either
+hide deployed product state or weaken the gate. The allowlist remains exact and
+now matches the complete v4 deployment contract.
+
+**Remaining risks and next gate:** Commit and deploy the corrected gate only,
+prepare a fresh same-boot evidence directory, then launch the Stock shell and
+reference Dashboard graph. Integrated keyboard, touchpad and touchscreen
+criteria cannot be satisfied through PiKVM HID.

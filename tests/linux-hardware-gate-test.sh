@@ -247,5 +247,16 @@ grep -F 'image-identity.env' "$test_gate" >/dev/null
 grep -F 'payload_sha256' "$test_gate" >/dev/null
 grep -F 'boot_id=' "$test_gate" >/dev/null
 grep -F '/usr/local/libexec/sos/linux-hardware-gate collect' "$test_gate" >/dev/null
+for test_development_path in \
+  /usr/local/libexec/sos/sos-agent-login \
+  /usr/share/sos/experiences/default.package.json \
+  /usr/share/sos/experiences/modules/stock-theme.luau \
+  /usr/share/sos/experiences/timeflow.luau \
+  /usr/share/sos/experiences/timeflow.package.json \
+  /usr/share/doc/sos/sos-agent.md \
+  /usr/share/doc/sos/linux-stable-host.md \
+  /etc/xdg/monitors.xml; do
+  grep -F "$test_development_path" "$test_gate" >/dev/null
+done
 
 printf 'linux_hardware_gate_host_tests=PASS\n'
