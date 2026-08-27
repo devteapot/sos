@@ -14391,6 +14391,12 @@ under `.cache/evidence/android-v4-884ab4e/` and remain outside Git. The older
 `.cache/evidence/android-v4-4f93f50/` pair is superseded because it predates
 secondary-input removal. At 2026-08-27T16:00:09+02:00, serial `RFCT50EGFCN`
 still reported `no permissions` through adb and USB `04e8:685d` Download Mode.
+After every artifact and transcript was finalized, `a33xctl` generated and
+independently verified the complete 17-file evidence manifest in
+6,115,010,906 ns. The 1,775-byte manifest is
+`.cache/evidence/android-v4-884ab4e/manifest.sha256`, SHA-256
+`a8f056b6d8c77d56b2ed6b4f297802b5b726a3f4200573ab43859114690f7b93`;
+an independent path-set comparison found no unmanifested file in its root.
 No install, flash, reboot, or other device mutation was attempted. These are
 offline-candidate passes, not physical-product verdicts. The next gate is the
 exact Compat then Core device campaign once an authorized Android or recovery

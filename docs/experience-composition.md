@@ -558,7 +558,9 @@ their deterministic target-files archives have SHA-256
 `e8dc8d7d41ddbfe7d6459cc63d4f7290bc9f6e147914382aca1f504d0261a4f2`
 and `49ba5c7ace4df8bcd22605f2334da0fa34229b7fd227bf1f657b7f8785a1b863`.
 This supersedes the earlier Android candidates that still carried the retired
-secondary agent input.
+secondary agent input. Their independently verified 17-file evidence manifest
+has SHA-256
+`a8f056b6d8c77d56b2ed6b4f297802b5b726a3f4200573ab43859114690f7b93`.
 
 The remaining physical composition gate is the Samsung SM-A336B campaign for
 Compat and Core: composition, input, IME, accessibility, appearance, grants,
