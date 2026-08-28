@@ -1,9 +1,15 @@
-# Coordinated revision and state activation journal
+# Historical single-revision activation journal
 
 Date: 2026-08-08
 
+> This report records the single-revision transaction that preceded Experience
+> API v4 graphs. Its `activate` command, `current` pointer, ordering, recovery
+> matrix, and test counts are historical. The current graph transaction is
+> documented in [`revision-supervisor.md`](revision-supervisor.md) and
+> [`experience-composition.md`](experience-composition.md).
+
 This contract joins the stable-host [`revision-supervisor.md`](revision-supervisor.md)
-to the durable provider/state authority. “Activation” means making a prepared
+to the durable provider/state authority. "Activation" means making a prepared
 Luau scene current. The provider service may retain `promote` as its internal
 transaction verb, but there is no Luau-to-native experience promotion tier.
 
@@ -29,7 +35,7 @@ points at a candidate whose state/effect transaction is merely staged.
 
 The service may therefore be briefly newer than the visible scene, but the
 visible scene is never newer than durable state/effects. The production host
-must quiesce old-revision input across steps 5–7.
+must quiesce old-revision input across steps 5 through 7.
 
 ## Recovery matrix
 
@@ -49,7 +55,7 @@ binding mismatch is not guessed through. After service commit, semantic rollback
 must be a new forward transaction; moving only the pointer would split visible
 source from authoritative state and effects.
 
-## Daemon use
+## Daemon use at the time
 
 ```sh
 sos-revision-supervisor serve \
@@ -63,7 +69,7 @@ sos-revision-supervisor activate \
   --transaction <stable-transaction-id>
 ```
 
-## Evidence and remaining gate
+## Evidence and remaining gate at the time
 
 Ten coordinator integration tests cover normal activation, immutable binding
 mismatch, Luau candidate rejection, failures before and during service commit,

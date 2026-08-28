@@ -1,6 +1,6 @@
-# Durable provider and state service prototype
+# Durable provider and state service
 
-Date: 2026-08-08
+Date: 2026-08-08 (updated 2026-08-28)
 
 This is the Linux-first implementation of the provider/state authority called
 for by [`android-exit-verdict.md`](android-exit-verdict.md). It replaces the
@@ -8,6 +8,14 @@ legacy daemon's in-memory stage IDs and staged effects with caller-stable,
 durable transactions. The old TCP daemon remains unchanged for the APK
 regression harness; the new service is the protocol intended for the system
 service and revision-supervisor path.
+
+The original single-Experience transaction and its measurements remain below.
+The current v4 authority also accepts a `GraphPromotionDraft`, which binds one
+or more Experience revisions, states, migrations, and effects to one durable
+transaction. The graph supervisor stages that batch, presents the candidate
+graph, commits the authority batch, advances registry and graph pointers, and
+finalizes the host through the recovery journal described in
+[`revision-supervisor.md`](revision-supervisor.md).
 
 ## Protocol
 
@@ -123,8 +131,10 @@ Unix addresses fixed transport without changing device policy.
 
 ## Supervisor integration
 
-The authority transaction is now bound to the revision supervisor's `current`
-pointer by the durable recovery protocol in
-[`coordinated-activation.md`](coordinated-activation.md). The APK remains on its
-legacy TCP adapter until that coordinator has an AOSP-owned service, process,
-and surface location.
+The v4 graph supervisor binds authority transactions to exact Experience and
+graph identities. Its journal covers presentation, authority commit, registry
+commit, graph-pointer commit, host finalization, rollback, and restart. Android
+uses an init-supervised authority and bounded platform graph IPC; Linux uses the
+Unix-socket service. The retired single-revision ordering remains in
+[`coordinated-activation.md`](coordinated-activation.md) only as historical
+evidence.

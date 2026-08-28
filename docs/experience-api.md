@@ -1,9 +1,9 @@
-# Luau ↔ host Scene ABI (prototype)
+# Experience API v4 and host Scene ABI
 
 This is the contract available to an agent-authored Luau revision. Luau is the
-long-lived experience language; Rust/GPUI is the permanent execution substrate.
-An experience revision contains source, state migrations, and eventually typed
-assets, but never a native executable.
+long-lived experience language; Rust/GPUI is the permanent executor. An
+experience revision contains source, state migrations, typed assets, and a v4
+package contract, but never a native executable.
 
 The prototype deliberately broke the original `UiNode` catalog. API version 4
 uses orthogonal scene facets so an agent can combine layout, content, paint,
@@ -293,7 +293,7 @@ model.shell = {
 Output and window IDs are opaque selections valid only while the compositor
 continues to report them. The document is capped at 16 outputs and 64 windows.
 It contains logical geometry, scale, a bounded display title, native versus
-compatibility kind, activity, and closed capabilities—never connector names,
+compatibility kind, activity, and closed capabilities, never connector names,
 Wayland/X11 handles, application IDs, PIDs, commands, or desktop files. A stale
 selection is rejected. Map, unmap, title, focus, output-layout, and resize
 changes push a fresh model into the accepted revision without activation.
@@ -417,7 +417,7 @@ A node has no `type`. It is a table made from independent facets:
 }
 ```
 
-This removes distinctions such as “box versus row versus canvas.” A node can,
+This removes distinctions such as "box versus row versus canvas." A node can,
 for example, arrange children in a row, draw generated paths behind them,
 define custom hit regions, expose button semantics, and animate as one object.
 Source-local Luau helpers may build conventions such as stacks or buttons;
@@ -762,7 +762,7 @@ even as scene expressiveness grows.
 
 ## Next integration work
 
-Version 3 includes bounded clips/transforms/layers, host-shaped glyph runs and
+Version 4 includes bounded clips/transforms/layers, host-shaped glyph runs and
 revision fonts, retained responsive layout programs, raw multi-pointer routing
 with capture policy, accessible scrolling/selection, complete Android marked
 text transport, and supervisor-packaged sidecars. Further depth should focus on
@@ -785,5 +785,5 @@ The Android-exit demonstration uses this single-shot request:
 > calculate the geometry and hit regions in Luau, show attached state, and emit
 > the typed `notes.attach_to_event` provider action on a valid drop.
 
-The agent implements this in source. “Bent time flow” and drag/drop are not host
+The agent implements this in source. "Bent time flow" and drag/drop are not host
 components.

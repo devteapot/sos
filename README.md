@@ -4,7 +4,7 @@ SOS is a research prototype for an agent-native operating experience: the user
 directs an agent that writes and evolves the visible environment, while
 separately installed providers remain authoritative over data and actions. It
 is not a launcher, a scriptable Android application, or a fixed catalog of
-generated widgets. The architectural north star is
+generated widgets. The product direction is defined in
 [`docs/vision.md`](docs/vision.md).
 
 > [!WARNING]
@@ -17,16 +17,16 @@ generated widgets. The architectural north star is
 
 ## Current status
 
-As of 2026-08-27, SOS has moved beyond its original Android application
+As of 2026-08-28, SOS has moved beyond its original Android application
 laboratory into the privileged system and native-ownership phase.
 
 | Track | Current evidence |
 | --- | --- |
-| Generated experience | Package and Experience API v4 own all built-ins, authoring, activation, and rollback. They add named exports, exact fork/remix lineage, host-owned live mounts, isolated child VMs, state and grants, typed appearance, locked or tracked graphs, and transactional activation on Linux and Android. The Agenda, Media, Dashboard, and self-contained remix reference gate passes desktop tests plus Framework and Android hardware campaigns; rebuilt v4-only Compat and Core artifacts remain to be accepted after removal of the migration readers. |
+| Generated experience | Package format and Experience API v4 are the only built-in, authoring, activation, and rollback path. Named exports, exact fork/remix lineage, host-owned live mounts, isolated child VMs, state and grants, typed appearance, locked or tracked graphs, and transactional activation run on Linux and Android. The Agenda, Media, Dashboard, and self-contained remix gates pass desktop tests, v4-only Compat and Core SM-A336B campaigns, and the Framework development-live campaign. The composition milestones are closed; Linux release promotion and wider product hardening remain separate gates. |
 | Android APK harness | The physical SM-A336B passed the stable-host regression, typed provider effect, durable state/authority recovery, and a 10,000-swap device soak. This remains a regression harness, not the product boundary. |
-| Linux | A permanent GPUI/Wayland host, durable provider/state service, revision supervisor, resident Pi authoring agent, authenticated Smithay compositor, selectable GDM session, and Debian direct-DRM VM gate are implemented. The exact Framework development-live composition and integrated-input diagnostic passes; installed-product promotion remains open. |
+| Linux | A permanent GPUI/Wayland host, durable provider/state service, revision supervisor, resident Pi authoring agent, authenticated Smithay compositor, selectable GDM session, and Debian direct-DRM VM gate are implemented. The exact Framework development-live composition and integrated-input campaign passes; installed-product promotion remains open. |
 | AOSP Cuttlefish | Pristine Android 17, SOS-as-HOME, and an init-supervised on-device authority passed in x86-64 Cuttlefish. |
-| Samsung a33x | The historical six-stage campaign was completed on physical hardware. Compat 1 is the accepted usable fallback and later passed live System Providers v1. Core 1 is the only active Core development target; Core 0A is archived and Core 0B is a frozen, opt-in migration oracle. Core 1 now builds the same provider ABI through native Health, Supplicant, audio, app-manifest, media, and attention adapters, but that slice has not passed its physical gate and Core 1 is not yet a usable unlocked OS. |
+| Samsung a33x | The historical six-stage campaign was completed on physical hardware. Compat 1 remains the accepted usable fallback and later passed live System Providers v1. Fresh v4-only Compat and Core 1 artifacts passed composition, containment, recovery, authoring, and rollback. Core input in that repeatable campaign used a debug-only uinput service and is not a new physical-touch claim. Core 1 is still locked, and its native provider slice has build parity rather than physical acceptance. Core 0A is archived and Core 0B is a frozen, opt-in migration oracle. |
 | Resident agent | Pi runs on Linux and as native ARM64/Bionic Node on the phone. A subscription-backed Codex flow produced and activated a live generated revision on-device without bypassing trusted validation. |
 
 The accepted physical fallback is Compat 1 revision
@@ -42,6 +42,12 @@ generated-revision failure recovery to signed stock, reboot persistence, and a
 125-second refresh smoke soak. It does not supersede the broader fallback
 revision because successful media/application actions and physical ENTER were
 not repeated in that campaign.
+
+The later v4-only composition artifacts are Compat 1
+`sos.compat1.7c973a4bce2c.5ef843a208f6` and Core 1
+`sos.core1.e21d0fcb4e31.41406fcf892b`. They close the cross-platform
+composition milestone, but they do not replace the broader Compat fallback
+claim or close Core native unlock and provider-service migration.
 
 The concise chronological record is [`docs/progress.md`](docs/progress.md).
 The product boundary and exact physical results are in
@@ -64,7 +70,7 @@ fresh-VM evaluation and capability validation
     ↓
 permanent Rust/GPUI host prepares and presents a retained scene
     ↓
-supervisor commits revision, provider effects, and durable state—or rolls back
+supervisor commits revision, provider effects, and durable state, or rolls back
 ```
 
 Generated code does not receive a GPUI context, device handle, provider
@@ -308,7 +314,7 @@ The complete profile matrix is:
 | Compat 0 | Historical Compat bring-up | `build-compat0` | `inspect-compat0` |
 | Compat 1 | Active fallback/application island | `build-compat1` | `inspect-compat1` |
 | Shadow | Diagnostic probe | `build-core-shadow` | `inspect-core` |
-| Core 0A | Archived; product removed | — | — |
+| Core 0A | Archived; product removed | None | None |
 | Core 0B | Frozen legacy migration oracle | `SOS_ENABLE_LEGACY_CORE0B_BUILD=1 ./tools/a33xctl build-core0b` | `inspect-core0b` |
 | Core 1 | Active Core target | `build-core1` | `inspect-core1` |
 
@@ -338,6 +344,9 @@ Build products and raw evidence belong in `artifacts/`, `.cache/`, or the
 documented external evidence directories and are intentionally not tracked.
 
 ## Documentation map
+
+[`docs/README.md`](docs/README.md) indexes every current architecture guide,
+platform runbook, and historical gate report. The main entry points are:
 
 - [`docs/vision.md`](docs/vision.md) defines the intended product and permanent
   versus generative boundary.
@@ -378,9 +387,10 @@ documented external evidence directories and are intentionally not tracked.
 - The test handset has credential type `NONE`; real PIN/Gatekeeper throttling,
   fingerprint, authentication-bound Keystore release, and the physical
   Volume-Up+Volume-Down Recovery chord remain unproven.
-- Core 1 proves the no-Zygote process and recovery boundary while remaining
+- Core 1 proves the no-Zygote process and recovery boundary and has passed the
+  v4 composition, recovery, authoring, and rollback campaign while remaining
   deliberately locked. Its native System Providers v1 adapter has build/ABI
-  parity, not physical acceptance: saved-Wi-Fi provisioning, validated
+  parity, not physical provider acceptance: saved-Wi-Fi provisioning, validated
   reachability, media/app owners, attention producers, and provider restart/
   soak evidence remain open alongside native CE unlock.
 - Core 0A is historical evidence only. Core 0B is retained solely as an

@@ -1,6 +1,6 @@
 # Debian 13 Wayland VM gate
 
-Date: 2026-08-09
+Date: 2026-08-09 (updated 2026-08-28)
 
 This is the reproducible reference environment for the Linux client-host gate.
 It is development infrastructure, not the SOS distribution contract. A result
@@ -213,8 +213,17 @@ changing host PID 883, recovered after `SIGKILL` in PID 1089, then survived a
 provider-triggered systemd restart in lifecycle PID 1222 and host PID 1312.
 All four boot/activation/recovery boundaries used `drm_page_flip`; the service
 restart counter reached one, and the verifier returned the guest to GNOME and
-removed its disposable installation. Deterministic injected input is the next
-VM gate.
+removed its disposable installation.
+
+A later x86-64 Debian 13 campaign closed the v4 graph and input follow-up. At
+source revision `294fe67`, `verify-direct-session` passed in 15.887747472
+monotonic seconds with five ordered DRM graph frames: Stock boot, committed
+candidate, rejected Stock, restored candidate, and restarted candidate. Kernel
+uinput held a keyboard key, pointer button, and two touch contacts across both
+successful and failed activation boundaries; the compositor quiesced them until
+finalization or restoration. Registry and authority agreed, no singleton
+pointer was created, and GDM and seatd were active after cleanup. This is the
+current Debian v4 direct-DRM gate, not physical-panel evidence.
 
 References: [Debian Cloud images](https://wiki.debian.org/Cloud),
 [Debian cloud image comparison](https://wiki.debian.org/Cloud/SystemsComparison),

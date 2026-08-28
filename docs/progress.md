@@ -7061,7 +7061,7 @@ revision/size/hash, reflash it, verify `sos_core_platform` stays active without
 the parent-search AVC, and then rerun every provider/action, restoration,
 restart/fallback, Recovery-coexistence, and soak test skipped by the failed
 gate. Detailed status remains in
-[`core1-provider-parity.md`](core1-provider-parity.md#minimal-fix-prepared-device-re-acceptance-pending).
+[`core1-provider-parity.md`](core1-provider-parity.md#minimal-fix-prepared-later-device-re-acceptance-passed).
 
 ## 2026-08-17 — Non-shipping Core 1 provider acceptance probe
 

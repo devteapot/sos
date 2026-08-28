@@ -1,6 +1,6 @@
 # Linux stable-host vertical slice
 
-Date: 2026-08-09
+Date: 2026-08-09 (updated 2026-08-28)
 
 SOS now has both a real Linux presentation host and a minimal trusted Wayland
 compositor. The host can remain an ordinary client for desktop development, or
@@ -266,7 +266,7 @@ evidence: recovery and two distinct revisions reached DRM page flips, the host
 did not restart, durable authority agreed with revision `6b3341ee…`, and SOS
 returned cleanly to an active GDM before GNOME session 246 started.
 
-That later run is not a physical-input pass. Its original gate printed
+That 2026-08-27 run is not a physical-input pass. Its original gate printed
 `DIAGNOSTIC_PASS`, but the controller audit found four hot-added devices named
 `SOS Remote Diagnostic ...`; those devices produced the relative pointer,
 button, and touch markers. The auditor now rejects any input device absent from
@@ -275,6 +275,19 @@ that evidence as `DIAGNOSTIC_FAIL`. The semantic and DRM evidence remains useful
 but integrated keyboard, touchpad, and touchscreen input stays open. The
 session also reported `active_graph: null`, so it did not physically present
 the reference live-composition graph. Suspend/resume remains open as well.
+
+The gap closed on 2026-08-28 with exact clean source
+`f9085e5fcd26974c88ab002a243a9c708558114d`. A PiKVM-driven campaign first
+passed the complete v4 composition, containment, recovery, authoring, rollback,
+and GDM lifecycle while remaining labeled `physical_touch=not_claimed`. A
+separate same-boot interval then unbound the PiKVM USB HID interfaces before
+input collection. The compositor observed the built-in keyboard, PIXA3854
+touchpad motion and button, and ILIT2901 touchscreen on `eDP-1`. The standard
+gate passed with `DIAGNOSTIC_PASS promotion_eligible=false`. The independently
+verified 114-file combined manifest has SHA-256
+`df1bd6e54f814614af7ccb39783df3995508770375938039f3b26e13b7856591`.
+This closes the Framework composition and integrated-input question, but the
+mutable development-live environment cannot promote a Linux release.
 
 Keep SSH and a text console available, then use `tools/linux-hardware-gate` and
 the exact PASS contract in [`linux-hardware-gate.md`](linux-hardware-gate.md).
@@ -519,12 +532,14 @@ agent and lifecycle reruns passed before the complete campaign was accepted.
   the buffer. Direct mode waits for DRM VBlank, but only physical hardware can
   turn that into a panel/touch latency claim.
 - Core `wl_touch` does not carry finger pressure; tablet-v2 transports stylus
-  pressure. Physical calibration and touch/stylus coexistence remain unverified.
+  pressure. Framework touch routing passed, but calibration accuracy and
+  touch/stylus coexistence remain unverified.
 - The VM proves libseat pause/resume, `s2idle` kernel freezer suspend/resume, connector
   removal/reconnect, two simultaneous VirtIO outputs, and live mode/scale/
-  rotation. Full platform sleep/wake, physical hotplug, another real DRM device,
-  target GPU/panel behavior, memory pressure, latency, thermals, and physical
-  touch remain unverified under the user's hardware waiver.
+  rotation. The Framework development-live campaign proves physical Intel DRM,
+  panel presentation, and built-in keyboard, touchpad, and touchscreen input.
+  Full platform sleep/wake, physical hotplug, measured GPU/panel performance,
+  memory pressure, latency, thermals, and power remain unverified.
 - The prototype service processes have distinct Unix identities, executables,
   owner-managed sockets, peer checks, scoped credentials/capabilities, and
   zero effective child capabilities. Fine-grained MAC policy and production
@@ -539,7 +554,7 @@ agent and lifecycle reruns passed before the complete campaign was accepted.
   protected playback, camera capture ownership, and secure scanout require a
   concrete provider/device integration.
 
-The Linux integration prototype envelope is complete at virtual-device scope.
-The remaining items above are physical-device evidence or production/optional
-compatibility work, not claims inferred from the VM. Physical touch-device
-verification is explicitly waived because no target is available.
+The Linux integration prototype is complete at VM scope and has physical
+development-live diagnostic evidence on the Framework Laptop 12. Installed or
+immutable release promotion, the measurements above, and production security
+remain open.
