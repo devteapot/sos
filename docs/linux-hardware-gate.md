@@ -1,7 +1,7 @@
-# First physical Linux hardware gate
+# Physical Linux hardware gate
 
 Date: 2026-08-21
-Updated: 2026-08-25
+Updated: 2026-08-28
 
 The first physical Linux gate uses the selectable GDM session. It does not
 install the boot-owned appliance target, stop or reconfigure GDM, or change the
@@ -9,11 +9,18 @@ default systemd target. The initial target is a Framework Laptop 12 in normal
 clamshell orientation. The same harness can later identify another bare-metal
 Linux target explicitly.
 
-The gate is an observed human-input campaign. The controller prepares an
-evidence directory before logout, the operator selects SOS and performs the
-bounded interactions below, and the controller collects finalized evidence
-after SOS returns cleanly to GDM. It never injects input or infers physical
-behavior from VM results.
+The gate records an observed input campaign. The controller prepares an
+evidence directory before logout and collects finalized evidence after SOS
+returns cleanly to GDM. Remote HID may drive repeatable functional steps when
+the campaign labels it. It cannot establish built-in input. A claim about the
+Framework controls requires an isolated interval from its keyboard, touchpad,
+and touchscreen, and VM input never counts as physical evidence.
+
+The accepted 2026-08-28 development-live campaign used exact source
+`f9085e5fcd26974c88ab002a243a9c708558114d`. It passed the full v4 composition
+and lifecycle campaign, then isolated PiKVM HID and observed all three built-in
+input devices. The verdict is `DIAGNOSTIC_PASS promotion_eligible=false`; no
+installed-product or release claim follows from it.
 
 Two environments can exercise the criteria below, but they do not produce the
 same verdict:

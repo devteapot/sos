@@ -1,6 +1,6 @@
 # SOS Compat and SOS Core
 
-Date: 2026-08-16
+Date: 2026-08-16 (updated 2026-08-28)
 
 SOS has two product families over one hardware, service, and revision base. Six
 historical ownership stages established the migration evidence; Core 1 is now
@@ -32,7 +32,7 @@ the documents. The detailed package, boot, credential, and recovery contracts ar
 | Shadow | `lineage_sos_core_a33x` | Android remains owner until a disabled native probe or GPUI supervisor is started manually. |
 | Core 0A | Archived; no product | Historical evidence only. Android performed CE unlock before native SOS acquired presentation/input ownership. |
 | Core 0B | `lineage_sos_core0b_a33x` (`ro.sos.lifecycle=legacy`) | Frozen, explicit-opt-in migration oracle. A fixed native lock starts before CE while Zygote/`system_server` retain headless services and the no-Activity bridge. |
-| Core 1 | `lineage_sos_core1_a33x` (`ro.sos.lifecycle=active`) | Sole active Core target. AOSP's no-Zygote init is selected; the native host exposes an honest locked/recovery surface, and System Providers v1 selects the native Health/Supplicant/audio/inventory adapter. Synthetic-password unlock and the remaining displaced services still need native owners. |
+| Core 1 | `lineage_sos_core1_a33x` (`ro.sos.lifecycle=active`) | Sole active Core target. AOSP's no-Zygote init is selected; the native host exposes an honest locked/recovery surface, and System Providers v1 selects the native Health/Supplicant/audio/inventory adapter. A v4-only artifact passed composition, recovery, authoring, and rollback with labeled debug-only input automation. Synthetic-password unlock and the remaining displaced services still need native owners. |
 
 Both inherit the same Samsung a33x device/vendor graph, init, SELinux, Binder,
 SurfaceFlinger, Hardware Composer, audio services, Keystore, Gatekeeper, vendor
@@ -129,16 +129,16 @@ therefore a service migration, not a UI cleanup.
 
 Core historically advanced through two Core 0 gates before no-Zygote:
 
-1. **Core 0A — archived native ownership with Android recovery.** Android UI stayed
+1. **Core 0A.** This archived stage used native ownership with Android recovery. Android UI stayed
    installed but becomes inert behind the native top layer after trusted CE
    unlock. This isolates shell, input, watchdog, and recovery failures.
-2. **Core 0B — frozen no-Android-rendered migration oracle.** Principal UI packages are
+2. **Core 0B.** This is the frozen no-Android-rendered migration oracle. Principal UI packages are
    overridden out and an immutable product policy aborts every Activity start,
    including starts from preserved `/data/app` packages on no-wipe upgrades.
    The remaining SOS Java process is a direct-boot, system-UID bridge with no
    Activity; it delegates bounded PIN verification to LockSettings.
    Phone/network/Bluetooth/NFC framework services remain.
-3. **Core 1 — active no-Zygote/APK target.** AOSP's no-Zygote init is selected. The
+3. **Core 1.** This is the active no-Zygote/APK target. AOSP's no-Zygote init is selected. The
    initial target deliberately remains locked because native Android
    synthetic-password unwrap and the displaced services are not yet complete.
 
@@ -180,10 +180,12 @@ Current physical status on the SM-A336B:
 | --- | --- |
 | Compat 0 ownership | Passed on `sos.compat0.0805cf6bd0b4.db36ed79bb16`: SOS reclaimed HOME while Launcher3 and Android ceremonies remained available. |
 | Compat 1 ownership | The old `sos.compat1.0805cf6bd0b4.616ac2404a79` was rejected for visible SystemUI/keyguard. Rebuilt `sos.compat1.19d8a653fbd7.220e268c228f` passed exact-image hardware evidence for full-frame HOME/workspace/attention, selected-app containment, redirected-system-Activity blocking, HOME crash restart, side-button wake to `SOS Trusted Lock`, and owner-confirmed touchscreen ENTER return, with no Android system surface. |
+| Compat 1 v4-only composition | Passed on `sos.compat1.7c973a4bce2c.5ef843a208f6`. The eleven-stage physical campaign covered independent Dashboard/Agenda/Media instances, state and grants, appearance without revision churn, two contained child failures and recoveries, mounted IME and accessibility, independent HOME and authority restart, Stock Mobile authoring, and exact v4 rollback. Its independently verified 148-file manifest has SHA-256 `ca360ff142602d9befb3a87ebcccdc1c28570695de4fd4f22f47ef2d4b930d89`. |
 | Shadow display and failure boundary | Passed on `sos.shadow.0805cf6bd0b4.1aad692518b8`: both the one-frame probe and GPUI rendered through SurfaceComposer/Samsung HWC, injected failure reached fixed recovery, Retry relaunched GPUI, and Android escape exposed the intact framework UI. |
 | Core 0A ownership (archived) | Passed on `sos.core0a.0805cf6bd0b4.1b0c9edec481`: GPUI started after CE unlock, raw input was acquired, user install was rejected, and Android remained an explicit failure escape. |
 | Core 0B headless framework (legacy) | Passed on `sos.core0b.0805cf6bd0b4.4341fa73391c`: native lock was visible before CE, headless boot reached `RUNNING_UNLOCKED`, native provider/revision IPC used confined Unix sockets, no Android Activity or UI surface rendered, and phone/Bluetooth/NFC framework processes remained live. |
 | Core 1 no-Zygote boundary | Passed on `sos.core1.0805cf6bd0b4.1f3cd4b232c2`: `ro.zygote=no_zygote`, Zygote/system_server/APK processes were absent, CE stayed locked, and the native locked/recovery surface survived a watchdog/retry cycle. |
+| Core 1 v4-only composition | Passed on `sos.core1.e21d0fcb4e31.41406fcf892b`. The campaign covered the same graph, containment, appearance, recovery, native keyboard, accessibility, authoring, and rollback contract under Enforcing SELinux and no Zygote. Its input was the explicit debug-only uinput service, not a physical-digitizer claim. The independently verified 138-file manifest has SHA-256 `1eb6761befa93ee2a4e2670f3b6cbaa71c08c53e77998b5d55eaac7f09b6a3b6`. |
 | Core 1 System Providers v1 build boundary | Passed exact product build/inspection on `sos.core1.f4d780007972.812bca990cc5`: the AArch64 native adapter, Health v4 and Supplicant v4 clients, audio actions, signed app manifest, media/attention state, authority socket policy, VINTF, SELinux, package signature, and AVB chain were present. No physical provider test was run, so hardware behavior is pending. |
 | Fixed native recovery after child failure | Passed in Shadow, Core 0A, Core 0B, and Core 1 through injected `SIGABRT`; the supervisor remained alive and Retry launched a clean child. Core 0B correctly refused the Android UI action. |
 | Recovery and rollback | Mechanism passed, and revision `220e268c228f` is now the inspected, sideloaded, native-Compat rollback artifact for the next Core campaign. Recovery accepted it without a wipe and reported `Total xfer: 1.00x`. |

@@ -4,12 +4,15 @@
 
 The connected Galaxy A33 5G has passed the stock rollback, bootloader-unlock,
 LineageOS bring-up, **physical ARM64 SOS runtime gates**, and the complete
-six-profile Compat/Core ownership campaign. It is running accepted Compat 1
-revision `sos.compat1.19d8a653fbd7.220e268c228f` over exact FYH2 vendor
-firmware with an unlocked/orange boot chain. SOS owns the visible system and
-on-device authority; the resident native Pi agent has produced a live Luau
-revision that survived an OTA and independent authority/HOME restarts. A custom
-boot has irreversibly changed the Knox warranty bit to `1`.
+six-profile Compat/Core ownership campaign. The broad usable fallback is Compat
+1 revision `sos.compat1.19d8a653fbd7.220e268c228f` over exact FYH2 vendor
+firmware with an unlocked/orange boot chain. Later v4-only Compat
+`sos.compat1.7c973a4bce2c.5ef843a208f6` and Core
+`sos.core1.e21d0fcb4e31.41406fcf892b` artifacts passed their separate
+composition, recovery, authoring, and rollback gates. SOS owns the visible
+system and on-device authority; the resident native Pi agent has produced a
+live Luau revision that survived an OTA and independent authority/HOME
+restarts. A custom boot has irreversibly changed the Knox warranty bit to `1`.
 
 - The owner explicitly accepted factory reset and device-loss risk on
   2026-08-15 and waived the user-data backup gate because this is a dedicated
@@ -38,8 +41,9 @@ boot has irreversibly changed the Knox warranty bit to `1`.
   native Pi execution, Codex subscription authentication, and a live generated
   rewrite now pass. Speaker/earpiece/Bluetooth/call audio, fingerprint and real
   PIN gates, cellular calls/data transfer, the physical Recovery chord,
-  broader suspend/resume, thermal behavior, accessibility, and longer soak
-  testing remain open; service presence does not close functional gates.
+  broader suspend/resume, thermal behavior, full assistive operation, and
+  longer soak testing remain open; service presence does not close functional
+  gates.
 
 ## Connected-device evidence
 
@@ -435,7 +439,7 @@ The initial authority query returned bootstrap revision
 at state revision 0. The test then installed the 5,678-byte
 `experiences/timeflow.luau`, SHA-256
 `4983de6756ef4b21ba6a0eddaed9f2a01f4363b0ab18d0292f55987f49f7ceb9`.
-The application—not a manual authority command—presented the candidate via
+The application, not a manual authority command, presented the candidate via
 `sos://reload`; validation measured 7,204 us compile, 5,493 us render, and
 12,716 us worker-total time. Activation returned revision
 `32fa86a739260e3b13a7bf7f4bc9639708a7d9517d852c6bfe71acb13a552f59`,
@@ -850,7 +854,7 @@ Setup and ADB read-back subsequently established the exact installed state:
 The UI result was confirmed with a temporary `uiautomator` dump and the device
 file was removed immediately. The `ro.oem_unlock_supported` property remains
 unset on FYH2 despite the functional Samsung OEM-unlock preference, so the UI
-and eventual Download Mode state—not that generic property alone—are the
+and eventual Download Mode state, not that generic property alone, are the
 relevant evidence on this build. The rollback gate is complete. Bootloader
 unlock remains a separate, not-yet-attempted destructive operation.
 

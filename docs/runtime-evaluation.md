@@ -7,12 +7,13 @@ Keep the experience boundary runtime-neutral so Rhai remains a useful control.
 Do not use Flutter Engine as a scripting layer for GPUI.
 
 This is a tactical latency decision, not a redefinition of the project. SOS's
-[north star](vision.md) permits the agent to invent component types, layout,
+[product vision](vision.md) permits the agent to invent component types, layout,
 geometry, hit testing, navigation, and native behavior without a closed catalog.
 The original bounded widget tree was the initial contract used to learn
-quickly. It has now been replaced by Scene ABI v3, whose layout, content,
+quickly. It has now been replaced by Experience API v4, whose layout, content,
 paint, interaction, animation, and semantics facets can be combined without a
-node-type catalog. The executor now also supports nested paint layers,
+node-type catalog. V4 also adds named exports and host-owned live mounts. The
+executor supports nested paint layers,
 clips/transforms, glyph runs, responsive layout programs, multi-pointer capture,
 virtual Android accessibility nodes, composing IME sessions, and supervisor
 sidecar assets; it can continue gaining low-level capabilities without a native

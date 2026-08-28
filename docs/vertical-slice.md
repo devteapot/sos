@@ -2,7 +2,7 @@
 
 > Historical gate: this report describes the original catalog-shaped UI IR.
 > The active contract is the breaking, node-type-free
-> [Scene ABI v3](experience-api.md); the measurements below remain historical
+> [Experience API v4](experience-api.md); the measurements below remain historical
 > evidence for the mutation loop.
 
 ## Result
@@ -60,7 +60,11 @@ protected-call path and abort the process. Retaining unwind tables fixed the
 same test. The accepted source and persistent state survived even that crash,
 which also exercised the separation between data and disposable UI state.
 
-## Commands
+## Commands at the time
+
+The `timeflow.luau` fixture has been retired from the current v4 product. The
+commands below document the 2026-08-08 gate and require its recorded source
+revision; they are not current reproduction instructions.
 
 One command builds, installs with data preservation, launches, and tails logs:
 
@@ -79,7 +83,7 @@ The host keeps `experience.active.luau`, `experience.previous.luau`, and the
 JSON state in app-internal storage. A rejected candidate is retained as
 `experience.rejected.luau` for diagnosis and never replaces the active source.
 
-## Remaining gates
+## Gates that remained after this run
 
 - Move candidate compilation/evaluation off the GPUI event-loop thread. The
   current 20 ms render budget bounds VM execution, but source compilation is

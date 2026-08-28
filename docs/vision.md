@@ -1,8 +1,8 @@
-# SOS north star: an agent-native operating experience
+# SOS product vision: an agent-native operating experience
 
-This document is the architectural north star for SOS. Experiment reports say
-what has been proven; this document says what the project is trying to become.
-When a prototype shortcut conflicts with this vision, the shortcut is temporary.
+This document defines the intended SOS product. Experiment reports say what has
+been proven. When a prototype shortcut conflicts with this design, the shortcut
+is temporary.
 
 The idea originated in the
 [initial design conversation](https://chatgpt.com/share/6a765af1-5328-83eb-83a8-ea844b42c865).
@@ -21,18 +21,18 @@ of the visible environment.
 
 For example:
 
-> “Create a morning space around my first appointment, when I need to leave,
-> family messages, and quiet music. Hide work information before 08:30.”
+> "Create a morning space around my first appointment, when I need to leave,
+> family messages, and quiet music. Hide work information before 08:30."
 
 The result becomes a durable, versioned space. Provider events refresh its data
 without involving a model in every frame. The user can later reshape it:
 
-> “Remove the cards. Make time flow upward, bend it toward appointments that
-> require travel, and let me drag a note onto an appointment.”
+> "Remove the cards. Make time flow upward, bend it toward appointments that
+> require travel, and let me drag a note onto an appointment."
 
 That request may require a new layout algorithm, geometry, hit testing,
 animation, state transitions, and provider operations. SOS must permit the
-agent to implement those concepts even when no “bent timeline” component exists.
+agent to implement those concepts even when no "bent timeline" component exists.
 
 ## The change to the application model
 
@@ -54,7 +54,7 @@ A provider package can expose:
 
 The provider remains authoritative over its data and operations. SOS owns the
 cross-provider composition and presentation. In the intended experience there
-may be no visible Calendar, Maps, Messages, or Music app—only a space assembled
+may be no visible Calendar, Maps, Messages, or Music app, only a space assembled
 around the user's current goal from those separately installed providers.
 
 ## What remains fixed and what remains generative
@@ -208,7 +208,7 @@ The agent is central to composition but does not need to be in the frame loop.
 Native or interpreted deterministic code handles touch, scrolling, layout,
 animation, text input, and provider event updates after a revision is installed.
 
-## What “moving off Android” means
+## What "moving off Android" means
 
 It does **not** mean porting the prototype to an ordinary desktop Linux app.
 It means promoting SOS from an application hosted by Android into the phone's
@@ -217,24 +217,24 @@ primary operating environment.
 The transition is incremental, and multiple stages remain runnable as
 regression and recovery targets:
 
-1. **Android laboratory — passed and retained as a harness.** The GPUI Mobile
+1. **Android laboratory.** Passed and retained as a harness. The GPUI Mobile
    APK proved generated interaction, transactional revision activation,
    provider/state independence, and sustained device viability.
-2. **Privileged Android/AOSP shell — current physical baseline.** SOS boots as
+2. **Privileged Android/AOSP shell.** This is the current physical baseline. SOS boots as
    the complete visible shell. Compat may present explicitly selected
    non-system Android applications inside an SOS-owned boundary; Core presents
    no Android Activity UI.
-3. **SOS system services — in progress.** Revision supervision, durable state,
+3. **SOS system services.** Work remains in progress. Revision supervision, durable state,
    provider transport, the resident agent, evaluation, native input, and scene
    activation have first-class implementations. Phone, credential, network,
    accessibility, urgent-attention, and other retained Android services still
    need bounded native brokers or replacements.
-4. **Thin hardware substrate — architecture gate demonstrated, migration not
-   complete.** Core 1 boots the fixed native locked/recovery surface without
+4. **Thin hardware base.** The architecture gate passed, but migration is not
+   complete. Core 1 boots the fixed native locked/recovery surface without
    Zygote or any APK process. It deliberately does not unlock CE storage or
    claim that displaced framework services have been replaced.
 
-“Off Android” therefore does not require rewriting a kernel, GPU driver, modem
+"Off Android" therefore does not require rewriting a kernel, GPU driver, modem
 stack, camera HAL, or every vendor service. It means that Android's application
 and SystemUI model no longer defines the shell, provider model, revision model,
 or interaction experience.
@@ -327,7 +327,7 @@ real personal data, or a final security model.
 The prototype deliberately uses synthetic data and disposable identities while
 generated code remains prototype-sandboxed. Security, provider certification,
 and protected system surfaces become mandatory before real credentials or
-consequential actions—not before testing whether the generative experience is
+consequential actions, not before testing whether the generative experience is
 worth building.
 
 ## Exit condition in one paragraph
@@ -360,23 +360,30 @@ one GPUI experience process. The new run's visible p95 was 92.708 ms with zero
 rejections; full evidence is in
 [`stable-host-device-gate.md`](stable-host-device-gate.md).
 
-The project did leave the APK laboratory. The Linux path now has a stable host,
-durable provider/state authority, revision supervisor, resident authoring
-agent, authenticated compositor, and direct-DRM VM gate. Android 17 Cuttlefish
-boots SOS as HOME with an init-supervised on-device authority. On the physical
-SM-A336B, Compat 1 owns every system surface around an optional Android
-application-runtime island; the ordered Shadow, Core 0A, Core 0B, and Core 1
-campaign historically demonstrated successively stronger native ownership
-boundaries.
+The project did leave the APK laboratory. Package format and Experience API v4
+now own every built-in, authoring, activation, and rollback path. Exact graphs,
+live mounts, independent state and grants, typed appearance, failure
+containment, and fork/remix lineage passed desktop tests and physical campaigns
+on Android and Linux. Android 17 Cuttlefish boots SOS as HOME with an
+init-supervised on-device authority. On the SM-A336B, v4-only Compat and Core 1
+artifacts passed composition, independent recovery, authoring, and rollback.
+Core used a debug-only automation service for its repeatable campaign, so that
+result does not replace the separately recorded physical Samsung input gate.
+On the Framework Laptop 12, the exact post-cutover graph passed direct DRM,
+composition, built-in keyboard, touchpad, touchscreen, authoring, rollback, and
+clean GDM recovery from a mutable development-live image. That is diagnostic
+hardware evidence, not Linux release promotion.
 
-The current phase is service migration and hardening, not further proof that a
-generated experience can replace an APK screen. Compat 1 revision
-`sos.compat1.19d8a653fbd7.220e268c228f` is the accepted physical fallback.
-Core 0B remains the frozen last bootable headless-framework comparison target;
-Core 1 is the active, intentionally locked no-Zygote target. Real credentials,
-accessibility, urgent attention, data containment, service replacement, and
-broader physical hardware gates remain open. The APK continues as a regression
-harness rather than the product architecture.
+The current phase is service migration, security hardening, and product
+acceptance. Compat 1 revision `sos.compat1.19d8a653fbd7.220e268c228f` remains
+the broad physical fallback because its application-island and trusted-lock
+campaign covered behavior not repeated by the narrower v4 composition runs.
+Core 0B is the frozen headless-framework comparison target. Core 1 is the
+active, intentionally locked no-Zygote target. Native CE unlock, real
+credentials, assistive operation, urgent attention, data containment, the rest
+of Android service replacement, and installed or immutable Linux release gates
+remain open. The APK continues as a regression harness rather than the product
+architecture.
 
 ## Explicit non-goals for the current phase
 

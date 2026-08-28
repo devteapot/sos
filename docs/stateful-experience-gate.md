@@ -85,7 +85,7 @@ two complete Stock revisions and waits for a GPUI post-render callback after
 every candidate. Active v4 graphs reject that source-swap harness; composition
 stress uses graph activation instead.
 
-## Physical-device evidence — 2026-08-08
+## Physical-device evidence, 2026-08-08
 
 Target: Samsung SM-A336B, Android API 35, `arm64-v8a`.
 
@@ -124,8 +124,8 @@ in 15.302 ms while retaining the same state.
 
 The Android keyboard also exercised Enter: `save_note` set
 `last_saved=true`. A touch on the music control changed `playing=false` to
-`playing=true` and updated the published semantics from “Play music, Paused” to
-“Pause music, Playing.” A swipe exposed all three calendar events. Two album-art
+`playing=true` and updated the published semantics from "Play music, Paused" to
+"Pause music, Playing." A swipe exposed all three calendar events. Two album-art
 crops 450 ms apart differed in 1,082 pixels, confirming that the native pulse
 animation advanced rather than being a static script value.
 
@@ -220,10 +220,10 @@ The proposed success condition is confirmed for a trusted prototype:
 
 Continue with Luau + GPUI, but do not mistake the current bounded IR for the
 end-state UI model. This gate proves a fast stateful composition path; it does
-not yet prove the [north-star claim](vision.md) that an agent can invent a
+not yet prove the [product claim](vision.md) that an agent can invent a
 component implementation outside a predefined catalog.
 
-The next gate is generative depth: implement the original “bent time axis” and
+The next gate is generative depth: implement the original "bent time axis" and
 drag-a-note interaction using agent-authored geometry, hit testing, state, and a
 typed provider action. In parallel, turn the manual `agent-apply` scaffolding
 into a request→patch→inspect→self-correct→accept/rollback loop. Once that works,

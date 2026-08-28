@@ -1,13 +1,15 @@
 # SOS compositor gates
 
-Date: 2026-08-26
+Date: 2026-08-26 (updated 2026-08-28)
 
 SOS now has a minimal Smithay compositor with a nested development backend and
 a direct DRM/GBM/libinput backend. Both keep Wayland beneath the generated
 presentation layer while SOS owns client identity, surface ordering, focus,
 input quiescing, and revision evidence. The direct backend and boot-owned
-logind/tty session pass in the reference Debian VM. This remains virtual-device,
-not physical-hardware, evidence.
+logind/tty session pass in the reference Debian VM. The selectable GDM path has
+also passed physical Intel DRM, built-in keyboard, touchpad, and touchscreen
+diagnostics on a Framework Laptop 12 development-live boot. That physical run
+is not an installed-product or release-promotion verdict.
 
 ## Boundary
 
@@ -72,8 +74,8 @@ scrolling mode uses overlapping horizontal cards while
 focus/scroll-position control remains a later protocol addition. Configure
 requests are constrained to the declared region, and each application's
 rendered surface tree and pointer hit test are clipped to its assigned
-rectangle. Hit testing uses the same buffer render origin as drawing—managed
-window location minus the client's `xdg_window_geometry` inset—and refreshes a
+rectangle. Hit testing uses the same buffer render origin as drawing, the managed
+window location minus the client's `xdg_window_geometry` inset. It refreshes a
 stationary pointer target at an ungrabbed press boundary. This remains true
 when an XDG client advertises a minimum size
 larger than a tile. Popups are clipped with their owning application; layer
@@ -383,6 +385,8 @@ live provider/media refresh, and focus/state recovery. The direct recovery
 layer is a readable compositor-owned panel with restart, rollback, safe-mode,
 and provider-disable controls. Multi-output, runtime mode/scale/rotation,
 rootless XWayland, tablet pressure, and executable bounded shaders now have VM
-or software-renderer evidence. Physical touch calibration, a physical panel,
-real GPU performance, full platform sleep/wake, latency, memory-pressure, and
-thermal evidence remain outside the waived hardware gate.
+or software-renderer evidence. The Framework development-live campaign has
+physical panel, Intel DRM, built-in keyboard, touchpad, and touchscreen
+evidence. Calibration accuracy, measured GPU/panel performance, full platform
+sleep/wake, latency, memory pressure, thermals, and an installed or immutable
+release gate remain open.
