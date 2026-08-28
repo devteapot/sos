@@ -1644,6 +1644,9 @@ inspect_core_stage() {
   grep -F '(allow sos_core_host sos_node_exec (file (' "$system_ext_policy" | \
     grep -F 'execute_no_trans' >/dev/null || \
     fail "SOS $stage Core host cannot execute the shared Pi runner"
+  grep -F '(allow sos_core_host proc_meminfo (file (' "$system_ext_policy" | \
+    grep -F 'read' >/dev/null || \
+    fail "SOS $stage Core Pi runner cannot read its bounded aggregate memory snapshot"
   grep -F '(allow sos_core_host sos_authority (unix_stream_socket (connectto)))' \
     "$system_ext_policy" >/dev/null || \
     fail "SOS $stage policy cannot connect Core to the revision authority"

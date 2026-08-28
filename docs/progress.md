@@ -16428,3 +16428,64 @@ seconds with 807,240 KiB peak RSS and only the existing dead-code warnings.
 exact correction. Require the daemon, init socket, virtual evdev reader, and a
 single end-to-end UI action under Enforcing SELinux before starting a fresh
 automation-mode composition campaign.
+
+## 2026-08-28: Prove Core input automation; reject authoring on a proc denial
+
+**Goal / replacement artifact:** Close the hardened-userdebug correction on
+the SM-A336B, then use the bounded uinput boundary to run the complete Core v4
+composition campaign without ADB's absent Android input service. Source
+`8132ef1fd33191748f99c349ab57c57169f1f3d0` built product
+`sos.core1.8132ef1fd331.a476f178b359` in 228.17 seconds with 2,979,152 KiB
+peak RSS. The sealed OTA at
+`.cache/evidence/android-v4-8132ef1/core1/sealed/lineage-23.0-20260828-UNOFFICIAL-sos_core1_a33x-8132ef1.zip`
+is 1,022,806,246 bytes with SHA-256
+`9394a680756267cdb7df301fd7446832fe2fd30a5fc3a4b619afdf0aae0f3f30`.
+Complete inspection passed in 17.65 seconds with 47,272 KiB peak RSS. The
+sealed 893-byte manifest has SHA-256
+`342c675ac351800a1572a536ac95619bc952e2087d50f533f456be1c0c5ce711`.
+Recovery installed the exact artifact once in 79.54 seconds with `Total xfer:
+1.00x`; the device returned with Enforcing SELinux, no Zygote, host PIDs
+926/932, authority PID 945, platform PID 947, and no relevant crash or AVC.
+
+**Automation and accepted campaign evidence:** `core-input-status` returned
+the exact `sos_core_automation_touch` uinput identity. Automation sequence 1 at
+`(540,2280)` traversed daemon peer validation, the virtual evdev reader, the
+shared Core parser, GPUI pointer routing, and Luau as `navigate_apps`. The
+ordered campaign under
+`.cache/evidence/android-v4-8132ef1-physical/core1/composition/` is explicitly
+marked `input_mode=automation`; it does not replace the separately completed
+Samsung digitizer evidence. Dashboard ran as three independently ready
+Instances. Appearance advanced from generation 20 to 21 without revision
+churn. Agenda update failure and time-budget exhaustion were independently
+contained and recovered, while Dashboard retained `Design review` and advanced
+its parent liveness counter to 25. The namespaced mounted input opened and
+closed Core's native software keyboard, and the automation path entered a
+five-byte authoring prompt through rendered keyboard keys.
+
+The bounded host recovery kept supervisor 926 and authority 945 while child
+932 became 3804; after the explicit retry, the complete graph was ready in
+0.65 seconds. Authority-only recovery then changed PID 945 to 4024 in 0.50
+seconds while host PIDs 926/3804 stayed exact. Appearance 21 and the independent
+Agenda and Dashboard state survived both transitions. Accepted artifact-bound
+checkpoints run through `authority-restart`; there is no campaign PASS or
+sealed campaign manifest.
+
+**Rejected authoring gate / diagnosis:** The deterministic Offline provider
+accepted prompt `remix`, validated and staged graph
+`198f12c5b613f1fcfaf23286f0b56447972023c86a419f5c90625790bb19ad65`,
+presented it, and committed it through the system authority in 1.76 seconds.
+The subsequent `authored` capture failed closed because the immutable Node
+child, still in `sos_core_host`, attempted one read of aggregate
+`/proc/meminfo`. SELinux denied `proc_meminfo:file read` at audit event 13.
+Unlike the earlier executable-memory failure, the interpreter-only runner
+completed, but a relevant enforcing denial remains an acceptance failure.
+
+**Correction / verification / next gate:** Grant only read-only
+`proc_meminfo:file` access to `sos_core_host`; do not grant process-specific
+proc access, writes, executable memory, or a broader Android service. The Core
+artifact inspector now requires that exact compiled policy rule. Shell syntax,
+diff checks, and the complete A33x host fixture pass; the fixture took 8.20
+seconds with 5,100 KiB peak RSS. Build and inspect one superseding Core OTA,
+install it once, and restart the eleven-stage automation campaign from Stock.
+The final gate still requires clean authoring, exact v4 rollback, no relevant
+enforcing AVC, and an independently verified evidence manifest.
