@@ -55,6 +55,33 @@ cc_binary {
     ],
 }
 
+cc_defaults {
+    name: "sos-core-input-automation-defaults",
+    srcs: ["core/input_automation.cpp"],
+    compile_multilib: "64",
+    system_ext_specific: true,
+    cflags: [
+        "-Wall",
+        "-Werror",
+        "-Wextra",
+    ],
+    shared_libs: [
+        "libcutils",
+        "liblog",
+    ],
+}
+
+cc_binary {
+    name: "sos-core-input-automation",
+    defaults: ["sos-core-input-automation-defaults"],
+    init_rc: ["core/sos-core-input-automation.rc"],
+}
+
+cc_binary {
+    name: "sos-core-inputctl",
+    defaults: ["sos-core-input-automation-defaults"],
+}
+
 cc_binary {
     name: "sos-core-platform-adapter",
     stem: "sos-core-platform",

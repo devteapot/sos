@@ -1,0 +1,9 @@
+userdebug_or_eng(`
+  init_daemon_domain(sos_core_input_automation)
+  allow sos_core_input_automation uhid_device:chr_file rw_file_perms;
+  allow sos_core_input_automation self:unix_stream_socket {
+    accept create getattr getopt listen read setopt shutdown write
+  };
+  allow shell sos_core_input_automation_socket:sock_file write;
+  allow shell sos_core_input_automation:unix_stream_socket connectto;
+')

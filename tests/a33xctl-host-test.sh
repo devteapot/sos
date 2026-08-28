@@ -23,6 +23,9 @@ mobile_theme="$repo_root/experiences/modules/mobile-theme.luau"
 android_authority_rc="$repo_root/aosp/device/sos/a33x/sos-authority.rc"
 android_authority_main="$repo_root/crates/android-system-authority/src/main.rs"
 android_agent="$repo_root/apps/experience/android/gradle/app/src/main/java/dev/gpui/mobile/GpuiAgent.java"
+core_input_automation="$repo_root/aosp/device/sos/a33x/core/input_automation.cpp"
+core_input_product="$repo_root/aosp/device/sos/a33x/lineage_sos_core1_a33x.mk"
+core_input_rc="$repo_root/aosp/device/sos/a33x/core/sos-core-input-automation.rc"
 grep -F 'android:name="dev.sos.permission.REPORT_ADB_CONSENT"' "$adb_manifest" >/dev/null
 grep -F 'android:protectionLevel="signature"' "$adb_manifest" >/dev/null
 grep -F 'android:name=".SosAdbConsentReceiver"' "$adb_manifest" >/dev/null
@@ -103,6 +106,16 @@ grep -F 'log_android_graph_status_transitions(&graph.snapshot, &snapshot);' \
   "$repo_root/apps/experience/src/android.rs" >/dev/null
 grep -F '.arg("--jitless")' \
   "$repo_root/apps/experience/src/android/agent.rs" >/dev/null
+for marker in \
+  'sos_core_automation_touch' \
+  'core_input_automation_tap sequence=' \
+  'credentials.uid != kShellUid && credentials.uid != 0' \
+  'x >= kWidth || y < 0 || y >= kHeight'; do
+  grep -F "$marker" "$core_input_automation" >/dev/null
+done
+grep -F 'PRODUCT_PACKAGES_DEBUG +=' "$core_input_product" >/dev/null
+grep -F 'property:ro.debuggable=1' "$core_input_rc" >/dev/null
+grep -F 'origin={}' "$repo_root/apps/experience/src/android/core_input.rs" >/dev/null
 grep -F 'sos://mobile/navigate/' "$repo_root/apps/experience/src/android.rs" >/dev/null
 ! grep -F 'SosCompatWorkspaceActivity' \
   "$repo_root/apps/experience/android/gradle/app/src/main/AndroidManifest.xml" >/dev/null
@@ -115,6 +128,17 @@ A33XCTL_ADB="$mock_adb" "$ctl" inspect-core1-readiness \
   >"$test_root/readiness.out"
 grep -Fx 'core1_readiness=PASS' "$test_root/readiness.out" >/dev/null
 grep -Fx 'native_lifecycle=PASS' "$test_root/readiness.out" >/dev/null
+A33XCTL_ADB="$mock_adb" "$ctl" core-input-status --serial MOCKSERIAL \
+  >"$test_root/core-input-status.out"
+grep -Fx 'core_input_automation=PASS' "$test_root/core-input-status.out" >/dev/null
+A33XCTL_ADB="$mock_adb" "$ctl" core-input-tap --serial MOCKSERIAL --x 540 --y 1200 \
+  >"$test_root/core-input-tap.out"
+grep -Fx 'action=tap' "$test_root/core-input-tap.out" >/dev/null
+if A33XCTL_ADB="$mock_adb" "$ctl" core-input-tap \
+  --serial MOCKSERIAL --x 1080 --y 1200 >/dev/null 2>&1; then
+  printf 'out-of-bounds Core automation tap unexpectedly passed\n' >&2
+  exit 1
+fi
 if A33XCTL_ADB="$mock_adb" "$ctl" inspect-core1-readiness \
   --serial MOCKSERIAL --expected-revision sos.core1.wrong >/dev/null 2>&1; then
   printf 'wrong Core 1 revision unexpectedly passed\n' >&2
@@ -185,6 +209,10 @@ for product in compat1 core1; do
   revision="sos.$product.test.revision"
   artifact="$test_root/${product%1}.ota.zip"
   campaign="$test_root/$product-campaign"
+  mode_args=()
+  if [[ "$product" == core1 ]]; then
+    mode_args=(--input-mode automation)
+  fi
   for stage in stock dashboard appearance child-failure child-timeout recovered \
     ime-accessibility host-restart authority-restart authored rollback; do
     A33XCTL_ADB="$mock_adb" A33XCTL_NC="$mock_nc" \
@@ -195,12 +223,15 @@ for product in compat1 core1; do
       --artifact "$artifact" \
       --root "$campaign" \
       --stage "$stage" \
+      "${mode_args[@]}" \
       >"$test_root/$product-$stage.out"
   done
   "$ctl" audit-v4-composition-campaign --root "$campaign" \
     >"$test_root/$product-audit.out"
   grep -Fx 'v4_composition_campaign=PASS' "$test_root/$product-audit.out" >/dev/null
   if [[ "$product" == core1 ]]; then
+    jq -e '.input_mode == "automation"' "$campaign/campaign.json" >/dev/null
+    grep -Fx 'input_mode=automation' "$campaign/verdict.txt" >/dev/null
     grep -F 'experience_action request_id=6 action=open_first target=i-agenda::agenda-open' \
       "$campaign/stages/rollback/logcat.txt" >/dev/null
     ! grep -F 'android_reference_graph_event_dispatched' \

@@ -16335,3 +16335,53 @@ on the SM-A336B, verify the exact native revision and lifecycle, and rerun all
 eleven physical composition stages from Stock. Android Core parity remains
 open until offline authoring stages a candidate and host-owned rollback
 restores the original v4 revision.
+
+## 2026-08-28: Add a no-Zygote Core input automation boundary
+
+**Goal / device evidence:** Remove repeated human touch handoffs from the Core
+composition campaign without recreating Android's absent input service or
+mislabeling synthetic input as physical. Read-only inspection of the live
+SM-A336B found `/dev/uinput` labeled `uhid_device`, owned by `uhid:uhid`, and
+kernel support `CONFIG_INPUT_UINPUT=y`, `CONFIG_INPUT_EVDEV=y`, and
+`CONFIG_UHID=y`. Direct shell injection remains correctly unavailable: Core
+has no Android input service, shell `sendevent` is SELinux-denied, and `adb
+root` is unavailable.
+
+**Implementation / boundaries:** Userdebug and eng Core now select two
+debug-only packages: the isolated `sos-core-input-automation` daemon and
+`sos-core-inputctl`. The daemon creates exactly one 1080x2400 named multitouch
+device through `/dev/uinput`. Its init-owned Unix socket is mode 0660 for the
+ADB shell; `SO_PEERCRED` additionally rejects every UID except shell 2000 and
+root. The closed protocol exposes only `status` and a single in-bounds `tap X
+Y`; requests are capped at 128 bytes, responses at 1 KiB, and contacts last 24
+ms. There is no arbitrary event, device, file, key, or text command.
+
+The existing Core runtime opens the virtual device only when
+`ro.debuggable=1`, alongside the exclusively owned physical
+`sec_touchscreen`. Both sources use the same multitouch-slot parser,
+`AndroidPlatform` dispatch, hit testing, Instance-namespaced mount routing,
+focus and native-keyboard behavior, and Luau action path. Touch logs now bind
+each down/up to `origin=physical` or `origin=automation`. Composition campaign
+metadata freezes that input mode, and the audit requires the corresponding
+origin plus the daemon's bounded uinput receipt for an automated run.
+Production user products omit both executables via `PRODUCT_PACKAGES_DEBUG`.
+
+**Evidence / failures:** The complete A33x host suite, including an automated
+Core campaign fixture with no Compat dispatch markers, passed in 8.07 seconds
+with 5,348 KiB peak RSS. ARM64 Core runtime checking passed in 1.07 seconds
+with 381,968 KiB peak RSS and only existing dead-code warnings. The real AOSP
+daemon/client module build passed in 136.82 seconds with 45,780 KiB peak RSS.
+The complete product SELinux build, including neverallow and context tests,
+passed in 37.96 seconds with 45,892 KiB peak RSS. Its compiled CIL grants only
+the isolated daemon `uhid_device` access and shell-to-daemon `connectto`; the
+daemon executable and init socket have distinct labels.
+
+**Decision / remaining risk / next gate:** Use kernel uinput automation for
+repeatable composition functionality, but retain one separately labeled
+physical-touch acceptance probe for the Samsung digitizer and raw device
+ownership. No new OTA has yet been built or installed, so the live `e448751`
+product remains unchanged and this is not hardware execution evidence for the
+new service. Build and seal the exact source revision, install it once, prove
+service status and one tap on the phone under Enforcing SELinux, then run the
+eleven-stage Core campaign with `input_mode=automation` and the independent
+physical input probe.

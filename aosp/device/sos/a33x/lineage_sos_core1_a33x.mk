@@ -14,6 +14,12 @@ PRODUCT_PACKAGES += \
     sos-core-platform-adapter \
     sos-ui-removal-marker
 
+# Userdebug/eng acceptance uses a kernel uinput device, not Android's absent
+# InputManager. Production user artifacts do not contain either executable.
+PRODUCT_PACKAGES_DEBUG += \
+    sos-core-input-automation \
+    sos-core-inputctl
+
 PRODUCT_SYSTEM_EXT_PROPERTIES += \
     ro.sos.block_android_activities=true \
     ro.sos.disable_user_apk_install=true \

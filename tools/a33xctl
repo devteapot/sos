@@ -1523,10 +1523,14 @@ inspect_core_stage() {
   local bootstrap_package="$target_files/SYSTEM_EXT/etc/sos/mobile.package.json"
   local stock_theme="$target_files/SYSTEM_EXT/etc/sos/modules/mobile-theme.luau"
   local system_ext_policy="$target_files/SYSTEM_EXT/etc/selinux/system_ext_sepolicy.cil"
+  local file_contexts="$target_files/SYSTEM_EXT/etc/selinux/system_ext_file_contexts"
   local bridge_apk="$target_files/SYSTEM_EXT/priv-app/SosFrameworkBridge/SosFrameworkBridge.apk"
   local core_platform="$target_files/SYSTEM_EXT/bin/sos-core-platform"
   local core_platform_rc="$target_files/SYSTEM_EXT/etc/init/sos-core-platform.rc"
   local core_app_manifest="$target_files/SYSTEM_EXT/etc/sos/core-apps.json"
+  local core_input_automation="$target_files/SYSTEM_EXT/bin/sos-core-input-automation"
+  local core_inputctl="$target_files/SYSTEM_EXT/bin/sos-core-inputctl"
+  local core_input_automation_rc="$target_files/SYSTEM_EXT/etc/init/sos-core-input-automation.rc"
   local marker="$target_files/SYSTEM_EXT/bin/sos-ui-removal-marker"
   local compat_marker="$target_files/SYSTEM_EXT/bin/sos-compat-ui-removal-marker"
   local artifact
@@ -1561,6 +1565,12 @@ inspect_core_stage() {
     fail "SOS $stage GPUI runtime omitted Samsung TSP open/close start"
   strings "$host_runtime" | grep -F 'core_native_software_keyboard node=' >/dev/null || \
     fail "SOS $stage GPUI runtime omitted the Core software keyboard"
+  if [[ "$stage" == core1 ]]; then
+    strings "$host_runtime" | grep -F 'sos_core_automation_touch' >/dev/null || \
+      fail "SOS Core 1 runtime omitted the debug uinput device boundary"
+    strings "$host_runtime" | grep -F 'origin=automation' >/dev/null || \
+      fail "SOS Core 1 runtime cannot distinguish automated touch evidence"
+  fi
   file "$authority" | grep -F 'ARM aarch64' >/dev/null || \
     fail "SOS $stage revision authority is not AArch64"
   strings "$authority" | grep -F 'core_revision=' >/dev/null || \
@@ -1730,6 +1740,43 @@ inspect_core_stage() {
       fail "SOS $stage omitted its physical bridge-test trigger"
   else
     [[ ! -e "$bridge_apk" ]] || fail "Core 1 cannot retain an APK framework bridge"
+    for artifact in "$core_input_automation" "$core_inputctl" "$core_input_automation_rc"; do
+      [[ -f "$artifact" ]] || fail "Core 1 userdebug input automation artifact missing: $artifact"
+      stat --printf='%n %s bytes\n' "$artifact"
+      sha256sum "$artifact"
+    done
+    file "$core_input_automation" "$core_inputctl" | grep -c 'ARM aarch64' | \
+      grep -Fx 2 >/dev/null || fail "Core 1 input automation binaries are not AArch64"
+    for automation_marker in \
+      'core_input_automation_ready version=1' \
+      'core_input_automation_tap sequence=' \
+      'peer-not-authorized' \
+      'invalid-tap'; do
+      strings "$core_input_automation" | grep -F "$automation_marker" >/dev/null || \
+        fail "Core 1 input automation omitted bounded marker: $automation_marker"
+    done
+    strings "$core_inputctl" | grep -F 'sos_core_automation_touch' >/dev/null || \
+      fail "Core 1 input automation client omitted the exact virtual device identity"
+    grep -Fx \
+      'on post-fs-data && property:ro.sos.profile=core && property:ro.debuggable=1' \
+      "$core_input_automation_rc" >/dev/null || \
+      fail "Core 1 input automation is not gated to debuggable Core builds"
+    grep -Fx \
+      '    socket sos_core_input_automation stream 0660 shell shell' \
+      "$core_input_automation_rc" >/dev/null || \
+      fail "Core 1 input automation lacks its bounded init socket"
+    grep -F '(allow sos_core_input_automation uhid_device (chr_file (' \
+      "$system_ext_policy" >/dev/null || \
+      fail "Core 1 input automation cannot own the uinput device"
+    grep -F '(allow shell sos_core_input_automation (unix_stream_socket (connectto)))' \
+      "$system_ext_policy" >/dev/null || \
+      fail "Core 1 shell cannot reach the bounded input automation service"
+    grep -F '/system_ext/bin/sos-core-input-automation' "$file_contexts" | \
+      grep -F 'sos_core_input_automation_exec' >/dev/null || \
+      fail "Core 1 input automation daemon has no isolated executable label"
+    grep -F '/dev/socket/sos_core_input_automation' "$file_contexts" | \
+      grep -F 'sos_core_input_automation_socket' >/dev/null || \
+      fail "Core 1 input automation socket has no isolated label"
     for artifact in "$core_platform" "$core_platform_rc" "$core_app_manifest"; do
       [[ -f "$artifact" ]] || fail "Core 1 native provider artifact missing: $artifact"
       stat --printf='%n %s bytes\n' "$artifact"
@@ -1931,6 +1978,51 @@ adb_readonly() {
   "$adb_binary" -s "$serial" "$@"
 }
 
+core_input_automation() {
+  local action="$1"
+  shift
+  local serial x y response
+  require_command jq
+  case "$action" in
+    status)
+      [[ "$#" -eq 2 && "$1" == --serial ]] || \
+        fail "usage: ./tools/a33xctl core-input-status --serial SERIAL"
+      serial="$2"
+      ;;
+    tap)
+      [[ "$#" -eq 6 && "$1" == --serial && "$3" == --x && "$5" == --y ]] || \
+        fail "usage: ./tools/a33xctl core-input-tap --serial SERIAL --x X --y Y"
+      serial="$2"
+      x="$4"
+      y="$6"
+      [[ "$x" =~ ^[0-9]+$ && "$y" =~ ^[0-9]+$ && \
+        "$x" -le 1079 && "$y" -le 2399 ]] || \
+        fail "Core input tap coordinates must be within 0..1079 and 0..2399"
+      ;;
+    *) fail "internal usage: core_input_automation status|tap" ;;
+  esac
+  validate_device_identity "$serial" core-input-automation
+  [[ "$(device_property "$serial" ro.sos.profile)" == core ]] || \
+    fail "Core input automation is available only on the Core profile"
+  [[ "$(device_property "$serial" ro.debuggable)" == 1 ]] || \
+    fail "Core input automation is available only on userdebug or eng builds"
+  [[ "$(device_property "$serial" init.svc.sos_core_input_automation)" == running ]] || \
+    fail "Core input automation service is not running"
+  if [[ "$action" == status ]]; then
+    response="$(adb_readonly "$serial" shell /system_ext/bin/sos-core-inputctl status | tr -d '\r')"
+    jq -e '.ok == true and .version == 1 and
+      .device == "sos_core_automation_touch" and .origin == "uinput"' \
+      <<<"$response" >/dev/null || fail "Core input automation returned invalid status"
+  else
+    response="$(adb_readonly "$serial" shell /system_ext/bin/sos-core-inputctl tap "$x" "$y" | tr -d '\r')"
+    jq -e --argjson x "$x" --argjson y "$y" '
+      .ok == true and .action == "tap" and .x == $x and .y == $y and
+      (.sequence | numbers) >= 1
+    ' <<<"$response" >/dev/null || fail "Core input automation returned invalid tap evidence"
+  fi
+  printf 'core_input_automation=PASS\naction=%s\nresponse=%s\n' "$action" "$response"
+}
+
 capture_authority_audit_snapshot() {
   [[ "$#" -eq 2 ]] || \
     fail "internal usage: capture_authority_audit_snapshot <serial> <output>"
@@ -2105,15 +2197,25 @@ host_monotonic_ns() {
 }
 
 capture_v4_composition_stage() {
-  [[ "$#" -eq 12 && "$1" == --product && "$3" == --serial && \
+  [[ ("$#" -eq 12 || "$#" -eq 14) && "$1" == --product && "$3" == --serial && \
     "$5" == --expected-revision && "$7" == --artifact && \
     "${9}" == --root && "${11}" == --stage ]] || \
-    fail "usage: ./tools/a33xctl capture-v4-composition-stage --product compat1|core1 --serial SERIAL --expected-revision REVISION --artifact OTA --root DIR --stage STAGE"
+    fail "usage: ./tools/a33xctl capture-v4-composition-stage --product compat1|core1 --serial SERIAL --expected-revision REVISION --artifact OTA --root DIR --stage STAGE [--input-mode physical|automation]"
   local product="$2" serial="$4" expected_revision="$6" artifact="$8"
   local evidence_root="${10}" stage="${12}" previous campaign_file stage_root final_stage_root
+  local input_mode=physical
   local artifact_bytes artifact_sha started_ns finished_ns enforcing
   local authority_pid home_pid core_host_pids platform_pid
+  if [[ "$#" -eq 14 ]]; then
+    [[ "${13}" == --input-mode ]] || \
+      fail "v4 composition input mode must follow --input-mode"
+    input_mode="${14}"
+  fi
+  [[ "$input_mode" == physical || "$input_mode" == automation ]] || \
+    fail "v4 composition input mode must be physical or automation"
   validate_v4_composition_product "$product"
+  [[ "$product" == core1 || "$input_mode" == physical ]] || \
+    fail "Compat composition does not support Core uinput automation"
   validate_device_identity "$serial" "$expected_revision"
   previous="$(v4_composition_stage_previous "$stage")"
   require_command jq
@@ -2133,10 +2235,11 @@ capture_v4_composition_stage() {
       --arg product "$product" \
       --arg serial "$serial" \
       --arg expected_revision "$expected_revision" \
+      --arg input_mode "$input_mode" \
       --arg artifact "$artifact" \
       --arg artifact_sha256 "$artifact_sha" \
       --argjson artifact_bytes "$artifact_bytes" \
-      '{format_version: 1, product: $product, serial: $serial,
+      '{format_version: 1, product: $product, serial: $serial, input_mode: $input_mode,
         expected_revision: $expected_revision, artifact: $artifact,
         artifact_bytes: $artifact_bytes, artifact_sha256: $artifact_sha256}' \
       >"$evidence_root/campaign.json"
@@ -2151,6 +2254,8 @@ capture_v4_composition_stage() {
     fail "v4 composition serial changed during the campaign"
   [[ "$(v4_campaign_json_value "$campaign_file" expected_revision)" == "$expected_revision" ]] || \
     fail "v4 composition revision changed during the campaign"
+  [[ "$(v4_campaign_json_value "$campaign_file" input_mode)" == "$input_mode" ]] || \
+    fail "v4 composition input mode changed during the campaign"
   [[ "$(v4_campaign_json_value "$campaign_file" artifact)" == "$artifact" ]] || \
     fail "v4 composition artifact path changed during the campaign"
   [[ "$(v4_campaign_json_value "$campaign_file" artifact_sha256)" == "$artifact_sha" ]] || \
@@ -2173,6 +2278,7 @@ capture_v4_composition_stage() {
   export A33XCTL_CAPTURE_STAGE="$stage"
   export A33XCTL_CAPTURE_PRODUCT="$product"
   export A33XCTL_CAPTURE_REVISION="$expected_revision"
+  export A33XCTL_CAPTURE_INPUT_MODE="$input_mode"
   started_ns="$(host_monotonic_ns)"
   write_v4_stage_properties "$serial" "$stage_root/properties.env"
   enforcing="$(adb_readonly "$serial" shell getenforce | tr -d '\r\n')"
@@ -2223,9 +2329,10 @@ capture_v4_composition_stage() {
   trap - EXIT
   stage_root="$final_stage_root"
   unset A33XCTL_CAPTURE_STAGE A33XCTL_CAPTURE_PRODUCT A33XCTL_CAPTURE_REVISION \
+    A33XCTL_CAPTURE_INPUT_MODE \
     A33XCTL_CAPTURE_TEMP_ROOT
-  printf 'v4_composition_stage=CAPTURED\nproduct=%s\nserial=%s\nrevision=%s\nstage=%s\nroot=%s\n' \
-    "$product" "$serial" "$expected_revision" "$stage" "$evidence_root"
+  printf 'v4_composition_stage=CAPTURED\nproduct=%s\nserial=%s\nrevision=%s\ninput_mode=%s\nstage=%s\nroot=%s\n' \
+    "$product" "$serial" "$expected_revision" "$input_mode" "$stage" "$evidence_root"
 }
 
 v4_stage_property() {
@@ -2319,7 +2426,7 @@ audit_v4_stage_common() {
 audit_v4_composition_campaign() {
   [[ "$#" -eq 2 && "$1" == --root ]] || \
     fail "usage: ./tools/a33xctl audit-v4-composition-campaign --root DIR"
-  local evidence_root campaign_file product serial expected_revision artifact artifact_sha artifact_bytes stage final_log
+  local evidence_root campaign_file product serial expected_revision input_mode artifact artifact_sha artifact_bytes stage final_log
   local control_label
   local stage_started stage_finished previous_finished=0 campaign_started campaign_finished
   local dashboard_generation appearance_generation runtime_ready_count failed_count recovered_count
@@ -2332,6 +2439,9 @@ audit_v4_composition_campaign() {
   product="$(v4_campaign_json_value "$campaign_file" product)"
   serial="$(v4_campaign_json_value "$campaign_file" serial)"
   expected_revision="$(v4_campaign_json_value "$campaign_file" expected_revision)"
+  input_mode="$(v4_campaign_json_value "$campaign_file" input_mode)"
+  [[ "$input_mode" == physical || "$input_mode" == automation ]] || \
+    fail "v4 composition campaign has an invalid input mode"
   artifact="$(v4_campaign_json_value "$campaign_file" artifact)"
   artifact_sha="$(v4_campaign_json_value "$campaign_file" artifact_sha256)"
   artifact_bytes="$(jq -er '.artifact_bytes | numbers' "$campaign_file")"
@@ -2530,10 +2640,17 @@ audit_v4_composition_campaign() {
       "$authority_stage_host" == "$authored_host" && "$authored_host" == "$rollback_host" ]] || \
       fail "Compat HOME PID evidence does not isolate host recovery"
   else
-    require_v4_log_pattern "$final_log" 'core_input_touch action=down' \
-      "Core physical touchscreen down is missing"
-    require_v4_log_pattern "$final_log" 'core_input_touch action=up' \
-      "Core physical touchscreen up is missing"
+    require_v4_log_pattern "$final_log" \
+      "core_input_touch action=down .*origin=$input_mode" \
+      "Core $input_mode touchscreen down is missing"
+    require_v4_log_pattern "$final_log" \
+      "core_input_touch action=up .*origin=$input_mode" \
+      "Core $input_mode touchscreen up is missing"
+    if [[ "$input_mode" == automation ]]; then
+      require_v4_log_pattern "$final_log" \
+        'core_input_automation_tap sequence=[1-9][0-9]* .*origin=uinput' \
+        "Core automation campaign lacks bounded uinput service evidence"
+    fi
     require_v4_log_pattern "$final_log" \
       'core_native_software_keyboard node=i-[^ ]+::agenda-input visible=true' \
       "Core native IME did not open for the namespaced mounted Agenda input"
@@ -2565,11 +2682,12 @@ audit_v4_composition_campaign() {
     "$appearance_generation" "$failed_count" "$recovered_count" >>"$evidence_root/verdict.txt"
   printf 'campaign_elapsed_ns=%s\n' "$((campaign_finished - campaign_started))" \
     >>"$evidence_root/verdict.txt"
+  printf 'input_mode=%s\n' "$input_mode" >>"$evidence_root/verdict.txt"
   evidence_manifest_generate --root "$evidence_root" --output "$evidence_root/manifest.tsv" >/dev/null
   evidence_manifest_verify --root "$evidence_root" --manifest "$evidence_root/manifest.tsv" >/dev/null
   cat "$evidence_root/verdict.txt"
   printf 'manifest=%s\n' "$evidence_root/manifest.tsv"
-  info "v4 composition physical campaign passed with an independently verified manifest"
+  info "v4 composition $input_mode campaign passed with an independently verified manifest"
 }
 
 evidence_path_is_temporary() {
@@ -2727,6 +2845,10 @@ commands:
                     verify the non-shipping trusted provider probe is present
   inspect-core1-readiness --serial SERIAL --expected-revision REVISION
                     read-only exact-product Core 1 readiness snapshot
+  core-input-status --serial SERIAL
+                    verify the debug-only Core uinput automation boundary
+  core-input-tap --serial SERIAL --x X --y Y
+                    emit one bounded tap through the Core uinput device
   restart-v4-authority --serial SERIAL --expected-revision REVISION
                     restart only the authority through the userdebug recovery probe
   capture-v4-composition-stage --product compat1|core1 --serial SERIAL
@@ -2781,6 +2903,8 @@ case "$command" in
   inspect-core1) inspect_core1 "$@" ;;
   inspect-core1-provider-probe) inspect_core1_provider_probe "$@" ;;
   inspect-core1-readiness) inspect_core1_readiness "$@" ;;
+  core-input-status) core_input_automation status "$@" ;;
+  core-input-tap) core_input_automation tap "$@" ;;
   restart-v4-authority) restart_v4_authority "$@" ;;
   capture-v4-composition-stage) capture_v4_composition_stage "$@" ;;
   audit-v4-composition-campaign) audit_v4_composition_campaign "$@" ;;

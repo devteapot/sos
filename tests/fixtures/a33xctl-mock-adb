@@ -41,6 +41,7 @@ if [[ -n "${A33XCTL_CAPTURE_STAGE:-}" ]]; then
   mock_stage="$A33XCTL_CAPTURE_STAGE"
   mock_product="${A33XCTL_CAPTURE_PRODUCT:?}"
   mock_revision="${A33XCTL_CAPTURE_REVISION:?}"
+  mock_input_mode="${A33XCTL_CAPTURE_INPUT_MODE:-physical}"
   mock_generation=0
   mock_selected=null
   mock_opened=null
@@ -146,8 +147,8 @@ EOF
       '08-27 14:00:20.000 I sos-experience: scene_pointer phase=up id=1 count=1 pressure=0.000' \
       '08-27 14:00:21.000 I sos-experience: compat_ime_focus_transition from=none to=i-agenda::agenda-input epoch=3 lifecycle=active' \
       '08-27 14:00:22.000 I sos-experience: compat_ime_blur_resolved node_id=i-agenda::agenda-input epoch=4 outcome=deactivate lifecycle=inactive' \
-      '08-27 14:00:23.000 I sos-experience: core_input_touch action=down id=1 x=120 y=400' \
-      '08-27 14:00:24.000 I sos-experience: core_input_touch action=up id=1 x=120 y=400' \
+      "08-27 14:00:23.000 I sos-experience: core_input_touch action=down id=1 x=120 y=400 origin=$mock_input_mode" \
+      "08-27 14:00:24.000 I sos-experience: core_input_touch action=up id=1 x=120 y=400 origin=$mock_input_mode" \
       '08-27 14:00:25.000 I sos-experience: core_native_software_keyboard node=i-agenda::agenda-input visible=true' \
       '08-27 14:00:26.000 I sos-experience: core_native_software_keyboard node=i-agenda::agenda-input visible=false' \
       '08-27 14:00:27.000 I sos-experience: android_system_control action=dismiss_experience experience_id=sos.example.dashboard' \
@@ -155,6 +156,10 @@ EOF
       '08-27 14:00:29.000 I sos-experience: android_agent_activation_commit request_id=9 graph_id=graph-candidate phase=committed authority=system-graph' \
       '08-27 14:00:30.000 I sos-experience: android_system_control action=rollback_graph' \
       '08-27 14:00:31.000 I sos-experience: android_graph_rollback_presented graph_id=graph-previous'
+    if [[ "$mock_input_mode" == automation ]]; then
+      printf '%s\n' \
+        '08-27 14:00:32.000 I sos-core-input: core_input_automation_tap sequence=7 x=120 y=400 peer_uid=2000 origin=uinput'
+    fi
   }
 
   case "$*" in
@@ -236,12 +241,21 @@ case "$*" in
   'shell getprop ro.sos.core.stage') printf '1\r\n' ;;
   'shell getprop ro.sos.lifecycle') printf 'active\r\n' ;;
   'shell getprop ro.sos.profile') printf 'core\r\n' ;;
+  'shell getprop ro.debuggable') printf '1\r\n' ;;
   'shell getprop ro.sos.providers') printf 'core-native\r\n' ;;
   'shell getprop ro.sos.ui_owner') printf 'native-sos-no-zygote\r\n' ;;
   'shell getprop ro.zygote') printf 'no_zygote\r\n' ;;
   'shell getprop init.svc.sos_core_host') printf 'running\r\n' ;;
   'shell getprop init.svc.sos_authority') printf 'running\r\n' ;;
   'shell getprop init.svc.sos_core_platform') printf 'running\r\n' ;;
+  'shell getprop init.svc.sos_core_input_automation') printf 'running\r\n' ;;
+  'shell /system_ext/bin/sos-core-inputctl status')
+    printf '{"ok":true,"version":1,"device":"sos_core_automation_touch","origin":"uinput"}\r\n'
+    ;;
+  shell\ /system_ext/bin/sos-core-inputctl\ tap\ [0-9]*\ [0-9]*)
+    set -- $*
+    printf '{"ok":true,"sequence":1,"action":"tap","x":%s,"y":%s}\r\n' "$4" "$5"
+    ;;
   'shell getenforce') printf 'Enforcing\r\n' ;;
   'shell dumpsys SurfaceFlinger --list') printf 'Background\r\nSOS Core Experience\r\n' ;;
   'shell pidof sos-core-host') printf '921 932\r\n' ;;

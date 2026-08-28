@@ -570,6 +570,18 @@ KiB, or a coarse 257 KiB per Instance. These measurements exercise the
 serialization, VM, and transaction boundaries. They are not compositor frame,
 physical input, or device memory verdicts.
 
+Core's no-Zygote acceptance path has no Android `InputManager`, so repeatable
+functional campaigns use a debug-build-only kernel ingress rather than an
+Android injection API. `sos-core-input-automation` owns one named `/dev/uinput`
+multitouch device and accepts only bounded taps from the ADB shell UID through
+an init-owned Unix socket. The Core host opens that device alongside the real
+Samsung touchscreen and sends both through the same evdev parser, pointer
+router, mount coordinate translation, focus/IME handling, and Luau event path.
+Every touch record carries `origin=automation` or `origin=physical`, and the
+campaign identity freezes the expected input mode. This makes the composition
+gate repeatable without converting virtual-device evidence into a claim about
+the physical digitizer. Production user images omit the daemon and client.
+
 `tools/linux-compositor/verify-composition-nested` additionally installed the
 reference packages into a disposable Debian 13 graph store and presented graph
 `f09068511e1c9d2c160fcc55583e9d347024fbf4a6ca2fa53ff2492a983ab287`
