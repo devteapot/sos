@@ -1425,8 +1425,9 @@ inspect_core() {
   readelf -Ws "$host_runtime" | awk \
     '$8 == "android_main" && $7 != "UND" { found = 1 } END { exit !found }' || \
     fail "SOS Core GPUI runtime cannot satisfy NativeActivity glue at load time"
-  strings "$host_runtime" | grep -F \
-    'core_input_ready device=sec_touchscreen mode=exclusive protocol=mt-slot+btn_touch' >/dev/null || \
+  strings "$host_runtime" | grep -F 'sec_touchscreen' >/dev/null &&
+    strings "$host_runtime" | grep -F \
+      'mode=exclusive protocol=mt-slot+btn_touch origin=' >/dev/null || \
     fail "SOS Core GPUI runtime does not own the Samsung touchscreen with BTN_TOUCH fallback"
   strings "$host_runtime" | grep -F 'core_input_tsp_enabled path=' >/dev/null || \
     fail "SOS Core GPUI runtime omitted Samsung TSP enable"
@@ -1556,8 +1557,9 @@ inspect_core_stage() {
   check_android_v4_system_controls "$host_runtime"
   readelf -Ws "$host_runtime" | grep -F ' sos_core_main' >/dev/null || \
     fail "SOS $stage GPUI runtime does not export sos_core_main"
-  strings "$host_runtime" | grep -F \
-    'core_input_ready device=sec_touchscreen mode=exclusive protocol=mt-slot+btn_touch' >/dev/null || \
+  strings "$host_runtime" | grep -F 'sec_touchscreen' >/dev/null &&
+    strings "$host_runtime" | grep -F \
+      'mode=exclusive protocol=mt-slot+btn_touch origin=' >/dev/null || \
     fail "SOS $stage GPUI runtime omitted Samsung BTN_TOUCH fallback"
   strings "$host_runtime" | grep -F 'core_input_tsp_enabled path=' >/dev/null || \
     fail "SOS $stage GPUI runtime omitted Samsung TSP enable"

@@ -16376,12 +16376,25 @@ passed in 37.96 seconds with 45,892 KiB peak RSS. Its compiled CIL grants only
 the isolated daemon `uhid_device` access and shell-to-daemon `connectto`; the
 daemon executable and init socket have distinct labels.
 
+**Full product artifact / inspection:** Exact source
+`8d965f723f07` built product `sos.core1.8d965f723f07.ff313a0fcba0` in
+314.82 seconds with 2,978,932 KiB peak RSS. The resulting signed
+1,022,809,463-byte OTA has SHA-256
+`7c7177611d143496107ce9e4d930345da55b5502fc795f5e6b846b49684f9b67`.
+The first full inspection reached the runtime boundary but rejected the old
+contiguous `sec_touchscreen` plus `mt-slot+btn_touch` marker: the shared reader
+causes optimized Rust to store those two fragments separately. Source, unit
+tests, and raw binary strings proved the physical fallback remained present.
+The inspector now requires both fragments independently; the complete
+package-signature, AVB, product-graph, v4 identity, runtime, init, debug-package,
+and compiled-SELinux gate passed in 17.53 seconds with 47,396 KiB peak RSS.
+
 **Decision / remaining risk / next gate:** Use kernel uinput automation for
 repeatable composition functionality, but retain one separately labeled
 physical-touch acceptance probe for the Samsung digitizer and raw device
-ownership. No new OTA has yet been built or installed, so the live `e448751`
-product remains unchanged and this is not hardware execution evidence for the
-new service. Build and seal the exact source revision, install it once, prove
-service status and one tap on the phone under Enforcing SELinux, then run the
-eleven-stage Core campaign with `input_mode=automation` and the independent
-physical input probe.
+ownership. The exact replacement OTA is built and passes offline inspection,
+but is not yet installed, so the live `e448751` product remains unchanged and
+there is no hardware execution evidence for the new service yet. Seal and
+install the exact artifact once, prove service status and one tap on the phone
+under Enforcing SELinux, then run the eleven-stage Core campaign with
+`input_mode=automation` and the independent physical input probe.
