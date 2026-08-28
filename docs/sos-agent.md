@@ -54,20 +54,20 @@ Start the resident service with Pi's faux provider in the second. This performs
 the real SOS validation, staging, and activation path without a model API call:
 
 ```sh
-./tools/sosctl linux-agent-run --fake experiences/daily-flow.luau
+./tools/sosctl linux-agent-run --fake tests/fixtures/stock-authoring-v4.luau
 ```
 
 In the GPUI experience, type the request into the “Make it yours” field and
 press Enter. The maintenance client remains useful for protocol diagnosis:
 
 ```sh
-./tools/sosctl linux-agent-prompt "Turn this into a calm daily flow"
+./tools/sosctl linux-agent-prompt "Turn this into a compact timeline"
 ./tools/sosctl linux-status
 ```
 
 The expected tool order is context, validation, submission. The GPUI host must
-remain the same process while the active revision changes and the window renders
-the daily-flow candidate.
+remain the same process while the active Stock revision changes and the window
+renders the v4 candidate.
 
 The packaged direct-KMS gate automates this exact product path through the
 semantic interface rather than calling the agent socket. It sets and submits
@@ -288,7 +288,7 @@ maintenance shell:
 ```sh
 /usr/local/bin/node /usr/local/libexec/sos-agent/dist/agent-runner.cjs prompt \
   --socket /run/sos-agent/agent.sock \
-  --request "Turn this into a calm daily flow"
+  --request "Turn this into a compact timeline"
 ```
 
 The Luau conversation surface is now the intended first human interaction.

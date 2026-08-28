@@ -6,6 +6,7 @@ import android.content.Intent;
 import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageManager;
 import android.content.pm.ResolveInfo;
+import android.net.Uri;
 import android.os.Build;
 import android.util.Log;
 import android.view.KeyEvent;
@@ -80,10 +81,16 @@ final class SosAndroidAppAdapter {
     }
 
     static void home(Context context) {
-        Intent home = new Intent(Intent.ACTION_MAIN)
-                .addCategory(Intent.CATEGORY_HOME)
-                .setPackage(context.getPackageName())
+        home(context, null);
+    }
+
+    static void home(Context context, String mobileScreen) {
+        Intent home = new Intent(context, GpuiActivity.class)
+                .setAction(Intent.ACTION_MAIN)
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
+        if (mobileScreen != null) {
+            home.setData(Uri.parse("sos://mobile/navigate/" + mobileScreen));
+        }
         context.startActivity(home);
     }
 

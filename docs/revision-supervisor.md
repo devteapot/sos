@@ -1,6 +1,6 @@
 # Stable-host revision supervisor
 
-Date: 2026-08-08 (updated 2026-08-26)
+Date: 2026-08-08 (updated 2026-08-28)
 
 This is the Linux prototype of SOS revision activation after removing native
 experience binaries from the experience contract. Generated revisions are Luau
@@ -14,36 +14,42 @@ The `revision-supervisor` crate now owns these operations:
 - install a content-addressed revision containing Luau source, durable state,
   state schema, required experience-API version, and bounded sidecar assets;
 - verify every file's byte length and SHA-256 before activation;
-- keep the active host process independent from revision contents;
-- ask that stable host to prepare a candidate while the accepted scene remains
-  active;
-- activate only after the host reports that the candidate was presented;
-- atomically replace the relative `current` symlink;
-- restart the permanent host on its committed current revision if the host
-  process exits.
+- keep Experience histories and current/previous pointers in the registry;
+- resolve immutable, content-addressed graphs before runtime preparation;
+- ask the stable host to prepare every graph instance while accepted graphs
+  remain active;
+- activate registry pointers, graph pointers, and authority state as one
+  journaled transaction after presentation; and
+- restart hosts on committed graphs if a host process exits.
 
 The on-disk shape is:
 
 ```text
 ROOT/
-  current -> revisions/<revision-id>
   revisions/<revision-id>/
     manifest.json
     manifest.hmac-sha256  # optional development integrity mode
+    package.json
     source.luau
     state.json
     assets/
       <sha256>.svg|png|jpg|webp|font|wgsl
+  experience-registry.json
+  graphs/<graph-id>.json
+  graph-pointers/<experience-id>.json
+  reverse-dependencies.json
+  graph-activation-journal.json  # present only during recovery
   run/
     supervisor.sock
 ```
 
 There is deliberately no `experience` executable or per-revision argument list.
-Format version 3 hashes the state schema, experience-API version, source,
-state, and sorted asset ID/kind/file identities. Installation writes and `fsync`s a private staging
-directory, changes its files to read-only, renames it into `revisions/`, and
-`fsync`s the parent. `current` is replaced with an atomic relative-symlink
-rename followed by a directory `fsync`.
+Format version 4 hashes the complete immutable package, state schema,
+Experience API version, source, state, and sorted asset ID/kind/file
+identities. Installation writes and `fsync`s a private staging directory,
+changes its files to read-only, renames it into `revisions/`, and `fsync`s the
+parent. Registry and graph pointer files use atomic rename plus directory
+`fsync`; the activation journal binds every pointer transition.
 
 When `SOS_REVISION_SIGNING_KEY_FILE` is provisioned, installation writes a
 detached HMAC-SHA-256 over the exact manifest bytes. When
@@ -53,8 +59,8 @@ useful keyed-integrity mode for controlled deployments, but it is optional and
 symmetric. It is not an asymmetric release signature or a system-owned stock
 recovery pin.
 
-Scene ABI v3 revisions may retain small SVG declarations inside `source.luau`
-or use individually hashed `svg`, `png`, `jpeg`, `webp`, `font`, and WGSL
+Experience API v4 revisions may retain small SVG declarations inside
+`source.luau` or use individually hashed `svg`, `png`, `jpeg`, `webp`, `font`, and WGSL
 `shader` sidecars. Installation enforces 64 assets, 4 MiB per asset, and 16 MiB
 total; rejects active/external SVG content and malformed file signatures; and
 makes the files and asset directory read-only. The runtime re-verifies the
@@ -73,24 +79,24 @@ on the supervisor implementation:
 
 | Supervisor request | Required host behavior |
 | --- | --- |
-| `boot` | Load the committed revision and report `presented` |
-| `prepare` | Create a fresh VM, migrate state, validate capabilities, and prepare a retained scene without replacing the active scene |
-| `present` | Switch to the prepared scene at a frame boundary and report `presented` |
-| `confirm` | Prove the host event loop is still alive after presentation and before pointer commit |
-| `discard` | Destroy an unaccepted candidate VM/scene |
+| `boot_graph` | Load the committed resolved graph and report composed presentation evidence |
+| `prepare_graph` | Create fresh per-instance VMs, migrate state, validate contracts and capabilities, and prepare a composed scene without replacing the active graph |
+| `present_graph` | Switch every prepared root at a frame boundary and report composed presentation evidence |
+| `confirm_graph` | Prove the host event loop and exact graph remain alive before pointer commit |
+| `discard_graph` | Destroy every unaccepted candidate VM/scene |
 | `shutdown` | Terminate the permanent host cleanly |
 
-Every request and response carries a request ID; revision operations also carry
-the content-addressed revision ID. `boot` and `prepare` include the verified,
-read-only revision directory and required experience-API version. A production
+Every request and response carries a request ID; graph operations also carry
+the content-addressed graph ID and verified revision root. A production
 AOSP integration may replace pipes with a privileged IPC transport, but must
 preserve these semantics.
 
 Candidate syntax, migration, capability, timeout, and render-preparation errors
 therefore reject a Luau revision without launching a new native process or
 surface. A successful activation keeps the same host PID. A host crash is a
-permanent-layer failure: the supervisor restarts the host on `current`; it does
-not roll back durable provider state by moving only the source pointer.
+permanent-layer failure: the supervisor restarts the host on the committed
+graph; it does not roll back durable provider state by moving only one
+revision pointer.
 
 ## CLI
 
@@ -99,58 +105,51 @@ cargo build -p revision-supervisor --bins
 SUPERVISOR=target/debug/sos-revision-supervisor
 ROOT=/tmp/sos-revisions
 
-$SUPERVISOR install --root "$ROOT" --source experience.luau \
-  --state state.json --schema 1 --api 3 \
-  --asset hero:png:hero.png --asset display:font:Display.otf
-$SUPERVISOR bootstrap --root "$ROOT" --revision <initial-revision-id>
-$SUPERVISOR serve --root "$ROOT" --host-executable /usr/libexec/sos-experience-host
-$SUPERVISOR activate --root "$ROOT" --revision <candidate-revision-id>
+$SUPERVISOR install-package --root "$ROOT" --source experience.luau \
+  --state state.json --schema 1 --package package.json \
+  --asset theme:luau:theme.luau
+$SUPERVISOR bootstrap-graph --root "$ROOT" \
+  --experience <experience-id> --revision <initial-revision-id>
+$SUPERVISOR serve --root "$ROOT" --host-executable /usr/libexec/sos-experience-host \
+  --root-experience <experience-id>
+$SUPERVISOR activate-graph --root "$ROOT" --graph <candidate-graph-id>
 ```
 
-`bootstrap` refuses an initialized store. All later pointer movement belongs to
-the daemon. Coordinated mode additionally requires a stable state transaction
-ID; see [`coordinated-activation.md`](coordinated-activation.md).
+Use the `install-package` command shown above. Bare `install` authoring is
+disabled. `bootstrap-graph` creates the initial registry and graph pointers;
+all later pointer movement belongs to the graph daemon. A revision without a
+format-v4 package is rejected before resolution.
 
 ## Evidence
 
-`cargo test -p revision-supervisor --all-targets` runs the supervisor and
-coordinator integration suites. Supervisor tests cover executable-free revision identity, API-version
-binding, read-only storage, concurrent atomic pointer reads, candidate
-rejection, preparation timeout, failures before and immediately after
-presentation, same-PID activation, host restart on the committed revision, and
-the external daemon. Ten
-coordinator tests retain state/source/schema binding and crash-journal cases.
-The protocol probe remains the deterministic supervisor integration-test child,
+`cargo test -p revision-supervisor --all-targets` runs registry, resolver,
+graph-supervisor, reverse-index, and fault-injection suites. The tests cover
+executable-free revision identity, API-version binding, read-only storage,
+independent histories, contract resolution, candidate rejection, preparation
+timeout, every activation-journal phase, multi-root atomicity, same-PID
+activation, host restart on committed graphs, and the external daemon. The
+protocol probe remains the deterministic supervisor integration-test child,
 but it is no longer the only external host. `sos-experience-host` is a real
-GPUI/Wayland client that loads the immutable Luau revision, implements every
-request in the table above, activates within one native process, and restarts on
-the committed pointer. Its scoped evidence and known presentation/input gaps
+GPUI/Wayland client that loads immutable resolved graphs, implements every
+request in the table above, activates within stable host processes, and
+restarts on committed graph pointers. Its scoped evidence and known presentation/input gaps
 are in [`linux-stable-host.md`](linux-stable-host.md).
 
 This is Linux process/filesystem and nested-Wayland evidence. The corresponding
-Android harness uses one GPUI process and in-process worker activation. Its
-physical-device activation, rejection, recovery, platform regression,
-typed-effect, and 10,000-swap measurements are recorded in
-[`stable-host-device-gate.md`](stable-host-device-gate.md). The AOSP adapter
-still needs to join that real GPUI host to this external supervisor protocol.
+Android authority uses its platform-specific bounded graph IPC with the same
+package, registry, graph, state, appearance, grant, activation, and recovery
+semantics. Its physical-device evidence is indexed in
+[`progress.md`](progress.md).
 
 ## Remaining boundaries
 
-- The Android GPUI shell still needs to implement this external transport; its
-  confirmed stable-host lifecycle is currently in-process.
 - The activation journal remains unsigned. Revision manifests are only
   conditionally HMAC-authenticated; production Linux still needs mandatory
   asymmetric verification rooted outside mutable user state.
-- The Android harness consumes the same runtime asset set, but the AOSP adapter
-  must still carry the supervisor-provided revision directory through its
-  production IPC instead of the current in-process activation harness.
 - Host process descendants are not yet in a cgroup or capability sandbox.
-- An actual compositor-present fence must replace the prototype host's
-  `presented` assertion.
 - Android has an AVB/OTA-protected, authority-pinned stock fallback. Linux still
   needs the equivalent immutable stock pointer and fixed recovery request;
   HMAC-enabled ordinary revisions do not supply that provenance boundary.
 - The A/B permanent-host update mechanism remains to be built.
-- Real-data isolation requires moving the Luau VM behind a constrained worker
-  process or equivalently strong boundary; the current in-process Android VM is
-  not a production trust boundary.
+- Android VM worker-process isolation remains optional defense in depth; the
+  API and authority model do not depend on the present in-process deployment.

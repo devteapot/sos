@@ -38,9 +38,59 @@ def wait_for_stop() -> None:
 
 
 name = os.path.basename(sys.argv[0])
+if name == "sudo":
+    os.execvp(sys.argv[1], sys.argv[1:])
+
+if name == "systemd-run":
+    state_file = os.environ["SOS_TEST_GATE_INHIBITOR_STATE"]
+    arguments_file = os.environ.get("SOS_TEST_GATE_SYSTEMD_RUN_ARGS_FILE")
+    if arguments_file:
+        with open(arguments_file, "w", encoding="utf-8") as output:
+            output.write("\n".join(sys.argv[1:]) + "\n")
+    with open(state_file, "w", encoding="utf-8") as output:
+        output.write("active\n")
+    raise SystemExit(0)
+
 if name == "sos-revision-supervisor":
-    if len(sys.argv) >= 2 and sys.argv[1] == "status":
-        print("1" * 64)
+    root = option("--root")
+    os.makedirs(root, exist_ok=True)
+
+    def marker(name: str) -> str:
+        return os.path.join(root, "mock-" + name)
+
+    def read_marker(name: str) -> str | None:
+        try:
+            with open(marker(name), encoding="utf-8") as stored:
+                return stored.read().strip()
+        except FileNotFoundError:
+            return None
+
+    def write_marker(name: str, value: str) -> None:
+        with open(marker(name), "w", encoding="utf-8") as stored:
+            stored.write(value + "\n")
+
+    if len(sys.argv) >= 2 and sys.argv[1] == "graph-status":
+        experience = option("--experience")
+        print(read_marker("graph-" + experience) or "none")
+        raise SystemExit(0)
+    if len(sys.argv) >= 2 and sys.argv[1] == "install-package":
+        print("2" * 64)
+        raise SystemExit(0)
+    if len(sys.argv) >= 2 and sys.argv[1] == "bootstrap-graph":
+        experience = option("--experience")
+        write_marker("graph-" + experience, "a" * 64)
+        write_marker("experience-" + experience, option("--revision"))
+        raise SystemExit(0)
+    if len(sys.argv) >= 2 and sys.argv[1] == "experience-status":
+        print(read_marker("experience-" + option("--experience")) or "none")
+        raise SystemExit(0)
+    if len(sys.argv) >= 2 and sys.argv[1] == "retire-experience":
+        experience = option("--experience")
+        try:
+            os.unlink(marker("experience-" + experience))
+        except FileNotFoundError:
+            pass
+        print("retired=true experience_id=" + experience)
         raise SystemExit(0)
     raise SystemExit("unsupported revision-supervisor mock command")
 
@@ -75,6 +125,20 @@ if name == "sos-agent-authoring":
     raise SystemExit(0)
 
 if name == "systemctl":
+    gate_state_file = os.environ.get("SOS_TEST_GATE_INHIBITOR_STATE")
+    if gate_state_file:
+        try:
+            with open(gate_state_file, encoding="utf-8") as stored:
+                gate_state = stored.read().strip()
+        except FileNotFoundError:
+            gate_state = "inactive"
+        if sys.argv[1] == "is-active":
+            raise SystemExit(0 if gate_state == "active" else 3)
+        if sys.argv[1] == "stop":
+            with open(gate_state_file, "w", encoding="utf-8") as output:
+                output.write("inactive\n")
+            raise SystemExit(0)
+        raise SystemExit("unsupported gate systemctl mock command")
     arguments_file = os.environ.get("SOS_TEST_SYSTEMCTL_ARGS_FILE")
     if arguments_file:
         with open(arguments_file, "a", encoding="utf-8") as output:
@@ -82,6 +146,17 @@ if name == "systemctl":
     raise SystemExit(0)
 
 if name == "systemd-inhibit":
+    if "--list" in sys.argv:
+        gate_state_file = os.environ.get("SOS_TEST_GATE_INHIBITOR_STATE")
+        if gate_state_file:
+            with open(gate_state_file, encoding="utf-8") as stored:
+                if stored.read().strip() == "active":
+                    print(
+                        "SOS Linux hardware gate 0 root 123 systemd-inhibit "
+                        "sleep:idle:handle-lid-switch "
+                        "Prepared physical acceptance campaign block"
+                    )
+        raise SystemExit(0)
     arguments_file = os.environ.get("SOS_TEST_INHIBIT_ARGS_FILE")
     if arguments_file:
         with open(arguments_file, "w", encoding="utf-8") as output:
@@ -89,6 +164,9 @@ if name == "systemd-inhibit":
     separator = sys.argv.index("--")
     command = sys.argv[separator + 1 :]
     os.execv(command[0], command)
+
+if name == "sleep":
+    raise SystemExit(0)
 
 if name == "node":
     arguments_file = os.environ["SOS_TEST_AGENT_ARGS_FILE"]

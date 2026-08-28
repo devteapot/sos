@@ -6,17 +6,18 @@ SOS now has both a real Linux presentation host and a minimal trusted Wayland
 compositor. The host can remain an ordinary client for desktop development, or
 the Debian reference VM can boot directly into a systemd/PAM session where SOS
 owns tty1, seat0, DRM/KMS, libinput, surface policy, and presentation evidence.
-Both paths preserve the same generated experience, permanent-host lifecycle,
+Both paths preserve the same generated experience, stable-host lifecycle,
 and local provider/state boundary.
 
 ## Current process and presentation boundary
 
 ```text
-revision supervisor
-    | newline JSON: boot / prepare / present / confirm / discard / shutdown
+experience graph supervisor
+    | newline JSON: boot_graph / prepare_graph / present_graph /
+    |               confirm_graph / discard_graph / shutdown
     v
-permanent sos-experience-host process
-    | Luau -> validated Scene ABI v3 -> retained GPUI elements
+stable sos-experience-host process
+    | one Luau VM per graph Instance -> validated retained scene -> GPUI
     v
 one GPUI Wayland surface
     v
@@ -24,27 +25,30 @@ existing Wayland compositor
 ```
 
 `linux-run` also owns a sibling provider/state authority. The Linux-only
-`sos-linux-session` helper verifies the revision store, bootstraps an empty
-authority from the committed pointer, and stages each candidate before asking
-the coordinated supervisor to activate it. The same authority socket is passed
-to the supervisor and permanent host; either top-level service exiting tears
-down the developer session. A non-empty mismatch remains fatal unless the
-durable activation journal binds the pointer as its previous revision and the
-authority as its candidate; that one crash boundary is handed to the existing
-coordinator recovery path instead of being mistaken for corruption.
+`sos-linux-session` helper verifies the revision and graph stores, bootstraps
+authority state for every Experience in the committed graph, and asks the
+graph supervisor to activate candidates transactionally. The same authority
+socket is passed to the supervisor and host; either top-level service exiting
+tears down the developer session. Recovery reconciles the graph activation
+journal, registry and graph pointers, and the authority's batched state
+promotion as one boundary.
 
 `experience-host-protocol` owns the transport ABI shared by the supervisor and
 host. Host stdout is reserved for newline-delimited protocol events; all GPUI,
 runtime, timing, and recovery diagnostics go to stderr. A candidate is compiled
-and rendered in a fresh Luau VM while the accepted scene remains active. On
-`present`, the worker commits that prepared VM and the same GPUI entity renders
-the new scene. In an ordinary Wayland session, a GPUI next-frame callback emits
-`presented`. Under `sos-compositor`, the host instead arms the scene handoff and
+and rendered in a fresh Luau VM while the accepted scene remains active. The
+installed session sets `SOS_GRAPH_RUNTIME_ISOLATION=process`, which moves v4
+graph VMs behind a bounded subprocess protocol. Set it to `thread` only for a
+deliberate deployment fallback. On `present_graph`, the workers commit those
+prepared VMs and the same GPUI entity renders the new composed scene. In an
+ordinary Wayland session, a GPUI next-frame callback emits presentation
+evidence. Under `sos-compositor`, the host instead arms the scene handoff and
 waits for the compositor to observe its later shell commit in a successful
-nested backend submit. A later `confirm` request proves that the event loop is
-still responsive before the supervisor advances `current`.
+nested backend submit. A later `confirm_graph` request proves that the event
+loop is still responsive before the supervisor advances registry and graph
+pointers.
 
-The Linux adapter consumes Scene ABI v3: orthogonal layout/content/paint/
+The Linux adapter consumes Experience API v4 scenes: orthogonal layout/content/paint/
 interaction/animation facets, bounded containing-block layout programs, nested
 clips/transforms/layers, host-shaped glyph runs, revision images/fonts, and tap,
 double-tap, long-press, swipe, drag, drop, and single-pointer events all render
@@ -53,8 +57,8 @@ retained paint/gesture surface. A small shared hook lets Android register each
 surface with its raw NDK multi-pointer router without making that router part of
 the Linux client.
 
-The host validates manifest format 3, file sizes, SHA-256 values, source/state
-binding, schema, and API version 3 again before activation. It separately loads
+The host validates manifest format 4, file sizes, SHA-256 values, source/state
+binding, package contract, schema, and API version 4 again before activation. It separately loads
 and re-verifies the candidate revision's content-addressed image/font/shader
 sidecars, then supplies only that set to the candidate's fresh VM. A candidate
 therefore cannot inherit assets from the boot or accepted revision. Wayland
@@ -78,27 +82,26 @@ On a Linux desktop or VM logged into a Wayland session:
 ```
 
 Omit `--windowed` for a fullscreen shell surface. The first run creates an
-ignored content-addressed store at `.cache/linux-revisions-v3`, installs
-`experiences/default.luau`, and boots it through the real supervisor. The
-command stays in the foreground so host and recovery logs remain visible.
+ignored content-addressed store at `.cache/linux-revisions-v4`, installs the
+complete Stock v4 package and theme module, creates its registry and graph
+pointers, and boots it through the real supervisor. The command stays in the
+foreground so host and recovery logs remain visible.
 
 From a second terminal:
 
 ```sh
-./tools/sosctl linux-script experiences/daily-flow.luau
+./tools/sosctl linux-agent-run --fake .cache/agent-candidates/android-stock-agent.luau
+./tools/sosctl linux-agent-prompt "make the active Stock workspace calmer"
 ./tools/sosctl linux-status
 ./tools/sosctl linux-stop
 ```
 
-`linux-script` accepts an optional second `state.json` argument and otherwise
-starts the candidate with `{}`. It stages that immutable state in the authority,
-then supplies the stable transaction ID to the coordinated supervisor. Set
-`SOS_LINUX_REVISION_ROOT` to use a disposable or isolated revision store. Use
-the supervisor's `install --asset ID:KIND:FILE` interface described in
-[`revision-supervisor.md`](revision-supervisor.md) when testing v3 sidecars.
-The shell helper remains development orchestration. The boot-owned appliance
-path below implements the same lifecycle without granting generated code
-process authority.
+The resident authoring broker validates the exact v4 package, migration, and
+resolved graph before presentation. `linux-script` remains a trusted local
+shortcut for a Stock-compatible v4 source and optional state file; it does not
+create a bare revision. Set `SOS_LINUX_REVISION_ROOT` to use a disposable or
+isolated revision store. The boot-owned appliance path below implements the
+same lifecycle without granting generated code process authority.
 
 The reproducible Debian 13 guest definition, provisioning command, and nested
 acceptance gate are in [`linux-vm.md`](linux-vm.md).
@@ -173,11 +176,19 @@ GNOME session's stored preferences. A future trusted suspend action must first
 release this session-owned inhibitor as part of its fixed native ceremony;
 generated Luau cannot remove or bypass it.
 
+The physical acceptance harness owns the earlier GDM gap separately. Its
+`prepare` command starts a root transient block inhibitor before logout, and
+`collect` verifies and releases it after the fallback display manager returns.
+This keeps a remotely observed campaign reachable while no SOS session exists;
+it does not make the SOS launcher or generated code responsible for GDM power
+policy.
+
 For a credential- and network-independent first hardware gate, install with
 `./tools/install-linux-login-session install --offline`. This configures the
-same resident runner with the checked-in deterministic `daily-flow.luau`
-candidate and preserves the same broker, validation, activation, and monitored
-lifecycle boundaries. It is a hardware isolation mode, not live-model evidence.
+same resident runner with the installed Stock source. A prompt traverses the
+same broker, validation, submission, and monitored lifecycle boundaries but
+resolves as `already_active`. It is a hardware isolation mode, not live-model
+evidence.
 Running `sos-agent-login` later replaces that configuration with the normal
 subscription-backed mode.
 
@@ -247,18 +258,31 @@ private, but processes in that login account are not security-isolated from one
 another. Use the system session below when the separate service identities are
 required.
 
-The selectable-session path has now completed physical GDM login, direct DRM
-page flip, provider actions, native application composition, coordinated
-activation, and clean logout on a Framework Laptop 12 development-live boot.
-The diagnostic campaign did not exercise touchpad motion or touchscreen input,
-and its iterative seven-host-launch journal is not a stable-lifecycle pass;
-suspend/resume also remains open. Keep SSH and a text console available, then use
-`tools/linux-hardware-gate` and the exact PASS contract in
-[`linux-hardware-gate.md`](linux-hardware-gate.md). The gate refuses VMs, dirty
-or revision-mismatched installs, missing observations, and tampered evidence.
-A SOS-baked Fedora Workstation `development-live` remix is a mutable diagnostic
-path; it is not an installed product or release-acceptance artifact. See
-[`linux-live-image.md`](linux-live-image.md).
+The selectable-session path has completed physical GDM login, direct DRM page
+flip, provider actions, native application composition, coordinated activation,
+and clean logout on a Framework Laptop 12 development-live boot. A later
+2026-08-27 remote-controlled run added one-host lifecycle and resident-authoring
+evidence: recovery and two distinct revisions reached DRM page flips, the host
+did not restart, durable authority agreed with revision `6b3341ee…`, and SOS
+returned cleanly to an active GDM before GNOME session 246 started.
+
+That later run is not a physical-input pass. Its original gate printed
+`DIAGNOSTIC_PASS`, but the controller audit found four hot-added devices named
+`SOS Remote Diagnostic ...`; those devices produced the relative pointer,
+button, and touch markers. The auditor now rejects any input device absent from
+the libinput inventory captured by preparation, and it correctly reclassifies
+that evidence as `DIAGNOSTIC_FAIL`. The semantic and DRM evidence remains useful,
+but integrated keyboard, touchpad, and touchscreen input stays open. The
+session also reported `active_graph: null`, so it did not physically present
+the reference live-composition graph. Suspend/resume remains open as well.
+
+Keep SSH and a text console available, then use `tools/linux-hardware-gate` and
+the exact PASS contract in [`linux-hardware-gate.md`](linux-hardware-gate.md).
+The gate refuses VMs, dirty or revision-mismatched installs, missing
+observations, input devices absent from the prepared inventory, and tampered
+evidence. A SOS-baked Fedora Workstation `development-live` remix is a mutable
+diagnostic path; it is not an installed product or release-acceptance artifact.
+See [`linux-live-image.md`](linux-live-image.md).
 
 After returning to the conventional desktop,
 `./tools/install-linux-login-session uninstall` removes the exact installed SOS
@@ -364,7 +388,7 @@ latency result.
 
 After rebasing onto Scene ABI v2, the real host booted revision `ff63f61d…` and
 emitted a GPUI next-frame event in PID 1527912. It prepared and committed
-`daily-flow.luau` as revision `bc81479e…` in the same PID (116 us queue,
+the legacy stateful fixture as revision `bc81479e…` in the same PID (116 us queue,
 1,194 us compile, 646 us render, 1,848 us worker total). It then activated the
 richer `android-exit-agent.luau` scene as revision `99ba2162…`, exercising
 layers, shaped glyphs, gestures, and a revision SVG in that same process (26 us
@@ -462,8 +486,31 @@ one campaign. `tools/linux-vm/verify-direct-session` uses kernel `uinput`
 keyboard, relative-pointer, and two-contact touchscreen devices through direct
 libinput, including held inputs across successful and aborted activations.
 `tools/linux-vm/verify-boot-session` boots the appliance target, invokes the
-recovery rollback channel in both directions, kills/restarts the host, kills a
-provider to restart the whole service, and restores GNOME afterward.
+recovery rollback channel in both directions, drives the packaged resident
+agent through context, validation, submission, and visible completion,
+exercises VT pause/resume, `s2idle` freezer recovery and output hotplug,
+kills/restarts the host, kills a provider to restart the whole service, and
+restores GNOME afterward. Focused development runs may stop after the agent or
+lifecycle phases with `SOS_BOOT_GATE_STOP_AFTER_AGENT=1` or
+`SOS_BOOT_GATE_STOP_AFTER_LIFECYCLE=1`; neither marker substitutes for the
+complete gate.
+
+The 2026-08-27 x86_64 Debian 13 campaign completed the full gate in 57.952
+seconds on kernel `6.12.101+deb13-amd64`. The resident faux Pi flow activated
+revision `431f6687…` with DRM page-flip evidence, and the later
+activation/recovery campaign ended on revision `578c1f5a…`. The lifecycle
+owner moved from PID 878 to recovered PID 1877 and then PID 2146 after the
+intentional service failures; the host moved from PID 1005 to 1764 and 1957.
+Every service identity remained separated, GDM and seatd were active after the
+restoration reboot, and the disposable SOS installation state was absent.
+
+The same campaign closed two races exposed by the stricter sequencing. First,
+DRM master could disappear before libseat delivered its pause event; only the
+explicit inactive/permission-denied commit result is now deferred until seat
+activation. Second, an asynchronous model render or candidate commit could
+restore prepare-time agent, shell, or appearance fields over newer live state;
+both completion boundaries now re-merge those host-owned channels. The focused
+agent and lifecycle reruns passed before the complete campaign was accepted.
 
 ## Honest remaining boundaries
 
@@ -473,7 +520,7 @@ provider to restart the whole service, and restores GNOME afterward.
   turn that into a panel/touch latency claim.
 - Core `wl_touch` does not carry finger pressure; tablet-v2 transports stylus
   pressure. Physical calibration and touch/stylus coexistence remain unverified.
-- The VM proves libseat pause/resume, kernel freezer suspend/resume, connector
+- The VM proves libseat pause/resume, `s2idle` kernel freezer suspend/resume, connector
   removal/reconnect, two simultaneous VirtIO outputs, and live mode/scale/
   rotation. Full platform sleep/wake, physical hotplug, another real DRM device,
   target GPU/panel behavior, memory pressure, latency, thermals, and physical

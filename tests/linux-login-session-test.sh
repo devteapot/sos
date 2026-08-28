@@ -16,7 +16,12 @@ test_bin="$test_root/bin"
 test_home="$test_root/home"
 test_runtime="$test_root/runtime"
 test_state="$test_root/state"
-mkdir -p "$test_bin" "$test_home" "$test_runtime" "$test_state/sos/agent"
+mkdir -p \
+  "$test_bin" \
+  "$test_home" \
+  "$test_runtime" \
+  "$test_state/sos/agent" \
+  "$test_state/sos/revisions"
 chmod 0700 "$test_runtime"
 for test_binary in \
   sos-compositor \
@@ -34,7 +39,7 @@ touch "$test_root/agent-runner.cjs"
 printf '%s\n' \
   'SOS_AGENT_PROVIDER=openai-codex' \
   'SOS_AGENT_MODEL=faux' \
-  "SOS_AGENT_FAKE_SOURCE=$test_repo_root/experiences/daily-flow.luau" \
+  "SOS_AGENT_FAKE_SOURCE=$test_repo_root/experiences/default.luau" \
   >"$test_state/sos/agent/config.env"
 chmod 0600 "$test_state/sos/agent/config.env"
 
@@ -45,6 +50,8 @@ XDG_STATE_HOME="$test_state" \
 SOS_INSTALL_ROOT="$test_bin" \
 SOS_AGENT_MAIN="$test_root/agent-runner.cjs" \
 SOS_DEFAULT_EXPERIENCE="$test_repo_root/experiences/default.luau" \
+SOS_DEFAULT_PACKAGE="$test_repo_root/experiences/default.package.json" \
+SOS_STOCK_THEME="$test_repo_root/experiences/modules/stock-theme.luau" \
 SOS_TEST_AGENT_ARGS_FILE="$test_root/agent-arguments.txt" \
 SOS_TEST_SESSION_ENV_FILE="$test_root/session-environment.txt" \
 SOS_TEST_SYSTEMCTL_ARGS_FILE="$test_root/systemctl-arguments.txt" \
@@ -56,8 +63,16 @@ grep -Fx 'sos_login_agent_mode mode=offline' "$test_root/offline-session.txt" >/
 grep -F 'sos_login_agent_started' "$test_root/offline-session.txt" >/dev/null
 [[ "$(stat -c %a "$test_state/sos/output.json")" == 600 ]]
 grep -Fx '{}' "$test_state/sos/output.json" >/dev/null
+[[ "$(stat -c %a "$test_state/sos/appearance-write.capability")" == 600 ]]
+[[ "$(wc -c <"$test_state/sos/appearance-write.capability")" == 64 ]]
+[[ "$(stat -c %a "$test_state/sos/grant-review.capability")" == 600 ]]
+[[ "$(wc -c <"$test_state/sos/grant-review.capability")" == 64 ]]
 grep -Fx -- '--fake-source' "$test_root/agent-arguments.txt" >/dev/null
-grep -Fx "$test_repo_root/experiences/daily-flow.luau" "$test_root/agent-arguments.txt" >/dev/null
+grep -Fx "$test_repo_root/experiences/default.luau" "$test_root/agent-arguments.txt" >/dev/null
+if grep -Fx -- '--example-secondary' "$test_root/agent-arguments.txt" >/dev/null; then
+  printf 'error: Linux selectable session retained a secondary fixture experience\n' >&2
+  exit 1
+fi
 grep -Fx "SOS_LINUX_PROVIDER_ROOT=$test_state/sos/providers" \
   "$test_root/session-environment.txt" >/dev/null
 grep -Fx "SOS_PROVIDER_GRANTS=$test_state/sos/provider-grants.json" \
@@ -82,6 +97,7 @@ grep -Fx -- "$test_bin/sos-linux-session" "$test_root/inhibit-arguments.txt" >/d
 [[ "$(stat -c %a "$test_state/sos/provider-grants.json")" == 600 ]]
 grep -F '"application_launch"' "$test_state/sos/provider-grants.json" >/dev/null
 grep -F '"network_control"' "$test_state/sos/provider-grants.json" >/dev/null
+[[ ! -e "$test_state/sos/revisions/mock-current" ]]
 if grep -Fx -- '--credentials' "$test_root/agent-arguments.txt" >/dev/null; then
   printf 'error: offline selectable session passed a credential path to the faux agent\n' >&2
   exit 1
@@ -97,6 +113,8 @@ if PATH="$test_bin:$PATH" \
   SOS_INSTALL_ROOT="$test_bin" \
   SOS_AGENT_MAIN="$test_root/agent-runner.cjs" \
   SOS_DEFAULT_EXPERIENCE="$test_repo_root/experiences/default.luau" \
+  SOS_DEFAULT_PACKAGE="$test_repo_root/experiences/default.package.json" \
+  SOS_STOCK_THEME="$test_repo_root/experiences/modules/stock-theme.luau" \
   SOS_TEST_AGENT_ARGS_FILE="$test_root/live-agent-arguments.txt" \
     "$test_session" >"$test_root/live-session.txt" 2>&1; then
   printf 'error: live selectable session started without credentials\n' >&2

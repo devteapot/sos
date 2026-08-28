@@ -22,8 +22,7 @@ ExecStart=/usr/local/bin/node /usr/local/libexec/sos-agent/dist/agent-runner.cjs
   --state /var/lib/sos-agent/messages.json \
   --credentials /var/lib/sos-agent/auth.json \
   --api-doc /usr/share/doc/sos/experience-api.md \
-  --example /usr/share/sos/experiences/default.luau \
-  --example-secondary /usr/share/sos/experiences/daily-flow.luau
+  --example /usr/share/sos/experiences/default.luau
 Restart=on-failure
 RestartSec=1s
 UMask=0007

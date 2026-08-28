@@ -30,7 +30,7 @@ import java.nio.CharBuffer;
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 
-/** Direct-boot, non-rendering bridge for credentials and typed framework-only providers. */
+/** Direct-boot bridge for credentials, typed providers, and fixed trusted administration. */
 public final class SosFrameworkBridgeApplication extends Application {
     private static final String TAG = "SosFrameworkBridge";
     private static final String SOCKET_NAME = "sos_framework_bridge";

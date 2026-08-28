@@ -42,7 +42,7 @@ sos_install_target() {
 
 sos_install_preflight() {
   local sos_install_command node_version
-  for sos_install_command in cargo git install node npm pkg-config rustc sha256sum stat sudo; do
+  for sos_install_command in cargo cut git grep install node npm pkg-config rustc sha256sum stat sudo; do
     command -v "$sos_install_command" >/dev/null 2>&1 || \
       sos_install_fail "required command not found: $sos_install_command"
   done
@@ -205,7 +205,13 @@ sudo install -o root -g root -m 0644 \
 sudo install -o root -g root -m 0644 \
   experiences/default.luau "$(sos_install_target /usr/share/sos/experiences/default.luau)"
 sudo install -o root -g root -m 0644 \
-  experiences/daily-flow.luau "$(sos_install_target /usr/share/sos/experiences/daily-flow.luau)"
+  experiences/default.package.json \
+  "$(sos_install_target /usr/share/sos/experiences/default.package.json)"
+sudo install -d -o root -g root -m 0755 \
+  "$(sos_install_target /usr/share/sos/experiences/modules)"
+sudo install -o root -g root -m 0644 \
+  experiences/modules/stock-theme.luau \
+  "$(sos_install_target /usr/share/sos/experiences/modules/stock-theme.luau)"
 sudo install -o root -g root -m 0644 \
   docs/experience-api.md "$(sos_install_target /usr/share/doc/sos/experience-api.md)"
 sudo install -o root -g root -m 0644 \
@@ -241,7 +247,8 @@ sos_install_artifacts=(
   /usr/local/lib/systemd/user/sos-session.target
   /usr/local/lib/systemd/user/sos-session-shutdown.target
   /usr/share/sos/experiences/default.luau
-  /usr/share/sos/experiences/daily-flow.luau
+  /usr/share/sos/experiences/default.package.json
+  /usr/share/sos/experiences/modules/stock-theme.luau
 )
 for sos_install_artifact in "${sos_install_artifacts[@]}"; do
   sos_install_artifact_target="$(sos_install_target "$sos_install_artifact")"
@@ -258,6 +265,24 @@ for sos_install_artifact in "${sos_install_artifacts[@]}"; do
     "$sos_install_artifact_sha" \
     >>"$sos_install_manifest"
 done
+
+sos_install_existing_manifest="$(sos_install_target /usr/share/doc/sos/install-manifest.tsv)"
+if [[ -f "$sos_install_existing_manifest" && ! -L "$sos_install_existing_manifest" ]]; then
+  while IFS=$'\t' read -r sos_install_old_path _; do
+    case "$sos_install_old_path" in
+      /usr/share/sos/experiences/*.luau|/usr/share/sos/experiences/*.package.json)
+        sos_install_old_name="${sos_install_old_path#/usr/share/sos/experiences/}"
+        [[ "$sos_install_old_name" != */* \
+          && "$sos_install_old_name" =~ ^[A-Za-z0-9._-]+\.(luau|package\.json)$ ]] || \
+          sos_install_fail "unsafe obsolete experience path in installed manifest"
+        if ! cut -f 1 "$sos_install_manifest" | grep -Fxq "$sos_install_old_path"; then
+          sudo rm -f -- "$(sos_install_target "$sos_install_old_path")"
+        fi
+        ;;
+    esac
+  done <"$sos_install_existing_manifest"
+fi
+
 sudo install -o root -g root -m 0644 \
   "$sos_install_metadata" "$(sos_install_target /usr/share/doc/sos/install-metadata.env)"
 sudo install -o root -g root -m 0644 \

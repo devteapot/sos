@@ -12,8 +12,9 @@ PRODUCT_PACKAGES += \
     sos-agent-runner \
     sos-agent-experience-api \
     sos-agent-example-primary \
-    sos-agent-example-secondary \
-    sos-default-experience
+    sos-mobile-experience \
+    sos-mobile-package \
+    sos-mobile-theme
 
 SYSTEM_EXT_PUBLIC_SEPOLICY_DIRS += \
     device/sos/a33x/sepolicy/system_ext/public
@@ -23,5 +24,5 @@ SYSTEM_EXT_PRIVATE_SEPOLICY_DIRS += \
 
 PRODUCT_SYSTEM_EXT_PROPERTIES += \
     ro.sos.authority=on-device \
-    ro.sos.experience_api=3 \
-    ro.sos.revision_format=3
+    ro.sos.experience_api=4 \
+    ro.sos.revision_format=4

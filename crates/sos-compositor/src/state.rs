@@ -341,12 +341,20 @@ impl SosCompositor {
 
     pub fn handle_control(&mut self, command: ControlCommand) {
         match command {
-            ControlCommand::Register { pid, events, reply } => {
-                let result = self
-                    .policy
-                    .register_shell(pid)
-                    .map_err(|error| error.to_string());
-                if result.is_ok() {
+            ControlCommand::Register {
+                pid,
+                role,
+                events,
+                reply,
+            } => {
+                let result = match role {
+                    crate::control::ControlClientRole::Shell => self.policy.register_shell(pid),
+                    crate::control::ControlClientRole::NativeApplication => {
+                        self.policy.register_native_application(pid)
+                    }
+                }
+                .map_err(|error| error.to_string());
+                if result.is_ok() && role == crate::control::ControlClientRole::Shell {
                     self.shell_events = Some((pid, events));
                 }
                 let _ = reply.send(result);
@@ -424,7 +432,7 @@ impl SosCompositor {
                             request_id,
                             revision_id,
                             changed,
-                            "resumed compositor input after revision abort"
+                            "resumed compositor input epoch"
                         );
                         let _ = reply.send(Ok(changed));
                     }
@@ -543,15 +551,16 @@ impl SosCompositor {
                 let _ = reply.send(result);
             }
             ControlCommand::Disconnected { pid } => {
-                let was_quiesced = self.policy.input_quiesced();
-                self.policy.unregister_shell(pid);
+                let disconnected_shell = self.policy.is_shell_owner(pid);
+                let was_quiesced = disconnected_shell && self.policy.input_quiesced();
+                self.policy.unregister_client(pid);
                 if was_quiesced {
                     self.end_input_quiesce(false);
                 }
                 if self.shell_events.as_ref().map(|(owner, _)| *owner) == Some(pid) {
                     self.shell_events = None;
                 }
-                tracing::info!(pid, "shell control connection closed");
+                tracing::info!(pid, "trusted compositor control connection closed");
             }
         }
     }
@@ -710,7 +719,6 @@ impl SosCompositor {
         presented: crate::policy::QueuedRevision,
         evidence: PresentationEvidence,
     ) {
-        self.end_input_quiesce(true);
         let event = CompositorEvent::Presented {
             request_id: presented.request_id,
             revision_id: presented.revision_id.clone(),

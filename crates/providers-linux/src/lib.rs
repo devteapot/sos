@@ -17,6 +17,7 @@ use experience_ir::{
     CalendarEvent, ExperienceModel, Music, Note, ProviderEffect, ProviderSurface,
     ProviderSurfaceKind, ProviderSurfaceStatus, SystemState,
 };
+use experience_package::InstanceId;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
@@ -25,6 +26,7 @@ use thiserror::Error;
 #[serde(rename_all = "snake_case")]
 pub enum Capability {
     ApplicationLaunch,
+    AppearanceWrite,
     AudioControl,
     CalendarRead,
     CalendarWrite,
@@ -42,6 +44,7 @@ pub enum Capability {
 #[derive(Clone, Debug)]
 pub struct ProviderContext {
     pub revision_id: String,
+    pub instance_id: Option<InstanceId>,
     pub grants: BTreeSet<Capability>,
     pub cancellation: CancellationToken,
 }
@@ -132,15 +135,34 @@ impl ProviderHub {
         context: &ProviderContext,
     ) -> Result<ProviderSnapshot, ProviderError> {
         context.cancellation.check()?;
-        require(context, Capability::NotesRead)?;
-        require(context, Capability::CalendarRead)?;
-        require(context, Capability::MusicRead)?;
         let mut model = providers_fake::snapshot();
-        model.notes = self.notes()?;
-        model.calendar = self.calendar()?;
-        model.music = self.music()?;
-        model.system = self.system(context)?;
-        model.providers = self.system.snapshot(context)?;
+        model.notes = if context.grants.contains(&Capability::NotesRead) {
+            self.notes()?
+        } else {
+            Vec::new()
+        };
+        model.calendar = if context.grants.contains(&Capability::CalendarRead) {
+            self.calendar()?
+        } else {
+            Vec::new()
+        };
+        model.music = if context.grants.contains(&Capability::MusicRead) {
+            self.music()?
+        } else {
+            Music {
+                title: String::new(),
+                artist: String::new(),
+                playing: false,
+            }
+        };
+        if context.grants.contains(&Capability::SystemRead) {
+            model.system = self.system(context)?;
+            model.providers = self.system.snapshot(context)?;
+        } else {
+            model.system = SystemState::default();
+            model.providers = Default::default();
+            model.network = Default::default();
+        }
         let (surfaces, frames) = self.surfaces(context)?;
         model.surfaces = surfaces;
         Ok(ProviderSnapshot { model, frames })
@@ -418,6 +440,7 @@ fn required_string<'a>(
 pub fn prototype_grants(revision_id: impl Into<String>) -> ProviderContext {
     ProviderContext {
         revision_id: revision_id.into(),
+        instance_id: None,
         grants: [
             Capability::ApplicationLaunch,
             Capability::AudioControl,
@@ -467,6 +490,7 @@ pub fn load_grants(
     });
     Ok(ProviderContext {
         revision_id: revision_id.into(),
+        instance_id: None,
         grants: selected.unwrap_or_default(),
         cancellation: CancellationToken::default(),
     })
@@ -763,6 +787,7 @@ mod tests {
         let hub = ProviderHub::open(temp.path()).unwrap();
         let context = ProviderContext {
             revision_id: "limited".into(),
+            instance_id: None,
             grants: BTreeSet::new(),
             cancellation: CancellationToken::default(),
         };
@@ -770,6 +795,13 @@ mod tests {
             hub.write_note(&context, "x", "x"),
             Err(ProviderError::Denied(Capability::NotesWrite))
         ));
+        let snapshot = hub.snapshot(&context).unwrap();
+        assert!(snapshot.notes.is_empty());
+        assert!(snapshot.calendar.is_empty());
+        assert!(snapshot.music.title.is_empty());
+        assert_eq!(snapshot.system, SystemState::default());
+        assert_eq!(snapshot.providers, Default::default());
+        assert_eq!(snapshot.network, Default::default());
         let context = prototype_grants("cancelled");
         context.cancellation.cancel();
         assert!(matches!(
@@ -830,6 +862,40 @@ mod tests {
     }
 
     #[test]
+    fn read_capabilities_filter_each_snapshot_domain() {
+        let temp = tempfile::tempdir().unwrap();
+        let hub = ProviderHub::open(temp.path()).unwrap();
+        fs::write(
+            temp.path().join("notes/visible.md"),
+            "# Visible note\nCapability-scoped read.",
+        )
+        .unwrap();
+        fs::write(
+            temp.path().join("calendar/hidden.ics"),
+            "BEGIN:VCALENDAR\nBEGIN:VEVENT\nDTSTART:09:30\nSUMMARY:Hidden event\nDESCRIPTION:Denied\nEND:VEVENT\nEND:VCALENDAR\n",
+        )
+        .unwrap();
+        fs::write(
+            temp.path().join("music.json"),
+            r#"{"title":"Hidden track","artist":"Denied","playing":true}"#,
+        )
+        .unwrap();
+        let context = ProviderContext {
+            revision_id: "notes-only".into(),
+            instance_id: None,
+            grants: BTreeSet::from([Capability::NotesRead]),
+            cancellation: CancellationToken::default(),
+        };
+
+        let snapshot = hub.snapshot(&context).unwrap();
+        assert_eq!(snapshot.notes[0].title, "Visible note");
+        assert!(snapshot.calendar.is_empty());
+        assert!(snapshot.music.title.is_empty());
+        assert_eq!(snapshot.system, SystemState::default());
+        assert_eq!(snapshot.providers, Default::default());
+    }
+
+    #[test]
     fn grant_manifest_is_revision_scoped_and_wildcard_is_opt_in() {
         use std::os::unix::fs::PermissionsExt as _;
 
@@ -851,6 +917,22 @@ mod tests {
             .unwrap()
             .grants
             .contains(&Capability::MusicControl));
+    }
+
+    #[test]
+    fn stock_package_capabilities_are_decodable_by_linux_host() {
+        let package: experience_package::PackageMetadata =
+            serde_json::from_str(include_str!("../../../experiences/default.package.json"))
+                .unwrap();
+        let capabilities = package
+            .provider_capabilities
+            .into_iter()
+            .map(|capability| {
+                serde_json::from_value::<Capability>(serde_json::Value::String(capability))
+            })
+            .collect::<Result<BTreeSet<_>, _>>()
+            .unwrap();
+        assert!(capabilities.contains(&Capability::AppearanceWrite));
     }
 
     #[test]

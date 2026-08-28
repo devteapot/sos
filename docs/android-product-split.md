@@ -36,7 +36,7 @@ the documents. The detailed package, boot, credential, and recovery contracts ar
 
 Both inherit the same Samsung a33x device/vendor graph, init, SELinux, Binder,
 SurfaceFlinger, Hardware Composer, audio services, Keystore, Gatekeeper, vendor
-HALs, on-device SOS authority, and revision format 3. The split does not fork
+HALs, on-device SOS authority, and revision format 4. The split does not fork
 hardware enablement or experience artifacts.
 
 Both Compat stages package the platform-signed `SosShell` NativeActivity. Its
@@ -91,6 +91,9 @@ The Compat visible-output invariant is exact: a frame may contain SOS or the
 contents of one explicitly selected compatible non-system Android app, and
 nothing else. Package visibility is limited to exported launcher Activities;
 legacy targets that require Android's permission-review ceremony are excluded.
+SOS HOME is the independent `sos.stock.mobile` v4 experience, with a
+phone-native top bar, bottom navigation, touch-first launcher, and full-screen
+root presentation. Android never boots or adapts Linux `sos.stock.shell`.
 Stock keyguard, status/navigation bars, notification/quick-settings shade,
 Settings, permission and install dialogs, chooser/file picker, IME settings or
 setup Activities, setup, dialer/emergency UI, crash/ANR dialogs, and Recovery
@@ -186,6 +189,7 @@ Current physical status on the SM-A336B:
 | Recovery and rollback | Mechanism passed, and revision `220e268c228f` is now the inspected, sideloaded, native-Compat rollback artifact for the next Core campaign. Recovery accepted it without a wipe and reported `Total xfer: 1.00x`. |
 | Suspend/resume while native UI owns the display | Passed for one earlier Shadow doze/resume cycle; not yet repeated for every accepted stage revision. |
 | Raw input acquisition | Passed in logs: Core exclusively grabbed `sec_touchscreen` and `gpio_keys` and observed `sec-pmic-key` while Android remained the display-power owner. |
+| Automated Core input | Userdebug/eng Core packages a bounded `sos-core-input-automation` daemon and client through `PRODUCT_PACKAGES_DEBUG`; init and the runtime independently require `ro.build.type=userdebug|eng`. The project deliberately does not use `ro.debuggable`, because hardened Lineage userdebug images report it as `0`. The daemon accepts only UID 2000/root `status` and in-bounds `tap` requests, emits a named multitouch device through `/dev/uinput`, and lets the existing Core parser, hit testing, focus, mount routing, and Luau action path process the event. Production user builds omit both executables. Campaign evidence locks `input_mode=automation` or `physical`; automation never satisfies the separate digitizer claim. |
 | Physical touch dispatch and volume chord | Compat physical touch dispatch passed: eight native no-credential unlock completions were observed across owner-operated lock/wake/ENTER cycles. The Volume Up+Down Recovery chord remains pending owner interaction. |
 | Trusted lockscreen/FBE/Gatekeeper/Keystore ceremony | Implementation exists for a bounded PIN bridge in Core 0B, but the test handset has `CredentialType: NONE`; no real PIN, Gatekeeper throttle, fingerprint, or authentication-bound key release was exercised. Core 1 therefore remains honestly locked. |
 | JNI-free Core provider baseline | Passed for native provider/revision Unix IPC, read-only network state, deterministic native-agent status/candidates, and a bounded semantic document. No Java VM fallback was used for the Core UI. |

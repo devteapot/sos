@@ -1,9 +1,33 @@
--- SOS Experience API v3 Luau type prelude.
+-- SOS Experience API v4 Luau type prelude.
 -- This file is prepended by `sosctl typecheck`; the embedded VM erases the
 -- matching annotations and the Rust decoder remains the authority boundary.
 
 type JsonValue = any
 type ExperienceState = {[string]: any}
+
+type AppearanceTypography = {
+    family: string,
+    size_milli_points: number,
+    weight: number,
+    line_height_milli: number,
+}
+type AppearanceProfile = {
+    abi_version: number,
+    generation: number,
+    scheme: "light" | "dark",
+    contrast: "standard" | "high",
+    text_scale_milli: number,
+    reduce_motion: boolean,
+    colors: {[string]: string},
+    spacing: {[string]: number},
+    radii: {[string]: number},
+    typography: {[string]: AppearanceTypography},
+}
+type ContainerAppearance = {
+    colors: {[string]: string}?,
+    spacing: {[string]: number}?,
+    radii: {[string]: number}?,
+}
 
 type ShellCanvas = {
     width: number,
@@ -29,11 +53,17 @@ type ShellWindow = {
     capabilities: {"focus" | "close"},
 }
 
+type ShellExperience = {
+    experience_id: string,
+    title: string,
+}
+
 type ShellModel = {
     abi_version: number,
     canvas: ShellCanvas,
     outputs: {ShellOutput},
     windows: {ShellWindow},
+    experiences: {ShellExperience},
     capabilities: {"window_focus" | "window_close"},
 }
 
@@ -148,6 +178,7 @@ type LegacyNetwork = {
 }
 
 type ExperienceModel = {
+    appearance: AppearanceProfile,
     greeting: string,
     date: string,
     weather: { summary: string, temperature_c: number, high_c: number, low_c: number },
@@ -199,6 +230,12 @@ type TextSessionContent = {
 }
 type ImageContent = { kind: "image", asset: string }
 type ProviderSurfaceContent = { kind: "provider_surface", surface: string }
+type ExperienceMountContent = {
+    kind: "experience_mount",
+    dependency: string,
+    properties: JsonValue?,
+    container_appearance: ContainerAppearance?,
+}
 type WindowSpaceContent = {
     kind: "window_space",
     layout: ("floating" | "tiling" | "scrolling")?,
@@ -220,9 +257,8 @@ type ShellOverlayContent = {
     placement: ShellOverlayPlacement?,
     anchor: ShellOverlayAnchor?,
 }
-type ApplicationSurfaceContent = { kind: "application_surface", title: string }
 type Content = TextContent | TextSessionContent | ImageContent | ProviderSurfaceContent
-    | WindowSpaceContent | ShellOverlayContent | ApplicationSurfaceContent
+    | ExperienceMountContent | WindowSpaceContent | ShellOverlayContent
 
 type PaintPoint = { x: number, y: number }
 type GlyphRun = {
@@ -305,5 +341,28 @@ type SceneEvent = {
 }
 
 type ProviderEffect = { provider: string, action: string, payload: JsonValue? }
-type UpdateOutcome = { state: ExperienceState, effects: {ProviderEffect} }
+type ExperienceInsets = { left: number, top: number, right: number, bottom: number }
+type ExperienceViewport = {
+    width: number,
+    height: number,
+    scale_milli: number,
+    safe_insets: ExperienceInsets,
+}
+type ExperienceContext = {
+    export_id: string,
+    viewport: ExperienceViewport,
+    properties: JsonValue,
+    container_appearance: ContainerAppearance?,
+}
+type ExperienceEvent = { dependency: string, event: string, payload: JsonValue }
+type ExperienceOutputEvent = { event: string, payload: JsonValue }
+type UpdateOutcome = {
+    state: ExperienceState,
+    effects: {ProviderEffect},
+    events: {ExperienceOutputEvent}?,
+}
+type ExperienceExport = {
+    render: (ExperienceModel, ExperienceState, JsonValue, ExperienceContext) -> SceneNode,
+    update: ((ExperienceModel, ExperienceState, SceneEvent | ExperienceEvent, JsonValue, ExperienceContext) -> ExperienceState | UpdateOutcome)?,
+}
 type ValidationScenario = { name: string, state: ExperienceState }

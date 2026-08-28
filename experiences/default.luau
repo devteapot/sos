@@ -1,29 +1,13 @@
 --!strict
--- SOS Stock Shell. This is a privileged, replaceable Scene ABI v3 revision.
+-- SOS Stock Shell. This is a privileged, replaceable Experience API v4 package.
 -- Its window-space node is a bounded compositor primitive; every surrounding
 -- bar, panel, control, workspace, and policy choice remains ordinary Luau.
 -- Credentials, lock, permission, emergency, confirmation, and Recovery remain
 -- fixed native surfaces below the revision boundary.
 
--- The bootstrap remains a single immutable file, but uses the same token
--- shape available to revision-local theme modules (`stock.theme`).
-local theme = {
-    color = {
-        ink = 0x17211B,
-        muted = 0x637069,
-        paper = 0xF3F1E8,
-        white = 0xFEFDF8,
-        moss = 0x3E6B52,
-        mint = 0xDCE8D8,
-        amber = 0xE9A23B,
-        alert = 0x8C3A36,
-        rose = 0xF2DDD7,
-        sand = 0xE8E4D7,
-        panel = 0xECE9DC,
-    },
-    space = { xs = 4, sm = 8, md = 12, lg = 16, xl = 24 },
-    radius = { control = 12, card = 18, panel = 22 },
-}
+-- Visual implementation remains revision-local. The authority supplies only
+-- typed semantic appearance values, which are resolved onto these fallbacks.
+local theme = require("stock.theme")
 
 local ink = theme.color.ink
 local muted = theme.color.muted
@@ -36,6 +20,28 @@ local alert = theme.color.alert
 local rose = theme.color.rose
 local sand = theme.color.sand
 local panel = theme.color.panel
+
+local function appearance_color(appearance: any, token: string, fallback: number): number
+    local value = appearance and appearance.colors and appearance.colors[token] or nil
+    if type(value) ~= "string" or not string.match(value, "^#[0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F]$") then
+        return fallback
+    end
+    return tonumber(string.sub(value, 2, 7), 16) or fallback
+end
+
+local function apply_appearance(appearance: any)
+    ink = appearance_color(appearance, "text.primary", theme.color.ink)
+    muted = appearance_color(appearance, "text.muted", theme.color.muted)
+    paper = appearance_color(appearance, "surface.canvas", theme.color.paper)
+    white = appearance_color(appearance, "surface.primary", theme.color.white)
+    moss = appearance_color(appearance, "accent.primary", theme.color.moss)
+    mint = appearance_color(appearance, "accent.subtle", theme.color.mint)
+    amber = appearance_color(appearance, "status.warning", theme.color.amber)
+    alert = appearance_color(appearance, "status.danger", theme.color.alert)
+    rose = appearance_color(appearance, "status.danger_subtle", theme.color.rose)
+    sand = appearance_color(appearance, "surface.secondary", theme.color.sand)
+    panel = appearance_color(appearance, "surface.panel", theme.color.panel)
+end
 
 local assets = {
     stock_mark = {
@@ -609,12 +615,23 @@ local function system_workspace(providers: SystemProviders): SceneNode
     return group("column", { gap = 10 }, rows, nil, 0, "workspace-system")
 end
 
-local function apps_workspace(providers: SystemProviders): SceneNode
+local function apps_workspace(model: ExperienceModel, providers: SystemProviders): SceneNode
     local rows: {SceneNode} = {
         heading("Applications", "Only provider-approved, compatible launch targets appear here.",
             "apps-heading"),
     }
     local applications = providers.apps.compatible
+    for index, experience in ipairs(model.shell.experiences or {}) do
+        if index > 32 then break end
+        table.insert(rows, group("row", {
+            padding = 12, justify = "between", align = "center", gap = 8,
+        }, {
+            text(experience.title, 15, ink),
+            text("OPEN EXPERIENCE", 10, moss),
+        }, white, 15, "experience-" .. tostring(index),
+            "experience_present_" .. tostring(index),
+            "Open " .. experience.title))
+    end
     if not providers_available(providers) then
         table.insert(rows, empty_state("apps-unavailable", "Application provider unavailable",
             "Launching is disabled, but the rest of Stock Base remains usable."))
@@ -728,7 +745,7 @@ local function render_workspace(model: ExperienceModel, state: ExperienceState, 
     if active == "media" then return media_workspace(model, providers) end
     if active == "attention" then return attention_workspace(providers) end
     if active == "system" then return system_workspace(providers) end
-    if active == "apps" then return apps_workspace(providers) end
+    if active == "apps" then return apps_workspace(model, providers) end
     if active == "agent" then return agent_workspace(model, state, "workspace") end
     return home_workspace(model, state, providers)
 end
@@ -846,6 +863,17 @@ local function command_center(
             }),
             group("row", { gap = 5 }, controls),
         }, white, 12, "shell-window-" .. tostring(index)))
+    end
+    for index, experience in ipairs(model.shell.experiences or {}) do
+        if index > 32 then break end
+        table.insert(rows, group("row", {
+            padding = 11, justify = "between", align = "center", gap = 8,
+        }, {
+            text(experience.title, 13, ink),
+            text("OPEN EXPERIENCE", 9, moss),
+        }, white, 12, "command-experience-" .. tostring(index),
+            "experience_present_" .. tostring(index),
+            "Open " .. experience.title))
     end
     if not providers_available(providers) then
         table.insert(rows, empty_state("command-apps-unavailable", "Applications unavailable",
@@ -979,39 +1007,20 @@ local function shell_window_space(model: ExperienceModel, state: ExperienceState
         },
         paint = {{ kind = "fill_bounds", color = paper, radius = 0 }},
         semantics = { role = "scroll_area", label = "Application window space" },
-    }
-end
-
-local function stock_application(model: ExperienceModel, state: ExperienceState, providers: SystemProviders): SceneNode
-    local workspace = active_workspace(state)
-    local chrome = group("row", { justify = "between", align = "center", gap = 12 }, {
-        text("SOS NATIVE EXPERIENCE", 9, moss),
-        text(string.upper(workspace), 9, muted),
-    }, panel, 10, "stock-application-chrome")
-    chrome.interaction = { surface_drag = true }
-    return {
-        id = "stock-application-surface",
-        layout = {
-            flow = "column", program = { measure_width = 1, measure_height = 1 },
-            padding = 18, gap = 14,
-        },
-        content = { kind = "application_surface", title = "SOS " .. workspace },
-        paint = {{ kind = "fill_bounds", color = paper, radius = 0 }},
-        semantics = { role = "scroll_area", label = "SOS " .. workspace .. " experience" },
         children = {
-            chrome,
-            group("column", { scroll_y = true, gap = 14, grow = true }, {
+            group("column", { scroll_y = true, padding = 18, gap = 14, grow = true }, {
                 render_workspace(model, state, providers),
                 group("row", { justify = "between", gap = 12 }, {
-                    text("SOURCE-DEFINED APPLICATION SURFACE", 9, muted),
+                    text("STOCK SHELL WORKSPACE", 9, muted),
                     text("SYSTEM PROVIDERS ABI " .. tostring(providers.abi_version or 0), 9, muted),
                 }),
-            }, nil, 0, "stock-content-frame"),
+            }, nil, 0, "stock-workspace-frame"),
         },
     }
 end
 
 local function render(model: ExperienceModel, state: ExperienceState): SceneNode
+    apply_appearance(model.appearance)
     local providers = model.providers
     return group("column", { program = { measure_width = 1, measure_height = 1 } }, {
         shell_top_bar(model, state, providers),
@@ -1020,7 +1029,6 @@ local function render(model: ExperienceModel, state: ExperienceState): SceneNode
             shell_rail(model, state, providers),
         }, nil, 0, "shell-body"),
         agent_overlay(model, state),
-        stock_application(model, state, providers),
     }, paper, 0, "stock-experience-root")
 end
 
@@ -1183,6 +1191,13 @@ local function update(
     if application then
         return provider_effect("apps", "launch", { app_id = application.id }, state)
     end
+    local experience_index = tonumber(string.match(action, "^experience_present_(%d+)$"))
+    local experience = experience_index and model.shell.experiences[experience_index] or nil
+    if experience then
+        return provider_effect("shell", "present_experience", {
+            experience_id = experience.experience_id,
+        }, state)
+    end
     local status_widgets: {ApplicationStatusWidget} = providers.apps.status_widgets or {}
     local widget_index = tonumber(string.match(action, "^shell_app_widget_(%d+)$"))
     local widget = widget_index
@@ -1209,10 +1224,11 @@ local function update(
 end
 
 return {
-    api_version = 3,
+    api_version = 4,
     state_version = 1,
     assets = assets,
     validation_scenarios = validation_scenarios,
-    render = render,
-    update = update,
+    exports = {
+        main = { render = render, update = update },
+    },
 }

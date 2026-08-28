@@ -285,9 +285,17 @@ for _ in {1..1000}; do
 done
 grep -q 'sos_provider_frame_installed surface_id=provider-video' "$gate_run_dir/session.log"
 
-# Establish compositor keyboard focus, then keep native events flowing while
-# the coordinator crosses its explicit input-quiesce boundary.
-inject_x11_input click 640 400
+# Establish keyboard focus on visible shell chrome outside the stock
+# application surface, then keep native events flowing while the coordinator
+# crosses its explicit input-quiesce boundary.
+inject_x11_input click 40 100
+for _ in {1..500}; do
+  grep -q 'refreshed pointer focus before primary press.*target_role=Some(Shell)' \
+    "$gate_run_dir/compositor.log" && break
+  sleep 0.01
+done
+grep -q 'refreshed pointer focus before primary press.*target_role=Some(Shell)' \
+  "$gate_run_dir/compositor.log"
 inject_x11_input spam F12 500 >"$gate_run_dir/input-inject.log" 2>&1 &
 gate_input_pid=$!
 sleep 0.02
@@ -300,7 +308,7 @@ gate_pid_before="$(
 )"
 gate_activation="$(
   SOS_LINUX_REVISION_ROOT="$gate_revision_root" \
-    ./tools/sosctl linux-script experiences/daily-flow.luau
+    ./tools/sosctl linux-script tests/fixtures/linux-stateful-experience.luau
 )"
 if kill -0 "$gate_input_pid" 2>/dev/null; then
   kill "$gate_input_pid"
@@ -315,6 +323,23 @@ gate_suppressed_events="$(
     "$gate_run_dir/compositor.log"
 )"
 [[ -n "$gate_suppressed_events" ]]
+
+if [[ "${SOS_NESTED_OVERLAY_ONLY:-0}" == 1 ]]; then
+  for _ in {1..500}; do
+    if grep -q 'sos_experience_overlay_closed' "$gate_run_dir/session.log"; then
+      break
+    fi
+    kill -0 "$gate_session_pid" 2>/dev/null
+    sleep 0.01
+  done
+  grep -q 'sos_experience_overlay_opened' "$gate_run_dir/session.log"
+  grep -q 'sos_experience_overlay_closed' "$gate_run_dir/session.log"
+  ! grep -qE "already being updated|panicked at|SIGSEGV" "$gate_run_dir/session.log"
+  kill -0 "$gate_session_pid" 2>/dev/null
+  printf '%s\n' \
+    "linux_overlay_window_nested_passed host_pid=$gate_pid_before suppressed_events=$gate_suppressed_events"
+  exit 0
+fi
 
 # The candidate autofocuses its native GPUI text session. These events enter
 # through XTest, the outer Weston seat, Smithay, and the inner wl_keyboard.
@@ -334,10 +359,10 @@ gate_accessibility_snapshot="$(accessibility_call '{"method":"snapshot"}')"
 [[ "$(jq -r '.ok' <<<"$gate_accessibility_snapshot")" == true ]]
 jq -e '.snapshot.nodes[] | select(.id == "note-draft" and .role == "text_field" and .editable)' \
   <<<"$gate_accessibility_snapshot" >/dev/null
-[[ "$(accessibility_call '{"method":"action","kind":"next","target":"daily-flow-root"}' | jq -r '.ok')" == true ]]
-[[ "$(accessibility_call '{"method":"action","kind":"previous","target":"daily-flow-root"}' | jq -r '.ok')" == true ]]
+[[ "$(accessibility_call '{"method":"action","kind":"next","target":"stateful-gate-root"}' | jq -r '.ok')" == true ]]
+[[ "$(accessibility_call '{"method":"action","kind":"previous","target":"stateful-gate-root"}' | jq -r '.ok')" == true ]]
 [[ "$(accessibility_call '{"method":"action","kind":"activate","target":"music-toggle"}' | jq -r '.ok')" == true ]]
-[[ "$(accessibility_call '{"method":"action","kind":"scroll_forward","target":"daily-flow-root"}' | jq -r '.ok')" == true ]]
+[[ "$(accessibility_call '{"method":"action","kind":"scroll_forward","target":"stateful-gate-root"}' | jq -r '.ok')" == true ]]
 for gate_accessibility_action in next previous activate scroll_forward; do
   for _ in {1..500}; do
     grep -q "sos_accessibility_action kind=$gate_accessibility_action" "$gate_run_dir/session.log" && break
@@ -531,7 +556,7 @@ XDG_RUNTIME_DIR="$gate_runtime_dir" WAYLAND_DISPLAY=wayland-sos \
   weston-simple-shm >"$gate_run_dir/compatibility.log" 2>&1 &
 gate_compatibility_pid=$!
 for _ in {1..500}; do
-  if grep -Eq 'mapped compositor-managed XDG toplevel role=Compatibility x=[0-9]+ y=[0-9]+' \
+  if grep -Eq 'registered compositor-managed XDG toplevel role=Compatibility x=[0-9]+ y=[0-9]+' \
       "$gate_run_dir/compositor.log"; then
     break
   fi
@@ -541,6 +566,8 @@ for _ in {1..500}; do
   }
   sleep 0.01
 done
+grep -Eq 'registered compositor-managed XDG toplevel role=Compatibility x=[0-9]+ y=[0-9]+' \
+  "$gate_run_dir/compositor.log"
 
 gate_current_revision="$(
   target/debug/sos-revision-supervisor status --root "$gate_revision_root"
@@ -567,7 +594,7 @@ grep -q "accepted Wayland client pid=$gate_restarted_pid role=Shell" \
 grep -q 'HostRestarted' "$gate_run_dir/session.log"
 grep -q 'accepted Wayland client.*role=Compatibility' "$gate_run_dir/compositor.log"
 grep -q 'configured shell window space' "$gate_run_dir/compositor.log"
-grep -Eq 'mapped compositor-managed XDG toplevel role=Compatibility x=[0-9]+ y=[0-9]+' \
+grep -Eq 'registered compositor-managed XDG toplevel role=Compatibility x=[0-9]+ y=[0-9]+' \
   "$gate_run_dir/compositor.log"
 grep -q 'mapped bounded XWayland window' "$gate_run_dir/compositor.log"
 

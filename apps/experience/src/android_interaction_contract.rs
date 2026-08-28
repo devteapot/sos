@@ -1,3 +1,5 @@
+use experience_ir::Flow;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TextTapOutcome {
     NoActiveInput,
@@ -78,6 +80,14 @@ pub fn text_tap_outcome<'a>(
     TextTapOutcome::OutsideInputs
 }
 
+pub fn semantic_tracker_offset(flow: Flow, padding: Option<f32>) -> f32 {
+    if flow == Flow::Overlay {
+        -padding.unwrap_or_default()
+    } else {
+        0.0
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -143,5 +153,13 @@ mod tests {
             lifecycle.resolve_blur(second).as_deref(),
             Some("agent-prompt")
         );
+    }
+
+    #[test]
+    fn overlay_semantic_tracker_cancels_its_padded_content_origin() {
+        assert_eq!(semantic_tracker_offset(Flow::Overlay, Some(14.0)), -14.0);
+        assert_eq!(semantic_tracker_offset(Flow::Overlay, None), 0.0);
+        assert_eq!(semantic_tracker_offset(Flow::Row, Some(14.0)), 0.0);
+        assert_eq!(semantic_tracker_offset(Flow::Column, Some(14.0)), 0.0);
     }
 }

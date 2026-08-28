@@ -49,6 +49,7 @@ public final class GpuiAgent {
             .getBytes(StandardCharsets.UTF_8);
 
     private static final String PROVIDER_FAKE = "fake";
+    private static final String RUNNER_PROVIDER_FAUX = "faux";
     private static final String PROVIDER_OPENAI = "openai";
     private static final String PROVIDER_OPENROUTER = "openrouter";
     private static final String PROVIDER_CODEX = "openai-codex";
@@ -60,7 +61,6 @@ public final class GpuiAgent {
     private static final String RUNNER = "/system_ext/etc/sos-agent/agent-runner.cjs";
     private static final String API_DOC = "/system_ext/etc/sos-agent/experience-api.md";
     private static final String EXAMPLE_PRIMARY = "/system_ext/etc/sos-agent/example-primary.luau";
-    private static final String EXAMPLE_SECONDARY = "/system_ext/etc/sos-agent/example-secondary.luau";
 
     private static final int MAX_PROCESS_BYTES = 2 * 1024 * 1024;
     private static final int MAX_SOURCE_BYTES = 256 * 1024;
@@ -431,7 +431,8 @@ public final class GpuiAgent {
             String source, String fauxCandidateSource, byte[] credentialBytes) throws Exception {
         JSONObject request = new JSONObject()
                 .put("action", "prompt")
-                .put("provider", provider)
+                .put("provider", PROVIDER_FAKE.equals(provider)
+                        ? RUNNER_PROVIDER_FAUX : provider)
                 .put("prompt", prompt)
                 .put("currentSource", source);
         if (PROVIDER_FAKE.equals(provider)) {
@@ -558,8 +559,7 @@ public final class GpuiAgent {
     private static Process startPi() throws Exception {
         Process process = new ProcessBuilder(NODE, RUNNER, "stdio",
                 "--api-doc", API_DOC,
-                "--example", EXAMPLE_PRIMARY,
-                "--example-secondary", EXAMPLE_SECONDARY).start();
+                "--example", EXAMPLE_PRIMARY).start();
         Log.i(TAG, "android_agent_child_start executable=sos-node");
         return process;
     }

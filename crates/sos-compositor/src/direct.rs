@@ -23,10 +23,11 @@ use smithay::{
             Fourcc,
         },
         drm::{
-            compositor::FrameFlags,
+            compositor::{FrameError, FrameFlags, RenderFrameError},
             exporter::gbm::GbmFramebufferExporter,
             output::{DrmOutput, DrmOutputManager, DrmOutputRenderElements},
-            DrmDevice, DrmDeviceFd, DrmEvent, DrmEventMetadata, DrmEventTime, DrmNode, NodeType,
+            DrmDevice, DrmDeviceFd, DrmError, DrmEvent, DrmEventMetadata, DrmEventTime, DrmNode,
+            NodeType,
         },
         egl::{EGLContext, EGLDevice, EGLDisplay},
         input::{Device as _, InputEvent},
@@ -853,6 +854,13 @@ fn render_all(data: &mut CompositorData) {
         })
         .unwrap_or_default();
     for (node, crtc) in targets {
+        if data
+            .direct
+            .as_ref()
+            .is_some_and(|direct| direct.session_paused)
+        {
+            return;
+        }
         if let Err(error) = render_output(data, node, crtc) {
             tracing::error!(%error, ?node, ?crtc, "direct output render failed");
             data.loop_signal.stop();
@@ -916,10 +924,33 @@ fn render_output(data: &mut CompositorData, node: DrmNode, crtc: crtc::Handle) -
         elements.push(BaseDirectRenderElement::Cursor(element));
     }
     let elements = project_output_elements(state, &output_data.output, elements);
-    let result = output_data
-        .drm_output
-        .render_frame(&mut *renderer, &elements, CLEAR_COLOR, FrameFlags::DEFAULT)
-        .map_err(|error| anyhow::anyhow!("prepare direct frame: {error}"))?;
+    let result = match output_data.drm_output.render_frame(
+        &mut *renderer,
+        &elements,
+        CLEAR_COLOR,
+        FrameFlags::DEFAULT,
+    ) {
+        Ok(result) => result,
+        Err(error) => {
+            let seat_transition = matches!(
+                &error,
+                RenderFrameError::PrepareFrame(frame_error)
+                    if drm_frame_error_is_session_transition(frame_error)
+            );
+            if !seat_transition {
+                return Err(anyhow::anyhow!("prepare direct frame: {error}"));
+            }
+            direct.session_paused = true;
+            output_data.frame_pending = false;
+            tracing::warn!(
+                %error,
+                ?node,
+                ?crtc,
+                "deferred direct render after DRM access loss while awaiting seat pause"
+            );
+            return Ok(());
+        }
+    };
     if output_data.needs_initial_damage {
         tracing::info!(
             output = output_data.output.name(),
@@ -935,13 +966,23 @@ fn render_output(data: &mut CompositorData, node: DrmNode, crtc: crtc::Handle) -
     let shell_rendered = state.shell_rendered(&result.states);
     let queued_revision = state.policy.queued_revision(shell_rendered);
     let feedback = take_presentation_feedback(state, &output_data.output, &result.states);
-    output_data
-        .drm_output
-        .queue_frame(DirectFrame {
-            feedback,
-            revision: queued_revision.clone(),
-        })
-        .map_err(|error| anyhow::anyhow!("queue direct frame: {error}"))?;
+    if let Err(error) = output_data.drm_output.queue_frame(DirectFrame {
+        feedback,
+        revision: queued_revision.clone(),
+    }) {
+        if !drm_frame_error_is_session_transition(&error) {
+            return Err(anyhow::anyhow!("queue direct frame: {error}"));
+        }
+        direct.session_paused = true;
+        output_data.frame_pending = false;
+        tracing::warn!(
+            %error,
+            ?node,
+            ?crtc,
+            "deferred direct render after DRM access loss while awaiting seat pause"
+        );
+        return Ok(());
+    }
     state.policy.record_frame_queued(queued_revision.as_ref());
     output_data.frame_pending = true;
     output_data.needs_initial_damage = false;
@@ -949,6 +990,21 @@ fn render_output(data: &mut CompositorData, node: DrmNode, crtc: crtc::Handle) -
     state.popups.cleanup();
     let _ = data.display_handle.flush_clients();
     Ok(())
+}
+
+fn drm_frame_error_is_session_transition<A, B, F>(error: &FrameError<A, B, F>) -> bool
+where
+    A: std::error::Error + Send + Sync + 'static,
+    B: std::error::Error + Send + Sync + 'static,
+    F: std::error::Error + Send + Sync + 'static,
+{
+    match error {
+        FrameError::DrmError(DrmError::DeviceInactive) => true,
+        FrameError::DrmError(DrmError::Access(error)) => {
+            error.source.kind() == std::io::ErrorKind::PermissionDenied
+        }
+        _ => false,
+    }
 }
 
 fn recovery_render_element(

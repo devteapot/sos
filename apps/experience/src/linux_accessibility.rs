@@ -11,6 +11,7 @@ use std::{
 use experience_ir::{Content, Scene, SceneNode, SemanticRole};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use sha2::{Digest, Sha256};
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub struct Action {
@@ -47,11 +48,21 @@ pub struct Service {
     actions: async_channel::Receiver<Action>,
 }
 
-pub fn start_from_environment() -> Result<Option<Service>, String> {
+pub fn start_from_environment_for_experience(
+    experience_id: Option<&str>,
+) -> Result<Option<Service>, String> {
     let Some(path) = std::env::var_os("SOS_ACCESSIBILITY_SOCKET").map(PathBuf::from) else {
         return Ok(None);
     };
+    let path = experience_id.map_or(path.clone(), |experience_id| {
+        namespaced_socket_path(&path, experience_id)
+    });
     start(&path).map(Some)
+}
+
+fn namespaced_socket_path(base: &Path, experience_id: &str) -> PathBuf {
+    let digest = format!("{:x}", Sha256::digest(experience_id.as_bytes()));
+    base.with_file_name(format!("accessibility-{}.sock", &digest[..16]))
 }
 
 pub fn start(path: &Path) -> Result<Service, String> {
@@ -286,5 +297,20 @@ mod tests {
         assert_eq!(nodes[1].parent.as_deref(), Some("root"));
         assert!(nodes[0].scrollable);
         assert!(nodes[1].activate);
+    }
+
+    #[test]
+    fn independently_presented_experiences_get_bounded_accessibility_sockets() {
+        let base = Path::new("/run/user/1000/sos-session/accessibility.sock");
+        let dashboard = namespaced_socket_path(base, "sos.example.dashboard");
+        let media = namespaced_socket_path(base, "sos.example.media");
+        assert_eq!(dashboard.parent(), base.parent());
+        assert_ne!(dashboard, media);
+        assert!(dashboard
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .starts_with("accessibility-"));
+        assert!(dashboard.as_os_str().len() < 108);
     }
 }

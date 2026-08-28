@@ -1,0 +1,133 @@
+{
+  "appearance": {
+    "abi_version": 1,
+    "colors": {
+      "surface.primary": "#101820ff",
+      "text.primary": "#f4f7f9ff"
+    },
+    "contrast": "high",
+    "generation": 7,
+    "radii": {
+      "surface.card": 14
+    },
+    "reduce_motion": true,
+    "scheme": "dark",
+    "spacing": {
+      "layout.gap": 12
+    },
+    "text_scale_milli": 1100,
+    "typography": {
+      "body.default": {
+        "family": "Inter",
+        "line_height_milli": 1400,
+        "size_milli_points": 16000,
+        "weight": 450
+      }
+    }
+  },
+  "fixture_version": 1,
+  "graph": {
+    "format_version": 1,
+    "nodes": {
+      "agenda-summary": {
+        "dependency": "agenda",
+        "experience_id": "sos.reference.agenda",
+        "export_id": "summary",
+        "parent": "dashboard-main",
+        "revision_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "dashboard-main": {
+        "experience_id": "sos.reference.dashboard",
+        "export_id": "main",
+        "revision_id": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+      }
+    },
+    "root": "dashboard-main"
+  },
+  "instance_id": "runtime-7f35c9a2",
+  "limits": {
+    "boundary_value_bytes": 16384,
+    "dependencies": 16,
+    "exports": 16,
+    "graph_depth": 4,
+    "graph_instances": 8,
+    "graph_scene_nodes": 8192
+  },
+  "package": {
+    "contract": {
+      "contract_version": 1,
+      "exports": {
+        "main": {
+          "accepts_container_appearance": true,
+          "appearance_abi": 1,
+          "events": {
+            "refresh_requested": {
+              "fields": {
+                "force": {
+                  "required": true,
+                  "value": {
+                    "type": "boolean"
+                  }
+                }
+              },
+              "type": "record"
+            }
+          },
+          "properties": {
+            "fields": {
+              "accent": {
+                "required": false,
+                "value": {
+                  "choices": [
+                    "blue",
+                    "green"
+                  ],
+                  "max_bytes": 16,
+                  "type": "string"
+                }
+              },
+              "title": {
+                "required": true,
+                "value": {
+                  "max_bytes": 64,
+                  "type": "string"
+                }
+              }
+            },
+            "type": "record"
+          },
+          "viewport": {
+            "max_height": 2160,
+            "max_width": 3840,
+            "min_height": 200,
+            "min_width": 320
+          }
+        }
+      }
+    },
+    "dependencies": {
+      "agenda": {
+        "contract_digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "experience_id": "sos.reference.agenda",
+        "export_id": "summary",
+        "grant": {
+          "events": [
+            "open"
+          ],
+          "properties": [
+            "title"
+          ]
+        },
+        "policy": "locked",
+        "revision_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    },
+    "derivation": {
+      "kind": "original",
+      "parents": []
+    },
+    "experience_id": "sos.reference.dashboard",
+    "format_version": 4,
+    "role": "shell"
+  }
+}

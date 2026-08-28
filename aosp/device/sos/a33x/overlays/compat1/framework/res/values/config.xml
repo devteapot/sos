@@ -1,5 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="config_defaultListenerAccessPackages" translatable="false">dev.sos.experience</string>
+    <string name="config_customAdbPublicKeyConfirmationComponent" translatable="false">dev.sos.experience/dev.gpui.mobile.SosAdbConfirmationActivity</string>
+    <string name="config_customAdbPublicKeyConfirmationSecondaryUserComponent" translatable="false">dev.sos.experience/dev.gpui.mobile.SosAdbConfirmationActivity</string>
     <bool name="config_quickSettingsSupported">false</bool>
 </resources>

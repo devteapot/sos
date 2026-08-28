@@ -4,11 +4,14 @@ import android.app.NativeActivity;
 import android.content.Intent;
 import android.content.pm.ActivityInfo;
 import android.content.pm.PackageManager;
+import android.graphics.Insets;
 import android.media.AudioManager;
 import android.net.Uri;
 import android.os.Bundle;
 import android.util.Log;
+import android.view.View;
 import android.view.KeyEvent;
+import android.view.WindowInsets;
 
 import dev.sos.experience.BuildConfig;
 
@@ -17,6 +20,7 @@ import androidx.core.splashscreen.SplashScreen;
 public class GpuiActivity extends NativeActivity {
     private static volatile boolean sNativeLibLoaded = false;
     private static volatile boolean sActivityCreated = false;
+    private boolean viewportBridgeInstalled;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -51,6 +55,7 @@ public class GpuiActivity extends NativeActivity {
         splash.setKeepOnScreenCondition(() -> !isNativeReady());
         setVolumeControlStream(AudioManager.STREAM_MUSIC);
         super.onCreate(savedInstanceState);
+        installViewportBridge();
         sActivityCreated = true;
         SosHomePolicy.enforce(this, "activity-create");
     }
@@ -59,6 +64,9 @@ public class GpuiActivity extends NativeActivity {
     protected void onResume() {
         super.onResume();
         configureSosWindow();
+        installViewportBridge();
+        dispatchViewportContext(getWindow().getDecorView(),
+                getWindow().getDecorView().getRootWindowInsets());
         SosHomePolicy.enforce(this, "activity-resume");
         if (BuildConfig.SOS_COMPAT_ENABLED) {
             SosCompatChromeService.start(this);
@@ -74,12 +82,63 @@ public class GpuiActivity extends NativeActivity {
         super.onWindowFocusChanged(hasFocus);
         if (hasFocus) {
             configureSosWindow();
-            SosCompatChromeService.ownerFocused(this);
+            dispatchViewportContext(getWindow().getDecorView(),
+                    getWindow().getDecorView().getRootWindowInsets());
+            SosCompatChromeService.experienceOwnerFocused(this);
         }
     }
 
     private void configureSosWindow() {
         SosWindowPolicy.apply(this, "gpui");
+    }
+
+    private void installViewportBridge() {
+        if (viewportBridgeInstalled) return;
+        View decor = getWindow().getDecorView();
+        decor.setOnApplyWindowInsetsListener((view, insets) -> {
+            dispatchViewportContext(view, insets);
+            return insets;
+        });
+        decor.addOnLayoutChangeListener((view, left, top, right, bottom,
+                oldLeft, oldTop, oldRight, oldBottom) ->
+                dispatchViewportContext(view, view.getRootWindowInsets()));
+        viewportBridgeInstalled = true;
+        decor.requestApplyInsets();
+    }
+
+    private static void dispatchViewportContext(View view, WindowInsets windowInsets) {
+        if (!sNativeLibLoaded || view == null || view.getWidth() <= 0 || view.getHeight() <= 0) {
+            return;
+        }
+        float density = view.getResources().getDisplayMetrics().density;
+        if (!Float.isFinite(density) || density <= 0f) return;
+        Insets safe = Insets.NONE;
+        if (windowInsets != null) {
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
+                safe = windowInsets.getInsets(
+                        WindowInsets.Type.displayCutout()
+                                | WindowInsets.Type.systemGestures()
+                                | WindowInsets.Type.mandatorySystemGestures());
+            } else {
+                safe = Insets.of(
+                        windowInsets.getSystemWindowInsetLeft(),
+                        windowInsets.getSystemWindowInsetTop(),
+                        windowInsets.getSystemWindowInsetRight(),
+                        windowInsets.getSystemWindowInsetBottom());
+            }
+        }
+        try {
+            nativeOnViewportContext(
+                    view.getWidth() / density,
+                    view.getHeight() / density,
+                    Math.round(density * 1000f),
+                    safe.left / density,
+                    safe.top / density,
+                    safe.right / density,
+                    safe.bottom / density);
+        } catch (UnsatisfiedLinkError ignored) {
+            Log.w("GpuiActivity", "native viewport bridge unavailable");
+        }
     }
 
     static boolean isSosHomeReady() {
@@ -162,4 +221,7 @@ public class GpuiActivity extends NativeActivity {
             String target, String text, int selectionStart, int selectionEnd,
             int markedStart, int markedEnd, String kind);
     private static native void nativeOnImeInset(float logicalBottom);
+    private static native void nativeOnViewportContext(
+            float logicalWidth, float logicalHeight, int scaleMilli,
+            float safeLeft, float safeTop, float safeRight, float safeBottom);
 }

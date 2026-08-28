@@ -1,7 +1,17 @@
-use std::io::{BufRead, BufReader, Read, Write};
+use std::{
+    collections::BTreeMap,
+    io::{BufRead, BufReader, Read, Write},
+};
 
-use experience_ir::{ProviderRequest, ProviderResponse, StateEnvelope, MAX_STATE_BYTES};
+use experience_ir::{ProviderEffect, ProviderRequest, ProviderResponse, MAX_STATE_BYTES};
+use experience_package::{
+    AppearanceProfile, ExperienceId, GraphNodeId, InstanceId, PackageMetadata, ResolvedGraph,
+    RevisionId,
+};
 use serde::{Deserialize, Serialize};
+use service_protocol::{
+    AppearanceResource, ExperienceStateResource, GrantDecisionResource, StateResource,
+};
 
 pub const REVISION_ADDRESS: &str = "127.0.0.1:47778";
 pub const CORE_PROVIDER_SOCKET: &str = "/data/misc/sos/provider.sock";
@@ -67,40 +77,136 @@ pub struct RevisionAssetWire {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+pub struct GraphRevisionWire {
+    pub revision_id: String,
+    pub source: String,
+    pub assets: Vec<RevisionAssetWire>,
+    pub package: PackageMetadata,
+    pub state: ExperienceStateResource,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+pub struct GraphBundle {
+    pub graph_id: String,
+    pub graph: ResolvedGraph,
+    pub revisions: Vec<GraphRevisionWire>,
+    pub appearance: AppearanceResource,
+    #[serde(default)]
+    pub grants: Vec<GrantDecisionResource>,
+    #[serde(default)]
+    pub migration_pending: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+pub struct GraphStateUpdateWire {
+    pub node_id: GraphNodeId,
+    pub instance_id: InstanceId,
+    pub experience_id: ExperienceId,
+    pub revision_id: RevisionId,
+    pub expected_revision: u64,
+    pub state: serde_json::Value,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+pub struct AuthorityAuditSnapshot {
+    pub format_version: u32,
+    #[serde(default)]
+    pub presented_experience: Option<ExperienceId>,
+    #[serde(default)]
+    pub states: BTreeMap<ExperienceId, StateResource>,
+    #[serde(default)]
+    pub appearance: AppearanceResource,
+    #[serde(default)]
+    pub grants: BTreeMap<ExperienceId, GrantDecisionResource>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+pub struct GraphEffectWire {
+    pub node_id: GraphNodeId,
+    pub instance_id: InstanceId,
+    pub revision_id: RevisionId,
+    pub effect: ProviderEffect,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(tag = "action", rename_all = "snake_case")]
 pub enum RevisionRequest {
-    Current {
+    CurrentGraph {
         request_id: u64,
     },
-    Install {
+    AuditSnapshot {
         request_id: u64,
+    },
+    PresentExperience {
+        request_id: u64,
+        expected_graph_id: String,
+        experience_id: ExperienceId,
+    },
+    DismissExperience {
+        request_id: u64,
+        expected_graph_id: String,
+        experience_id: ExperienceId,
+    },
+    ConfirmGraph {
+        request_id: u64,
+        graph_id: String,
+    },
+    RollbackGraph {
+        request_id: u64,
+        failed_graph_id: String,
+    },
+    StageGraphRevision {
+        request_id: u64,
+        expected_graph_id: String,
+        package: PackageMetadata,
         source: String,
         state: serde_json::Value,
         schema_version: u64,
-        experience_api_version: u32,
         assets: Vec<RevisionAssetWire>,
     },
-    Activate {
+    DiscardGraph {
         request_id: u64,
-        revision_id: String,
-        state_stage_id: u64,
+        graph_id: String,
     },
-    /// Restore the authority-pinned stock experience after the active
-    /// generated revision fails validation during host startup. The failed id
-    /// prevents a stale host from rolling back a newer activation.
-    FallbackToStock {
+    CommitGraphAction {
         request_id: u64,
-        failed_revision_id: String,
+        graph_id: String,
+        updates: Vec<GraphStateUpdateWire>,
+        effects: Vec<GraphEffectWire>,
+    },
+    CurrentAppearance {
+        request_id: u64,
+    },
+    SetExperienceAppearance {
+        request_id: u64,
+        expected_graph_id: String,
+        writer_experience_id: ExperienceId,
+        expected_generation: u64,
+        profile: AppearanceProfile,
+    },
+    UpdateAppearance {
+        request_id: u64,
+        expected_generation: u64,
+        capability: String,
+        profile: AppearanceProfile,
     },
 }
 
 impl RevisionRequest {
     pub fn request_id(&self) -> u64 {
         match self {
-            Self::Current { request_id }
-            | Self::Install { request_id, .. }
-            | Self::Activate { request_id, .. }
-            | Self::FallbackToStock { request_id, .. } => *request_id,
+            Self::CurrentGraph { request_id }
+            | Self::AuditSnapshot { request_id }
+            | Self::PresentExperience { request_id, .. }
+            | Self::DismissExperience { request_id, .. }
+            | Self::ConfirmGraph { request_id, .. }
+            | Self::RollbackGraph { request_id, .. }
+            | Self::StageGraphRevision { request_id, .. }
+            | Self::DiscardGraph { request_id, .. }
+            | Self::CommitGraphAction { request_id, .. }
+            | Self::CurrentAppearance { request_id }
+            | Self::SetExperienceAppearance { request_id, .. }
+            | Self::UpdateAppearance { request_id, .. } => *request_id,
         }
     }
 }
@@ -131,16 +237,14 @@ pub fn read_revision_request<R: Read>(reader: &mut R) -> std::io::Result<Revisio
 pub struct RevisionResponse {
     pub request_id: u64,
     pub ok: bool,
-    pub revision_id: Option<String>,
-    pub source: Option<String>,
-    pub state: Option<StateEnvelope>,
-    pub assets: Vec<RevisionAssetWire>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub stock_revision_id: Option<String>,
-    #[serde(default)]
-    pub stock_trusted: bool,
-    #[serde(default)]
-    pub fallback_performed: bool,
+    pub graph: Option<GraphBundle>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audit_snapshot: Option<AuthorityAuditSnapshot>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub appearance: Option<AppearanceResource>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub states: Vec<ExperienceStateResource>,
     pub error: Option<String>,
 }
 
@@ -267,7 +371,8 @@ mod tests {
         let empty = read_revision_request(&mut &b""[..]).unwrap_err();
         assert_eq!(empty.kind(), std::io::ErrorKind::UnexpectedEof);
         let truncated =
-            read_revision_request(&mut &br#"{"action":"current","request_id":4}"#[..]).unwrap_err();
+            read_revision_request(&mut &br#"{"action":"current_graph","request_id":4}"#[..])
+                .unwrap_err();
         assert_eq!(truncated.kind(), std::io::ErrorKind::UnexpectedEof);
     }
 
@@ -279,7 +384,7 @@ mod tests {
             server.shutdown(Shutdown::Write).unwrap();
         });
         let error =
-            request_revision_over_stream(client, RevisionRequest::Current { request_id: 17 })
+            request_revision_over_stream(client, RevisionRequest::CurrentGraph { request_id: 17 })
                 .unwrap_err();
         worker.join().unwrap();
         error
@@ -295,5 +400,23 @@ mod tests {
             revision_response_error(br#"{"request_id":17,"ok":true}"#),
             "revision authority returned a truncated response"
         );
+    }
+
+    #[test]
+    fn audit_snapshot_has_a_stable_bounded_wire_action() {
+        let request = RevisionRequest::AuditSnapshot { request_id: 91 };
+        assert_eq!(
+            serde_json::to_value(&request).unwrap(),
+            serde_json::json!({"action": "audit_snapshot", "request_id": 91})
+        );
+        assert_eq!(request.request_id(), 91);
+    }
+
+    #[test]
+    fn graph_protocol_rejects_retired_single_revision_actions() {
+        for action in ["current", "install", "activate", "fallback_to_stock"] {
+            let wire = format!(r#"{{"action":"{action}","request_id":1}}"#);
+            assert!(serde_json::from_str::<RevisionRequest>(&wire).is_err());
+        }
     }
 }

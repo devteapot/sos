@@ -7,6 +7,10 @@ allow sos_core_host sos_core_host_exec:file execute_no_trans;
 # Compat, while the host remains the compile/render/activation authority.
 allow sos_core_host sos_node_exec:file rx_file_perms;
 allow sos_core_host sos_node_exec:file execute_no_trans;
+# Node reads the aggregate memory snapshot while starting the immutable Pi
+# runner. It does not need process-specific proc access or any writable proc
+# surface.
+allow sos_core_host proc_meminfo:file r_file_perms;
 
 binder_use(sos_core_host)
 binder_call(sos_core_host, surfaceflinger)

@@ -1,17 +1,20 @@
-# Stock experience
+# Stock experiences
 
-Date: 2026-08-26
+Date: 2026-08-27
 
-Stock Shell is the product's substantial default experience and the
-integration target for the System Providers ABI. It is a privileged but
-replaceable Scene ABI v3 module in
+SOS has platform-specific pinned Stock experiences. They share the Experience
+API, System Providers ABI, semantic appearance snapshot, and Shell role, but
+they do not share an Experience ID, durable state, revision history, source,
+layout, or product semantics.
+
+Stock Shell is the Linux default and desktop integration target. It is the
+reserved, pinned `sos.stock.shell` Experience API v4 package whose source lives in
 [`experiences/default.luau`](../experiences/default.luau), not a fixed Rust UI
-or catalog of native widgets. The permanent host compiles, validates, installs,
-and activates it through the same content-addressed revision path used by
-agent-authored experiences.
+or catalog of native widgets. The supervisor resolves and activates its graph
+through the same content-addressed registry path used by other v4 experiences.
 
-Privilege is narrow and structural. One source node may declare each of
-`window_space`, `shell_overlay`, and `application_surface`. The Linux host
+Privilege is narrow and structural. One Shell-role source node may declare
+each of `window_space` and `shell_overlay`. The Linux host
 reports only bounded geometry and a closed policy over its authenticated
 compositor connection. The compositor—not Luau—continues to own surface
 identity, mapping, focus, activation, stacking, input, movement, and lifecycle.
@@ -19,7 +22,31 @@ No Wayland object, socket, PID, desktop-file path, or arbitrary geometry
 authority crosses into the revision. Android renders these Linux integration
 primitives as explicit unavailable surfaces.
 
-## Product surface
+## Stock Mobile product surface
+
+Android boots the separate pinned `sos.stock.mobile` package from
+[`experiences/mobile.luau`](../experiences/mobile.luau) and
+[`experiences/mobile.package.json`](../experiences/mobile.package.json). It is
+not a responsive branch or adapted revision of Stock Shell. It defines a
+phone-native top bar, large touch targets, a bottom navigation model, a
+source-owned full-screen application launcher, vertically scrolling content,
+and a mobile agent surface. Registry experiences and compatible Android
+applications open as independent full-screen roots; there is no desktop
+window region, floating/tiled policy, command rail, hover UI, or window list.
+
+Stock Mobile owns its own history, state, appearance-write grant, authoring
+target, recovery pointer, and `mobile.theme` sidecar. Android's immutable
+bootstrap and agent example package only this mobile source. Linux continues
+to package Stock Shell and `stock.theme`. Shared semantic appearance values
+can keep both products in one design language without sharing style code or
+information architecture.
+
+The Shell role here is an authority role: it may present another registered
+Experience and write reviewed system appearance. It does not imply desktop
+shell chrome. Dismissing an Android top-level Experience returns to Stock
+Mobile, while Linux returns to Stock Shell.
+
+## Stock Shell product surface
 
 The initial stock revision is a complete source-defined shell with:
 
@@ -40,9 +67,9 @@ The initial stock revision is a complete source-defined shell with:
 - a command center for workspaces, application launch, window policy, and the
   current bounded `model.shell.windows` list. Each row renders only the
   compositor-advertised focus/close controls for its opaque window ID; and
-- one source-defined native application surface, managed in the same window
-  space as compatibility clients, whose current revision exposes eight
-  workspaces:
+- one source-defined workspace inside the shell graph, plus registry-discovered
+  independently supervised v4 Experiences that Stock can present into the
+  compositor's application window space. The current Stock workspace exposes:
 
 - Home, with workspace navigation, provider status, agenda, notes, media,
   attention, system-control, application, and agent entry points;
@@ -75,27 +102,33 @@ Existing desktop applications are not rewritten or wrapped in CLI calls. The
 Linux applications provider discovers eligible freedesktop entries and
 launches their normal Wayland/XWayland processes through a strict `gio launch`
 argument vector. Those surfaces are compositor clients placed within the
-declared window space. Source-native SOS content uses `application_surface` to
-open a separate GPUI/XDG toplevel that the compositor classifies as
-`NativeApplication`, so it tiles, focuses, clips, unmaps, and reflows beside
-ordinary applications instead of being embedded in the shell window.
+declared window space. An independently presented ordinary-role v4 Experience
+runs in its own host process, authenticates as `NativeApplication` without
+receiving shell control, and opens a GPUI/XDG toplevel. The compositor tiles,
+focuses, clips, unmaps, and reflows it beside ordinary applications instead of
+embedding it in Stock.
 Stock observes those independent toplevels through the typed shell model. The
 model distinguishes native and compatibility windows, marks current focus, and
 contains no application ID, process identity, executable, or protocol handle.
 Its actions are closed `shell.focus_window` and `shell.close_window` effects;
 the compositor re-resolves an opaque ID and rejects stale selections.
 
-This is the first composition boundary, not the final application supervisor:
-the stock shell and its one active native application surface still come from
-the same revision and host process. Independent application revisions,
-namespaced state, lifecycle supervision, and an application registration
-broker are the next layer. SOS-native applications may additionally publish a
-bounded `status_widgets` contribution through the trusted applications
-provider: an ID, visible label/value and optional opaque compatible-application
-selection. The optional tap reuses the existing typed `apps.launch` authority;
-arbitrary callbacks or app-supplied Luau do not enter the bar. The current
-Linux provider publishes an empty contribution set until the native-app
-registration broker exists.
+Top-level launch and embedded composition are deliberately distinct. A launch
+is a registry lifecycle request from the Shell role and preserves the target's
+independent Experience ID, state, grants, graph activation, and recovery. An
+`experience_mount` is host-owned composition inside one graph and is bounded
+by the declared dependency contract described in
+[`experience-composition.md`](experience-composition.md). The old
+`application_surface` node has been removed; independent top-level lifecycle
+always crosses the registry and graph authority boundary.
+
+SOS-native applications may additionally publish a bounded `status_widgets`
+contribution through the trusted applications provider: an ID, visible
+label/value and optional opaque compatible-application selection. Stock
+renders that data in its own style. The optional tap reuses the existing typed
+`apps.launch` authority; arbitrary callbacks or app-supplied Luau do not enter
+the bar. The current Linux provider publishes an empty contribution set until
+the native-app registration broker exists.
 
 The mark is currently an inline immutable SVG declaration and therefore enters
 the same revision asset set and validation limits as agent content. Sidecar
@@ -107,8 +140,12 @@ demonstrates the typed token shape used by the bootstrap. Larger installed
 revisions can submit it as the namespaced `stock.theme` Luau sidecar and load it
 through the sandboxed revision-local `require`; the immutable cross-platform
 bootstrap keeps an in-file copy so Android can still start without sidecars.
+The intended multi-experience contract keeps style modules revision-local and
+publishes global accessibility preferences and semantic appearance tokens as
+authority-owned data. A mounted child may accept a bounded container override,
+but a parent never injects style code or repaints the child scene.
 
-## Responsive contract
+## Stock Shell responsive contract
 
 The root and shell body measure against the complete logical output. The top
 bar remains fixed, the application region grows, and opening the 390-pixel

@@ -68,6 +68,97 @@ check_core_runtime_model_contract() {
   info "Core runtime pinned model bytes and mismatch rejection passed"
 }
 
+check_android_composition_authority() {
+  [[ "$#" -eq 2 ]] || \
+    fail "usage: check_android_composition_authority AUTHORITY INIT_RC"
+  local authority="$1" init_rc="$2" marker
+  grep -F -- '--install-reference-composition' "$init_rc" >/dev/null || \
+    fail "SOS authority does not install the signed reference composition"
+  grep -F -- '--bootstrap-source /system_ext/etc/sos/mobile.luau' "$init_rc" >/dev/null || \
+    fail "SOS authority does not boot the Stock Mobile source"
+  grep -F -- '--bootstrap-package /system_ext/etc/sos/mobile.package.json' "$init_rc" >/dev/null || \
+    fail "SOS authority does not boot the Stock Mobile package"
+  grep -F -- '--bootstrap-asset mobile.theme luau /system_ext/etc/sos/modules/mobile-theme.luau' \
+    "$init_rc" >/dev/null || fail "SOS authority does not bind the Stock Mobile theme"
+  grep -Fx 'on property:sys.sos.authority_recovery_probe=1' "$init_rc" >/dev/null || \
+    fail "SOS authority omitted its userdebug-only physical recovery trigger"
+  grep -F '    restart sos_authority' "$init_rc" >/dev/null || \
+    fail "SOS authority recovery trigger does not restart only the authority"
+  grep -F '    setprop sys.sos.authority_recovery_probe 0' "$init_rc" >/dev/null || \
+    fail "SOS authority recovery trigger is not one-shot"
+  readelf -d "$authority" | grep -F 'Shared library: [liblog.so]' >/dev/null || \
+    fail "SOS authority cannot publish fatal startup failures to Android logd"
+  grep -aF 'android_system_authority_failed error=' "$authority" >/dev/null || \
+    fail "SOS authority omitted its fatal startup marker"
+  grep -aF 'install reference composition failed: ' "$authority" >/dev/null || \
+    fail "SOS authority omitted its reference-install startup boundary"
+  for marker in \
+    'raw socket step=socket(AF_INET, SOCK_STREAM)' \
+    'raw socket step=setsockopt(SO_REUSEADDR)' \
+    'raw socket step=bind' \
+    'raw socket step=listen'; do
+    grep -aF "$marker" "$authority" >/dev/null || \
+      fail "SOS authority omitted raw listener diagnostic boundary: $marker"
+  done
+  grep -aF 'sos.stock.mobile' "$authority" >/dev/null || \
+    fail "SOS authority omitted the reserved Stock Mobile identity"
+  for marker in \
+    sos.example.agenda \
+    sos.example.media \
+    sos.example.dashboard \
+    sos.example.agenda-media-remix; do
+    grep -aF "$marker" "$authority" >/dev/null || \
+      fail "SOS authority omitted reference Experience $marker"
+  done
+  info "SOS authority signed reference composition markers passed"
+}
+
+check_android_stock_mobile() {
+  [[ "$#" -eq 3 ]] || \
+    fail "usage: check_android_stock_mobile SOURCE PACKAGE THEME"
+  local source="$1" package="$2" theme="$3" marker
+  jq -e '
+    .format_version == 4 and
+    .experience_id == "sos.stock.mobile" and
+    .role == "shell" and
+    .contract.exports.main.viewport.min_width == 320 and
+    .contract.exports.main.viewport.min_height == 480 and
+    (.provider_capabilities | index("appearance_write") != null)
+  ' "$package" >/dev/null || fail "Android Stock Mobile package contract is invalid"
+  grep -F 'require("mobile.theme")' "$source" >/dev/null || \
+    fail "Android Stock Mobile source omitted its revision-local theme"
+  for marker in \
+    'stock-mobile-root' \
+    'mobile-top-bar' \
+    'mobile-bottom-navigation' \
+    'mobile-app-launcher' \
+    'experience_present_'; do
+    grep -F "$marker" "$source" >/dev/null || \
+      fail "Android Stock Mobile source omitted phone-native marker: $marker"
+  done
+  ! grep -F 'kind = "window_space"' "$source" >/dev/null || \
+    fail "Android Stock Mobile source contains the desktop window-space primitive"
+  grep -F 'touch = {' "$theme" >/dev/null || \
+    fail "Android Stock Mobile theme omitted touch geometry"
+  info "Android Stock Mobile identity and phone-native source contract passed"
+}
+
+check_android_v4_system_controls() {
+  [[ "$#" -eq 1 ]] || fail "usage: check_android_v4_system_controls RUNTIME"
+  local runtime="$1" marker
+  for marker in \
+    'android_system_control action=appearance_toggle' \
+    'android_system_control action=dismiss_experience experience_id=' \
+    'android_system_control action=rollback_graph' \
+    'Change system theme' \
+    'Roll back Experience graph' \
+    'Return to Stock'; do
+    grep -aF "$marker" "$runtime" >/dev/null || \
+      fail "Android v4 runtime omitted host-owned system control: $marker"
+  done
+  info "Android v4 host-owned system controls passed"
+}
+
 soong_module_block() {
   [[ "$#" -eq 2 ]] || fail "internal usage: soong_module_block <type> <name>"
   local module_type="$1" module_name="$2"
@@ -190,6 +281,35 @@ doctor() {
   printf '    memory:     %s kB\n' "$memory_kb"
 }
 
+install_host_usb_rules() {
+  [[ "$#" -eq 2 && "$1" == --group ]] || \
+    fail "usage: sudo ./tools/a33xctl install-host-usb-rules --group GROUP"
+  [[ "$EUID" -eq 0 ]] || \
+    fail "host USB rule installation requires root; rerun through sudo"
+  require_command getent
+  require_command install
+  require_command sed
+  require_command udevadm
+  local usb_group="$2"
+  [[ "$usb_group" =~ ^[a-zA-Z_][a-zA-Z0-9_-]*$ ]] || \
+    fail "invalid host USB group: $usb_group"
+  getent group "$usb_group" >/dev/null || fail "host USB group does not exist: $usb_group"
+  local template="$SOS_ROOT/tools/a33x/70-sos-a33x-usb.rules.in"
+  local destination=/etc/udev/rules.d/70-sos-a33x-usb.rules
+  local temporary
+  [[ -f "$template" ]] || fail "host USB rule template is missing: $template"
+  temporary="$(mktemp /tmp/70-sos-a33x-usb.rules.XXXXXX)"
+  trap 'rm -f -- "$temporary"' EXIT
+  sed "s/@SOS_USB_GROUP@/$usb_group/g" "$template" >"$temporary"
+  install -o root -g root -m 0644 "$temporary" "$destination"
+  udevadm control --reload-rules
+  udevadm trigger --action=change --subsystem-match=usb
+  udevadm settle
+  trap - EXIT
+  rm -f -- "$temporary"
+  printf 'host_usb_rules=INSTALLED\npath=%s\ngroup=%s\n' "$destination" "$usb_group"
+}
+
 init() {
   [[ "$#" -eq 0 ]] || fail "usage: ./tools/a33xctl init"
   [[ ! -e "$LINEAGE_ROOT/.repo" ]] || fail "$LINEAGE_ROOT is already initialized"
@@ -296,9 +416,10 @@ stage_sos() {
   local node_cxx="$SOS_ROOT/artifacts/sos-node-libc++_shared.so"
   local agent_runner="$SOS_ROOT/services/sos-agent/dist/agent-runner.cjs"
   local agent_api="$SOS_ROOT/docs/experience-api.md"
-  local agent_example_primary="$SOS_ROOT/experiences/default.luau"
-  local agent_example_secondary="$SOS_ROOT/experiences/timeflow.luau"
-  local bootstrap="$SOS_ROOT/experiences/default.luau"
+  local agent_example_primary="$SOS_ROOT/experiences/mobile.luau"
+  local bootstrap="$SOS_ROOT/experiences/mobile.luau"
+  local bootstrap_package="$SOS_ROOT/experiences/mobile.package.json"
+  local stock_theme="$SOS_ROOT/experiences/modules/mobile-theme.luau"
   [[ -f "$LINEAGE_ROOT/build/envsetup.sh" ]] || fail "run init and sync first"
   [[ -f "$apk" ]] || \
     fail "ARM64 SOS APK missing; run ./tools/sosctl m1-build --abi arm64-v8a --home"
@@ -308,9 +429,10 @@ stage_sos() {
   [[ -x "$node" ]] || fail "Android ARM64 Node missing; run ./tools/build-android-node"
   [[ -f "$node_cxx" ]] || fail "Android Node libc++ runtime missing; run ./tools/build-android-node"
   [[ -f "$agent_runner" ]] || fail "shared Pi runner missing; run npm run build in services/sos-agent"
-  [[ -f "$agent_api" && -f "$agent_example_primary" && -f "$agent_example_secondary" ]] || \
+  [[ -f "$agent_api" && -f "$agent_example_primary" ]] || \
     fail "Android Pi prompt documents are missing"
-  [[ -f "$bootstrap" ]] || fail "SOS bootstrap experience missing"
+  [[ -f "$bootstrap" && -f "$bootstrap_package" && -f "$stock_theme" ]] || \
+    fail "SOS v4 bootstrap package is incomplete"
   [[ "$LINEAGE_SOS_OVERLAY_DESTINATION" == "$LINEAGE_ROOT/device/sos/a33x" ]] || \
     fail "refusing to stage outside the managed a33x SOS destination"
   unzip -Z1 "$apk" | grep -Fx lib/arm64-v8a/libsos_experience.so >/dev/null || \
@@ -350,10 +472,17 @@ stage_sos() {
     "$LINEAGE_SOS_OVERLAY_DESTINATION/prebuilts/sos-agent/experience-api.md"
   install -m 0644 "$agent_example_primary" \
     "$LINEAGE_SOS_OVERLAY_DESTINATION/prebuilts/sos-agent/example-primary.luau"
-  install -m 0644 "$agent_example_secondary" \
-    "$LINEAGE_SOS_OVERLAY_DESTINATION/prebuilts/sos-agent/example-secondary.luau"
+  rm -f -- \
+    "$LINEAGE_SOS_OVERLAY_DESTINATION/prebuilts/sos-agent/example-secondary.luau" \
+    "$LINEAGE_SOS_OVERLAY_DESTINATION/prebuilts/default.luau" \
+    "$LINEAGE_SOS_OVERLAY_DESTINATION/prebuilts/default.package.json" \
+    "$LINEAGE_SOS_OVERLAY_DESTINATION/prebuilts/stock-theme.luau"
   install -m 0644 "$bootstrap" \
-    "$LINEAGE_SOS_OVERLAY_DESTINATION/prebuilts/default.luau"
+    "$LINEAGE_SOS_OVERLAY_DESTINATION/prebuilts/mobile.luau"
+  install -m 0644 "$bootstrap_package" \
+    "$LINEAGE_SOS_OVERLAY_DESTINATION/prebuilts/mobile.package.json"
+  install -m 0644 "$stock_theme" \
+    "$LINEAGE_SOS_OVERLAY_DESTINATION/prebuilts/mobile-theme.luau"
   sha256sum \
     "$LINEAGE_SOS_OVERLAY_DESTINATION/prebuilts/SosShell.apk" \
     "$LINEAGE_SOS_OVERLAY_DESTINATION/prebuilts/arm64/libsos_core_experience.so" \
@@ -363,8 +492,9 @@ stage_sos() {
     "$LINEAGE_SOS_OVERLAY_DESTINATION/prebuilts/sos-agent/agent-runner.cjs" \
     "$LINEAGE_SOS_OVERLAY_DESTINATION/prebuilts/sos-agent/experience-api.md" \
     "$LINEAGE_SOS_OVERLAY_DESTINATION/prebuilts/sos-agent/example-primary.luau" \
-    "$LINEAGE_SOS_OVERLAY_DESTINATION/prebuilts/sos-agent/example-secondary.luau" \
-    "$LINEAGE_SOS_OVERLAY_DESTINATION/prebuilts/default.luau"
+    "$LINEAGE_SOS_OVERLAY_DESTINATION/prebuilts/mobile.luau" \
+    "$LINEAGE_SOS_OVERLAY_DESTINATION/prebuilts/mobile.package.json" \
+    "$LINEAGE_SOS_OVERLAY_DESTINATION/prebuilts/mobile-theme.luau"
 }
 
 build_recovery() {
@@ -712,23 +842,36 @@ inspect_compat_profile() {
   local agent_runner="$target_files/SYSTEM_EXT/etc/sos-agent/agent-runner.cjs"
   local agent_api="$target_files/SYSTEM_EXT/etc/sos-agent/experience-api.md"
   local agent_example_primary="$target_files/SYSTEM_EXT/etc/sos-agent/example-primary.luau"
-  local agent_example_secondary="$target_files/SYSTEM_EXT/etc/sos-agent/example-secondary.luau"
-  local bootstrap="$target_files/SYSTEM_EXT/etc/sos/default.luau"
+  local bootstrap="$target_files/SYSTEM_EXT/etc/sos/mobile.luau"
+  local bootstrap_package="$target_files/SYSTEM_EXT/etc/sos/mobile.package.json"
+  local stock_theme="$target_files/SYSTEM_EXT/etc/sos/modules/mobile-theme.luau"
   local init_rc="$target_files/SYSTEM_EXT/etc/init/sos-authority.rc"
   local properties="$target_files/SYSTEM_EXT/etc/build.prop"
   local seapp_contexts="$target_files/SYSTEM_EXT/etc/selinux/system_ext_seapp_contexts"
   local file_contexts="$target_files/SYSTEM_EXT/etc/selinux/system_ext_file_contexts"
+  local property_contexts="$target_files/SYSTEM_EXT/etc/selinux/system_ext_property_contexts"
+  local system_ext_policy="$target_files/SYSTEM_EXT/etc/selinux/system_ext_sepolicy.cil"
   local privapp_permissions="$target_files/SYSTEM_EXT/etc/permissions/privapp-permissions-sos.xml"
   local latin_ime_apk="$target_files/PRODUCT/app/LatinIME/LatinIME.apk"
   local artifact
   for artifact in \
     "$apk" "$authority" "$node" "$node_cxx" "$agent_runner" "$agent_api" \
-    "$agent_example_primary" "$agent_example_secondary" "$bootstrap" "$init_rc" "$properties" \
-    "$seapp_contexts" "$file_contexts" "$privapp_permissions"; do
+    "$agent_example_primary" "$bootstrap" \
+    "$bootstrap_package" "$stock_theme" "$init_rc" "$properties" \
+    "$seapp_contexts" "$file_contexts" "$property_contexts" \
+    "$system_ext_policy" "$privapp_permissions"; do
     [[ -f "$artifact" ]] || fail "SOS target-files artifact missing: $artifact"
     stat --printf='%n %s bytes\n' "$artifact"
     sha256sum "$artifact"
   done
+  grep -Fx \
+    'sys.sos.authority_recovery_probe u:object_r:sos_authority_recovery_probe_prop:s0 exact bool' \
+    "$property_contexts" >/dev/null || \
+    fail "SOS authority recovery probe property has the wrong installed label or type"
+  grep -F \
+    '(allow shell sos_authority_recovery_probe_prop (property_service (set)))' \
+    "$system_ext_policy" >/dev/null || \
+    fail "SOS userdebug policy omitted the bounded authority recovery permission"
   unzip -tq "$apk"
   [[ "$(unzip -Z1 "$apk" | sed -n 's|^lib/\([^/]*\)/.*|\1|p' | sort -u)" == arm64-v8a ]] || \
     fail "packaged SOS APK is not ARM64-only"
@@ -774,9 +917,7 @@ inspect_compat_profile() {
   if [[ "$profile" == compat1 ]]; then
     for component in \
       dev.gpui.mobile.SosCompatChromeService \
-      dev.gpui.mobile.SosCompatWorkspaceActivity \
       dev.gpui.mobile.SosAttentionListenerService \
-      dev.gpui.mobile.SosAttentionActivity \
       dev.gpui.mobile.SosSystemAttentionReceiver; do
       grep -F "=\"$component\"" <<<"$manifest_dump" >/dev/null || \
         fail "SOS Compat 1 component missing: $component"
@@ -790,6 +931,26 @@ inspect_compat_profile() {
     grep -F '="dev.sos.permission.REPORT_HOME_HEARTBEAT"' \
       <<<"$manifest_dump" >/dev/null || \
       fail "SOS Compat 1 omitted its signed HOME-health boundary"
+    grep -F '="dev.sos.permission.REPORT_ADB_CONSENT"' \
+      <<<"$manifest_dump" >/dev/null || \
+      fail "SOS Compat 1 HOME omitted its signed ADB-consent result boundary"
+    grep -F '="android.permission.HIDE_OVERLAY_WINDOWS"' \
+      <<<"$manifest_dump" >/dev/null || \
+      fail "SOS Compat 1 ADB consent surface cannot suppress untrusted overlays"
+    local home_adb_consent_activity
+    home_adb_consent_activity="$(grep -F -A12 \
+      '="dev.gpui.mobile.SosAdbConfirmationActivity"' <<<"$manifest_dump")"
+    [[ -n "$home_adb_consent_activity" ]] || \
+      fail "SOS Compat 1 HOME omitted its ADB consent surface"
+    grep -F ':enabled' <<<"$home_adb_consent_activity" | grep -F '=true' >/dev/null || \
+      fail "SOS Compat 1 ADB consent surface is disabled"
+    grep -F ':directBootAware' <<<"$home_adb_consent_activity" | grep -F '=true' >/dev/null || \
+      fail "SOS Compat 1 ADB consent surface is not direct-boot-aware"
+    grep -F ':exported' <<<"$home_adb_consent_activity" | grep -F '=true' >/dev/null || \
+      fail "SOS Compat 1 ADB consent surface cannot be reached by system_server"
+    grep -F '="android.permission.MANAGE_DEBUGGING"' \
+      <<<"$home_adb_consent_activity" >/dev/null || \
+      fail "SOS Compat 1 ADB consent surface lacks its system_server boundary"
     grep -F 'E: queries' <<<"$manifest_dump" >/dev/null || \
       fail "SOS Compat 1 omitted its launcher-only package visibility query"
     grep -F -A8 'E: queries' <<<"$manifest_dump" | \
@@ -810,11 +971,21 @@ inspect_compat_profile() {
       grep -F 'Ldev/gpui/mobile/SosVisibleIdentity;' >/dev/null || \
       fail "native Compat omitted its SOS-owned visible identity policy"
     unzip -p "$apk" 'classes*.dex' | strings | \
-      grep -F 'Open a compatible application. SOS remains in control.' >/dev/null || \
-      fail "native Compat workspace copy exposes its Android substrate"
+      grep -F 'sos://mobile/navigate/' >/dev/null || \
+      fail "native Compat controls cannot navigate the Stock Mobile launcher"
+    unzip -p "$apk" 'classes*.dex' | strings | \
+      grep -F 'compat_chrome_visibility=hidden owner=stock-mobile' >/dev/null || \
+      fail "native Compat chrome can cover the Stock Mobile owner"
+    if unzip -p "$apk" 'classes*.dex' | strings | \
+      grep -E 'SosCompatWorkspaceActivity|SosAttentionActivity' >/dev/null; then
+      fail "native Compat retained a Java-owned launcher or attention screen"
+    fi
     unzip -p "$apk" 'classes*.dex' | strings | \
       grep -F 'transition_reveal=atomic controls=back,apps,attention,exit' >/dev/null || \
       fail "native Compat chrome can expose a partially rendered transition frame"
+    unzip -p "$apk" 'classes*.dex' | strings | \
+      grep -F 'owner_visibility=guarded' >/dev/null || \
+      fail "native Compat chrome reveal is not guarded by the current surface owner"
     local ime_bridge_marker
     for ime_bridge_marker in \
       'ime_activate focus_requested=' \
@@ -856,7 +1027,8 @@ inspect_compat_profile() {
         grep -F ':enabled' | grep -F '=false' >/dev/null || \
         fail "native Compat Android ceremony remains enabled: $disabled_ceremony"
     done
-    [[ -f "$target_files/PRODUCT/overlay/SosCompat1FrameworkOverlay.apk" ]] || \
+    local framework_overlay="$target_files/PRODUCT/overlay/SosCompat1FrameworkOverlay.apk"
+    [[ -f "$framework_overlay" ]] || \
       fail "SOS Compat 1 framework overlay is missing"
     [[ ! -e "$target_files/PRODUCT/overlay/SosCompat1SystemUiOverlay.apk" ]] || \
       fail "native Compat must not depend on a SystemUI presentation overlay"
@@ -870,13 +1042,20 @@ inspect_compat_profile() {
     local services_jar="$target_files/SYSTEM/framework/services.jar"
     local system_ext_policy="$target_files/SYSTEM_EXT/etc/selinux/system_ext_sepolicy.cil"
     for artifact in \
-      "$host" "$host_runtime" "$host_init_rc" "$bridge_apk" "$marker" \
+      "$host" "$host_runtime" "$host_init_rc" "$bridge_apk" "$framework_overlay" "$marker" \
       "$latin_ime_apk" \
       "$services_jar" "$system_ext_policy"; do
       [[ -f "$artifact" ]] || fail "native Compat artifact missing: $artifact"
       stat --printf='%n %s bytes\n' "$artifact"
       sha256sum "$artifact"
     done
+    local bridge_manifest_dump
+    bridge_manifest_dump="$(container out/host/linux-x86/bin/aapt2 dump xmltree \
+      --file AndroidManifest.xml "$bridge_apk")"
+    grep -F 'package="dev.sos.frameworkbridge"' <<<"$bridge_manifest_dump" >/dev/null || \
+      fail "SOS framework bridge has the wrong application ID"
+    grep -F '="android.permission.INTERNET"' <<<"$bridge_manifest_dump" >/dev/null || \
+      fail "SOS framework bridge omitted the system UID socket-create permission"
     file "$host" | grep -F 'ARM aarch64' >/dev/null || \
       fail "native Compat host is not AArch64"
     file "$host_runtime" | grep -F 'ARM aarch64' >/dev/null || \
@@ -884,6 +1063,7 @@ inspect_compat_profile() {
     strings "$host_runtime" | grep -F \
       'SOS experience window is live frame_padding=none' >/dev/null || \
       fail "native Compat GPUI runtime still reserves Android-style frame bands"
+    check_android_v4_system_controls "$host_runtime"
     file "$marker" | grep -F 'ARM aarch64' >/dev/null || \
       fail "native Compat UI-removal marker is not AArch64"
     [[ ! -e "$core_marker" ]] || \
@@ -920,6 +1100,9 @@ inspect_compat_profile() {
     unzip -p "$services_jar" 'classes*.dex' | strings | \
       grep -F 'SOS Compat blocked Android system Activity:' >/dev/null || \
       fail "native Compat framework omitted its Android system-Activity block"
+    unzip -p "$services_jar" 'classes*.dex' | strings | \
+      grep -F 'dev.sos.experience' >/dev/null || \
+      fail "native Compat framework membrane blocks SOS HOME system surfaces"
     unzip -p "$services_jar" 'classes*.dex' | strings | \
       grep -F 'SOS Compat blocked redirected Android system Activity:' >/dev/null || \
       fail "native Compat framework omitted its post-redirection Activity block"
@@ -960,8 +1143,28 @@ inspect_compat_profile() {
       --file AndroidManifest.xml "$bridge_apk")"
     grep -F 'package="dev.sos.frameworkbridge"' <<<"$bridge_manifest" >/dev/null || \
       fail "native Compat packaged the wrong framework bridge"
-    ! grep -F 'E: activity' <<<"$bridge_manifest" >/dev/null || \
-      fail "native Compat framework bridge must remain non-rendering"
+    [[ "$(grep -Fc 'E: activity' <<<"$bridge_manifest")" == 0 ]] || \
+      fail "native Compat framework bridge must remain headless"
+    grep -F '="dev.sos.permission.REPORT_ADB_CONSENT"' \
+      <<<"$bridge_manifest" >/dev/null || \
+      fail "native Compat framework bridge omitted its signed ADB-consent permission"
+    local adb_consent_receiver
+    adb_consent_receiver="$(grep -F -A12 \
+      '=".SosAdbConsentReceiver"' <<<"$bridge_manifest")"
+    [[ -n "$adb_consent_receiver" ]] || \
+      fail "native Compat framework bridge omitted its ADB consent receiver"
+    grep -F ':directBootAware' <<<"$adb_consent_receiver" | grep -F '=true' >/dev/null || \
+      fail "native Compat ADB consent receiver is not direct-boot-aware"
+    grep -F ':exported' <<<"$adb_consent_receiver" | grep -F '=true' >/dev/null || \
+      fail "native Compat ADB consent receiver cannot receive the HOME result"
+    grep -F '="dev.sos.permission.REPORT_ADB_CONSENT"' \
+      <<<"$adb_consent_receiver" >/dev/null || \
+      fail "native Compat ADB consent receiver lacks its signature boundary"
+    grep -F '="android.permission.MANAGE_DEBUGGING"' <<<"$bridge_manifest" >/dev/null || \
+      fail "native Compat framework bridge cannot answer the ADB service"
+    grep -F '<permission name="android.permission.MANAGE_DEBUGGING" />' \
+      "$privapp_permissions" >/dev/null || \
+      fail "native Compat omitted the bridge MANAGE_DEBUGGING privapp allowlist"
     grep -F '="dev.sos.permission.REPORT_HOME_HEARTBEAT"' \
       <<<"$bridge_manifest" >/dev/null || \
       fail "native Compat framework bridge omitted its signature heartbeat permission"
@@ -989,6 +1192,37 @@ inspect_compat_profile() {
     unzip -p "$bridge_apk" 'classes*.dex' | strings | \
       grep -F 'framework_bridge_home_start result=user-locked' >/dev/null || \
       fail "native Compat framework bridge can initialize HOME before CE unlock"
+    for consent_marker in \
+      'framework_adb_consent action=' \
+      'allow-once' \
+      'always-allow' \
+      'deny'; do
+      unzip -p "$bridge_apk" 'classes*.dex' | strings | \
+        grep -F "$consent_marker" >/dev/null || \
+        fail "native Compat ADB consent receiver omitted marker: $consent_marker"
+    done
+    for consent_marker in \
+      'sos_adb_confirmation state=shown owner=true renderer=sos-home' \
+      'Allow once' \
+      'Always allow this computer' \
+      'Deny connection' \
+      'dev.sos.action.ADB_CONSENT_RESULT'; do
+      unzip -p "$apk" 'classes*.dex' | strings | \
+        grep -F "$consent_marker" >/dev/null || \
+        fail "SOS HOME ADB consent surface omitted marker: $consent_marker"
+    done
+    local framework_overlay_resources
+    framework_overlay_resources="$(container out/host/linux-x86/bin/aapt2 dump resources \
+      "$framework_overlay")"
+    for overlay_resource in \
+      config_customAdbPublicKeyConfirmationComponent \
+      config_customAdbPublicKeyConfirmationSecondaryUserComponent; do
+      grep -F "$overlay_resource" <<<"$framework_overlay_resources" >/dev/null || \
+        fail "native Compat framework overlay omitted ADB consent binding: $overlay_resource"
+    done
+    unzip -p "$framework_overlay" resources.arsc | strings | \
+      grep -F 'dev.sos.experience/dev.gpui.mobile.SosAdbConfirmationActivity' >/dev/null || \
+      fail "native Compat framework overlay points ADB consent outside SOS"
     unzip -p "$apk" 'classes*.dex' | strings | \
       grep -Fx 'deepseek/deepseek-v4-flash-0731' >/dev/null || \
       fail "Compat HOME omitted the pinned OpenRouter campaign model"
@@ -1073,12 +1307,22 @@ inspect_compat_profile() {
   check_agent_runner_contract "$agent_runner"
   cmp -s "$agent_api" "$SOS_ROOT/docs/experience-api.md" || \
     fail "packaged Android Pi API document differs from repository source"
-  cmp -s "$agent_example_primary" "$SOS_ROOT/experiences/default.luau" || \
+  cmp -s "$agent_example_primary" "$SOS_ROOT/experiences/mobile.luau" || \
     fail "packaged Android Pi primary example differs from repository source"
-  cmp -s "$agent_example_secondary" "$SOS_ROOT/experiences/timeflow.luau" || \
-    fail "packaged Android Pi secondary example differs from repository source"
-  cmp -s "$bootstrap" "$SOS_ROOT/experiences/default.luau" || \
+  [[ ! -e "$target_files/SYSTEM_EXT/etc/sos-agent/example-secondary.luau" ]] || \
+    fail "packaged Android product retained a secondary Pi example"
+  [[ ! -e "$target_files/SYSTEM_EXT/etc/sos/default.luau" && \
+    ! -e "$target_files/SYSTEM_EXT/etc/sos/default.package.json" && \
+    ! -e "$target_files/SYSTEM_EXT/etc/sos/modules/stock-theme.luau" ]] || \
+    fail "packaged Android product retained the Linux Stock Shell bootstrap"
+  cmp -s "$bootstrap" "$SOS_ROOT/experiences/mobile.luau" || \
     fail "packaged SOS bootstrap differs from the repository source"
+  cmp -s "$bootstrap_package" "$SOS_ROOT/experiences/mobile.package.json" || \
+    fail "packaged SOS v4 manifest differs from the repository source"
+  cmp -s "$stock_theme" "$SOS_ROOT/experiences/modules/mobile-theme.luau" || \
+    fail "packaged SOS Stock Mobile theme differs from the repository source"
+  check_android_stock_mobile "$bootstrap" "$bootstrap_package" "$stock_theme"
+  check_android_composition_authority "$authority" "$init_rc"
   grep -Fx 'ro.sos.authority=on-device' "$properties"
   grep -Fx 'ro.sos.home=dev.sos.experience' "$properties"
   grep -E "^ro\\.system_ext\\.build\\.version\\.incremental=sos\\.${build_profile}\\.[0-9a-f]{12}\\.[0-9a-f]{12}$" \
@@ -1086,8 +1330,8 @@ inspect_compat_profile() {
   grep -Fx 'ro.sos.profile=compat' "$properties"
   grep -Fx "ro.sos.compat.stage=$expected_stage" "$properties"
   grep -Fx "ro.sos.ui_owner=$expected_owner" "$properties"
-  grep -Fx 'ro.sos.revision_format=3' "$properties"
-  grep -Fx 'ro.sos.experience_api=3' "$properties"
+  grep -Fx 'ro.sos.revision_format=4' "$properties"
+  grep -Fx 'ro.sos.experience_api=4' "$properties"
   grep -Fx \
     'user=_app isPrivApp=true seinfo=platform name=dev.sos.experience domain=priv_app type=privapp_data_file levelFrom=all' \
     "$seapp_contexts"
@@ -1131,12 +1375,18 @@ inspect_core() {
   local file_contexts="$target_files/SYSTEM_EXT/etc/selinux/system_ext_file_contexts"
   local system_ext_policy="$target_files/SYSTEM_EXT/etc/selinux/system_ext_sepolicy.cil"
   local authority="$target_files/SYSTEM_EXT/bin/sos-authority"
+  local authority_init_rc="$target_files/SYSTEM_EXT/etc/init/sos-authority.rc"
+  local bootstrap="$target_files/SYSTEM_EXT/etc/sos/mobile.luau"
+  local bootstrap_package="$target_files/SYSTEM_EXT/etc/sos/mobile.package.json"
+  local stock_theme="$target_files/SYSTEM_EXT/etc/sos/modules/mobile-theme.luau"
   local system_ui="$target_files/SYSTEM_EXT/priv-app/SystemUI/SystemUI.apk"
   local launcher="$target_files/SYSTEM_EXT/priv-app/Launcher3QuickStep/Launcher3QuickStep.apk"
   local artifact
   for artifact in \
     "$probe" "$init_rc" "$host" "$host_runtime" "$host_init_rc" \
     "$properties" "$file_contexts" "$system_ext_policy" "$authority" \
+    "$authority_init_rc" \
+    "$bootstrap" "$bootstrap_package" "$stock_theme" \
     "$system_ui" "$launcher"; do
     [[ -f "$artifact" ]] || fail "SOS Core shadow-stage artifact missing: $artifact"
     stat --printf='%n %s bytes\n' "$artifact"
@@ -1175,8 +1425,9 @@ inspect_core() {
   readelf -Ws "$host_runtime" | awk \
     '$8 == "android_main" && $7 != "UND" { found = 1 } END { exit !found }' || \
     fail "SOS Core GPUI runtime cannot satisfy NativeActivity glue at load time"
-  strings "$host_runtime" | grep -F \
-    'core_input_ready device=sec_touchscreen mode=exclusive protocol=mt-slot+btn_touch' >/dev/null || \
+  strings "$host_runtime" | grep -F 'sec_touchscreen' >/dev/null &&
+    strings "$host_runtime" | grep -F \
+      'mode=exclusive protocol=mt-slot+btn_touch origin=' >/dev/null || \
     fail "SOS Core GPUI runtime does not own the Samsung touchscreen with BTN_TOUCH fallback"
   strings "$host_runtime" | grep -F 'core_input_tsp_enabled path=' >/dev/null || \
     fail "SOS Core GPUI runtime omitted Samsung TSP enable"
@@ -1205,8 +1456,20 @@ inspect_core() {
   grep -Fx 'ro.sos.authority=on-device' "$properties"
   grep -Fx 'ro.sos.profile=core' "$properties"
   grep -Fx 'ro.sos.ui_owner=android-shadow' "$properties"
-  grep -Fx 'ro.sos.revision_format=3' "$properties"
-  grep -Fx 'ro.sos.experience_api=3' "$properties"
+  cmp -s "$bootstrap" "$SOS_ROOT/experiences/mobile.luau" || \
+    fail "SOS Core shadow bootstrap differs from the Stock Mobile source"
+  cmp -s "$bootstrap_package" "$SOS_ROOT/experiences/mobile.package.json" || \
+    fail "SOS Core v4 manifest differs from the repository source"
+  cmp -s "$stock_theme" "$SOS_ROOT/experiences/modules/mobile-theme.luau" || \
+    fail "SOS Core Stock Mobile theme differs from the repository source"
+  [[ ! -e "$target_files/SYSTEM_EXT/etc/sos/default.luau" && \
+    ! -e "$target_files/SYSTEM_EXT/etc/sos/default.package.json" && \
+    ! -e "$target_files/SYSTEM_EXT/etc/sos/modules/stock-theme.luau" ]] || \
+    fail "SOS Core shadow retained the Linux Stock Shell bootstrap"
+  check_android_stock_mobile "$bootstrap" "$bootstrap_package" "$stock_theme"
+  check_android_composition_authority "$authority" "$authority_init_rc"
+  grep -Fx 'ro.sos.revision_format=4' "$properties"
+  grep -Fx 'ro.sos.experience_api=4' "$properties"
   grep -E '^ro\.system_ext\.build\.version\.incremental=sos\.shadow\.[0-9a-f]{12}\.[0-9a-f]{12}$' \
     "$properties" || fail "SOS Core build does not carry a content-derived fingerprint"
   grep -Fx \
@@ -1252,23 +1515,32 @@ inspect_core_stage() {
   local host_init_rc="$target_files/SYSTEM_EXT/etc/init/sos-core-host.rc"
   local properties="$target_files/SYSTEM_EXT/etc/build.prop"
   local authority="$target_files/SYSTEM_EXT/bin/sos-authority"
+  local authority_init_rc="$target_files/SYSTEM_EXT/etc/init/sos-authority.rc"
   local node="$target_files/SYSTEM_EXT/bin/sos-node"
   local agent_runner="$target_files/SYSTEM_EXT/etc/sos-agent/agent-runner.cjs"
   local agent_api="$target_files/SYSTEM_EXT/etc/sos-agent/experience-api.md"
   local agent_example_primary="$target_files/SYSTEM_EXT/etc/sos-agent/example-primary.luau"
-  local agent_example_secondary="$target_files/SYSTEM_EXT/etc/sos-agent/example-secondary.luau"
+  local bootstrap="$target_files/SYSTEM_EXT/etc/sos/mobile.luau"
+  local bootstrap_package="$target_files/SYSTEM_EXT/etc/sos/mobile.package.json"
+  local stock_theme="$target_files/SYSTEM_EXT/etc/sos/modules/mobile-theme.luau"
   local system_ext_policy="$target_files/SYSTEM_EXT/etc/selinux/system_ext_sepolicy.cil"
+  local file_contexts="$target_files/SYSTEM_EXT/etc/selinux/system_ext_file_contexts"
   local bridge_apk="$target_files/SYSTEM_EXT/priv-app/SosFrameworkBridge/SosFrameworkBridge.apk"
   local core_platform="$target_files/SYSTEM_EXT/bin/sos-core-platform"
   local core_platform_rc="$target_files/SYSTEM_EXT/etc/init/sos-core-platform.rc"
   local core_app_manifest="$target_files/SYSTEM_EXT/etc/sos/core-apps.json"
+  local core_input_automation="$target_files/SYSTEM_EXT/bin/sos-core-input-automation"
+  local core_inputctl="$target_files/SYSTEM_EXT/bin/sos-core-inputctl"
+  local core_input_automation_rc="$target_files/SYSTEM_EXT/etc/init/sos-core-input-automation.rc"
   local marker="$target_files/SYSTEM_EXT/bin/sos-ui-removal-marker"
   local compat_marker="$target_files/SYSTEM_EXT/bin/sos-compat-ui-removal-marker"
   local artifact
   for artifact in \
     "$host" "$host_runtime" "$host_init_rc" "$properties" "$authority" \
+    "$authority_init_rc" \
     "$node" "$agent_runner" "$agent_api" "$agent_example_primary" \
-    "$agent_example_secondary" "$system_ext_policy"; do
+    "$bootstrap" "$bootstrap_package" "$stock_theme" \
+    "$system_ext_policy"; do
     [[ -f "$artifact" ]] || fail "SOS $stage artifact missing: $artifact"
     stat --printf='%n %s bytes\n' "$artifact"
     sha256sum "$artifact"
@@ -1282,10 +1554,12 @@ inspect_core_stage() {
   strings "$host_runtime" | grep -F \
     'SOS experience window is live frame_padding=none' >/dev/null || \
     fail "SOS $stage GPUI runtime still reserves Android-style frame bands"
+  check_android_v4_system_controls "$host_runtime"
   readelf -Ws "$host_runtime" | grep -F ' sos_core_main' >/dev/null || \
     fail "SOS $stage GPUI runtime does not export sos_core_main"
-  strings "$host_runtime" | grep -F \
-    'core_input_ready device=sec_touchscreen mode=exclusive protocol=mt-slot+btn_touch' >/dev/null || \
+  strings "$host_runtime" | grep -F 'sec_touchscreen' >/dev/null &&
+    strings "$host_runtime" | grep -F \
+      'mode=exclusive protocol=mt-slot+btn_touch origin=' >/dev/null || \
     fail "SOS $stage GPUI runtime omitted Samsung BTN_TOUCH fallback"
   strings "$host_runtime" | grep -F 'core_input_tsp_enabled path=' >/dev/null || \
     fail "SOS $stage GPUI runtime omitted Samsung TSP enable"
@@ -1293,6 +1567,12 @@ inspect_core_stage() {
     fail "SOS $stage GPUI runtime omitted Samsung TSP open/close start"
   strings "$host_runtime" | grep -F 'core_native_software_keyboard node=' >/dev/null || \
     fail "SOS $stage GPUI runtime omitted the Core software keyboard"
+  if [[ "$stage" == core1 ]]; then
+    strings "$host_runtime" | grep -F 'sos_core_automation_touch' >/dev/null || \
+      fail "SOS Core 1 runtime omitted the debug uinput device boundary"
+    strings "$host_runtime" | grep -F 'origin=automation' >/dev/null || \
+      fail "SOS Core 1 runtime cannot distinguish automated touch evidence"
+  fi
   file "$authority" | grep -F 'ARM aarch64' >/dev/null || \
     fail "SOS $stage revision authority is not AArch64"
   strings "$authority" | grep -F 'core_revision=' >/dev/null || \
@@ -1310,6 +1590,8 @@ inspect_core_stage() {
   strings "$host_runtime" | grep -F \
     '/system_ext/etc/sos-agent/agent-runner.cjs' >/dev/null || \
     fail "SOS $stage GPUI runtime omitted the shared Pi runner boundary"
+  strings "$host_runtime" | grep -F -- '--jitless' >/dev/null || \
+    fail "SOS $stage GPUI runtime does not disable Pi runner executable memory"
   check_core_runtime_model_contract "$host_runtime"
   for agent_marker in \
     'android_agent_effect_dispatch action=' \
@@ -1341,15 +1623,30 @@ inspect_core_stage() {
     fail "SOS $stage packaged Pi runner differs from the shared built bundle"
   cmp -s "$agent_api" "$SOS_ROOT/docs/experience-api.md" || \
     fail "SOS $stage packaged Pi API document differs from repository source"
-  cmp -s "$agent_example_primary" "$SOS_ROOT/experiences/default.luau" || \
+  cmp -s "$agent_example_primary" "$SOS_ROOT/experiences/mobile.luau" || \
     fail "SOS $stage packaged Pi primary example differs from repository source"
-  cmp -s "$agent_example_secondary" "$SOS_ROOT/experiences/timeflow.luau" || \
-    fail "SOS $stage packaged Pi secondary example differs from repository source"
+  [[ ! -e "$target_files/SYSTEM_EXT/etc/sos-agent/example-secondary.luau" ]] || \
+    fail "SOS $stage retained a secondary Pi example"
+  [[ ! -e "$target_files/SYSTEM_EXT/etc/sos/default.luau" && \
+    ! -e "$target_files/SYSTEM_EXT/etc/sos/default.package.json" && \
+    ! -e "$target_files/SYSTEM_EXT/etc/sos/modules/stock-theme.luau" ]] || \
+    fail "SOS $stage retained the Linux Stock Shell bootstrap"
+  cmp -s "$bootstrap" "$SOS_ROOT/experiences/mobile.luau" || \
+    fail "SOS $stage bootstrap differs from the Stock Mobile source"
+  cmp -s "$bootstrap_package" "$SOS_ROOT/experiences/mobile.package.json" || \
+    fail "SOS $stage packaged v4 manifest differs from repository source"
+  cmp -s "$stock_theme" "$SOS_ROOT/experiences/modules/mobile-theme.luau" || \
+    fail "SOS $stage packaged Stock Mobile theme differs from repository source"
+  check_android_stock_mobile "$bootstrap" "$bootstrap_package" "$stock_theme"
+  check_android_composition_authority "$authority" "$authority_init_rc"
   [[ ! -e "$target_files/SYSTEM_EXT/etc/sos-agent/android-runner.cjs" ]] || \
     fail "SOS $stage retained the superseded Android-only Pi runner"
   grep -F '(allow sos_core_host sos_node_exec (file (' "$system_ext_policy" | \
     grep -F 'execute_no_trans' >/dev/null || \
     fail "SOS $stage Core host cannot execute the shared Pi runner"
+  grep -F '(allow sos_core_host proc_meminfo (file (' "$system_ext_policy" | \
+    grep -F 'read' >/dev/null || \
+    fail "SOS $stage Core Pi runner cannot read its bounded aggregate memory snapshot"
   grep -F '(allow sos_core_host sos_authority (unix_stream_socket (connectto)))' \
     "$system_ext_policy" >/dev/null || \
     fail "SOS $stage policy cannot connect Core to the revision authority"
@@ -1364,7 +1661,8 @@ inspect_core_stage() {
   grep -Fx "ro.sos.lifecycle=$expected_lifecycle" "$properties"
   grep -Fx 'ro.sos.profile=core' "$properties"
   grep -Fx 'ro.sos.disable_user_apk_install=true' "$properties"
-  grep -Fx 'ro.sos.revision_format=3' "$properties"
+  grep -Fx 'ro.sos.revision_format=4' "$properties"
+  grep -Fx 'ro.sos.experience_api=4' "$properties"
   unzip -p "$target_files/SYSTEM/framework/services.jar" 'classes*.dex' | strings | \
     grep -F 'SOS Core product policy prevents user APK installation' >/dev/null || \
     fail "SOS $stage framework does not enforce the Core APK-install policy"
@@ -1447,6 +1745,45 @@ inspect_core_stage() {
       fail "SOS $stage omitted its physical bridge-test trigger"
   else
     [[ ! -e "$bridge_apk" ]] || fail "Core 1 cannot retain an APK framework bridge"
+    for artifact in "$core_input_automation" "$core_inputctl" "$core_input_automation_rc"; do
+      [[ -f "$artifact" ]] || fail "Core 1 userdebug input automation artifact missing: $artifact"
+      stat --printf='%n %s bytes\n' "$artifact"
+      sha256sum "$artifact"
+    done
+    file "$core_input_automation" "$core_inputctl" | grep -c 'ARM aarch64' | \
+      grep -Fx 2 >/dev/null || fail "Core 1 input automation binaries are not AArch64"
+    for automation_marker in \
+      'core_input_automation_ready version=1' \
+      'core_input_automation_tap sequence=' \
+      'peer-not-authorized' \
+      'invalid-tap'; do
+      strings "$core_input_automation" | grep -F "$automation_marker" >/dev/null || \
+        fail "Core 1 input automation omitted bounded marker: $automation_marker"
+    done
+    strings "$core_inputctl" | grep -F 'sos_core_automation_touch' >/dev/null || \
+      fail "Core 1 input automation client omitted the exact virtual device identity"
+    for build_type in userdebug eng; do
+      grep -Fx \
+        "on post-fs-data && property:ro.sos.profile=core && property:ro.build.type=$build_type" \
+        "$core_input_automation_rc" >/dev/null || \
+        fail "Core 1 input automation is not gated to $build_type Core builds"
+    done
+    grep -Fx \
+      '    socket sos_core_input_automation stream 0660 shell shell' \
+      "$core_input_automation_rc" >/dev/null || \
+      fail "Core 1 input automation lacks its bounded init socket"
+    grep -F '(allow sos_core_input_automation uhid_device (chr_file (' \
+      "$system_ext_policy" >/dev/null || \
+      fail "Core 1 input automation cannot own the uinput device"
+    grep -F '(allow shell sos_core_input_automation (unix_stream_socket (connectto)))' \
+      "$system_ext_policy" >/dev/null || \
+      fail "Core 1 shell cannot reach the bounded input automation service"
+    grep -F '/system_ext/bin/sos-core-input-automation' "$file_contexts" | \
+      grep -F 'sos_core_input_automation_exec' >/dev/null || \
+      fail "Core 1 input automation daemon has no isolated executable label"
+    grep -F '/dev/socket/sos_core_input_automation' "$file_contexts" | \
+      grep -F 'sos_core_input_automation_socket' >/dev/null || \
+      fail "Core 1 input automation socket has no isolated label"
     for artifact in "$core_platform" "$core_platform_rc" "$core_app_manifest"; do
       [[ -f "$artifact" ]] || fail "Core 1 native provider artifact missing: $artifact"
       stat --printf='%n %s bytes\n' "$artifact"
@@ -1577,12 +1914,148 @@ validate_device_identity() {
   [[ "$2" =~ ^[A-Za-z0-9._:+-]+$ ]] || fail "invalid expected revision: $2"
 }
 
+restart_v4_authority() {
+  [[ "$#" -eq 4 && "$1" == --serial && "$3" == --expected-revision ]] || \
+    fail "usage: ./tools/a33xctl restart-v4-authority --serial SERIAL --expected-revision REVISION"
+  local serial="$2" expected_revision="$4" revision build_type profile host_process
+  local old_authority new_authority old_host new_host service recovery_snapshot audit_ready=0
+  validate_device_identity "$serial" "$expected_revision"
+  revision="$(device_property "$serial" ro.build.version.incremental)"
+  build_type="$(device_property "$serial" ro.build.type)"
+  profile="$(device_property "$serial" ro.sos.profile)"
+  [[ "$revision" == "$expected_revision" ]] || \
+    fail "authority recovery revision mismatch: expected $expected_revision, found $revision"
+  [[ "$build_type" == userdebug || "$build_type" == eng ]] || \
+    fail "authority recovery probe is available only on a userdebug or eng physical gate product"
+  case "$profile" in
+    compat) host_process=dev.sos.experience ;;
+    core) host_process=sos-core-host ;;
+    *) fail "authority recovery does not support SOS profile: $profile" ;;
+  esac
+  old_authority="$(adb_readonly "$serial" shell pidof sos-authority 2>/dev/null | tr -d '\r\n' || true)"
+  old_host="$(adb_readonly "$serial" shell pidof "$host_process" 2>/dev/null | \
+    tr -d '\r' | tr ' ' '\n' | sed '/^$/d' | sort -n | paste -sd ' ' - || true)"
+  [[ "$old_authority" =~ ^[0-9]+$ ]] || fail "SOS authority is not live before recovery"
+  if [[ "$profile" == compat ]]; then
+    [[ "$old_host" =~ ^[0-9]+$ ]] || fail "SOS HOME is not live before authority recovery"
+  else
+    [[ "$old_host" =~ ^[0-9]+\ [0-9]+$ ]] || \
+      fail "Core supervisor and child are not both live before authority recovery"
+  fi
+
+  adb_readonly "$serial" shell setprop sys.sos.authority_recovery_probe 1
+  recovery_snapshot="$(mktemp /tmp/sos-authority-recovery-audit.XXXXXX)"
+  new_authority=''
+  for _ in {1..100}; do
+    new_authority="$(adb_readonly "$serial" shell pidof sos-authority 2>/dev/null | tr -d '\r\n' || true)"
+    service="$(device_property "$serial" init.svc.sos_authority)"
+    if [[ "$new_authority" =~ ^[0-9]+$ && "$new_authority" != "$old_authority" && \
+      "$service" == running ]]; then
+      if capture_authority_audit_snapshot "$serial" "$recovery_snapshot" \
+        >/dev/null 2>&1; then
+        audit_ready=1
+        break
+      fi
+    fi
+    sleep 0.1
+  done
+  if [[ ! "$new_authority" =~ ^[0-9]+$ || "$new_authority" == "$old_authority" || \
+    "$audit_ready" != 1 ]]; then
+    rm -f -- "$recovery_snapshot"
+    fail "init did not recover an audit-ready authority after the bounded probe"
+  fi
+  rm -f -- "$recovery_snapshot"
+  new_host="$(adb_readonly "$serial" shell pidof "$host_process" 2>/dev/null | \
+    tr -d '\r' | tr ' ' '\n' | sed '/^$/d' | sort -n | paste -sd ' ' - || true)"
+  [[ "$new_host" == "$old_host" ]] || \
+    fail "authority recovery replaced the SOS host process"
+  [[ "$(device_property "$serial" sys.sos.authority_recovery_probe)" == 0 ]] || \
+    fail "authority recovery probe did not reset after one use"
+  printf 'v4_authority_recovery=PASS\nserial=%s\nrevision=%s\nbuild_type=%s\nprofile=%s\n' \
+    "$serial" "$revision" "$build_type" "$profile"
+  printf 'authority_pid_before=%s\nauthority_pid_after=%s\nhost_process=%s\nhost_pids=%s\n' \
+    "$old_authority" "$new_authority" "$host_process" "$new_host"
+}
+
 adb_readonly() {
   [[ "$#" -ge 2 ]] || fail "internal usage: adb_readonly <serial> <arguments...>"
   local serial="$1" adb_binary="${A33XCTL_ADB:-adb}"
   shift
   require_command "$adb_binary"
   "$adb_binary" -s "$serial" "$@"
+}
+
+core_input_automation() {
+  local action="$1"
+  shift
+  local serial x y response build_type
+  require_command jq
+  case "$action" in
+    status)
+      [[ "$#" -eq 2 && "$1" == --serial ]] || \
+        fail "usage: ./tools/a33xctl core-input-status --serial SERIAL"
+      serial="$2"
+      ;;
+    tap)
+      [[ "$#" -eq 6 && "$1" == --serial && "$3" == --x && "$5" == --y ]] || \
+        fail "usage: ./tools/a33xctl core-input-tap --serial SERIAL --x X --y Y"
+      serial="$2"
+      x="$4"
+      y="$6"
+      [[ "$x" =~ ^[0-9]+$ && "$y" =~ ^[0-9]+$ && \
+        "$x" -le 1079 && "$y" -le 2399 ]] || \
+        fail "Core input tap coordinates must be within 0..1079 and 0..2399"
+      ;;
+    *) fail "internal usage: core_input_automation status|tap" ;;
+  esac
+  validate_device_identity "$serial" core-input-automation
+  [[ "$(device_property "$serial" ro.sos.profile)" == core ]] || \
+    fail "Core input automation is available only on the Core profile"
+  build_type="$(device_property "$serial" ro.build.type)"
+  [[ "$build_type" == userdebug || "$build_type" == eng ]] || \
+    fail "Core input automation is available only on userdebug or eng builds"
+  [[ "$(device_property "$serial" init.svc.sos_core_input_automation)" == running ]] || \
+    fail "Core input automation service is not running"
+  if [[ "$action" == status ]]; then
+    response="$(adb_readonly "$serial" shell /system_ext/bin/sos-core-inputctl status | tr -d '\r')"
+    jq -e '.ok == true and .version == 1 and
+      .device == "sos_core_automation_touch" and .origin == "uinput"' \
+      <<<"$response" >/dev/null || fail "Core input automation returned invalid status"
+  else
+    response="$(adb_readonly "$serial" shell /system_ext/bin/sos-core-inputctl tap "$x" "$y" | tr -d '\r')"
+    jq -e --argjson x "$x" --argjson y "$y" '
+      .ok == true and .action == "tap" and .x == $x and .y == $y and
+      (.sequence | numbers) >= 1
+    ' <<<"$response" >/dev/null || fail "Core input automation returned invalid tap evidence"
+  fi
+  printf 'core_input_automation=PASS\naction=%s\nresponse=%s\n' "$action" "$response"
+}
+
+capture_authority_audit_snapshot() {
+  [[ "$#" -eq 2 ]] || \
+    fail "internal usage: capture_authority_audit_snapshot <serial> <output>"
+  local serial="$1" output="$2"
+  (
+    set -euo pipefail
+    local nc_binary="${A33XCTL_NC:-nc}" port response
+    require_command "$nc_binary"
+    require_command timeout
+    response="$(mktemp "$(dirname "$output")/.authority-audit.XXXXXX")"
+    port="$(adb_readonly "$serial" forward tcp:0 tcp:47778 | tr -d '\r\n')"
+    [[ "$port" =~ ^[0-9]+$ && "$port" -ge 1024 && "$port" -le 65535 ]] || \
+      fail "adb returned an invalid authority-forward port: $port"
+    trap 'adb_readonly "$serial" forward --remove "tcp:$port" >/dev/null 2>&1 || true; rm -f -- "$response"' EXIT
+    printf '%s\n' '{"action":"audit_snapshot","request_id":9100}' | \
+      timeout 15s "$nc_binary" --no-shutdown 127.0.0.1 "$port" >"$response"
+    [[ "$(stat -c %s "$response")" -le 100663296 ]] || \
+      fail "authority audit response exceeded its size limit"
+    jq -e '
+      .request_id == 9100 and .ok == true and
+      (.audit_snapshot | type == "object") and
+      (.audit_snapshot.format_version == 1)
+    ' "$response" >/dev/null || fail "authority returned an invalid audit snapshot"
+    jq -S '.audit_snapshot' "$response" >"$output"
+  )
 }
 
 device_property() {
@@ -1668,6 +2141,578 @@ inspect_core1_readiness() {
     "$host_pids" "$authority_pid" "$platform_pid"
   printf 'native_lifecycle=PASS\nrelevant_crash=absent\nrelevant_enforcing_avc=absent\n'
   info "Core 1 readiness inspection passed without Android boot-complete predicates"
+}
+
+validate_v4_composition_product() {
+  [[ "$#" -eq 1 ]] || fail "internal usage: validate_v4_composition_product PRODUCT"
+  case "$1" in
+    compat1|core1) ;;
+    *) fail "v4 composition product must be compat1 or core1" ;;
+  esac
+}
+
+v4_composition_stage_previous() {
+  [[ "$#" -eq 1 ]] || fail "internal usage: v4_composition_stage_previous STAGE"
+  case "$1" in
+    stock) printf '\n' ;;
+    dashboard) printf 'stock\n' ;;
+    appearance) printf 'dashboard\n' ;;
+    child-failure) printf 'appearance\n' ;;
+    child-timeout) printf 'child-failure\n' ;;
+    recovered) printf 'child-timeout\n' ;;
+    ime-accessibility) printf 'recovered\n' ;;
+    host-restart) printf 'ime-accessibility\n' ;;
+    authority-restart) printf 'host-restart\n' ;;
+    authored) printf 'authority-restart\n' ;;
+    rollback) printf 'authored\n' ;;
+    *) fail "unknown v4 composition stage: $1" ;;
+  esac
+}
+
+v4_campaign_json_value() {
+  [[ "$#" -eq 2 ]] || fail "internal usage: v4_campaign_json_value FILE FIELD"
+  jq -er --arg field "$2" '.[$field] | strings' "$1"
+}
+
+write_v4_stage_properties() {
+  [[ "$#" -eq 2 ]] || fail "internal usage: write_v4_stage_properties SERIAL OUTPUT"
+  local serial="$1" output="$2" property value
+  : >"$output"
+  for property in \
+    ro.build.version.incremental \
+    ro.sos.experience_api \
+    ro.sos.revision_format \
+    ro.sos.profile \
+    ro.sos.ui_owner \
+    ro.sos.core.stage \
+    ro.sos.compat.stage \
+    ro.sos.providers \
+    ro.zygote \
+    sys.boot_completed \
+    init.svc.sos_authority \
+    init.svc.sos_core_host \
+    init.svc.sos_core_platform; do
+    value="$(device_property "$serial" "$property")"
+    [[ "$value" != *$'\n'* && "$value" != *$'\r'* ]] || \
+      fail "device property contains a line break: $property"
+    printf '%s=%s\n' "$property" "$value" >>"$output"
+  done
+}
+
+host_monotonic_ns() {
+  [[ "$#" -eq 0 ]] || fail "internal usage: host_monotonic_ns"
+  awk '{ printf "%.0f\n", $1 * 1000000000 }' /proc/uptime
+}
+
+capture_v4_composition_stage() {
+  [[ ("$#" -eq 12 || "$#" -eq 14) && "$1" == --product && "$3" == --serial && \
+    "$5" == --expected-revision && "$7" == --artifact && \
+    "${9}" == --root && "${11}" == --stage ]] || \
+    fail "usage: ./tools/a33xctl capture-v4-composition-stage --product compat1|core1 --serial SERIAL --expected-revision REVISION --artifact OTA --root DIR --stage STAGE [--input-mode physical|automation]"
+  local product="$2" serial="$4" expected_revision="$6" artifact="$8"
+  local evidence_root="${10}" stage="${12}" previous campaign_file stage_root final_stage_root
+  local input_mode=physical
+  local artifact_bytes artifact_sha started_ns finished_ns enforcing
+  local authority_pid home_pid core_host_pids platform_pid
+  if [[ "$#" -eq 14 ]]; then
+    [[ "${13}" == --input-mode ]] || \
+      fail "v4 composition input mode must follow --input-mode"
+    input_mode="${14}"
+  fi
+  [[ "$input_mode" == physical || "$input_mode" == automation ]] || \
+    fail "v4 composition input mode must be physical or automation"
+  validate_v4_composition_product "$product"
+  [[ "$product" == core1 || "$input_mode" == physical ]] || \
+    fail "Compat composition does not support Core uinput automation"
+  validate_device_identity "$serial" "$expected_revision"
+  previous="$(v4_composition_stage_previous "$stage")"
+  require_command jq
+  require_command sha256sum
+  require_command stat
+  artifact="$(realpath -e "$artifact")"
+  [[ -f "$artifact" ]] || fail "v4 composition artifact is not a file: $artifact"
+  artifact_bytes="$(stat -c %s "$artifact")"
+  artifact_sha="$(sha256sum "$artifact" | awk '{print $1}')"
+
+  if [[ ! -e "$evidence_root" ]]; then
+    [[ "$stage" == stock ]] || fail "the stock stage must initialize a v4 composition campaign"
+    mkdir -m 0700 -- "$evidence_root"
+    evidence_root="$(realpath -e "$evidence_root")"
+    mkdir -m 0700 -- "$evidence_root/stages"
+    jq -n \
+      --arg product "$product" \
+      --arg serial "$serial" \
+      --arg expected_revision "$expected_revision" \
+      --arg input_mode "$input_mode" \
+      --arg artifact "$artifact" \
+      --arg artifact_sha256 "$artifact_sha" \
+      --argjson artifact_bytes "$artifact_bytes" \
+      '{format_version: 1, product: $product, serial: $serial, input_mode: $input_mode,
+        expected_revision: $expected_revision, artifact: $artifact,
+        artifact_bytes: $artifact_bytes, artifact_sha256: $artifact_sha256}' \
+      >"$evidence_root/campaign.json"
+  else
+    evidence_root="$(realpath -e "$evidence_root")"
+  fi
+  campaign_file="$evidence_root/campaign.json"
+  [[ -f "$campaign_file" ]] || fail "v4 composition campaign metadata is missing"
+  [[ "$(v4_campaign_json_value "$campaign_file" product)" == "$product" ]] || \
+    fail "v4 composition product changed during the campaign"
+  [[ "$(v4_campaign_json_value "$campaign_file" serial)" == "$serial" ]] || \
+    fail "v4 composition serial changed during the campaign"
+  [[ "$(v4_campaign_json_value "$campaign_file" expected_revision)" == "$expected_revision" ]] || \
+    fail "v4 composition revision changed during the campaign"
+  [[ "$(v4_campaign_json_value "$campaign_file" input_mode)" == "$input_mode" ]] || \
+    fail "v4 composition input mode changed during the campaign"
+  [[ "$(v4_campaign_json_value "$campaign_file" artifact)" == "$artifact" ]] || \
+    fail "v4 composition artifact path changed during the campaign"
+  [[ "$(v4_campaign_json_value "$campaign_file" artifact_sha256)" == "$artifact_sha" ]] || \
+    fail "v4 composition artifact content changed during the campaign"
+  [[ "$(jq -er '.artifact_bytes | numbers' "$campaign_file")" == "$artifact_bytes" ]] || \
+    fail "v4 composition artifact size changed during the campaign"
+  if [[ -n "$previous" ]]; then
+    [[ -d "$evidence_root/stages/$previous" ]] || \
+      fail "v4 composition stage $stage requires completed stage $previous"
+  fi
+  final_stage_root="$evidence_root/stages/$stage"
+  [[ ! -e "$final_stage_root" ]] || fail "v4 composition stage already exists: $stage"
+  stage_root="$(mktemp -d "$evidence_root/stages/.$stage.capture.XXXXXX")"
+  chmod 0700 -- "$stage_root"
+  A33XCTL_CAPTURE_TEMP_ROOT="$stage_root"
+  trap 'if [[ -n "${A33XCTL_CAPTURE_TEMP_ROOT:-}" ]]; then
+    rm -rf -- "$A33XCTL_CAPTURE_TEMP_ROOT"
+  fi' EXIT
+
+  export A33XCTL_CAPTURE_STAGE="$stage"
+  export A33XCTL_CAPTURE_PRODUCT="$product"
+  export A33XCTL_CAPTURE_REVISION="$expected_revision"
+  export A33XCTL_CAPTURE_INPUT_MODE="$input_mode"
+  started_ns="$(host_monotonic_ns)"
+  write_v4_stage_properties "$serial" "$stage_root/properties.env"
+  enforcing="$(adb_readonly "$serial" shell getenforce | tr -d '\r\n')"
+  printf 'selinux=%s\n' "$enforcing" >"$stage_root/security.env"
+  adb_readonly "$serial" shell ps -AZ >"$stage_root/processes.txt"
+  adb_readonly "$serial" shell dumpsys SurfaceFlinger --list >"$stage_root/surfaces.txt"
+  adb_readonly "$serial" logcat -d -b all -v threadtime >"$stage_root/logcat.txt"
+  capture_authority_audit_snapshot "$serial" "$stage_root/composition.json"
+  adb_readonly "$serial" exec-out screencap -p >"$stage_root/screen.png"
+  adb_readonly "$serial" shell cat /proc/meminfo >"$stage_root/meminfo.txt"
+  authority_pid="$(adb_readonly "$serial" shell pidof sos-authority | tr -d '\r\n')"
+  if [[ "$product" == compat1 ]]; then
+    home_pid="$(adb_readonly "$serial" shell pidof dev.sos.experience | tr -d '\r\n')"
+    printf 'authority_pid=%s\nhome_pid=%s\n' "$authority_pid" "$home_pid" \
+      >"$stage_root/pids.env"
+    adb_readonly "$serial" shell dumpsys meminfo dev.sos.experience \
+      >"$stage_root/runtime-memory.txt"
+    local accessibility_remote="/data/local/tmp/sos-v4-$stage-accessibility.xml"
+    adb_readonly "$serial" shell uiautomator dump "$accessibility_remote" >/dev/null
+    adb_readonly "$serial" shell cat "$accessibility_remote" \
+      >"$stage_root/accessibility.xml"
+    adb_readonly "$serial" shell rm -f "$accessibility_remote"
+  else
+    core_host_pids="$(adb_readonly "$serial" shell pidof sos-core-host | \
+      tr -d '\r' | tr ' ' '\n' | sed '/^$/d' | sort -n | paste -sd ' ' -)"
+    platform_pid="$(adb_readonly "$serial" shell pidof sos-core-platform | tr -d '\r\n')"
+    printf 'authority_pid=%s\ncore_host_pids=%s\nplatform_pid=%s\n' \
+      "$authority_pid" "$core_host_pids" "$platform_pid" >"$stage_root/pids.env"
+    : >"$stage_root/runtime-memory.txt"
+    local core_pid
+    for core_pid in $core_host_pids; do
+      printf 'pid=%s\n' "$core_pid" >>"$stage_root/runtime-memory.txt"
+      adb_readonly "$serial" shell cat "/proc/$core_pid/status" \
+        >>"$stage_root/runtime-memory.txt"
+    done
+    inspect_core1_readiness --serial "$serial" --expected-revision "$expected_revision" \
+      >"$stage_root/readiness.txt"
+  fi
+  finished_ns="$(host_monotonic_ns)"
+  printf 'stage=%s\nproduct=%s\nserial=%s\nrevision=%s\nartifact_sha256=%s\n' \
+    "$stage" "$product" "$serial" "$expected_revision" "$artifact_sha" \
+    >"$stage_root/stage.env"
+  printf 'started_ns=%s\nfinished_ns=%s\nduration_ns=%s\n' \
+    "$started_ns" "$finished_ns" "$((finished_ns - started_ns))" \
+    >>"$stage_root/stage.env"
+  mv -- "$stage_root" "$final_stage_root"
+  A33XCTL_CAPTURE_TEMP_ROOT=
+  trap - EXIT
+  stage_root="$final_stage_root"
+  unset A33XCTL_CAPTURE_STAGE A33XCTL_CAPTURE_PRODUCT A33XCTL_CAPTURE_REVISION \
+    A33XCTL_CAPTURE_INPUT_MODE \
+    A33XCTL_CAPTURE_TEMP_ROOT
+  printf 'v4_composition_stage=CAPTURED\nproduct=%s\nserial=%s\nrevision=%s\ninput_mode=%s\nstage=%s\nroot=%s\n' \
+    "$product" "$serial" "$expected_revision" "$input_mode" "$stage" "$evidence_root"
+}
+
+v4_stage_property() {
+  [[ "$#" -eq 2 ]] || fail "internal usage: v4_stage_property FILE PROPERTY"
+  awk -F= -v property="$2" '$1 == property { sub(/^[^=]*=/, ""); print; found = 1; exit }
+    END { if (!found) exit 1 }' "$1"
+}
+
+v4_stage_pid() {
+  [[ "$#" -eq 2 ]] || fail "internal usage: v4_stage_pid FILE FIELD"
+  v4_stage_property "$1" "$2"
+}
+
+require_v4_log_pattern() {
+  [[ "$#" -eq 3 ]] || fail "internal usage: require_v4_log_pattern LOG PATTERN MESSAGE"
+  grep -Eq "$2" "$1" || fail "$3"
+}
+
+audit_v4_stage_common() {
+  [[ "$#" -eq 5 ]] || fail "internal usage: audit_v4_stage_common ROOT STAGE PRODUCT SERIAL REVISION"
+  local evidence_root="$1" stage="$2" product="$3" serial="$4" expected_revision="$5"
+  local stage_root="$evidence_root/stages/$stage" png_magic relevant_crashes
+  for required in properties.env security.env processes.txt surfaces.txt logcat.txt \
+    composition.json screen.png meminfo.txt runtime-memory.txt pids.env stage.env; do
+    [[ -s "$stage_root/$required" ]] || fail "v4 composition stage $stage lacks $required"
+  done
+  jq -e . "$stage_root/composition.json" >/dev/null || \
+    fail "v4 composition stage $stage has invalid authority JSON"
+  [[ "$(v4_stage_property "$stage_root/properties.env" ro.build.version.incremental)" == "$expected_revision" ]] || \
+    fail "v4 composition stage $stage has the wrong product revision"
+  [[ "$(v4_stage_property "$stage_root/stage.env" stage)" == "$stage" && \
+    "$(v4_stage_property "$stage_root/stage.env" product)" == "$product" && \
+    "$(v4_stage_property "$stage_root/stage.env" serial)" == "$serial" && \
+    "$(v4_stage_property "$stage_root/stage.env" revision)" == "$expected_revision" && \
+    "$(v4_stage_property "$stage_root/stage.env" artifact_sha256)" == \
+      "$(v4_campaign_json_value "$evidence_root/campaign.json" artifact_sha256)" ]] || \
+    fail "v4 composition stage $stage identity is not bound to its campaign"
+  [[ "$(v4_stage_property "$stage_root/properties.env" ro.sos.experience_api)" == 4 ]] || \
+    fail "v4 composition stage $stage does not report Experience API v4"
+  [[ "$(v4_stage_property "$stage_root/properties.env" ro.sos.revision_format)" == 4 ]] || \
+    fail "v4 composition stage $stage does not report package format v4"
+  grep -Fx 'selinux=Enforcing' "$stage_root/security.env" >/dev/null || \
+    fail "v4 composition stage $stage is not SELinux Enforcing"
+  png_magic="$(head -c 8 "$stage_root/screen.png" | od -An -tx1 | tr -d ' \n')"
+  [[ "$png_magic" == 89504e470d0a1a0a ]] || \
+    fail "v4 composition stage $stage screenshot is not PNG"
+  grep -F 'sos-authority' "$stage_root/processes.txt" >/dev/null || \
+    fail "v4 composition stage $stage lacks the authority process"
+  relevant_crashes="$(grep -Ei \
+    '(Fatal signal.*sos|ANR in dev\.sos|native_gpui_failed|android_authority_fatal|system_revision_activation_failed)' \
+    "$stage_root/logcat.txt" || true)"
+  if [[ "$product" == core1 && \
+    "$stage" =~ ^(host-restart|authority-restart|authored|rollback)$ ]] && \
+    awk '
+      /native_fault_injected child=[0-9]+ signal=6/ { fault += 1 }
+      /Fatal signal 6 \(SIGABRT\), code 0 \(SI_USER from pid [0-9]+, uid 1000\).*pid [0-9]+ \(sos-core-host\)$/ { fatal += 1 }
+      /native_gpui_failed signal=6$/ { failed += 1 }
+      /fixed_recovery_ready child_status=6 .*keys=ready$/ { ready += 1 }
+      /fixed_recovery_action action=retry$/ { retry += 1 }
+      retry > 0 && /android_graph_runtime_ready .*root_experience=sos\.example\.dashboard instances=3$/ { restored += 1 }
+      END { exit !(fault == 1 && fatal == 1 && failed == 1 && ready == 1 && retry == 1 && restored >= 1) }
+    ' "$stage_root/logcat.txt"; then
+    relevant_crashes="$(grep -Ev \
+      'Fatal signal 6 \(SIGABRT\), code 0 \(SI_USER from pid [0-9]+, uid 1000\).*pid [0-9]+ \(sos-core-host\)$|native_gpui_failed signal=6$' \
+      <<<"$relevant_crashes" || true)"
+  fi
+  if [[ -n "$relevant_crashes" ]]; then
+    fail "v4 composition stage $stage contains a relevant crash or ANR"
+  fi
+  if [[ "$product" == compat1 ]]; then
+    [[ "$(v4_stage_property "$stage_root/properties.env" ro.sos.profile)" == compat && \
+      "$(v4_stage_property "$stage_root/properties.env" ro.sos.compat.stage)" == 1 && \
+      "$(v4_stage_property "$stage_root/properties.env" ro.sos.ui_owner)" == native-sos-android-runtime && \
+      "$(v4_stage_property "$stage_root/properties.env" sys.boot_completed)" == 1 ]] || \
+      fail "v4 composition stage $stage is not ready Compat 1"
+    grep -F 'dev.sos.experience' "$stage_root/processes.txt" >/dev/null || \
+      fail "v4 composition stage $stage lacks the Compat HOME process"
+    grep -Eq 'SosHomeActivity|dev\.sos\.experience' "$stage_root/surfaces.txt" || \
+      fail "v4 composition stage $stage lacks the Compat HOME surface"
+    [[ -s "$stage_root/accessibility.xml" ]] || \
+      fail "v4 composition stage $stage lacks the Android accessibility tree"
+    grep -F 'TOTAL PSS:' "$stage_root/runtime-memory.txt" >/dev/null || \
+      fail "v4 composition stage $stage lacks Compat runtime memory evidence"
+    if grep -Ei 'avc:[[:space:]]*denied.*scontext=u:r:(sos_authority|priv_app):s0' \
+      "$stage_root/logcat.txt" >/dev/null; then
+      fail "v4 composition stage $stage contains a relevant enforcing AVC"
+    fi
+  else
+    [[ "$(v4_stage_property "$stage_root/properties.env" ro.sos.profile)" == core && \
+      "$(v4_stage_property "$stage_root/properties.env" ro.sos.core.stage)" == 1 && \
+      "$(v4_stage_property "$stage_root/properties.env" ro.sos.providers)" == core-native && \
+      "$(v4_stage_property "$stage_root/properties.env" ro.sos.ui_owner)" == native-sos-no-zygote && \
+      "$(v4_stage_property "$stage_root/properties.env" ro.zygote)" == no_zygote ]] || \
+      fail "v4 composition stage $stage is not ready Core 1"
+    grep -F 'sos-core-host' "$stage_root/processes.txt" >/dev/null || \
+      fail "v4 composition stage $stage lacks the Core supervisor and child"
+    grep -F 'SOS Core Experience' "$stage_root/surfaces.txt" >/dev/null || \
+      fail "v4 composition stage $stage lacks the Core Experience surface"
+    grep -Fx 'core1_readiness=PASS' "$stage_root/readiness.txt" >/dev/null || \
+      fail "v4 composition stage $stage failed Core readiness"
+    [[ "$(grep -c '^VmRSS:' "$stage_root/runtime-memory.txt")" -ge 2 ]] || \
+      fail "v4 composition stage $stage lacks per-process Core runtime memory evidence"
+  fi
+  [[ "$(v4_campaign_json_value "$evidence_root/campaign.json" serial)" == "$serial" ]] || \
+    fail "v4 composition serial changed while auditing stage $stage"
+}
+
+audit_v4_composition_campaign() {
+  [[ "$#" -eq 2 && "$1" == --root ]] || \
+    fail "usage: ./tools/a33xctl audit-v4-composition-campaign --root DIR"
+  local evidence_root campaign_file product serial expected_revision input_mode artifact artifact_sha artifact_bytes stage final_log
+  local control_label
+  local stage_started stage_finished previous_finished=0 campaign_started campaign_finished
+  local dashboard_generation appearance_generation runtime_ready_count failed_count recovered_count
+  local original_stock_revision authored_stock_revision rollback_stock_revision
+  local dashboard_authority host_authority restarted_authority authored_authority rollback_authority
+  local dashboard_host restarted_host authority_stage_host authored_host rollback_host common_core_pids
+  evidence_root="$(realpath -e "$2")"
+  campaign_file="$evidence_root/campaign.json"
+  [[ -f "$campaign_file" ]] || fail "v4 composition campaign metadata is missing"
+  product="$(v4_campaign_json_value "$campaign_file" product)"
+  serial="$(v4_campaign_json_value "$campaign_file" serial)"
+  expected_revision="$(v4_campaign_json_value "$campaign_file" expected_revision)"
+  input_mode="$(v4_campaign_json_value "$campaign_file" input_mode)"
+  [[ "$input_mode" == physical || "$input_mode" == automation ]] || \
+    fail "v4 composition campaign has an invalid input mode"
+  artifact="$(v4_campaign_json_value "$campaign_file" artifact)"
+  artifact_sha="$(v4_campaign_json_value "$campaign_file" artifact_sha256)"
+  artifact_bytes="$(jq -er '.artifact_bytes | numbers' "$campaign_file")"
+  validate_v4_composition_product "$product"
+  [[ -f "$artifact" && "$(stat -c %s "$artifact")" == "$artifact_bytes" && \
+    "$(sha256sum "$artifact" | awk '{print $1}')" == "$artifact_sha" ]] || \
+    fail "v4 composition campaign artifact is missing or changed"
+  for stage in stock dashboard appearance child-failure child-timeout recovered \
+    ime-accessibility host-restart authority-restart authored rollback; do
+    [[ -d "$evidence_root/stages/$stage" ]] || \
+      fail "v4 composition campaign lacks stage $stage"
+    audit_v4_stage_common "$evidence_root" "$stage" "$product" "$serial" "$expected_revision"
+    stage_started="$(v4_stage_property "$evidence_root/stages/$stage/stage.env" started_ns)"
+    stage_finished="$(v4_stage_property "$evidence_root/stages/$stage/stage.env" finished_ns)"
+    [[ "$stage_started" =~ ^[0-9]+$ && "$stage_finished" =~ ^[0-9]+$ && \
+      "$stage_started" -ge "$previous_finished" && "$stage_finished" -ge "$stage_started" ]] || \
+      fail "v4 composition stage $stage has invalid or non-monotonic timing evidence"
+    [[ "$stage" == stock ]] && campaign_started="$stage_started"
+    previous_finished="$stage_finished"
+    campaign_finished="$stage_finished"
+  done
+
+  jq -e '
+    . as $root |
+    $root.format_version == 1 and
+    $root.presented_experience == "sos.example.dashboard" and
+    (["sos.stock.mobile", "sos.example.agenda", "sos.example.media",
+      "sos.example.dashboard", "sos.example.agenda-media-remix"]
+      | all(. as $id | $root.states[$id] != null and $root.grants[$id] != null))
+  ' "$evidence_root/stages/dashboard/composition.json" >/dev/null || \
+    fail "Dashboard stage lacks independent v4 state and grant resources"
+  jq -e '
+    . as $root |
+    ($root.grants | to_entries | all(.value.reviewed == true and .value.experience_id == .key)) and
+    ($root.grants["sos.stock.mobile"].provider_capabilities | index("appearance_write") != null) and
+    ($root.grants["sos.example.agenda"].provider_capabilities | length == 0) and
+    ($root.grants["sos.example.dashboard"].provider_capabilities | length == 0) and
+    ($root.grants["sos.example.media"].provider_capabilities | sort == ["music_control", "music_read"]) and
+    ($root.grants["sos.example.dashboard"].data_flows | keys | sort == ["agenda", "media"])
+  ' "$evidence_root/stages/recovered/composition.json" >/dev/null || \
+    fail "v4 composition grants are missing, merged, or not independently reviewed"
+  jq -e '
+    .states["sos.example.agenda"].state.selected == "Design review" and
+    .states["sos.example.dashboard"].state.opened == "Design review" and
+    .states["sos.example.dashboard"].state.acceptance_pings >= 2 and
+    ([.states[] | .revision_id] | unique | length >= 4)
+  ' "$evidence_root/stages/recovered/composition.json" >/dev/null || \
+    fail "child event, durable state, parent liveness, or Experience isolation evidence is missing"
+  dashboard_generation="$(jq -er '.appearance.generation' \
+    "$evidence_root/stages/dashboard/composition.json")"
+  appearance_generation="$(jq -er '.appearance.generation' \
+    "$evidence_root/stages/appearance/composition.json")"
+  [[ "$dashboard_generation" =~ ^[0-9]+$ && "$appearance_generation" =~ ^[0-9]+$ && \
+    "$appearance_generation" -gt "$dashboard_generation" ]] || \
+    fail "appearance generation did not advance"
+  cmp -s \
+    <(jq -S -c '.states | with_entries(.value = .value.revision_id)' \
+      "$evidence_root/stages/dashboard/composition.json") \
+    <(jq -S -c '.states | with_entries(.value = .value.revision_id)' \
+      "$evidence_root/stages/appearance/composition.json") || \
+    fail "appearance propagation changed an Experience revision"
+  cmp -s \
+    <(jq -S -c '.states["sos.example.media"]' \
+      "$evidence_root/stages/dashboard/composition.json") \
+    <(jq -S -c '.states["sos.example.media"]' \
+      "$evidence_root/stages/appearance/composition.json") || \
+    fail "custom Media state changed during appearance propagation"
+  for stage in host-restart authority-restart; do
+    jq -e --argjson generation "$appearance_generation" '
+      .presented_experience == "sos.example.dashboard" and
+      .appearance.generation == $generation and
+      .states["sos.example.agenda"].state.selected == "Design review" and
+      .states["sos.example.dashboard"].state.opened == "Design review"
+    ' "$evidence_root/stages/$stage/composition.json" >/dev/null || \
+      fail "v4 graph, state, or appearance did not survive $stage"
+  done
+  original_stock_revision="$(jq -er '.states["sos.stock.mobile"].revision_id' \
+    "$evidence_root/stages/dashboard/composition.json")"
+  authored_stock_revision="$(jq -er '.states["sos.stock.mobile"].revision_id' \
+    "$evidence_root/stages/authored/composition.json")"
+  rollback_stock_revision="$(jq -er '.states["sos.stock.mobile"].revision_id' \
+    "$evidence_root/stages/rollback/composition.json")"
+  [[ "$original_stock_revision" != "$authored_stock_revision" && \
+    "$rollback_stock_revision" == "$original_stock_revision" ]] || \
+    fail "Stock did not activate and roll back between two v4 revisions"
+  jq -s -e 'all(.[]; .presented_experience == null)' \
+    "$evidence_root/stages/authored/composition.json" \
+    "$evidence_root/stages/rollback/composition.json" >/dev/null || \
+    fail "Stock authoring or rollback left another top-level Experience presented"
+
+  final_log="$evidence_root/stages/rollback/logcat.txt"
+  require_v4_log_pattern "$final_log" \
+    'android_graph_runtime_ready .*root_experience=sos\.example\.dashboard instances=3' \
+    "Dashboard did not start as a three-Instance graph"
+  require_v4_log_pattern "$final_log" 'android_graph_presented .*confirmed=true' \
+    "Dashboard lacks rendered-frame confirmation"
+  if [[ "$product" == compat1 ]]; then
+    for stage in open_first acceptance_update_fail acceptance_timeout; do
+      require_v4_log_pattern "$final_log" \
+        "android_reference_graph_event_dispatched experience_id=sos\\.example\\.agenda action=$stage" \
+        "Agenda reference action $stage was not dispatched"
+    done
+    require_v4_log_pattern "$final_log" \
+      'android_reference_graph_event_dispatched experience_id=sos\.example\.dashboard action=acceptance_ping' \
+      "parent liveness action was not dispatched"
+  else
+    require_v4_log_pattern "$final_log" \
+      'experience_action request_id=[0-9]+ action=open_first target=i-[^ ]+::agenda-open' \
+      "Core Agenda open action did not cross the namespaced mount"
+    require_v4_log_pattern "$final_log" \
+      'experience_action request_id=[0-9]+ action=acceptance_update_fail target=i-[^ ]+::agenda-update-fail' \
+      "Core Agenda update-failure action did not cross the namespaced mount"
+    require_v4_log_pattern "$final_log" \
+      'experience_action request_id=[0-9]+ action=acceptance_timeout target=i-[^ ]+::agenda-timeout' \
+      "Core Agenda timeout action did not cross the namespaced mount"
+    require_v4_log_pattern "$final_log" \
+      'experience_action request_id=[0-9]+ action=acceptance_ping target=i-[^ ]+::dashboard-ping' \
+      "Core parent liveness action did not reach Dashboard"
+  fi
+  require_v4_log_pattern "$final_log" \
+    'android_graph_instance_failed .*experience_id=sos\.example\.agenda root_ready=true .*reference Agenda update failure' \
+    "Agenda update failure was not contained"
+  failed_count="$(grep -Ec 'android_graph_instance_failed .*experience_id=sos\.example\.agenda root_ready=true' "$final_log")"
+  [[ "$failed_count" -ge 2 ]] || fail "Agenda timeout did not become a contained child failure"
+  recovered_count="$(grep -Ec 'android_graph_instance_recovered .*experience_id=sos\.example\.agenda root_ready=true' "$final_log")"
+  [[ "$recovered_count" -ge 2 ]] || fail "Agenda did not recover after both child failures"
+  require_v4_log_pattern "$final_log" \
+    "android_appearance_write_committed .*generation=$appearance_generation" \
+    "authority appearance commit is missing"
+  require_v4_log_pattern "$final_log" \
+    "android_graph_refreshed .*appearance_generation=$appearance_generation failed_instances=0" \
+    "appearance did not reach the healthy complete graph"
+  runtime_ready_count="$(grep -Ec 'android_graph_runtime_ready .*root_experience=sos\.example\.dashboard instances=3' "$final_log")"
+  [[ "$runtime_ready_count" -ge 2 ]] || \
+    fail "host recovery did not restore Dashboard"
+  require_v4_log_pattern "$final_log" 'android_system_control action=appearance_toggle' \
+    "host-owned appearance control was not used"
+  require_v4_log_pattern "$final_log" 'android_system_control action=dismiss_experience experience_id=sos\.example\.dashboard' \
+    "host-owned Home control did not dismiss Dashboard"
+  require_v4_log_pattern "$final_log" 'android_v4_candidate_staged graph_id=' \
+    "Stock v4 authoring candidate was not staged"
+  require_v4_log_pattern "$final_log" \
+    'android_agent_activation_commit .*phase=committed authority=system-graph' \
+    "Stock v4 authoring candidate lacks authority commit evidence"
+  require_v4_log_pattern "$final_log" 'android_system_control action=rollback_graph' \
+    "host-owned rollback control was not used"
+  require_v4_log_pattern "$final_log" 'android_graph_rollback_presented graph_id=' \
+    "v4 graph rollback lacks presentation evidence"
+  require_v4_log_pattern "$final_log" 'accessibility_published bytes=[1-9][0-9]* semantics=[1-9][0-9]*' \
+    "composed accessibility semantics were not published"
+  require_v4_log_pattern "$final_log" 'scene_pointer phase=down' \
+    "physical pointer down did not reach the namespaced scene"
+  require_v4_log_pattern "$final_log" 'scene_pointer phase=up' \
+    "physical pointer up did not reach the namespaced scene"
+
+  dashboard_authority="$(v4_stage_pid "$evidence_root/stages/dashboard/pids.env" authority_pid)"
+  host_authority="$(v4_stage_pid "$evidence_root/stages/host-restart/pids.env" authority_pid)"
+  restarted_authority="$(v4_stage_pid "$evidence_root/stages/authority-restart/pids.env" authority_pid)"
+  authored_authority="$(v4_stage_pid "$evidence_root/stages/authored/pids.env" authority_pid)"
+  rollback_authority="$(v4_stage_pid "$evidence_root/stages/rollback/pids.env" authority_pid)"
+  [[ "$dashboard_authority" =~ ^[0-9]+$ && "$host_authority" == "$dashboard_authority" && \
+    "$host_authority" != "$restarted_authority" && \
+    "$restarted_authority" == "$authored_authority" && \
+    "$authored_authority" == "$rollback_authority" ]] || \
+    fail "authority PID evidence does not isolate host and authority recovery"
+  if [[ "$product" == compat1 ]]; then
+    require_v4_log_pattern "$final_log" \
+      'compat_ime_focus_transition .*to=i-[^ ]+::agenda-input .*lifecycle=active' \
+      "Compat IME did not focus the namespaced mounted Agenda input"
+    require_v4_log_pattern "$final_log" \
+      'compat_ime_blur_resolved node_id=i-[^ ]+::agenda-input .*outcome=deactivate lifecycle=inactive' \
+      "Compat mounted Agenda IME outside-blur routing is missing"
+    require_v4_log_pattern "$final_log" \
+      'GpuiPlatformView.*Accessibility tree updated: nodes=[1-9][0-9]*' \
+      "Compat virtual accessibility tree did not reach Android"
+    grep -F 'Dashboard' "$evidence_root/stages/dashboard/accessibility.xml" >/dev/null || \
+      fail "Compat accessibility tree omits Dashboard"
+    grep -F 'Open first agenda item' "$evidence_root/stages/dashboard/accessibility.xml" >/dev/null || \
+      fail "Compat accessibility tree omits the namespaced Agenda action"
+    grep -F 'Agenda child text input' "$evidence_root/stages/dashboard/accessibility.xml" >/dev/null || \
+      fail "Compat accessibility tree omits the mounted Agenda text field"
+    for control_label in 'Change system theme' 'Roll back Experience graph' 'Return to Stock'; do
+      grep -F "$control_label" "$evidence_root/stages/dashboard/accessibility.xml" >/dev/null || \
+        fail "Compat accessibility tree omits host control: $control_label"
+    done
+    grep -F "Today · appearance $appearance_generation" \
+      "$evidence_root/stages/appearance/accessibility.xml" >/dev/null || \
+      fail "Compat accessibility tree did not receive mounted appearance data"
+    dashboard_host="$(v4_stage_pid "$evidence_root/stages/dashboard/pids.env" home_pid)"
+    restarted_host="$(v4_stage_pid "$evidence_root/stages/host-restart/pids.env" home_pid)"
+    authority_stage_host="$(v4_stage_pid "$evidence_root/stages/authority-restart/pids.env" home_pid)"
+    authored_host="$(v4_stage_pid "$evidence_root/stages/authored/pids.env" home_pid)"
+    rollback_host="$(v4_stage_pid "$evidence_root/stages/rollback/pids.env" home_pid)"
+    [[ "$dashboard_host" =~ ^[0-9]+$ && "$restarted_host" =~ ^[0-9]+$ && \
+      "$dashboard_host" != "$restarted_host" && "$restarted_host" == "$authority_stage_host" && \
+      "$authority_stage_host" == "$authored_host" && "$authored_host" == "$rollback_host" ]] || \
+      fail "Compat HOME PID evidence does not isolate host recovery"
+  else
+    require_v4_log_pattern "$final_log" \
+      "core_input_touch action=down .*origin=$input_mode" \
+      "Core $input_mode touchscreen down is missing"
+    require_v4_log_pattern "$final_log" \
+      "core_input_touch action=up .*origin=$input_mode" \
+      "Core $input_mode touchscreen up is missing"
+    if [[ "$input_mode" == automation ]]; then
+      require_v4_log_pattern "$final_log" \
+        'core_input_automation_tap sequence=[1-9][0-9]* .*origin=uinput' \
+        "Core automation campaign lacks bounded uinput service evidence"
+    fi
+    require_v4_log_pattern "$final_log" \
+      'core_native_software_keyboard node=i-[^ ]+::agenda-input visible=true' \
+      "Core native IME did not open for the namespaced mounted Agenda input"
+    require_v4_log_pattern "$final_log" \
+      'core_native_software_keyboard node=i-[^ ]+::agenda-input visible=false' \
+      "Core native IME did not close for the namespaced mounted Agenda input"
+    dashboard_host="$(v4_stage_pid "$evidence_root/stages/dashboard/pids.env" core_host_pids)"
+    restarted_host="$(v4_stage_pid "$evidence_root/stages/host-restart/pids.env" core_host_pids)"
+    authority_stage_host="$(v4_stage_pid "$evidence_root/stages/authority-restart/pids.env" core_host_pids)"
+    authored_host="$(v4_stage_pid "$evidence_root/stages/authored/pids.env" core_host_pids)"
+    rollback_host="$(v4_stage_pid "$evidence_root/stages/rollback/pids.env" core_host_pids)"
+    [[ "$dashboard_host" != "$restarted_host" && "$restarted_host" == "$authority_stage_host" && \
+      "$authority_stage_host" == "$authored_host" && "$authored_host" == "$rollback_host" ]] || \
+      fail "Core child PID evidence does not isolate host recovery"
+    for stage in dashboard host-restart authority-restart authored rollback; do
+      [[ "$(v4_stage_pid "$evidence_root/stages/$stage/pids.env" core_host_pids)" =~ \
+        ^[0-9]+\ [0-9]+$ ]] || fail "Core stage $stage lacks two normalized host PIDs"
+    done
+    common_core_pids="$(comm -12 \
+      <(tr ' ' '\n' <<<"$dashboard_host" | sed '/^$/d' | sort -u) \
+      <(tr ' ' '\n' <<<"$restarted_host" | sed '/^$/d' | sort -u))"
+    [[ -n "$common_core_pids" ]] || \
+      fail "Core supervisor did not survive child recovery"
+  fi
+
+  printf 'v4_composition_campaign=PASS\nproduct=%s\nserial=%s\nrevision=%s\n' \
+    "$product" "$serial" "$expected_revision" >"$evidence_root/verdict.txt"
+  printf 'appearance_generation=%s\ncontained_failures=%s\nrecoveries=%s\n' \
+    "$appearance_generation" "$failed_count" "$recovered_count" >>"$evidence_root/verdict.txt"
+  printf 'campaign_elapsed_ns=%s\n' "$((campaign_finished - campaign_started))" \
+    >>"$evidence_root/verdict.txt"
+  printf 'input_mode=%s\n' "$input_mode" >>"$evidence_root/verdict.txt"
+  evidence_manifest_generate --root "$evidence_root" --output "$evidence_root/manifest.tsv" >/dev/null
+  evidence_manifest_verify --root "$evidence_root" --manifest "$evidence_root/manifest.tsv" >/dev/null
+  cat "$evidence_root/verdict.txt"
+  printf 'manifest=%s\n' "$evidence_root/manifest.tsv"
+  info "v4 composition $input_mode campaign passed with an independently verified manifest"
 }
 
 evidence_path_is_temporary() {
@@ -1790,6 +2835,8 @@ usage: ./tools/a33xctl <command>
 commands:
   image             build the pinned Ubuntu 24.04 LineageOS host image
   doctor            validate host resources and container tooling
+  install-host-usb-rules --group GROUP
+                    install durable SM-A336B ADB/Recovery node access (requires root)
   init              initialize the separate LineageOS checkout
   sync              sync sources and record an immutable resolved manifest
   hydrate-lfs       fetch and verify the pinned ARM64 WebView LFS object
@@ -1823,6 +2870,17 @@ commands:
                     verify the non-shipping trusted provider probe is present
   inspect-core1-readiness --serial SERIAL --expected-revision REVISION
                     read-only exact-product Core 1 readiness snapshot
+  core-input-status --serial SERIAL
+                    verify the debug-only Core uinput automation boundary
+  core-input-tap --serial SERIAL --x X --y Y
+                    emit one bounded tap through the Core uinput device
+  restart-v4-authority --serial SERIAL --expected-revision REVISION
+                    restart only the authority through the userdebug recovery probe
+  capture-v4-composition-stage --product compat1|core1 --serial SERIAL
+                    --expected-revision REVISION --artifact OTA --root DIR --stage STAGE
+                    capture one ordered physical v4 composition checkpoint
+  audit-v4-composition-campaign --root DIR
+                    judge all physical v4 checkpoints and seal their manifest
   evidence-manifest-generate --root DIR --output MANIFEST
                     atomically record finalized evidence path/size/SHA-256
   evidence-manifest-verify --root DIR --manifest MANIFEST
@@ -1840,6 +2898,7 @@ fi
 case "$command" in
   image) image "$@" ;;
   doctor) doctor "$@" ;;
+  install-host-usb-rules) install_host_usb_rules "$@" ;;
   init) init "$@" ;;
   sync) sync_source "$@" ;;
   hydrate-lfs) hydrate_source_lfs "$@" ;;
@@ -1869,6 +2928,11 @@ case "$command" in
   inspect-core1) inspect_core1 "$@" ;;
   inspect-core1-provider-probe) inspect_core1_provider_probe "$@" ;;
   inspect-core1-readiness) inspect_core1_readiness "$@" ;;
+  core-input-status) core_input_automation status "$@" ;;
+  core-input-tap) core_input_automation tap "$@" ;;
+  restart-v4-authority) restart_v4_authority "$@" ;;
+  capture-v4-composition-stage) capture_v4_composition_stage "$@" ;;
+  audit-v4-composition-campaign) audit_v4_composition_campaign "$@" ;;
   evidence-manifest-generate) evidence_manifest_generate "$@" ;;
   evidence-manifest-verify) evidence_manifest_verify "$@" ;;
   -h|--help|help|'') usage ;;

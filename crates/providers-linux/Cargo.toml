@@ -7,6 +7,7 @@ license.workspace = true
 [dependencies]
 chrono.workspace = true
 experience-ir.workspace = true
+experience-package.workspace = true
 providers-fake.workspace = true
 serde.workspace = true
 serde_json.workspace = true

@@ -827,16 +827,18 @@ impl SosCompositor {
     fn canonical_absolute_position(
         &self,
         position: smithay::utils::Point<f64, smithay::utils::Logical>,
-        output: smithay::utils::Rectangle<i32, smithay::utils::Logical>,
+        _output: smithay::utils::Rectangle<i32, smithay::utils::Logical>,
     ) -> smithay::utils::Point<f64, smithay::utils::Logical> {
         #[cfg(feature = "direct-backend")]
         if self.output_layout_mirrored {
             let projection = crate::direct::mirror_projection(
                 self.output_size,
-                (output.size.w.max(0), output.size.h.max(0)),
+                (_output.size.w.max(0), _output.size.h.max(0)),
             );
-            let x = (position.x - f64::from(output.loc.x + projection.offset.0)) / projection.scale;
-            let y = (position.y - f64::from(output.loc.y + projection.offset.1)) / projection.scale;
+            let x =
+                (position.x - f64::from(_output.loc.x + projection.offset.0)) / projection.scale;
+            let y =
+                (position.y - f64::from(_output.loc.y + projection.offset.1)) / projection.scale;
             return (
                 x.clamp(0.0, f64::from((self.output_size.0 - 1).max(0))),
                 y.clamp(0.0, f64::from((self.output_size.1 - 1).max(0))),

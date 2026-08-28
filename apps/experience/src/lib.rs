@@ -4,7 +4,9 @@ mod agent_bridge;
 mod android;
 #[cfg(any(target_os = "android", test))]
 mod android_agent_contract;
-#[cfg(any(all(target_os = "android", not(feature = "core-native")), test))]
+#[cfg(any(target_os = "android", test))]
+mod android_graph_contract;
+#[cfg(any(target_os = "android", test))]
 mod android_interaction_contract;
 #[cfg(any(
     target_os = "android",
@@ -15,6 +17,12 @@ mod assets;
 mod compositor_fence;
 #[cfg(any(all(target_os = "android", feature = "core-native"), test))]
 mod core_credential;
+#[cfg(any(
+    all(target_os = "android", feature = "aosp-system"),
+    all(target_os = "linux", feature = "linux-host"),
+    test
+))]
+mod graph_scene;
 #[cfg(all(target_os = "linux", feature = "linux-host"))]
 mod linux;
 #[cfg(all(target_os = "linux", feature = "linux-host"))]
@@ -43,23 +51,64 @@ mod window_space;
 pub use linux::run as run_linux_host;
 
 pub const DEFAULT_EXPERIENCE: &str = include_str!("../../../experiences/default.luau");
-pub const TIMEFLOW_EXPERIENCE: &str = include_str!("../../../experiences/timeflow.luau");
-pub const DAILY_FLOW_EXPERIENCE: &str = include_str!("../../../experiences/daily-flow.luau");
-pub const DAILY_FLOW_AGENT_EXPERIENCE: &str =
-    include_str!("../../../experiences/daily-flow-agent.luau");
+pub const MOBILE_EXPERIENCE: &str = include_str!("../../../experiences/mobile.luau");
+pub const STOCK_THEME_MODULE: &str = include_str!("../../../experiences/modules/stock-theme.luau");
+pub const MOBILE_THEME_MODULE: &str =
+    include_str!("../../../experiences/modules/mobile-theme.luau");
 
-pub fn deterministic_agent_candidate(current_source: &str) -> &'static str {
-    if current_source.trim() == DAILY_FLOW_EXPERIENCE.trim() {
-        TIMEFLOW_EXPERIENCE
+const STOCK_AGENT_VARIANT_ORIGINAL: &str = "Make Stock Base yours";
+const STOCK_AGENT_VARIANT_ALTERNATE: &str = "Shape Stock Base around your day";
+
+pub fn deterministic_stock_agent_candidate(current_source: &str) -> String {
+    if current_source.contains(STOCK_AGENT_VARIANT_ALTERNATE) {
+        DEFAULT_EXPERIENCE.to_owned()
     } else {
-        DAILY_FLOW_EXPERIENCE
+        DEFAULT_EXPERIENCE.replacen(
+            STOCK_AGENT_VARIANT_ORIGINAL,
+            STOCK_AGENT_VARIANT_ALTERNATE,
+            1,
+        )
+    }
+}
+
+const MOBILE_AGENT_VARIANT_ORIGINAL: &str = "Make Stock Mobile yours";
+const MOBILE_AGENT_VARIANT_ALTERNATE: &str = "Shape Stock Mobile around your day";
+
+pub fn deterministic_mobile_agent_candidate(current_source: &str) -> String {
+    if current_source.contains(MOBILE_AGENT_VARIANT_ALTERNATE) {
+        MOBILE_EXPERIENCE.to_owned()
+    } else {
+        MOBILE_EXPERIENCE.replacen(
+            MOBILE_AGENT_VARIANT_ORIGINAL,
+            MOBILE_AGENT_VARIANT_ALTERNATE,
+            1,
+        )
     }
 }
 
 #[cfg(not(target_os = "android"))]
+fn compile_built_in(source: &str) -> Result<runtime_luau::LuauRuntime, runtime_luau::RuntimeError> {
+    let sidecars = if source.contains("require(\"stock.theme\")") {
+        vec![runtime_luau::RevisionAssetInput {
+            id: "stock.theme".into(),
+            kind: "luau".into(),
+            bytes: STOCK_THEME_MODULE.as_bytes().to_vec(),
+        }]
+    } else if source.contains("require(\"mobile.theme\")") {
+        vec![runtime_luau::RevisionAssetInput {
+            id: "mobile.theme".into(),
+            kind: "luau".into(),
+            bytes: MOBILE_THEME_MODULE.as_bytes().to_vec(),
+        }]
+    } else {
+        Vec::new()
+    };
+    runtime_luau::LuauRuntime::compile_with_assets(source, sidecars)
+}
+
+#[cfg(not(target_os = "android"))]
 pub fn validate_embedded_experience() -> Result<usize, String> {
-    let runtime = runtime_luau::LuauRuntime::compile(DEFAULT_EXPERIENCE)
-        .map_err(|error| error.to_string())?;
+    let runtime = compile_built_in(DEFAULT_EXPERIENCE).map_err(|error| error.to_string())?;
     let scene = runtime
         .render(&providers_fake::snapshot(), &runtime.initial_state())
         .map_err(|error| error.to_string())?;
@@ -68,9 +117,33 @@ pub fn validate_embedded_experience() -> Result<usize, String> {
 
 #[cfg(test)]
 mod tests {
+    fn scene_contains_id(node: &experience_ir::SceneNode, id: &str) -> bool {
+        node.id.as_deref() == Some(id)
+            || node
+                .children
+                .iter()
+                .any(|child| scene_contains_id(child, id))
+    }
+
+    fn scene_contains_action(node: &experience_ir::SceneNode, action: &str) -> bool {
+        node.interaction.tap_action.as_deref() == Some(action)
+            || node
+                .children
+                .iter()
+                .any(|child| scene_contains_action(child, action))
+    }
+
+    fn scene_contains_agent_composer(node: &experience_ir::SceneNode) -> bool {
+        matches!(
+            &node.content,
+            Some(experience_ir::Content::TextSession(session))
+                if session.submit_action.as_deref() == Some("agent_submit")
+        ) || node.children.iter().any(scene_contains_agent_composer)
+    }
+
     #[test]
     fn embedded_experience_is_valid() {
-        let runtime = runtime_luau::LuauRuntime::compile(super::DEFAULT_EXPERIENCE).unwrap();
+        let runtime = super::compile_built_in(super::DEFAULT_EXPERIENCE).unwrap();
         let initial_scene = runtime
             .render(&providers_fake::snapshot(), &runtime.initial_state())
             .unwrap();
@@ -162,6 +235,10 @@ mod tests {
             experience_ir::SystemCapability::AudioSetVolume,
             experience_ir::SystemCapability::AppLaunch,
         ];
+        stock_model.shell.experiences = vec![experience_ir::ShellExperience {
+            experience_id: "sos.example.dashboard".into(),
+            title: "Dashboard".into(),
+        }];
         assert_eq!(runtime.assets().len(), 1);
         let stock_scene = runtime
             .render(&stock_model, &runtime.initial_state())
@@ -180,7 +257,7 @@ mod tests {
         assert!(contains_wrapping_layout(&stock_scene.root));
         let home_grid = node_by_id(&stock_scene.root, "home-responsive-grid").unwrap();
         assert!(home_grid.layout.wrap);
-        let content_frame = node_by_id(&stock_scene.root, "stock-content-frame").unwrap();
+        let content_frame = node_by_id(&stock_scene.root, "stock-workspace-frame").unwrap();
         assert!(content_frame.layout.scroll_y);
         let command_state = runtime
             .update(
@@ -194,6 +271,7 @@ mod tests {
             .unwrap();
         let command_scene = runtime.render(&stock_model, &command_state).unwrap();
         assert!(contains_id(&command_scene.root, "shell-command-center"));
+        assert!(contains_action(&command_scene.root, "experience_present_1"));
         for workspace in [
             "home",
             "agenda",
@@ -260,6 +338,25 @@ mod tests {
             .unwrap();
         let agent_scene = runtime.render(&stock_model, &agent_state).unwrap();
         assert!(contains_agent_composer(&agent_scene.root));
+        let agent_outcome = runtime
+            .update_with_effects(
+                &stock_model,
+                &agent_state,
+                &experience_ir::SceneEvent {
+                    action: "agent_submit".into(),
+                    target: Some("agent-prompt".into()),
+                    value: Some("Make this calmer".into()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(agent_outcome.effects.len(), 1);
+        assert_eq!(agent_outcome.effects[0].provider, "agent");
+        assert_eq!(agent_outcome.effects[0].action, "prompt");
+        assert_eq!(
+            agent_outcome.effects[0].payload["prompt"],
+            "Make this calmer"
+        );
         let agent_panel_state = runtime
             .update(
                 &stock_model,
@@ -274,27 +371,19 @@ mod tests {
         assert!(contains_id(&agent_panel_scene.root, "shell-rail-agent"));
         assert!(contains_id(&agent_panel_scene.root, "panel-agent-prompt"));
         assert!(experience_ir::validate_scene(&agent_panel_scene).is_ok());
-        for source in [
-            super::DEFAULT_EXPERIENCE,
-            super::TIMEFLOW_EXPERIENCE,
-            super::DAILY_FLOW_EXPERIENCE,
-        ] {
-            let runtime = runtime_luau::LuauRuntime::compile(source).unwrap();
+        for source in [super::DEFAULT_EXPERIENCE] {
+            let runtime = super::compile_built_in(source).unwrap();
             let model = providers_fake::snapshot();
-            let state = if source == super::DEFAULT_EXPERIENCE {
-                runtime
-                    .update(
-                        &model,
-                        &runtime.initial_state(),
-                        &experience_ir::SceneEvent {
-                            action: "navigate_agent".into(),
-                            ..Default::default()
-                        },
-                    )
-                    .unwrap()
-            } else {
-                runtime.initial_state()
-            };
+            let state = runtime
+                .update(
+                    &model,
+                    &runtime.initial_state(),
+                    &experience_ir::SceneEvent {
+                        action: "navigate_agent".into(),
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
             let scene = runtime.render(&model, &state).unwrap();
             for action in [
                 "agent_configure_openai",
@@ -330,6 +419,23 @@ mod tests {
         assert_eq!(outcome.effects[0].provider, "audio");
         assert_eq!(outcome.effects[0].action, "adjust_volume");
         assert_eq!(outcome.effects[0].payload["delta"], 10);
+
+        let launch = runtime
+            .update_with_effects(
+                &stock_model,
+                &runtime.initial_state(),
+                &experience_ir::SceneEvent {
+                    action: "experience_present_1".into(),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(launch.effects[0].provider, "shell");
+        assert_eq!(launch.effects[0].action, "present_experience");
+        assert_eq!(
+            launch.effects[0].payload["experience_id"],
+            "sos.example.dashboard"
+        );
 
         let note = runtime
             .update_with_effects(
@@ -404,64 +510,75 @@ mod tests {
             "system-providers-unavailable"
         ));
         assert!(!contains_action(&unavailable_scene.root, "audio_volume_up"));
+    }
 
-        let timeflow = runtime_luau::LuauRuntime::compile(super::TIMEFLOW_EXPERIENCE).unwrap();
-        let timeflow_scene = timeflow
-            .render(&providers_fake::snapshot(), &timeflow.initial_state())
+    #[test]
+    fn embedded_mobile_experience_is_phone_native_and_valid() {
+        let runtime = super::compile_built_in(super::MOBILE_EXPERIENCE).unwrap();
+        let mut model = providers_fake::snapshot();
+        model.shell.experiences = vec![experience_ir::ShellExperience {
+            experience_id: "sos.example.dashboard".into(),
+            title: "Dashboard".into(),
+        }];
+        let initial = runtime.initial_state();
+        let scene = runtime.render(&model, &initial).unwrap();
+        assert!(scene_contains_id(&scene.root, "stock-mobile-root"));
+        assert!(scene_contains_id(&scene.root, "mobile-top-bar"));
+        assert!(scene_contains_id(&scene.root, "mobile-bottom-navigation"));
+        assert!(!scene_contains_id(&scene.root, "shell-top-bar"));
+        assert!(scene_contains_action(&scene.root, "navigate_apps"));
+
+        let apps = runtime
+            .render(&model, &serde_json::json!({"screen": "apps"}))
             .unwrap();
-        assert!(experience_ir::validate_scene(&timeflow_scene).unwrap() > 15);
-        assert!(contains_action(&timeflow_scene.root, "toggle_music"));
+        assert!(scene_contains_id(&apps.root, "mobile-app-launcher"));
+        assert!(scene_contains_action(&apps.root, "experience_present_1"));
 
-        for source in [
-            super::DAILY_FLOW_EXPERIENCE,
-            super::DAILY_FLOW_AGENT_EXPERIENCE,
-        ] {
-            let runtime = runtime_luau::LuauRuntime::compile(source).unwrap();
-            let scene = runtime
-                .render(&providers_fake::snapshot(), &runtime.initial_state())
-                .unwrap();
-            assert!(experience_ir::validate_scene(&scene).unwrap() > 15);
-            assert!(contains_action(&scene.root, "toggle_music"));
-        }
+        let agent = runtime
+            .render(&model, &serde_json::json!({"screen": "agent"}))
+            .unwrap();
+        assert!(scene_contains_id(&agent.root, "mobile-agent-prompt"));
+        assert!(scene_contains_agent_composer(&agent.root));
+    }
 
-        for source in [super::TIMEFLOW_EXPERIENCE, super::DAILY_FLOW_EXPERIENCE] {
-            let runtime = runtime_luau::LuauRuntime::compile(source).unwrap();
-            let model = providers_fake::snapshot();
-            let state = runtime.initial_state();
-            let scene = runtime.render(&model, &state).unwrap();
-            assert!(contains_agent_composer(&scene.root));
-            let outcome = runtime
-                .update_with_effects(
-                    &model,
-                    &state,
-                    &experience_ir::SceneEvent {
-                        action: "agent_submit".into(),
-                        target: Some("agent-prompt".into()),
-                        value: Some("Make this calmer".into()),
-                        ..Default::default()
-                    },
-                )
-                .unwrap();
-            assert_eq!(outcome.effects.len(), 1);
-            assert_eq!(outcome.effects[0].provider, "agent");
-            assert_eq!(outcome.effects[0].action, "prompt");
-            assert_eq!(outcome.effects[0].payload["prompt"], "Make this calmer");
+    #[test]
+    fn deterministic_stock_agent_candidate_retains_the_shell_contract() {
+        let first = super::deterministic_stock_agent_candidate(super::DEFAULT_EXPERIENCE);
+        assert_ne!(first.trim(), super::DEFAULT_EXPERIENCE.trim());
+        let second = super::deterministic_stock_agent_candidate(&first);
+        assert_eq!(second.trim(), super::DEFAULT_EXPERIENCE.trim());
+
+        for source in [&first, &second] {
+            let runtime = super::compile_built_in(source).unwrap();
+            assert_eq!(runtime.api_version(), experience_ir::EXPERIENCE_API_VERSION);
+            assert_eq!(runtime.export_ids().unwrap(), vec!["main"]);
+            let mut state = runtime.initial_state();
+            state["active_workspace"] = serde_json::json!("agent");
+            let scene = runtime.render(&providers_fake::snapshot(), &state).unwrap();
+            assert!(scene_contains_agent_composer(&scene.root));
         }
     }
 
     #[test]
-    fn deterministic_agent_candidate_is_complete_and_visibly_alternates() {
-        let first = super::deterministic_agent_candidate(super::TIMEFLOW_EXPERIENCE);
-        assert_eq!(first.trim(), super::DAILY_FLOW_EXPERIENCE.trim());
-        let second = super::deterministic_agent_candidate(first);
-        assert_eq!(second.trim(), super::TIMEFLOW_EXPERIENCE.trim());
+    fn deterministic_mobile_agent_candidate_retains_the_mobile_contract() {
+        let first = super::deterministic_mobile_agent_candidate(super::MOBILE_EXPERIENCE);
+        assert!(first.contains(super::MOBILE_AGENT_VARIANT_ALTERNATE));
+        assert!(first.contains("require(\"mobile.theme\")"));
+        assert!(first.contains("stock-mobile-root"));
+        let second = super::deterministic_mobile_agent_candidate(&first);
+        assert_eq!(second, super::MOBILE_EXPERIENCE);
 
-        for source in [first, second] {
-            let runtime = runtime_luau::LuauRuntime::compile(source).unwrap();
+        for source in [&first, &second] {
+            let runtime = super::compile_built_in(source).unwrap();
+            assert_eq!(runtime.api_version(), experience_ir::EXPERIENCE_API_VERSION);
+            assert_eq!(runtime.export_ids().unwrap(), vec!["main"]);
             let scene = runtime
-                .render(&providers_fake::snapshot(), &runtime.initial_state())
+                .render(
+                    &providers_fake::snapshot(),
+                    &serde_json::json!({"screen": "agent"}),
+                )
                 .unwrap();
-            assert!(experience_ir::validate_scene(&scene).unwrap() > 15);
+            assert!(scene_contains_agent_composer(&scene.root));
         }
     }
 }

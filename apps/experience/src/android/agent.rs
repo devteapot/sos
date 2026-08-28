@@ -14,7 +14,9 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use async_channel::Sender;
-use experience_ir::{AgentConfigurationAction, AgentConversation, ExperienceModel};
+use experience_ir::{
+    AgentConfigurationAction, AgentConversation, Content, ExperienceModel, SceneNode,
+};
 #[cfg(not(feature = "core-native"))]
 use gpui_mobile::android::jni::{activity, find_app_class, get_string, with_env};
 #[cfg(not(feature = "core-native"))]
@@ -27,12 +29,13 @@ use zeroize::{Zeroize, Zeroizing};
 
 use crate::android_agent_contract::{
     expected_model, model_is_exact, reconciled_request_error, verified_action_sequence,
+    STOCK_AGENT_COMPOSER_STATE_SELECTORS,
 };
 #[cfg(feature = "core-native")]
 use crate::android_agent_contract::{pi_timeout_seconds, OPENROUTER_MODEL};
 #[cfg(feature = "core-native")]
 use crate::core_credential::{CeremonySnapshot, CredentialState};
-use crate::deterministic_agent_candidate;
+use crate::{deterministic_mobile_agent_candidate, MOBILE_THEME_MODULE};
 
 #[cfg(not(feature = "core-native"))]
 const HELPER_CLASS: &str = "dev.gpui.mobile.GpuiAgent";
@@ -354,11 +357,16 @@ fn run_prompt(
         status.provider
     );
     let faux_candidate = if status.provider == "fake" {
-        Some(deterministic_agent_candidate(current_source))
+        Some(deterministic_mobile_agent_candidate(current_source))
     } else {
         None
     };
-    let candidate = run_live(&status.provider, prompt, current_source, faux_candidate)?;
+    let candidate = run_live(
+        &status.provider,
+        prompt,
+        current_source,
+        faux_candidate.as_deref(),
+    )?;
     emit_completed_tool(updates, "get_experience_context")?;
     emit_tool(updates, "validate_experience", || {
         validate_candidate(&candidate.source, model)
@@ -401,9 +409,22 @@ fn validate_candidate(source: &str, model: &ExperienceModel) -> Result<(), Strin
                 .into(),
         );
     }
-    let runtime = runtime_luau::LuauRuntime::compile(source).map_err(|_| {
+    let runtime = runtime_luau::LuauRuntime::compile_with_assets(
+        source,
+        vec![runtime_luau::RevisionAssetInput {
+            id: "mobile.theme".into(),
+            kind: "luau".into(),
+            bytes: MOBILE_THEME_MODULE.as_bytes().to_vec(),
+        }],
+    )
+    .map_err(|_| {
         "The agent candidate did not compile. [validation/invalid_candidate]".to_owned()
     })?;
+    if runtime.api_version() != experience_ir::EXPERIENCE_API_VERSION {
+        return Err(
+            "The agent candidate must use Experience API v4. [validation/invalid_candidate]".into(),
+        );
+    }
     let scene = runtime
         .render(model, &runtime.initial_state())
         .map_err(|_| {
@@ -413,7 +434,42 @@ fn validate_candidate(source: &str, model: &ExperienceModel) -> Result<(), Strin
         .map(|_| ())
         .map_err(|_| {
             "The agent candidate scene is invalid. [validation/invalid_candidate]".to_owned()
-        })
+        })?;
+    if !has_stock_agent_composer(&runtime, model)? {
+        return Err(
+            "The agent candidate removed the Stock agent composer. [validation/invalid_candidate]"
+                .into(),
+        );
+    }
+    Ok(())
+}
+
+fn has_agent_composer(node: &SceneNode) -> bool {
+    matches!(
+        &node.content,
+        Some(Content::TextSession(session))
+            if session.submit_action.as_deref() == Some("agent_submit")
+    ) || node.children.iter().any(has_agent_composer)
+}
+
+fn has_stock_agent_composer(
+    runtime: &runtime_luau::LuauRuntime,
+    model: &ExperienceModel,
+) -> Result<bool, String> {
+    for (key, value) in STOCK_AGENT_COMPOSER_STATE_SELECTORS {
+        let mut state = runtime.initial_state();
+        let object = state.as_object_mut().ok_or_else(|| {
+            "The Stock shell state is not a record. [validation/invalid_candidate]".to_owned()
+        })?;
+        object.insert(key.into(), serde_json::Value::String(value.into()));
+        let scene = runtime.render(model, &state).map_err(|_| {
+            "The Stock agent branch did not render. [validation/invalid_candidate]".to_owned()
+        })?;
+        if has_agent_composer(&scene.root) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 fn structured_failure(envelope: &LiveEnvelope, expected_model: &str) -> String {
@@ -574,6 +630,10 @@ fn run_core_pi(
     timeout: Duration,
 ) -> Result<(ExitStatus, Zeroizing<Vec<u8>>), String> {
     let child = Command::new("/system_ext/bin/sos-node")
+        // The runner handles untrusted generated input inside sos_core_host's
+        // enforcing domain. Keep V8 interpreter-only instead of granting the
+        // host executable-memory authority for JIT code.
+        .arg("--jitless")
         .args([
             "/system_ext/etc/sos-agent/agent-runner.cjs",
             "stdio",
@@ -581,8 +641,6 @@ fn run_core_pi(
             "/system_ext/etc/sos-agent/experience-api.md",
             "--example",
             "/system_ext/etc/sos-agent/example-primary.luau",
-            "--example-secondary",
-            "/system_ext/etc/sos-agent/example-secondary.luau",
         ])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

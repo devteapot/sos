@@ -1,143 +1,148 @@
 use std::{
-    fs,
+    env, fs,
     io::{self, BufRead, Write},
-    process, thread,
-    time::Duration,
 };
 
-use revision_supervisor::{HostEvent, HostRequest};
+use revision_supervisor::{ExperienceLifecycleOperation, HostEvent, HostRequest};
 
 fn main() {
+    let mut arguments = env::args().skip(1);
+    let mut lifecycle = None;
+    while let Some(argument) = arguments.next() {
+        if argument == "--emit-present-from" || argument == "--emit-dismiss-from" {
+            let emitter = arguments.next().expect("missing lifecycle emitter");
+            let target = arguments.next().expect("missing lifecycle target");
+            let operation = if argument == "--emit-present-from" {
+                ExperienceLifecycleOperation::Present
+            } else {
+                ExperienceLifecycleOperation::Dismiss
+            };
+            lifecycle = Some((emitter, target, operation));
+        } else {
+            panic!("unknown test-host argument: {argument}");
+        }
+    }
     let stdin = io::stdin();
-    let mut prepared: Option<(String, String)> = None;
-    let mut quiesced_revision: Option<String> = None;
+    let mut prepared_graph: Option<String> = None;
+    let mut quiesced_graph: Option<String> = None;
     for line in stdin.lock().lines() {
         let request: HostRequest = serde_json::from_str(&line.expect("read host request"))
             .expect("deserialize host request");
         match request {
-            HostRequest::Boot {
+            HostRequest::BootGraph {
                 request_id,
-                revision_id,
-                revision_path,
-                experience_api_version,
+                graph_id,
+                graph_path,
+                ..
             } => {
-                if !matches!(experience_api_version, 1 | 3) {
-                    emit(HostEvent::Rejected {
+                if !graph_path.is_file() {
+                    emit(HostEvent::GraphRejected {
                         request_id,
-                        revision_id,
-                        error: format!(
-                            "unsupported experience API version {experience_api_version}"
-                        ),
-                    });
-                    continue;
-                }
-                let mode = source_mode(&revision_path);
-                emit(HostEvent::Presented {
-                    request_id,
-                    revision_id,
-                });
-                exit_later_if_requested(&mode);
-            }
-            HostRequest::Prepare {
-                request_id,
-                revision_id,
-                revision_path,
-                experience_api_version,
-            } => {
-                let mode = source_mode(&revision_path);
-                if !matches!(experience_api_version, 1 | 3) {
-                    emit(HostEvent::Rejected {
-                        request_id,
-                        revision_id,
-                        error: format!(
-                            "unsupported experience API version {experience_api_version}"
-                        ),
-                    });
-                } else if mode == "reject" {
-                    emit(HostEvent::Rejected {
-                        request_id,
-                        revision_id,
-                        error: "synthetic Luau validation rejection".into(),
-                    });
-                } else if mode != "no-response" {
-                    prepared = Some((revision_id.clone(), mode));
-                    emit(HostEvent::Prepared {
-                        request_id,
-                        revision_id,
-                    });
-                }
-            }
-            HostRequest::QuiesceInput {
-                request_id,
-                revision_id,
-            } => {
-                if prepared.as_ref().map(|(revision, _)| revision) != Some(&revision_id) {
-                    emit(HostEvent::Rejected {
-                        request_id,
-                        revision_id,
-                        error: "cannot quiesce without the matching prepared revision".into(),
+                        graph_id,
+                        error: "graph file is missing".into(),
                     });
                 } else {
-                    quiesced_revision = Some(revision_id.clone());
-                    emit(HostEvent::InputQuiesced {
+                    emit(HostEvent::GraphPresented {
                         request_id,
-                        revision_id,
+                        graph_id,
                     });
+                    if let Some((emitter, target, operation)) = &lifecycle {
+                        let graph: experience_package::ResolvedGraph = serde_json::from_slice(
+                            &fs::read(&graph_path).expect("read test graph"),
+                        )
+                        .expect("decode test graph");
+                        if graph.nodes[&graph.root].experience_id.as_str() == emitter {
+                            emit(HostEvent::ExperienceLifecycleRequested {
+                                request_id: 1_u64 << 63,
+                                experience_id: target.clone(),
+                                operation: *operation,
+                            });
+                        }
+                    }
                 }
             }
-            HostRequest::Present {
+            HostRequest::PrepareGraph {
                 request_id,
-                revision_id,
+                graph_id,
+                graph_path,
+                ..
             } => {
-                let Some((prepared_revision, mode)) = prepared.take() else {
-                    emit(HostEvent::Rejected {
+                if !graph_path.is_file() {
+                    emit(HostEvent::GraphRejected {
                         request_id,
-                        revision_id,
-                        error: "no prepared revision".into(),
+                        graph_id,
+                        error: "graph file is missing".into(),
                     });
-                    continue;
-                };
-                if prepared_revision != revision_id {
-                    emit(HostEvent::Rejected {
-                        request_id,
-                        revision_id,
-                        error: "prepared revision mismatch".into(),
-                    });
-                } else if quiesced_revision.as_deref() != Some(&revision_id) {
-                    emit(HostEvent::Rejected {
-                        request_id,
-                        revision_id,
-                        error: "input was not quiesced for prepared revision".into(),
-                    });
-                } else if mode == "exit-before-present" {
-                    process::exit(42);
                 } else {
-                    quiesced_revision = None;
-                    emit(HostEvent::Presented {
+                    prepared_graph = Some(graph_id.clone());
+                    emit(HostEvent::GraphPrepared {
                         request_id,
-                        revision_id,
+                        graph_id,
                     });
-                    exit_later_if_requested(&mode);
                 }
             }
-            HostRequest::Confirm {
+            HostRequest::QuiesceGraphInput {
                 request_id,
-                revision_id,
-            } => emit(HostEvent::Confirmed {
+                graph_id,
+            } => {
+                if prepared_graph.as_ref() != Some(&graph_id) {
+                    emit(HostEvent::GraphRejected {
+                        request_id,
+                        graph_id,
+                        error: "cannot quiesce without the matching prepared graph".into(),
+                    });
+                } else {
+                    quiesced_graph = Some(graph_id.clone());
+                    emit(HostEvent::GraphInputQuiesced {
+                        request_id,
+                        graph_id,
+                    });
+                }
+            }
+            HostRequest::PresentGraph {
                 request_id,
-                revision_id,
+                graph_id,
+            } => {
+                if prepared_graph.as_ref() != Some(&graph_id)
+                    || quiesced_graph.as_ref() != Some(&graph_id)
+                {
+                    emit(HostEvent::GraphRejected {
+                        request_id,
+                        graph_id,
+                        error: "graph was not prepared and quiesced".into(),
+                    });
+                } else {
+                    prepared_graph = None;
+                    quiesced_graph = None;
+                    emit(HostEvent::GraphPresented {
+                        request_id,
+                        graph_id,
+                    });
+                }
+            }
+            HostRequest::ConfirmGraph {
+                request_id,
+                graph_id,
+            } => emit(HostEvent::GraphConfirmed {
+                request_id,
+                graph_id,
             }),
-            HostRequest::Discard {
+            HostRequest::FinalizeGraph {
                 request_id,
-                revision_id,
+                graph_id,
+            } => emit(HostEvent::GraphFinalized {
+                request_id,
+                graph_id,
+            }),
+            HostRequest::DiscardGraph {
+                request_id,
+                graph_id,
             } => {
-                prepared = None;
-                if quiesced_revision.as_deref() == Some(&revision_id) {
-                    quiesced_revision = None;
-                }
-                emit(HostEvent::Discarded {
+                prepared_graph = None;
+                quiesced_graph = None;
+                emit(HostEvent::GraphDiscarded {
                     request_id,
-                    revision_id,
+                    graph_id,
                 });
             }
             HostRequest::Shutdown { request_id } => {
@@ -148,35 +153,9 @@ fn main() {
     }
 }
 
-fn source_mode(revision_path: &std::path::Path) -> String {
-    fs::read_to_string(revision_path.join("source.luau"))
-        .expect("read revision source")
-        .strip_prefix("host:")
-        .unwrap_or("stay")
-        .trim()
-        .to_owned()
-}
-
 fn emit(event: HostEvent) {
     let mut stdout = io::stdout().lock();
     serde_json::to_writer(&mut stdout, &event).expect("serialize host event");
     stdout.write_all(b"\n").expect("write host event");
     stdout.flush().expect("flush host event");
-}
-
-fn exit_later_if_requested(mode: &str) {
-    if mode == "exit-immediately-after-present" {
-        process::exit(44);
-    }
-    let delay = match mode {
-        "exit-after-present" => Some(Duration::from_millis(40)),
-        "crash-later" => Some(Duration::from_millis(250)),
-        _ => None,
-    };
-    if let Some(delay) = delay {
-        thread::spawn(move || {
-            thread::sleep(delay);
-            process::exit(43);
-        });
-    }
 }

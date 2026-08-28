@@ -83,6 +83,10 @@ the preferred panel mode, scale 1.0, and rotation 0. A bounded override may set
 
 Automatic tablet rotation is not part of the first gate. Finalize this file
 before preparing evidence; the harness records its exact contents.
+The same bounded file may set `"layout"` to `"mirror"` or `"extend"` and may
+map at most 32 exact, printable libinput device names to printable connector
+names through `"input_outputs"`. The gate validates the same keys and limits as
+the direct compositor, including the 128-byte limit on each name.
 
 ### Development-live remix, same-boot diagnostics
 
@@ -140,6 +144,15 @@ development-live pin preserves the baked image identity but permits an exact,
 hashed overlay deployment whose source dirty state is recorded. It then prints
 the operator steps:
 
+Preparation also starts the root-owned transient unit
+`sos-linux-hardware-gate-awake.service`. Its logind block inhibitor covers
+`idle`, `sleep`, and `handle-lid-switch` while the machine waits at GDM, which
+is before the normal SOS-session inhibitor exists. Preparation refuses a
+second active owner. Collection requires the recorded unit to remain active,
+captures its exact inhibitor record, and stops it before finalizing evidence.
+An early collection failure also stops the unit. This is gate lifecycle state,
+not a change to the workstation's stored GNOME or GDM power settings.
+
 1. Log out and choose **SOS** from GDM.
 2. Confirm the compositor recovery view and generated experience appear.
 3. Exercise the physical keyboard, touchpad motion and click, and touchscreen.
@@ -157,10 +170,12 @@ Collection first requires the exact kernel boot ID recorded by preparation so
 journal cursors and monotonic timestamps can never span a reboot. It then reads
 only the prepared journal interval for the login UID plus the kernel journal,
 captures durable revision/authority agreement and the restored display-manager
-state, and records the matching boot ID again. It finalizes `verdict.txt`,
+state, verifies and releases the prepared awake inhibitor, and records the
+matching boot ID again. It finalizes `verdict.txt`,
 measures campaign wall time from same-boot monotonic timestamps, generates
 `evidence-manifest.tsv`, and independently verifies every path, byte size, and
-SHA-256.
+SHA-256. Manifest paths use bytewise `C` ordering, independent of the locale on
+the target or the audit machine.
 
 On development-live, use the baked harness for collection:
 
@@ -182,6 +197,9 @@ becoming a SKIP:
 - preparation and collection come from the same kernel boot;
 - real libinput events are observed for keyboard, relative pointer, pointer
   button, and touchscreen;
+- every input device added during SOS was already present in the libinput
+  inventory captured at preparation, so a hot-added uinput helper cannot satisfy
+  a physical-input criterion;
 - at least two distinct revisions reach compositor-owned DRM page flips,
   proving boot plus one transactional authoring activation, while the permanent
   experience host has exactly one launch and no restart;

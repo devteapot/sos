@@ -1,0 +1,1 @@
+sys.sos.authority_recovery_probe u:object_r:sos_authority_recovery_probe_prop:s0 exact bool

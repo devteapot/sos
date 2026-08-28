@@ -1,0 +1,144 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+state_root="${SOS_TEST_AOSP_STATE:?SOS_TEST_AOSP_STATE is required}"
+mkdir -p "$state_root"
+{
+  printf 'adb'
+  printf '\t%s' "$@"
+  printf '\n'
+} >>"$state_root/requests.tsv"
+
+if [[ "${1:-}" == connect ]]; then
+  printf 'connected to %s\n' "${2:-unknown}"
+  exit 0
+fi
+
+[[ "${1:-}" == -s && -n "${2:-}" ]] || {
+  printf 'mock adb requires an explicit serial\n' >&2
+  exit 2
+}
+shift 2
+
+command_name="${1:-}"
+shift || true
+case "$command_name" in
+  get-state)
+    printf 'device\n'
+    ;;
+  root)
+    printf 'restarting adbd as root\n'
+    ;;
+  reverse)
+    [[ "${1:-}" == --list ]]
+    ;;
+  logcat)
+    case "${1:-}" in
+      -c)
+        :
+        ;;
+      -d)
+        if [[ "$(<"$state_root/mode")" == dashboard ]]; then
+          printf '%s\n' \
+            'I/sos-experience: SOS experience window is live' \
+            'I/sos-experience: android_graph_runtime_ready root_experience=sos.example.dashboard' \
+            'I/sos-experience: android_graph_presented graph_id=dashboard-graph confirmed=true'
+        else
+          printf '%s\n' \
+            'I/sos-experience: SOS experience window is live' \
+            'I/sos-experience: heartbeat init_done=true, active=true'
+        fi
+        ;;
+      *)
+        printf 'unsupported mock logcat command: %s\n' "${1:-}" >&2
+        exit 2
+        ;;
+    esac
+    ;;
+  shell)
+    shell_command="${1:-}"
+    shift || true
+    case "$shell_command" in
+      getprop)
+        [[ "${1:-}" == sys.boot_completed ]]
+        printf '1\n'
+        ;;
+      input|wm|svc)
+        :
+        ;;
+      dumpsys)
+        [[ "${1:-}" == package && "${2:-}" == dev.sos.experience ]]
+        printf '  primaryCpuAbi=x86_64\n'
+        ;;
+      cmd)
+        [[ "${1:-}" == package && "${2:-}" == resolve-activity ]]
+        printf 'dev.sos.experience/.SosHomeActivity\n'
+        ;;
+      pidof)
+        case "${1:-}" in
+          sos-authority) cat "$state_root/authority-pid" ;;
+          dev.sos.experience) cat "$state_root/home-pid" ;;
+          *) exit 1 ;;
+        esac
+        ;;
+      readlink)
+        case "${1:-}" in
+          /data/misc/sos/revisions/active/sos.stock.mobile/current)
+            printf '/data/misc/sos/revisions/graphs/stock-graph.json\n'
+            ;;
+          /data/misc/sos/revisions/active/sos.example.dashboard/current)
+            printf '/data/misc/sos/revisions/graphs/dashboard-graph.json\n'
+            ;;
+          *)
+            exit 1
+            ;;
+        esac
+        ;;
+      cat)
+        [[ "${1:-}" == /data/misc/sos/provider-state.composition.json ]]
+        if [[ "$(<"$state_root/mode")" == dashboard ]]; then
+          printf '{"presented_experience":"sos.example.dashboard"}\n'
+        else
+          printf '{"presented_experience":"sos.stock.mobile"}\n'
+        fi
+        ;;
+      ps)
+        [[ "${1:-}" == -AZ ]]
+        printf '%s\n' \
+          "u:r:sos_shell_app:s0 u0_a123 $(<"$state_root/home-pid") 1 dev.sos.experience" \
+          "u:r:sos_authority:s0 root $(<"$state_root/authority-pid") 1 sos-authority"
+        ;;
+      getenforce)
+        printf 'Enforcing\n'
+        ;;
+      am)
+        [[ "${1:-}" == start ]]
+        printf 'dashboard\n' >"$state_root/mode"
+        printf 'Status: ok\n'
+        ;;
+      kill)
+        [[ "${1:-}" == -9 && -n "${2:-}" ]]
+        if [[ "${2:-}" == "$(<"$state_root/authority-pid")" ]]; then
+          printf '202\n' >"$state_root/authority-pid"
+        elif [[ "${2:-}" == "$(<"$state_root/home-pid")" ]]; then
+          printf '302\n' >"$state_root/home-pid"
+          if [[ "${SOS_TEST_AOSP_BREAK:-}" == home-kills-authority ]]; then
+            printf '404\n' >"$state_root/authority-pid"
+          fi
+        else
+          printf 'mock kill targeted an unknown PID: %s\n' "${2:-}" >&2
+          exit 2
+        fi
+        ;;
+      *)
+        printf 'unsupported mock adb shell command: %s\n' "$shell_command" >&2
+        exit 2
+        ;;
+    esac
+    ;;
+  *)
+    printf 'unsupported mock adb command: %s\n' "$command_name" >&2
+    exit 2
+    ;;
+esac

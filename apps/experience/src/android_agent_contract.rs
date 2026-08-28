@@ -11,6 +11,11 @@ pub const VERIFIED_ACTIONS: [&str; 3] = [
     "validate_experience",
     "submit_experience",
 ];
+pub const STOCK_AGENT_COMPOSER_STATE_SELECTORS: [(&str, &str); 3] = [
+    ("active_workspace", "agent"),
+    ("shell_panel", "agent"),
+    ("screen", "agent"),
+];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AgentActivationPhase {
@@ -133,6 +138,18 @@ mod tests {
         assert_eq!(pi_timeout_seconds("openrouter"), Some(240));
         assert_eq!(expected_model("unknown"), None);
         assert_eq!(pi_timeout_seconds("unknown"), None);
+    }
+
+    #[test]
+    fn stock_agent_preservation_covers_desktop_and_mobile_state_selectors() {
+        assert_eq!(
+            STOCK_AGENT_COMPOSER_STATE_SELECTORS,
+            [
+                ("active_workspace", "agent"),
+                ("shell_panel", "agent"),
+                ("screen", "agent"),
+            ]
+        );
     }
 
     #[test]

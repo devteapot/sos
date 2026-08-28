@@ -146,12 +146,22 @@ stage_sos() {
   install -m 0644 "$apk" "$AOSP_OVERLAY_DESTINATION/prebuilts/SosShell.apk"
   install -m 0755 "$authority" \
     "$AOSP_OVERLAY_DESTINATION/prebuilts/x86_64/sos-android-system-authority"
-  install -m 0644 "$SOS_ROOT/experiences/default.luau" \
-    "$AOSP_OVERLAY_DESTINATION/prebuilts/default.luau"
+  rm -f -- \
+    "$AOSP_OVERLAY_DESTINATION/prebuilts/default.luau" \
+    "$AOSP_OVERLAY_DESTINATION/prebuilts/default.package.json" \
+    "$AOSP_OVERLAY_DESTINATION/prebuilts/stock-theme.luau"
+  install -m 0644 "$SOS_ROOT/experiences/mobile.luau" \
+    "$AOSP_OVERLAY_DESTINATION/prebuilts/mobile.luau"
+  install -m 0644 "$SOS_ROOT/experiences/mobile.package.json" \
+    "$AOSP_OVERLAY_DESTINATION/prebuilts/mobile.package.json"
+  install -m 0644 "$SOS_ROOT/experiences/modules/mobile-theme.luau" \
+    "$AOSP_OVERLAY_DESTINATION/prebuilts/mobile-theme.luau"
   sha256sum \
     "$AOSP_OVERLAY_DESTINATION/prebuilts/SosShell.apk" \
     "$AOSP_OVERLAY_DESTINATION/prebuilts/x86_64/sos-android-system-authority" \
-    "$AOSP_OVERLAY_DESTINATION/prebuilts/default.luau"
+    "$AOSP_OVERLAY_DESTINATION/prebuilts/mobile.luau" \
+    "$AOSP_OVERLAY_DESTINATION/prebuilts/mobile.package.json" \
+    "$AOSP_OVERLAY_DESTINATION/prebuilts/mobile-theme.luau"
 }
 
 build_sos() {
@@ -279,6 +289,12 @@ verify_pristine() {
   printf 'boot_completed=1\nhome=%s\nfingerprint=%s\n' "$home" "$fingerprint"
 }
 
+android_graph_pointer() {
+  [[ "$#" -eq 1 ]] || fail "internal usage: android_graph_pointer EXPERIENCE_ID"
+  adb_command shell readlink "/data/misc/sos/revisions/active/$1/current" 2>/dev/null | \
+    tr -d '\r' | sed -E 's|.*/||; s|\.json$||'
+}
+
 verify_sos() {
   [[ "$#" -eq 0 ]] || fail "usage: ./tools/aospctl verify-sos"
   wait_for_boot
@@ -289,7 +305,7 @@ verify_sos() {
   done
   [[ "$(adb_command get-state 2>/dev/null || true)" == "device" ]] || \
     fail "Cuttlefish ADB did not return after adb root"
-  local home abi authority_pid initial_authority_pid recovered_authority_pid first_home_pid second_home_pid revision_before revision_after bootstrap_revision reverses enforcing logs app_context authority_context
+  local home abi authority_pid initial_authority_pid recovered_authority_pid first_home_pid second_home_pid stock_graph dashboard_graph bootstrap_graph active_graph reverses enforcing logs app_context authority_context composition
   # A freshly booted Cuttlefish display can sleep while adb restarts as root,
   # and PackageManager can briefly resolve Settings' FallbackHome during user
   # unlock. Keep the virtual display awake and wait for the actual HOME.
@@ -304,11 +320,11 @@ verify_sos() {
       -a android.intent.action.MAIN -c android.intent.category.HOME | tail -n 1 | tr -d '\r')"
     authority_pid="$(adb_command shell pidof sos-authority 2>/dev/null | tr -d '\r' || true)"
     first_home_pid="$(adb_command shell pidof dev.sos.experience 2>/dev/null | tr -d '\r' || true)"
-    revision_before="$(adb_command shell readlink /data/misc/sos/revisions/current 2>/dev/null | tr -d '\r' || true)"
+    stock_graph="$(android_graph_pointer sos.stock.mobile || true)"
     logs="$(adb_command logcat -d -s 'sos-experience:I' '*:S')"
     if [[ "$home" == "dev.sos.experience/.SosHomeActivity" || \
       "$home" == "dev.sos.experience/dev.sos.experience.SosHomeActivity" ]] && \
-      [[ -n "$authority_pid" && -n "$first_home_pid" && -n "$revision_before" && \
+      [[ -n "$authority_pid" && -n "$first_home_pid" && -n "$stock_graph" && \
       ( "$logs" == *"SOS experience window is live"* || \
         "$logs" == *"heartbeat"*"init_done=true, active=true"* ) ]]; then
       break
@@ -324,7 +340,7 @@ verify_sos() {
     fail "SOS is not the resolved HOME activity: $home"
   [[ "$abi" == "x86_64" ]] || fail "SOS primary ABI is $abi, expected x86_64"
   [[ -n "$authority_pid" && -n "$first_home_pid" ]] || fail "SOS authority or HOME is not running"
-  [[ -n "$revision_before" ]] || fail "authority current revision pointer is missing"
+  [[ -n "$stock_graph" ]] || fail "Stock v4 graph pointer is missing"
   [[ -z "$reverses" ]] || fail "ADB reverse mappings remain: $reverses"
   [[ "$enforcing" == "Enforcing" ]] || fail "SELinux is not enforcing: $enforcing"
   [[ "$app_context" == "u:r:sos_shell_app:s0"* ]] || fail "unexpected SOS app domain: $app_context"
@@ -333,32 +349,33 @@ verify_sos() {
     "$logs" == *"heartbeat"*"init_done=true, active=true"* ]] || \
     fail "SOS HOME did not log a live GPUI window"
 
-  bootstrap_revision="$revision_before"
+  bootstrap_graph="$stock_graph"
   adb_command logcat -c
-  adb_command push "$SOS_ROOT/experiences/timeflow.luau" \
-    /data/local/tmp/dev.sos.experience.candidate.luau >/dev/null
-  adb_command shell run-as dev.sos.experience \
-    cp /data/local/tmp/dev.sos.experience.candidate.luau files/experience.candidate.luau
-  adb_command shell rm -f /data/local/tmp/dev.sos.experience.candidate.luau
   adb_command shell am start -W \
     -a android.intent.action.VIEW \
-    -d sos://reload \
+    -d sos://experience/present/sos.example.dashboard \
     -n dev.sos.experience/dev.gpui.mobile.GpuiActivity >/dev/null
   for _ in {1..100}; do
-    revision_after="$(adb_command shell readlink /data/misc/sos/revisions/current 2>/dev/null | tr -d '\r' || true)"
+    dashboard_graph="$(android_graph_pointer sos.example.dashboard || true)"
+    composition="$(adb_command shell cat /data/misc/sos/provider-state.composition.json 2>/dev/null | tr -d '\r' || true)"
     logs="$(adb_command logcat -d -s 'sos-experience:I' '*:S')"
-    if [[ -n "$revision_after" && "$revision_after" != "$bootstrap_revision" && \
-      "$logs" == *"android_authority_revision_activated"* ]]; then
+    if [[ -n "$dashboard_graph" && "$dashboard_graph" != "$bootstrap_graph" && \
+      "$composition" == *'"presented_experience":"sos.example.dashboard"'* && \
+      "$logs" == *"android_graph_runtime_ready"*"root_experience=sos.example.dashboard"* && \
+      "$logs" == *"android_graph_presented graph_id=$dashboard_graph confirmed=true"* ]]; then
       break
     fi
     sleep 0.1
   done
-  [[ "$revision_after" != "$bootstrap_revision" ]] || fail "presented probe did not change the durable revision"
-  [[ "$logs" == *"android_authority_revision_activated"* ]] || \
-    fail "presented probe did not log authority activation"
+  [[ -n "$dashboard_graph" && "$dashboard_graph" != "$bootstrap_graph" ]] || \
+    fail "Dashboard presentation did not select a distinct v4 graph"
+  [[ "$composition" == *'"presented_experience":"sos.example.dashboard"'* ]] || \
+    fail "Dashboard presentation did not update composition authority state"
+  [[ "$logs" == *"android_graph_presented graph_id=$dashboard_graph confirmed=true"* ]] || \
+    fail "Dashboard presentation did not confirm the v4 graph"
   [[ "$(adb_command shell pidof dev.sos.experience 2>/dev/null | tr -d '\r' || true)" == "$first_home_pid" ]] || \
-    fail "revision activation replaced the permanent GPUI process"
-  revision_before="$revision_after"
+    fail "v4 graph presentation replaced the permanent GPUI process"
+  active_graph="$dashboard_graph"
 
   initial_authority_pid="$authority_pid"
   adb_command shell kill -9 "$authority_pid"
@@ -369,8 +386,11 @@ verify_sos() {
   done
   [[ -n "$recovered_authority_pid" && "$recovered_authority_pid" != "$authority_pid" ]] || \
     fail "init did not recover the killed authority process"
-  [[ "$(adb_command shell readlink /data/misc/sos/revisions/current 2>/dev/null | tr -d '\r' || true)" == "$revision_before" ]] || \
-    fail "revision changed across authority recovery"
+  [[ "$(android_graph_pointer sos.example.dashboard || true)" == "$active_graph" ]] || \
+    fail "Dashboard graph changed across authority recovery"
+  composition="$(adb_command shell cat /data/misc/sos/provider-state.composition.json 2>/dev/null | tr -d '\r' || true)"
+  [[ "$composition" == *'"presented_experience":"sos.example.dashboard"'* ]] || \
+    fail "composition authority state changed across authority recovery"
   [[ "$(adb_command shell pidof dev.sos.experience 2>/dev/null | tr -d '\r' || true)" == "$first_home_pid" ]] || \
     fail "authority recovery replaced the GPUI process"
   authority_pid="$recovered_authority_pid"
@@ -386,16 +406,16 @@ verify_sos() {
     fi
     sleep 0.1
   done
-  revision_after="$(adb_command shell readlink /data/misc/sos/revisions/current 2>/dev/null | tr -d '\r' || true)"
+  dashboard_graph="$(android_graph_pointer sos.example.dashboard || true)"
   [[ -n "$second_home_pid" && "$second_home_pid" != "$first_home_pid" ]] || \
     fail "Android did not recover the killed HOME process"
   [[ "$logs" == *"SOS experience window is live"* ]] || \
     fail "recovered HOME did not reopen a live GPUI window"
-  [[ "$revision_after" == "$revision_before" ]] || fail "revision changed across HOME recovery"
+  [[ "$dashboard_graph" == "$active_graph" ]] || fail "v4 graph changed across HOME recovery"
   [[ "$(adb_command shell pidof sos-authority 2>/dev/null | tr -d '\r' || true)" == "$authority_pid" ]] || \
     fail "authority process changed when only HOME was killed"
-  printf 'boot_completed=1\nhome=%s\nabi=%s\nselinux=%s\napp_domain=%s\nauthority_domain=%s\nauthority_pid_before=%s\nauthority_pid_after=%s\nhome_pid_before=%s\nhome_pid_after=%s\nbootstrap_revision=%s\nactivated_revision=%s\nadb_reverse=none\n' \
-    "$home" "$abi" "$enforcing" "$app_context" "$authority_context" "$initial_authority_pid" "$authority_pid" "$first_home_pid" "$second_home_pid" "$bootstrap_revision" "$revision_before"
+  printf 'boot_completed=1\nhome=%s\nabi=%s\nselinux=%s\napp_domain=%s\nauthority_domain=%s\nauthority_pid_before=%s\nauthority_pid_after=%s\nhome_pid_before=%s\nhome_pid_after=%s\nbootstrap_graph=%s\nactivated_graph=%s\nactivated_experience=sos.example.dashboard\nadb_reverse=none\n' \
+    "$home" "$abi" "$enforcing" "$app_context" "$authority_context" "$initial_authority_pid" "$authority_pid" "$first_home_pid" "$second_home_pid" "$bootstrap_graph" "$active_graph"
 }
 
 manifest_identity() {

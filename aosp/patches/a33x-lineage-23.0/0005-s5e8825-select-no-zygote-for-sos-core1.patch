@@ -9,8 +9,8 @@ core_no_zygote.mk, producing contradictory immutable vendor properties and a
 hard build failure.
 
 Select AOSP's existing no-Zygote product fragment at the shared hardware
-boundary for the explicit Core 1 target. All other a33x products retain the
-original 64-bit Zygote configuration.
+boundary for the Core 1 shipping and provider-probe targets. All other a33x
+products retain the original 64-bit Zygote configuration.
 ---
  common.mk | 8 +++++++-
  1 file changed, 7 insertions(+), 1 deletion(-)
@@ -25,7 +25,7 @@ index 1233c99..010fad1 100644
 +# Inherit from generic products, most specific first. SOS Core 1 deliberately
 +# retains the shared Samsung hardware product while selecting AOSP's empty
 +# Zygote init configuration; every other a33x product remains 64-bit-only.
-+ifeq ($(TARGET_PRODUCT),lineage_sos_core1_a33x)
++ifneq ($(filter lineage_sos_core1_a33x lineage_sos_core1_dev_a33x,$(TARGET_PRODUCT)),)
 +$(call inherit-product, $(SRC_TARGET_DIR)/product/core_no_zygote.mk)
 +else
  $(call inherit-product, $(SRC_TARGET_DIR)/product/core_64_bit_only.mk)

@@ -37,8 +37,10 @@
          hide ordinary overlays. -->
     <uses-permission android:name="android.permission.SYSTEM_APPLICATION_OVERLAY" />
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+    <uses-permission android:name="android.permission.HIDE_OVERLAY_WINDOWS" />
     <uses-permission android:name="android.permission.INJECT_EVENTS" />
     <uses-permission android:name="dev.sos.permission.REPORT_HOME_HEARTBEAT" />
+    <uses-permission android:name="dev.sos.permission.REPORT_ADB_CONSENT" />
     <!-- SOS is platform-signed and is the system HOME on SOS products. This
          signature permission keeps scan/configuration access inside the
          trusted permanent host rather than exposing Wi-Fi objects to Luau. -->
@@ -195,22 +197,13 @@
         />
 
         <activity
-            android:name="dev.gpui.mobile.SosCompatWorkspaceActivity"
-            android:directBootAware="false"
+            android:name="dev.gpui.mobile.SosAdbConfirmationActivity"
+            android:directBootAware="true"
             android:enabled="${sosCompatEnabled}"
             android:excludeFromRecents="true"
-            android:exported="false"
-            android:launchMode="singleTask"
-            android:theme="@style/GpuiTheme"
-        />
-
-        <activity
-            android:name="dev.gpui.mobile.SosAttentionActivity"
-            android:directBootAware="false"
-            android:enabled="${sosCompatEnabled}"
-            android:excludeFromRecents="true"
-            android:exported="false"
-            android:launchMode="singleTask"
+            android:exported="true"
+            android:finishOnCloseSystemDialogs="true"
+            android:permission="android.permission.MANAGE_DEBUGGING"
             android:theme="@style/GpuiTheme"
         />
 

@@ -19,10 +19,10 @@ permanent sos-experience-host PID
     | authenticated bounded control protocol
     | register / quiesce / arm / configure bounded shell surfaces
     |
-    | Luau -> Scene ABI v3 -> retained GPUI
+    | Luau -> Experience API v4 graph -> retained GPUI
     v
 authenticated GPUI surfaces
-    | shell + shell overlay + native application
+    | shell + shell overlay + independently hosted native applications
 sos-compositor (Smithay 0.7.0)
     | one shell + one overlay + bounded native/compatibility toplevels
     | shared focus/input/activation policy
@@ -30,10 +30,11 @@ sos-compositor (Smithay 0.7.0)
     `-- libseat + udev + DRM/GBM + libinput -> KMS output
 ```
 
-Luau still sees only the versioned Scene and provider capabilities. Its keyed
-`window_space`, `shell_overlay`, and `application_surface` nodes describe
-bounded composition intent. Only the trusted host converts measured bounds
-into compositor geometry or opens the corresponding GPUI/XDG surface. Luau
+Luau still sees only the versioned Scene and provider capabilities. Shell-role
+`window_space` and `shell_overlay` nodes describe bounded composition intent;
+ordinary-role v4 graph roots open independently supervised GPUI/XDG surfaces.
+Only the trusted hosts convert measured bounds into compositor geometry or
+authenticate the corresponding surface. Luau
 never receives a Wayland object, socket, file descriptor, surface identity,
 PID, or arbitrary placement operation.
 `compositor-control-protocol` is a separate bounded newline-JSON ABI between
@@ -42,9 +43,13 @@ the trusted permanent host and compositor.
 The compositor creates a mode-0600 control socket in a caller-owned mode-0700
 runtime directory. A client must present the launch token and a PID equal to
 the socket's `SO_PEERCRED` PID before opening its GPUI Wayland connection. The
-compositor records that PID as trusted. Its first XDG toplevel is the shell,
-its second is the one topmost shell overlay, and subsequent trusted toplevels
-are `NativeApplication`; other Wayland client PIDs are compatibility clients.
+compositor records the Shell host PID as trusted shell authority. Each ordinary
+v4 host separately registers its own peer-credential PID as
+`NativeApplication` but receives no shell-control methods. Other Wayland client
+PIDs are compatibility clients. The listener serves at most 16 registered or
+registering control connections concurrently; every mutation still crosses
+the single compositor event-loop channel. A long-lived shell registration
+therefore cannot block an independently presented application from registering.
 This is a development-session authenticator. A
 production session must also isolate service users/credentials so another
 same-UID process cannot inspect launch credentials.
@@ -166,7 +171,7 @@ On a Linux development machine with Xvfb, Weston, and
 The verifier builds the locked graph and creates only disposable state. It
 runs Weston's X11 backend in Xvfb, runs `sos-compositor` through its Smithay
 winit backend, boots the coordinated Linux session inside that compositor,
-activates `daily-flow.luau`, kills the exact host PID, waits for supervisor
+activates the test-only stateful fixture, kills the exact host PID, waits for supervisor
 recovery, and maps `weston-simple-shm` as the compatibility client. It requires:
 
 - unchanged PID across the normal Luau activation;
@@ -194,6 +199,29 @@ Expected leading output:
 ```text
 linux_nested_compositor_passed activation_pid=... restarted_pid=... revision_id=... evidence=nested_backend_submit
 ```
+
+The composition-specific companion gate is:
+
+```sh
+./tools/linux-compositor/verify-composition-nested
+```
+
+It installs the Agenda, Media, Dashboard, and Remix reference packages into a
+disposable graph store, activates the resolved Dashboard graph through the
+durable graph supervisor, and inspects the composed semantic tree. It requires
+separate parent/child ownership, namespaced editable state, child-event
+routing, appearance propagation without forcing the custom Media visual
+system, the same host PID across graph activation, exact graph recovery after
+host death, and three `nested_backend_submit` fences. Its raw logs and stores
+can be retained with `SOS_COMPOSITION_EVIDENCE_DIR`.
+
+The host creates the trusted shell-overlay GPUI window only when the active
+Scene contains its corresponding content. It reconciles that window after the
+current GPUI entity update finishes, so a revision can add or remove the
+surface without a reentrant entity update or leaving a transparent input
+surface behind. Set `SOS_NESTED_OVERLAY_ONLY=1` on the broader nested verifier
+for the focused open/close check. Independent application Experiences use
+registry lifecycle and separate host processes.
 
 The gate passes both on the ARM64 Ubuntu 24.04 development host and inside the
 reference Debian 13.6 ARM64 KVM guest. The Debian run activated revision
@@ -244,6 +272,20 @@ metadata, not a fabricated counter. The compositor presented its recovery view
 both before boot and between the killed/restarted hosts, and the separate
 compatibility client mapped at `(280, 140)`.
 
+The 2026-08-27 x86_64 Debian 13 v4 graph campaign passed at source revision
+`294fe67` on kernel `6.12.101+deb13-amd64` in 15.887747472 monotonic seconds.
+It booted Stock graph `b8d0745f…`, activated candidate graph `27ddfcc9…` in
+unchanged host PID 16868, physically presented a fault-injected rejected Stock
+candidate, physically restored `27ddfcc9…` before completing discard, and
+restarted that accepted graph in PID 17301. The exact DRM-frame graph sequence
+was old, new, rejected old, restored new, restarted new. Input stayed quiesced
+from each candidate boundary until authority finalization or the restored
+frame; both held-input lifecycles contained one keyboard key, one pointer
+button and two touch contacts. Registry and authority agreed, no singleton
+pointer was created, and GDM and seatd were active after cleanup. The retained
+evidence is indexed from `docs/progress.md`; it is VM, not physical-panel or
+integrated-input evidence.
+
 The direct backend remains intentionally one seat, but accepts multiple DRM
 devices and simultaneous connected outputs. Its default mirror policy prefers
 the internal `eDP` connector as the canonical logical canvas, falling back to
@@ -285,6 +327,17 @@ before-promotion authority failure. Both paths require `keys=1 buttons=1
 touches=2` at quiesce and suppressed releases after presentation or abort.
 Revision `250b1573…` activated in PID 8641 and recovered after the exact host
 kill in PID 8888 with DRM page-flip evidence.
+
+Seat revocation may make a KMS commit return `EACCES` just before libseat
+delivers `PauseSession`. The direct renderer treats only Smithay's explicit
+inactive-device or permission-denied DRM errors as that transition: it stops
+submitting, waits for the seat event, and resumes on `ActivateSession`. Other
+render failures remain fatal. The boot verifier selects `s2idle` explicitly,
+restores the prior `/sys/power/mem_sleep` selection on every exit, and proves
+that the same compositor owner survives VT pause/activation, the kernel freezer
+suspend test, and connector remove/reconnect. This avoids both a false failure
+on machines whose default is `deep` and a real crash in the DRM-master
+revocation race.
 
 Activation quiescing includes touch. Existing contacts receive one
 `wl_touch.cancel`, their physical motion/release is suppressed across either a

@@ -46,7 +46,9 @@ PY
 "$test_deploy" components >"$test_root/deploy-components.txt"
 for test_component in \
   compositor experience-host provider supervisor session authoring provider-probe \
-  login-session session-target session-shutdown-target hardware-gate stock-base api-doc \
+  login-session agent-login session-target session-shutdown-target hardware-gate \
+  stock-base stock-package stock-theme \
+  api-doc agent-doc stable-host-doc \
   display-defaults; do
   grep -E "^${test_component}[[:space:]]+/" \
     "$test_root/deploy-components.txt" >/dev/null
@@ -102,13 +104,19 @@ printf '%s\n' \
   '    ;;' \
   '  "set -euo pipefail;"*)' \
   '    stage="$(cat "$TEST_DEPLOY_STATE")"' \
-  '    mkdir -p "$TEST_DEPLOY_REMOTE/usr/local/libexec/sos" "$TEST_DEPLOY_REMOTE/usr/local/lib/systemd/user" "$TEST_DEPLOY_REMOTE/usr/share/doc/sos" "$TEST_DEPLOY_REMOTE/usr/share/sos/experiences" "$TEST_DEPLOY_REMOTE/etc/xdg"' \
+  '    [[ "$command" == *"sudo install -d -o root -g root -m 0755 '\''/usr/share/sos/experiences/modules'\'';"* ]]' \
+  '    mkdir -p "$TEST_DEPLOY_REMOTE/usr/local/libexec/sos" "$TEST_DEPLOY_REMOTE/usr/local/libexec/sos-agent/dist" "$TEST_DEPLOY_REMOTE/usr/local/lib/systemd/user" "$TEST_DEPLOY_REMOTE/usr/share/doc/sos" "$TEST_DEPLOY_REMOTE/usr/share/sos/experiences/modules" "$TEST_DEPLOY_REMOTE/etc/xdg"' \
   '    for source in "$stage"/sos-*; do cp -- "$source" "$TEST_DEPLOY_REMOTE/usr/local/libexec/sos/$(basename "$source")"; done' \
   '    [[ ! -f "$stage/linux-hardware-gate" ]] || cp -- "$stage/linux-hardware-gate" "$TEST_DEPLOY_REMOTE/usr/local/libexec/sos/"' \
+  '    [[ ! -f "$stage/agent-runner.cjs" ]] || cp -- "$stage/agent-runner.cjs" "$TEST_DEPLOY_REMOTE/usr/local/libexec/sos-agent/dist/"' \
   '    [[ ! -f "$stage/sos-session.target" ]] || cp -- "$stage/sos-session.target" "$TEST_DEPLOY_REMOTE/usr/local/lib/systemd/user/"' \
   '    [[ ! -f "$stage/sos-session-shutdown.target" ]] || cp -- "$stage/sos-session-shutdown.target" "$TEST_DEPLOY_REMOTE/usr/local/lib/systemd/user/"' \
   '    [[ ! -f "$stage/default.luau" ]] || cp -- "$stage/default.luau" "$TEST_DEPLOY_REMOTE/usr/share/sos/experiences/"' \
+  '    [[ ! -f "$stage/default.package.json" ]] || cp -- "$stage/default.package.json" "$TEST_DEPLOY_REMOTE/usr/share/sos/experiences/"' \
+  '    [[ ! -f "$stage/stock-theme.luau" ]] || cp -- "$stage/stock-theme.luau" "$TEST_DEPLOY_REMOTE/usr/share/sos/experiences/modules/"' \
   '    [[ ! -f "$stage/experience-api.md" ]] || cp -- "$stage/experience-api.md" "$TEST_DEPLOY_REMOTE/usr/share/doc/sos/"' \
+  '    [[ ! -f "$stage/sos-agent.md" ]] || cp -- "$stage/sos-agent.md" "$TEST_DEPLOY_REMOTE/usr/share/doc/sos/"' \
+  '    [[ ! -f "$stage/linux-stable-host.md" ]] || cp -- "$stage/linux-stable-host.md" "$TEST_DEPLOY_REMOTE/usr/share/doc/sos/"' \
   '    [[ ! -f "$stage/monitors.xml" ]] || cp -- "$stage/monitors.xml" "$TEST_DEPLOY_REMOTE/etc/xdg/"' \
   '    cp -- "$stage/development-deployment.env" "$TEST_DEPLOY_REMOTE/usr/share/doc/sos/"' \
   '    cp -- "$stage/development-deployment-manifest.tsv" "$TEST_DEPLOY_REMOTE/usr/share/doc/sos/"' \
@@ -148,31 +156,45 @@ SOS_DEVELOPMENT_DEPLOY_ARTIFACTS_DIR="$test_root/deploy-artifacts" \
     --component compositor \
     --component provider-probe \
     --component login-session \
+    --component agent-login \
+    --component agent-runtime \
     --component session-target \
     --component session-shutdown-target \
     --component hardware-gate \
     --component stock-base \
+    --component stock-package \
+    --component stock-theme \
     --component api-doc \
+    --component agent-doc \
+    --component stable-host-doc \
     --component display-defaults \
     >"$test_root/deploy-pass.txt"
 grep -F 'linux_development_live_deployed=PASS' "$test_root/deploy-pass.txt" >/dev/null
 grep -F 'promotion_eligible=false' "$test_root/deploy-pass.txt" >/dev/null
 for test_binary in \
-  sos-experience-host sos-compositor sos-linux-provider-probe sos-login-session linux-hardware-gate; do
+  sos-experience-host sos-compositor sos-linux-provider-probe sos-login-session sos-agent-login \
+  linux-hardware-gate; do
   [[ -x "$test_deploy_remote/usr/local/libexec/sos/$test_binary" ]]
 done
 [[ -f "$test_deploy_remote/usr/share/sos/experiences/default.luau" ]]
+[[ -f "$test_deploy_remote/usr/share/sos/experiences/default.package.json" ]]
+[[ -f "$test_deploy_remote/usr/share/sos/experiences/modules/stock-theme.luau" ]]
 [[ -f "$test_deploy_remote/usr/share/doc/sos/experience-api.md" ]]
+[[ -f "$test_deploy_remote/usr/share/doc/sos/sos-agent.md" ]]
+[[ -f "$test_deploy_remote/usr/share/doc/sos/linux-stable-host.md" ]]
 cmp -s \
   "$test_repo_root/packaging/xdg/framework12-pikvm-monitors.xml" \
   "$test_deploy_remote/etc/xdg/monitors.xml"
 [[ -f "$test_deploy_remote/usr/local/lib/systemd/user/sos-session.target" ]]
 [[ -f "$test_deploy_remote/usr/local/lib/systemd/user/sos-session-shutdown.target" ]]
+cmp -s \
+  "$test_repo_root/services/sos-agent/dist/agent-runner.cjs" \
+  "$test_deploy_remote/usr/local/libexec/sos-agent/dist/agent-runner.cjs"
 test_deployment_metadata="$test_deploy_remote/usr/share/doc/sos/development-deployment.env"
 test_deployment_manifest="$test_deploy_remote/usr/share/doc/sos/development-deployment-manifest.tsv"
 grep -Fx 'image_kind=development-live' "$test_deployment_metadata" >/dev/null
 grep -Fx 'promotion_eligible=false' "$test_deployment_metadata" >/dev/null
-[[ "$(wc -l <"$test_deployment_manifest")" -eq 10 ]]
+[[ "$(wc -l <"$test_deployment_manifest")" -eq 16 ]]
 while IFS=$'\t' read -r test_path test_bytes test_sha; do
   [[ "$(stat -c %s "$test_deploy_remote$test_path")" == "$test_bytes" ]]
   [[ "$(sha256sum "$test_deploy_remote$test_path" | cut -d ' ' -f 1)" == "$test_sha" ]]
@@ -535,6 +557,7 @@ mkdir -p \
   "$test_rootfs/usr/libexec/livesys" \
   "$test_rootfs/usr/share/wayland-sessions" \
   "$test_rootfs/usr/share/sos/experiences" \
+  "$test_rootfs/usr/share/sos/experiences/modules" \
   "$test_rootfs/usr/share/doc/sos" \
   "$test_rootfs/usr/lib/systemd/system" \
   "$test_rootfs/usr/lib/firewalld" \
@@ -550,7 +573,8 @@ mkdir -p \
 : >"$test_rootfs/usr/local/libexec/sos-agent/dist/agent-runner.cjs"
 : >"$test_rootfs/usr/share/wayland-sessions/sos.desktop"
 : >"$test_rootfs/usr/share/sos/experiences/default.luau"
-: >"$test_rootfs/usr/share/sos/experiences/daily-flow.luau"
+: >"$test_rootfs/usr/share/sos/experiences/default.package.json"
+: >"$test_rootfs/usr/share/sos/experiences/modules/stock-theme.luau"
 cp -- "$test_repo_root/packaging/xdg/framework12-pikvm-monitors.xml" \
   "$test_rootfs/etc/xdg/monitors.xml"
 : >"$test_rootfs/usr/lib/systemd/system/gdm.service"
@@ -1070,6 +1094,10 @@ grep -F "target is not a mutable, non-promotable development-live image" \
   "$test_deploy" >/dev/null
 grep -F "log out of SOS before deploying" "$test_deploy" >/dev/null
 grep -F 'development-deployment-manifest.tsv' "$test_deploy" >/dev/null
+grep -F "'agent-runtime       /usr/local/libexec/sos-agent/dist/agent-runner.cjs'" \
+  "$test_deploy" >/dev/null
+grep -F 'npm --prefix services/sos-agent run build' "$test_deploy" >/dev/null
+grep -F 'login-session agent-login agent-runtime session-target' "$test_deploy" >/dev/null
 grep -F 'lorax' "$test_repo_root/docs/linux-live-image.md" >/dev/null
 grep -F 'install-linux-login-session' "$test_repo_root/docs/linux-live-image.md" >/dev/null
 grep -F 'same-boot' "$test_repo_root/docs/linux-hardware-gate.md" >/dev/null

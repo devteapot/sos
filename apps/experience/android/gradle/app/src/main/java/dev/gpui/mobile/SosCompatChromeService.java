@@ -41,12 +41,13 @@ public final class SosCompatChromeService extends Service {
     private static final long APP_TRANSITION_REVEAL_MS = 750;
     private static final long OWNER_FOCUS_REVEAL_MS = 250;
     private static volatile boolean ready;
+    private static volatile boolean experienceOwnerVisible;
     private static volatile SosCompatChromeService instance;
     private final Handler handler = new Handler(Looper.getMainLooper());
     private WindowManager windowManager;
     private ChromeView chrome;
     private final Runnable transitionReveal = () -> {
-        if (chrome != null) {
+        if (chrome != null && !experienceOwnerVisible) {
             chrome.setVisibility(View.VISIBLE);
             chrome.invalidate();
         }
@@ -67,7 +68,18 @@ public final class SosCompatChromeService extends Service {
         return ready;
     }
 
-    static void ownerFocused(Context context) {
+    static void experienceOwnerFocused(Context context) {
+        experienceOwnerVisible = true;
+        SosCompatChromeService service = instance;
+        if (service == null) {
+            start(context);
+        } else {
+            service.handler.post(service::hideForExperienceOwner);
+        }
+    }
+
+    static void trustedSurfaceFocused(Context context) {
+        experienceOwnerVisible = false;
         SosCompatChromeService service = instance;
         if (service == null) {
             start(context);
@@ -78,6 +90,7 @@ public final class SosCompatChromeService extends Service {
     }
 
     static void beginTransition(Context context) {
+        experienceOwnerVisible = false;
         SosCompatChromeService service = instance;
         if (service == null) {
             start(context);
@@ -100,7 +113,11 @@ public final class SosCompatChromeService extends Service {
     public int onStartCommand(Intent intent, int flags, int startId) {
         if (chrome == null) installChrome();
         setAndroidNavigationDisabled(true);
-        redrawAfterTransition(APP_TRANSITION_REVEAL_MS);
+        if (experienceOwnerVisible) {
+            hideForExperienceOwner();
+        } else {
+            redrawAfterTransition(APP_TRANSITION_REVEAL_MS);
+        }
         return START_STICKY;
     }
 
@@ -140,9 +157,14 @@ public final class SosCompatChromeService extends Service {
             windowManager.addView(view, params);
             chrome = view;
             ready = true;
-            redrawAfterTransition(APP_TRANSITION_REVEAL_MS);
+            if (experienceOwnerVisible) {
+                hideForExperienceOwner();
+            } else {
+                redrawAfterTransition(APP_TRANSITION_REVEAL_MS);
+            }
             Log.i(TAG, "compat_chrome_ready renderer=sos-fixed-software-text"
-                    + " transition_reveal=atomic controls=back,apps,attention,exit");
+                    + " transition_reveal=atomic controls=back,apps,attention,exit"
+                    + " owner_visibility=guarded");
         } catch (ReflectiveOperationException | RuntimeException error) {
             ready = false;
             Log.e(TAG, "compat_chrome_failed", error);
@@ -156,18 +178,19 @@ public final class SosCompatChromeService extends Service {
         handler.postDelayed(transitionReveal, revealDelayMs);
     }
 
+    private void hideForExperienceOwner() {
+        if (chrome == null) return;
+        handler.removeCallbacks(transitionReveal);
+        chrome.setVisibility(View.INVISIBLE);
+        Log.i(TAG, "compat_chrome_visibility=hidden owner=stock-mobile");
+    }
+
     private void markAsSystemApplicationOverlay(WindowManager.LayoutParams params)
             throws ReflectiveOperationException {
         Method mark = WindowManager.LayoutParams.class.getMethod(
                 "setSystemApplicationOverlay", boolean.class);
         mark.invoke(params, true);
         Log.i(TAG, "compat_chrome_trust=system_application_overlay");
-    }
-
-    private void open(Class<?> activity) {
-        Intent intent = new Intent(this, activity)
-                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
-        startActivity(intent);
     }
 
     private void updateStatus() {
@@ -268,8 +291,10 @@ public final class SosCompatChromeService extends Service {
                     beginTransition(SosCompatChromeService.this);
                 }
                 if (selected == 0) SosAndroidAppAdapter.back();
-                else if (selected == 1) open(SosCompatWorkspaceActivity.class);
-                else if (selected == 2) open(SosAttentionActivity.class);
+                else if (selected == 1) SosAndroidAppAdapter.home(
+                        SosCompatChromeService.this, "apps");
+                else if (selected == 2) SosAndroidAppAdapter.home(
+                        SosCompatChromeService.this, "controls");
                 else if (selected == 3) SosAndroidAppAdapter.home(SosCompatChromeService.this);
                 performClick();
                 return true;

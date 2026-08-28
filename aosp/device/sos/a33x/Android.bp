@@ -55,6 +55,33 @@ cc_binary {
     ],
 }
 
+cc_defaults {
+    name: "sos-core-input-automation-defaults",
+    srcs: ["core/input_automation.cpp"],
+    compile_multilib: "64",
+    system_ext_specific: true,
+    cflags: [
+        "-Wall",
+        "-Werror",
+        "-Wextra",
+    ],
+    shared_libs: [
+        "libcutils",
+        "liblog",
+    ],
+}
+
+cc_binary {
+    name: "sos-core-input-automation",
+    defaults: ["sos-core-input-automation-defaults"],
+    init_rc: ["core/sos-core-input-automation.rc"],
+}
+
+cc_binary {
+    name: "sos-core-inputctl",
+    defaults: ["sos-core-input-automation-defaults"],
+}
+
 cc_binary {
     name: "sos-core-platform-adapter",
     stem: "sos-core-platform",
@@ -267,18 +294,26 @@ prebuilt_etc {
 }
 
 prebuilt_etc {
-    name: "sos-agent-example-secondary",
-    src: "prebuilts/sos-agent/example-secondary.luau",
-    filename: "example-secondary.luau",
-    sub_dir: "sos-agent",
+    name: "sos-mobile-experience",
+    src: "prebuilts/mobile.luau",
+    filename: "mobile.luau",
+    sub_dir: "sos",
     system_ext_specific: true,
 }
 
 prebuilt_etc {
-    name: "sos-default-experience",
-    src: "prebuilts/default.luau",
-    filename: "default.luau",
+    name: "sos-mobile-package",
+    src: "prebuilts/mobile.package.json",
+    filename: "mobile.package.json",
     sub_dir: "sos",
+    system_ext_specific: true,
+}
+
+prebuilt_etc {
+    name: "sos-mobile-theme",
+    src: "prebuilts/mobile-theme.luau",
+    filename: "mobile-theme.luau",
+    sub_dir: "sos/modules",
     system_ext_specific: true,
 }
 

@@ -17,14 +17,14 @@ generated widgets. The architectural north star is
 
 ## Current status
 
-As of 2026-08-16, SOS has moved beyond its original Android application
+As of 2026-08-27, SOS has moved beyond its original Android application
 laboratory into the privileged system and native-ownership phase.
 
 | Track | Current evidence |
 | --- | --- |
-| Generated experience | Scene ABI v3 Luau revisions support responsive layout, paint, transforms, clips, host-shaped text, raw multi-pointer input, animation, semantics, text composition, and bounded image/font/shader sidecars. Revisions are validated and activated transactionally in one permanent Rust/GPUI host. |
+| Generated experience | Package and Experience API v4 own all built-ins, authoring, activation, and rollback. They add named exports, exact fork/remix lineage, host-owned live mounts, isolated child VMs, state and grants, typed appearance, locked or tracked graphs, and transactional activation on Linux and Android. The Agenda, Media, Dashboard, and self-contained remix reference gate passes desktop tests plus Framework and Android hardware campaigns; rebuilt v4-only Compat and Core artifacts remain to be accepted after removal of the migration readers. |
 | Android APK harness | The physical SM-A336B passed the stable-host regression, typed provider effect, durable state/authority recovery, and a 10,000-swap device soak. This remains a regression harness, not the product boundary. |
-| Linux | A permanent GPUI/Wayland host, durable provider/state service, revision supervisor, resident Pi authoring agent, authenticated Smithay compositor, selectable GDM session, and Debian direct-DRM VM gate are implemented. Physical Linux hardware remains unproven. |
+| Linux | A permanent GPUI/Wayland host, durable provider/state service, revision supervisor, resident Pi authoring agent, authenticated Smithay compositor, selectable GDM session, and Debian direct-DRM VM gate are implemented. The exact Framework development-live composition and integrated-input diagnostic passes; installed-product promotion remains open. |
 | AOSP Cuttlefish | Pristine Android 17, SOS-as-HOME, and an init-supervised on-device authority passed in x86-64 Cuttlefish. |
 | Samsung a33x | The historical six-stage campaign was completed on physical hardware. Compat 1 is the accepted usable fallback and later passed live System Providers v1. Core 1 is the only active Core development target; Core 0A is archived and Core 0B is a frozen, opt-in migration oracle. Core 1 now builds the same provider ABI through native Health, Supplicant, audio, app-manifest, media, and attention adapters, but that slice has not passed its physical gate and Core 1 is not yet a usable unlocked OS. |
 | Resident agent | Pi runs on Linux and as native ARM64/Bionic Node on the phone. A subscription-backed Codex flow produced and activated a live generated revision on-device without bypassing trusted validation. |
@@ -119,16 +119,21 @@ session with:
 ./tools/sosctl m1-stop
 ```
 
-Replace only the experience while the same process and APK remain alive:
+Validate a v4 Experience or stage a Stock-compatible v4 edit while the same
+process and APK remain alive:
 
 ```sh
-./tools/sosctl validate experiences/daily-flow-agent.luau
-./tools/sosctl script experiences/timeflow.luau
-./tools/sosctl agent-apply experiences/daily-flow-agent.luau
+./tools/sosctl validate experiences/android-exit-agent.luau
+./tools/sosctl agent-generate "make the Stock workspace calmer"
+./tools/sosctl agent-apply .cache/agent-candidates/android-stock-agent.luau
 ./tools/sosctl rollback
 ./tools/sosctl worker-restart
-./tools/sosctl stress 10000
 ```
+
+The source delivery command edits the active Stock Experience and therefore
+keeps its v4 `main` export and agent composer. Ordinary Experiences retain
+their own registry identities and launch as independent top-level graphs; the
+signed Agenda, Media, Dashboard, and remix packages exercise that boundary.
 
 The original unmodified GPUI Mobile hardware spike remains available through
 `./tools/sosctl run`; see [`docs/experiment.md`](docs/experiment.md).
@@ -146,16 +151,29 @@ From another terminal, inspect or replace the active revision without
 replacing the process or window:
 
 ```sh
-./tools/sosctl linux-script experiences/daily-flow.luau
+./tools/sosctl linux-script tests/fixtures/stock-authoring-v4.luau
 ./tools/sosctl linux-status
 ./tools/sosctl linux-stop
 ```
+
+Install the API v4 composition reference package into an isolated store:
+
+```sh
+demo_root=$(mktemp -d)
+cargo run --locked -p revision-supervisor --bin sos-revision-supervisor -- \
+  install-composition-demo --root "$demo_root"
+```
+
+The JSON result names the Agenda, Media, Dashboard, and remix revisions plus
+the resolved Dashboard graph. See
+[`docs/experience-composition.md`](docs/experience-composition.md) for graph
+activation and acceptance status.
 
 Run the resident-agent path deterministically without a model call:
 
 ```sh
 ./tools/sosctl linux-agent-test
-./tools/sosctl linux-agent-run --fake experiences/daily-flow.luau
+./tools/sosctl linux-agent-run --fake tests/fixtures/stock-authoring-v4.luau
 ```
 
 For a subscription-backed live model, authenticate with Pi's headless Codex
@@ -331,6 +349,8 @@ documented external evidence directories and are intentionally not tracked.
   device, reproducible build, rollback risk, and hardware evidence.
 - [`docs/experience-api.md`](docs/experience-api.md) documents the Luau-facing
   capability API.
+- [`docs/experience-composition.md`](docs/experience-composition.md) defines
+  fork, remix, live mounting, experience boundaries, and shared appearance.
 - [`docs/runtime-evaluation.md`](docs/runtime-evaluation.md) records why Luau
   was selected for the current experience runtime.
 - [`docs/stable-host-device-gate.md`](docs/stable-host-device-gate.md) and

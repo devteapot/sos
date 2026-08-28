@@ -3,7 +3,10 @@ use std::{
     io::{self, BufRead, BufReader, Read as _, Write},
     os::unix::{fs::PermissionsExt as _, net::UnixListener},
     path::{Path, PathBuf},
-    sync::mpsc,
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        mpsc, Arc,
+    },
     thread,
     time::Duration,
 };
@@ -23,10 +26,30 @@ use crate::CompositorData;
 
 const CONTROL_TIMEOUT: Duration = Duration::from_secs(5);
 const EVENT_POLL_INTERVAL: Duration = Duration::from_millis(20);
+const MAX_CONTROL_CONNECTIONS: usize = 16;
+
+struct ControlConnectionSlot(Arc<AtomicUsize>);
+
+impl Drop for ControlConnectionSlot {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+fn reserve_control_connection(active: &Arc<AtomicUsize>) -> Option<ControlConnectionSlot> {
+    let previous = active.fetch_add(1, Ordering::AcqRel);
+    if previous >= MAX_CONTROL_CONNECTIONS {
+        active.fetch_sub(1, Ordering::AcqRel);
+        None
+    } else {
+        Some(ControlConnectionSlot(Arc::clone(active)))
+    }
+}
 
 pub enum ControlCommand {
     Register {
         pid: u32,
+        role: ControlClientRole,
         events: mpsc::Sender<CompositorEvent>,
         reply: mpsc::Sender<std::result::Result<(), String>>,
     },
@@ -70,6 +93,12 @@ pub enum ControlCommand {
     Disconnected {
         pid: u32,
     },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ControlClientRole {
+    Shell,
+    NativeApplication,
 }
 
 pub struct ControlSocketGuard(PathBuf);
@@ -120,12 +149,39 @@ pub fn init_control(
     thread::Builder::new()
         .name("sos-compositor-control".into())
         .spawn(move || {
+            let active_connections = Arc::new(AtomicUsize::new(0));
             for connection in listener.incoming() {
                 match connection {
                     Ok(stream) => {
-                        if let Err(error) = serve_shell_connection(stream, &shell_token, &commands)
+                        let Some(slot) = reserve_control_connection(&active_connections) else {
+                            tracing::warn!(
+                                limit = MAX_CONTROL_CONNECTIONS,
+                                "refused compositor control connection above the bounded limit"
+                            );
+                            continue;
+                        };
+                        let connection_token = shell_token.clone();
+                        let connection_commands = commands.clone();
+                        if let Err(error) = thread::Builder::new()
+                            .name("sos-compositor-control-client".into())
+                            .spawn(move || {
+                                let _slot = slot;
+                                if let Err(error) = serve_shell_connection(
+                                    stream,
+                                    &connection_token,
+                                    &connection_commands,
+                                ) {
+                                    tracing::warn!(
+                                        error = %error,
+                                        "compositor control connection failed"
+                                    );
+                                }
+                            })
                         {
-                            tracing::warn!(error = %error, "compositor control connection failed");
+                            tracing::warn!(
+                                error = %error,
+                                "could not start compositor control client thread"
+                            );
                         }
                     }
                     Err(error) => {
@@ -150,20 +206,27 @@ fn serve_shell_connection(
     let mut reader = BufReader::new(stream.try_clone()?);
     let request =
         read_request(&mut reader)?.context("control client closed before registration")?;
-    let CompositorRequest::RegisterShell {
-        request_id,
-        token,
-        pid,
-    } = request
-    else {
-        write_event(
-            &mut stream,
-            &CompositorEvent::Rejected {
-                request_id: request.request_id(),
-                error: "first compositor request must register the shell".into(),
-            },
-        )?;
-        return Ok(());
+    let (request_id, token, pid, role) = match request {
+        CompositorRequest::RegisterShell {
+            request_id,
+            token,
+            pid,
+        } => (request_id, token, pid, ControlClientRole::Shell),
+        CompositorRequest::RegisterApplication {
+            request_id,
+            token,
+            pid,
+        } => (request_id, token, pid, ControlClientRole::NativeApplication),
+        request => {
+            write_event(
+                &mut stream,
+                &CompositorEvent::Rejected {
+                    request_id: request.request_id(),
+                    error: "first compositor request must register a trusted client".into(),
+                },
+            )?;
+            return Ok(());
+        }
     };
     if token != shell_token || pid != peer_pid {
         write_event(
@@ -178,7 +241,12 @@ fn serve_shell_connection(
 
     let (events, event_rx) = mpsc::channel();
     let (reply, reply_rx) = mpsc::channel();
-    commands.send(ControlCommand::Register { pid, events, reply })?;
+    commands.send(ControlCommand::Register {
+        pid,
+        role,
+        events,
+        reply,
+    })?;
     match reply_rx.recv_timeout(CONTROL_TIMEOUT)? {
         Ok(()) => write_event(
             &mut stream,
@@ -192,7 +260,11 @@ fn serve_shell_connection(
             return Ok(());
         }
     }
-    tracing::info!(pid, "authenticated SOS shell control connection");
+    tracing::info!(
+        pid,
+        ?role,
+        "authenticated SOS compositor control connection"
+    );
     stream.set_read_timeout(Some(EVENT_POLL_INTERVAL))?;
 
     let result = loop {
@@ -324,11 +396,14 @@ fn serve_shell_connection(
                 };
                 write_event(&mut stream, &event)?;
             }
-            Ok(Some(CompositorRequest::RegisterShell { request_id, .. })) => write_event(
+            Ok(Some(
+                CompositorRequest::RegisterShell { request_id, .. }
+                | CompositorRequest::RegisterApplication { request_id, .. },
+            )) => write_event(
                 &mut stream,
                 &CompositorEvent::Rejected {
                     request_id,
-                    error: "shell is already registered on this connection".into(),
+                    error: "client is already registered on this connection".into(),
                 },
             )?,
             Ok(None) => break Ok(()),
@@ -372,4 +447,23 @@ fn write_event(
     serde_json::to_writer(&mut *stream, event).map_err(io::Error::other)?;
     stream.write_all(b"\n")?;
     stream.flush()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn compositor_control_connections_have_a_recoverable_bound() {
+        let active = Arc::new(AtomicUsize::new(0));
+        let mut slots = (0..MAX_CONTROL_CONNECTIONS)
+            .map(|_| reserve_control_connection(&active).unwrap())
+            .collect::<Vec<_>>();
+        assert!(reserve_control_connection(&active).is_none());
+        assert_eq!(active.load(Ordering::Acquire), MAX_CONTROL_CONNECTIONS);
+
+        slots.pop();
+        assert_eq!(active.load(Ordering::Acquire), MAX_CONTROL_CONNECTIONS - 1);
+        assert!(reserve_control_connection(&active).is_some());
+    }
 }

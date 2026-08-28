@@ -1,4 +1,5 @@
 use std::{
+    collections::VecDeque,
     io::{BufRead, BufReader, Write},
     path::PathBuf,
     process::{Child, ChildStdin, Command, ExitStatus, Stdio},
@@ -7,9 +8,11 @@ use std::{
     time::Duration,
 };
 
-use experience_host_protocol::{HostEvent, HostRequest};
+use experience_host_protocol::{
+    ExperienceLifecycleOperation, HostEvent, HostRequest, TopLevelExperience,
+};
 
-use crate::{Error, Result, VerifiedRevision};
+use crate::{Error, Result};
 
 #[derive(Clone, Debug)]
 pub struct HostCommand {
@@ -40,6 +43,13 @@ pub struct ExperienceHost {
     events: Receiver<std::result::Result<HostEvent, String>>,
     timeout: Duration,
     next_request_id: u64,
+    pending_lifecycle: VecDeque<ExperienceLifecycleRequest>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ExperienceLifecycleRequest {
+    pub experience_id: String,
+    pub operation: ExperienceLifecycleOperation,
 }
 
 impl ExperienceHost {
@@ -77,6 +87,7 @@ impl ExperienceHost {
             events: events_rx,
             timeout,
             next_request_id: 1,
+            pending_lifecycle: VecDeque::new(),
         })
     }
 
@@ -92,85 +103,135 @@ impl ExperienceHost {
         Ok(self.child.try_wait()?)
     }
 
-    pub fn boot(&mut self, revision: &VerifiedRevision) -> Result<()> {
-        let request_id = self.request_id();
-        let revision_id = revision.manifest.revision_id.clone();
-        let event = self.call(HostRequest::Boot {
-            request_id,
-            revision_id: revision_id.clone(),
-            revision_path: revision.directory.clone(),
-            experience_api_version: revision.manifest.experience_api_version,
-        })?;
-        expect_presented(event, request_id, &revision_id)
+    pub fn take_lifecycle_requests(&mut self) -> Result<Vec<ExperienceLifecycleRequest>> {
+        while let Ok(event) = self.events.try_recv() {
+            match event {
+                Ok(HostEvent::ExperienceLifecycleRequested {
+                    experience_id,
+                    operation,
+                    ..
+                }) => self
+                    .pending_lifecycle
+                    .push_back(ExperienceLifecycleRequest {
+                        experience_id,
+                        operation,
+                    }),
+                Ok(_) => return Err(Error::InvalidHostEvent),
+                Err(error) => return Err(Error::HostProtocol(error)),
+            }
+        }
+        Ok(self.pending_lifecycle.drain(..).collect())
     }
 
-    pub fn prepare(&mut self, revision: &VerifiedRevision) -> Result<()> {
+    pub fn boot_graph(
+        &mut self,
+        graph_id: &str,
+        graph_path: PathBuf,
+        revision_root: PathBuf,
+        launchable_experiences: Vec<TopLevelExperience>,
+    ) -> Result<()> {
         let request_id = self.request_id();
-        let revision_id = revision.manifest.revision_id.clone();
-        let event = self.call(HostRequest::Prepare {
+        let event = self.call(HostRequest::BootGraph {
             request_id,
-            revision_id: revision_id.clone(),
-            revision_path: revision.directory.clone(),
-            experience_api_version: revision.manifest.experience_api_version,
+            graph_id: graph_id.into(),
+            graph_path,
+            revision_root,
+            launchable_experiences,
+        })?;
+        expect_graph_presented(event, request_id, graph_id)
+    }
+
+    pub fn prepare_graph(
+        &mut self,
+        graph_id: &str,
+        graph_path: PathBuf,
+        revision_root: PathBuf,
+        launchable_experiences: Vec<TopLevelExperience>,
+    ) -> Result<()> {
+        let request_id = self.request_id();
+        let event = self.call(HostRequest::PrepareGraph {
+            request_id,
+            graph_id: graph_id.into(),
+            graph_path,
+            revision_root,
+            launchable_experiences,
         })?;
         match event {
-            HostEvent::Prepared {
+            HostEvent::GraphPrepared {
                 request_id: received,
-                revision_id: received_revision,
-            } if received == request_id && received_revision == revision_id => Ok(()),
-            HostEvent::Rejected { error, .. } => Err(Error::HostRejected(error)),
+                graph_id: received_graph,
+            } if received == request_id && received_graph == graph_id => Ok(()),
+            HostEvent::GraphRejected { error, .. } => Err(Error::HostRejected(error)),
             _ => Err(Error::InvalidHostEvent),
         }
     }
 
-    pub fn present(&mut self, revision_id: &str) -> Result<()> {
+    pub fn present_graph(&mut self, graph_id: &str) -> Result<()> {
         let request_id = self.request_id();
-        let event = self.call(HostRequest::Present {
+        let event = self.call(HostRequest::PresentGraph {
             request_id,
-            revision_id: revision_id.into(),
+            graph_id: graph_id.into(),
         })?;
-        expect_presented(event, request_id, revision_id)?;
+        expect_graph_presented(event, request_id, graph_id)?;
         let request_id = self.request_id();
-        let event = self.call(HostRequest::Confirm {
+        let event = self.call(HostRequest::ConfirmGraph {
             request_id,
-            revision_id: revision_id.into(),
+            graph_id: graph_id.into(),
         })?;
         match event {
-            HostEvent::Confirmed {
+            HostEvent::GraphConfirmed {
                 request_id: received,
-                revision_id: received_revision,
-            } if received == request_id && received_revision == revision_id => Ok(()),
+                graph_id: received_graph,
+            } if received == request_id && received_graph == graph_id => Ok(()),
+            HostEvent::GraphRejected { error, .. } => Err(Error::HostRejected(error)),
             _ => Err(Error::InvalidHostEvent),
         }
     }
 
-    pub fn quiesce_input(&mut self, revision_id: &str) -> Result<()> {
+    pub fn finalize_graph(&mut self, graph_id: &str) -> Result<()> {
         let request_id = self.request_id();
-        let event = self.call(HostRequest::QuiesceInput {
+        let event = self.call(HostRequest::FinalizeGraph {
             request_id,
-            revision_id: revision_id.into(),
+            graph_id: graph_id.into(),
         })?;
         match event {
-            HostEvent::InputQuiesced {
+            HostEvent::GraphFinalized {
                 request_id: received,
-                revision_id: received_revision,
-            } if received == request_id && received_revision == revision_id => Ok(()),
-            HostEvent::Rejected { error, .. } => Err(Error::HostRejected(error)),
+                graph_id: received_graph,
+            } if received == request_id && received_graph == graph_id => Ok(()),
+            HostEvent::GraphRejected { error, .. } => Err(Error::HostRejected(error)),
             _ => Err(Error::InvalidHostEvent),
         }
     }
 
-    pub fn discard(&mut self, revision_id: &str) -> Result<()> {
+    pub fn quiesce_graph_input(&mut self, graph_id: &str) -> Result<()> {
         let request_id = self.request_id();
-        let event = self.call(HostRequest::Discard {
+        let event = self.call(HostRequest::QuiesceGraphInput {
             request_id,
-            revision_id: revision_id.into(),
+            graph_id: graph_id.into(),
         })?;
         match event {
-            HostEvent::Discarded {
+            HostEvent::GraphInputQuiesced {
                 request_id: received,
-                revision_id: received_revision,
-            } if received == request_id && received_revision == revision_id => Ok(()),
+                graph_id: received_graph,
+            } if received == request_id && received_graph == graph_id => Ok(()),
+            HostEvent::GraphRejected { error, .. } => Err(Error::HostRejected(error)),
+            _ => Err(Error::InvalidHostEvent),
+        }
+    }
+
+    pub fn discard_graph(&mut self, graph_id: &str) -> Result<()> {
+        let request_id = self.request_id();
+        let event = self.call(HostRequest::DiscardGraph {
+            request_id,
+            graph_id: graph_id.into(),
+        })?;
+        match event {
+            HostEvent::GraphDiscarded {
+                request_id: received,
+                graph_id: received_graph,
+            } if received == request_id && received_graph == graph_id => Ok(()),
+            HostEvent::GraphRejected { error, .. } => Err(Error::HostRejected(error)),
             _ => Err(Error::InvalidHostEvent),
         }
     }
@@ -201,20 +262,34 @@ impl ExperienceHost {
         serde_json::to_writer(&mut self.input, &request)?;
         self.input.write_all(b"\n")?;
         self.input.flush()?;
-        match self.events.recv_timeout(self.timeout) {
-            Ok(Ok(event)) if event.request_id() == request.request_id() => Ok(event),
-            Ok(Ok(_)) => Err(Error::InvalidHostEvent),
-            Ok(Err(error)) => Err(Error::HostProtocol(error)),
-            Err(RecvTimeoutError::Timeout) => {
-                if let Some(status) = self.child.try_wait()? {
-                    Err(Error::HostExited(status))
-                } else {
-                    Err(Error::HostTimeout(self.timeout))
+        let deadline = std::time::Instant::now() + self.timeout;
+        loop {
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            match self.events.recv_timeout(remaining) {
+                Ok(Ok(HostEvent::ExperienceLifecycleRequested {
+                    experience_id,
+                    operation,
+                    ..
+                })) => self
+                    .pending_lifecycle
+                    .push_back(ExperienceLifecycleRequest {
+                        experience_id,
+                        operation,
+                    }),
+                Ok(Ok(event)) if event.request_id() == request.request_id() => return Ok(event),
+                Ok(Ok(_)) => return Err(Error::InvalidHostEvent),
+                Ok(Err(error)) => return Err(Error::HostProtocol(error)),
+                Err(RecvTimeoutError::Timeout) => {
+                    return if let Some(status) = self.child.try_wait()? {
+                        Err(Error::HostExited(status))
+                    } else {
+                        Err(Error::HostTimeout(self.timeout))
+                    };
                 }
-            }
-            Err(RecvTimeoutError::Disconnected) => {
-                let status = self.child.wait()?;
-                Err(Error::HostExited(status))
+                Err(RecvTimeoutError::Disconnected) => {
+                    let status = self.child.wait()?;
+                    return Err(Error::HostExited(status));
+                }
             }
         }
     }
@@ -229,13 +304,13 @@ impl Drop for ExperienceHost {
     }
 }
 
-fn expect_presented(event: HostEvent, request_id: u64, revision_id: &str) -> Result<()> {
+fn expect_graph_presented(event: HostEvent, request_id: u64, graph_id: &str) -> Result<()> {
     match event {
-        HostEvent::Presented {
+        HostEvent::GraphPresented {
             request_id: received,
-            revision_id: received_revision,
-        } if received == request_id && received_revision == revision_id => Ok(()),
-        HostEvent::Rejected { error, .. } => Err(Error::HostRejected(error)),
+            graph_id: received_graph,
+        } if received == request_id && received_graph == graph_id => Ok(()),
+        HostEvent::GraphRejected { error, .. } => Err(Error::HostRejected(error)),
         _ => Err(Error::InvalidHostEvent),
     }
 }

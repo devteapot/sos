@@ -1,6 +1,6 @@
 return {
-    api_version = 3,
-    render = function()
+    api_version = 4,
+    exports = { main = { render = function()
         return {
             id = "sidecar-proof",
             layout = {
@@ -30,5 +30,5 @@ return {
                 },
             },
         }
-    end,
+    end } },
 }

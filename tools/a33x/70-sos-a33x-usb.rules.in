@@ -1,0 +1,5 @@
+# SOS SM-A336B Android/Download, normal MTP/ADB, and Recovery sideload.
+# The installer replaces @SOS_USB_GROUP@ with an existing local group.
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="04e8", ATTR{idProduct}=="685d", OWNER:="root", GROUP:="@SOS_USB_GROUP@", MODE:="0660", TAG+="uaccess"
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="04e8", ATTR{idProduct}=="6860", OWNER:="root", GROUP:="@SOS_USB_GROUP@", MODE:="0660", TAG+="uaccess"
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="18d1", ATTR{idProduct}=="d001", OWNER:="root", GROUP:="@SOS_USB_GROUP@", MODE:="0660", TAG+="uaccess"

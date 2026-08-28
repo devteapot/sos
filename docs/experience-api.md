@@ -5,11 +5,12 @@ long-lived experience language; Rust/GPUI is the permanent execution substrate.
 An experience revision contains source, state migrations, and eventually typed
 assets, but never a native executable.
 
-The prototype deliberately broke the original `UiNode` catalog. API version 3
+The prototype deliberately broke the original `UiNode` catalog. API version 4
 uses orthogonal scene facets so an agent can combine layout, content, paint,
-interaction, animation, and semantics on the same retained node. There is no
-compatibility decoder for the catalog ABI or Scene ABI v2. Host upgrades remain
-separate system updates while the contract is intentionally fluid.
+interaction, animation, and semantics on the same retained node, and adds
+named exports, export context, declared child events, and host-owned live
+mounts. There is no compatibility decoder for the catalog ABI, Scene ABI v2,
+or Experience API v3.
 
 ## Module contract
 
@@ -17,7 +18,7 @@ Every module declares the exact scene API it emits:
 
 ```luau
 return {
-    api_version = 3,
+    api_version = 4,
     state_version = 1, -- optional; defaults to 1
     assets = { -- optional immutable, revision-scoped assets
         mark = { kind = "svg", data = "<svg ...>...</svg>" },
@@ -26,8 +27,12 @@ return {
         { name = "command_panel", state = { shell_panel = "command" } },
         { name = "agent_overlay", state = { shell_panel = "agent" } },
     },
-    render = function(model, state): SceneNode ... end,
-    update = function(model, state, event): state | UpdateEnvelope ... end, -- optional
+    exports = {
+        main = {
+            render = function(model, state, properties, context): SceneNode ... end,
+            update = function(model, state, event, properties, context): state | UpdateEnvelope ... end, -- optional
+        },
+    },
     migrate = function(from_version, state): state ... end, -- required for a state-version change
 }
 ```
@@ -44,7 +49,8 @@ authoring feedback loop; the Rust decoder remains the runtime authority.
 
 Large revisions may package sandboxed revision-local Luau modules as manifest
 sidecars with `kind = "luau"`. Module IDs are namespaced, for example
-`stock.theme`, and the entry source loads one with `require("stock.theme")`.
+`stock.theme` on Linux and `mobile.theme` on Android, and the entry source
+loads its own module with `require`.
 The loader has no filesystem, package search path, network, or host-module
 fallback. It caches one evaluation per VM and rejects missing modules, cycles,
 non-UTF-8/empty/oversized source, `nil` results, reserved `sos.*` names, and
@@ -56,7 +62,109 @@ empty list removes them. Local validation accepts repeatable module arguments:
 ```sh
 ./tools/sosctl validate experiences/default.luau \
   --module stock.theme=experiences/modules/stock-theme.luau --json
+
+./tools/sosctl validate experiences/mobile.luau \
+  --module mobile.theme=experiences/modules/mobile-theme.luau --json
 ```
+
+## Experience composition status
+
+Package format v4 and Experience API v4 implement named exports and live
+mounts. Every authored, activated, or rolled-back revision has a package
+contract and resolves to an exact graph.
+
+An API v4 module returns an exact export table:
+
+```luau
+return {
+    api_version = 4,
+    state_version = 1,
+    exports = {
+        summary = {
+            render = function(model, state, properties, context): SceneNode
+                return { id = "summary", children = {} }
+            end,
+            update = function(model, state, event, properties, context): UpdateOutcome
+                return { state = state, effects = {}, events = {} }
+            end,
+        },
+    },
+}
+```
+
+The v4 package contract declares each export's closed property and event
+schemas, bounded viewport, appearance ABI, and whether it accepts a typed
+container appearance. The parent refers only to a declared dependency alias:
+
+```luau
+{
+    id = "agenda-slot",
+    layout = { width = 440, height = 180, clip_bounds = true },
+    content = {
+        kind = "experience_mount",
+        dependency = "agenda",
+        properties = { title = "Today" },
+        container_appearance = { radii = { surface = 14 } },
+    },
+}
+```
+
+The host measures and clips the slot, runs the child export in its own VM and
+state namespace, and delivers declared child output as
+`{ dependency, event, payload }` to the parent update function. Properties and
+events must fit both the export schema and the dependency's explicit boundary
+grant. The parent never receives the child scene, state, provider handles, or
+grants.
+
+`context.viewport` is live host-owned geometry in logical units. It contains
+`width`, `height`, `scale_milli`, and `safe_insets = { left, top, right,
+bottom }`. A top-level host updates that context and rerenders the root when
+its real window metrics, density, display cutout, or gesture insets change;
+the revision and Instance ID do not change. A mounted child receives its
+measured mount size and zero physical-display insets because its parent owns
+the clipped placement. Insets must be non-negative and leave a non-empty
+viewport. Experiences may add their own visual padding, but must keep primary
+content and controls outside the reported unsafe edges.
+
+`model.appearance` is an authority-owned ABI v1 snapshot. It includes scheme,
+contrast, text scale, reduced-motion preference, and semantic color, spacing,
+radius, and typography tokens. It updates live without revision activation.
+Appearance mutation requires the authority's dedicated `appearance-write`
+capability; access to the state/provider socket alone is not sufficient. Linux
+binds that capability to a separately provisioned credential. Android's signed
+Stock package requests `appearance_write`, the authority records its reviewed
+grant under the stable Stock Experience ID, and every write still binds the
+exact presented graph and next generation. Ordinary top-level or mounted
+Experiences cannot inherit that grant. Android accepts the request only on the
+SELinux-restricted revision channel used by the fixed SOS host; untrusted app
+domains cannot connect to that port.
+An export may ignore optional design tokens, but not host accessibility or
+trusted-ceremony policy. Styles and assets remain revision-local.
+
+Provider capabilities and cross-experience property/event flows are immutable
+package requests. The authority stores the reviewed decision under the stable
+Experience ID, and the host exposes only capabilities requested by the running
+revision and included in that decision. A new revision may reuse an existing
+superset grant; a fork or remix with a new Experience ID requires its own
+review. Agent authoring cannot hold the native `grant-review` capability.
+
+New v4 authoring also names an explicit state source. It may start fresh or
+migrate the authority's retained state for one exact selected parent/current
+target revision. The package hashes both source and result state identities,
+and installation verifies the result against the immutable durable state.
+
+Every live export has a transient opaque Instance ID. The host uses it to
+namespace rendered node IDs, revision assets, provider surfaces and sessions,
+text/IME state, pointer capture, and accessibility focus. Graph Node IDs remain
+stable resolved-graph addresses and are never exposed as runtime isolation
+identities. Linux may place the graph runtime in the host process or a worker
+process. Both modes preserve the same Instance IDs, snapshots, limits, and
+typed commands. The installed session selects the process mode.
+
+[`experience-composition.md`](experience-composition.md) defines exact
+identity, package, resolver, state, authority, activation, authoring, and
+acceptance rules. The checked-in examples are under
+[`experiences/composition`](../experiences/composition).
 
 `model` retains the prototype `greeting`, `date`, `weather`, `calendar`,
 `notes`, `music`, `system`, `surfaces`, `network`, and `agent` values for Linux
@@ -144,7 +252,7 @@ model.agent = {
     configuration_actions = {},
     messages = {
         { role = "user", text = "Make this calmer" },
-        { role = "assistant", text = "I changed the daily flow." },
+        { role = "assistant", text = "I changed the layout." },
     },
 }
 ```
@@ -190,10 +298,10 @@ Wayland/X11 handles, application IDs, PIDs, commands, or desktop files. A stale
 selection is rejected. Map, unmap, title, focus, output-layout, and resize
 changes push a fresh model into the accepted revision without activation.
 
-## Stock Shell is a replaceable revision
+## Platform Stock experiences are replaceable revisions
 
-The default [`experiences/default.luau`](../experiences/default.luau) exercises
-this contract as the product integration target. Its top bar, status
+Linux [`experiences/default.luau`](../experiences/default.luau) exercises this
+contract as a desktop integration target. Its top bar, status
 contributions, command center, application-region policy, agent FAB/rail,
 Home, Agenda, Notes, Media, Attention, System, Apps and Agent workspaces,
 unavailable states, responsive layout and inline SVG mark are declared in
@@ -204,6 +312,17 @@ remain fixed. The one structural exception is the native-backed
 but never owns its application surfaces. See
 [`stock-experience.md`](stock-experience.md) for its surface and recovery
 status.
+
+Android uses the independent `sos.stock.mobile` package in
+[`experiences/mobile.luau`](../experiences/mobile.luau). Its mobile top bar,
+bottom navigation, touch geometry, vertically scrolling screens, app launcher,
+and agent flow are authored separately. Applications and ordinary SOS
+Experiences replace the presented root and fill the phone viewport. Stock
+Mobile has no `window_space`, command rail, hover surface, tiling policy, or
+desktop window model. It consumes the live safe-inset context in its source,
+including cutout clearance above its top bar and gesture clearance below its
+bottom navigation. Sharing the provider and appearance ABIs does not merge the
+two Stock identities or their durable resources.
 
 `render` returns the root scene node. `update` may mutate and return state, or
 return a typed effect envelope:
@@ -387,7 +506,6 @@ content = {
     },
 }
 
-content = { kind = "application_surface", title = "SOS Home" }
 ```
 
 `text_session` is a host-owned editing session and requires a stable node ID.
@@ -395,7 +513,7 @@ content = { kind = "application_surface", title = "SOS Home" }
 inline SVG assets. The runtime validates them, rejects scripts,
 external references, doctypes/entities, and foreign objects, hashes their
 bytes, and exposes only a content-addressed host path after candidate commit.
-Supervisor manifest format 3 additionally packages `svg`, `png`, `jpeg`,
+Supervisor manifest format 4 additionally packages `svg`, `png`, `jpeg`,
 `webp`, `font`, and validated WGSL `shader` sidecars with stable IDs and
 individual byte-length/SHA-256 identities. The runtime re-verifies them and
 admits them to the same candidate asset set; images enter the host asset source
@@ -474,18 +592,13 @@ surface origin. Luau can persist that anchor or change the source-defined
 layout, but cannot address or reposition another surface. Android renders an
 unavailable placeholder.
 
-`application_surface` moves its complete subtree out of the shell window and
-into a separate normal GPUI/XDG toplevel. It requires a stable ID and a bounded
-non-empty title, and validation currently admits at most one. The compositor
-classifies the toplevel as `NativeApplication` and applies the same window-space
-placement, clipping, focus, unmap, and reflow policy used for compatibility
-clients. The base shell does not paint that subtree beneath the application.
-This first cut is still hosted by the shell revision's permanent process;
-independent native-app revision processes and lifecycle supervision remain a
-separate application-runtime layer. Android renders an unavailable placeholder.
-External application windows are observed and controlled through
-`model.shell.windows`; `application_surface` still means the one source-owned
-GPUI application subtree, not an arbitrary external window.
+Stock receives the registry's bounded ordinary-role catalog in
+`model.shell.experiences` and emits `shell.present_experience` with a stable
+Experience ID. The supervisor boots that Experience's exact current graph in
+an independent host process, and the host authenticates only the
+`NativeApplication` compositor role. `shell.dismiss_experience` terminates the
+independent host; an ordinary Experience may dismiss only itself. There is no
+source-defined native-toplevel primitive.
 
 ### Paint and interaction
 
@@ -541,7 +654,7 @@ Paint and hit testing are facets of any node, not a `canvas` escape-hatch type:
 Coordinates are node-local logical pixels. Paths are filled when `width` is
 omitted and stroked otherwise. Layers recursively compose bounded paint with a
 rectangular clip, affine transform, and opacity; GPUI shapes glyph runs in the
-host rather than in Luau. Compatibility gesture events carry `action`,
+host rather than in Luau. Gesture events carry `action`,
 `target`, coordinates, deltas, velocities, and `phase = "start" | "update" |
 "end"`. `pointer_action` exposes the Android pointer stream before GPUI maps it
 to mouse/scroll: `phase = "down" | "move" | "up" | "cancel"` plus
@@ -554,12 +667,10 @@ meaning while the host owns bounded routing and capture lifetime.
 `hover_action` emits only when hover state changes and supplies
 `event.focused`. `surface_drag` is a structural Linux integration flag rather
 than a general-purpose drag callback: on a node rendered inside
-`shell_overlay`, it transfers the pointer gesture to the compositor. It is
-also accepted on the source chrome inside `application_surface`, where it asks
-the compositor to move that native application in Floating mode. The handler
-is attached to the declared node rather than an implicit full-size wrapper, so
-nearby inputs are not converted into move gestures. It is ignored as a
-surface-management authority elsewhere.
+`shell_overlay`, it transfers the pointer gesture to the compositor. The
+handler is attached to the declared node rather than an implicit full-size
+wrapper, so nearby inputs are not converted into move gestures. It is ignored
+as a surface-management authority elsewhere.
 
 For the SM-A336B audit, keep a low-level paint node's complete initial draggable
 region at local `y <= 400`. This is a measured viewport constraint, not a
@@ -615,16 +726,17 @@ does not use this Compat-only outside-tap policy.
 
 Before presentation the host enforces, among other checks:
 
-- exact module `api_version = 3`;
-- 2,048 scene nodes, depth 32, and 256 children per node;
+- exact module `api_version = 4` and agreement with its immutable v4 package
+  contract;
+- 2,048 scene nodes per instance, 8,192 aggregate graph scene nodes, depth 32,
+  and 256 children per node;
 - 4,096 recursively counted paint operations, depth 16, 8,192 path points,
   256 glyph runs, and 256 hit regions per node;
 - bounded text, coordinates, dimensions, animation durations, state, effects,
   and effect payloads;
 - unique IDs and stable IDs for interactive, animated, semantic, and
   text-session nodes;
-- at most one keyed `window_space`, `shell_overlay`, and
-  `application_surface`, with their primitive-specific geometry/title bounds;
+- at most one keyed `window_space` and `shell_overlay` in Shell-role scenes;
 - a 16 MiB VM limit and fixed render/update time budgets;
 - at most 64 revision assets, 4 MiB each and 16 MiB total, with checks repeated
   by the supervisor and runtime.

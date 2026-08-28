@@ -22,7 +22,7 @@ abstract class SosFixedActivity extends Activity {
         super.onWindowFocusChanged(hasFocus);
         if (hasFocus) {
             SosWindowPolicy.apply(this, getClass().getSimpleName());
-            SosCompatChromeService.ownerFocused(this);
+            SosCompatChromeService.trustedSurfaceFocused(this);
         }
     }
 }

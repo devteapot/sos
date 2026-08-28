@@ -11875,3 +11875,4955 @@ source has a clean revision, rebuild with `--ssh-authorized-key-file
 /home/carlid/.ssh/id_ed25519.pub`, boot it on the Framework through the normal
 disk-protected workflow, verify public-key login and remote password rejection,
 and confirm that local password recovery still works.
+## 2026-08-26: Formalize experience derivation and live composition
+
+**Goal:** Define how SOS combines experiences without confusing source
+derivation, runtime composition, ordinary window coexistence, revision-local
+code reuse, or shared appearance. Preserve independent state, authority,
+activation, failure, and custom visual systems across a live boundary.
+
+**Changed:** Added `docs/experience-composition.md` as the architecture decision
+for stable experience/revision/instance identities, fork and remix lineage,
+published entry points, revision-bound dependency aliases, the proposed
+host-owned `experience_mount`, typed properties and child events, data-flow
+authorization, graph validation, locked and future tracked dependencies,
+runtime containment, appearance resolution, authoring targets, activation,
+rejected shortcuts, and the first acceptance gate. The document explicitly
+marks derivation metadata, the contract package, global appearance model, and
+mount content kind as unimplemented in Scene ABI v3.
+
+Updated the vision's canonical artifact from one parent revision to exact
+derivation parents plus exported contracts and dependencies. Updated the Stock
+report to classify its current same-revision `application_surface` as
+native-window coexistence rather than experience composition. The API documentation
+now states the current limit and points to the future contract, and the README
+documentation map links the focused decision.
+
+**Evidence:** `git diff --check` passed for tracked edits. A no-index whitespace
+check passed for the new untracked document. Focused relative-link checks
+resolved every local link in the changed README, vision, Stock, and API files.
+`docs/experience-composition.md` is 372 lines, 2,332 words, and 16,832 bytes.
+This was a documentation-only architecture change, so no runtime, compositor,
+device, or latency result is claimed.
+
+**Failures and rejected approaches:** No documentation check failed. The first
+framing used composition for independently presented windows; the decision now
+calls that coexistence. A derivation-only model was rejected because it loses
+child identity, state, independent updates, and failure isolation. Raw child
+scene injection, cross-revision `require`, implicit permission union,
+schema-only tracked updates, and a global executable style engine were also
+rejected. Live composition instead keeps the child behind a host-enforced
+mount, while a fork or remix emits a complete new revision.
+
+**Decision:** Support both derivation and live composition. A fork has one exact
+parent and a remix has several; both produce a self-contained experience with
+new grants. Live composition resolves a declared child export through a
+revision-bound alias and keeps parent and child VMs, state, grants, validation,
+and activation separate. Appearance crosses the boundary as typed data;
+styles remain revision-local code. Neither `application_surface` nor ordinary
+window placement satisfies this contract.
+
+**Open risks / next gate:** Fix numeric schema and graph limits, the exact
+contract serialization, experience registry and manifest identity rules,
+data-flow grant representation, child-event ABI, multi-VM lifecycle, global
+appearance ABI, and tracked graph transaction semantics. Then implement the
+Agenda and Media gate defined in `docs/experience-composition.md`: mount both
+exports in a Dashboard, prove containment and appearance propagation, exercise
+a tracked update, and create a self-contained remix from the same parents.
+
+## 2026-08-26: Implement experience derivation, composition, and appearance
+
+**Goal:** Build the complete shared and Linux-host milestone plan from the
+experience derivation and composition decision. Preserve the API v3 edit path,
+allow custom visual systems, keep authority at revision and experience
+boundaries, and make graph activation recoverable rather than inferring
+success from package installation.
+
+**Changed:** Added the platform-neutral `experience-package` crate with stable
+experience, revision, export, dependency, instance, and graph identities;
+closed bounded value schemas; canonical contract digests; exact fork/remix
+lineage; locked and tracked bindings; explicit boundary grants; typed global
+and container appearance; canonical resolved graphs; and fixed limits for
+exports, dependencies, values, depth, and instances. Revision manifest v4 now
+hashes the canonical package, while v3 remains readable for the legacy path.
+The durable registry owns stable experience identities and current/previous
+pointers. The resolver verifies exact exports, digests, grants, roles, cycles,
+and graph limits, and the graph store persists the exact accepted snapshot.
+
+Added Experience API v4 named exports and host-owned `experience_mount`
+content with bounded properties, container appearance, and declared child
+events. `GraphRuntime` runs one sandboxed VM, state namespace, asset namespace,
+and package per graph node. It validates every boundary value, contains a
+failed child, shares durable state across repeated instances of the same
+experience revision, and rolls back a partially failed child-event cascade.
+Provider/state protocol v2 now supports per-experience resources, durable
+revision-specific state, independent appearance generations, and atomic graph
+state promotions. Ordinary mounted experiences cannot use shell-only content
+or shell effects.
+
+Extended the host protocol and supervisor with prepare, quiesce, present,
+confirm, discard, and finalize graph operations. A durable activation journal
+coordinates registry and graph pointers, retains the previous graph until
+finalization, and selects a recoverable side after an injected crash. The Linux
+host prepares graphs on a dedicated worker, renders and clips the composed
+tree, routes input to one graph owner, namespaces text and accessibility state,
+maintains revision-bound provider subscriptions, and can restore the previous
+graph after a pre-commit failure.
+
+Added bounded derivation and composition context, validation, and submission
+tools to the trusted Rust broker and resident TypeScript agent. Validation is
+bound to exact parents, dependencies, source, modules, contracts, grants, and
+representative viewport and appearance scenarios. Submission installs the
+candidate and resolved graph but reports activation as still required. A new
+identity receives its initial registry pointer; replacing an existing identity
+leaves its current pointer unchanged until graph activation. Authoring also
+rejects replacement of a non-ordinary identity. Added Agenda, Media, Dashboard,
+and self-contained Agenda-Media Remix packages plus a deterministic reference
+installer and tracked-update/restart integration gate.
+
+**Evidence:**
+
+- `cargo test --workspace --locked --lib --bins --tests -q` passed every
+  product unit and integration target. The focused
+  `sos-linux-session` replacement-pointer regression passed, and
+  `cargo test --locked -p sos-experience --features linux-host -q` passed 32
+  Linux-host tests. `cargo test --workspace --locked --doc --exclude
+  gpui-mobile -q` passed the remaining workspace documentation targets.
+- `cargo check --workspace --locked --all-targets -q` passed. It retained the
+  pre-existing cfg-dependent unused-`output` warning in `sos-compositor`.
+- `npm --prefix services/sos-agent test` rebuilt the packaged runner and passed
+  16/16 tests, including exact derivation and composition package binding.
+- `./tools/sosctl typecheck` and `./tools/sosctl validate --json` passed all
+  four checked-in composition examples.
+- `cargo fmt --all`, `git diff --check`, and a focused relative-link check over
+  the changed README and architecture documents passed.
+
+**Failures and rejected approaches:** An unfiltered `cargo test --workspace
+--locked` passed the product suites and then failed two pre-existing
+`gpui-mobile` documentation examples: one refers to an illustrative
+`MyVideoFactory`, and one omits imports for `Arc`, `IntoElement`, and `div`.
+The vendored examples were not changed or counted as product failures. The
+Android target probe stopped in `psm` because this host has no
+`aarch64-linux-android-clang`; no Android build result is claimed. An early
+submission path could make a replacement revision current during registration;
+it was changed to leave existing pointers for activation and covered by a
+regression test. Automatic activation from the authoring broker was rejected
+because it would collapse validation, presentation, durable pointer commit,
+rollback, and truthful status into one unverified response.
+
+**Decision:** Adopt package and Experience API v4 for derivation and live
+composition while retaining API v3 for legacy single-experience revisions.
+Appearance is authority-owned typed data; executable styles stay local to the
+experience. A fork or remix is a self-contained new revision. A live
+composition preserves child identity, VM, state, grants, and failure ownership
+behind a host mount. Installation and validation never imply activation.
+
+**Open risks / next gate:** This entry completes the shared and Linux desktop
+implementation milestones, not physical acceptance. Run the SOS Linux stable
+host workflow to verify real pointer and text focus, accessibility focus,
+compositor clipping, presentation latency, and recovery on hardware. Add graph
+loading and rendering to the Android GPUI host, then run its build and physical
+device gate with the Android NDK available. The current Stock shell remains an
+API v3 top-level experience rather than a packaged v4 graph root. External
+provider side effects are revision-authorized, but provider-wide idempotency or
+compensation across a host crash remains future work.
+
+## 2026-08-27: Accept composition and stable-host behavior in the Linux VM
+
+**Goal:** Close the non-physical Linux loop for appearance, live composition,
+the permanent host, compositor presentation, resident authoring, and packaged
+boot recovery. Keep physical claims separate and leave the Framework target in
+its existing development-live classification.
+
+**Changed:** Added `tools/linux-compositor/verify-composition-nested`, which
+installs the reference Agenda, Media, Dashboard, and Remix packages into a
+disposable store and exercises a real graph supervisor, Linux host, and nested
+Smithay compositor. It asserts Dashboard and child semantics, namespaced child
+input and events, appearance generation, custom-child styling, unchanged host
+PID across graph activation, exact graph recovery after host death, and three
+compositor submit fences. Raw evidence preservation now fails the gate if its
+destination is not new and writable.
+
+The Linux host now creates `shell_overlay` and `application_surface` auxiliary
+windows only while the active Scene contains those nodes. Reconciliation is
+deferred until the current GPUI entity update completes. Revision handoff and
+asynchronous model-refresh completion also re-merge the newest host-owned
+agent, shell, and appearance channels, preventing an older worker snapshot from
+erasing a resident-agent completion or appearance generation.
+
+The direct compositor now distinguishes DRM access loss during a seat
+transition from fatal rendering errors. Smithay `DeviceInactive` and
+permission-denied frame errors pause submissions until libseat activation;
+other errors still stop the compositor. The boot verifier records and restores
+the selected memory-sleep mode, explicitly selects `s2idle`, supports focused
+agent and lifecycle stops, and prints agent/service diagnostics on a semantic
+completion failure. Nested and direct verifiers now check the current
+registration/mapping log split, and the nested pointer probe targets trusted
+shell chrome rather than an application surface. The session verifier waits
+for a responsive supervisor socket and terminates the exact session PID on a
+failed graceful stop. `linux-live-deploy` cleanup now remains safe under
+`set -u` when the first SSH connection fails.
+
+Reference composition semantics now identify the Dashboard root, Agenda
+appearance generation, and Media title explicitly, making the cross-experience
+assertions independent of incidental text.
+
+**Evidence:** Evidence is under
+`artifacts/linux-composition-acceptance-20260826/` (generated, not committed).
+The composition gate passed in 1.544 seconds with graph
+`f09068511e1c9d2c160fcc55583e9d347024fbf4a6ca2fa53ff2492a983ab287`,
+activation PID 13140, recovered PID 13305, appearance generation 1, child event
+`agenda.open`, and `nested_backend_submit`. The focused auxiliary-window gate
+passed in 11.848 seconds (PID 6989, 152 suppressed compositor events), and the
+complete nested gate passed in 10.888 seconds with activation PID 11324,
+recovered PID 11985, revision `578c1f5a…`, native input/accessibility/IME,
+conditional auxiliary surfaces, compatibility coexistence, and three exact
+submit fences.
+
+The Debian 13 direct-DRM gate passed in 22.198 seconds on kernel
+`6.12.101+deb13-amd64`, activating revision `250b1573…` in PID 14478 and
+recovering it in PID 14797 with VBlank-backed `drm_page_flip` evidence. The
+focused packaged lifecycle gate passed in 43.902 seconds with the same lifecycle
+PID across logind VT pause/resume, `s2idle` freezer suspend/resume, and output
+remove/reconnect. The focused resident-agent gate passed in 43.009 seconds with
+text-session input, typed `agent.prompt`, exact context/validate/submit tools,
+Timeflow activation in the same host, a visible assistant completion, and DRM
+evidence.
+
+The final `tools/linux-vm/verify-boot-session` campaign passed in 57.952 seconds.
+It reported session 1, lifecycle PIDs 878/1877/2146, host PIDs
+1005/1764/1957, two intended systemd restarts, separated service identities,
+revision `578c1f5a…`, and `drm_page_flip`. It rebooted back to
+`graphical.target`; GDM and seatd were active and the disposable SOS install
+tree was absent. The 33 direct-compositor tests and 33 Linux-host tests passed,
+including the new live-channel handoff regression. Every acceptance run used
+deterministic fixtures or the faux Pi provider, so external model-weighted cost
+was zero.
+
+**Failures and rejected approaches:** The first composition evidence-retention
+attempt found an existing destination after the behavior had passed; cleanup
+incorrectly preserved status 0, so cleanup failure now overrides success. The
+first auxiliary-window implementation mutated GPUI windows reentrantly and was
+replaced by deferred reconciliation. Early broad nested reruns clicked a valid
+application instead of shell chrome and expected coordinates on the later map
+log rather than the registration log; the probes were made explicit. The first
+boot lifecycle assertion counted only `s2idle` while the guest selected `deep`;
+after the verifier began selecting the intended mode, an immediate VT switch
+exposed the real pre-pause DRM `EACCES` race. Treating every rendering error as
+transient was rejected in favor of the two typed seat-transition errors.
+
+Two agent reruns then activated Timeflow but lost the final assistant message.
+Preserving live channels only at candidate commit was insufficient: an older
+in-flight model-render result could still overwrite them. Re-merging at both
+commit boundaries fixed the race, after which the focused and complete gates
+passed. The physical redeploy attempt did not reach the target: ping failed,
+SSH returned `No route to host`, and unauthenticated PiKVM status returned HTTP
+401. No physical result is inferred from those failures.
+
+**Decision:** Accept the composition and Linux stable-host milestones at
+virtual-device scope. The reference graph has real host/compositor evidence,
+and the packaged direct session has a complete cold-boot, resident-agent,
+lifecycle, recovery, and restoration pass. Keep the physical result open: the
+previous Framework deployment is a mutable, dirty `development-live`
+diagnostic build, and the final host/compositor fixes were not deployed after
+the target became unreachable.
+
+**Remaining risks / next gate:** Power on the Framework 12, redeploy the final
+`compositor` and `experience-host` artifacts, then run the physical hardware
+gate from the fallback desktop and select SOS at GDM. Collect visible panel,
+pointer/touch, suspend, hotplug, GPU, latency, thermal, clean logout, and
+fallback evidence through an authenticated PiKVM session or an owner at the
+machine. A development-live run can be only `DIAGNOSTIC_PASS`; installed-product
+promotion still requires a clean revision-matched image. Android graph-host
+integration remains separate.
+
+## 2026-08-27: Prepare the Framework 12 composition diagnostic
+
+**Goal:** Deploy the accepted Linux host/compositor fixes to the physical
+Framework Laptop 12 and prepare the same-boot development-live hardware gate
+without promoting mutable live evidence to an installed-product result.
+
+**Changed:** Deployed the release `sos-compositor` and
+`sos-experience-host` built from Git object `dcc9e2fc7ab9…`, then redeployed
+those binaries together with the corrected `linux-hardware-gate`. The final
+deployment is `20260826T224212Z-dcc9e2fc7ab9-2314801`, records a dirty source
+tree, and remains `promotion_eligible=false`. The offline agent configuration
+had drifted to `default.luau`; its mode-0600 original was preserved as
+`config.env.pre-composition-gate`, and the configured source was restored to
+the installed `daily-flow.luau` whose SHA-256
+`09ccddca90f6d0a94ea8fbbb86204bbf8522123d2f73f21becfe964a2851a693`
+matches the baked install manifest.
+
+The physical gate's output-config validator was stale relative to the direct
+compositor. It now accepts the documented `layout` and `input_outputs` fields,
+keeps the closed key set, permits only mirror/extend, limits mappings to 32,
+and applies the compositor's nonempty printable 128-byte bounds to both device
+and connector names. A source guard makes that validator directly testable
+without running a hardware campaign.
+
+**Evidence:** The target reported Fedora 44, kernel
+`6.19.10-300.fc44.x86_64`, bare metal, active GDM, and product `Laptop 12 (13th
+Gen Intel Core)`. Focused validator tests passed `{}`, the target's four-device
+mirror mapping, and rejection cases for an unknown layout, empty names, 33
+mappings, a 129-byte name, and a control character. `bash -n` and
+`git diff --check` passed. The final three-component development deployment
+passed in 18.647 seconds; its local evidence is under
+`artifacts/linux-live-deploy/20260826T224212Z-dcc9e2fc7ab9-2314801/`.
+
+Hardware preparation then passed at
+`/home/liveuser/framework12-composition-20260827` with exact revision
+`dcc9e2fc7ab90d919afa63a9a1291a565717d505`, offline agent mode, and
+`boot_kind=development-live`. Preparation captured the current same-boot
+journal cursor and hardware/install identity before any SOS login.
+
+**Failures and decision:** The first preparation stopped before evidence
+creation because the offline source setting named `default.luau`. The second
+stopped after nine preflight files because the gate rejected the compositor's
+valid mirror/input mapping. That partial directory has no `prepared` marker and
+was preserved as
+`/home/liveuser/framework12-composition-20260827-failed-output-config`.
+Changing the target configuration to fit a stale gate or bypassing validation
+was rejected; the gate now checks the actual bounded compositor schema.
+
+**Physical run and evidence:** A final clean campaign on the same boot started
+at monotonic 69,977,359,677,901 ns and collected after 735,685,634,926 ns. The
+recovery view reached a DP-1 DRM page flip, revision `e2af4edc…` reached both
+panel outputs, and the semantic Stock composer submitted "Compose a calmer
+daily flow" through `agent.prompt`. Context, validation, and submission tools
+activated revision `6b3341ee…` at a DP-1 page flip. Supervisor host-proxy PID
+534023 stayed constant, the journal recorded one experience-host launch at PID
+534029, and the durable authority agreed with `6b3341ee…`. The session exited
+through `Ctrl+Alt+Backspace`, GDM returned, and GNOME session 246 started on
+`tty4`.
+
+The target's original auditor printed `DIAGNOSTIC_PASS` for all criteria with
+two presentations, two revision IDs, and one host launch. Its finalized 38-file
+nested manifest is 3,595 bytes with SHA-256
+`dad5cb62ab857ae76a2fc691f09e3954d9ffc4cbdb2feff1273ddae8bca18eff`;
+target and controller verification both passed. The raw target evidence and
+controller records are under
+`artifacts/linux-framework12-composition-20260827/`.
+The finalized top-level manifest lists 128 files, is 13,972 bytes, has SHA-256
+`99731b64bbfb386a8184f32dfe34d6e01bbf397509a8a2f4445761ad8e86964d`,
+and passed independent verification after every controller record was final.
+
+**Failures, correction, and decision:** The first collection correctly failed
+because SOS had never been entered. Its evidence was preserved as the
+skipped-session attempt. Independent copying then found that manifest order
+depended on locale: the Fedora target accepted `authority.json` before
+`authority-revision.txt`, while bytewise controller verification rejected it.
+Generation and verification now force `LC_ALL=C`; the host test generates under
+`en_US.UTF-8`, verifies under `C.UTF-8`, and checks bytewise order.
+
+Remote GDM password input reached PAM but failed authentication, so that helper
+was retired. A bounded autologin attempt initially selected GNOME because GDM
+reads AccountsService `Session`, not `XSession`; the exact GDM config was
+restored and the uncollected attempt was archived. Setting `Session=sos` fixed
+the focused reproduction. A later semantic check also needed to wait for the
+post-`set_value` snapshot before submission. These attempts did not enter the
+final journal cursor.
+
+The final campaign did contain remote uinput. Journal markers for relative
+pointer, pointer button, and touch followed devices named `SOS Remote
+Diagnostic ...`, and the touch was explicitly reported as ambiguously routed.
+The old auditor had no provenance check and therefore mislabeled those classes
+as physical input. It now compares every session-added input device with the
+libinput inventory captured at preparation. The corrected controller audit
+fails this campaign with `input_device_inventory unexpected_devices=4` and
+`DIAGNOSTIC_FAIL`. Keep the DRM, one-host lifecycle, authoring, durable-state,
+and reversible-session results as development diagnostics, but reject the
+physical-input claim. Supervisor status also recorded `active_graph: null`, so
+this run does not close physical composition even though it exercised the final
+graph-capable host and compositor binaries.
+
+The stricter gate, compositor, and host were left installed together as
+development deployment `20260826T231654Z-dcc9e2fc7ab9-2319572`, which passed in
+24.700 seconds and remains dirty and promotion-ineligible. Temporary uinput,
+semantic-client, and autologin files were removed after exact GDM-config
+restoration. The final target state is the writable live overlay with active
+GDM, GNOME on `tty4`, no SOS process, `Session=gnome`, empty `XSession`, and no
+mounted internal NVMe partition.
+
+**Next gate:** Run a fresh campaign with an owner at the Framework for the
+integrated keyboard, touchpad, and touchscreen, without hot-added input devices.
+Separately add a selectable-session graph root and physically boot the Dashboard
+with its Agenda and Media mounts; require child-event, appearance, graph
+recovery, and DRM evidence. Development-live can still produce only a
+non-promotion diagnostic. An installed-product result requires a clean,
+revision-matched immutable image.
+
+## 2026-08-27: Remove the legacy Daily Flow experience
+
+**Goal and cause:** Remove the old alternate experience and its instrumented
+agent panel from every active product path. The August 26 change had made Stock
+the default offline source, but the physical hardware gate still required the
+old developer fixture. During the August 27 campaign that stale assertion was
+mistaken for target drift, so the target config was changed back and a faux
+prompt activated the obsolete experience. This was a gate and packaging bug,
+not experience composition.
+
+**Changed:** Deleted both legacy Luau sources. Linux now packages Stock and
+Timeflow, uses Timeflow only as the resident agent's secondary prompt example,
+and requires Stock as the deterministic offline source. The compositor's
+native-input and accessibility checks now activate a test-only stateful fixture
+with no agent UI. VM, authoring, login-session, live-image, faux-agent, Android
+stress, README, and current design documentation references now use Stock,
+Timeflow, the Android spatial candidate, or that test fixture. The installer
+reconciles its previous manifest and removes packaged experience files that no
+longer appear in the new manifest. Development-live deployment can now update
+the agent-login helper, Timeflow, and both installed operator documents along
+with the existing session components.
+
+**Host evidence:** `rg` found no case-insensitive legacy name outside this
+historical ledger and ignored generated artifacts. `cargo fmt --all`,
+`git diff --check`, shell syntax checks, and validation of
+`tests/fixtures/linux-stateful-experience.luau` passed; the fixture compiled to
+16 nodes with one input, one image, one animation, and six semantic nodes.
+`cargo test -p sos-experience --lib` passed 16 tests, and the focused
+`sos-linux-session` authoring test passed. The login-session, hardware-gate,
+and live-image host tests all reported `PASS`. `tools/linux-agent-e2e` traversed
+context, validation, and submission, then changed revision
+`82f5ddab…` to Timeflow revision `d5db162f…`. No model request ran, so model and
+model-weighted cost were zero. The complete nested compositor command stopped
+before setup because `weston` is not installed on this workstation; no nested
+result is claimed. Crate-scoped
+`cargo clippy -p sos-experience --lib --no-deps -- -D warnings` passed. The
+dependency-wide form stopped on pre-existing
+`derivable_impls` and `too_many_arguments` lints in `service-protocol` and
+`experience-ir`; those unrelated composition changes were left untouched.
+
+**Physical cleanup:** The Framework was reachable but an SOS session was still
+active with the old source as both current revision and faux-provider input.
+The running supervisor activated installed Stock revision `82f5ddab…` in the
+same host PID 551202. The private mode-0600 offline config was rewritten to
+`/usr/share/sos/experiences/default.luau`, then the session shut down cleanly.
+The old installed source was 15,676 bytes with SHA-256
+`09ccddca90f6d0a94ea8fbbb86204bbf8522123d2f73f21becfe964a2851a693`.
+It, five inactive revisions containing the old root, and the eight-message
+agent transcript containing a complete copy of that source were removed. The
+final target scan found no old source or path under the executable directory,
+installed experiences and current operator docs, or mutable user state. GDM
+was active, no SOS process remained, and no internal NVMe partition was
+mounted.
+
+Final same-boot deployment
+`20260826T234429Z-dcc9e2fc7ab9-2333753` updated six root-owned files in
+7,520,181,781 ns and remains dirty and promotion-ineligible. Its ignored
+evidence directory is
+`artifacts/linux-live-deploy/20260826T234429Z-dcc9e2fc7ab9-2333753/`.
+The 661-byte deployment manifest has SHA-256
+`29619bdd9a594df5bc4b3985e6e49d1be568fb1e96f9ba9163326b9a61b72ebb`;
+the 278-byte metadata has SHA-256
+`c127adb6d120a1f2929a6ca4e2d0cd73ff9731ea0fdc8bd5b974a7cb3dc185c4`;
+the 149-byte result has SHA-256
+`392372eb35419e6d2bc4420eb4d4e6639779f678cc3b3db77f5fbf1b61e9ae8f`.
+
+**Failures and decision:** Direct removal of immutable revision directories
+first prompted and then failed because their contents were read-only. The
+attempt was stopped, the five exact inactive directories were checked against
+the current Stock revision, made owner-writable, and removed. Accept the source,
+runtime, packaging, tests, and current-boot cleanup. Do not call the existing
+development ISO clean: its immutable install manifest truthfully records the
+old baked file, and a reboot discards the mutable overlay changes.
+
+**Next gate:** Build a clean revision-matched development image, verify its
+installed manifest and root filesystem contain only Stock and Timeflow, boot it
+on the Framework, and repeat the Stock no-op faux prompt plus the physical
+composition and input gates. Run the complete nested compositor regression on
+a host with Weston before that image gate.
+
+## 2026-08-27: Repair the GDM login bounce after revision cleanup
+
+**Goal and cause:** Restore the physical SOS login after the Daily Flow cleanup
+made GDM return immediately to its login page. Two attempts failed before the
+provider socket existed, at journal monotonic times 72,911 and 72,915 seconds,
+with `linux_session_failed` reporting `No such file or directory`. GDM and the
+compositor were downstream of the failure. The cleanup had removed revision
+`579f946f…` but left `previous` pointing to that absent directory. The session
+runner reads both `current` and optional `previous` when it creates recovery
+status, so the dangling rollback pointer aborted startup even though `current`
+still named valid Stock revision `82f5ddab…`.
+
+**Changed:** Removed only the invalid `previous` pointer on the live target and
+kept the current Stock pointer unchanged. `RevisionStore::previous` now treats
+a pointer whose revision directory no longer exists as unavailable. It still
+validates the pointer shape and fully verifies any revision that does exist, so
+a malformed pointer or corrupt rollback revision is not silently accepted. A
+regression test removes the first of two installed revisions, asserts that
+`previous()` returns `None`, and asserts that the second current revision still
+verifies.
+
+**Host evidence:** `cargo test -p revision-supervisor` passed 7 unit, 10
+coordinator, 3 graph-supervisor, and 16 supervisor tests, including the new
+dangling-pointer case. The five focused `sos-linux-session` system-session
+tests passed. `cargo clippy -p revision-supervisor -p sos-linux-session
+--all-targets --no-deps -- -D warnings`, `cargo fmt --all`, and
+`git diff --check` passed. The first version of the regression fixture could
+not delete the mode-0555 immutable revision as an ordinary user; the test now
+models the privileged cleanup explicitly by making that exact fixture
+directory owner-writable before removal.
+
+**Physical evidence:** Development-live deployment
+`20260826T235443Z-dcc9e2fc7ab9-2341916` installed the hardened session binary
+in 11,385,200,513 ns. The installed 1,888,336-byte binary has SHA-256
+`a32ef434b02eaa5fed52b2d68c578f219f94d65e218d65fcefa633a2bdb4e88a`.
+The ignored evidence directory is
+`artifacts/linux-live-deploy/20260826T235443Z-dcc9e2fc7ab9-2341916/`: its
+114-byte manifest has SHA-256
+`aeebf8d422a9df522f12c8e24c00aeda43a714f42fadf90d13abdf6fd5482170`,
+its 278-byte metadata has SHA-256
+`1f4b8eec40ff2f0ad471ad4ca589f878bdc8d31afce630693227bb367db2ec50`,
+and its 83-byte result has SHA-256
+`d19cd9f031bdba8b91759ef3a1a3ce9b9afc4938ae096c9b49fa8cccb0e4d425`.
+
+A bounded GDM autologin used the already selected SOS session. PAM opened
+physical session 258 at monotonic 73,343.919 seconds. Stock produced real
+non-recovery DRM page flips on `eDP-1` and `DP-1` at 73,347.310 and 73,347.326
+seconds, and `linux_system_session_ready` followed at 73,347.349 seconds: 3.430
+seconds after session open. The supervisor, durable authority, and rendered
+frame all agreed on Stock revision `82f5ddab…` and source SHA-256 `9f09372f…`.
+The provider continued publishing through 73,387.318 seconds with the complete
+session process set alive. The exact pre-test GDM config was then restored with
+SHA-256 `87d6cc7eecc23565f361c46581b0fecf219eeef3791f088ea6e62943a1e66e36`;
+GDM returned active, the temporary backup was absent, no SOS process remained,
+and neither internal NVMe partition was mounted.
+
+**Decision and next gate:** The current-boot GDM bounce is fixed and the
+physical login-to-Stock path passes. This does not promote the dirty mutable
+deployment or replace the previously required physical input and composition
+campaigns. Bake the guard and Daily Flow removal into a clean image, reboot the
+Framework from that image, and repeat manual SOS login plus the remaining
+physical gates.
+
+## 2026-08-27: Begin the complete v4 built-in and graph-activation migration
+
+**Goal:** Resume the frozen experience-composition plan from its actual
+implementation state, remove v3 as an authoring and built-in target, and close
+the wire, migration, and atomic graph-state gaps before the remaining Linux and
+Android gates.
+
+**Changed:** The shared `experience-package` crate now defines opaque Instance
+IDs, 256 KiB canonical package and graph wire limits, and strict canonical
+decoders. One checked-in fixture covers a complete package, contract,
+dependency binding, derivation, appearance profile, graph, instance identity,
+and every frozen numeric limit. Rust, the Linux adapter, the Android authority
+adapter, and the TypeScript resident-agent decoder consume that same fixture;
+unknown fields, non-canonical bytes, and oversized payloads are rejected. The
+canonical form is RFC 8785 JCS, including ECMAScript number formatting and
+UTF-16 property ordering rather than a Rust-specific approximation.
+
+Stock Shell and Timeflow now declare Experience API v4 exports and immutable
+v4 packages. Stock loads its one revision-local `stock.theme` module instead
+of duplicating that palette in the bootstrap source and maps authority-owned
+semantic color tokens onto revision-local fallbacks at render time. The Linux
+installer, development deploy tool, image checks, and selectable-session runner
+carry both packages and the Stock theme module. A fresh session installs and
+boots the reserved `sos.stock.shell` graph and registers `sos.timeflow`.
+
+For an existing v3 store, `migrate-stock-v4` copies the verified durable state
+into the v4 package, creates the Stock registry and graph records, and leaves
+the old single `current` pointer unchanged. Once the provider starts, the
+session seeds exact graph state through an explicit activation-mode graph
+transaction and boots the supervisor with `--root-experience
+sos.stock.shell`. Runtime graph state updates retain their prior exact-revision
+semantics; only graph activation changes the stable per-experience current
+state. The activation journal now places authority commit before registry and
+graph pointer commits and records an authority transaction. A crash before
+that commit aborts and returns to the old graph; a crash after it completes the
+new graph. Resolved graphs also reject one Experience ID bound to multiple
+revisions.
+
+**Evidence:** `cargo test -p experience-package --test wire_model` passed three
+wire tests. The shared Linux and Android wire fixture tests each passed, and
+`npm --prefix services/sos-agent test` passed 19 tests. Focused package
+validation rendered all ten Stock scenarios (43–125 nodes) and the 70-node
+Timeflow scenario successfully. `cargo test -p provider-state-service -p
+sos-linux-session -p revision-supervisor` passed the authority, registry,
+resolver, coordinator, supervisor, authoring, and session suites. A new fault
+test killed activation immediately after authority commit and recovered the
+candidate state, registry pointer, and graph pointer together. A migration
+test preserved `{"count":7}` under the v4 revision while proving the legacy
+pointer still named the original v3 revision. `tests/linux-login-session-test.sh`
+and `tests/linux-live-image-test.sh` passed, as did Rust formatting, focused
+compilation, and the TypeScript build.
+
+**Failures and decision:** The first authority change treated every graph
+state batch as activation and broke the locked-revision test with `expected 1,
+current 2`. The protocol now distinguishes activation batches from ordinary
+state-update batches, preserving locked historical state while allowing an
+activation to advance stable Experience state. A first package-install smoke
+command omitted Cargo's binary selector; rerunning against the explicit
+`sos-revision-supervisor` binary installed Stock revision `62374642…`,
+Timeflow revision `1c3a0ed8…`, and Stock graph `ba056e2b…` successfully.
+
+**Remaining risks and next gate:** This checkpoint has host evidence only and
+does not close a hardware milestone. Finish persistent reverse-dependency and
+multi-root tracked activation, convert ordinary authoring to v4 graph
+activation, complete Instance-ID containment and appearance-write grants,
+migrate Android and all current fixtures, then run full fault, fuzz,
+performance, Linux physical, and Android physical campaigns. Retain the
+legacy pointer and v3 activation reader until the migrated Stock graph has
+booted, presented, restarted, and rolled back on the Framework.
+
+## 2026-08-27: Move ordinary authoring and tracked updates onto v4 graphs
+
+**Goal:** Remove the remaining new-authoring dependency on the v3 singleton
+revision protocol and implement the tracked-child update path against stable
+Experience identities.
+
+**Changed:** Linux authoring context now names the active Stock Experience,
+graph, and package. Validation accepts only API v4 candidates with the exact
+Stock export contract, reads revision-exact authority state, validates every
+scenario at the export's minimum and maximum viewports plus high-contrast
+appearance, and requires the functional agent composer in agent workspaces.
+Submission installs the immutable package, resolves a content-addressed graph,
+and uses graph activation; it no longer stages or activates a singleton v3
+revision. The resident-agent examples, authoring fixtures, Linux state/input/
+failure fixtures, deploy helper, and curated generation guide now emit API v4.
+
+The supervisor persists a canonical reverse-dependency index derived from
+current package records and rebuilds it after registry changes and recovery.
+The resolver can validate a candidate revision through an in-memory tracked
+binding override without first changing any durable pointer. The new
+`advance-experience` control operation leaves locked graphs pinned, but for an
+affected tracked root it prepares the complete candidate graph, presents it,
+commits authority state, then journals the child registry pointer and graph
+pointer as one activation. Graph restart is now an explicit supported control
+operation as well as automatic crash recovery.
+
+**Evidence:** `cargo test -p sos-linux-session --lib` passed 14 authoring and
+session tests. `npm --prefix services/sos-agent test` passed 19 tests. The
+`tools/linux-agent-e2e` campaign started at Stock revision `62374642…`,
+validated the v4 candidate across the full scenario and viewport matrix, and
+activated revision `1767e067…` through the graph protocol. `cargo test -p
+revision-supervisor` passed 39 tests, including locked child pinning, tracked
+child graph advancement, exact restart, reverse-index persistence, activation
+fault recovery, and existing legacy compatibility. `cargo check -p
+revision-supervisor --all-targets` and Rust formatting passed.
+
+**Failures and decision:** The first tracked test changed the child registry
+before graph validation, which recreated the non-atomic ordering the feature
+is meant to eliminate. The final flow keeps the current pointer untouched,
+resolves with an ephemeral candidate override, and lets the activation journal
+perform the durable switch only after presentation and authority commit.
+
+**Remaining risks and next gate:** One supervisor currently owns one presented
+root, so an update affecting multiple independently presented tracked roots is
+still rejected rather than partially committed. Generalize the activation
+unit across every affected root, then close Instance-ID namespaces, recovery
+actions, authority appearance grants, and the remaining Android parity work.
+
+## 2026-08-27: Enforce Linux Instance boundaries and graph-native recovery
+
+**Goal:** Replace stable graph/revision identities at live isolation
+boundaries, protect appearance mutation, and ensure Recovery operates on the
+v4 graph that the session actually presents.
+
+**Changed:** Each graph VM now receives a fresh opaque Instance ID when its
+runtime starts; a second instantiation of the same content-addressed graph gets
+different IDs. Runtime snapshots and provider effects carry that identity.
+Linux namespaces rendered element and accessibility IDs, text/IME state,
+pointer and hit-region capture, revision image/font/shader paths, provider
+surfaces, provider frames, and provider-effect contexts by Instance ID. Stale
+input, focus, gestures, and per-instance provider contexts are discarded or
+cancelled when an instance leaves the active graph. Pending input is bounded
+globally and per instance, child coordinates remain mount-local, and the graph
+runtime enforces the frozen 8,192 aggregate scene-node limit.
+
+The system-session Recovery status and rollback action now use the reserved
+Stock graph's current and previous records in graph mode. An explicit restart
+recreates the exact active graph host. Appearance writes now require a
+separately provisioned `appearance-write` capability: the authority persists
+only its SHA-256 digest, rejects socket clients without the exact capability,
+and retains exact generation checks. The Linux session copies an optional
+0600 capability file into the provider identity's private runtime credential
+before starting the authority. The nested composition gate supplies that
+credential explicitly.
+
+**Evidence:** `cargo test -p runtime-luau` passed 31 tests, including fresh
+instance identity, independent VM/state behavior, provider/asset namespacing,
+scene authority, and graph rollback. `cargo test -p provider-state-service`
+passed 14 tests, including denial before the appearance grant and persistence
+after an authorized update. `cargo test -p sos-linux-session --lib` passed 15
+tests, including a v4 graph-history Recovery test. `cargo test -p
+sos-experience --features linux-host --lib` passed 34 tests, including
+Instance-scoped accessibility/text state and pointer hit regions. Focused
+all-target compilation, Rust formatting, shell syntax validation, and
+`git diff --check` passed.
+
+**Failures and decision:** The first embedded Stock test compiled the new
+`require("stock.theme")` source without its revision-local module. The helper
+now compiles checked-in Stock with the same module sidecar used by packaging.
+The local nested Weston campaign could not start because this development host
+does not have the `weston` executable; it failed before creating product
+evidence and therefore closes no presentation gate.
+
+**Remaining risks and next gate:** Instance namespaces are implemented on the
+Linux host, but the multi-root tracked activation transaction and equivalent
+Android host routing remain open. Run the updated nested composition campaign
+on the Linux target with Weston available, then extend graph activation across
+all affected presented roots before starting Android parity.
+
+## 2026-08-27: Make tracked graph activation atomic across top-level roots
+
+**Goal:** Close the remaining single-root supervisor assumption so one tracked
+Experience update cannot leave independently launched consumers on different
+child revisions.
+
+**Changed:** The graph supervisor now owns a host and active graph per presented
+root. A tracked update resolves every affected current graph against the exact
+candidate revision, prepares all live hosts, stages the union of authority
+state promotions once, and records all registry and graph-pointer changes in a
+single durable activation journal. Inactive roots with current graph pointers
+advance in the same transaction without creating phantom hosts. Recovery rolls
+the entire set backward before authority commit or forward after it. Conflicting
+revision bindings for the same Experience are rejected before staging.
+
+Top-level presentation is now registry-addressed through `present-experience`
+and `dismiss-experience`; the configured Stock root remains pinned. Each root
+still has an independent host process, while each graph node retains its own
+Luau VM and Instance ID. The supervisor enforces the frozen limit of eight live
+instances across all simultaneously presented graphs and reports whether each
+advanced root was live or inactive.
+
+**Evidence:** `cargo test -p revision-supervisor --all-targets` passed 44 tests.
+The focused graph suite passed 10 cases covering two live tracked roots, a live
+plus inactive root, one authority transaction shared by two roots, rollback of
+both pointers after an injected post-presentation fault, locked pinning, exact
+restart, and rejection of a ninth aggregate instance. Rust formatting and
+all-target compilation passed.
+
+**Failures and decision:** Treating only roots owned by the running supervisor
+as affected would have silently left a registered inactive graph stale. The
+final transaction uses every current graph pointer from the reverse-dependency
+index, but sends prepare, quiesce, present, and finalize only to roots with a
+live host. Recovery no longer inserts inactive roots into the in-memory live
+host map.
+
+**Remaining risks and next gate:** The Linux control and transaction path is
+complete at the supervisor layer, but compositor presentation evidence still
+needs the physical Linux campaign. Audit and finish fork/remix authoring and
+built-in v4 conversion next, then implement the same registry, graph, state,
+appearance, and boundary behavior in the Android authority and host.
+
+## 2026-08-27: Bind v4 authoring state and grants to explicit authority records
+
+**Goal:** Remove the remaining implicit state/grant assumptions from v4
+authoring and make provider access follow the frozen stable-Experience
+authority model.
+
+**Changed:** Package format v4 now carries an immutable state-migration record
+with a fresh or exact Experience/revision source, source schema and state hash,
+target schema, and result state hash. Derived and composed authoring requests
+must choose that state source explicitly and declare bounded provider
+capability requests. Exact revision migration reads the authority's retained
+state; the revision store rejects a package whose migration result does not
+match the installed durable state.
+
+Authority format 3 adds capability-protected, generation-checked grant
+decisions keyed by stable Experience ID. Decisions cover provider capabilities
+and exact child Experience/export property and event flows. The graph
+supervisor rejects unreviewed or overreaching graphs before preparation. In v4
+graph mode the Linux host reads authority grants and intersects them with the
+running revision's immutable requests; the legacy grant file remains only on
+the singleton v3 rollback path. Trusted Stock and Timeflow packages receive
+native bootstrap review, while agent-authored candidates report that review is
+required and cannot activate until a native caller uses the private review
+capability. Existing supersets are preserved and reused across revisions of
+the same Experience.
+
+**Evidence:** `cargo check --workspace --all-targets` passed. `cargo test -p
+experience-package` passed 10 tests, `cargo test -p provider-state-service`
+passed 15, `cargo test -p revision-supervisor` passed 47 after adding migration
+digest rejection and stable-grant/revision coverage, `cargo test -p
+sos-linux-session --lib` passed 15, `npm --prefix services/sos-agent test`
+passed 19, and `cargo test -p sos-experience --features linux-host --lib --
+--test-threads=1` passed 34. Rust formatting and
+`bash -n packaging/libexec/sos-login-session` passed.
+
+**Failures and decision:** The first grant draft keyed reviews by immutable
+revision, conflicting with the frozen ownership rule. Moving the record to the
+stable Experience ID exposed a second issue: returning the complete stable
+superset to an older revision would exceed that revision's declaration. The
+host now intersects both sets. Trusted review is idempotent and unions an
+existing superset instead of silently revoking it.
+
+**Remaining risks and next gate:** This closes explicit migration provenance
+and Linux grant enforcement at the desktop-test boundary. Finish Stock's
+top-level launch migration and optional worker-process isolation, then port the
+registry, graph protocol, authority resources, and Instance-scoped routing to
+Android before either physical acceptance campaign.
+
+## 2026-08-27: Launch independent v4 Experiences from the Stock registry
+
+**Goal:** Remove Stock's same-revision application subtree and make an
+ordinary SOS application a separately identified, supervised, and
+compositor-contained v4 Experience.
+
+**Changed:** Graph boot and preparation now carry a bounded registry catalog
+of ordinary-role Experiences. The typed Shell model exposes their stable IDs
+and labels, and Stock emits closed `present_experience` lifecycle effects from
+its command center and Applications workspace. The Linux graph host accepts
+those effects only from a registry-authorized Shell package. The supervisor
+then resolves and boots the target's exact current graph in its own permanent
+host process; dismissal is restricted to the Shell or the ordinary Experience
+itself. Eight live graph instances remain the global runtime limit, while the
+non-live catalog is separately bounded to 64 entries.
+
+The compositor control protocol now distinguishes authenticated Shell and
+`NativeApplication` registrations. An ordinary graph host proves its own PID
+with the existing peer-credential/token handshake but receives no quiesce,
+presentation-fence, window-space, overlay, or window-control authority. Its XDG
+toplevel participates in native application placement and containment. Closing
+that window requests supervised dismissal instead of triggering crash restart,
+and disconnecting an ordinary host no longer releases a Shell-owned input
+quiesce. Checked-in Stock paints its workspace inside the shell and contains no
+`application_surface`; that node remains only in the API v3 rollback reader.
+
+**Evidence:** `cargo test -p compositor-control-protocol` passed 2 tests;
+`cargo test -p sos-compositor` passed 27, including distinct authenticated
+native application classification; `cargo test -p revision-supervisor --test
+graph_supervisor` passed 14, including registry launch into an independent
+host; `cargo test -p runtime-luau` passed 31, including rejection of the legacy
+application primitive from every v4 graph role; and `cargo test -p
+sos-experience --features linux-host --lib --
+--test-threads=1` passed 35, including the native registration handshake and
+Stock's typed stable-ID launch effect. `cargo check --workspace --all-targets`,
+Rust formatting, `git diff --check`, and an explicit check that
+`experiences/default.luau` contains no `application_surface` passed.
+
+**Failures and decision:** The first Stock assertion looked for the registry
+action on the Home workspace, although the product intentionally exposes it in
+Applications and the command center; the corrected test opens the command
+center before asserting the action and separately checks its typed effect. The
+standalone `sosctl typecheck/validate experiences/default.luau` route is not
+accepted as evidence because that utility still typechecks the entry source
+without its revision-local `stock.theme` module. Package-aware Rust compilation
+and validation use the real sidecar and pass.
+
+**Remaining risks and next gate:** Independently presented v4 roots are now
+separate host processes, while mounted graph children still share a process
+with one Luau VM per Instance. Add the optional graph worker-process deployment
+without changing the VM API, then close equivalent Android graph, state,
+appearance, input, IME, accessibility, grant, activation, and recovery behavior
+before the two physical acceptance campaigns.
+
+## 2026-08-27: Isolate the v4 graph runtime in an optional worker process
+
+**Goal:** Add the milestone 12 process boundary without making Experience code
+or graph contracts depend on a Linux deployment detail.
+
+**Changed:** `GraphRuntimeWorker` now has thread and process deployments behind
+the same typed Rust API. Process mode re-executes `sos-experience-host` through
+a private worker entry point and exchanges only length-prefixed, closed serde
+messages. The 384 MiB frame cap covers the frozen eight-instance aggregate
+asset and scene limits. Binary assets use base64 inside the private JSON frame
+instead of unbounded integer arrays. Scene IR now has an explicit serde form so
+snapshots can cross the process boundary without converting them to general
+JSON values.
+
+The worker reports readiness before the host can present the graph. Commands
+remain request-ID matched, shutdown closes and reaps the child, and a broken
+pipe returns a rejected operation or closes the results channel. The selectable
+login session and direct system service choose `process` by default.
+`SOS_GRAPH_RUNTIME_ISOLATION=thread` keeps the existing deployment for focused
+debugging. Instance IDs, VM count, state ownership, grants, properties, events,
+and scene limits are identical in both modes.
+
+**Evidence:** `cargo test -p runtime-luau` passed 32 tests, including bounded
+frame round trips. `cargo test -j 1 -p sos-experience --features linux-host
+--test graph_process_isolation -- --nocapture` passed. That test compiled a v4
+graph with a binary sidecar, rendered it in a different PID, completed a state
+update, sent `SIGKILL` to the worker, and observed containment in the still-live
+parent. `bash -n packaging/libexec/sos-login-session` passed.
+
+**Failures and decision:** The first integration link filled the development
+filesystem with regenerable Rust output and failed with `ENOSPC`; the linker
+also exited with a bus error during that attempt. `cargo clean -p
+sos-experience` removed 9.8 GiB of package build output. The identical
+single-job test then passed. This is not product evidence, but it explains why
+the test uses `-j 1` on this host.
+
+**Remaining risks and next gate:** This process boundary isolates the complete
+graph runtime from GPUI and compositor code. It does not assign one OS process
+per mounted Instance, which the frozen deployment rule does not require. Each
+Instance still owns a distinct Luau VM and no API observes process placement.
+Android v4 parity is now the next implementation gate.
+
+## 2026-08-27: Move the Android authority and host onto the v4 graph boundary
+
+**Goal:** Replace Android's singleton v3 runtime ownership with the same stable
+Experience, resolved graph, per-Instance runtime, durable state, appearance,
+grant, and recovery boundaries used by Linux.
+
+**Changed:** The Android authority now imports an existing singleton install as
+the reserved Stock Shell Experience without moving or rewriting the legacy
+pointer or state file. A packaged v4 Stock revision is installed beside it,
+resolved into a content-addressed graph, and returned as a pending migration.
+Only a host presentation confirmation moves the registry and graph pointers.
+Rejecting that pending graph removes it and returns the untouched v3 artifact;
+the fallback marker survives another authority restart. Fresh v4 installs use
+the registry and graph store directly.
+
+Android graph responses carry exact immutable package metadata, sources,
+sidecars, per-Experience state resources, reviewed grants, and the
+authority-owned appearance generation. Graph actions are checked against the
+active graph identity, stable grant decision, immutable capability request,
+provider action schema, expected state generation, state size, and shared
+Experience state invariant. All affected Experience states replace one durable
+composition document before provider effects execute. Appearance writes use a
+separately provisioned bounded capability and generation compare-and-swap.
+
+The Android GPUI host now starts one Luau VM per resolved graph Instance.
+Mounts are clipped and rendered at host-owned bounds. Node IDs, assets, native
+text sessions, pointer surfaces and capture, semantic bounds, focus targets,
+and input shadow state are namespaced by Instance ID. Events are routed back to
+the owning graph node with the namespace removed. Child failure renders a
+bounded placeholder. Provider models are filtered by the intersection of the
+revision request and reviewed stable grant, and only the registry-selected
+role reaches the runtime. Graph state and effects commit through the authority;
+failed commits restore the prior in-memory snapshot. Appearance generations
+are polled and applied without changing revision identity. A first v4 boot is
+confirmed after a rendered frame. A rejected startup graph is rolled back
+before the app aborts, preventing a repeated bad-candidate boot loop.
+
+Samsung and Cuttlefish product definitions now install
+`default.package.json` and the `stock.theme` sidecar with the Stock source,
+start the authority with that complete package, and publish revision and API
+format 4. `ro.sos.legacy_revision_read=3` describes the remaining rollback
+reader. Staging and Samsung target-files inspection compare both new artifacts
+with repository sources.
+
+**Evidence:** `cargo test -j1 -p android-authority-protocol -p
+android-system-authority` passed 24 unit, integration, wire-fixture, and doc
+tests. The new authority cases cover pending migration across restart,
+presentation confirmation, rollback to v3 across restart, per-Experience graph
+state persistence, and appearance persistence. `cargo ndk -t arm64-v8a -P 31
+check -j1 -p sos-experience --features aosp-system` and the corresponding
+`--no-default-features --features core-native` check both passed. `cargo fmt
+--all`, `git diff --check`, and `bash -n tools/a33xctl tools/aospctl` passed.
+
+**Failures and decision:** A direct `cargo check --target
+aarch64-linux-android` could not locate `aarch64-linux-android-clang`. This was
+a host invocation error, not a source or target failure. Re-running through
+the repository's cargo-ndk path supplied the pinned NDK compiler and both
+Android feature sets passed. The regular source-swap authoring entry point is
+explicitly rejected while a v4 graph is active because installing a bare
+source would recreate singleton v3 ownership.
+
+**Remaining risks and next gate:** This is compile and authority fault-path
+evidence, not an Android hardware verdict. Finish the packaged v4 Android
+authoring and staged graph-activation API, add Android-side graph fixture
+coverage, build and install the resulting ARM64 product, then run restart,
+rollback, IME, accessibility, grant isolation, child-failure, appearance, and
+composition acceptance on the Samsung target.
+
+## 2026-08-27: Make Android authoring a staged v4 graph transaction
+
+**Goal:** Remove Android's remaining singleton source-swap authoring path from
+the active product and make a generated Stock revision use the same immutable
+package, resolved graph, presentation, recovery, and rollback rules as every
+other v4 activation.
+
+**Changed:** The Android authority protocol now stages an immutable package
+revision against an exact active graph and can discard the staged graph before
+presentation. The authority checks the stable Experience ID and registry-owned
+role, exact current state hash and schema, package contract, grants, resolved
+graph limits, and dependency bindings before returning the candidate graph.
+Candidate state stays separate until the host confirms a rendered frame.
+
+Confirmation writes one graph-activation journal before it replaces the
+composition state, Experience registry pointer, graph pointer, and legacy
+fallback marker. Restart recovery completes that journal from every durable
+phase. Whole-graph rollback restores the prior composition state and pointers.
+Opening the v4 authority disables bare v3 installation, while the legacy
+revision reader and rollback activation remain available for existing recovery
+artifacts.
+
+The Android host now compiles generated source with the active revision's
+sidecars, requires API v4 and the exact active export set, migrates state with
+an explicit exact-parent record, validates all declared scenarios and export
+viewports, starts the candidate graph with one VM per Instance, and confirms it
+only after GPUI presents a frame. Failed runtime preparation discards the
+staged graph. The fake agent now makes a visible edit to the v4 Stock package
+instead of replacing the shell with the unrelated Timeflow Experience. Both
+agent preflight and host submission require the privileged Stock shell to keep
+its `agent_submit` text session. Agent activation evidence advances through
+validated, staged, and committed phases on the graph path.
+
+**Evidence:** `cargo test -j1 -p android-authority-protocol -p
+android-system-authority` passed 26 tests. The new authoring case covers stage,
+discard, presentation, candidate state commit, whole-graph rollback, and v3
+authoring rejection. The recovery case interrupted six consecutive journal
+phases and proved that every restart selected the complete candidate graph,
+removed pending intent, and could roll back to the original graph. `cargo test
+-j1 -p sos-experience` passed 18 tests, including a fake-agent Stock edit that
+retains API v4, the `main` export, theme module, and agent composer. Both
+`cargo ndk -t arm64-v8a -P 31 check -j1 -p sos-experience --features
+aosp-system` and `cargo ndk -t arm64-v8a -P 31 check -j1 -p sos-experience
+--no-default-features --features core-native` passed. `cargo fmt --all` and
+`git diff --check` passed.
+
+**Failures and decision:** The first Stock agent test compiled the modified
+source without its `stock.theme` module and failed at `require`. The built-in
+compiler now derives sidecar need from the declared module import, matching the
+package behavior. Android v4 authoring is accepted as the only creation path.
+The v3 code remains a bounded read and rollback compatibility path.
+
+**Remaining risks and next gate:** This is host compilation and authority fault
+evidence, not a Samsung hardware verdict. Audit checked-in tools, fixtures, and
+recovery scripts for any remaining v3 creation. Then complete the shared
+desktop verification campaign and run the Android graph activation, restart,
+rollback, IME, accessibility, appearance, grant, containment, and child-failure
+campaign on the physical SM-A336B.
+
+## 2026-08-27: Remove the remaining v3 creation paths
+
+**Goal:** Make Experience API v4 the only built-in and authoring target across
+repository tools, Linux boot setup, Android source delivery, and checked-in
+examples, while retaining the explicit v3 rollback reader.
+
+**Changed:** `android-exit-agent.luau` now publishes a v4 `main` export. The
+Android development helper seeds generated work from Stock v4, preserves its
+theme module and agent composer, waits for graph presentation, reports source
+identity, and invokes live whole-graph rollback. The host accepts the rollback
+request through a deep link, starts the previous graph, and reports success
+only after GPUI presents a frame. Candidate failures now emit one stable log
+record for device automation.
+
+The revision supervisor CLI rejects bare `install`; new callers must provide a
+complete v4 package. The direct-DRM boot campaign now installs packaged Stock
+and Timeflow revisions, creates both registry graphs, provisions grant review
+and exact trusted revision inputs, boots the graph supervisor, uses the
+resident authoring broker for replacement, and checks graph-aware status and
+rollback. Its systemd unit now passes the trusted product revision IDs from a
+root-owned environment file. The type prelude, top-level status, architecture,
+runtime, host, supervisor, and composition documents describe v4 as the active
+contract and v3 as read-only recovery compatibility.
+
+**Evidence:** `./tools/sosctl validate
+experiences/android-exit-agent.luau --json` passed Luau type checking and the
+runtime's complete scenario validation at 15,383 source bytes and 22 scene
+nodes. `cargo test -j1 -p revision-supervisor --all-targets` passed 48 tests.
+`cargo test -j1 -p sos-linux-session --all-targets` passed 18 tests, including
+v4 authoring, graph authority, recovery history, and the retained legacy
+migration fixture. `cargo test -j1 -p sos-experience` passed 18 tests. The
+ARM64 `cargo ndk -t arm64-v8a -P 31 check -j1 -p sos-experience --features
+aosp-system` check and the corresponding `--no-default-features --features
+core-native` check passed. `tests/linux-login-session-test.sh`, `bash -n
+tools/sosctl tools/linux-vm/verify-boot-session
+packaging/libexec/sos-login-session`, `cargo fmt --all -- --check`, and `git
+diff --check` passed.
+
+**Failures and decision:** The audit found two active leftovers. The direct-DRM
+VM still installed and swapped singleton v3 revisions, and the systemd unit did
+not supply the trusted revision arguments required by graph mode. It also used
+Timeflow as a fake Stock edit, which the v4 shell-composer check correctly
+rejects. The rewritten campaign uses a visible Stock variant through the
+authoring broker. No built-in, public CLI, or resident authoring flow creates
+v3 now. Direct library fixtures still create v3 artifacts solely to prove
+migration and rollback decoding.
+
+**Remaining risks and next gate:** The rewritten direct-DRM campaign has passed
+syntax and desktop component tests but has not yet rerun inside the Debian VM.
+Run that gate before treating its old physical evidence as v4 evidence. Then
+close fuzz, fault, performance, and documentation coverage before starting the
+Framework and Samsung physical campaigns.
+
+## 2026-08-27: Close v4 desktop boundary, recovery, and measurement coverage
+
+**Goal:** Complete the platform-neutral verification required before rerunning
+the Linux and Android physical composition campaigns.
+
+**Changed:** Added deterministic generated-boundary tests without a new fuzzing
+runtime dependency. They generate bounded closed schemas and resolved graphs,
+check canonical round trips and stable graph identities, reject wrong types and
+structural corruption, and mutate the shared package and graph fixture at the
+byte boundary. Graph-supervisor fault coverage now interrupts every durable
+activation cut point: intent, presented, authority committed, registry
+committed, and graph committed. Each restart asserts both the registry and
+graph pointer, not only the returned recovery decision.
+
+Added an explicit release-profile desktop measurement for the reference
+Agenda, Media, and Dashboard graph. It installs and resolves the immutable
+packages, starts all three VMs through mounted-scene readiness, dispatches a
+namespaced child event, propagates appearance, activates a new root graph,
+recovers a committed journal, and reports Linux process RSS. Android pointer
+containment tests now exercise local Router owners instead of racing through
+the process-global production router when Rust runs tests concurrently.
+
+**Evidence:** `cargo test -j1 -p experience-package --all-targets --
+--nocapture` passed 13 tests. The generated corpus covered 10,000 schemas,
+10,000 graphs, and 5,000 mutations of each canonical fixture in 2.74 seconds.
+`cargo test -j1 -p revision-supervisor --test graph_supervisor
+activation_journal_recovers_an_atomic_graph_at_every_durable_phase --
+--nocapture` passed all five injected phases. Core Rust, Linux, Android, and
+TypeScript shared-wire tests passed; `npm test` in `services/sos-agent` passed
+19 tests.
+
+`cargo test --release -j1 -p revision-supervisor --test composition_metrics --
+--ignored --nocapture` measured 1.383 ms for package install and graph
+resolution, 1.347 ms from graph start through all three mounted scenes ready,
+0.693 ms from child event to composed snapshot, 0.250 ms for appearance to
+composed snapshot, 0.809 ms for graph prepare/present/commit, and 0.610 ms for
+committed-journal recovery. Process RSS changed from 7,496 to 8,268 KiB, a 772
+KiB delta or coarse 257 KiB per Instance. After the Router isolation fix,
+`cargo test --workspace --all-targets -j1` passed the complete Rust workspace.
+Both ARM64 `cargo ndk` checks for `aosp-system` and `core-native` passed.
+
+**Failures and decision:** The first workspace-wide run exposed two parallel
+Android pointer-test failures. Both tests used the singleton production Router,
+so an active surface capture and render order from one case could overwrite the
+other. Router operations now have owner-local helpers used by the tests; the
+production entry points retain one locked Router per host process. The desktop
+latencies stop at a complete composed snapshot and are not labeled as physical
+frame latency.
+
+**Remaining risks and next gate:** Run the rewritten v4 direct-DRM VM gate and
+the Framework stable-host composition campaign. Desktop RSS and snapshot
+latencies cannot close compositor input, page-flip, suspend, thermals, or
+device-memory gates. The Samsung v4 composition, IME, accessibility, grant,
+failure, appearance, restart, and rollback campaign remains required.
+
+## 2026-08-27: Preserve direct-DRM acceptance evidence before cleanup
+
+**Goal:** Make the rewritten v4 Debian direct-session run independently
+auditable under the Linux acceptance workflow.
+
+**Changed:** `verify-direct-session` accepts an opt-in absolute
+`SOS_DIRECT_EVIDENCE_DIR`. After stopping the disposable session and restoring
+GDM, it copies finalized compositor, session, uinput, activation, and status
+logs, records the source revision and guest environment, archives the
+socket-free revision store, and writes measured monotonic duration and exit
+status. The default remains destructive temporary cleanup, and an existing or
+relative evidence path is rejected instead of overwritten.
+
+**Evidence:** `bash -n tools/linux-vm/verify-direct-session` passed, and
+`tests/linux-login-session-test.sh` reported
+`linux_login_session_host_tests=PASS` through the v4 mock registry. The v4 VM
+campaign itself is the next gate and will supply the retained artifacts,
+hashes, and measured result.
+
+**Failures and decision:** The prior verifier printed selected evidence but
+removed the raw per-criterion logs on every exit. Console output alone is not
+enough for the formal campaign ledger, so retention is explicit and opt-in
+instead of weakening normal disposable cleanup. Preflight also found that the
+selectable-session component mock still returned a synthetic singleton current
+revision and lacked registry graph commands. The mock now persists isolated
+current, Experience, and graph markers and exercises install-package,
+bootstrap, bootstrap-graph, and experience-status through the active v4 path.
+
+**Remaining risks and next gate:** Synchronize this exact revision into the
+Debian 13 KVM guest, run the direct gate once with a fresh evidence directory,
+copy the finalized artifact set back to the host, verify its manifest, and
+record the verdict. VM evidence still cannot close Framework hardware claims.
+
+## 2026-08-27: Remove the singleton pointer from fresh Linux v4 boot
+
+**Goal:** Resolve the first rewritten direct-DRM failure and make stable
+Experience registry state the only active ownership path in a fresh Linux v4
+session.
+
+**Changed:** The development launcher now installs and registers packaged Stock
+and Timeflow independently, creates no global `current` pointer, bootstraps both
+graphs into per-Experience authority state, provisions a private grant-review
+capability, and reviews each exact trusted graph before starting the graph
+supervisor. The Linux session CLI exposes graph-authority bootstrap and trusted
+graph grant review for this path.
+
+The installed selectable session now distinguishes migration from fresh boot.
+An existing v3 singleton is imported without moving its pointer. A fresh store
+creates only v4 Experience and graph pointers. In graph mode the system session
+does not bootstrap global authority state; it initializes and reviews exact
+Stock and Timeflow graphs. The direct verifier compares registry and authority
+state for `sos.stock.shell` and asserts that a fresh run never creates the
+legacy pointer.
+
+**Evidence:** The first VM attempt is retained at
+`.cache/evidence/linux-v4-69d58d7/attempt1`. Its nine finalized files total
+25,511 bytes. `SHA256SUMS` is 990 bytes with SHA-256
+`a304ffb23e2d9e6025245b8dec03905094e10ccd4646a85e4365fb4fa279709a`.
+`result.json` records FAIL after 52.738361068 monotonic seconds. The compositor
+completed its recovery DRM page flip, then the graph supervisor rejected Stock
+because the authority had no grant decision for `sos.stock.shell`.
+
+After the fix, `cargo test -j1 -p sos-linux-session --all-targets` passed 19
+tests, including a fresh graph-authority bootstrap that leaves
+`RevisionStore::current()` absent and a migration case that leaves an existing
+v3 pointer unchanged. Shell syntax, `git diff --check`, and
+`tests/linux-login-session-test.sh` passed. The selectable-session fixture now
+also asserts that fresh v4 startup creates no mock singleton pointer.
+
+**Failures and decision:** The failed attempt showed that package and graph
+installation alone is insufficient: graph boot correctly fails closed until
+the authority has both exact per-Experience state and a reviewed stable grant.
+Keeping the old global bootstrap merely to make this path start would preserve
+the ownership model v4 is replacing, so the launcher now uses the graph
+authority APIs directly.
+
+**Remaining risks and next gate:** Commit and synchronize the fix, then rerun
+only the direct-DRM phase with a new evidence directory. This is the second
+end-to-end attempt for the same objective; another failure triggers the runtime
+debug circuit breaker before any further complete rerun.
+
+## 2026-08-27: Keep the direct input activation inside the Stock v4 contract
+
+**Goal:** Apply the repeated-gate circuit breaker to the second direct-DRM
+failure and repair the earliest failing layer without another full attempt.
+
+**Changed:** The direct verifier no longer activates the standalone minimal
+input Scene as if it were the privileged Stock shell. It derives a visible
+candidate from the complete checked-in Stock source, verifies that the stable
+text changed and the `agent_submit` composer remains, then submits that exact
+candidate through the v4 Stock package flow. The old fixture was removed. The
+input criterion remains compositor-owned: it holds kernel keyboard, button,
+touch, and stylus state across the graph activation and checks suppression at
+the presentation boundary. The maintenance validator no longer runs the entry
+source through a module-unaware standalone analyzer when revision-local modules
+are supplied; it typechecks the sidecars and compiles and validates the complete
+runtime package instead.
+
+**Evidence:** Attempt two is retained at
+`.cache/evidence/linux-v4-661bb29/attempt2`. Its 11 captured evidence files
+total 42,555 bytes. `SHA256SUMS` is 1,357 bytes with SHA-256
+`f98ef9816b84e3e0ad6ea463707c2d4da8a91f9c4b18a40c36a166c38f932ba8`.
+`result.json` records FAIL after 5.565508283 monotonic seconds. It proves both
+graph-authority bootstraps and grant reviews, Stock DRM presentation, stable
+host startup, and all four initial compositor input classes before
+`linux-script` rejected the incomplete fixture with `requires the Stock agent
+composer`.
+
+The focused package-aware regression
+`validates_a_visible_complete_stock_edit_with_its_revision_local_theme` passed.
+The matching `sosctl validate` run compiled the 57,116-byte candidate with the
+`stock.theme` module and reported all ten scenarios valid, from 39 to 121 nodes
+and zero to one text sessions per scenario. Linux session tests, shell syntax,
+the selectable-session fixture, formatting, and diff checks pass.
+
+**Failures and decision:** This was the second full failure for the direct-DRM
+objective. The runtime-debug circuit breaker stopped complete reruns. Comparing
+the attempts isolated distinct sequential preconditions: attempt one lacked
+authority grants; attempt two passed that layer and failed at source extraction
+and revision validation. Weakening the Stock composer check or attaching the
+shell role to the small input fixture would violate v4 role and authoring
+boundaries, so the gate now edits the complete Stock artifact.
+
+**Remaining risks and next gate:** The focused layer passes. Run one fresh
+downstream direct-DRM attempt. A PASS must still preserve raw evidence and prove
+no singleton pointer.
+
+## 2026-08-27: Prevalidate direct candidates before the timed input hold
+
+**Goal:** Diagnose the post-circuit downstream failure without treating it as
+an input or compositor product regression.
+
+**Changed:** The direct gate now generates and package-validates the complete
+Stock candidate before creating kernel input devices. It parses the retained
+validation report and requires one revision-local module and a valid aggregate
+result. Only then does it begin the bounded input hold and invoke the exact
+submission path again. The hold is five seconds for both successful and
+aborted activations, leaving measured scheduling margin without weakening any
+required input count or suppression assertion.
+
+**Evidence:** The failed downstream run is retained at
+`.cache/evidence/linux-v4-17227eb/attempt3`. Its 13 captured evidence files
+total 116,640 bytes. `SHA256SUMS` is 1,489 bytes with SHA-256
+`72aa35b188317ffec229c0f4efe140e9e31e6beb4eee44fc57f93bacd1c37f93`.
+`result.json` records FAIL after 101.873237232 monotonic seconds. Candidate
+revision `27ddfcc9…` did reach a DRM page flip in unchanged host PID 10147, but
+the log shows the input contacts ended at monotonic second 1011 while candidate
+quiesce began at second 1107 with `keys=0 buttons=0 touches=0`.
+
+**Failures and decision:** The first use of the pinned Luau analyzer cloned and
+built it after the input helper had begun its 1.5-second hold. The gate then
+correctly failed at the first held-input assertion. Prewarming outside the
+timed interval makes compilation readiness an explicit prerequisite and keeps
+the activation assertion about input containment rather than host build speed.
+
+The focused prevalidation reported PASS for ten scenarios and one module. The
+matching package-aware authoring regression, shell syntax, formatting, and diff
+checks passed.
+
+**Remaining risks and next gate:** Run syntax and focused package validation,
+then one clean direct phase from a fresh store and evidence directory. Do not
+accept cached success without the retained prevalidation report and nonzero
+held-input counts.
+
+## 2026-08-27: Bind Linux input release and rollback to the graph transaction
+
+**Goal:** Diagnose the fourth direct-DRM result at the first incorrect product
+boundary and make a rejected presented graph return to the accepted graph with
+physical evidence.
+
+**Changed:** The compositor no longer ends its input-quiesce epoch merely
+because an armed candidate frame was presented. A graph candidate remains
+non-interactive until the supervisor has promoted authority state, registry
+and graph pointers and sends `FinalizeGraph`. Boot and bounded legacy revision
+presentation still resume explicitly after their first proven frame.
+
+If authority rejects after candidate presentation, the Linux host now restores
+the previous graph while retaining the candidate's quiesced input epoch, arms a
+new fence for the restored graph, and emits `GraphDiscarded` only after that
+graph has compositor presentation evidence. The compositor permits this
+trusted shell rollback fence to reuse the existing quiesce epoch without an
+input-release gap. The direct verifier now requires the exact five-frame graph
+sequence: boot old, committed new, rejected old, restored new, restarted new.
+
+**Evidence:** Attempt four is retained at
+`.cache/evidence/linux-v4-528a3e6/attempt4`. Its finalized files total 144,395
+bytes. `SHA256SUMS` is 2,388 bytes with SHA-256
+`f69773ffd9653af66f0936eef4b8a900421234e01324f0f463a5ebe6c48a4724`.
+`result.json` records FAIL after 15.877643295 monotonic seconds. Before the
+final count assertion, it proved complete v4 Stock boot and grant review,
+successful candidate activation under held keyboard, pointer, touch and stylus
+input, an authority rejection under the second held-input lifecycle, unchanged
+registry/authority state, and host restart from PID 13025 to 13451. Its four
+DRM frames exposed the missing fifth boundary: the rejected old graph was
+presented, but discard restored the accepted new graph only in host memory and
+returned without a compositor fence.
+
+After the fix, all 28 compositor library tests pass, including explicit
+finalization and rollback rearm policy cases. All 36 Linux/Android experience
+library tests and all 15 graph-supervisor integration tests pass. The Linux
+host compiles with `linux-host`; `bash -n tools/linux-vm/verify-direct-session`,
+formatting, and diff checks pass.
+
+**Failures and decision:** Treating the fourth frame as harmless preview and
+changing the expected count would not prove visible rollback, and releasing
+input at candidate presentation allowed interaction before authority commit.
+The durable transaction already ended at `FinalizeGraph`; physical input and
+discard evidence now use that existing boundary.
+
+**Remaining risks and next gate:** Commit and synchronize this exact revision,
+then run one fresh direct-DRM attempt. PASS requires five ordered DRM graph
+frames, four explicit input-epoch resumptions, retained raw evidence and a
+verified manifest. Framework integrated-input and Samsung physical campaigns
+remain open.
+
+## 2026-08-27: Correct the final direct verifier authentication assertion
+
+**Goal:** Preserve and classify the first run with physically evidenced graph
+rollback, then repair its exact non-product failure before one downstream run.
+
+**Changed:** The final direct-session PID checks now match the compositor's
+current structured authentication message, including the explicit
+`role=Shell`. No product behavior or acceptance count changed.
+
+**Evidence:** Attempt five is retained at
+`.cache/evidence/linux-v4-769866b/attempt5`. Its finalized files total 147,484
+bytes. `SHA256SUMS` is 2,388 bytes with SHA-256
+`45a7f672e1cb20b03c8647b31caa2b3c10030393c542bf4b5b6714884c486d8e`;
+`sha256sum -c` verifies all 19 listed artifacts. `result.json` records FAIL
+after 31.726691694 monotonic seconds.
+
+The run nevertheless passed the complete product boundary before line 434:
+five ordered DRM graph frames were Stock boot `b8d0745f…`, accepted candidate
+`27ddfcc9…`, rejected Stock `b8d0745f…`, physically restored candidate
+`27ddfcc9…`, and restarted candidate `27ddfcc9…`. The compositor recorded four
+explicit input-epoch resumptions, with the rejected and restored frames sharing
+one quiesced epoch. Registry and authority revisions agreed, no singleton
+pointer existed, both held-input lifecycles had nonzero keyboard, button and
+two-touch state, host PID changed from 15336 to 15770 after the forced crash,
+and compatibility mapping succeeded. GDM and seatd were active after cleanup.
+
+**Failures and decision:** The gate stopped because it searched for the removed
+phrase `authenticated SOS shell control connection`; both relevant log lines
+use `authenticated SOS compositor control connection ... role=Shell`. The PID
+values and shell role were present. The assertion now follows the actual stable
+structured message instead of weakening authentication evidence.
+
+**Remaining risks and next gate:** Run syntax checks, commit, synchronize and
+perform one fresh direct phase. A PASS must retain and verify the same evidence
+set. Physical Framework and Samsung acceptance remain open.
+
+## 2026-08-27: Pass the v4 Debian direct-DRM graph gate
+
+**Goal:** Close the virtual Linux physical-presentation phase with a clean,
+auditable v4 graph verdict after the focused authentication assertion fix.
+
+**Changed:** No product code changed during this attempt. The exact committed
+verifier and rollback/input transaction implementation from source revision
+`294fe67` were synchronized into the Debian 13 guest.
+
+**Evidence:** `tools/linux-vm/verify-direct-session` reported
+`linux_direct_session_passed` with activation PID 16868, restarted PID 17301,
+revision `e094a24c…`, and `drm_page_flip` evidence. `result.json` records PASS
+after 15.887747472 monotonic seconds. The retained bundle is
+`.cache/evidence/linux-v4-294fe67/attempt6`; its finalized files total 125,684
+bytes. `SHA256SUMS` is 2,388 bytes with SHA-256
+`1e143313c4d2e39d5647baa26227a24e026f0ddc8c5100111250d5241309cda1`,
+and `sha256sum -c` verifies all 19 listed artifacts.
+
+The session contains exactly five DRM graph frames in the required order:
+Stock boot `b8d0745f…`, committed candidate `27ddfcc9…`, rejected Stock
+`b8d0745f…`, restored candidate `27ddfcc9…`, and restarted candidate
+`27ddfcc9…`. The compositor recorded four explicit input-epoch resumptions, so
+the rejected and restored frames remained in one closed epoch. Both successful
+and faulted activations began with one held keyboard key, one held pointer
+button and two held touch contacts, and their later releases were suppressed.
+Stylus pressure traversed tablet-v2. Registry and authority revisions agreed,
+the fresh store had no singleton `current`, the compatibility client mapped,
+and GDM and seatd were active after cleanup.
+
+**Failures and decision:** None in the accepted run. This closes the Debian
+direct-DRM v4 graph gate, including visible rollback and host restart. It does
+not make a Framework panel, integrated-input, suspend, latency or thermal claim.
+
+**Remaining risks and next gate:** Run the stable-host campaign on the physical
+Framework using only input devices present in the prepared inventory and an
+actual Dashboard composition graph. Then complete the Samsung v4 composition,
+IME, accessibility, grant, child-failure, appearance, restart and rollback
+campaign.
+
+## 2026-08-27: Create missing parent directories during live deployment
+
+**Goal:** Deploy the complete v4 Linux stack to the Framework development-live
+target without relying on directories introduced only by newer base images.
+
+**Changed:** `linux-live-deploy` now creates the root-owned parent directory for
+every exact component destination before installing that component. This
+includes the revision-local Stock module directory and also makes selective
+deployment independent of which sibling component happened to run first. The
+mock deployment requires the module-directory creation command explicitly.
+
+**Physical experiment and evidence:** The Framework at `192.168.1.132`
+reported `Laptop 12 (13th Gen Intel Core)`, Fedora 44, kernel
+`6.19.10-300.fc44.x86_64`, boot ID
+`9b1818f2-c6c3-4829-8109-c9b3320a02a3`, active GDM and SSH, and
+`LiveOS_rootfs`. No internal NVMe filesystem was mounted. The prior SOS login
+was still a singleton session with no active graph; it was terminated cleanly
+before deployment and all SOS processes exited.
+
+Release builds from clean source `c217b8fdd58e…` completed and the deployer
+transferred the v4 executables and package inputs. Installation then stopped at
+`/usr/share/sos/experiences/modules/stock-theme.luau` because that older live
+image did not contain the parent `modules` directory. It did not start SOS,
+touch boot configuration, or mount the internal disk. The failed deploy ended
+before emitting an accepted deployment record.
+
+After the fix, shell syntax passes and `tests/linux-live-image-test.sh` reports
+`linux_live_image_host_tests=PASS`, including the explicit missing-parent
+contract.
+
+**Failures and decision:** Precreating the module directory manually would make
+this target pass while leaving the reusable incremental deployer dependent on
+base-image age. Parent creation is now part of the exact root installation
+transaction. The partially updated target remains at GDM and must not launch
+SOS until the complete redeployment verifies every installed digest.
+
+**Remaining risks and next gate:** Commit the deployment fix, redeploy every v4
+component, verify the target manifest and start a fresh Framework graph
+campaign. The mutable development-live result remains diagnostic and physical
+integrated input still requires an owner at the laptop.
+
+## 2026-08-27: Keep the Framework gate allowlist aligned with v4 deployment
+
+**Goal:** Prepare the revision-pinned Framework campaign after the complete v4
+deployment without broadening the hardware gate beyond known product paths.
+
+**Changed:** The hardware gate's closed development-deployment allowlist now
+includes the exact current destinations for `sos-agent-login`, the Stock and
+Timeflow package manifests and sources, the revision-local Stock theme, current
+agent and stable-host documentation, and the bounded Framework display
+defaults. It still rejects every unlisted path. The host test pins each newly
+accepted destination so deployment and acceptance cannot drift silently.
+
+**Physical experiment and evidence:** The complete clean deployment from
+revision `f2b2b2334edd…` passed on the Framework as deployment
+`20260827T090419Z-f2b2b2334edd-2567577`. It installed and independently checked
+all component digests in 23,115,719,197 ns. Generated deployment evidence is
+under
+`.cache/evidence/framework-v4-deploy/20260827T090419Z-f2b2b2334edd-2567577/`;
+the image remains mutable `development-live` and
+`promotion_eligible=false`.
+
+The first hardware preparation then stopped before runtime launch with
+`unsafe development deployment path: /usr/local/libexec/sos/sos-agent-login`.
+This was the first of several valid v4 paths absent from the older allowlist;
+no partial campaign was accepted and SOS remained stopped at GDM. After the
+fix, `tests/linux-hardware-gate-test.sh` reports
+`linux_hardware_gate_host_tests=PASS`, and shell syntax passes.
+
+**Failures and decision:** Removing current components from the deployment
+manifest or accepting `/usr/local/libexec/sos/*` as a wildcard would either
+hide deployed product state or weaken the gate. The allowlist remains exact and
+now matches the complete v4 deployment contract.
+
+**Remaining risks and next gate:** Commit and deploy the corrected gate only,
+prepare a fresh same-boot evidence directory, then launch the Stock shell and
+reference Dashboard graph. Integrated keyboard, touchpad and touchscreen
+criteria cannot be satisfied through PiKVM HID.
+
+## 2026-08-27: Represent the removed legacy experience in live-image audits
+
+**Goal:** Keep the old baked image auditable after the explicitly requested
+legacy Experience removal, without restoring that source or allowing arbitrary
+missing installed files.
+
+**Changed:** Development deployment metadata now declares one exact retired
+baked artifact, `/usr/share/sos/experiences/daily-flow.luau`, and deployment
+idempotently removes that exact path. The physical gate requires that exact
+metadata value. While snapshotting the immutable image's historical install
+manifest, it records only that exact absent file as `retired`; every other
+missing or mismatched baked artifact still fails closed. Both deploy and gate
+tests pin the deletion command, metadata identity, and narrow exception.
+
+**Physical experiment and evidence:** After the corrected v4 allowlist was
+deployed in the complete clean component set, Framework deployment
+`20260827T090741Z-53e8cc3c150b-2570383` passed all installed digest checks in
+24,551,567,902 ns. Generated evidence is under
+`.cache/evidence/framework-v4-deploy/20260827T090741Z-53e8cc3c150b-2570383/`.
+Hardware preparation then reached the baked-artifact snapshot and stopped on
+the exact old 15,676-byte source named by the immutable install manifest. The
+overlay correctly reported that path absent; its baked SHA-256 is
+`09ccddca90f6d0a94ea8fbbb86204bbf8522123d2f73f21becfe964a2851a693`.
+SOS was not launched and the internal disk remained out of scope.
+
+`tests/linux-live-image-test.sh` and `tests/linux-hardware-gate-test.sh` now
+both report PASS, and shell syntax passes.
+
+**Failures and decision:** A clean newly baked image would naturally omit the
+old manifest row, but the current mutable physical diagnostic must remain
+truthful about its immutable lower layer. Restoring the deleted source was
+rejected. A wildcard missing-file exception was also rejected; the deployment
+records and the gate recognizes one exact tombstone.
+
+**Remaining risks and next gate:** Commit and redeploy the complete manifest so
+the tombstone is target evidence, then prepare the Framework campaign again.
+This compatibility tombstone can be removed with the old development image;
+it is not an active experience or activation path.
+
+## 2026-08-27: Stage the Framework v4 composition campaign without claiming runtime
+
+**Goal:** Put the exact clean v4 deployment and reference graph on the physical
+Framework 12 while preserving the distinction between preparation and live
+composition evidence.
+
+**Changed environment and evidence:** Clean source revision
+`c4e9aec110982b27e82e63ba2158dad8aff259c9` was completely deployed as
+`20260827T091047Z-c4e9aec11098-2574462`. The deployer independently verified
+every installed digest and completed in 29,171,952,848 ns. Generated evidence
+is under
+`.cache/evidence/framework-v4-deploy/20260827T091047Z-c4e9aec11098-2574462/`;
+the mutable live overlay remains `promotion_eligible=false`.
+
+The hardware gate then prepared
+`/home/liveuser/framework12-v4-composition-c4e9aec` on Framework Laptop 12,
+Fedora 44, kernel `6.19.10-300.fc44.x86_64`, boot ID
+`9b1818f2-c6c3-4829-8109-c9b3320a02a3`. The internal NVMe remained unmounted.
+The content-addressed reference set was installed with Dashboard graph
+`f09068511e1c9d2c160fcc55583e9d347024fbf4a6ca2fa53ff2492a983ab287`,
+Dashboard revision
+`6676864289356369df159b1e55f110e08878948c94272398ec0580765e5eee98`,
+Agenda revision
+`30e496f607393114c5a3963a25b91681c5a49d222db16801cbe6882b42b3ba3b`,
+Media revision
+`f6a9b11b2ce849ae5525319e6dd34e14ef38406ee27b8d1524bd03bff04c8bb6`,
+and self-contained remix revision
+`d5f061a7097eb069c83046679cc937287219fa475c6697da381abcb23eae2de3`.
+
+**Failure and decision:** The laptop became unreachable before GDM or SOS was
+reconfigured and before the graph runtime started. No autologin mutation was
+made. Preparation is retained on the live overlay, but it is not presentation,
+input, restart, or rollback evidence. If the boot ID changes after wake, the
+same-boot evidence directory must be discarded and prepared again.
+
+**Remaining risks and next gate:** Wake the Framework, verify the same boot ID,
+then run Dashboard through physical presentation, mounted-child interaction,
+appearance propagation, restart, rollback, and integrated keyboard, touchpad,
+and touchscreen checks. PiKVM HID cannot satisfy the integrated-input gate.
+
+## 2026-08-27: Recover Android build capacity and align the Core 1 patch contract
+
+**Goal:** Resume a clean Samsung v4 build without accepting stale generated
+images or a source patch whose declared target set differs from the applied
+Lineage tree.
+
+**Changed environment:** The accepted Debian VM was stopped cleanly before its
+79 GiB generated `.cache/linux-vm` runtime was removed. An unrelated,
+rebuildable 163 GiB `/home/carlid/dev/aosp-sos/out` tree was also removed.
+Linux source, the retained acceptance evidence, the 417 MiB base image, and the
+active `/home/carlid/dev/lineage-a33x` source/output tree were preserved. Free
+space increased from 116 GiB to 331 GiB; `./tools/a33xctl doctor` then passed
+with 350,166,740 KiB available.
+
+The pinned patch
+`0005-s5e8825-select-no-zygote-for-sos-core1.patch` now names both the shipping
+`lineage_sos_core1_a33x` product and the non-shipping
+`lineage_sos_core1_dev_a33x` provider-probe product in its make condition and
+description. This matches the already-applied Lineage hardware tree instead of
+failing patch idempotence on the second target.
+
+**Evidence:** `git -C /home/carlid/dev/lineage-a33x/device/samsung/s5e8825-common
+apply --reverse --check` passes for the corrected patch. A subsequent
+`./tools/a33xctl apply-patches` classified all seven pinned patches as already
+applied. The standalone ARM64 APK, GPUI Core runtime, native Node runtime, Pi
+runner, and Android authority rebuilt successfully before the shadow Lineage
+compile began.
+
+**Failures and decision:** The first `build-core` stopped because patch 0005
+could neither apply nor reverse cleanly: the Lineage tree already contained the
+two-product condition while the repository patch described only Core 1
+shipping. Reverting the provider-probe protection was rejected. Generated
+Linux VM and old AOSP output were removed only after identifying them as
+rebuildable and outside the retained evidence set. The shadow build launched
+from the earlier dirty patch state is diagnostic only and cannot be selected
+for a device.
+
+**Remaining risks and next gate:** Finish the diagnostic shadow build, commit
+this corrected source contract, then rebuild and inspect final Compat 1 and
+Core 1 artifacts from one clean revision. No Android artifact may be installed
+until its source identity, target profile, signatures, AVB graph, package
+contents, byte size, and SHA-256 pass the matching inspector.
+
+## 2026-08-27: Complete Android registry launching and dynamic child containment
+
+**Goal:** Remove the last Stock-only Android composition shortcut before
+building physical artifacts: install the reference Experiences as signed
+product content, launch them through the registry, propagate appearance, and
+contain a child that fails after activation.
+
+**Changed:** The Android revision protocol and authority now stage
+`PresentExperience` and `DismissExperience` against the exact presented graph.
+Presentation writes a pending graph record, starts no pointer mutation, and
+durably selects the top-level Experience only after the host confirms a
+rendered frame. The selected Experience survives authority and host restart.
+Stock is the only registry-owned role that may present another Experience;
+dismissal returns the currently presented ordinary Experience to Stock through
+the same staged path.
+
+The signed Samsung and Cuttlefish authority services now idempotently install
+Agenda, Media, Dashboard, and Agenda-Media Remix. All four receive independent
+top-level `main` graph pointers, while Dashboard retains locked Agenda and Media
+summary mounts. Authority restart does not reset later registry revisions.
+Provider snapshots expose the bounded catalog only to the host; the runtime
+still clears it from every ordinary Experience model. Stock now requests the
+explicit `appearance_write` capability. Android checks that request and its
+reviewed stable-ID grant, the exact presented graph, and the next generation
+before changing authority-owned appearance. A write remains available while
+an ordinary graph is presented without transferring the grant to that graph.
+The request travels over the existing SELinux-restricted administrative
+revision channel: only the fixed Core host or platform-privileged SOS host may
+connect, while untrusted app domains have no `name_connect` permission.
+
+The GPUI host separates `shell.present_experience` and dismissal from provider
+effects, commits the initiating state, prepares the selected graph, and waits
+for its frame before confirmation. Exact bounded deep links support physical
+automation for presentation, dismissal, appearance toggle, and reference
+events. Logs identify the graph root, every Instance/Experience/export, child
+failure/recovery, root readiness, and appearance generation.
+
+The graph runtime now contains both update-time and render-time failures from a
+non-root Instance. It marks only that child failed, removes its scene so the
+host renders the unavailable placeholder, and suppresses the failed update's
+provider effects and output events. The root and siblings remain ready. The
+reference Agenda exposes hidden acceptance failure/recovery actions and
+Dashboard exposes a liveness counter. Media's invalid `music.toggle` fixture
+was corrected to the closed `media.play_pause` ABI and its immutable package
+now requests `music_control`.
+
+**Evidence:** The focused reference graph test installs all four top-level
+graphs, starts Dashboard's three VMs, routes `agenda.open`, contains both an
+Agenda update exception and render exception while Dashboard remains ready,
+commits a root liveness action, recovers Agenda, propagates appearance, and
+checks the self-contained remix. All 32 `runtime-luau` library tests pass.
+
+The Android authority suite passes 16 tests and the revision wire suite passes
+5. The new authority case discovers four signed catalog records, stages the
+three-Instance Dashboard, recovers the pending selection after restart,
+confirms it, denies presentation from an ordinary root, accepts a Stock-granted
+appearance generation while Dashboard is active, denies Dashboard the same
+write, restarts on the exact Dashboard graph and appearance generation, then
+stages and confirms dismissal to Stock. Both ARM64 checks pass:
+`cargo ndk -t arm64-v8a -P 31 check -j1 -p sos-experience --features
+aosp-system` and the `--no-default-features --features core-native` variant.
+`./tools/a33xctl check-product-graph`, shell syntax, Rust formatting, and diff
+whitespace checks pass.
+
+The earlier diagnostic Shadow image completed successfully in 13m44s as
+`sos.shadow.c4e9aec11098.b97282870441`, proving the corrected seven-patch
+Lineage tree and full OTA pipeline. It was built before this change from a
+dirty source identity and is explicitly rejected for installation.
+
+**Failures and decision:** Android previously packaged only Stock even though
+its runtime could decode a graph. Stock therefore received an empty Experience
+catalog, and its valid `shell.present_experience` effect was rejected by the
+system provider registry. Separately, startup rendering contained a broken
+child, but a child that failed during an update caused whole-graph rollback.
+Test-only direct pointer mutation and raw scene injection were rejected. The
+same staged authority protocol and failed-Instance placeholder now cover the
+real product path.
+
+**Remaining risks and next gate:** Commit this slice, rebuild Compat 1 and Core
+1 from the clean revision, run their complete inspectors, then install only an
+exact inspected artifact on serial `RFCT50EGFCN`. Physical acceptance must
+still prove touch, hardware keyboard/IME where applicable, accessibility,
+namespaced Agenda interaction, appearance propagation, failure containment,
+restart, rollback/dismissal, memory, thermals, and exact evidence hashes. The
+local USB ACL and sleeping Framework remain external prerequisites for their
+respective physical gates.
+
+## 2026-08-27: Build and inspect exact v4 Android composition artifacts
+
+**Goal:** Produce installable Compat 1 and Core 1 artifacts from the committed
+Android composition implementation, prove their package and image contracts,
+and preserve the exact inspected inputs before the shared Lineage output tree
+changes product.
+
+**Changed:** No product source changed during this gate. Both builds used clean
+commit `52ce577ac0f46e9a22eec4edde93f136b648b894`. Compat 1 identified itself as
+`sos.compat1.52ce577ac0f4.89321d76b350`; Core 1 identified itself as
+`sos.core1.52ce577ac0f4.8ff80933e8b1`. The complete extracted target-files
+trees were archived with Zstandard alongside each OTA and inspector log under
+`.cache/evidence/android-v4-52ce577/` before the next product build reused the
+Lineage output tree.
+
+**Evidence:** `./tools/a33xctl build-compat1` completed successfully in 5m41s.
+`./tools/a33xctl inspect-compat1` passed whole-package signature, compressed
+data, PIT ceilings, boot/recovery/vendor-boot footers, the complete AVB and
+verity graph, recovery init packaging, exact Stock source/package/theme,
+SELinux labels and policy, provider runner, v4-only creation markers, and all
+four signed reference Experience markers. Preserved Compat 1 artifacts are:
+
+- `compat1/lineage-23.0-20260827-UNOFFICIAL-sos_compat_a33x.zip`:
+  1,067,703,993 bytes, SHA-256
+  `9d013db07b75c469ff4f8186c6ebb944a150a196ff924bbc11276e055c6daf76`;
+- `compat1/lineage_sos_compat_a33x-target-files.tar.zst`:
+  2,175,140,468 bytes, SHA-256
+  `40c2e3134f3c9aea2c27b244cd989c513376a18e05ff10a41ac2c5083cb995a2`;
+  and
+- `compat1/inspect-compat1.log`: 29,237 bytes, SHA-256
+  `99b078dbf0c71bcdbd46623650a17d98440d8f2dc34bb87d9d845accc9f6af38`.
+
+`./tools/a33xctl build-core1` completed successfully in 5m23s.
+`./tools/a33xctl inspect-core1` passed the same signature, PIT, AVB, recovery,
+v4 package, theme, and composition gates plus native no-Zygote ownership,
+pinned Core model validation, disabled user APK installation, and the exact
+Core host/platform policy. Preserved Core 1 artifacts are:
+
+- `core1/lineage-23.0-20260827-UNOFFICIAL-sos_core1_a33x.zip`:
+  1,022,839,686 bytes, SHA-256
+  `66cba1584be3a8a8d9e849a19e57c52ae4c1a45c22ff28183bc2f4f54c4a216c`;
+- `core1/lineage_sos_core1_a33x-target-files.tar.zst`:
+  2,079,179,951 bytes, SHA-256
+  `887e2d0f3f9a0dc11408d2ffe4b1e463432063a006447cb5f7d83d6b7b347699`;
+  and
+- `core1/inspect-core1.log`: 25,466 bytes, SHA-256
+  `7bd04f14962f24d9f84cf076bbe0cd87586f13a1651c5cf31c5e54f7752ba530`.
+
+**Failures and decision:** The earlier Shadow artifact remains rejected because
+it predated the committed composition source. Both final artifacts passed from
+one exact clean commit. The physical Samsung is detected at USB path `1-1.1`,
+but `adb devices -l` reports serial `RFCT50EGFCN` as `no permissions`; no image
+was installed and no physical claim is made from the build inspectors.
+
+**Remaining risks and next gate:** Refresh the Samsung USB ACL, install only the
+preserved inspected Compat 1 artifact, and run the complete device campaign
+before advancing to Core 1. Physical input, accessibility, restart, recovery,
+thermal, memory, and composition behavior remain open. The Framework Linux
+input campaign also remains open and may proceed independently over SSH while
+the Android USB transport is unavailable.
+
+## 2026-08-27: Recheck the v4-only authoring and Linux host boundary
+
+**Goal:** Verify at the exact documentation head that no checked-in Linux
+experience or creation command can return to Experience API v3, and distinguish
+the remaining physical prerequisites from product failures.
+
+**Changed:** No product or target state changed. The audit ran at commit
+`9610dec`. Stock and Timeflow are the only checked-in general Linux experiences
+and both have package-v4 manifests. `sosctl linux-script` requires
+`api_version = 4`, installs the Stock package through the v4 package path,
+resolves a graph, and activates that graph. Daily Flow has no source, package,
+agent input, or activation path. Its remaining non-historical occurrences are
+the exact retired baked-artifact tombstone and tests that require its deletion.
+API v3 remains only the deliberately bounded activation/rollback decoder and
+test fixtures that exercise that compatibility reader. Scene ABI v3 references
+describe the retained scene model and are not Experience API v3 authoring.
+
+**Evidence:** `tests/linux-live-image-test.sh`,
+`tests/linux-hardware-gate-test.sh`, and
+`tests/linux-login-session-test.sh` each reported `PASS`. The corrected command
+`cargo test -j1 -p sos-linux-session -p revision-supervisor --all-targets`
+passed 69 tests with one explicit desktop-performance test ignored: registry,
+resolver, tracked update, graph journal, authority transaction, authoring,
+legacy import, and shared v4 wire cases all passed. A case-insensitive source
+audit found the Daily Flow name outside `docs/progress.md` only in the exact
+live-image tombstone and its pinning tests.
+
+**Failures and decision:** The first combined Rust invocation selected the
+nonexistent Cargo package name `linux-session`; Cargo rejected it before
+running tests. Repeating the unchanged test command with the declared package
+name `sos-linux-session` passed. No hardware verdict is inferred. The Samsung
+enumerates as USB `04e8:685d` in Download Mode, so adb cannot own it, and the
+Framework address `192.168.1.132` returns `No route to host`. No OTA, target
+file, session, or boot state was changed.
+
+**Remaining risks and next gate:** Exit Samsung Download Mode into the existing
+authorized Android system, unlock and replug it, then sideload the exact
+inspected Compat 1 artifact through the established one-OTA recovery path.
+Wake the Framework and redeploy the current clean v4 component set before its
+integrated input and composition campaign. Retain the v3 rollback reader until
+the pinned recovery artifacts have completed migration, as required by the
+rolling and reversible plan; do not restore v3 authoring.
+
+## 2026-08-27: Make child failure and timeout physically addressable
+
+**Goal:** Let the Framework and Samsung campaigns prove child containment
+through the shipped reference graph instead of substituting a direct runtime
+unit-test call for physical host behavior.
+
+**Changed:** Agenda's reference summary now has semantic controls that trigger
+an update exception and an instruction-budget timeout. Dashboard has a parent
+liveness control and displays its committed count. These are ordinary Scene
+ABI interactions. Their Instance-owned targets pass through the same input,
+graph worker, authority transaction, and fallback rendering paths as any other
+child or parent action. No host-only event injection or cross-experience call
+was added. The reference integration test now times out Agenda, verifies that
+Dashboard remains Ready, commits a Dashboard action, recovers Agenda, and then
+continues the existing render-failure proof.
+
+**Evidence:** Both changed Luau sources passed `sosctl validate`. Agenda
+validated at 2,882 bytes with five nodes and four semantic nodes; Dashboard
+validated at 2,603 bytes with six nodes and two semantic nodes. The focused
+reference composition test passed, including the bounded timeout interrupt,
+and all 32 `runtime-luau` library tests passed. Both default and
+`direct-backend` compositor checks also pass without the earlier feature-only
+unused-parameter warning.
+
+**Physical environment and failure:** Before this audit changed the reference
+source, clean commit `205fc42548d529ec011f189a71e367092257a379` deployed all
+Linux components to the Framework as deployment
+`20260827T103016Z-205fc42548d5-3061033`. The deployer verified every installed
+digest in 218,496,599,593 ns. The laptop remained at GDM on boot ID
+`9b1818f2-c6c3-4829-8109-c9b3320a02a3`, with no SOS process and no mounted
+internal NVMe. The newly installed reference set produced Dashboard graph
+`d3a96aeec8cd8c290e38602ce91d41f4d05a459d3843fdd864e325a58ba24c3f`.
+That deployment is now stale by design because the acceptance controls changed
+after the audit. It is deployment evidence, not runtime acceptance.
+
+**Decision and next gate:** Commit and redeploy the complete reference set,
+install its new exact revisions, then prepare a fresh same-boot campaign. The
+operator must still use the integrated Framework keyboard, touchpad, and
+touchscreen; accessibility automation may inspect or activate composition
+semantics but cannot satisfy those physical-input criteria.
+
+## 2026-08-27: Freeze exact composition artifacts and redeploy Framework
+
+**Goal:** Replace the now-stale Android and Framework artifacts with exact
+outputs from the composition acceptance-control revision before either physical
+campaign starts.
+
+**Changed:** No product source changed during this gate. Compat 1, Core 1, and
+the Framework deployment all use clean commit
+`ed88d333d02f85b0c9f43ba237a60f3b67cecd8b`. Compat identifies itself as
+`sos.compat1.ed88d333d02f.191469142323`; Core identifies itself as
+`sos.core1.ed88d333d02f.a6e4c4bebd47`. The preserved Android inputs live under
+`.cache/evidence/android-v4-ed88d33/`. This directory does not yet contain a
+final evidence manifest because device evidence still has to be added.
+
+**Android evidence:** `./tools/a33xctl build-compat1` reported a successful
+Lineage build in 3m33s. Its preserved inspector rerun completed in 18.98s and
+passed whole-package signature, compressed data, PIT ceilings, AVB and verity,
+recovery init, exact v4 package and theme bytes, SELinux policy, provider
+runner, and all four signed reference Experience markers. The exact Compat 1
+files are:
+
+- `compat1/lineage-23.0-20260827-UNOFFICIAL-sos_compat_a33x.zip`:
+  1,067,692,779 bytes, SHA-256
+  `49620a0d3115027341d7b08a77f387dd942841207bc3a237f695d88deb60d69f`;
+- `compat1/lineage_sos_compat_a33x-target-files.tar.zst`:
+  2,176,146,364 bytes, SHA-256
+  `9ce371c3a360ae4dc54c55c006efe1c05f573a7726371b3c70a64c10c097af25`;
+- `compat1/inspect-compat1.log`: 29,237 bytes, SHA-256
+  `98362f1ff87f527957ff77c20ccee4cdcbab20504ce56bb1ed423be6b1ec34ff`;
+  and
+- `compat1/inspect-duration.env`: 33 bytes, SHA-256
+  `906be7f1e8e3dc5af615ec5c82b46615f914011c7ba044cc48848f9ee3fe1aad`.
+
+`./tools/a33xctl build-core1` reported a successful Lineage build in 3m28s.
+Its preserved inspector rerun completed in 17.22s and passed the shared image
+checks plus no-Zygote ownership, pinned Core model validation, disabled user
+APK installation, native host and platform policy, and the signed reference
+composition markers. The exact Core 1 files are:
+
+- `core1/lineage-23.0-20260827-UNOFFICIAL-sos_core1_a33x.zip`:
+  1,022,894,881 bytes, SHA-256
+  `c5ef24a41e284bb93febe75d12dd45836f28720eb6e775f0e58594d0f5467b78`;
+- `core1/lineage_sos_core1_a33x-target-files.tar.zst`:
+  2,079,722,884 bytes, SHA-256
+  `e1f15ad5a354987dc6faa2b7e642132b4d86d84671a94ec6ff1a91cc4246fa7a`;
+- `core1/inspect-core1.log`: 25,466 bytes, SHA-256
+  `7b9b167f1f0132df378eb1a52d58db772d620097fa9d0fbb51de50c70effc12a`;
+  and
+- `core1/inspect-duration.env`: 27 bytes, SHA-256
+  `ca295f20f7f20f570d3cc87d28f9734474bf468184bd878ed59920e52fcecafe`.
+
+**Framework environment:** `tools/linux-live-deploy` installed the exact clean
+revision as deployment `20260827T103546Z-ed88d333d02f-3066003` in
+72,958,871,510 ns. Its three local records are under
+`artifacts/linux-live-deploy/20260827T103546Z-ed88d333d02f-3066003/`:
+`deployment-result.env` is 348 bytes with SHA-256
+`d5fe4d49ab74ee12ce8c64291f0689383de196d44b712a566f635d79a7b88ac2`,
+`development-deployment-manifest.tsv` is 2,389 bytes with SHA-256
+`66abe0f29472cd1e3fe545d4240d908ba686d4968df3e1553009a922d6904f1f`,
+and `development-deployment.env` is 345 bytes with SHA-256
+`ed89e9bb6e23cbfc56de8cc0f399b578bc2e480da4d6c9e9ec68b7218a715bbb`.
+The target holds Dashboard graph
+`be6025edc7f87c25167df07079612b78d34a999b4c94514f79d3df179d933582`
+and a fresh same-boot gate at
+`/home/liveuser/framework12-v4-composition-ed88d33`. It remains a
+`development-live` diagnostic with `promotion_eligible=false`.
+
+**Failure and decision:** The earlier `52ce577` Android artifacts and
+`205fc42` Framework deployment predate the acceptance controls and are rejected
+for these campaigns. The Samsung still has not received an OTA. The Framework
+is reachable on the prepared boot, but it remains at GDM. The PiKVM API is
+online and authenticated access is unavailable, so no remote HID was sent and
+no Linux runtime or physical-input claim is made.
+
+**Remaining risks and next gate:** Enter the prepared SOS session, collect the
+integrated Framework input and live Dashboard composition evidence, and return
+cleanly to GDM. Then install only the preserved Compat 1 OTA on serial
+`RFCT50EGFCN`, complete its physical campaign, and advance to the preserved
+Core 1 OTA. Generate manifests only after each evidence directory is final.
+
+## 2026-08-27: Fix Linux appearance-grant startup schema skew
+
+**Goal:** Diagnose the Framework SOS login that returned to GDM and repair the
+earliest failed runtime boundary before another physical attempt.
+
+**Failure evidence:** The exact `ed88d33` deployment authenticated through GDM,
+initialized both DRM outputs, and reached a nonempty recovery page flip. It
+then started the provider, authority, supervisor, permanent host, offline agent,
+and authoring broker. At monotonic timestamp `110121.424685`, the host rejected
+Stock's reviewed `appearance_write` capability as an unknown
+`providers-linux::Capability` variant. The host exited, the supervisor and
+session followed, and GDM returned. The failure happened before the first Stock
+frame, so no input or composition interaction was attempted.
+
+The finalized same-boot result is
+`.cache/evidence/linux-framework-ed88d33-startup-fail/`. Its campaign wall time
+is 1,083,931,528,324 ns and its verdict is `DIAGNOSTIC_FAIL
+promotion_eligible=false`. The directory contains 38 manifested files and is
+1,218,361 bytes. `evidence-manifest.tsv` is 3,597 bytes with SHA-256
+`45acc4906d040b13e2bbf328881d0389c773ec5c89749e4b4e2e8909dfa42c94`;
+independent verification passed. `journal-user.txt` is 18,016 bytes with
+SHA-256
+`3a339d83fb9651f9f8d3c3d4c02049c79f2f287e51634f0691c8923eda8338d7`.
+`journal-kernel.txt` is 4,015 bytes with SHA-256
+`8d5e52d076039ab0d6405f574ce9ca5232abf9fa386870e5ba22ba2be039f786`.
+`verdict.txt` is 1,128 bytes with SHA-256
+`1e241179d1f049d64f7e259308ce2fcf05b4e6e8eaad10ae90e8237b28dbf019`.
+The gate passed same-boot identity, recovery page flip, direct compositor,
+offline agent start, prepared input inventory, one host launch, GDM fallback,
+and kernel fault scrutiny. It correctly failed session readiness, input,
+activation, durable agreement, clean logout, and process-failure criteria.
+
+**Changed:** `providers-linux::Capability` now includes `AppearanceWrite`. The
+variant only decodes an authority-owned grant; it adds no Linux provider
+operation. A regression test loads the shipped Stock v4 package and requires
+every declared provider capability to decode through the Linux host type. This
+closes the exact package-to-host schema boundary that escaped the earlier graph
+and Android tests.
+
+The laptop also lost network access while it waited at GDM. The existing
+launcher inhibitor starts only after GDM launches SOS, so it correctly protects
+an active SOS session but cannot protect the prepared-login interval. The Linux
+hardware gate now starts the root transient unit
+`sos-linux-hardware-gate-awake.service` at the end of `prepare`. Its logind block
+inhibitor covers `idle`, `sleep`, and `handle-lid-switch`. `collect` requires
+that exact recorded unit, captures its inhibitor row, and releases it before
+manifest generation; its exit trap releases the unit after an earlier
+collection failure. Preparation refuses a second active owner. The gate does
+not change persistent GNOME or GDM power settings. The final audit now requires
+the exact prepared inhibitor row, the row immediately before release, and the
+recorded inactive unit after release as the `gate_awake_inhibitor` criterion.
+
+**Inhibitor experiment:** A user-manager transient unit was rejected by logind
+with `Failed to inhibit: Access denied` because a noninteractive desktop user
+cannot acquire this block inhibitor. That approach was removed. The root-owned
+transient unit then registered successfully as PID 863940 with
+`sleep:idle:handle-lid-switch`, reason `Prepared physical acceptance campaign`,
+and mode `block`; it remains active on the Framework while the fixed deployment
+is prepared.
+
+**Verification:** All 18 `providers-linux` tests pass. The `sos-experience`
+library passes 18 tests, `sos-linux-session --all-targets` passes 20 tests, and
+`revision-supervisor --all-targets` passes 49 tests with only the explicit
+desktop composition metric ignored. The latter includes the reference graph,
+activation journal, tracked update, restart, and host lifecycle cases.
+`tests/linux-hardware-gate-test.sh` executes normal inhibitor release and the
+early-failure cleanup path and passes. `tests/linux-login-session-test.sh` and
+`tests/linux-live-image-test.sh` also pass. Shell syntax, Rust formatting, and
+diff whitespace checks pass; `shellcheck` is not installed on this development
+host.
+
+**Decision and next gate:** The failed run is retained and cannot be promoted.
+Commit and deploy the decoder fix, prepare a new same-boot directory from that
+exact clean revision, and make one fresh physical login attempt. The Framework
+integrated-input and live Dashboard composition criteria remain open.
+
+## 2026-08-27: Isolate accessibility endpoints for presented Experiences
+
+**Goal:** Resume the Framework composition campaign after the v4 grant decoder
+repair and follow the first failed top-level Dashboard launch to its earliest
+runtime boundary.
+
+**Physical experiment:** The exact clean `05845c7` source deployed as
+`20260827T111453Z-05845c792079-3342501` in 147,826,226,695 ns. The new gate at
+`/home/liveuser/framework12-v4-composition-05845c7` acquired its root-owned
+GDM-gap inhibitor before the temporary inhibitor was released. The SOS login
+then reached physical DRM presentation, loaded Stock's reviewed
+`appearance_write` grant, presented Stock, and kept the permanent host and
+offline authoring agent alive. A console-driven prompt produced and presented
+candidate Stock revision
+`26f36f17f51251e5c8c911e9d8cbec0a34b5d9a2b2e2fb3db2ed03245fe30491`
+without restarting the permanent host.
+
+The first Dashboard catalog action was correctly denied because the reference
+Media and Dashboard packages had not received independent authority decisions.
+This was an acceptance-preparation omission, not permission inheritance: the
+trusted `bootstrap-graph` and exact `review-graph-grants` commands initialized
+the three-Experience graph and recorded one Media capability review plus one
+Dashboard data-flow review. The retry advanced past grants and launched PID
+871467, then failed at monotonic timestamp `111585.383886` with
+`accessibility service is already listening` on the shell's canonical socket.
+The supervisor retained Stock. Direct cross-root `activate-graph` was also
+rejected as designed because the configured root did not match the Dashboard
+graph; no pointer was forced.
+
+**Changed:** The Linux host now reads the first graph request and determines
+its registry role before starting accessibility. The shell continues to own
+the canonical `SOS_ACCESSIBILITY_SOCKET`. An independently presented ordinary
+Experience derives a fixed-length SHA-256 namespace from its stable Experience
+ID and binds a sibling socket, while mounted child semantics stay namespaced in
+the host tree. This prevents a top-level application host from colliding with
+or replacing shell semantics and keeps the Unix path below the platform length
+limit even for a maximum-size Experience ID.
+
+**Verification:** `cargo test -j1 -p sos-experience --features linux-host
+--lib` passes 37 tests, including the bounded, stable, distinct top-level
+accessibility path regression. The default `sos-experience` library suite
+passes all 18 tests, and Rust formatting passes.
+
+**Decision and next gate:** Preserve the `05845c7` diagnostic interval, deploy
+the namespaced-host fix from one clean revision, and relaunch Dashboard through
+Stock after the exact independent grant reviews. Pass still requires visible
+Dashboard, Agenda, and Media semantics, child event and appearance propagation,
+host recovery, clean logout, same-boot collection, and manifest verification.
+
+## 2026-08-27: Accept concurrent authenticated compositor clients
+
+**Goal:** Retry the Framework Dashboard launch after separating top-level
+accessibility endpoints and diagnose the next failed boundary without relaxing
+the presentation protocol timeout.
+
+**Physical experiment:** Exact clean revision `943ebba` deployed as
+`20260827T113325Z-943ebba00bfa-3350997` in 120,954,048,218 ns. The prepared
+same-boot directory is
+`/home/liveuser/framework12-v4-composition-943ebba`. Stock recovered its
+durable generated revision, and its catalog action launched ordinary Dashboard
+host PID 881336. That host successfully bound the new namespaced accessibility
+socket `accessibility-52cfa993b20dbe27.sock`, proving the preceding fix. It
+then timed out before compositor application registration and was killed after
+the supervisor closed its proxy.
+
+**Root cause:** The mode-0600 compositor control listener accepted one
+connection and called its complete connection loop inline. Stock's permanent
+shell registration is intentionally long-lived, so the listener could never
+accept the Dashboard registration behind it. Raising the five-second protocol
+timeout would only delay the same failure and was rejected.
+
+**Changed:** Each accepted control connection now runs in its own bounded
+client thread. A maximum of 16 registering or registered connections covers
+the eight-live-Instance limit with recovery overlap while rejecting an
+unbounded same-UID connection fan-out. Authentication remains token plus
+`SO_PEERCRED` PID. All policy and geometry mutations still serialize through
+the single calloop channel and compositor state owner.
+
+**Verification:** `cargo test -j1 -p sos-compositor --all-targets` passes all
+29 tests, including recovery of a released connection slot at the hard bound.
+Rust formatting passes.
+
+**Decision and next gate:** Preserve the `943ebba` failure interval, deploy the
+bounded concurrent-listener fix from a clean revision, and repeat the same
+Stock catalog action. Require both authenticated control PIDs, the separate
+semantic endpoints, a mapped Dashboard surface, mounted child semantics, and
+the remaining physical and recovery criteria before collection.
+
+## 2026-08-27: Filter Linux provider snapshots by reviewed grants
+
+**Goal:** Continue the same Framework Dashboard launch after the concurrent
+compositor-listener repair and stop at the first remaining failed boundary.
+
+**Physical experiment and failure:** Exact clean revision `e024434` deployed as
+`20260827T114243Z-e024434871c3-3355860` in 95,551,157,858 ns. PiKVM selected
+the SOS GDM session and entered the prepared login without local intervention.
+Stock presented on both physical DRM outputs and kept its permanent host alive.
+Its `Open dashboard` semantic action launched ordinary host PID 887248. The
+host bound `accessibility-52cfa993b20dbe27.sock` and authenticated a concurrent
+`NativeApplication` compositor-control connection, proving both preceding
+fixes. It then stopped before graph preparation because its empty, reviewed
+provider grant could not pass the Linux snapshot reader's unconditional
+`NotesRead` check. The compositor closed only the failed application's control
+connection; Stock remained interactive.
+
+**Root cause and changed code:** `ProviderHub::snapshot_with_frames` required
+`NotesRead`, `CalendarRead`, `MusicRead`, and `SystemRead` before returning any
+model. That made every ordinary v4 Experience request Stock's complete read
+set, even when its package declared no provider access. Linux snapshots now
+read each domain only when the authority-reviewed grant contains that domain's
+read capability. Denied notes, calendar, music, legacy network/system, system
+provider data, and provider surfaces arrive as empty typed values. Effects
+retain their separate capability checks. The reference Media package now
+declares both `music_read`, which its renderer consumes, and `music_control`,
+which its toggle effect consumes.
+
+**Decision and next gate:** Run the focused provider and reference-graph tests,
+then redeploy one clean revision. The next physical attempt must render the
+complete Dashboard graph rather than widening Dashboard's authority decision.
+The current run is diagnostic evidence, not an acceptance result.
+
+## 2026-08-27: Retire the secondary Linux experience and fix the v4 physical audit
+
+**Goal:** Remove the obsolete secondary Experience from the Linux product and
+make the Framework gate judge the multi-host v4 system instead of its former
+single-revision assumptions.
+
+**Changed:** The selectable login, direct system session, development runner,
+installer, live-image check, and resident-agent unit no longer install,
+bootstrap, review, advertise, or use the secondary Timeflow package. The agent
+prompt builder now accepts one required Stock example; Android may still pass a
+second example while its migration remains open. On an upgraded Linux state
+directory, `retire-experience` atomically moves the old ordinary registry
+record to `retired-experiences/<Experience ID>`. Its revision history remains
+recoverable, but it no longer enters Stock's launch catalog. The pinned Stock
+Shell cannot be retired. Development deployment also removes the two baked
+Timeflow files and the older Daily Flow source, and records that exact retired
+artifact list for the hardware gate.
+
+The hardware collector now reads Stock with `experience-status` and compares
+that v4 registry revision to
+`authority.experiences["sos.stock.shell"].revision_id`. It no longer compares
+the compatibility singleton pointer to v4 authority state. Stable lifecycle
+now requires one unique authenticated `Shell` compositor-control PID while
+allowing independently presented and intentionally recovered
+`NativeApplication` hosts. Counting every isolated host as a shell restart was
+rejected because successful Dashboard composition necessarily creates another
+host. Deleting old revision data was also rejected; registry retirement keeps
+history while removing the product entry point.
+
+**Verification:** `cargo test -j1 -p revision-supervisor --all-targets` passes
+50 tests plus the explicitly ignored desktop metric, including recoverable
+retirement and the pinned-shell rejection. `cargo test -j1 -p
+sos-linux-session --all-targets` passes 20 tests. `cargo test -j1 -p
+sos-experience --features linux-host --lib` passes 37 tests. The login-session,
+hardware-gate, and live-image shell suites pass. The agent TypeScript build and
+all 19 tests pass, including the packaged runner with only one example. Shell
+syntax, Rust formatting, and diff whitespace checks pass.
+
+**Decision and next gate:** Commit and deploy this clean v4 Linux product set,
+archive the old registry record on the Framework, and prepare a fresh exact
+same-boot campaign. Physical Dashboard composition, child event, appearance,
+application-host recovery, integrated input, and clean logout remain open.
+
+## 2026-08-27: Deploy the resident-agent runtime with Linux source changes
+
+**Goal / physical failure:** Run the fresh Framework campaign from exact clean
+revision `99fc6edbb1b3f0a8b2f07abeab6e2dc93f7282e5`. The complete deployment
+`20260827T120844Z-99fc6edbb1b3-3373758` passed in 221,202,268,279 ns and the
+gate at `/home/liveuser/framework12-v4-composition-99fc6ed` acquired its
+root-owned sleep inhibitor. PiKVM selected the SOS GDM session and submitted
+the login remotely. GDM opened session 300 at monotonic timestamp
+114591.240238, but the session returned to tty4 at 114594.773129, about 3.53
+seconds later. The console selection, black transition, and returned console
+frames are retained under
+`.cache/evidence/linux-framework-99fc6ed-live/`; their SHA-256 values are
+`082af38c44505a2fdc53ae274e13860673935c8bd78a2f4e54986d0dd5de3cb9`,
+`8be18d70dd2ffbfbb73d3aec970541fec3c4dfb27e1dbc4c86736e6bc108af8b`,
+and `f2e47040186ffa55231ea2c06479f40a08be91831c0a69c2802515e83e4271ea`.
+This run is diagnostic and not an acceptance result.
+
+**Diagnosis / evidence:** The compositor reached direct DRM on both outputs,
+the provider and supervisor started, and Stock host PID 898012 authenticated
+as the shell. The resident agent then exited with `missing required option
+--example-secondary`; the login wrapper correctly treated the missing agent
+socket as fatal and closed the graphical session. The target's bundled runner
+was the baked 1,878,811-byte artifact with SHA-256
+`3eee6e7922fb82e344277793a435bb8edd36a2c183050b638a3c6ca13d3bc99a`.
+The current one-example-capable bundle is 1,890,551 bytes with SHA-256
+`c98c35fefede6b9c5d53f5b01021e63ed7ccd790470db5c3f02a186305ae4b58`.
+`linux-live-deploy` rebuilt and copied native binaries and checked-in assets,
+but did not define the resident-agent runtime as a deployable component, so
+the source/API change and runtime artifact diverged despite the agent tests
+passing locally.
+
+**Verification:** The agent package rebuilt the exact 1,890,551-byte bundle
+and all 19 tests passed, including the packaged runner with only one example.
+The complete Linux live-image host suite passed, the deploy component listing
+contains `agent-runtime` at its installed path, Bash parsing and the Git
+whitespace check passed. The ordered local campaign took 3.742 seconds.
+ShellCheck was not installed in this checkout environment, so no ShellCheck
+result is claimed for this change.
+
+**Changed / decision / remaining risk / next gate:** Add `agent-runtime` to the
+development deployment contract and its default component set. It runs the
+pinned package build, stages the executable bundle, records its size and
+digest in the deployment manifest, installs it at
+`/usr/local/libexec/sos-agent/dist/agent-runner.cjs`, and verifies the remote
+digest like every native component. The host regression now requires this
+component and build step. Updating only the current target by hand was
+rejected because the next full deployment would silently recreate the same
+source/runtime skew. Run the agent and live-image host suites, commit the
+change, deploy the exact clean revision, and repeat the PiKVM login. The full
+Dashboard composition and physical acceptance gates remain open.
+
+## 2026-08-27: Admit the agent bundle to the development gate allowlist
+
+**Goal / physical preflight failure:** Deploy the resident-agent correction
+and prepare a new exact Framework campaign. Clean revision
+`418cb925952164b84d55b397d1d6a1288edc42b5` deployed as
+`20260827T121856Z-418cb9259521-3380427` in 68,434,256,933 ns. Its manifest and
+the target both recorded the corrected runner at 1,890,551 bytes with SHA-256
+`c98c35fefede6b9c5d53f5b01021e63ed7ccd790470db5c3f02a186305ae4b58`.
+Before SOS login, `prepare` rejected that new manifest entry as an unsafe
+development deployment path. It created only the partial preflight directory
+`/home/liveuser/framework12-v4-composition-418cb92`; no campaign environment,
+graphical session, or acceptance result was created. A separate root-owned
+handoff inhibitor remains active while the exact-revision campaign is rotated.
+
+**Root cause / changed / decision:** The deploy tool and manifest now owned the
+agent bundle, but the hardware gate's closed allowlist still named only the
+previous deployment components. Add exactly
+`/usr/local/libexec/sos-agent/dist/agent-runner.cjs`; do not widen the rule to
+the complete agent tree. The live-deployment fixture now builds, stages,
+installs, hashes, and compares this component and requires the 16-entry
+selected-component manifest. The hardware-gate fixture requires the exact
+allowlist entry. Bash parsing, both complete host suites, and the Git
+whitespace check passed in an ordered 4.359-second campaign. Commit and
+redeploy all default components from one clean revision, then prepare and
+execute the PiKVM campaign. Physical composition remains the next gate.
+
+## 2026-08-27: Provision the Linux appearance authority at every launch path
+
+**Goal / physical diagnosis:** Continue the exact Framework v4 composition
+campaign through the first unsupported authority operation. Clean revision
+`c7558102e7049f4321434a1156ba0414c547a88c` deployed as
+`20260827T122511Z-c7558102e704-3386411` in 74,809,654,404 ns. PiKVM selected
+SOS at GDM, entered the login, and captured Stock and the composed Dashboard
+without local console handling. Locked graph
+`9a49ec819b8d0c83fa45566f16925498dbb95bd882bfc87d6b92526603e637f7`
+mounted independent Agenda and Media instances. Agenda's structured child
+event reached Dashboard in 33,807,189 ns. A forced child update failure left
+the parent responsive and durable Agenda state intact; a forced timeout was
+contained in 22,046,197 ns and recovered in 112,470,695 ns. Killing Dashboard
+renderer PID 903265 left shell renderer PID 900864 alive and produced proxy
+PID 908497 plus renderer PID 908502 with both child mounts and durable state
+restored.
+
+**Failure / root cause:** Live appearance propagation could not start because
+the selectable login provisioned only `grant-review.capability`. The system
+session already had a least-privilege path that copies an existing
+`appearance-write.capability` into a provider-only runtime credential, but no
+selectable, development, or direct-VM launcher created the source capability.
+The live provider therefore started without `--appearance-capability-file`.
+An attempted Media action also failed atomically because no MPRIS player was
+active; authority and Dashboard state remained unchanged, which is the
+expected provider-boundary behavior rather than a product defect.
+
+**Changed / decision:** Provision a persistent random 32-byte appearance-write
+capability beside the authority state for the selectable session and
+development runner, with mode 0600. Pass it only to the provider authority.
+The direct-system VM setup creates the equivalent `sos-compositor:sos-ipc`
+0640 capability so the existing per-role credential copy can restrict runtime
+access. Keep appearance authority separate from grant review instead of
+reusing one bearer secret across two powers. The selectable-session regression
+asserts both capability files are exactly 64 hexadecimal bytes at mode 0600.
+
+**Verification:** All 20 Linux session tests pass, including graph-authority
+binding and the shared v4 wire fixture. The selectable-session, complete live
+image, and hardware-gate host suites report PASS. Bash parsing passes for all
+four changed launch and test scripts; Rust formatting and Git whitespace checks
+also pass.
+
+**Remaining risks and next gate:** Commit and redeploy one exact clean revision.
+A fresh Framework campaign must mutate appearance through the authority socket,
+prove generation propagation without revision changes, and repeat composition,
+containment, renderer recovery, Stock revision activation, physical input,
+clean logout, manifest verification, and evidence collection.
+
+## 2026-08-27: Preserve appearance generation across graph child recovery
+
+**Goal / physical experiment:** Exercise live appearance and child containment
+through one fresh exact Framework session after provisioning the missing
+authority credential. Clean revision
+`175137d366f9a72f3d3a379f5ef2dd0c23b5c72d` deployed as
+`20260827T124231Z-175137d366f9-3396618` in 40,113,525,553 ns. PiKVM performed
+the complete GDM SOS selection and login. The persistent appearance capability
+was 64 bytes at mode 0600; the running provider received its separate mode-0400
+runtime copy. Dashboard graph
+`9a49ec819b8d0c83fa45566f16925498dbb95bd882bfc87d6b92526603e637f7`
+presented both locked children.
+
+The authority accepted appearance generation 0 to 1 in 4,964,227 ns and the
+Agenda semantic result exposed generation 1 after 407,318,787 ns. Media's
+custom scene remained byte-for-byte equal and the Agenda, Media, and Dashboard
+revision IDs did not change. The target evidence is under
+`/home/liveuser/framework12-v4-composition-175137d/composition`; the PiKVM
+generation-1 frame is under
+`.cache/evidence/linux-framework-175137d-live/dashboard-appearance-1.jpg`.
+
+**Failure / root cause:** The ordinary Agenda update failure was contained and
+Dashboard committed its next parent ping, but the recovered Agenda displayed
+`Today · appearance 0` while authority state still recorded generation 1.
+`child-recovery-appearance-regression.json` records the healthy parent,
+preserved `Design review` state, recovered child, parent ping 4, authority
+generation 1, and stale child label. The matching PiKVM frame is 92,474 bytes
+with SHA-256
+`987c0523a8be3345784e9c4d648e0bbc47697f35686347dda2c175da6b63e789`.
+
+The Linux host sent a graph-wide appearance command to the runtime worker but
+returned before advancing its own cached `ExperienceModel`. A later provider
+refresh correctly preserved the host's supposedly authoritative appearance,
+which was still generation 0, and that full model refresh rerendered the
+recovered subtree with the stale value. Authority state, graph revision state,
+and failure containment were not corrupted.
+
+**Changed / decision / verification:** Install every newer appearance profile
+in the host model before dispatching it to a graph worker. Provider refreshes
+therefore inherit the same generation, and duplicate or stale profiles remain
+ignored. All 38 Linux-host library tests pass, including the new regression
+that recreates the provider-refresh boundary. The reference live-graph and
+self-contained-remix test also passes. Rust formatting and Git whitespace
+checks pass.
+
+**Remaining risks and next gate:** Commit, redeploy, and repeat the focused
+appearance/failure/recovery sequence before a new clean end-to-end Framework
+campaign. Timeout containment, application-host restart, Stock activation,
+integrated input, logout, and final collection remain open; this diagnostic
+campaign is not an acceptance result.
+
+## 2026-08-27: Complete the exact Framework v4 composition diagnostic
+
+**Goal and environment:** Close the full locked-composition Linux campaign on
+the Framework Laptop 12 from exact clean revision
+`4f93f50e9e559329eb6120ec5dcbeccfd530a1e7`. The complete development payload
+deployed as `20260827T125525Z-4f93f50e9e55-3402102` in 119,126,621,512 ns.
+PiKVM performed the SOS GDM selection, login, graphical observation, agent
+prompt entry, and clean logout. A root-owned block inhibitor protected the
+entire prepared campaign from idle, sleep, and lid-switch handling. This was
+Fedora development-live boot `9b1818f2-c6c3-4829-8109-c9b3320a02a3`, so it
+is intentionally promotion-ineligible and does not claim installed-product
+acceptance.
+
+**Physical composition evidence:** Stock launched locked Dashboard graph
+`9a49ec819b8d0c83fa45566f16925498dbb95bd882bfc87d6b92526603e637f7`
+through its semantic catalog action. The graph mounted independent Agenda
+revision `0fa593bb5dc1f655dfeacad3ff2a7fc457c98807ecf6800a42eb9accdbc7967d`
+and Media revision `8befbf5c1ebcde560edbc1e3254ff92c4e11bd86bf6ed1e015e484da4c2ff930`
+inside Dashboard revision
+`6ced86a21146c706b78851bf8278e797169d88d7a9296a62ea8adbaab265f9f0`.
+Agenda durable state survived restart from the preceding attempt. Appearance
+generation 1 to 2 committed through the authority in 6,256,369 ns and reached
+child semantics in 405,414,126 ns without changing any revision ID; Media's
+custom scene remained byte-identical.
+
+An injected Agenda update failure was contained in 21,994,463 ns and recovered
+after a parent event in 68,844,068 ns. An injected child timeout was contained
+in 22,575,946 ns and recovered in 90,349,829 ns. Both paths preserved Agenda
+state, kept Dashboard interactive, and restored appearance generation 2.
+Killing Dashboard renderer PID 926078 left Stock renderer PID 925154 alive;
+the application proxy and renderer restarted as PIDs 928138 and 928142 in
+197,354,046 ns with both mounts, state, and appearance intact. PiKVM then
+submitted `Make the workspace feel calmer` through Stock's resident agent.
+Stock atomically advanced from revision `26f36f17…` to
+`f39a6050cb0e8fb444beb7d4b1d7f62f76f992336688330c59ef8de5b2124479`
+and presented graph
+`f226d9795e5a6a5ca0a8f4d14f1df686fc569820aca6dc0d324712d5f7a427f0`;
+the pointer-visible change took 335,181,758 ns. Dashboard then dismissed
+through the v4 experience action.
+
+The exact prepared inventory and compositor journal proved the integrated AT
+keyboard, PIXA3854 touchpad motion and primary button, and ILIT2901 touchscreen
+contact, alongside physical DRM page flips on both outputs. PiKVM performed the
+clean logout and GDM recovery. Collection measured 1,320,441,618,564 ns from
+prepare through logout. All hardware-gate criteria passed: same boot, recovery
+page flip, direct compositor, session readiness, resident agent, all four input
+classes, prepared inventory, clean logout, awake inhibitor, transactional
+activation, multi-host lifecycle, durable authority, fallback display manager,
+process failures, and kernel GPU faults.
+
+**Evidence and decision:** The sealed bundle is
+`.cache/evidence/linux-framework-4f93f50-campaign/`, 2,968,676 bytes including
+the manifest. Its 8,696-byte 87-file manifest has SHA-256
+`0be17dc236149c9755c93b755314f8950e52a2199be20eb1cd08f9dcbbd7e800`.
+Both target-side and independent local `verify-manifest` and `audit` runs
+passed. The exact result is
+`DIAGNOSTIC_PASS promotion_eligible=false`; composition and recovery are green
+on physical Framework hardware, while installed-product promotion remains a
+separate gate.
+
+## 2026-08-27: Build and inspect exact v4 Android Compat 1 and Core 1 artifacts
+
+**Goal:** Produce immutable Samsung SM-A336B candidates from the same exact
+`4f93f50e9e559329eb6120ec5dcbeccfd530a1e7` source used by the successful
+Framework campaign, then run every offline package gate before touching the
+device.
+
+**Compat 1 evidence:** `build-compat1` produced build identity
+`sos.compat1.4f93f50e9e55.a55ec0763af3`. `inspect-compat1` passed in
+19,343,480,782 ns, covering the whole-package signature, compressed-data
+integrity, PIT ceilings, AVB consistency, recovery device init, ARM64-only
+native payload, native Compat ownership, system IME, UI-removal policy,
+authority and resident-agent payloads, reference composition markers, and
+`ro.sos.revision_format=4` / `ro.sos.experience_api=4`. The preserved OTA is
+1,067,689,645 bytes with SHA-256
+`ac4d46e40b38ea8b59a655ad1afefec7b11b5366d33e712925c87a9e9dd3e7f2`.
+Its deterministic target-files archive is 2,173,516,615 bytes with SHA-256
+`fd763645f3a2d9d5307a8f044974a2225626565bb23979d6e22e188a0fcf965d`.
+
+**Core 1 evidence:** `build-core1` completed in 251,728,919,131 ns with build
+identity `sos.core1.4f93f50e9e55.45ba3d420456`. `inspect-core1` passed in
+17,245,525,725 ns, covering the package and AVB gates plus Core's pre-unlock
+native host, pinned-model rejection, signed reference composition, no-Zygote
+UI ownership, disabled user APK installation, and v4 format/API markers. The
+preserved OTA is 1,022,880,554 bytes with SHA-256
+`f70e1bfbc264187363d81829abfc7edf1fd60dc9db32b494a30acd5365c8dd33`.
+Its deterministic target-files archive is 2,076,956,250 bytes with SHA-256
+`9600dd6ec5db97b32c1c83493156afa273fc1af4a1a07b05326079d0d0595641`.
+Logs, durations, identities, packages, and target files are under
+`.cache/evidence/android-v4-4f93f50/` and remain outside Git.
+
+**Decision and remaining gate:** Do not install either artifact while serial
+`RFCT50EGFCN` is exposed only as Samsung USB Download Mode (`04e8:685d`) and
+`adb` reports `no permissions`. No device mutation was attempted. Physical
+Compat and Core acceptance, including exact revision readiness, composition,
+properties/events, grants, appearance, restart/rollback, IME, accessibility,
+input containment, and final evidence manifests, remains open until an
+authorized Android or recovery transport exists.
+
+## 2026-08-27: Remove the retired secondary Experience from v4 product inputs
+
+**Goal:** Close the audit gap between the v4 registry/graph architecture and
+the artifacts actually shipped to Android. Stock must be the sole resident
+agent example, and the Cuttlefish product gate must exercise v4 graph
+presentation rather than the legacy singleton revision pointer.
+
+**Failure / root cause:** Linux had already retired the former secondary
+Experience from its catalog, but its source and package remained checked in and
+were still copied into every Compat and Core artifact as a second Pi prompt
+example. Both Android agent launchers passed that file to the runner. The AOSP
+`verify-sos` path also pushed it as a candidate and judged activation through
+`/data/misc/sos/revisions/current`, bypassing the registry and graph authority.
+The previously preserved `4f93f50` Android packages therefore remain valid
+offline evidence for that revision but are superseded for final physical
+acceptance.
+
+**Changed:** Deleted the retired source and package; removed the secondary
+prebuilt module, product package, stage input, inspector expectation, Java and
+Core launcher arguments, and runner option. The deterministic fake agent now
+generates a visibly distinct revision of Stock while preserving its v4 package
+and `stock.theme` sidecar. The legacy source-swap stress helper likewise uses
+Stock revisions only and remains rejected whenever a v4 graph is active.
+`aospctl verify-sos` now reads content-addressed graph pointers, presents the
+signed `sos.example.dashboard` graph through the lifecycle API, requires the
+composition authority and rendered-frame confirmation to agree, and preserves
+that graph across independent authority and HOME process recovery. Current
+documentation and authoring examples now point to Stock-v4 or the signed
+reference composition. Linux keeps only bounded removal tombstones for old
+installed registry records and baked files; they do not package or present the
+retired Experience.
+
+**Evidence:** `cargo test --locked -p sos-experience` passes all 17 tests;
+`cargo test --locked -p revision-supervisor --test graph_supervisor` passes all
+15 graph lifecycle, journal, tracked-update, authority, and state tests. The
+shared agent build passes all 19 TypeScript tests, including its one-example
+prompt contract. `tests/a33xctl-host-test.sh`,
+`tests/linux-login-session-test.sh`, and `tests/linux-live-image-test.sh` each
+report PASS. `bash -n tools/aospctl tools/a33xctl`, Rust formatting, and Git
+whitespace checks pass. No Android device command was issued while the Samsung
+remained in unauthorized Download Mode.
+
+**Decision / next gate:** Active product and authoring paths are v4-only; API
+v3 remains only as the bounded activation/rollback reader required for pinned
+recovery artifacts. Build and inspect fresh exact Compat 1 and Core 1 packages
+from this cleanup revision, then run their physical campaigns when an
+authorized transport is available. Remove the v3 reader only after those
+recovery artifacts have migrated and successfully rolled back.
+
+## 2026-08-27: Seal cleaned v4 Android Compat 1 and Core 1 candidates
+
+**Goal:** Rebuild both Samsung SM-A336B product profiles from the cleanup
+revision so the candidates reserved for physical acceptance contain Stock and
+the signed reference graph, but no retired Timeflow/Daily Flow package or
+secondary agent example. Preserve immutable OTA and deterministic target-files
+artifacts before any device mutation.
+
+**Compat 1 evidence:** Exact source
+`884ab4e0036e621f51ba0a3a6c147a5c591da81e` produced build identity
+`sos.compat1.884ab4e0036e.9f7afadd0450` in 384,330,589,843 ns.
+`inspect-compat1` passed in 19,390,410,550 ns, including package signature,
+compressed-data, PIT, AVB, product ownership, authority, resident-agent,
+reference-composition, v4 format/API, and retired-secondary-absence checks.
+The sealed OTA is 1,067,612,833 bytes with SHA-256
+`1e438726c96dfbdfa067b43a7ae4662b7e6b91ff56f4f2693d5c95470f0406ec`.
+The deterministic target-files archive is 1,863,975,871 bytes with SHA-256
+`e8dc8d7d41ddbfe7d6459cc63d4f7290bc9f6e147914382aca1f504d0261a4f2`;
+its zstd integrity and absence of the retired secondary input pass.
+
+**Core 1 evidence:** The same source produced build identity
+`sos.core1.884ab4e0036e.1df2554bb5c5` in 373,140,225,319 ns.
+`inspect-core1` passed in 17,584,174,377 ns, including the common artifact
+checks plus pre-unlock host, pinned-model rejection, signed composition,
+no-Zygote ownership, disabled user APK installation, v4 format/API, and
+retired-secondary-absence gates. The sealed OTA is 1,022,887,729 bytes with
+SHA-256
+`0b0ce039e306c42292cd67eb6be19f15ee753f7ab2ff6b4059247210af4f17fb`.
+The deterministic target-files archive is 1,782,249,070 bytes with SHA-256
+`49ba5c7ace4df8bcd22605f2334da0fa34229b7fd227bf1f657b7f8785a1b863`.
+Its 9,657-entry archive passes zstd integrity, contains the Stock package and
+theme module, and contains no Timeflow, Daily Flow, or secondary example.
+
+**Artifacts / failure / decision:** Logs, exact monotonic durations,
+identities, OTAs, target-files archives, and verification transcripts are
+under `.cache/evidence/android-v4-884ab4e/` and remain outside Git. The older
+`.cache/evidence/android-v4-4f93f50/` pair is superseded because it predates
+secondary-input removal. At 2026-08-27T16:00:09+02:00, serial `RFCT50EGFCN`
+still reported `no permissions` through adb and USB `04e8:685d` Download Mode.
+After every artifact and transcript was finalized, `a33xctl` generated and
+independently verified the complete 17-file evidence manifest in
+6,115,010,906 ns. The 1,775-byte manifest is
+`.cache/evidence/android-v4-884ab4e/manifest.sha256`, SHA-256
+`a8f056b6d8c77d56b2ed6b4f297802b5b726a3f4200573ab43859114690f7b93`;
+an independent path-set comparison found no unmanifested file in its root.
+No install, flash, reboot, or other device mutation was attempted. These are
+offline-candidate passes, not physical-product verdicts. The next gate is the
+exact Compat then Core device campaign once an authorized Android or recovery
+transport exists; retained API v3 recovery activation cannot be removed until
+that campaign proves migration and rollback.
+
+## 2026-08-27: Audit every v4 composition milestone against its exit gate
+
+**Goal:** Reconcile the implementation with the original milestones 0 through
+12, run the broad cross-component verification program from the current
+product tree, and distinguish missing code from physical gates that cannot be
+claimed on desktop evidence.
+
+**Changed:** Added an explicit milestone closure matrix to the composition
+design. Repaired two `gpui-mobile` documentation examples: the platform-view
+element now imports the types and GPUI traits it uses, and the registry example
+accepts a real `PlatformViewFactory` instead of referring to an undefined
+placeholder. No runtime or product behavior changed. A complete source audit
+finds every built-in package and every active authoring path on v4. Remaining
+API v3 literals are bounded migration, rollback, rejection, decoder, and test
+fixtures; no v3 package is shipped or newly authored.
+
+**Verification:** `cargo test --workspace --locked` passed 278 tests in
+9,921,878,687 ns after the documentation repair. The 94 ordinary ignored tests
+are 93 upstream-style GPUI examples plus the deliberately explicit performance
+campaign. Running the Linux graph worker gate with `linux-host` passed its
+process-crash-containment test in 6,482,634,425 ns. The explicit release
+composition campaign passed in 21,230,414,230 ns and measured three Instances:
+1,634 us cold mount readiness, 725 us child-event propagation, 382 us
+appearance propagation, 1,139 us graph activation, 985 us committed recovery,
+and 292 KiB coarse RSS delta per Instance. `services/sos-agent` passed all 19
+build, bounded-authoring, derivation, composition, canonical-wire, and prompt
+tests in 2,958,087,282 ns. The five a33x, Linux login/live-image/hardware, and
+PiKVM host suites all passed in 7,037,440,280 ns.
+
+**Failure / decision:** The first workspace run reached all product tests but
+failed the two incomplete documentation examples; the corrected examples and
+the full unchanged workspace then passed. Milestones 0 through 10 and the
+implementation portion of 12 satisfy their exit conditions. Milestone 11's
+shared Android implementation and offline products are complete, but its
+physical exit gate remains open. The connected SM-A336B is still in Download
+Mode, whose Odin session cannot be converted into the authenticated Recovery
+sideload path from this host; previous evidence establishes that a physical
+Side + Volume Down restart is required. No blind flash or device mutation was
+attempted.
+
+**Remaining risks and next gate:** Physically restart the SM-A336B out of
+Download Mode, then run the exact sealed Compat 1 campaign followed by Core 1,
+including input, IME, accessibility, appearance, grants, child containment,
+restart, rollback, and independently verified manifests. Only after the
+cleaned recovery artifacts migrate and roll back successfully may the bounded
+v3 reader be removed. Installed Linux promotion remains a separate physical
+product gate; the Framework development-live composition diagnostic is already
+green.
+
+## 2026-08-27: Add a v4 Cuttlefish lifecycle verifier regression
+
+**Goal:** Exercise the rewritten `aospctl verify-sos` contract after removal of
+the retired secondary Experience. The verifier must use stable Experience graph
+pointers, present the signed Dashboard graph, bind authority state to confirmed
+rendering, and distinguish authority recovery from HOME recovery.
+
+**Changed:** Added a stateful explicit-serial adb fixture and
+`tests/aospctl-host-test.sh`. The fixture models booted x86-64 SOS HOME,
+enforcing SELinux domains, Stock and Dashboard content-addressed graph
+pointers, composition authority state, confirmed graph logs, init-owned
+authority recovery, and Android-owned HOME recovery. The positive case proves
+Stock-to-Dashboard presentation without replacing the permanent GPUI process,
+then preserves Dashboard through both independent restarts. It records every
+transport command and rejects any query of `/data/misc/sos/revisions/current`.
+The negative case deliberately changes the authority PID during HOME-only
+recovery and requires the verifier to fail closed.
+
+**Evidence:** `tests/aospctl-host-test.sh` reports
+`aospctl_host_test=PASS`. Bash parsing passes for the verifier, fixture, and
+test. The complete six-script AOSP, a33x, Linux login/live-image/hardware, and
+PiKVM host set passed in 7,212,432,794 ns. No physical adb command is routed
+through this regression: its adb binary is an explicit temporary path and its
+serial is the Cuttlefish loopback endpoint.
+
+**Failure / decision / next gate:** A real Cuttlefish rerun is unavailable on
+this workstation because `~/dev/aosp-sos` is absent and the development volume
+has 306 GiB free, below the harness's enforced 400 GiB source/build floor. Do
+not delete unrelated data or weaken that resource gate. Retain the host
+regression and run the real product when a provisioned AOSP workspace is
+available. This improves Android lifecycle evidence but cannot replace the
+still-open SM-A336B physical campaign; the phone remains in Download Mode and
+requires its established physical key restart before Compat installation.
+
+## 2026-08-27: Share and cross-check composed scenes across Linux and Android
+
+**Goal / changed:** Remove the last platform copy of the scene-composition
+transform before installing the cleaned Compat and Core candidates. Linux,
+Compat, and Core now call one pure transform that prefixes node IDs with the
+owning Instance ID, attaches a ready child only to the matching declared
+dependency mount, and leaves a failed child's mount empty for the host-owned
+fallback. The host regression deliberately gives Dashboard and Agenda the
+same raw action ID, mounts Agenda, injects a failed Media sibling, and requires
+all composed IDs to remain unique and Instance-prefixed.
+
+**Failure / fix:** The first ARM64 `gate-strict` check exposed a separate
+configuration regression. Plain non-AOSP builds still compiled appearance,
+top-level lifecycle, and reference-event deep-link branches whose queues exist
+only in the AOSP product. The shipping `aosp-system` and `core-native` checks
+were already green. Non-AOSP builds now reject those product-only links with
+an explicit log entry, while Compat retains the real queue behavior.
+
+**Evidence / decision:** `cargo test --locked -p sos-experience` passes all 18
+default tests. The `linux-host` library passes all 38 tests in 2.85 seconds.
+ARM64 Android release checks pass for plain `gate-strict` in 0.71 seconds,
+Compat `aosp-system` in 0.76 seconds, and `core-native` in 0.83 seconds. Keep
+one composition implementation for all hosts. Rebuild and inspect the exact
+Android candidates after this source change, then run the physical Compat and
+Core campaign when the SM-A336B exposes an authorized recovery or Android
+transport.
+
+## 2026-08-27: Make Android v4 composition physically auditable
+
+**Goal:** Close the missing procedure and user-reachable control surface for
+the physical Compat/Core composition gate. The result must judge the complete
+v4 graph, not a boot screenshot or a collection of unbound adb transcripts.
+
+**Changed:** The AOSP Android host now owns a fixed `Theme`, `Rollback`, and
+conditional `Home` strip above Experience content. It advances appearance
+through the registry-authorized Stock identity, stages rollback through the
+authority, and returns an independently presented ordinary root to Stock
+through the normal lifecycle graph. Ordinary Luau receives neither those
+actions nor their authority. Fixed host IDs expose the controls through the
+Compat virtual accessibility tree and prevent Experience nodes from spoofing
+their actions.
+The mounted Agenda reference export now includes a text
+session so physical IME evidence names the child Instance instead of an
+unrelated Stock field. `tools/a33xctl` adds ordered
+`capture-v4-composition-stage` and `audit-v4-composition-campaign` commands for
+Stock, locked Dashboard, appearance, child update failure, child timeout,
+recovery, mounted IME/accessibility, independent host and authority restart,
+v4 Stock authoring, and v4-to-v4 rollback. Every checkpoint binds the exact
+product, serial, revision and artifact digest and captures monotonic timing,
+SELinux, processes, surfaces, authority state/grants, screenshot, logs,
+per-process memory, and product readiness or accessibility. The final audit
+checks state/grant isolation, structured child events, failure containment,
+appearance without revision churn, namespaced IME, independent PID recovery,
+authoring and rollback revisions, then generates and verifies its manifest.
+
+**Failure / decision:** The existing Android deep links were Compat-only, so
+Core had no user-reachable appearance, dismissal, or rollback path after an
+ordinary Experience replaced Stock. A proposed worker-restart checkpoint
+would also have required a test-only Core backdoor. The campaign instead uses
+shipping host controls and independently restarts the real host child and
+authority. The first audit draft treated generic Stock IME logs as composition
+evidence; the mounted Agenda input and Instance-prefixed log requirements
+replace that shortcut. PID sets are normalized before comparison, Core memory
+comes from each `/proc/<pid>/status`, and audit is offline-repeatable rather
+than depending on the device still being attached.
+
+**Evidence:** `tests/a33xctl-host-test.sh` passes complete mock Compat and Core
+campaigns, independently verifies both manifests, and rejects a campaign in
+which the authority changes during host-only recovery; its measured wall time
+is 6.92 seconds with 4,900 KiB peak host RSS. Bash parsing and `git diff
+--check` pass. Focused `revision-supervisor`, `runtime-luau`, and
+`sos-experience` suites pass 100 tests; the one explicit performance campaign
+remains intentionally ignored. The `linux-host` profile separately passes 38
+library tests plus its process-boundary integration test. ARM64 release checks
+pass for plain `gate-strict`, Compat `aosp-system`, and Core `core-native`.
+The complete a33xctl, aospctl, Linux login/live-image/hardware, and PiKVM
+six-script host set passes in 14.14 seconds with 708,684 KiB peak host RSS.
+
+**Remaining risk / next gate:** The previous `884ab4e` cleanup artifacts are
+superseded by these source changes. Build, inspect, and seal final exact Compat
+and Core artifacts, then run the staged campaign on SM-A336B serial
+`RFCT50EGFCN`. The phone still needs an authorized Android or Recovery
+transport before installation: at 2026-08-27T17:09:06+02:00, adb still reports
+`no permissions` and USB ID `04e8:685d` still reports Download Mode. Retain the
+bounded v3 rollback reader until the physical campaign has migrated Stock and
+proved rollback between two v4 revisions; only then remove it and rebuild the
+final no-v3 products.
+
+## 2026-08-27: Seal exact Android v4 composition candidates
+
+**Goal / changed:** Rebuild the Compat 1 and Core 1 products from the complete
+physical-campaign implementation and seal the exact install inputs before any
+Samsung mutation. Both builds use clean source
+`cfe4ebb63eb3b7ffc9bf72c95a25f33152e1314c`. Compat identity
+`sos.compat1.cfe4ebb63eb3.a6a42402ae5b` built in 269.80 seconds with
+2,974,452 KiB peak RSS. Its offline inspector passed in 19.29 seconds with
+47,512 KiB peak RSS. Core identity
+`sos.core1.cfe4ebb63eb3.4d984b84b044` built in 260.94 seconds with
+2,978,176 KiB peak RSS. Its offline inspector passed in 17.27 seconds with
+47,860 KiB peak RSS. Both inspectors require revision format 4 and Experience
+API 4, preserve `ro.sos.legacy_revision_read=3` only for the reversible
+rollback window, and pass the v4 system-control, graph, signature, AVB,
+ownership, and retired-secondary-absence checks.
+
+**Artifact evidence:** Compat produced
+`.cache/evidence/android-v4-cfe4ebb/compat1/compat1.ota.zip`, 1,067,699,297
+bytes, SHA-256
+`3f70274838d07d2aedeeea820b1bab549f628ed9032cc956e31c1a5bb07e1144`.
+Its deterministic 9,673-entry target-files archive is 2,173,677,658 bytes,
+SHA-256
+`dd80b1332c37e3a385551e70da4b829d938ef1a3967dda0bc09582b76f97c631`;
+archive creation took 3.88 seconds with 113,524 KiB peak RSS. Core produced
+`.cache/evidence/android-v4-cfe4ebb/core1/core1.ota.zip`, 1,022,859,688 bytes,
+SHA-256
+`c183cba1d9cbc71d19ef91a960716c6a621b3272bb075ed3c016a498c868c454`.
+Its deterministic 9,657-entry target-files archive is 2,077,042,185 bytes,
+SHA-256
+`95dcb14c5287fc33efb0006431559a81ad107901042cb976bcc5e2e0b29103ae`;
+archive creation took 3.54 seconds with 114,052 KiB peak RSS. `zstd -t` and a
+complete tar listing pass for both archives. Each contains Stock and its theme
+and contains no Timeflow, Daily Flow, or retired example-secondary product.
+
+**Failure / decision:** The first Core archive attempt used Compat's
+`-target-files` directory spelling. Core actually generates
+`lineage_sos_core1_a33x-target_files`; tar rejected the missing input and left
+a 22-byte invalid output. No product input was altered. Replacing that output
+from the resolved Core directory with the same sorted, epoch-zero,
+numeric-owner archive recipe produced the verified artifact above. Keep the
+variant-specific source path explicit rather than normalizing a path that the
+Lineage products do not share.
+
+**Manifest and transport evidence:**
+`./tools/a33xctl evidence-manifest-generate --root
+.cache/evidence/android-v4-cfe4ebb --output
+.cache/evidence/android-v4-cfe4ebb/manifest.tsv` recorded 22 finalized files;
+`evidence-manifest-verify` independently passed. The 2,129-byte manifest has
+SHA-256
+`697ae62cc3f66211eebb2e95e97decd4fef34ec4935fe7ede6784c5274939bc8`.
+At 2026-08-27T17:24:36+02:00, serial `RFCT50EGFCN` still reported adb `no
+permissions` at USB path `1-1.1`, and `lsusb` identified `04e8:685d` Download
+Mode. `.cache/evidence/android-v4-cfe4ebb/transport-status.txt` records that
+read-only observation. No phone mutation was attempted.
+
+**Decision / next gate:** These are accepted offline candidates, not physical
+product verdicts. When the Samsung exposes authorized Android or Recovery,
+install the exact Compat OTA and run its complete staged v4 composition
+campaign, then repeat with the exact Core OTA. Keep the bounded v3 rollback
+reader through that campaign so Stock can migrate and prove v4-to-v4 rollback;
+then remove the reader, rebuild, and rerun the relevant package and rollback
+checks for the final no-v3 products.
+
+## 2026-08-27: Reject headless Compat ADB authorization and add trusted SOS consent
+
+**Goal / physical evidence:** Begin the sealed Compat campaign without erasing
+the installed migration source. Sysfs identified USB `04e8:685d` as an
+SM-A336B ADB interface despite the host `usb.ids` label “Download Mode.” After
+the device node received an ACL, the installed Core reported revision
+`sos.core1dev.e05f91bb6f0b.0be956df8e63`, profile `core`, revision format 3,
+Experience API 3, and enforcing SELinux. This is the intended legacy import
+case. A fresh inspection of the exact sealed Compat candidate passed in 18.61
+seconds after its hashed target-files archive and OTA were restored to the
+variant-specific build paths without changing their bytes.
+
+Recovery did not preserve `adb reboot sideload-auto-reboot` from that legacy
+Core build: it reached the “No command” recovery screen, exposed no sideload
+transport, and the bounded 170-second host wait stopped without sending OTA
+bytes. A plain recovery reboot followed by physical “Apply update / Apply from
+ADB” produced the expected `18d1:d001` sideload endpoint. The exact
+1,067,699,297-byte Compat OTA, SHA-256
+`3f70274838d07d2aedeeea820b1bab549f628ed9032cc956e31c1a5bb07e1144`,
+then transferred exactly once in 86.82 seconds with `Total xfer: 1.00x`; no
+wipe or second transfer occurred. Evidence is under
+`.cache/evidence/android-v4-cfe4ebb-physical/compat1/`, including the
+5,252-byte sideload log with SHA-256
+`901d1d686b5f88ff4c50796fbf8de2b47e6b81ec0e06aaffd27b118708611dc4`.
+
+**Failure / root cause:** The installed Compat candidate booted and exposed
+ADB but remained `unauthorized`. The product retains `ro.adb.secure=1` while
+intentionally removing SystemUI; Android's default key-confirmation component
+still pointed at the absent SystemUI APK. Compat's system-Activity membrane
+would also have blocked an arbitrary replacement privileged Activity. This is
+a product defect, not a transport timeout, so the sealed `cfe4ebb` Compat OTA
+is rejected as a physical candidate. Automatically accepting a new host key
+or injecting one through recovery was rejected because either path bypasses
+physical user consent.
+
+**Changed / decision:** `SosFrameworkBridge` now contains one fixed,
+platform-signed ADB consent Activity. The Compat framework overlay binds both
+owner and secondary-user confirmation resources to that component. The
+surface validates bounded key input, hides untrusted overlays, requires the
+owner profile to be unlocked, distinguishes Allow once from persistent trust,
+offers an explicit denial path, denies disconnect/close, and never logs key or
+fingerprint material. `MANAGE_DEBUGGING` protects the component and is
+privapp-allowlisted. The framework membrane exception names this exact class;
+all other Android system Activities remain blocked. The artifact inspector now
+checks the compiled resource binding, single-Activity manifest, permission
+boundary, membrane exception, lock/owner guards, and consent actions.
+`tests/a33xctl-host-test.sh`, Bash parsing, patch reverse-application, and
+`git diff --check` pass.
+
+**Remaining risks / next gate:** Compile and inspect a superseding Compat
+artifact, install it from Recovery, physically exercise Deny, Allow once, and
+Always allow, and then run the full composition campaign. The workstation's
+existing Samsung/Google USB udev rules still fail to grant remote-session ACLs
+for `04e8:685d` and `18d1:d001`. The new root-only
+`install-host-usb-rules` command installs an exact-PID, group-scoped 0660 rule,
+reloads udev, and retriggers current nodes; its source contract is covered by
+the a33x host suite. Run it once before the next install so device ownership no
+longer requires repeated manual ACL repair. Core remains unmodified and
+uninstalled. The v3 reader remains bounded to this migration window.
+
+## 2026-08-27: Build and seal the trusted-consent Compat candidate
+
+**Goal / evidence:** Compile the complete trusted ADB-consent change from
+clean repository revision `f19c430223a83ecef60f4ac787613078432e8dcd`
+before returning to Recovery. The end-to-end ARM64 Compat build passed in
+334.33 seconds with 2,978,056 KiB peak RSS; Soong's product phase reported
+4:49. The exact identity is
+`sos.compat1.f19c430223a8.2e0169180ab5`. The strict offline inspector passed
+again from the finalized outputs in 18.87 seconds with 48,272 KiB peak RSS,
+including the compiled single-Activity bridge manifest, both framework
+resource bindings, `MANAGE_DEBUGGING` boundary, exact framework membrane
+exception, consent/lock markers, whole-package signature, PIT ceilings, AVB
+hashes and hashtrees, v4 graph controls, API/format 4, and retired-secondary
+absence.
+
+**Artifacts / failure:** The sealed OTA is
+`.cache/evidence/android-v4-f19c430/compat1/compat1.ota.zip`, 1,067,659,231
+bytes, SHA-256
+`d91704446867ca51b95d392a6b1f4a7056e9247d2b8d9280e7fdaf73e758b4e2`.
+The deterministic 9,673-entry target-files archive is 2,173,369,839 bytes,
+SHA-256
+`33b2672cc0fa4c63bf4a6560f1ea7c55b2e0cb3634249d4923af73713ad1cc4b`;
+zstd integrity and complete listing pass, Stock package/theme are present,
+and the retired secondary is absent. The first archive command reused the
+older hyphenated directory spelling, so tar rejected its nonexistent input
+and left a 22-byte output. That exact failed output was removed and the
+resolved Soong `_target_files` directory was archived; no product input or
+sealed OTA changed.
+
+The complete ten-file candidate manifest was generated and independently
+verified. `.cache/evidence/android-v4-f19c430/manifest.tsv` is 978 bytes with
+SHA-256
+`9ca94f833d623513f308e0caeb9c9257146bc6078ea58c1fd7ccd6feff21b93e`.
+This is an offline candidate pass, not a physical verdict.
+
+**Decision / next gate:** Install the durable host USB rule once, manually
+enter Recovery because the currently installed rejected build cannot accept
+ADB, and sideload this exact OTA once. Physical acceptance begins only after
+the fixed surface visibly denies an untrusted request and then accepts the
+known workstation key through explicit user input. Continue the ordered Compat
+composition campaign only on that verified identity.
+
+## 2026-08-27: Prove durable remote ownership of A33x USB nodes
+
+**Goal / environment change:** Remove the repeated manual `setfacl` step from
+the Samsung acceptance lifecycle. The owner installed the repository rule with
+`install-host-usb-rules --group wheel`. The root-owned mode-0644 installed
+file is `/etc/udev/rules.d/70-sos-a33x-usb.rules`, 598 bytes, SHA-256
+`fc5a2b0e69ead827004cee98566d137fdddbf7db24fc0629d55b067d3600e72d`.
+`udevadm test` selects its exact `04e8:685d` entry, resolves group `wheel`, and
+sets mode 0660 while retaining the desktop `uaccess` tag.
+
+**Evidence / decision:** The current `/dev/bus/usb/001/089` node changed to
+`root:wheel` mode 0660 with no named per-user ACL. A remote process can open it;
+adb now reports the expected `unauthorized` state from the installed rejected
+Compat candidate rather than `no permissions`. The old setup appeared to work
+because it reused an authorized `04e8:6860` node or a desktop-seat ACL. SOS's
+ADB-only `04e8:685d` gadget and Recovery's `18d1:d001` endpoint were not both
+covered, and each reenumeration discarded the ephemeral node ACL.
+
+A bounded `adb -s RFCT50EGFCN wait-for-sideload` completed without observing a
+Recovery endpoint; the phone remained on `04e8:685d`. No sideload, reboot,
+wipe, or other phone mutation occurred. The next gate remains the physical
+Side + Volume Down restart, immediate Side + Volume Up Recovery entry, and
+selection of Apply update / Apply from ADB. The host rule is now ready for that
+new node without another ACL repair.
+
+The first physical restart attempt subsequently returned to the rejected SOS
+Compat image instead of Recovery. A second, explicitly measured
+`wait-for-sideload` ran for 300.00 seconds and exited 124 with 5,372 KiB peak
+RSS; USB remained the same booted `04e8:685d` endpoint. No OTA bytes or device
+commands were sent. The next retry may use either the fixed lock surface's
+Volume Up+Down recovery chord after a Side off/wake cycle, or the established
+Side+Volume Down then immediate Side+Volume Up boot sequence.
+
+## 2026-08-27: Bake and mount the revision 7c414374 development-live ISO
+
+**Goal / environment:** Build the newest clean Linux development-live image
+available to the bake, preserve private Wi-Fi autoconnect and password access,
+then replace the PiKVM virtual media without booting or writing an installed
+disk. The checksum-pinned Fedora 44 source ISO was 2,851,612,672 bytes with
+SHA-256 `1620295f6a00c27c3208f0c00b8ece4eab1ec69b9002152d97488bf26a426ddf`;
+its signed checksum verified against Fedora 44 primary-key fingerprint
+`36F612DCF27F7D1A48A835E4DBFCF71C6D9F90A6`. The rootless doctor passed.
+
+**Build evidence:** The worktree advanced from `cfe4ebb` to clean revision
+`7c414374e450733c6541e1e88a70dbe94c15c1bc` before source identity capture.
+The staged install metadata, rootfs check, image sidecar, and final filename all
+agree on `7c414374e450`. The 1:03:37 rootless bake passed rootfs validation,
+EROFS repack, ISO replay, and the embedded Fedora media check. The private
+inputs remained mode 0600 and were removed after the finalized bake. The ISO
+is `artifacts/development-live-7c41437/sos-development-live-7c414374e450.iso`,
+3,057,975,296 bytes, SHA-256
+`e2f5c5e9dd6315558e515dfdc25293b0db56e540c700175127f0fe1b4a5b3fad`.
+Its identity records `development-live`, `promotion_eligible=false`,
+`wifi_autoconnect=true`, and `network_credentials_embedded=true`.
+
+**PiKVM evidence / decision:** PiKVM at `192.168.1.47` first reported the old
+`28cf8ff` ISO connected read-only. It disconnected that drive before upload.
+The first multipart request failed immediately with HTTP 400 and transferred
+no image bytes; the documented binary-body request then uploaded the exact ISO
+in 2:15.96. PiKVM reported the stored image complete and non-writable at the
+expected byte size. A full 1:34.78 API read-back produced the same SHA-256 as
+the local artifact. Final state selects the exact `7c414374` image with
+`connected=true`, `cdrom=true`, `rw=false`, and `writable=false`. ATX remains
+retired because earlier calibration proved its telemetry unreliable. The
+inspected console frame was black, so target power and boot state are not
+claimed. No HID, ATX, installer, boot-order, internal-disk, or target SSH
+mutation occurred.
+
+**Remaining risk / next gate:** This accepts the image build and read-only
+PiKVM mount only. The ISO embeds a network credential and must remain private.
+Physical boot still requires an observed one-time firmware selection because
+remote ATX and the boot-menu window remain unreliable. After boot, verify the
+live overlay identity, Wi-Fi, SSH, SOS session, and that every internal NVMe
+partition remains unmounted before claiming a physical runtime result. Raw
+build, upload, read-back, MSD-state, and console evidence is under
+`.cache/evidence/pikvm-live-7c41437/`.
+
+## 2026-08-27: Reject bridge-owned ADB UI and split consent presentation from privilege
+
+**Goal / physical evidence:** Install and exercise the superseding
+`f19c430` Compat candidate's trusted ADB consent surface. Recovery exposed the
+durably group-owned `18d1:d001` sideload endpoint. The candidate manifest and
+artifact digest passed immediately before one transfer. The exact
+1,067,659,231-byte OTA, SHA-256
+`d91704446867ca51b95d392a6b1f4a7056e9247d2b8d9280e7fdaf73e758b4e2`,
+transferred once with `Total xfer: 1.00x` and exit 0 in 87.21 seconds. The
+4,456-byte finalized log at
+`.cache/evidence/android-v4-f19c430-physical/compat1/install/sideload.log`
+has SHA-256
+`3ef939c00174eee4a59534d39a84a6df649d05c44cb918f6af5fceef2369dec0`.
+Recovery returned to its main menu, the user selected reboot, and the new
+Compat product re-enumerated as the expected `04e8:685d` ADB-only gadget.
+
+**Failure / diagnosis:** The bridge-owned consent Activity did not become
+visible. Five fresh authorization checks after restarting the host ADB server
+and ten more after a physical USB reset all remained `unauthorized`. Offline
+inspection reconfirmed that the installed candidate compiled both overlay
+resources to the intended component and included the enabled, exported,
+direct-boot-aware bridge Activity with `MANAGE_DEBUGGING`; this rules out a
+stale package or source-only manifest assumption but does not prove that the
+shared-system-UID Activity reached presentation. The first `usbreset` attempt
+passed the full device-node path, which Fedora's implementation rejected as
+“No such device found.” Retrying its required `001/094` syntax succeeded and
+did not change the result. No authorization, wipe, or second OTA transfer
+occurred. The `f19c430` physical candidate is rejected.
+
+**Changed / decision:** Presentation now lives in the already proven,
+platform-signed SOS HOME package, while privilege stays in the headless
+framework bridge. Android's custom ADB confirmation resources name the fixed
+`SosAdbConfirmationActivity` in `dev.sos.experience`. That Activity is not
+Luau-visible, validates bounded owner/unlock/key/fingerprint input, suppresses
+untrusted overlays, keeps the display awake, and offers Deny, Allow once, and
+Always allow. It sends only an explicit result to a bridge receiver protected
+by the new signature permission `dev.sos.permission.REPORT_ADB_CONSENT`; the
+receiver alone calls `IAdbManager`. The framework membrane returns to its
+package-only SOS HOME exception, and the bridge exposes no Activity. The
+artifact inspector now verifies the compiled HOME Activity, permission and
+overlay binding, headless bridge receiver, signature boundary, consent markers,
+and framework membrane. `tests/a33xctl-host-test.sh`, Bash parsing, patch
+reverse-application, and `git diff --check` pass.
+
+The first public-SDK Java compile rejected `UsbManager.ACTION_USB_STATE` and
+`USB_CONNECTED`, which exist in the platform build API used by the earlier
+bridge implementation but not in Android's application stubs. The HOME
+surface now binds the stable framework action and boolean-extra strings
+locally; it does not acquire a hidden-API dependency. The repeated release
+Java compile passes.
+
+**Open risks / next gate:** Build, inspect, and seal this second superseding
+Compat candidate before another Recovery entry. Its first physical gate is
+visible denial, followed by session-only and persistent authorization of the
+known workstation key. The complete v4 composition campaign remains pending;
+the bounded v3 reader remains only for that reversible migration gate.
+
+## 2026-08-27: Split Android into a first-class Stock Mobile experience
+
+**Goal:** Stop treating the phone as a responsive rendering of the Linux Stock
+Shell. Mobile application lifecycle, full-screen presentation, launcher
+information architecture, touch geometry, safe compact chrome, and vertical
+viewport use are experience semantics and require an independent identity.
+
+**Changed:** Added the pinned `sos.stock.mobile` v4 package, a new Luau source,
+and the revision-local `mobile.theme` sidecar. Stock Mobile has its own top bar,
+bottom navigation, large touch targets, vertically scrolling Today, Apps,
+Agent, and Controls screens, a source-owned launcher for registered SOS
+Experiences and compatible applications, and full-screen root lifecycle
+effects. It contains no desktop `window_space`, window list, command rail,
+floating/tiling policy, hover interaction, or shell overlay. Linux retains
+`sos.stock.shell`, `default.luau`, and `stock.theme` unchanged.
+
+The duplicate Java-owned Compat workspace and attention screens were removed.
+The fixed Compat chrome now stays hidden while Stock Mobile owns focus and is
+shown only over a selected foreign Android application. Its Apps and Attention
+buttons return through a bounded `sos://mobile/navigate/{apps,controls}` handoff;
+the native host restores Stock Mobile first when another Experience owns the
+root, then dispatches the corresponding source-defined navigation action.
+Staging also deletes obsolete Linux Stock Shell prebuilts, and artifact
+inspection rejects their presence in an Android product image.
+
+The registry now reserves and prevents retirement of both platform Stock IDs
+while preserving separate current/previous pointers. Legacy migration accepts
+an explicit reserved target, so Linux imports old state under Stock Shell and
+Android imports it under Stock Mobile. The Android authority derives its
+active/recovery identity from its immutable bootstrap, requires exactly
+`sos.stock.mobile` for v4 products, keys state and grants to that ID, returns to
+it after dismissing an ordinary root, and accepts appearance writes only from
+that exact pinned identity. Existing Android Stock Shell records from rejected
+development candidates remain dormant and untouched rather than being
+silently rekeyed. The Android host's deterministic authoring seed, candidate
+module validator, A33x and Cuttlefish products, init command, agent example,
+artifact inspectors, composition audit, and mock gates now use Mobile source,
+package, theme, and identity. Android product images no longer package the
+Linux default source.
+
+**Evidence / failures:** Focused `revision-supervisor`,
+`android-system-authority`, and `sos-experience` suites pass 95 tests with one
+explicit performance campaign ignored. The new runtime test renders Today,
+Apps, and Agent branches, finds the mobile top and bottom bars and full-screen
+Experience launch action, requires the agent composer, and rejects accidental
+desktop chrome. `runtime-luau` validates the default, launcher, agent, and
+controls scenarios (73/30/31/50 nodes respectively), including the one mobile
+text session. The checked-in package now passes the Rust package validator as
+the reserved Stock Mobile Shell contract. Both the A33x and AOSP/Cuttlefish
+host suites pass after their state/grant fixtures moved to `sos.stock.mobile`;
+Bash parsing, Rust formatting, and `git diff --check` pass. A release ARM64
+Compat APK build completed in 11.26 seconds and its DEX contains the mobile
+navigation and Stock-owner chrome-hiding markers while omitting both deleted
+Java screen classes.
+
+The first integrated test compile failed only because the new Rust test
+referenced helper functions scoped inside an older test; moving reusable scene
+predicates to module scope fixed it. The first repeated A33x host test then
+failed because its new static checks used `repo` instead of the existing
+`repo_root`; correcting the variable made both host gates pass. Neither failure
+changed product behavior.
+
+**Decision / next gate:** Platform Stock identity is part of the v4 wire and
+registry model, not a theme or viewport switch. Build the second superseding
+Compat OTA with Stock Mobile and the HOME-owned ADB consent repair, inspect its
+compiled bootstrap identity and source/theme absence/presence invariants, then
+install it once. Physical acceptance must show that the phone fits its panel,
+the launcher and navigation are touch-first, ordinary experiences and
+compatible applications occupy the full root, and returning Home restores
+Stock Mobile. Real cutout/inset behavior and orientation remain hardware gates;
+desktop tests do not close them.
+
+## 2026-08-27: Seal the first Stock Mobile Compat candidate
+
+**Goal / build:** Produce the exact Android candidate that combines the
+HOME-owned ADB consent repair with the independent `sos.stock.mobile`
+experience. Clean source revision
+`a7dba1080c6337e10218d60c97febb381feead19` built Compat 1 successfully in
+5:58. Its immutable product identity is
+`sos.compat1.a7dba1080c63.f384ef7bfb46`. Soong installed `mobile.luau`,
+`mobile.package.json`, and `modules/mobile-theme.luau` while explicitly
+removing the Linux `default.luau`, `default.package.json`, and
+`modules/stock-theme.luau` prebuilts.
+
+**Offline evidence:** `./tools/a33xctl inspect-compat1` passed in 19.48 seconds
+with 47,660 KiB peak RSS. It verified the complete package signature, PIT
+ceilings, boot-chain AVB data, recovery packaging, the compiled HOME consent
+Activity and headless bridge, v4 package/API markers, registry and authority
+markers, and the Stock Mobile source contract. The inspector also confirmed
+`ro.sos.revision_format=4`, `ro.sos.experience_api=4`, and the bounded
+rollback-only v3 reader. This remains an offline candidate result.
+
+The sealed OTA is
+`.cache/evidence/android-v4-a7dba10/compat1/lineage-23.0-20260827-UNOFFICIAL-sos_compat_a33x.zip`,
+1,067,649,751 bytes, SHA-256
+`911e2ec4c5a49e374abbac9c4f58d3c82261ff4a4e92df4e0feb812d23e8b4b8`.
+The 9,673-entry deterministic target-files archive is 1,863,732,829 bytes,
+SHA-256
+`96c2402936c8d428009bfa35e1736b2799fe291f9d9d38c2c5dadc591f0146d4`.
+Its zstd integrity passes. It contains all three Mobile inputs and none of the
+three Linux Stock Shell inputs. Archive creation took 117.23 seconds with
+2,390,888 KiB peak RSS.
+
+The finalized nine-file manifest at
+`.cache/evidence/android-v4-a7dba10/manifest.tsv` is 928 bytes, SHA-256
+`1d8ff51f75a2705e9254de461afc96c78640f74959f506f916037b6fcc6bd828`.
+Independent manifest verification passes.
+
+**Decision / next gate:** This exact OTA is the only candidate authorized for
+the next Recovery transfer. First prove that a fresh workstation request
+shows the fixed consent surface and that Deny leaves ADB unauthorized. Then
+exercise Allow once and Always allow with the known workstation key before
+running the Compat composition, full-screen layout, touch, inset, restart,
+rollback, memory, thermal, crash, and AVC campaign. No physical claim is made
+until those checks run on product identity
+`sos.compat1.a7dba1080c63.f384ef7bfb46`.
+
+## 2026-08-27: Reject the first physical Stock Mobile layout and repair its owning boundaries
+
+**Goal / physical evidence:** Install the sealed `a7dba10` Compat candidate,
+close the HOME-owned ADB consent gate, and begin the ordered v4 composition
+campaign on SM-A336B `RFCT50EGFCN`. The exact 1,067,649,751-byte OTA with
+SHA-256 `911e2ec4c5a49e374abbac9c4f58d3c82261ff4a4e92df4e0feb812d23e8b4b8`
+was reverified immediately before installation. Its single Recovery transfer
+completed with `Total xfer: 1.00x`, exit 0, and 86.94 seconds wall time. The
+6,855-byte sideload log at
+`.cache/evidence/android-v4-a7dba10-physical/compat1/install/sideload.log` has
+SHA-256 `71b9215ccb3d1aee40488f61a55d8a1014c695ba6a01a0d1f43f2350c3a8f99f`.
+The device booted exact product
+`sos.compat1.a7dba1080c63.f384ef7bfb46` with boot-complete, Compat, package
+format 4, and Experience API 4 markers.
+
+The consent surface passed Deny and Allow once with a temporary workstation
+key. Deny left the transport unauthorized. Allow once authorized the live
+daemon, then restarting that daemon returned the same key to unauthorized,
+proving it was not persisted. The accidentally selected Always allow result
+was retained as the persistent-path gate: after a full device reboot the
+original workstation key reconnected as `device` in 87.81 seconds. The
+original key files were restored byte-for-byte and the temporary private and
+public keys were removed. The 740-byte focused consent log has SHA-256
+`18325397fd768269ad140dcb9bfeff5f0ae7a6a81da85abffefaefed76fa5c98` and
+records the HOME renderer plus bridge-accepted Deny and Allow-once decisions.
+An attempted `adb root` was rejected by the product setting as intended;
+debug-root was not enabled.
+
+**Rejected physical result / diagnosis:** Stock Mobile was visibly distinct
+from the Linux shell, but this candidate does not pass phone layout. The
+source rendered with the runtime's 1024x768 fallback instead of the real
+top-level Android viewport, and the fixed host Theme/Rollback strip overlapped
+its top bar. The measured panel is 1080x2400 at density 450 (2.8125), with an
+88-physical-pixel top display cutout. The 178,378-byte diagnosis screenshot at
+`.cache/evidence/android-v4-a7dba10-physical/compat1/layout-diagnosis/stock.png`
+has SHA-256 `9da17a7f65bf49c51ae7b2f27c00e8e3c07ca36af810cc826bdf8d2fb84c8355`.
+The first campaign capture also failed closed because the non-root ADB shell
+could not read `/data/misc/sos/provider-state.composition.json`; the attempted
+`uiautomator dump /dev/tty` returned only a status line. Making authority state
+readable or enabling root ADB were rejected.
+
+**Changed / evidence:** Experience API viewport context now includes bounded
+logical safe insets. The Android Activity derives live logical width, height,
+density, cutout, and gesture insets from its real decor view, sends them over a
+fixed JNI boundary, and wakes the host. The graph runtime validates and
+rerenders the root transactionally without changing revision or Instance ID;
+mounted children retain host-measured bounds and zero physical-display insets.
+Stock Mobile consumes those values in its source-owned top bar, content, and
+bottom navigation. Its Controls screen now owns touch-sized Theme and Rollback
+rows. The fixed host strip appears only over ordinary top-level Experiences,
+and the two reserved Stock actions are accepted only from the namespaced Stock
+Mobile root.
+
+The authority now exposes a bounded, read-only `AuditSnapshot` response with
+the presented Experience plus authority-owned state, appearance, and grant
+resources. `a33xctl` obtains it through a temporary authorized-ADB local
+forward and removes the forward; it never changes storage permissions.
+Accessibility capture uses a shell-owned temporary device file instead of
+`/dev/tty`, and stage directories become visible only after the complete
+capture succeeds. Protocol, authority, runtime, Experience, and host-harness
+tests pass, including new read-only, safe-inset rerender, and failed-capture
+retry cases. The real ARM64 `aosp-system` Rust build completed in 20.62 seconds
+and the release Java/APK build passed.
+
+**Decision / next gate:** The installed `a7dba10` candidate is accepted for
+ADB consent only and rejected for layout/composition. Commit the repair, build
+and inspect one superseding exact Compat OTA, then install it through the
+already authorized transport. Physical acceptance must prove the corrected
+cutout fit, source-owned Stock controls, full-screen ordinary roots, non-root
+evidence capture, and every ordered composition/restart/authoring/rollback
+stage before Android parity closes.
+
+## 2026-08-27: Seal the viewport-corrected Stock Mobile Compat candidate
+
+**Goal / build:** Produce the one exact replacement for the rejected physical
+layout candidate. Clean source revision
+`7da25e9c8a6c125f68f6adb6aef105509edbbb2a` built Compat 1 successfully in
+247.44 seconds with 2,979,196 KiB peak RSS. Its immutable product identity is
+`sos.compat1.7da25e9c8a6c.b93bb9eb8875`. This revision adds the live Android
+viewport and safe-inset boundary, transactionally rerenders the root while
+preserving its Instance ID, moves the reserved Theme and Rollback actions into
+Stock Mobile, and leaves the fixed host controls only over ordinary roots.
+
+**Offline evidence:** `./tools/a33xctl inspect-compat1` passed in 19.64 seconds
+with 47,620 KiB peak RSS. It verified the Stock Mobile identity and
+phone-native source contract, host-owned system controls, authority markers,
+package signature and boot-chain data, package format 4, Experience API 4, and
+the rollback-only v3 reader. The inspection log is 29,355 bytes with SHA-256
+`4112b815af0f33edac3f73ce800962d652801d49b86baa77ea007f77893c2714`.
+
+The sealed OTA at
+`.cache/evidence/android-v4-7da25e9/compat1/lineage-23.0-20260827-UNOFFICIAL-sos_compat_a33x-7da25e9.zip`
+is 1,067,674,864 bytes with SHA-256
+`2a3c91d3c784cdf04cd3dc79b76520b017d53fb61a7545016b96e0a57ad74945`.
+Its complete ZIP integrity check passed in 4.50 seconds. The finalized
+five-file evidence manifest at
+`.cache/evidence/android-v4-7da25e9/compat1/MANIFEST.sha256` is 465 bytes with
+SHA-256
+`cdadd44107d647777762b86b818d68c4f751c7207989b4b79a5ea186391cfd53`;
+independent manifest verification passes.
+
+**Decision / next gate:** This exact OTA is the only candidate authorized for
+the replacement Recovery transfer. Reverify its identity and digest at the
+device boundary, install it once, then require exact-product readiness and the
+complete ordered non-root composition campaign. Offline evidence does not
+close the physical cutout, touch, composition, restart, recovery, or rollback
+gates.
+
+## 2026-08-27: Reject the corrected viewport candidate for a Compat chrome race
+
+**Goal / physical evidence:** Install the sealed `7da25e9` candidate and judge
+the first real Stock Mobile frame before beginning the ordered campaign. Serial
+`RFCT50EGFCN` was the only device and no competing transfer was active. The
+1,067,674,864-byte OTA was reverified at the device boundary with SHA-256
+`2a3c91d3c784cdf04cd3dc79b76520b017d53fb61a7545016b96e0a57ad74945`.
+Automatic Recovery entry took 29.54 seconds; the single 82.52-second transfer
+exited 0 with `Total xfer: 1.00x`. Automatic reboot and the complete Compat
+readiness predicate took 99.69 seconds. The phone reached exact identity
+`sos.compat1.7da25e9c8a6c.b93bb9eb8875`, boot complete, API/package v4,
+Compat stage 1, SOS HOME ownership, live authority and HOME processes, and
+Enforcing SELinux without manual Recovery input.
+
+The native boundary reported the real viewport as 384x853 logical pixels at
+2.813 scale with a 31-logical-pixel safe top, matching the 1080x2400 panel and
+88-physical-pixel cutout. Stock now begins below that cutout and fills the
+phone. The 187,340-byte first-frame screenshot at
+`.cache/evidence/android-v4-7da25e9-physical/compat1/install/first-stock.png`
+has SHA-256
+`06439806ee2889e670f1f775d5c450cab31ca975f7e9eb858227a174a96b4004`.
+
+**Rejected result / root cause:** The first frame still exposed the fixed
+Compat Back, Apps, Attention, and Exit drawer above Stock Mobile, obscuring the
+right side of the source-owned interface. This was not persisted Experience
+state. The service logged `compat_chrome_visibility=hidden owner=stock-mobile`,
+then its later `onStartCommand()` unconditionally scheduled a reveal after 750
+ms. The 180-byte focused service log has SHA-256
+`a048d83c3b42ced177655bf75cdc2d5fb566bc9f3553e153e5d6c177a5dae7f4`.
+The `7da25e9` image is therefore accepted only for the viewport boundary and
+rejected as a Stock Mobile composition candidate.
+
+**Changed / verification:** Delayed reveal now checks the current owner, and
+service start hides immediately whenever Stock Mobile owns focus. The compiled
+artifact marker and source host gate require this owner-aware guard. The real
+release APK compiles successfully, and the complete mock Compat/Core staged
+campaign passes in 7.92 seconds with 5,012 KiB peak RSS. That gate also exposed
+that a failed stage capture could leave its hidden temporary directory because
+the EXIT trap outlived a function-local path. Capture cleanup now owns a
+process-scope exact temporary path, clears it after atomic rename, and the
+failed-capture regression passes. No device state was changed while making
+either repair.
+
+**Decision / next gate:** Build and inspect one superseding exact Compat OTA.
+Install it once through the authorized automatic Recovery path, require Stock
+Mobile to remain unobscured after the reveal interval, then begin the ordered
+non-root composition campaign. The Android physical milestone remains open.
+
+## 2026-08-27: Seal the owner-guarded Stock Mobile Compat candidate
+
+**Goal / build:** Produce the exact replacement for the Compat chrome race.
+Clean source `af57c0fed7202d384fb588fe3116f405dc7d89b5` built Compat 1 in
+237.19 seconds with 2,978,244 KiB peak RSS. Its immutable product identity is
+`sos.compat1.af57c0fed720.332e773ac9ad`. The compiled APK contains the
+owner-aware delayed-reveal guard, while the product retains the live physical
+viewport boundary, independent Stock Mobile package and appearance sidecar,
+and non-root authority audit protocol.
+
+**Offline evidence:** `./tools/a33xctl inspect-compat1` passed in 19.70 seconds
+with 47,800 KiB peak RSS. It verified the new owner-visibility marker, Stock
+Mobile identity and phone-native source contract, host-owned ordinary-root
+controls, signed authority reference composition, package and boot-chain
+signatures, API/package v4, and the bounded rollback-only v3 reader. The
+29,148-byte inspection log has SHA-256
+`360317aa4a90f888cf3fa470f05b821ad6a58b18e0829233fb9710c234d6b053`.
+
+The sealed OTA at
+`.cache/evidence/android-v4-af57c0f/compat1/lineage-23.0-20260827-UNOFFICIAL-sos_compat_a33x-af57c0f.zip`
+is 1,067,697,350 bytes with SHA-256
+`0049a6eff5ca1b5810dd3c2e89894d6e5b04a90aa50fa86e694b6aeecb4af402`.
+Its complete ZIP integrity check passed in 4.50 seconds. The finalized
+seven-file manifest is 627 bytes with SHA-256
+`dcc763d2ebab8ab23d8b5f19cc9120a1dc385d28b519c4f9b69e586d9fe95ee5`;
+independent verification passes.
+
+**Decision / next gate:** This exact OTA is the only candidate authorized for
+the next replacement transfer. Reverify it at the physical boundary, install
+it once, prove the Stock owner remains unobscured beyond the delayed-reveal
+interval, and only then initialize a new ordered composition campaign.
+
+## 2026-08-27: Accept the Stock frame and reject incomplete recovery evidence
+
+**Goal / physical evidence:** Install the owner-guarded `af57c0f` candidate and
+begin the complete ordered campaign. The sealed 1,067,697,350-byte OTA with
+SHA-256 `0049a6eff5ca1b5810dd3c2e89894d6e5b04a90aa50fa86e694b6aeecb4af402`
+was reverified at the device boundary. Automatic Recovery entry took 29.44
+seconds, the one transfer took 81.40 seconds and exited 0 with `Total xfer:
+1.00x`, and exact-product readiness took 109.73 seconds without manual input.
+The phone reached `sos.compat1.af57c0fed720.332e773ac9ad`, boot-complete v4
+Compat, live authority and HOME processes, and Enforcing SELinux.
+
+Stock Mobile passed the repaired frame gate. Two owner-focus callbacks logged
+the Compat chrome hidden after its reveal deadline, and neither the screenshot
+nor accessibility tree contains the fixed Back/Apps/Attention/Exit drawer. The
+175,069-byte screenshot at
+`.cache/evidence/android-v4-af57c0f-physical/compat1/install/first-stock.png`
+has SHA-256
+`47ecbef033a30726b7c107178f7a434306af434e6327e904c9e1adf9344eb299`.
+The independent phone-native top and bottom bars fit the full panel and remain
+clear of the display cutout.
+
+Dashboard then presented as a three-Instance graph. A real touch on the
+host-owned Theme control advanced authority appearance generation from 0 to 1,
+rerendered the complete graph with zero failed instances, and did not change
+any Experience revision ID. Agenda's `open_first` event durably set its own
+`selected` state and Dashboard's separately keyed `opened` state to `Design
+review`. Both the deliberate update exception and execution timeout left the
+parent ready and preserved those states. Captured evidence is retained under
+`.cache/evidence/android-v4-af57c0f-physical/compat1/composition/`, but the
+campaign is not a PASS.
+
+**Failures / changed:** The real authority snapshot exposed an audit-fixture
+mismatch: `AppearanceResource` is serialized with a flattened profile, while
+the shell audit and mock expected `.appearance.profile.generation`. The audit
+and fixture now use the actual `.appearance.generation` wire shape, and the
+complete mock campaign passes.
+
+The failed Agenda instance recovered on an authority model refresh before its
+explicit recovery event ran, but the host logged status transitions only for
+action completions. The refresh branch therefore installed a healthy snapshot
+without the required failed-to-ready evidence. The host now compares the old
+and refreshed snapshots through the same status-transition logger before
+installation. Focused `sos-experience` tests pass 20 tests, and the full A33x
+mock campaign passes in 7.97 seconds with 5,212 KiB peak RSS.
+
+**Decision / next gate:** Rebuild and inspect one superseding exact Compat OTA.
+Repeat the automatic install and start a new campaign root. Require explicit
+Agenda recovery markers after both containment failures before continuing to
+IME, restart, authoring, and rollback. The `af57c0f` product remains accepted
+for Stock layout, Compat chrome ownership, Dashboard composition, appearance,
+and failure containment only.
+
+## 2026-08-27: Seal the recovery-observable Compat candidate
+
+**Goal / build:** Produce the exact candidate that makes failed-to-ready child
+transitions observable whether recovery comes from an action or an authority
+refresh. Clean source `3693138b49afb7103b33e63edbcbd82eb5532908` built
+Compat 1 in 242.29 seconds with 2,978,672 KiB peak RSS. Its immutable identity
+is `sos.compat1.3693138b49af.cf58ca7e57f2`.
+
+**Offline evidence:** `./tools/a33xctl inspect-compat1` passed in 19.73 seconds
+with 47,784 KiB peak RSS, including the Stock Mobile, owner-guarded chrome,
+signed authority, v4 graph/API, package signature, boot-chain, and bounded
+legacy-reader gates. The sealed OTA at
+`.cache/evidence/android-v4-3693138/compat1/lineage-23.0-20260827-UNOFFICIAL-sos_compat_a33x-3693138.zip`
+is 1,067,652,445 bytes with SHA-256
+`84c5523b948aea5b0462fd4e2b6d1f078dccc381f754cdb978b2c30b79aec47b`.
+Its complete ZIP check passed in 4.43 seconds. The seven-file evidence manifest
+has SHA-256
+`09850f701fb9eb3a279c20e82aa96e6709f184b8f98bfd58483f11cd165f81db`;
+independent verification passes.
+
+**Decision / next gate:** Install only this exact OTA. Begin a fresh campaign,
+repeat the accepted Stock, Dashboard, appearance, failure, and timeout gates,
+and require two explicit recovery markers before the remaining ordered stages.
+
+## 2026-08-27: Accept composition through host recovery; add bounded authority recovery
+
+**Goal / physical evidence:** Install the recovery-observable candidate and
+advance the ordered Compat campaign through composition, containment, input,
+accessibility, and host recovery. Automatic Recovery entry took 29.54 seconds,
+the single sideload took 82.53 seconds and exited 0 with `Total xfer: 1.00x`,
+and exact-product readiness took 107.48 seconds. The installed identity is
+`sos.compat1.3693138b49af.cf58ca7e57f2`; authority PID 944 and initial HOME
+PID 1466 were live under Enforcing SELinux.
+
+Stock Mobile remained unobscured. Dashboard ran as three independent
+Instances. A real Theme touch advanced appearance to generation 2 without
+changing revisions. Agenda and Dashboard retained separately keyed `Design
+review` state; Dashboard retained two acceptance pings. The deliberate Agenda
+update exception and execution timeout each logged a contained failed Instance
+with `root_ready=true` followed by an explicit recovery of the same namespaced
+Instance. A physical tap inside the mounted Agenda field logged namespaced IME
+focus, a tap outside logged inactive blur, and Android published all 12 expected
+semantic nodes. The accepted IME stage screenshot, authority snapshot, and log
+have SHA-256 `e122692449bde35769e425543268d9ac7a0808a326b062caead032496452d170`,
+`c0e391a9370d8f5008bc0d921f4f86ad0d8a14b4d92e829b8f3ef8014cd6c171`,
+and `437cc7de142d03cd774bad0dbfb1ae7c0d54d96c3efaddd635b3cf5a62e5b582`.
+Restarting only HOME changed PID 1466 to 4314, left authority PID 944 intact,
+and restored the same three-Instance Dashboard and durable resources.
+
+**Failure / changed:** Android correctly denied both non-root `kill -9 944` and
+the broad `ctl.restart=sos_authority` property. The authority-only physical gate
+therefore lacked a safe actuator; enabling root ADB would invalidate the gate.
+The A33x product now defines one exact boolean
+`sys.sos.authority_recovery_probe` property. Only shell on userdebug/eng builds
+may set it. Init consumes value 1 by restarting only `sos_authority`, resets the
+property to 0, and leaves the experience host untouched. `a33xctl` exposes an
+exact-revision `restart-v4-authority` command that verifies debuggability, PID
+replacement, host preservation, service recovery, and one-shot reset. Package
+inspection requires the trigger and its reset. `bash -n`, the product-graph
+gate, and the complete A33x host fixture pass; the latter took 8.00 seconds.
+
+**Decision / remaining risk / next gate:** The current candidate is accepted
+through host recovery but cannot close authority recovery because it predates
+the bounded trigger. Build and inspect one superseding exact Compat OTA, install
+it once, and repeat the ordered campaign. The next candidate must pass the new
+authority-only PID gate before authoring and exact rollback. No production user
+build receives the shell property permission.
+
+## 2026-08-27: Seal the bounded-recovery Compat candidate
+
+**Goal / build:** Produce the exact userdebug candidate containing the
+authority-only physical recovery actuator. Clean source
+`0f15bf98f78cd107468994903555c1e72c7fc880` built Compat 1 successfully in
+303.73 seconds with 2,978,784 KiB peak RSS. Its immutable identity is
+`sos.compat1.0f15bf98f78c.3ec21b65cb07`. SELinux compilation, neverallow,
+property-context, compatibility, and APEX policy tests all passed. The compiled
+policy contains only the expected shell `property_service set` permission for
+`sos_authority_recovery_probe_prop` on this userdebug build.
+
+**Offline evidence:** The strengthened `inspect-compat1` gate passed in 19.68
+seconds with 47,768 KiB peak RSS. It verifies the one-shot init trigger, exact
+installed boolean property context, compiled userdebug shell permission, Stock
+Mobile identity, v4 graph/API, signed authority composition, host-owned system
+controls, package signatures, and boot chain. The sealed OTA at
+`.cache/evidence/android-v4-0f15bf9/compat1/lineage-23.0-20260827-UNOFFICIAL-sos_compat_a33x-0f15bf9.zip`
+is 1,067,709,730 bytes with SHA-256
+`146eb025a59ce33140f2829049abca2ce02bd301bbb2cce77bce09bb38d3d733`.
+Its complete ZIP test passed in 4.84 seconds. The finalized five-file evidence
+manifest is 467 bytes with SHA-256
+`50bc82c85044c064dd8b009f619ef1b4b6c19e5fe88b81d8578f821c6e5a308f`;
+independent verification passes.
+
+**Decision / next gate:** This exact OTA is the only authorized replacement.
+Reverify it at the device boundary, install it once through automatic Recovery,
+repeat the complete ordered campaign, and require the authority PID to change
+while the recovered HOME PID remains exact. Authoring and rollback remain open
+until that campaign passes.
+
+## 2026-08-27: Reject transient authority recovery and make its listeners restartable
+
+**Goal / physical evidence:** Install the bounded-recovery candidate and run
+the ordered Compat v4 campaign far enough to judge independent host and
+authority recovery. Recovery entry took 29.64 seconds, the single exact OTA
+transfer took 81.54 seconds with `Total xfer: 1.00x`, and exact boot readiness
+took 107.69 seconds. The installed identity was
+`sos.compat1.0f15bf98f78c.3ec21b65cb07`; SELinux was Enforcing. The distinct
+Stock Mobile frame remained unobscured. Its 175,754-byte screenshot at
+`.cache/evidence/android-v4-0f15bf9-physical/compat1/install/stock-mobile.png`
+has SHA-256
+`df382f446ba3d4d737993a4e0da1e4f9b042a93f3bdc9d84bc0a72f73a315a79`.
+
+Dashboard again ran as three Instances. A real Theme touch advanced appearance
+from generation 2 to 3 without revision churn. The Agenda update exception and
+time-budget violation were contained and recovered; parent liveness, separately
+keyed state and grants, mounted accessibility, and namespaced IME focus/blur
+passed. The first IME attempt used Android's reported virtual-node rectangle
+and missed the renderer hit target; the previously measured renderer coordinate
+`(500,900)` focused the expected `i-...::agenda-input`. Preserve this as an
+accessibility/hit-test alignment risk. HOME-only recovery changed PID 1480 to
+5025, kept authority PID 935, and restored Dashboard, state, and appearance.
+The accepted stages through `host-restart` are under
+`.cache/evidence/android-v4-0f15bf9-physical/compat1/composition/`; the campaign
+is not a PASS and has no sealed verdict.
+
+**Failures / diagnosis:** Lineage's hardened userdebug configuration sets
+`PRODUCT_NOT_DEBUGGABLE_IN_USERDEBUG := true`, so the initial actuator guard
+incorrectly rejected the genuine `ro.build.type=userdebug` product because
+`ro.debuggable=0`. The guard now follows the same `userdebug|eng` boundary as
+the compiled SELinux macro and still rejects `user`. After that correction,
+the old actuator check observed transient authority PID 5366 and reported PASS,
+but the process exited within 93 ms. The subsequent authority snapshot rejected
+the stage, and init then repeated status-1 exits while HOME PID 5025 survived.
+The finalized 5,104,827-byte lifecycle log has SHA-256
+`d71a00651a96a5eff573cdd161cbb44eba3409a1a165e833860d465b2167f13a`.
+A cold reboot recovered unmodified durable state, authority PID 944, and HOME
+PID 1469 in 127.82 seconds; the 121-byte result has SHA-256
+`98a0a9d9cdc9eb74549bf54d28de55cacc72312b4e0dcd85948b1962b25991b0`.
+
+An audit request against the recovered daemon exposed many server-side
+`TIME-WAIT` sockets for both `127.0.0.1:47777` and `:47778` while the original
+listeners remained live. The 10,026-byte socket snapshot has SHA-256
+`c2f04cde88a7ee6f0aabd04f85dd102ac757a7753973d61db4afbe0188a15fce`.
+The daemon used plain `TcpListener::bind`, so init could not immediately bind
+replacement listeners after killing an authority with active provider and
+revision clients. A local full-daemon reproduction was rejected as evidence:
+the workstation's resident `providerd` already owned port 47777, causing the
+probe to kill its test authority during reference installation and produce an
+unrelated incomplete-registry error.
+
+**Changed / verification:** Authority loopback listeners now set
+`SO_REUSEADDR` before bind and retain close-on-exec. A unit test opens a live
+connection, closes the listener, and immediately rebinds the exact address.
+`restart-v4-authority` now requires a valid authority audit snapshot after PID
+replacement, in addition to exact revision/build type, running service, stable
+HOME PID, and one-shot property reset; a transient PID can no longer pass.
+All 26 authority unit, binary, wire, and doc tests pass. The complete A33x host
+fixture passes in 8.09 seconds with 5,088 KiB peak RSS, including hardened
+userdebug acceptance, user rejection, and audit readiness. The Android ARM64
+release check passes in 4.37 seconds with 419,116 KiB peak RSS.
+
+**Decision / next gate:** The `0f15bf9` campaign is rejected at authority
+recovery despite all earlier accepted checkpoints. Build and inspect one new
+exact Compat OTA containing reusable listeners, install it once, and start a
+fresh artifact-bound campaign. Require the replacement authority to serve a
+valid audit snapshot while HOME remains exact before authoring and v4-to-v4
+rollback.
+
+## 2026-08-27: Seal the restartable-authority Compat candidate
+
+**Goal / build:** Produce the exact replacement containing reusable authority
+listeners and the audit-ready recovery gate. Clean source
+`b89f779d4067f82d9fd4c6ed785578c16ed48111` built Compat 1 successfully in
+257.47 seconds with 2,978,416 KiB peak RSS. Its immutable product identity is
+`sos.compat1.b89f779d4067.a7a7e01f504a`.
+
+**Offline evidence:** `./tools/a33xctl inspect-compat1` passed in 19.72 seconds
+with 48,248 KiB peak RSS. The packaged 1,924,616-byte authority has SHA-256
+`e71befb9aab7dd75ec1379d0dd38ea4d2fa9adef1ad1316990d216956cfd2b2f`.
+The inspector reverified the userdebug-only recovery property and compiled
+permission, Stock Mobile, Experience API and package format v4, signed
+reference graph, host-owned controls, SELinux ownership, APK signatures,
+VINTF, AVB, and the boot-chain image graph. The exact 1,067,728,950-byte OTA
+at
+`.cache/evidence/android-v4-b89f779/compat1/lineage-23.0-20260827-UNOFFICIAL-sos_compat_a33x-b89f779.zip`
+has SHA-256
+`fa9dcd4bde19faf544ce168bd93f2e36f3043b85277b7ceefba1df816a8260fe`.
+Its complete ZIP test passed in 4.83 seconds. The finalized eight-file offline
+manifest is 712 bytes with SHA-256
+`462e2939bbc468fcfdfbcc86adb0421831ba30cf75ec97620014d84a161fe668`;
+independent verification passes.
+
+**Decision / next gate:** Install only this digest, start a new physical
+campaign root bound to this artifact and revision, and require authority PID
+replacement plus a valid post-restart audit snapshot while HOME remains exact.
+Only after that gate may the campaign advance to Stock authoring and exact
+v4-to-v4 rollback.
+
+## 2026-08-27: Reject the b89 authority restart and instrument its true startup boundary
+
+**Goal / physical evidence:** Install the exact restartable-authority Compat
+candidate and judge the complete ordered v4 campaign on the Samsung SM-A336B.
+Automatic Recovery entry took 29.54 seconds, the only sideload took 81.53
+seconds with `Total xfer: 1.00x`, and exact-product readiness took 109.16
+seconds. The installed identity was
+`sos.compat1.b89f779d4067.a7a7e01f504a`; initial authority PID 939 and HOME PID
+1529 were live under Enforcing SELinux. Stock Mobile remained unobscured, and
+the 175,650-byte screenshot has SHA-256
+`bf802ad84f0573004037ae225a688b0c64a351524c06254221cb0b102fa3ec93`.
+
+Dashboard again presented three independent Instances. Appearance advanced
+from generation 3 to 4 without revision changes. Both deliberate Agenda
+failures were contained and explicitly recovered, the two acceptance pings and
+separately keyed state survived, namespaced IME focus/blur and all expected
+semantics passed, and HOME-only recovery changed PID 1529 to 3713 while
+authority PID 939 remained exact. These stages are retained under
+`.cache/evidence/android-v4-b89f779-physical/compat1/composition/`, but the
+campaign is rejected at `authority-restart`: the bounded command exited 1 after
+20.21 seconds because no replacement daemon became audit-ready. HOME PID 3713
+survived while init repeatedly observed authority status 1. The finalized
+4,547,951-byte lifecycle log has SHA-256
+`8aa738f06a79d689915cc9bb41d112919fce0a366ac3560fd1876f1a92d985eb`.
+
+**Corrected diagnosis:** The preceding TIME-WAIT inference was wrong. A tiny
+ARM64 probe run as the same unprivileged Android shell identity closed a live
+loopback connection and immediately rebound the exact address successfully,
+both with only `SO_REUSEADDR` and with `SO_REUSEPORT`. Its 80-byte result at
+`.cache/evidence/android-v4-b89f779-physical/compat1/composition/android-kernel-rebind-probe.txt`
+has SHA-256
+`78e3b83f08d1f5df64754bfe1c8aef73eff4ee426c9a0e6871254be6bfabecd5`.
+The reusable-listener change remains harmless and tested, but neither the
+2,210-byte socket snapshot nor TIME-WAIT explains this restart failure. The
+current init service discards stderr, so the 4.5 MiB system log cannot expose
+the process's actual startup error. A cold reboot recovered authority PID 944,
+HOME PID 1464, and the durable graph in 127.53 seconds; the 95-byte result has
+SHA-256
+`70c497db53a1b3ef777ba46c92147813a70f02d87f30b78960ce5ac77fcb6f9e`.
+
+**Changed / verification:** Fatal authority startup failures now go directly
+to Android `logd` with tag `sos-authority`. Every fallible startup boundary has
+context, including v4 authority open, reference-composition installation,
+loopback listener bind, and Core Unix-socket replacement. Package inspection
+requires the `liblog.so` dependency, fatal marker, and reference-install
+boundary so a stale binary cannot satisfy this diagnostic gate. All 27
+authority unit, binary, wire, and documentation tests pass in 0.58 seconds with
+366,176 KiB peak RSS. A linked ARM64/API 31 release build passes in 13.97
+seconds with 857,044 KiB peak RSS and carries the expected `liblog.so`
+dependency.
+
+**Decision / next gate:** Build and inspect one exact instrumented Compat OTA,
+then install it once and begin a fresh artifact-bound campaign. At the
+authority-only checkpoint, require either an audit-ready replacement or the
+new exact `android_system_authority_failed` log. Fix only that observed startup
+cause before authoring and v4-to-v4 rollback; do not add `SO_REUSEPORT` or make
+another socket-based inference.
+
+## 2026-08-27: Seal the authority-diagnostic Compat candidate
+
+**Goal / build:** Produce the exact replacement that exposes authority startup
+failures through Android `logd` without changing the restart actuator or
+durable registry. Clean source `dcbe6109b7ef0efcf70407f4a2ec08be2a5abdc4`
+built Compat 1 successfully in 239.21 seconds with 2,978,392 KiB peak RSS. Its
+immutable product identity is
+`sos.compat1.dcbe6109b7ef.88b08470bdbf`.
+
+**Offline evidence:** The strengthened `./tools/a33xctl inspect-compat1` gate
+passed in 19.71 seconds with 48,720 KiB peak RSS. In addition to Stock Mobile,
+v4 composition, policy, signature, VINTF, PIT, AVB, and boot-chain checks, it
+verified that the packaged 1,927,968-byte authority links `liblog.so` and
+contains both the fatal marker and reference-install startup boundary. That
+binary has SHA-256
+`5a99ef96ee47e820c0b7723a19216b946b15f7a8397f5a22bd3bc810d39d3ecd`.
+The exact 1,067,694,920-byte OTA at
+`.cache/evidence/android-v4-dcbe610/compat1/lineage-23.0-20260827-UNOFFICIAL-sos_compat_a33x-dcbe610.zip`
+has SHA-256
+`99dbed3ed79d8e0e12f4807f04f87a8bcde624f210ffb7cd2120d62b617729d3`.
+Its complete ZIP test passed in 4.53 seconds. The finalized eight-file offline
+manifest is 712 bytes with SHA-256
+`5f5e62660436f9e1334a298312f0ad90c44fdb18f238bd331470a800af65f978`;
+independent verification passes.
+
+**Decision / next gate:** This digest is the only authorized replacement.
+Reverify it at the device boundary, install it once through automatic Recovery,
+and start a fresh campaign. Require the authority-only restart either to serve
+an audit snapshot or to emit its exact contextual fatal cause while HOME stays
+live; do not advance to authoring on a transient PID.
+
+## 2026-08-27: Isolate the authority failure to its loopback-listener helper
+
+**Goal / physical evidence:** Install the exact authority-diagnostic candidate
+and use its Android log boundary to replace the remaining restart hypothesis
+with an observed cause. Device preflight reverified the 1,067,694,920-byte OTA
+and SHA-256 `99dbed3ed79d8e0e12f4807f04f87a8bcde624f210ffb7cd2120d62b617729d3`
+against live b89 Compat. Automatic Recovery entry took 29.44 seconds, the only
+sideload took 82.44 seconds with `Total xfer: 1.00x`, and exact-product
+readiness took 125.51 seconds. The installed identity was
+`sos.compat1.dcbe6109b7ef.88b08470bdbf`; authority PID 953 and HOME PID 1524
+were live under Enforcing SELinux with no relevant crash, ANR, fatal authority
+marker, or SOS AVC.
+
+The distinct Stock Mobile shell again fit the complete 1080x2400 panel with no
+Compat drawer. Its 181,576-byte screenshot has SHA-256
+`2757901190da72aa6433220e5dcac1bd3a5229eddf4e3822b22ca109c413d845`.
+Dashboard presented and confirmed a three-Instance graph. A real Theme tap
+advanced appearance generation 4 to 5 without revision churn. The Agenda
+update exception and time-budget violation were independently contained and
+recovered; two parent pings, separately keyed state, mounted IME focus/blur,
+and the 12-node Android accessibility tree passed. HOME-only recovery changed
+PID 1524 to 3746, preserved authority PID 953, and restored Dashboard at
+generation 5 with eight durable parent pings.
+
+**Failure / exact diagnosis boundary:** `restart-v4-authority` correctly exited
+1 after 20.25 seconds because no replacement became audit-ready. HOME PID 3746
+survived, the one-shot property reset to 0, and init reported the service as
+restarting. Every five-second replacement emitted the new direct log marker:
+`android_system_authority_failed error=bind provider listener
+127.0.0.1:47777 failed: Connection refused (os error 111)`. The finalized
+4,617,195-byte lifecycle log has SHA-256
+`607b7bdc4c164e508ec967cf081e0bad1ae93404741895547ee0b930398bb6c0`.
+This excludes registry installation, durable state open, revision listener,
+Core Unix sockets, and audit probing, but the helper still combined socket
+creation, `SO_REUSEADDR`, kernel bind, and listen under one outer label. No
+`authority-restart` campaign stage was captured and the campaign remains
+rejected. A cold reboot recovered the exact product, authority PID 942, HOME
+PID 1470, and durable Dashboard in 127.56 seconds; the 142-byte result has
+SHA-256
+`db733acae267d7bf7a7284e7e65ec61463eee55a8c8ecc3b954878d13fb5746a`.
+
+**Changed / verification:** Each raw listener operation now has a stable error
+boundary: socket creation, `SO_REUSEADDR`, bind, and listen. The artifact
+inspector requires all four compiled markers. All 28 authority unit, binary,
+wire, and documentation tests pass, including a non-local-address test that
+proves the bind boundary. The linked ARM64/API 31 release build passes in 13.64
+seconds with 854,504 KiB peak RSS and contains every marker. Bash parsing and
+the complete A33x host fixture pass; the latter took 8.01 seconds with 5,360
+KiB peak RSS.
+
+**Decision / next gate:** Build and inspect one exact raw-step diagnostic
+candidate, install it once, and repeat the ordered campaign. At authority
+recovery, use the emitted raw step to determine the implementation change; do
+not infer which syscall returned errno 111 and do not advance to authoring.
+
+## 2026-08-27: Seal the raw-step authority diagnostic candidate
+
+**Goal / build:** Package the exact authority binary that identifies socket
+creation, `SO_REUSEADDR`, bind, and listen as separate fatal boundaries. Clean
+source `0f519dd1a318ccd71b71d208c176d9d9dea09ee0` built Compat 1 successfully
+in 242.22 seconds with 2,978,888 KiB peak RSS. The immutable product identity
+is `sos.compat1.0f519dd1a318.967ed8346550`.
+
+**Offline evidence:** `./tools/a33xctl inspect-compat1` passed in 19.72 seconds
+with 47,912 KiB peak RSS. It verified the OTA signature, VINTF, PIT and AVB
+limits, boot chain, v4 and Stock Mobile contracts, Android authority markers,
+and all four compiled raw socket-step labels. The packaged 1,930,032-byte
+authority has SHA-256
+`88b9a5a05b9fdf41e4a9dbfb8b7f12f9e05bfb84246a42d05926d52c0dad9e97`.
+The exact 1,067,731,695-byte OTA at
+`.cache/evidence/android-v4-0f519dd/compat1/lineage-23.0-20260827-UNOFFICIAL-sos_compat_a33x-0f519dd.zip`
+has SHA-256
+`3891b536043aa7e150bb630f22e848c14af7767aef113c721253b63cb6e08a39`.
+Its complete ZIP test passed in 4.52 seconds. The finalized eight-file offline
+manifest is 712 bytes with SHA-256
+`f2e3eb1d36ec6ba16fdfffc3bdc251c2b76599d2601ce01472b558fc9fb38276`;
+independent verification passes.
+
+**Decision / next gate:** Reverify this digest at the device boundary, install
+it once through automatic Recovery, and run a fresh artifact-bound campaign.
+The authority restart must either become audit-ready or report the exact raw
+socket operation returning errno 111. No authoring or rollback claim follows
+from this diagnostic artifact alone.
+
+## 2026-08-27: Identify Android's post-boot socket-create denial
+
+**Goal / physical evidence:** Install the raw-step candidate once and replace
+the combined listener error with the first failed operation. Device preflight
+reverified the 1,067,731,695-byte OTA and SHA-256
+`3891b536043aa7e150bb630f22e848c14af7767aef113c721253b63cb6e08a39`
+against live dcbe Compat. Automatic Recovery entry took 29.45 seconds, the
+only sideload took 84.08 seconds with `Total xfer: 1.00x`, and exact-product
+readiness took 112.00 seconds. The installed identity was
+`sos.compat1.0f519dd1a318.967ed8346550`; authority PID 941 and HOME PID 1474
+were live under Enforcing SELinux without a relevant crash or SOS-domain AVC.
+
+The fresh campaign under
+`.cache/evidence/android-v4-0f519dd-physical/compat1/composition/` captured
+Stock Mobile, a three-Instance Dashboard, appearance generation 5 to 6 with
+unchanged revision IDs, separate Agenda update and time-budget failures,
+recovery, two new parent pings, mounted IME focus and outside blur, 12 composed
+semantics plus the Android hierarchy root, and HOME recovery from PID 1474 to
+3352 while authority PID 941 remained live. `restart-v4-authority` then exited
+1 after 20.07 seconds. HOME PID 3352 survived, but every replacement authority
+failed before bind with `raw socket step=socket(AF_INET, SOCK_STREAM)` and
+errno 111. The finalized 3,700,617-byte log has SHA-256
+`71dfe48b7605dff8987b7a726834d94e322f9f1e35a0632819a0fa9e5eb3824e`.
+No `authority-restart` stage or campaign manifest was created. A cold reboot
+restored the exact product, authority PID 947, and HOME PID 1435 in 125.65
+seconds.
+
+**Cause:** Android's Bionic `netdClientSocket` changes a kernel `EPERM` from
+an AF_INET socket-create attempt to `ECONNREFUSED`. Connectivity attaches its
+`cgroupsock/inet_create` BPF program after the authority's first boot start.
+That program requires `BPF_PERMISSION_INTERNET`, bit 4. The device's own
+PermissionMonitor record reports appId 1000, the authority's UID, with traffic
+mask 8 only, which is `UPDATE_DEVICE_STATS`; the 23,552-byte captured policy
+record has SHA-256
+`0c98d5465e5f7741f47d08ecc7647f259b2466e75220a278bfcdfc361fc93c62`.
+This explains the timing: the initial daemon creates its listeners before the
+BPF program attaches, while every later init restart is denied at socket
+creation. Port reuse, bind state, and listen state are not involved.
+
+**Changed / verification:** The persistent platform-signed framework bridge,
+which already shares appId 1000 with the native authority, now declares
+`android.permission.INTERNET`. Package inspection decodes the installed bridge
+APK and rejects a missing package identity or permission, and the host fixture
+checks the source declaration. Bash parsing and the complete A33x host fixture
+pass in 8.34 seconds with 5,128 KiB peak RSS.
+
+**Decision / next gate:** Build and inspect one exact candidate, then install
+it once. Before the authority restart, require the device PermissionMonitor
+record to report appId 1000 traffic mask 12. The authority must then replace
+its PID, serve a valid audit snapshot, preserve the HOME PID and composed
+Dashboard, and reset its one-shot property. Only that result can reopen the
+authored and v4-to-v4 rollback stages.
+
+## 2026-08-27: Seal the Android socket-permission candidate
+
+**Goal / build:** Package the exact bridge permission and inspection gate that
+should keep the native authority eligible for AF_INET socket creation after
+Connectivity attaches its BPF program. Clean source
+`9a8bd80af5c20ee51bdb2d24c12cb5e9b67a14c1` built Compat 1 successfully in
+248.30 seconds with 2,978,428 KiB peak RSS. Its immutable product identity is
+`sos.compat1.9a8bd80af5c2.7d1fcf888c79`.
+
+**Offline evidence:** `./tools/a33xctl inspect-compat1` passed in 20.19 seconds
+with 47,528 KiB peak RSS. It decoded the installed 41,374-byte
+`SosFrameworkBridge.apk`, verified package `dev.sos.frameworkbridge`, and
+required `android.permission.INTERNET`; that APK has SHA-256
+`d7c2f0fbd6b9a11bbe45766e03d33b7a318bf68cfc6ad21e136d6ddb8b905667`.
+The OTA signature, VINTF, PIT and AVB limits, boot chain, v4 and Stock Mobile
+contracts, authority boundaries, and system controls also passed. The exact
+1,067,700,551-byte OTA at
+`.cache/evidence/android-v4-9a8bd80/compat1/lineage-23.0-20260827-UNOFFICIAL-sos_compat_a33x-9a8bd80.zip`
+has SHA-256
+`c3fe0466617633f98a1a159d06230deb923bdbc462436d04a5313b3426a59b82`.
+Its complete ZIP test passed in 4.50 seconds. The finalized eight-file offline
+manifest is 712 bytes with SHA-256
+`f1552b73bb16bd8f8eaf755c9db7ea50963eb25c6bdcd2c779dc97de556ccf45`;
+independent verification passes.
+
+**Decision / next gate:** This digest is the only authorized replacement.
+Install it once through automatic Recovery and start a fresh campaign. Verify
+traffic mask 12 from the live device before the authority-only restart, then
+require an audit-ready replacement with HOME unchanged. Do not advance on a
+new PID alone.
+
+## 2026-08-28: Fix the Stock Mobile faux-provider wire identity
+
+**Goal / physical evidence:** Continue the exact socket-permission candidate
+through the previously blocked authority recovery and then exercise authoring
+from Stock Mobile's real text session. The 1,067,700,551-byte OTA with SHA-256
+`c3fe0466617633f98a1a159d06230deb923bdbc462436d04a5313b3426a59b82`
+installed as `sos.compat1.9a8bd80af5c2.7d1fcf888c79`. Automatic Recovery
+entry took 29.54 seconds, its only sideload took 83.95 seconds with
+`Total xfer: 1.00x`, and exact-product readiness took 114.37 seconds. The live
+PermissionMonitor traffic mask for appId 1000 was 12. HOME-only recovery
+changed PID 1483 to 3283 while authority PID 2451 stayed live. Authority-only
+recovery then passed in 0.45 seconds, changed PID 2451 to 3476 while HOME PID
+3283 stayed live, served a valid audit response, and preserved Dashboard,
+appearance generation 7, and durable state.
+
+The fresh campaign at
+`.cache/evidence/android-v4-9a8bd80-physical/compat1/composition/` captured the
+ordered `stock`, `dashboard`, `appearance`, `child-failure`, `child-timeout`,
+`recovered`, `ime-accessibility`, `host-restart`, and `authority-restart`
+stages. It proved three independent graph Instances, appearance propagation,
+separate child exception and time-budget containment, recovery, mounted IME
+and 13 Android hierarchy nodes including the root, and isolated HOME and
+authority restarts.
+
+**Failure / cause:** The physical authoring UI selected Offline, focused the
+real `mobile-agent-prompt`, submitted through the Samsung IME action key, and
+emitted `android_agent_thread_start provider=fake model=faux`. The bundled
+child then exited 1 after 0.63 seconds with
+`stage=request category=invalid_request`. The Java bridge retained `fake` as
+the Stock UI/provider identity and copied it into the runner request, while the
+closed runner wire schema accepts the deterministic provider only as `faux`.
+No authoring candidate was staged, no `authored` or `rollback` stage was
+captured, and this campaign is rejected. The finalized 3,187,957-byte log has
+SHA-256
+`f9beb04c049a71fb384bda2df492d9d26ce8869218cd4292c22023a163f42bda`;
+the 183,052-byte failure screenshot has SHA-256
+`539846857489c3772f0b5f173e64b271bf4f578b9b69420ac5b7030a359c5e1e`.
+
+This run also exposed an Android accessibility geometry defect. The visible
+prompt focused at physical point `(700,850)`, but its virtual node reported
+`[90,905][1069,1068]` while provider-button nodes simultaneously occupied its
+lower half. The finalized 5,304-byte hierarchy has SHA-256
+`fb6adb48a72da124f120df303fd34d775818222f15b897bffa7a4af3ab7e69e4`.
+The authoring gate used the real painted hit region, so this mismatch did not
+cause the runner rejection, but it remains an Android parity defect.
+
+**Changed / verification:** The trusted Java bridge now explicitly translates
+the persisted/logged `fake` identity to runner-only `faux` when constructing
+the bounded request; live providers are unchanged. The A33x host fixture now
+pins both identities and the translation. It passes in 8.10 seconds with 5,384
+KiB peak RSS. All four focused Android agent contract tests pass.
+
+**Decision / next gate:** Commit and seal a new Compat candidate. Its fresh
+physical campaign must repeat every ordered stage, show the faux child
+completing the exact context/validate/submit tool sequence, commit a distinct
+Stock Mobile v4 revision through the system-graph authority, and restore the
+original v4 revision through the real rollback control. Only then audit and
+hash the campaign. Fix and regress the virtual accessibility bounds before
+claiming Android parity complete.
+
+## 2026-08-28: Correct padded overlay accessibility geometry
+
+**Goal / cause:** Close the virtual-node mismatch found while focusing Stock
+Mobile's authoring prompt. Android records semantic bounds through a GPUI
+canvas placed inside each authored node. For a padded overlay node, that
+absolute canvas began at the padded content origin but `size_full` retained the
+outer node size. Its bounds were therefore translated down and right by the
+padding and extended beyond the painted node; row and column nodes did not use
+that placement behavior. This exactly accounts for the prompt's displaced,
+oversized virtual bounds and its apparent overlap with the next row.
+
+**Changed / verification:** Padded overlay semantic trackers now cancel their
+content-origin padding on both axes. The correction is limited to the
+accessibility measurement canvas and does not alter authored layout, paint, or
+touch hit-testing. A platform-neutral interaction-contract helper pins overlay
+padding `14` to offset `-14` while requiring zero correction for unpadded
+overlays, rows, and columns. All four focused Android interaction tests pass.
+The complete A33x host fixture passes in 8.04 seconds with 5,108 KiB peak RSS;
+format and diff checks are clean.
+
+The first full product build stopped before ROM packaging after 11.75 seconds
+with 753,780 KiB peak RSS. Compat compiled, but the separately built Core
+variant also shares the Android renderer and could not see the helper because
+the interaction-contract module was still excluded under `core-native`. The
+module is now compiled for both Android deployments while Compat-only IME
+imports remain feature-gated. The focused host tests pass again after that
+visibility correction.
+
+**Decision / next gate:** Include this correction with the faux-provider wire
+fix in one newly sealed Compat candidate. The fresh device hierarchy must show
+the Stock Mobile prompt wholly above the provider row and a physical tap inside
+the published prompt bounds must focus that same text session. This remains a
+physical acceptance requirement, not a host-only completion claim.
+
+## 2026-08-28: Seal the Android authoring and semantic-bounds candidate
+
+**Goal / build:** Package the exact faux-provider translation and padded
+overlay semantic correction for a fresh physical campaign. Clean source
+`4dbe4a2eb316935115cb708a5df9eb1f66ebc406` built Compat 1 successfully in
+242.57 seconds with 2,977,928 KiB peak RSS. Its immutable product identity is
+`sos.compat1.4dbe4a2eb316.9dd7e158b5e9`.
+
+**Offline evidence:** `./tools/a33xctl inspect-compat1` passed in 19.91 seconds
+with 48,032 KiB peak RSS. It verified the OTA signature, VINTF, PIT and AVB
+limits, boot chain, Android v4 and Stock Mobile contracts, agent runner,
+authority boundaries, framework bridge permission, system controls, and
+packaged source identities. The packaged 41,828,541-byte `SosShell.apk` has
+SHA-256
+`75a2f6affda6924bde8f320ea5960f818357aa40527055ee191b952afdf7e9e1`.
+The exact 1,067,526,493-byte OTA at
+`.cache/evidence/android-v4-4dbe4a2/compat1/lineage-23.0-20260827-UNOFFICIAL-sos_compat_a33x-4dbe4a2.zip`
+has SHA-256
+`e848a36734077572447dd0fe7fba88be4b24e2c198085dc65888b9e858a34bf9`.
+Its complete ZIP test passed in 4.68 seconds with 2,688 KiB peak RSS. The
+finalized eight-file offline manifest is 710 bytes with SHA-256
+`61dbeff2f934c331fd844796402fec3acc8dec3d3708ab3ca79267bd80035602`;
+independent verification passes.
+
+**Decision / next gate:** This digest is the only authorized replacement.
+Reverify it at the device boundary, install it once through automatic
+Recovery, and create a fresh artifact-bound campaign. In addition to every
+ordered composition and recovery stage, require non-overlapping prompt and
+provider virtual bounds, focus from a point inside the published prompt, a
+successful faux context/validate/submit sequence, a committed distinct v4
+Stock Mobile revision, and real-control rollback to the original v4 revision.
+
+## 2026-08-28: Reject the first Mobile authoring candidate at its Stock selector
+
+**Goal / physical evidence:** Install the exact `4dbe4a2` Compat candidate and
+run the complete Android v4 composition campaign through phone-native Stock
+Mobile authoring. Device-boundary verification retained the sealed
+1,067,526,493-byte OTA and SHA-256
+`e848a36734077572447dd0fe7fba88be4b24e2c198085dc65888b9e858a34bf9`.
+The first transition used generic Recovery instead of automatic sideload and
+timed out after 300.01 seconds with no OTA bytes transferred. Selecting Apply
+from ADB entered the intended state; the only sideload then completed in 87.30
+seconds with `Total xfer: 1.00x`, and exact-product readiness took 194.13
+seconds. The installed identity was
+`sos.compat1.4dbe4a2eb316.9dd7e158b5e9`; SELinux was Enforcing, authority PID
+947 and HOME PID 1468 were live, and PermissionMonitor retained traffic mask
+12 for appId 1000. The 129,658-byte post-install Stock Mobile screenshot has
+SHA-256
+`046646a7b174f41215f24d69cf27c522af64c05437548c23333c545e5aec25e3`.
+
+The fresh campaign under
+`.cache/evidence/android-v4-4dbe4a2-physical/compat1/composition/` passed Stock,
+three-Instance Dashboard composition, separately keyed Agenda and Dashboard
+state, physical appearance propagation from generation 7 to 8, child exception
+and time-budget containment, both explicit child recoveries, parent liveness,
+mounted accessibility, and namespaced IME focus and blur. HOME-only recovery
+changed PID 1468 to 3586 in 303 ms while authority PID 947 remained exact.
+Authority-only recovery passed in 0.30 seconds, changed PID 947 to 3763, kept
+HOME PID 3586, and served a valid audit snapshot. A real Return to Stock touch
+dismissed Dashboard. The corrected authoring prompt published bounds
+`[12,748][991,911]`, wholly above the provider row beginning at y=978, and a
+touch inside those exact bounds focused the namespaced `mobile-agent-prompt`.
+
+**Failure / cause:** Samsung IME touch input submitted the non-empty prompt
+`Blue`. The trusted bridge started `provider=fake model=faux`; the bundled
+runner returned `prompt_complete` after 819 ms, proving the fake-to-faux wire
+translation. Trusted validation then rejected the deterministic Mobile source
+with `stage=validation category=invalid_candidate`, so no candidate was staged
+or committed and no `authored`, `rollback`, or campaign manifest was created.
+The finalized 3,927,182-byte failure log at
+`.cache/evidence/android-v4-4dbe4a2-physical/compat1/authoring-validation-failure/logcat.txt`
+has SHA-256
+`643a421a28767fc9e92aee327b4fb51a1829f5da46bf386cee1fb6e150532ca2`;
+the 173,783-byte screenshot has SHA-256
+`72c027bc453b88c6d9bdcad01f948d1c270ccf1caa7c184d33589de8496b5a10`.
+
+The validator's agent-composer preservation probe covered desktop Stock state
+selectors `active_workspace="agent"` and `shell_panel="agent"` but omitted
+phone-native Stock Mobile's `screen="agent"`. The valid candidate therefore
+rendered its home branch during this check and was falsely rejected. The
+preservation contract now declares all three selectors and Android validation
+uses that closed list. The deterministic Mobile regression renders both
+alternating candidates under `screen="agent"` and requires the composer.
+
+**Verification / decision / next gate:** Formatting and diff checks are clean.
+All five focused Android agent-contract tests pass in 2.10 seconds, and the
+Mobile candidate regression passes in 0.24 seconds. The complete A33x host
+fixture passes in 7.95 seconds with 5,004 KiB peak RSS. Reject this physical
+campaign at authoring. Commit and seal one replacement Compat OTA, reinstall
+it once, and repeat every ordered physical stage before accepting authored
+activation or v4-to-v4 rollback.
+
+## 2026-08-28: Seal the phone-native authoring-selector candidate
+
+**Goal / build:** Package the exact Stock Mobile preservation-selector fix for
+one new physical campaign. Clean source
+`70236932142d2851e49b44c08233f307b8617395` built Compat 1 successfully in
+235.75 seconds with 2,978,440 KiB peak RSS. Its immutable product identity is
+`sos.compat1.70236932142d.26b3686ac23e`.
+
+**Offline evidence:** The complete Compat inspector passed in 19.98 seconds
+with 47,956 KiB peak RSS and again from the evidence seal in 19.72 seconds with
+47,688 KiB peak RSS. It verified the whole-package signature, AVB chain,
+VINTF, PIT ceilings, Android v4 and Stock Mobile contracts, agent runner,
+authority, host-owned system controls, framework bridge, and packaged source
+identities. The packaged 41,832,637-byte `SosShell.apk` has SHA-256
+`d35c74c6d6fe031407ae02d92300cbb376e50d929df9be43eae6deffc8a94295`.
+The exact 1,067,691,022-byte OTA at
+`.cache/evidence/android-v4-7023693/compat1/lineage-23.0-20260827-UNOFFICIAL-sos_compat_a33x-7023693.zip`
+has SHA-256
+`d24e9629f848c58e362ec05843d197775e0846b4c086f62ad5b462f572b646ac`.
+Its independent complete ZIP test passed in 4.52 seconds with 2,956 KiB peak
+RSS. The finalized seven-file manifest is 643 bytes with SHA-256
+`3685cbedd776a8eb3c3f6110c9f8f70ba08b2b6c01c1ab6a38cb9d6fe03e4887`;
+independent verification passes.
+
+**Decision / next gate:** This digest is the only authorized replacement.
+Reverify it at the live device boundary, enter automatic sideload Recovery,
+install it once, and start a fresh ordered campaign. Require successful
+phone-native authoring, a distinct committed Stock Mobile v4 revision, and
+real-control rollback to the original v4 revision before removing the v3 read
+compatibility path.
+
+## 2026-08-28: Accept Android Compat v4 composition, Mobile authoring, and rollback
+
+**Goal / install evidence:** Close the complete Android Compat physical gate
+for graph composition and phone-native Stock Mobile authoring. The live device
+boundary reverified the sealed 1,067,691,022-byte OTA with SHA-256
+`d24e9629f848c58e362ec05843d197775e0846b4c086f62ad5b462f572b646ac`
+and its seven-file offline manifest. Automatic sideload Recovery became ready
+in 29.34 seconds. The only OTA transfer completed in 85.48 seconds with
+`Total xfer: 1.00x`, and exact-product readiness took 112.82 seconds. The live
+identity was `sos.compat1.70236932142d.26b3686ac23e`; SELinux was Enforcing,
+authority PID 946 and HOME PID 1458 were live, the framework bridge held its
+INTERNET grant, and PermissionMonitor reported traffic mask 12 for appId 1000.
+Post-ready health found no relevant SOS fatal, crash, or SELinux denial. The
+130,195-byte Stock Mobile screenshot at
+`.cache/evidence/android-v4-7023693-physical/compat1/install/stock-post-install.png`
+has SHA-256
+`ed4fb4835a6aab784ee5a5394a19e4d91564c37960a7bde2d312cd5b5d4885b8`.
+
+**Composition / containment / recovery:** The artifact-bound campaign under
+`.cache/evidence/android-v4-7023693-physical/compat1/composition/` captured all
+eleven ordered stages. Dashboard ran as three independent Instances. Agenda
+and Dashboard preserved separately keyed `Design review` state and a fresh
+parent ping. A physical Theme touch advanced appearance from generation 8 to
+9 without revision churn. The Agenda update exception and execution-budget
+timeout each failed only the child with `root_ready=true`, and each produced an
+explicit recovery. A physical mounted-input touch focused the namespaced
+Agenda text session and an outside touch resolved inactive blur. Android
+published the composed semantic tree and all host controls.
+
+HOME-only recovery changed PID 1458 to 3069 in 306 ms while authority PID 946
+remained exact. Authority-only recovery then changed PID 946 to 3242 while
+HOME PID 3069 remained exact and the replacement served a valid audit
+snapshot. The restored graph retained appearance generation 9 and durable
+child and parent state.
+
+**Phone-native authoring / rollback:** A real Return to Stock touch dismissed
+Dashboard. Stock Mobile again published prompt bounds `[12,748][991,911]`,
+wholly above the provider row beginning at y=978; a touch inside those bounds
+focused the exact namespaced `mobile-agent-prompt`. Samsung keyboard touches
+entered the non-empty prompt `Blue`, and the IME action submitted it. The
+bridge started `provider=fake model=faux`; the child returned
+`prompt_complete` after 726 ms, the trusted context/validate/submit sequence
+completed, and graph
+`198f12c5b613f1fcfaf23286f0b56447972023c86a419f5c90625790bb19ad65`
+committed through `authority=system-graph`.
+
+The authored Stock Mobile revision was
+`f9bfec4e0b217ba63fb356e4bdf9a7d2063b44bd4b1b5108a94500b3da451944`
+with source SHA-256
+`290886afce4211b5216d16c472531b03f156c7ce73de3ea5b7aa31dc706b5de1`;
+no external experience was presented. A real ellipsis → Controls → Rollback
+touch then restored original v4 revision
+`43c52a6c45ee843ad1535ec81dd4833f8d8853911780a9e0d22239c3d7717edb`
+and kept `presented_experience=null`. The 130,494-byte authored screenshot and
+130,133-byte rollback screenshot have SHA-256
+`549db3e203901d66c62048e81eded432b414b99dc2e7c227d3d82d489b5786d0`
+and
+`20491de76c92eca40fad2a83c1291a80f20681a03b57d6fde96ee08e2bb0edc7`.
+
+**Verdict / evidence / next gate:** The campaign auditor passed in 2.60
+seconds with 4,996 KiB peak RSS. It counted appearance generation 9, two
+contained failures, two recoveries, correct host and authority PID isolation,
+exact authored/rollback revisions, and 210.53 seconds of ordered campaign
+time. The finalized 4,372,058-byte log has SHA-256
+`5316fe3121a7aef98fb2a651f0663eec6525bf8b680727b026ca62466ae773d8`.
+The independently verified 134-file manifest is 13,686 bytes with SHA-256
+`2821b92d9890d0e176235a687f33218ec8f7102abc181ab29a62faa3c3217873`.
+
+Accept the Android Compat v4 composition, isolation, recovery, Stock Mobile
+authoring, and v4-to-v4 rollback gate. The package inspector still exposes
+`ro.sos.legacy_revision_read=3`; the next implementation gate is to remove the
+bounded v3 read/activation/protocol path, rebuild no-v3 Compat and Core
+candidates, and repeat their physical acceptance campaigns. This Compat PASS
+does not complete the separate native Core physical gate.
+
+## 2026-08-28: Complete the source-level v4-only cutover
+
+**Goal / implementation:** Remove the bounded Experience API v3 read,
+activation, and host-protocol paths after the accepted v4-to-v4 Android
+rollback campaign. Starting from source revision
+`9e59fbb39c949bc4a48a5203c47e1c081e18be81`, package format v4 now requires a
+complete package identity and Experience API 4 at the Rust type boundary;
+manifests without `package.json`, non-v4 packages, legacy singleton stores,
+and retired single-revision authority or host actions fail closed. Linux and
+Android boot only resolved graphs. Luau exposes only explicit v4 exports, and
+the compatibility-only `application_surface` scene primitive is removed now
+that registry-owned top-level launching is present.
+
+The registry, graph resolver, state/appearance authority, authoring path, and
+Stock Shell packages retain stable Experience IDs and exact revision binding.
+Android continues to use its separate phone-native Stock Mobile shell. Live
+Linux product and test paths no longer contain Daily Flow/Timeflow retirement
+or artifact handling. Android product properties, inspectors, and host
+fixtures no longer advertise `ro.sos.legacy_revision_read=3`. Historical
+evidence remains unchanged, as do unrelated durable provider-state migration
+versions and Wayland's externally defined `text-input-v3` protocol.
+
+**Verification:** `cargo test --workspace` passed every enabled unit,
+integration, protocol-fixture, property, and documentation test in 7.54
+seconds. The explicit AOSP System, Core native, Linux host, and Android
+authority compile matrix passed in 1.27 seconds. `cargo fmt --all -- --check`,
+`git diff --check`, shell syntax checks, and `tests/aospctl-host-test.sh` all
+passed. The Linux login, live-image, and hardware-gate host fixtures passed in
+5.56 seconds; the complete A33x host fixture passed in 8.07 seconds.
+Module-aware `sosctl validate` accepted both checked-in v4 Stock Shell packages
+in 2.89 seconds: desktop exercised 10 scenarios with 121 maximum scene nodes,
+and Mobile exercised four scenarios with 73 maximum scene nodes. A live-source
+search across crates, apps, experiences, packaging, tools, types, tests, and
+AOSP product definitions found no Experience API 3 constant,
+`application_surface`, legacy-revision property, Daily Flow, or Timeflow
+reference.
+
+**Failures / rejected approaches:** The first complete workspace run exposed
+one stale Linux test-only `graph_mode=false` assertion. Removing that obsolete
+mode from the implementation and fixture made the complete rerun pass. Direct
+standalone typechecking of the desktop entry source remains unsuitable because
+that command does not resolve revision-local `require` modules and also
+reports a pre-existing narrowing diagnostic; the package-aware validator
+typechecks the theme module and validates the complete rendered package.
+Workspace clippy with warnings denied also stops on pre-existing precision,
+derivable-implementation, and scene-visitor argument-count lints, so it is not
+used as the cutover gate; the complete build and test matrix is green.
+
+The first exact ARM64 Compat packaging attempt stopped before ROM assembly
+after 12.98 seconds with 815,188 KiB peak RSS. The target build exposed one
+expression-level `cfg` rejected by the Android Rust toolchain and one untyped
+`None` left after removal of the standalone worker. No OTA was created and the
+device was not contacted. The system-graph initialization now uses a scoped
+statement, contains no placeholder standalone worker values, and gates
+standalone-only imports and frame timing. The exact ARM64 Compat APK build then
+passed in 9.47 seconds with 730,280 KiB peak RSS; this was a compile probe, not
+a sealed or installable acceptance artifact.
+
+**Decision / remaining risk / next gate:** Accept the source-level cutover as
+v4-only. No shipped reader, authoring path, activation path, or host protocol
+can execute an Experience API v3 revision. This is not yet a physical product
+PASS: build and seal a fresh no-v3 Compat OTA, install it on the SM-A336B, and
+repeat artifact-bound composition, containment, appearance, recovery,
+phone-native authoring, and rollback acceptance. Then build and run the
+separate native Core campaign before declaring Android milestone parity and
+hardening complete.
+
+## 2026-08-28: Reject the first no-v3 Compat campaign on a stale graph worker result
+
+**Goal / artifact:** Build and physically gate the first v4-only Compat product
+from source `916709e0a425183237d24aa8f6c7fabfd3a903c1`. The clean product build
+completed in 316.79 seconds with 2,977,952 KiB peak RSS and produced identity
+`sos.compat1.916709e0a425.449ede4457a1`. The complete inspector passed in
+20.00 seconds with 47,772 KiB peak RSS and again from the evidence copy in
+19.82 seconds with 48,220 KiB peak RSS. It verified signature, VINTF, PIT and
+AVB limits, the complete boot chain, Android v4 and Stock Mobile contracts,
+the authority, agent runner, framework bridge, system controls, and packaged
+source identities. The 1,067,475,483-byte OTA at
+`.cache/evidence/android-v4-916709e/compat1/lineage-23.0-20260828-UNOFFICIAL-sos_compat_a33x-916709e.zip`
+has SHA-256
+`15fdf27f529c45c4ae87fc6817d9905fcb089e6cf20d1c049fd005364857b11e`.
+Its 41,717,949-byte `SosShell.apk` has SHA-256
+`3d60b20b84aefb394ad8044f578726e38388efd14559825fe8d5fedddacbf3d4`.
+The complete ZIP test passed in 4.60 seconds. The independently verified
+seven-file offline manifest is 643 bytes with SHA-256
+`968ae7ae8238b9bfce5b52c5a5b60a9035c32f62315121edd8420b1712591f98`.
+
+**Install / successful stages:** Automatic sideload Recovery became ready in
+29.54 seconds. The only transfer completed in 81.84 seconds with
+`Total xfer: 1.00x`, and the system transport returned in 88.20 seconds. The
+live product reported exact revision
+`sos.compat1.916709e0a425.449ede4457a1`, Experience API and package format 4,
+Enforcing SELinux, authority PID 936, and HOME PID 1438. The first readiness
+wrapper exited after transport because a transient empty `pidof` was evaluated
+under `set -e`; adopting the already installed operation found the exact HOME
+and authority live and `sys.boot_completed=1` 2.30 seconds later. No second
+Recovery entry or sideload occurred.
+
+The ordered campaign subsequently proved independent Dashboard instances,
+state and grants; appearance generation 9 to 10; update-exception and
+time-budget containment with two recoveries; parent liveness; namespaced
+mounted IME focus and outside blur; and Android accessibility publication.
+HOME-only recovery changed PID 2400 to 3178 in approximately 290 ms while the
+authority stayed at PID 936. Authority-only recovery then changed PID 936 to
+3358 in 0.32 seconds without changing HOME. Standalone `adb input text` did not
+enter the focused native text session and its bounded commit wait expired; the
+visible Samsung keyboard path entered `blue`, after which the deterministic
+fake/faux provider committed graph
+`198f12c5b613f1fcfaf23286f0b56447972023c86a419f5c90625790bb19ad65`.
+A real Stock control then completed v4-to-v4 rollback.
+
+**Rejection / cause:** The campaign auditor rejected the Dashboard checkpoint
+because its complete device log contains a real HOME `SIGABRT` at
+03:26:08. The original HOME successfully staged and frame-confirmed the
+three-Instance Dashboard, then a refresh result queued by the replaced Stock
+worker arrived on its still-attached channel. The handler installed that stale
+Stock snapshot into the new Dashboard runtime record. The next provider refresh
+looked up the Stock revision in Dashboard's revision map at
+`apps/experience/src/android.rs:1242`, panicked on the missing key, and aborted
+PID 1438. Android restarted HOME as PID 2400, which explains why all later
+stages worked but does not make the campaign acceptable.
+
+Every graph worker channel now carries a monotonically advancing runtime
+generation. Results from a replaced worker are logged and detached before they
+can mutate the current graph. Revision/model refresh also handles a violated
+snapshot-to-revision invariant without indexing panic. The new neutral
+regression requires a Dashboard generation to reject Stock results and covers
+generation wrap. That focused test and the AOSP System compile passed; the
+exact ARM64 Compat APK probe passed in 9.89 seconds with 726,916 KiB peak RSS.
+
+**Evidence / decision / next gate:** Reject the `916709e` physical candidate.
+Its finalized 4,819,839-byte rollback log has SHA-256
+`8127cdda15b90c88a3bd17f11e755978ebd7f598cba581c884448ebf633bcff8`.
+The independently verified 141-file rejection manifest at
+`.cache/evidence/android-v4-916709e-physical/compat1/REJECTED-MANIFEST.tsv` is
+15,925 bytes with SHA-256
+`1c0392d3e3ffe8e97009cd20fa74aee2aeb8ba553c46989a734d78547cf04cf5`.
+Commit the stale-worker containment fix, seal one replacement Compat OTA, and
+repeat the entire physical campaign from Stock before accepting the no-v3
+product or starting Core.
+
+## 2026-08-28: Accept the v4-only Android Compat replacement
+
+**Goal / artifact:** Close the no-v3 Compat gate with the stale graph-result
+containment fix. Clean source `7c973a4bce2c4e457486b9da0a5f37f2f8814999`
+built product `sos.compat1.7c973a4bce2c.5ef843a208f6` in 238.25 seconds
+with 2,978,500 KiB peak RSS. The complete inspector passed in 20.24 seconds
+and again from the evidence seal in 19.83 seconds. It verified ZIP integrity,
+the whole-package signature, VINTF, PIT ceilings, the AVB chain, v4-only
+metadata, the authority and agent payloads, host-owned controls, and the
+phone-native Stock Mobile contract. The exact 1,067,546,493-byte OTA at
+`.cache/evidence/android-v4-7c973a4/compat1/lineage-23.0-20260828-UNOFFICIAL-sos_compat_a33x-7c973a4.zip`
+has SHA-256
+`a5fadf1123d9ff3e39f489ee4c4c865797a5b59c5a8a112749d093c19f3e80c5`.
+Its 41,717,949-byte `SosShell.apk` has SHA-256
+`ba1909d810b5048d16b73150502edcaa329ddf8cd5c19b13706954836c273cc4`.
+The independent complete ZIP test passed in 4.83 seconds. The verified
+seven-file offline manifest is 609 bytes with SHA-256
+`6119b640159493761e46f0f9d8f183f39e93aea674a84d663b530062273997ed`.
+
+**Install / regression evidence:** The SM-A336B entered automatic sideload
+Recovery in 24.98 seconds. The only OTA transfer completed in 83.67 seconds
+with `Total xfer: 1.00x`. Exact-product runtime readiness completed in 102.51
+seconds, including 38 seconds after the Android transport returned. The live
+system reported Experience API and revision format 4, Enforcing SELinux,
+Stock Mobile HOME PID 1491, and authority PID 940.
+
+Immediately after Dashboard replaced Stock, the queued Stock refresh result
+arrived in the same ordering that had aborted the rejected candidate. This
+time the host logged `android_stale_graph_result_ignored` for inactive runtime
+generation 1 while generation 2 stayed current. Dashboard then frame-confirmed
+as a three-Instance graph; HOME and authority PIDs remained live and no SOS
+fatal or ANR occurred. This is direct physical evidence for the containment
+regression, not only a host test.
+
+**Composition / recovery / authoring:** The accepted artifact-bound campaign
+at `.cache/evidence/android-v4-7c973a4-physical/compat1/composition/` captured
+all eleven ordered stages. It proved independent Experience state and grants,
+typed child events, parent liveness, appearance propagation from generation
+11 to 12 without revision churn, and containment plus recovery for both the
+Agenda exception and execution-budget timeout. Physical touches exercised the
+namespaced mounted IME focus and outside blur, and Android received the
+composed accessibility tree and host controls.
+
+HOME-only recovery changed PID 3606 to 5153 in 1.47 seconds while authority
+PID 3795 remained exact. Authority-only recovery then changed PID 3795 to
+5337 in 0.45 seconds without changing HOME. Durable graph, state, and
+appearance data survived both boundaries. Offline fake/faux authoring staged
+and authority-committed Stock Mobile revision
+`f9bfec4e0b217ba63fb356e4bdf9a7d2063b44bd4b1b5108a94500b3da451944`
+in 1.39 seconds. The host-owned rollback completed in 0.20 seconds and
+restored original v4 revision
+`43c52a6c45ee843ad1535ec81dd4833f8d8853911780a9e0d22239c3d7717edb`;
+no external top-level Experience remained presented.
+
+**Rejected capture attempts:** The first capture on this healthy installation
+was rejected because a physical coordinate hit the adjacent failure control
+and the final log lacked the required `open_first` dispatch. It remains at
+`.cache/evidence/android-v4-7c973a4-physical/compat1/composition-rejected-open-first/`.
+No reinstall occurred. During the replacement capture, an immediate prompt
+tap raced the provider-selection rerender. The bounded authoring wait expired
+after 120.00 seconds; logs proved that no submit, candidate, or commit had
+occurred. That capture is retained as
+`stages/authored-rejected-no-submit`. Waiting for the provider transition and
+then requiring a visible IME made the single retry deterministic. No external
+effect was resubmitted ambiguously.
+
+**Verdict / evidence / next gate:** The strict campaign audit passed in 2.55
+seconds with 4,492 KiB peak RSS. It counted appearance generation 12, two
+contained failures, two recoveries, and 375.37 seconds of ordered campaign
+time. After every redirected log and timing file was closed, the independently
+regenerated and verified 148-file manifest was 15,267 bytes with SHA-256
+`ca360ff142602d9befb3a87ebcccdc1c28570695de4fd4f22f47ef2d4b930d89`.
+The finalized 3,365,582-byte rollback log has SHA-256
+`d6c1a611360b4dad7589aa2211ba5ea294ee3365e5f89aaef3f86bb7f71f08e0`.
+
+Accept the Android Compat product as v4-only and accept the stale-result fix
+on physical hardware. This does not close Android parity: build and seal the
+matching native Core candidate, install it once, and pass the separate Core
+composition, native input/keyboard, recovery, authoring, and rollback
+campaign before declaring the Android milestones complete.
+
+## 2026-08-28: Fix the Core artifact inspector marker scope
+
+**Goal / evidence:** Build the matching v4-only native Core candidate and keep
+invalid artifacts off the phone. Clean source
+`1553d8d66d9679599e81648753642be6e81b8465` built product
+`sos.core1.1553d8d66d96.77ecf0025864` in 375.82 seconds with 2,979,104 KiB
+peak RSS. The first complete offline inspection verified ZIP integrity, the
+whole-package signature, VINTF, PIT ceilings, AVB, the native host and runtime,
+the authority and agent payloads, v4-only properties, framework policy, and
+the phone-native Stock Mobile sources, but then falsely reported a missing
+Core UI-removal marker.
+
+The target files contain the expected 51,216-byte AArch64 executable at
+`SYSTEM_EXT/bin/sos-ui-removal-marker`. Shell tracing showed that the nested
+Stock Mobile source check reused the caller's dynamically scoped `marker`
+variable and left it as `experience_present_`. The helper now declares its
+loop variable locally, so source-token validation cannot replace an artifact
+path in its caller. No OTA bytes changed, and no device command or install was
+attempted. Shell syntax, the product-graph check, and the complete A33x host
+fixture pass; the latter completed in 8.11 seconds. The fixed complete Core
+inspector then passed every boundary in 17.31 seconds with 47,244 KiB peak
+RSS. Seal this exact artifact, verify the seal independently, and only then
+start the native Core physical campaign.
+
+## 2026-08-28: Reject the first Core authoring attempt and remove Pi JIT authority
+
+**Goal / installed artifact:** Continue Android v4 parity on the native Core
+product and run the same ordered composition, recovery, authoring, and rollback
+campaign accepted on Compat. The sealed candidate was built from
+`1553d8d66d9679599e81648753642be6e81b8465`, identified itself as
+`sos.core1.1553d8d66d96.77ecf0025864`, and is the 1,022,777,330-byte OTA at
+`.cache/evidence/android-v4-1553d8d/core1/lineage-23.0-20260828-UNOFFICIAL-sos_core1_a33x-1553d8d.zip`
+with SHA-256
+`2ee65a3b1f84860b5174702c578cc2c3f9a2e301c1a86f786f8ccd9002fb8042`.
+The evidence-copy inspector passed in 17.20 seconds with 46,900 KiB peak RSS,
+and its independent ZIP test passed in 4.73 seconds. The seven-file offline
+manifest is 709 bytes with SHA-256
+`179ff12f983ecf63f6e709c1b5105de73472becd5e3de7f72ba10056a7671698`.
+
+The phone entered automatic Recovery in 22.26 seconds. Its single sideload
+completed in 79.29 seconds with `Total xfer: 1.00x`; exact native readiness
+followed in 52.62 seconds after transport. The live SM-A336B reported the exact
+revision, Experience API and package format 4, `ro.zygote=no_zygote`, Enforcing
+SELinux, the Core surface, supervisor/child PIDs 924/936, authority PID 945,
+and platform PID 946. No Android Activity or APK host was used.
+
+**Composition / recovery evidence before rejection:** Physical touch opened
+the phone-native Apps launcher and presented Dashboard as three independently
+ready graph instances. Agenda's `open_first` child event updated both child and
+parent durable state, and the parent liveness counter advanced. Appearance
+changed from generation 12 to 20 without revision churn. The Agenda update
+exception was contained and recovered in approximately 37 ms; its infinite
+handler hit `experience exceeded its time budget` and recovered in
+approximately 23 ms. Dashboard remained interactive, and the mounted Agenda
+input produced namespaced Core keyboard `visible=true` and `visible=false`
+transitions. The recovered snapshot retained `Design review`, 24 parent pings,
+independent state and grants, and a healthy complete graph.
+
+The original startup marker aged out of Android's finite log buffer before the
+Dashboard checkpoint. The first capture therefore failed closed even though
+the processes and SurfaceFlinger layer were live. A deliberate supervisor
+fault/retry created a fresh lifecycle epoch without changing authority or
+durable state; child 936 became 25903 and readiness passed. The explicit host
+recovery stage later kept supervisor 924 and authority 945 while changing the
+child from 25903 to 27264, then restored Dashboard and appearance 20. The
+authority recovery helper initially rejected Core before mutation because it
+was hard-coded to `dev.sos.experience`. It now selects the host by
+`ro.sos.profile`, requires Core's normalized supervisor/child pair to remain
+exact, and has separate Compat and Core regression cases. The corrected
+physical probe changed authority 945 to 27639 while host PIDs 924/27264 stayed
+fixed; graph, appearance, and durable state survived.
+
+**Rejected authoring attempt / cause:** Physical Core input selected the
+deterministic Offline provider, entered `make stock mobile lighter`, and
+submitted once. The host committed `agent_submit`, started the shared Pi runner
+as `/system_ext/bin/sos-node`, and received no response. Enforcing SELinux
+denied both a nonessential `/proc/meminfo` read and, critically, `execmem` in
+the inherited `sos_core_host` domain. V8 aborted with SIGTRAP in
+`v8::base::OS::SetPermissions` before the runner protocol began; the UI
+correctly surfaced `common Pi runner returned no response`. No candidate was
+staged or activated, so no retry or rollback was attempted on this artifact.
+
+The finalized rejection evidence is under
+`.cache/evidence/android-v4-1553d8d-physical/core1/authoring-rejected-execmem/`.
+Its independently verified 422-byte manifest has SHA-256
+`a722283e02e3c08d82211ff287b6f6569702bee3409018a5ef5ace21b6dd9939`;
+the 4,163,682-byte complete log has SHA-256
+`ba20eca7b615116f76e97cd915d115d8369ef9703bb28ece838629c07b2ebf65`,
+and the 139,867-byte error screenshot has SHA-256
+`3a2ccc082fdd945e6ca0b19b040879d3f96b49fe50f5454f2c8c1d3442a91c2b`.
+
+**Decision / verification / next gate:** Reject the `1553d8d` Core campaign.
+Do not grant the broad Core host executable-memory authority. Core now starts
+only the untrusted-input Pi child with V8 `--jitless`, and the artifact
+inspector requires that literal in the shipped runtime. The complete A33x host
+suite passed in 8.3 seconds; Core-native ARM64 compilation passed in 3.3
+seconds after `cargo fmt --all -- --check`, with only existing dead-code
+warnings. Build and inspect a replacement Core OTA from the exact fix, install
+it once, rerun the entire ordered physical campaign from Stock, and require
+offline authoring plus v4 rollback before accepting Android Core parity.
+
+## 2026-08-28: Seal the interpreter-only Core replacement
+
+**Goal / artifact:** Replace the rejected Core image with the narrow
+interpreter-only Pi runner fix and prevent acceptance tooling from conflating
+Core's native input path with Compat's deep-link test bridge. Source
+`e44875116d7246b5b7e4a45ce4c2067b25fb24cc` built product
+`sos.core1.e44875116d72.6e41c94c2136` in 231.92 seconds with 2,975,920 KiB
+peak RSS. The sealed 1,022,795,324-byte OTA is
+`.cache/evidence/android-v4-e448751/core1/sealed/lineage-23.0-20260828-UNOFFICIAL-sos_core1_a33x-e448751.zip`
+with SHA-256
+`08fd8c1df598c30e4db4e982b0e57aa6612212becfbac75acd91f2848adf66b1`.
+
+**Inspection and acceptance-tool corrections:** The first complete inspection
+verified package integrity, signature, AVB, target files, v4 identity, native
+host and authority, but its final `--jitless` assertion falsely failed. Raw
+byte inspection found the exact literal at runtime offset 1,516,935; optimized
+Rust constants placed it on the same `strings` line as adjacent arguments.
+The check now requires literal containment instead of an isolated output line.
+The complete corrected inspection passed in 17.31 seconds with 47,152 KiB
+peak RSS, and the independent evidence-copy ZIP test passed in 4.56 seconds
+with 2,948 KiB peak RSS.
+
+The composition audit now distinguishes the two real interaction boundaries.
+Compat continues to require authority-injected
+`android_reference_graph_event_dispatched` markers. Core instead requires the
+native, namespaced `experience_action` records for Agenda open, failure,
+timeout, and Dashboard liveness. The Core fixture contains none of the Compat
+markers, which prevents a false-positive audit. The complete A33x host suite
+passed in 8.20 seconds with 5,048 KiB peak RSS.
+
+**Decision / next gate:** Accept the replacement artifact offline; do not
+weaken Core SELinux or grant executable memory. Install this exact sealed OTA
+on the SM-A336B, verify the exact native revision and lifecycle, and rerun all
+eleven physical composition stages from Stock. Android Core parity remains
+open until offline authoring stages a candidate and host-owned rollback
+restores the original v4 revision.
+
+## 2026-08-28: Add a no-Zygote Core input automation boundary
+
+**Goal / device evidence:** Remove repeated human touch handoffs from the Core
+composition campaign without recreating Android's absent input service or
+mislabeling synthetic input as physical. Read-only inspection of the live
+SM-A336B found `/dev/uinput` labeled `uhid_device`, owned by `uhid:uhid`, and
+kernel support `CONFIG_INPUT_UINPUT=y`, `CONFIG_INPUT_EVDEV=y`, and
+`CONFIG_UHID=y`. Direct shell injection remains correctly unavailable: Core
+has no Android input service, shell `sendevent` is SELinux-denied, and `adb
+root` is unavailable.
+
+**Implementation / boundaries:** Userdebug and eng Core now select two
+debug-only packages: the isolated `sos-core-input-automation` daemon and
+`sos-core-inputctl`. The daemon creates exactly one 1080x2400 named multitouch
+device through `/dev/uinput`. Its init-owned Unix socket is mode 0660 for the
+ADB shell; `SO_PEERCRED` additionally rejects every UID except shell 2000 and
+root. The closed protocol exposes only `status` and a single in-bounds `tap X
+Y`; requests are capped at 128 bytes, responses at 1 KiB, and contacts last 24
+ms. There is no arbitrary event, device, file, key, or text command.
+
+The existing Core runtime opens the virtual device only on a userdebug or eng
+build, alongside the exclusively owned physical
+`sec_touchscreen`. Both sources use the same multitouch-slot parser,
+`AndroidPlatform` dispatch, hit testing, Instance-namespaced mount routing,
+focus and native-keyboard behavior, and Luau action path. Touch logs now bind
+each down/up to `origin=physical` or `origin=automation`. Composition campaign
+metadata freezes that input mode, and the audit requires the corresponding
+origin plus the daemon's bounded uinput receipt for an automated run.
+Production user products omit both executables via `PRODUCT_PACKAGES_DEBUG`.
+
+**Evidence / failures:** The complete A33x host suite, including an automated
+Core campaign fixture with no Compat dispatch markers, passed in 8.07 seconds
+with 5,348 KiB peak RSS. ARM64 Core runtime checking passed in 1.07 seconds
+with 381,968 KiB peak RSS and only existing dead-code warnings. The real AOSP
+daemon/client module build passed in 136.82 seconds with 45,780 KiB peak RSS.
+The complete product SELinux build, including neverallow and context tests,
+passed in 37.96 seconds with 45,892 KiB peak RSS. Its compiled CIL grants only
+the isolated daemon `uhid_device` access and shell-to-daemon `connectto`; the
+daemon executable and init socket have distinct labels.
+
+**Full product artifact / inspection:** Exact source
+`8d965f723f07` built product `sos.core1.8d965f723f07.ff313a0fcba0` in
+314.82 seconds with 2,978,932 KiB peak RSS. The resulting signed
+1,022,809,463-byte OTA has SHA-256
+`7c7177611d143496107ce9e4d930345da55b5502fc795f5e6b846b49684f9b67`.
+The first full inspection reached the runtime boundary but rejected the old
+contiguous `sec_touchscreen` plus `mt-slot+btn_touch` marker: the shared reader
+causes optimized Rust to store those two fragments separately. Source, unit
+tests, and raw binary strings proved the physical fallback remained present.
+The inspector now requires both fragments independently; the complete
+package-signature, AVB, product-graph, v4 identity, runtime, init, debug-package,
+and compiled-SELinux gate passed in 17.53 seconds with 47,396 KiB peak RSS.
+
+**Decision / remaining risk / next gate:** Use kernel uinput automation for
+repeatable composition functionality, but retain one separately labeled
+physical-touch acceptance probe for the Samsung digitizer and raw device
+ownership. The exact replacement OTA is built and passes offline inspection,
+but is not yet installed, so the live `e448751` product remains unchanged and
+there is no hardware execution evidence for the new service yet. Seal and
+install the exact artifact once, prove service status and one tap on the phone
+under Enforcing SELinux, then run the eleven-stage Core campaign with
+`input_mode=automation` and the independent physical input probe.
+
+## 2026-08-28: Correct the Core automation build-variant gate
+
+**Goal / installed-artifact evidence:** Install the sealed `8d965f7` Core OTA
+and prove the new bounded input service before beginning the composition
+campaign. Recovery accepted the exact 1,022,809,463-byte artifact with `Total
+xfer: 1.00x` in 79.57 seconds. The phone booted exact revision
+`sos.core1.8d965f723f07.ff313a0fcba0`; host PIDs 921/928, authority PID 938,
+and platform PID 939 were live, and graph refreshes reported zero failed
+instances. The automation service and socket were absent.
+
+**Failure / diagnosis / correction:** Live properties showed the same Lineage
+hardening already encountered by the authority recovery probe:
+`ro.build.type=userdebug` but `ro.debuggable=0`. `PRODUCT_PACKAGES_DEBUG`
+correctly included the binaries while the initial init trigger and runtime
+reader incorrectly used `ro.debuggable=1`, so neither started. This artifact
+is rejected for automated acceptance. Init and the runtime now independently
+require the actual `ro.build.type=userdebug|eng` boundary, as does
+`core-inputctl`; the compiled debug package selection and SELinux
+`userdebug_or_eng` macro still omit the entire boundary from production user
+images. A unit test rejects `user` and missing build types. The complete
+`a33xctl` host suite, including an explicit user-build rejection, passed in
+8.08 seconds with 5,084 KiB peak RSS. ARM64 Core checking passed in 11.91
+seconds with 807,240 KiB peak RSS and only the existing dead-code warnings.
+
+**Decision / remaining risk / next gate:** Keep hardened adbd and do not set
+`ro.debuggable=1`. Build, inspect, seal, and install one replacement from the
+exact correction. Require the daemon, init socket, virtual evdev reader, and a
+single end-to-end UI action under Enforcing SELinux before starting a fresh
+automation-mode composition campaign.
+
+## 2026-08-28: Prove Core input automation; reject authoring on a proc denial
+
+**Goal / replacement artifact:** Close the hardened-userdebug correction on
+the SM-A336B, then use the bounded uinput boundary to run the complete Core v4
+composition campaign without ADB's absent Android input service. Source
+`8132ef1fd33191748f99c349ab57c57169f1f3d0` built product
+`sos.core1.8132ef1fd331.a476f178b359` in 228.17 seconds with 2,979,152 KiB
+peak RSS. The sealed OTA at
+`.cache/evidence/android-v4-8132ef1/core1/sealed/lineage-23.0-20260828-UNOFFICIAL-sos_core1_a33x-8132ef1.zip`
+is 1,022,806,246 bytes with SHA-256
+`9394a680756267cdb7df301fd7446832fe2fd30a5fc3a4b619afdf0aae0f3f30`.
+Complete inspection passed in 17.65 seconds with 47,272 KiB peak RSS. The
+sealed 893-byte manifest has SHA-256
+`342c675ac351800a1572a536ac95619bc952e2087d50f533f456be1c0c5ce711`.
+Recovery installed the exact artifact once in 79.54 seconds with `Total xfer:
+1.00x`; the device returned with Enforcing SELinux, no Zygote, host PIDs
+926/932, authority PID 945, platform PID 947, and no relevant crash or AVC.
+
+**Automation and accepted campaign evidence:** `core-input-status` returned
+the exact `sos_core_automation_touch` uinput identity. Automation sequence 1 at
+`(540,2280)` traversed daemon peer validation, the virtual evdev reader, the
+shared Core parser, GPUI pointer routing, and Luau as `navigate_apps`. The
+ordered campaign under
+`.cache/evidence/android-v4-8132ef1-physical/core1/composition/` is explicitly
+marked `input_mode=automation`; it does not replace the separately completed
+Samsung digitizer evidence. Dashboard ran as three independently ready
+Instances. Appearance advanced from generation 20 to 21 without revision
+churn. Agenda update failure and time-budget exhaustion were independently
+contained and recovered, while Dashboard retained `Design review` and advanced
+its parent liveness counter to 25. The namespaced mounted input opened and
+closed Core's native software keyboard, and the automation path entered a
+five-byte authoring prompt through rendered keyboard keys.
+
+The bounded host recovery kept supervisor 926 and authority 945 while child
+932 became 3804; after the explicit retry, the complete graph was ready in
+0.65 seconds. Authority-only recovery then changed PID 945 to 4024 in 0.50
+seconds while host PIDs 926/3804 stayed exact. Appearance 21 and the independent
+Agenda and Dashboard state survived both transitions. Accepted artifact-bound
+checkpoints run through `authority-restart`; there is no campaign PASS or
+sealed campaign manifest.
+
+**Rejected authoring gate / diagnosis:** The deterministic Offline provider
+accepted prompt `remix`, validated and staged graph
+`198f12c5b613f1fcfaf23286f0b56447972023c86a419f5c90625790bb19ad65`,
+presented it, and committed it through the system authority in 1.76 seconds.
+The subsequent `authored` capture failed closed because the immutable Node
+child, still in `sos_core_host`, attempted one read of aggregate
+`/proc/meminfo`. SELinux denied `proc_meminfo:file read` at audit event 13.
+Unlike the earlier executable-memory failure, the interpreter-only runner
+completed, but a relevant enforcing denial remains an acceptance failure.
+
+**Correction / verification / next gate:** Grant only read-only
+`proc_meminfo:file` access to `sos_core_host`; do not grant process-specific
+proc access, writes, executable memory, or a broader Android service. The Core
+artifact inspector now requires that exact compiled policy rule. Shell syntax,
+diff checks, and the complete A33x host fixture pass; the fixture took 8.20
+seconds with 5,100 KiB peak RSS. Build and inspect one superseding Core OTA,
+install it once, and restart the eleven-stage automation campaign from Stock.
+The final gate still requires clean authoring, exact v4 rollback, no relevant
+enforcing AVC, and an independently verified evidence manifest.
+
+## 2026-08-28: Accept the complete automated Core v4 composition campaign
+
+**Goal / exact artifact:** Rebuild from the narrow aggregate-memory policy,
+install exactly once, and close Core's eleven-stage v4 composition, recovery,
+authoring, and rollback gate through the bounded no-Zygote input service.
+Source `e21d0fcb4e314d78b36f21af9b8987a9f6aa2017` built product
+`sos.core1.e21d0fcb4e31.41406fcf892b` in 233.21 seconds with 2,978,732 KiB
+peak RSS. Complete inspection passed in 18.14 seconds with 47,036 KiB peak
+RSS, including package signature, AVB, product graph, v4 identity, no-Zygote
+ownership, debug-only automation packaging, and the compiled read-only
+`sos_core_host` to `proc_meminfo` rule.
+
+The sealed 1,022,816,032-byte OTA is
+`.cache/evidence/android-v4-e21d0fc/core1/sealed/lineage-23.0-20260828-UNOFFICIAL-sos_core1_a33x-e21d0fc.zip`
+with SHA-256
+`c05d2a1e64616c69d33eba07dc5f718c7f8dad0e6651950e2bddcf39e9d85ff0`.
+Its independently verified nine-file, 893-byte offline manifest has SHA-256
+`f900212175af97eb6fb75f0b966b88ac42e4f4a8254dd003d3c12e4b01d36038`.
+The evidence-copy inspector and complete ZIP test took 18.00 and 4.46 seconds
+respectively.
+
+**Install / readiness:** The automatic Recovery endpoint appeared in 29.55
+seconds. One and only one sideload completed in 77.73 seconds with `Total xfer:
+1.00x`; no wipe or manual Recovery action occurred. Transport returned in
+66.64 seconds. Exact readiness then passed in 0.41 seconds with Enforcing
+SELinux, `ro.zygote=no_zygote`, supervisor/child PIDs 922/934, authority PID
+943, platform PID 945, and no relevant crash or enforcing AVC. The automation
+status response named only `sos_core_automation_touch` with origin `uinput`.
+
+**Composition / containment / input:** Stock launched Dashboard as three
+independently ready Instances. Agenda's namespaced `open_first` action crossed
+the mount and retained `Design review` in both child and parent state.
+Authority appearance advanced from generation 21 to 22 without changing any
+Experience revision. The Agenda update exception and Luau time-budget
+violation each failed only that child and each recovered, while a subsequent
+Dashboard ping proved parent liveness. Core's native keyboard focused the
+namespaced mounted input, received four automation taps through the rendered
+keys, committed durable draft `test`, and closed through its own hide key.
+Accessibility publication remained nonempty throughout.
+
+**Independent recovery / authoring / rollback:** The bounded host fault and
+retry completed in 1.30 seconds: supervisor 922 and authority 943 stayed fixed,
+child 934 became 2228, and the same complete Dashboard graph returned.
+Authority-only recovery took 0.50 seconds and changed only PID 943 to 2393.
+Appearance 22, the Agenda draft and selection, and Dashboard state survived
+both. The Offline agent accepted injected prompt `remix`, ran Node with
+`--jitless`, validated, staged, presented, and authority-committed graph
+`198f12c5b613f1fcfaf23286f0b56447972023c86a419f5c90625790bb19ad65`
+without the former proc denial. Stock revision changed from
+`43c52a6c45ee843ad1535ec81dd4833f8d8853911780a9e0d22239c3d7717edb`
+to `f9bfec4e0b217ba63fb356e4bdf9a7d2063b44bd4b1b5108a94500b3da451944`.
+The host-owned Controls surface then rolled back to the exact original revision
+while authority 2393 and host PIDs 922/2228 remained fixed.
+
+**Audit failure and correction:** The first complete audit rejected the
+required Core host-restart evidence because its common crash scan classified
+the intentionally injected `Fatal signal 6` and `native_gpui_failed signal=6`
+as an unexpected crash. This was a harness contradiction, not a device failure.
+The auditor now excludes exactly one such pair only in Core's cumulative
+host-restart and later logs, and only when the same ordered log proves one
+supervisor injection, `SI_USER` from UID 1000, fixed recovery with ready keys,
+one retry, and a subsequent three-Instance Dashboard runtime. Missing any
+fence or observing any additional crash still fails. The Core fixture now
+contains the intentional crash chain, and a negative fixture removes the retry
+fence and must fail. The complete host suite passes in 8.71 seconds with 5,188
+KiB peak RSS.
+
+**Verdict / evidence:** `audit-v4-composition-campaign` passed in 2.54 seconds
+with 5,092 KiB peak RSS. The verdict records exact product revision, appearance
+22, two contained failures, two recoveries, 274.89 seconds of campaign elapsed
+time, and `input_mode=automation`. The final 138-file manifest at
+`.cache/evidence/android-v4-e21d0fc-physical/core1/composition/manifest.tsv`
+has SHA-256
+`1eb6761befa93ee2a4e2670f3b6cbaa71c08c53e77998b5d55eaac7f09b6a3b6`
+and independently verifies. Accept automated Core v4 composition and
+authoring/rollback on this exact artifact. Keep the separately labeled
+physical Samsung digitizer result as the hardware-input claim; this campaign
+claims repeatable functional input automation, not physical touch.
+
+**Remaining risk / next gate:** The service intentionally proves only bounded
+debug-build input automation; it is absent from production user builds and does
+not replace a physical-panel result. Preserve the accepted artifact and evidence
+unchanged, then use the same automation mode for repeatable Core regressions
+while retaining a separately witnessed Samsung digitizer gate for releases that
+claim physical touch behavior.
+
+## 2026-08-28: Reconcile the complete plan after the v4-only Android gates
+
+**Goal / decision:** Audit the original composition milestones against exact
+current source `8d86a8ec1e197cfa2c226cb339bcf8d698c6804d`, including the
+source-level removal of the v3 reader and the later replacement Android
+artifacts. Milestones 0 through 12 meet their implementation and offline exit
+conditions. The fresh v4-only Compat and Core SM-A336B campaigns also close
+Android parity. Core's input verdict remains explicitly bounded to its
+debug-only automation service. Correct the composition report, which still
+said the post-cutover Android rebuilds were open.
+
+**Current-tree evidence:** `cargo test --workspace --locked` passed 254 tests
+with 94 intentional ignores in 7.55 seconds and 1,150,700 KiB peak RSS. The
+TypeScript agent package rebuilt and passed all 19 tests in 2.45 seconds with
+744,456 KiB peak RSS. The complete A33x, Cuttlefish, Linux login, live-image,
+hardware-gate, and PiKVM host set passed in 15.25 seconds with 710,964 KiB peak
+RSS. The optional `linux-host` profile passed 44 tests, including the real
+graph subprocess boundary, in 6.73 seconds with 2,904,096 KiB peak RSS. ARM64
+Compat `aosp-system` and no-Zygote `core-native` checks both passed in 87.35
+seconds with 814,480 KiB peak RSS. A product-source scan found no Experience
+API 3 constant, package-v3 constant, `application_surface`, legacy-revision
+property, Daily Flow, or Timeflow reference. The independently verified
+eleven-file record is
+`.cache/evidence/v4-plan-current-tree-20260828/manifest.tsv`, 961 bytes,
+with SHA-256
+`6a49afd8921e21d46c1c404b358df0be15eda217e2f10ae215a5c896dd1159db`.
+
+**Linux physical state:** The remaining post-cutover Framework campaign could
+not start. The known target address returned `No route to host`. PiKVM exposed
+live 1,920 by 1,080 video capture but only a black frame, reported its power LED
+off, and reported keyboard and mouse transport offline. No ATX, HID, virtual
+media, boot, disk, or installed-state mutation was attempted because that
+telemetry does not prove a safe remote power transition. The 41,109-byte frame
+has SHA-256
+`8be18d70dd2ffbfbb73d3aec970541fec3c4dfb27e1dbc4c86736e6bc108af8b`.
+The independently verified two-file status record is
+`.cache/evidence/linux-v4-only-framework-status-20260828/manifest.tsv`, 185
+bytes, with SHA-256
+`891275be331cf7c2d87da94b93b3d7dd3d9419e80f227c01347ec14b3791d461`.
+
+**Remaining risk / next gate:** No missing architecture milestone or v3
+compatibility path remains. The last project-level acceptance item is a fresh
+exact-source Linux hardware campaign after the reader removal. Power on the
+Framework, deploy one clean revision-matched component set, acquire the gate's
+awake inhibitor, and run Dashboard composition, appearance, failure recovery,
+authoring, rollback, DRM presentation, and integrated keyboard, touchpad, and
+touchscreen checks. Finalize and independently verify that campaign before
+calling the entire physical verification program closed.
+
+## 2026-08-28: Reject the first post-cutover Framework preparation
+
+**Goal / environment:** Start the final Linux hardware campaign on the
+Framework Laptop 12 after the user powered it on. PiKVM showed the Fedora 44
+GDM greeter and the attached 3,057,975,296-byte development-live ISO read-only.
+The target acquired `192.168.1.135` on boot
+`4233c8d6-e2a5-4b73-a2d5-233c594a9327`. SSH preflight proved an EROFS live
+base with a writable overlay, no running SOS product process, no installer or
+block writer, and no mount on the internal 931.5 GiB NVMe or its encrypted
+partition.
+
+**Deployment / evidence:** The complete clean source
+`f2d7aae5ecd77d2df28f304734ebe3733b8e4cf3` deployment passed. It built,
+copied, installed, and remotely rehashed the compositor, host, provider,
+supervisor, session owner, authoring broker, provider probe, resident agent,
+Stock package and theme, session units, documentation, display defaults, and
+hardware gate. Deployment took 343.35 seconds with 2,163,548 KiB peak host
+RSS. Its target-side deployment ID is
+`20260828T080744Z-f2d7aae5ecd7-2016837`. The local preflight, deployment log,
+and timing records are under
+`.cache/evidence/linux-v4-only-framework-f2d7aae-20260828/`.
+
+**Failure / fix:** Hardware preparation stopped after 74.91 seconds with
+10,248 KiB peak RSS at `unsafe baked artifact path:
+/usr/local/lib/systemd/user/sos-session.target`. It had not created the awake
+inhibitor or started an SOS session. The install manifest has carried the two
+fixed SOS user-session units since the selectable-session installer added
+them, but the development-live baked-file snapshot still allowed only libexec,
+the Wayland session entry, and Stock paths. The installed-file verifier had the
+same omission. Both validators now admit only the exact
+`sos-session.target` and `sos-session-shutdown.target` paths, not arbitrary
+user units. The focused host test checks both exact entries and rejects a
+wildcard. Bash parsing, the complete Linux hardware-gate host suite, and Git
+whitespace checks pass.
+
+**Decision / next gate:** Reject this preparation. Commit the validator fix,
+redeploy the complete clean component set so one manifest binds every changed
+artifact to the superseding revision, then prepare a new evidence directory on
+the same boot. Only a clean end-to-end physical session may close the Linux
+gate.
+
+## 2026-08-28: Complete the post-cutover Linux v4 PiKVM campaign
+
+**Goal / exact environment:** Automate the remaining Framework Laptop 12 v4
+composition campaign without asking the local operator to drive GDM or SOS.
+Clean revision `f9085e5fcd26974c88ab002a243a9c708558114d` deployed as
+`20260828T081459Z-f9085e5fcd26-2021282`. The complete component deployment
+took 115.81 seconds with 715,028 KiB peak host RSS. The campaign stayed on
+Fedora development-live boot `4233c8d6-e2a5-4b73-a2d5-233c594a9327`; the
+internal NVMe remained unmounted, and a root-owned block inhibitor covered the
+prepared interval.
+
+**Rejected preparation / corrected environment:** The first successful
+`f9085e5` preparation recorded the live image's initial `{}` `output.json`.
+When PiKVM moved its absolute USB mouse, the direct compositor rejected the
+device as ambiguous across `eDP-1` and `DP-1`; its primary click consequently
+landed at `(0,0)`. This interval is rejected rather than counted as automation
+evidence. The documented 221-byte Framework mapping was installed at mode
+0600 before a new preparation: PiKVM maps to `DP-1`, while the ILIT2901 touch,
+stylus, and mouse device names map to `eDP-1`. Its SHA-256 is
+`2cd3ef8fce5b50565bb0cd042b5892f14945cdc88efb16083a2c83df50fa52ff`.
+The replacement preparation took 20.41 seconds with 9,980 KiB peak RSS. Its
+first Dashboard request was correctly rejected because Media lacked its own
+authority decision. An explicit Media review recorded only `music_read` and
+`music_control`; Dashboard retained its separate Agenda and Media data-flow
+review. The successful retry inherited no Stock or parent grant.
+
+**Automated physical-host result:** Authenticated PiKVM HID selected SOS in
+GDM, entered the login credential without placing it in a command or evidence
+file, and clicked Stock's Dashboard row. The compositor routed the device to
+`DP-1` and delivered the click at `(926.6,293.3)`. Locked graph
+`a3c5a4afb95fd8bdd195f9d64de9d9e39f302cd5faae468fc161c2510a2e4040`
+presented Dashboard, Agenda, and Media as three Instances. Agenda's typed
+`open` event wrote separately keyed Agenda and Dashboard state. Authority
+appearance generation advanced from 0 to 1 in 34,236,755 ns and reached the
+mounted Agenda semantics in 212,060,902 ns without changing any of the three
+revision IDs.
+
+The deliberate Agenda update exception was contained in 105,010,414 ns and
+recovered in 95,190,131 ns. The instruction-budget timeout was contained in
+93,738,635 ns and recovered in 113,309,486 ns. Both kept Dashboard responsive,
+preserved `Design review`, and retained appearance generation 1. Killing
+Dashboard renderer PID 16382 left Stock renderer PID 15321 alive; the
+supervisor replaced application proxy/renderer PIDs `16378/16382` with
+`19491/19495` and restored both mounts and durable state in 205,692,535 ns.
+
+PiKVM then clicked the mounted Agenda input and typed the 17-byte value
+`PiKVM child draft`. The compositor focused the independently presented
+application, the namespaced `agenda-input` emitted each text change, and only
+Agenda acquired a `draft` field. PiKVM also focused Stock's real text session,
+typed `Make the workspace feel calmer`, and submitted it. The resident faux
+agent ran `get_experience_context`, `validate_experience`, and
+`submit_experience`, then frame-confirmed Stock revision
+`4912d0cf6a408d87105cfed6f3c4446579053e7add968179a26b70ded0379281`
+in graph `23e80dfc8c34109372297c90a97e9045820e2e3023ccf522a1c8ee0719753871`
+without replacing permanent host PID 15315. Exact activation of the prior
+Stock graph restored revision
+`a3bda563418984849de88d145048eee22ccf65bda5088f06fe23a9de2cb242f7`
+in 251,053,599 ns. Dashboard then dismissed while Stock remained live.
+
+PiKVM emitted keyboard, absolute-pointer, relative-pointer, and primary-button
+events through its USB composite device, sent the exact
+`ControlLeft,AltLeft,Backspace` shortcut, and selected GNOME at GDM. The
+standard gate passed same-boot DRM recovery, direct composition, session and
+agent readiness, every non-touch input class, prepared inventory, clean
+logout, inhibitor coverage, transactional activation, multi-host lifecycle,
+durable authority, fallback display manager, process-failure checks, and GPU
+fault checks. It failed only `touchscreen_input`, as expected: PiKVM exposes a
+keyboard and mouse, not a Framework digitizer. The bounded functional result
+is therefore `linux_v4_pikvm_automation_result=PASS` with
+`physical_touch=not_claimed`; the standard result remains the honest
+`DIAGNOSTIC_FAIL`, not a promotion verdict.
+
+**Evidence / independent verification:** Collection measured
+1,051,306,314,911 ns from preparation through fallback recovery. The copied
+bundle is
+`.cache/evidence/linux-v4-only-framework-f9085e5-pikvm-campaign/`, 2,141,280
+bytes with a 111-file manifest. The 11,381-byte manifest has SHA-256
+`55742ef14c7de7a79fff079af12a7e725bc5796e5010ba368fa04f66fd1a4fea`.
+Independent local manifest verification passed in 0.25 seconds with 4,076 KiB
+peak RSS. The independent audit reproduced the touchscreen-only rejection in
+0.04 seconds with 3,568 KiB peak RSS. The rejected pointer interval is retained
+under `automation/rejected-preparation-pikvm/` and cannot be mistaken for the
+replacement campaign.
+
+**Decision / remaining gate:** The post-v3-removal Linux product behavior,
+composition, containment, appearance, state, authoring, rollback, DRM,
+recovery, and repeatable remote-input automation are green on the physical
+Framework. PiKVM cannot substantiate an integrated-device claim. A release
+that requires fresh post-cutover Framework keyboard, PIXA3854 touchpad, and
+ILIT2901 touchscreen evidence still needs one separately labeled integrated
+input interval; it must not be inferred from PiKVM USB events.
+
+## 2026-08-28: Close the post-cutover Framework integrated-input gate
+
+**Goal / exact environment:** Close the last composition-acceptance item with
+fresh input from the Framework Laptop 12's built-in controls on the exact
+post-reader-removal deployment. The interval used clean product revision
+`f9085e5fcd26974c88ab002a243a9c708558114d`, deployment
+`20260828T081459Z-f9085e5fcd26-2021282`, and development-live boot
+`4233c8d6-e2a5-4b73-a2d5-233c594a9327`. The known 221-byte mirror mapping
+kept the ILIT2901 digitizer on `eDP-1` and PiKVM on `DP-1`. Preparation acquired
+the root-owned gate inhibitor before GNOME exited. The internal NVMe and both
+partitions stayed unmounted.
+
+**Input isolation and physical evidence:** PiKVM's
+`set_connected?connected=0` endpoint returned success but still reported
+`connected=null`, and the target retained all three PiKVM input nodes. That was
+not accepted as isolation. Instead, the target resolved the exact PiKVM USB
+device `1d6b:0104` and unbound only its `3-4:1.0`, `3-4:1.1`, and `3-4:1.2`
+`usbhid` interfaces. The compositor recorded removal of events 4, 5, and 6,
+with no input class yet observed. The local operator then pressed the built-in
+keyboard, moved and clicked the PIXA3854 touchpad, and tapped the touchscreen.
+The compositor recorded `keyboard` at monotonic 4480.216114,
+`relative_pointer` at 4525.190869, `pointer_button` at 4576.895716, and `touch`
+at 4610.052453. The same touch record names `ILIT2901:00 222A:5539` and routes
+it to `eDP-1`. PiKVM HID was rebound only after all four observations.
+
+**Activation, composition, and recovery:** PiKVM then drove only the remaining
+repeatable steps. The visible Stock composer submitted
+`make this stock shell focused v4`; the offline resident agent changed Stock
+from revision
+`a3bda563418984849de88d145048eee22ccf65bda5088f06fe23a9de2cb242f7`
+to `4912d0cf6a408d87105cfed6f3c4446579053e7add968179a26b70ded0379281`
+in graph `23e80dfc8c34109372297c90a97e9045820e2e3023ccf522a1c8ee0719753871`
+in 57,461,964 ns. Exact graph activation restored the original revision and
+graph in 215,557,782 ns. Dashboard then presented its Agenda and Media mounts;
+the semantics named `Dashboard`, `Today · appearance 1`, the Agenda action, and
+the Media action. `ControlLeft,AltLeft,Backspace` ended SOS cleanly, GDM
+returned, and GNOME logged in on the same boot. Durable authority and the
+supervisor both named the original Stock revision afterward.
+
+GDM reset the selected session when the first login backed out to calibrate the
+non-secret PiKVM typing sentinel, so that login returned to GNOME. No SOS
+runtime or product input occurred in that attempt. The second observed GDM
+selection entered SOS directly and produced the accepted interval.
+
+**Verdict / evidence:** The standard hardware audit passed same-boot recovery,
+physical DRM, session and agent readiness, keyboard, touchpad motion and
+button, touchscreen, prepared device inventory, clean logout, awake-inhibitor
+coverage, transactional activation, stable shell and application hosts,
+durable authority, fallback display manager, process health, and kernel GPU
+health. It counted three presentations, two revisions, one shell host, and one
+application host. Collection measured 1,044,863,100,036 ns and returned
+`DIAGNOSTIC_PASS promotion_eligible=false`, as required for development-live.
+
+The standard 42-file manifest is 4,002 bytes with SHA-256
+`385f0ecbd6340a1a0f398413531ddc71d24e9bb6aff60494434db010d5eaf62a`.
+The combined gate, PiKVM frames, HID isolation, and post-gate audit are under
+`.cache/evidence/linux-v4-only-framework-f9085e5-integrated-final/`, 3,000,688
+bytes. Its independently verified 114-file, 11,591-byte manifest has SHA-256
+`df1bd6e54f814614af7ccb39783df3995508770375938039f3b26e13b7856591`.
+GNOME is active, no SOS process or runtime directory survived logout, and the
+root-owned remote-work inhibitor again blocks idle, sleep, and lid-switch
+suspend.
+
+**Decision / remaining risk:** Accept the fresh post-cutover Framework
+integrated keyboard, touchpad, and touchscreen result. Milestones 0 through 12
+and the composition plan's cross-platform functional and physical acceptance
+are closed. This mutable development-live run cannot promote a Linux release.
+An installed or immutable release campaign, panel latency, suspend, GPU
+recovery, thermals, and power remain separate product gates.

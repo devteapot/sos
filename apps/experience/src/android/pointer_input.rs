@@ -144,6 +144,10 @@ pub fn begin_frame() {
         .get_or_init(|| Mutex::new(Router::default()))
         .lock()
         .expect("pointer router lock");
+    begin_router_frame(&mut router);
+}
+
+fn begin_router_frame(router: &mut Router) {
     router.epoch = router.epoch.wrapping_add(1).max(1);
     let epoch = router.epoch;
     router
@@ -162,7 +166,24 @@ pub fn record_surface(id: &str, bounds: Bounds<Pixels>, interaction: &Interactio
         .get_or_init(|| Mutex::new(Router::default()))
         .lock()
         .expect("pointer router lock");
+    record_router_surface(&mut router, id, bounds, interaction);
+}
+
+fn record_router_surface(
+    router: &mut Router,
+    id: &str,
+    bounds: Bounds<Pixels>,
+    interaction: &Interaction,
+) {
     router.order = router.order.wrapping_add(1).max(1);
+    let mut interaction = interaction.clone();
+    if let Some((namespace, _)) = id.split_once("::") {
+        for region in &mut interaction.hit_regions {
+            if !region.id.starts_with(&format!("{namespace}::")) {
+                region.id = format!("{namespace}::{}", region.id);
+            }
+        }
+    }
     let surface = Surface {
         id: id.to_owned(),
         bounds: [
@@ -171,7 +192,7 @@ pub fn record_surface(id: &str, bounds: Bounds<Pixels>, interaction: &Interactio
             f32::from(bounds.size.width),
             f32::from(bounds.size.height),
         ],
-        interaction: interaction.clone(),
+        interaction,
         epoch: router.epoch,
         order: router.order,
     };
@@ -220,7 +241,10 @@ pub fn route(sample: Sample) -> Vec<SceneEvent> {
         .get_or_init(|| Mutex::new(Router::default()))
         .lock()
         .expect("pointer router lock");
+    route_with_router(&mut router, sample)
+}
 
+fn route_with_router(router: &mut Router, sample: Sample) -> Vec<SceneEvent> {
     if sample.phase == Phase::Down {
         let surface_capture = router
             .captures
@@ -472,8 +496,10 @@ mod tests {
 
     #[test]
     fn surface_capture_routes_two_pointer_transform_until_release() {
-        begin_frame();
-        record_surface(
+        let mut router = Router::default();
+        begin_router_frame(&mut router);
+        record_router_surface(
+            &mut router,
             "surface",
             Bounds {
                 origin: point(px(0.0), px(0.0)),
@@ -496,9 +522,9 @@ mod tests {
             event_time_nanos: time,
         };
 
-        let first = route(sample(1, Phase::Down, 10.0, 10.0, 1, 1));
+        let first = route_with_router(&mut router, sample(1, Phase::Down, 10.0, 10.0, 1, 1));
         assert_eq!(first[0].pointer_id, Some(1));
-        let second = route(sample(2, Phase::Down, 30.0, 10.0, 2, 2));
+        let second = route_with_router(&mut router, sample(2, Phase::Down, 30.0, 10.0, 2, 2));
         let start = second
             .iter()
             .find(|event| event.action == "transform")
@@ -506,7 +532,7 @@ mod tests {
         assert_eq!(start.phase.as_deref(), Some("start"));
         assert_eq!(start.pointer_count, Some(2));
 
-        let moved = route(sample(2, Phase::Move, 10.0, 30.0, 2, 3));
+        let moved = route_with_router(&mut router, sample(2, Phase::Move, 10.0, 30.0, 2, 3));
         let update = moved
             .iter()
             .find(|event| event.action == "transform")
@@ -515,10 +541,69 @@ mod tests {
         assert!((update.scale.unwrap() - 1.0).abs() < 0.001);
         assert!((update.rotation_degrees.unwrap() - 90.0).abs() < 0.001);
 
-        let released = route(sample(2, Phase::Up, 10.0, 30.0, 2, 4));
+        let released = route_with_router(&mut router, sample(2, Phase::Up, 10.0, 30.0, 2, 4));
         assert!(released
             .iter()
             .any(|event| event.action == "transform" && event.phase.as_deref() == Some("end")));
-        assert!(route(sample(2, Phase::Move, 20.0, 20.0, 1, 5)).is_empty());
+        assert!(
+            route_with_router(&mut router, sample(2, Phase::Move, 20.0, 20.0, 1, 5)).is_empty()
+        );
+    }
+
+    #[test]
+    fn instance_scoped_surface_namespaces_hit_region_targets() {
+        let mut router = Router::default();
+        begin_router_frame(&mut router);
+        record_router_surface(
+            &mut router,
+            "i-child::surface",
+            Bounds {
+                origin: point(px(0.0), px(0.0)),
+                size: size(px(100.0), px(100.0)),
+            },
+            &Interaction {
+                pointer_action: Some("pointer".into()),
+                hit_regions: vec![experience_ir::HitRegion {
+                    id: "button".into(),
+                    x: 0.0,
+                    y: 0.0,
+                    width: 50.0,
+                    height: 50.0,
+                    press_action: None,
+                    drag_action: None,
+                    drop_action: None,
+                    tap_action: None,
+                    double_tap_action: None,
+                    long_press_action: None,
+                    swipe_action: None,
+                }],
+                ..Default::default()
+            },
+        );
+        let events = route_with_router(
+            &mut router,
+            Sample {
+                id: 91,
+                phase: Phase::Down,
+                x: 10.0,
+                y: 10.0,
+                pressure: 1.0,
+                pointer_count: 1,
+                event_time_nanos: 91,
+            },
+        );
+        assert_eq!(events[0].target.as_deref(), Some("i-child::button"));
+        let _ = route_with_router(
+            &mut router,
+            Sample {
+                id: 91,
+                phase: Phase::Up,
+                x: 10.0,
+                y: 10.0,
+                pressure: 0.0,
+                pointer_count: 1,
+                event_time_nanos: 92,
+            },
+        );
     }
 }

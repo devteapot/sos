@@ -3,5 +3,7 @@
 /system_ext/bin/sos-core-surface-probe      u:object_r:sos_core_surface_probe_exec:s0
 /system_ext/bin/sos-core-host               u:object_r:sos_core_host_exec:s0
 /system_ext/bin/sos-core-platform           u:object_r:sos_core_platform_exec:s0
+/system_ext/bin/sos-core-input-automation   u:object_r:sos_core_input_automation_exec:s0
+/dev/socket/sos_core_input_automation       u:object_r:sos_core_input_automation_socket:s0
 /data/misc/sos(/.*)?                         u:object_r:sos_authority_data_file:s0
 /data/misc/sos/platform(/.*)?                u:object_r:sos_core_platform_data_file:s0

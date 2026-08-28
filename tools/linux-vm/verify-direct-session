@@ -4,7 +4,7 @@ set -euo pipefail
 
 vm_repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$vm_repo_root"
-for vm_command in cargo python3 systemctl systemd-detect-virt weston-simple-shm; do
+for vm_command in cargo find python3 systemctl systemd-detect-virt tar weston-simple-shm; do
   command -v "$vm_command" >/dev/null 2>&1 || {
     printf 'error: required command not found: %s\n' "$vm_command" >&2
     exit 1
@@ -25,6 +25,20 @@ systemctl is-active --quiet seatd || {
   exit 1
 }
 
+vm_evidence_dir="${SOS_DIRECT_EVIDENCE_DIR:-}"
+if [[ -n "$vm_evidence_dir" ]]; then
+  [[ "$vm_evidence_dir" == /* ]] || {
+    printf 'error: SOS_DIRECT_EVIDENCE_DIR must be an absolute path\n' >&2
+    exit 1
+  }
+  [[ ! -e "$vm_evidence_dir" ]] || {
+    printf 'error: evidence path already exists: %s\n' "$vm_evidence_dir" >&2
+    exit 1
+  }
+  mkdir -p "$vm_evidence_dir"
+fi
+vm_started_ns="$(python3 -c 'import time; print(time.monotonic_ns())')"
+
 vm_run_dir="$(mktemp -d /tmp/sos-direct-session.XXXXXX)"
 vm_runtime_dir="$vm_run_dir/runtime"
 vm_revision_root="$vm_run_dir/revisions"
@@ -44,6 +58,8 @@ if systemctl is-active --quiet gdm; then
 fi
 
 cleanup_direct_gate() {
+  local vm_exit_status="$?"
+  set +e
   if [[ -w /sys/class/drm/card0-Virtual-2/status ]]; then
     sudo sh -c 'echo off > /sys/class/drm/card0-Virtual-2/status; echo change > /sys/class/drm/card0/uevent' \
       >/dev/null 2>&1 || true
@@ -62,10 +78,47 @@ cleanup_direct_gate() {
   if [[ "$vm_gdm_was_active" == true ]]; then
     sudo systemctl start gdm >/dev/null 2>&1 || true
   fi
+  if [[ -n "$vm_evidence_dir" && -d "$vm_run_dir" ]]; then
+    while IFS= read -r -d '' vm_evidence_file; do
+      cp -- "$vm_evidence_file" "$vm_evidence_dir/"
+    done < <(find "$vm_run_dir" -maxdepth 1 -type f -print0)
+    if [[ -d "$vm_revision_root" ]]; then
+      tar -C "$vm_run_dir" --exclude='revisions/run' \
+        -czf "$vm_evidence_dir/revision-store.tar.gz" revisions
+    fi
+    {
+      printf 'source_revision=%s\n' "${SOS_SOURCE_REVISION:-unknown}"
+      printf 'kernel=%s\n' "$(uname -r)"
+      printf 'virtualization=%s\n' "$(systemd-detect-virt)"
+      printf 'os=%s\n' "${ID:-unknown}"
+      printf 'os_version=%s\n' "${VERSION_ID:-unknown}"
+    } >"$vm_evidence_dir/environment.txt"
+    python3 - "$vm_evidence_dir/result.json" "$vm_started_ns" "$vm_exit_status" <<'PY'
+import json
+import sys
+import time
+
+path, started_ns, exit_status = sys.argv[1:]
+elapsed_ns = time.monotonic_ns() - int(started_ns)
+with open(path, "w", encoding="utf-8") as output:
+    json.dump(
+        {
+            "result": "pass" if exit_status == "0" else "fail",
+            "exit_status": int(exit_status),
+            "elapsed_seconds": elapsed_ns / 1_000_000_000,
+        },
+        output,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    output.write("\n")
+PY
+  fi
   if [[ "$vm_run_dir" == /tmp/sos-direct-session.* && -d "$vm_run_dir" ]]; then
     chmod -R u+w "$vm_run_dir" 2>/dev/null || true
     rm -r -- "$vm_run_dir"
   fi
+  return "$vm_exit_status"
 }
 trap cleanup_direct_gate EXIT
 
@@ -84,6 +137,18 @@ report_direct_gate_failure() {
   exit "$vm_status"
 }
 trap 'report_direct_gate_failure "$LINENO"' ERR
+
+authority_experience_revision() {
+  local vm_experience_id="$1"
+  python3 - "$vm_revision_root/authority.json" "$vm_experience_id" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as authority_file:
+    authority = json.load(authority_file)
+print(authority["experiences"][sys.argv[2]]["revision_id"])
+PY
+}
 
 cargo build --locked \
   -p sos-compositor --features direct-backend --bin sos-compositor
@@ -188,11 +253,32 @@ if [[ -w /sys/class/drm/card0-Virtual-2/status ]]; then
 fi
 
 vm_status_before="$(SOS_LINUX_REVISION_ROOT="$vm_revision_root" ./tools/sosctl linux-status)"
+printf '%s\n' "$vm_status_before" >"$vm_run_dir/status-before.json"
 vm_pid_before="$(sed -n 's/.*"host_pid":\([0-9][0-9]*\).*/\1/p' <<<"$vm_status_before")"
+vm_graph_before="$(sed -n 's/.*"active_graph":"\([0-9a-f][0-9a-f]*\)".*/\1/p' <<<"$vm_status_before")"
+vm_stock_candidate="$vm_run_dir/direct-input-stock.luau"
+sed '0,/A responsive workspace assembled entirely by this Luau revision\./s//Direct input gate active in this complete Stock revision./' \
+  experiences/default.luau >"$vm_stock_candidate"
+grep -F 'Direct input gate active in this complete Stock revision.' \
+  "$vm_stock_candidate" >/dev/null
+grep -F 'agent_submit' "$vm_stock_candidate" >/dev/null
+! cmp -s experiences/default.luau "$vm_stock_candidate"
+./tools/sosctl validate "$vm_stock_candidate" \
+  --module stock.theme=experiences/modules/stock-theme.luau \
+  --json >"$vm_run_dir/candidate-validation.json"
+python3 - "$vm_run_dir/candidate-validation.json" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as validation_file:
+    validation = json.load(validation_file)
+if validation["module_count"] != 1 or not validation["report"]["valid"]:
+    raise SystemExit("complete Stock candidate did not pass package validation")
+PY
 vm_input_ready="$vm_run_dir/uinput-ready"
 # The test controller, not sudo, intentionally owns this disposable log.
 # shellcheck disable=SC2024
-sudo tools/linux-vm/inject-uinput "$vm_input_ready" 1500 \
+sudo tools/linux-vm/inject-uinput "$vm_input_ready" 5000 \
   >"$vm_run_dir/uinput.log" 2>&1 &
 vm_input_pid=$!
 for _ in {1..500}; do
@@ -207,7 +293,7 @@ for vm_input_class in keyboard relative_pointer pointer_button touch; do
 done
 vm_activation="$(
   SOS_LINUX_REVISION_ROOT="$vm_revision_root" \
-    ./tools/sosctl linux-script tests/fixtures/linux-direct-input.luau
+    ./tools/sosctl linux-script "$vm_stock_candidate"
 )"
 wait "$vm_input_pid"
 vm_input_pid=""
@@ -221,15 +307,18 @@ grep -q 'suppressed key held across activation.*released=true' "$vm_run_dir/comp
 grep -q 'suppressed release for button held across activation' "$vm_run_dir/compositor.log"
 [[ "$(grep -c 'suppressed touch release held across activation' "$vm_run_dir/compositor.log")" -eq 2 ]]
 vm_status_after="$(SOS_LINUX_REVISION_ROOT="$vm_revision_root" ./tools/sosctl linux-status)"
+printf '%s\n' "$vm_status_after" >"$vm_run_dir/status-after.json"
 vm_pid_after="$(sed -n 's/.*"host_pid":\([0-9][0-9]*\).*/\1/p' <<<"$vm_status_after")"
+vm_graph_after="$(sed -n 's/.*"active_graph":"\([0-9a-f][0-9a-f]*\)".*/\1/p' <<<"$vm_status_after")"
 [[ -n "$vm_pid_before" && "$vm_pid_before" == "$vm_pid_after" ]]
+[[ -n "$vm_graph_before" && -n "$vm_graph_after" && "$vm_graph_before" != "$vm_graph_after" ]]
 
 # Repeat the same held-device lifecycle through an authority rejection after
 # compositor quiesce. This proves discard/resume suppression as well as the
 # successful presentation path above.
 vm_input_ready="$vm_run_dir/uinput-abort-ready"
 # shellcheck disable=SC2024
-sudo tools/linux-vm/inject-uinput "$vm_input_ready" 1500 \
+sudo tools/linux-vm/inject-uinput "$vm_input_ready" 5000 \
   >"$vm_run_dir/uinput-abort.log" 2>&1 &
 vm_input_pid=$!
 for _ in {1..500}; do
@@ -268,8 +357,9 @@ fi
 [[ "$vm_abort_status" -ne 0 ]]
 wait "$vm_input_pid"
 vm_input_pid=""
-[[ "$(target/debug/sos-revision-supervisor status --root "$vm_revision_root")" == \
-  "$(sed -n 's/.*"revision_id": "\([0-9a-f]*\)".*/\1/p' "$vm_revision_root/authority.json" | head -1)" ]]
+[[ "$(target/debug/sos-revision-supervisor experience-status \
+    --root "$vm_revision_root" --experience sos.stock.shell)" == \
+  "$(authority_experience_revision sos.stock.shell)" ]]
 [[ "$(grep -c 'detached focused input for revision quiesce keys=1 buttons=1 touches=2' "$vm_run_dir/compositor.log")" -ge 2 ]]
 [[ "$(grep -c 'suppressed key held across activation.*released=true' "$vm_run_dir/compositor.log")" -ge 2 ]]
 [[ "$(grep -c 'suppressed release for button held across activation' "$vm_run_dir/compositor.log")" -ge 2 ]]
@@ -291,12 +381,13 @@ for _ in {1..1000}; do
   sleep 0.01
 done
 [[ -n "$vm_restarted_pid" && "$vm_restarted_pid" != "$vm_pid_after" ]]
+printf '%s\n' "$vm_restart_status" >"$vm_run_dir/status-restarted.json"
 
 XDG_RUNTIME_DIR="$vm_runtime_dir" WAYLAND_DISPLAY=wayland-sos \
   weston-simple-shm >"$vm_run_dir/compatibility.log" 2>&1 &
 vm_compatibility_pid=$!
 for _ in {1..500}; do
-  if grep -Eq 'mapped compositor-managed XDG toplevel role=Compatibility x=[0-9]+ y=[0-9]+' \
+  if grep -Eq 'registered compositor-managed XDG toplevel role=Compatibility x=[0-9]+ y=[0-9]+' \
       "$vm_run_dir/compositor.log"; then
     break
   fi
@@ -305,30 +396,49 @@ for _ in {1..500}; do
   fi
   sleep 0.01
 done
+grep -Eq 'registered compositor-managed XDG toplevel role=Compatibility x=[0-9]+ y=[0-9]+' \
+  "$vm_run_dir/compositor.log"
 
 vm_current_revision="$(
-  target/debug/sos-revision-supervisor status --root "$vm_revision_root"
+  target/debug/sos-revision-supervisor experience-status \
+    --root "$vm_revision_root" --experience sos.stock.shell
 )"
-vm_authority_revision="$(
-  sed -n 's/.*"revision_id": "\([0-9a-f]*\)".*/\1/p' \
-    "$vm_revision_root/authority.json" | head -1
-)"
+vm_authority_revision="$(authority_experience_revision sos.stock.shell)"
 [[ "$vm_current_revision" == "$vm_authority_revision" ]]
-[[ "$(grep -c 'evidence=drm_page_flip' "$vm_run_dir/session.log")" -eq 3 ]]
+[[ ! -e "$vm_revision_root/current" ]]
+python3 - "$vm_run_dir/session.log" "$vm_graph_before" "$vm_graph_after" <<'PY'
+import re
+import sys
+
+log_path, before, after = sys.argv[1:]
+with open(log_path, encoding="utf-8") as log_file:
+    frames = [
+        match.group(1)
+        for line in log_file
+        if (match := re.search(
+            r"sos_revision_frame revision_id=([0-9a-f]{64}) evidence=drm_page_flip",
+            line,
+        ))
+    ]
+expected = [before, after, before, after, after]
+if frames != expected:
+    raise SystemExit(f"unexpected physical graph frame sequence: {frames!r} != {expected!r}")
+PY
 if grep -qE 'evidence=(gpui_next_frame|nested_backend_submit)' "$vm_run_dir/session.log"; then
   printf 'error: host used weaker presentation evidence in direct mode\n' >&2
   exit 1
 fi
 [[ "$(grep -c 'presented armed shell revision.*evidence=\"drm_page_flip\"' \
-  "$vm_run_dir/compositor.log")" -eq 3 ]]
-grep -q "authenticated SOS shell control connection pid=$vm_pid_after" \
+  "$vm_run_dir/compositor.log")" -eq 5 ]]
+[[ "$(grep -c 'resumed compositor input epoch' "$vm_run_dir/compositor.log")" -eq 4 ]]
+grep -q "authenticated SOS compositor control connection pid=$vm_pid_after role=Shell" \
   "$vm_run_dir/compositor.log"
-grep -q "authenticated SOS shell control connection pid=$vm_restarted_pid" \
+grep -q "authenticated SOS compositor control connection pid=$vm_restarted_pid role=Shell" \
   "$vm_run_dir/compositor.log"
 grep -q 'HostRestarted' "$vm_run_dir/session.log"
 grep -q 'accepted Wayland client.*role=Compatibility' "$vm_run_dir/compositor.log"
 grep -q 'configured shell window space' "$vm_run_dir/compositor.log"
-grep -Eq 'mapped compositor-managed XDG toplevel role=Compatibility x=[0-9]+ y=[0-9]+' \
+grep -Eq 'registered compositor-managed XDG toplevel role=Compatibility x=[0-9]+ y=[0-9]+' \
   "$vm_run_dir/compositor.log"
 
 SOS_LINUX_REVISION_ROOT="$vm_revision_root" ./tools/sosctl linux-stop >/dev/null
@@ -339,6 +449,9 @@ printf 'linux_direct_session_passed activation_pid=%s restarted_pid=%s revision_
   "$vm_pid_after" "$vm_restarted_pid" "$vm_current_revision"
 printf 'activation=%s\n' "$vm_activation"
 printf 'authority_revision=%s\n' "$vm_authority_revision"
+if [[ -n "$vm_evidence_dir" ]]; then
+  printf 'evidence_dir=%s\n' "$vm_evidence_dir"
+fi
 grep -E \
   'completed significant DRM page flip.*recovery_view=true|presented armed shell revision' \
   "$vm_run_dir/compositor.log"

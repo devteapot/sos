@@ -8,7 +8,9 @@ use std::{
     },
 };
 
-use experience_ir::MAX_TEXT_BYTES;
+#[cfg(not(feature = "core-native"))]
+use experience_ir::ExperienceInsets;
+use experience_ir::{ExperienceViewport, MAX_TEXT_BYTES};
 #[cfg(feature = "core-native")]
 use gpui::rgb;
 use gpui::{
@@ -58,6 +60,8 @@ pub struct ImeApplyOutcome {
 static IME_STATES: OnceLock<Mutex<VecDeque<ImeState>>> = OnceLock::new();
 static IME_INSET_BITS: AtomicU32 = AtomicU32::new(0);
 static IME_INSET_CHANGED: AtomicBool = AtomicBool::new(false);
+#[cfg(not(feature = "core-native"))]
+static VIEWPORT_CONTEXT: OnceLock<Mutex<Option<ExperienceViewport>>> = OnceLock::new();
 #[cfg(feature = "core-native")]
 static SOFTWARE_KEYBOARD_VISIBLE: AtomicBool = AtomicBool::new(false);
 #[cfg(feature = "core-native")]
@@ -84,6 +88,44 @@ pub fn take_ime_states() -> Vec<ImeState> {
         .expect("IME state lock")
         .drain(..)
         .collect()
+}
+
+#[cfg(not(feature = "core-native"))]
+pub fn viewport_context() -> Option<ExperienceViewport> {
+    VIEWPORT_CONTEXT
+        .get_or_init(|| Mutex::new(None))
+        .lock()
+        .expect("viewport context lock")
+        .clone()
+}
+
+#[cfg(feature = "core-native")]
+pub fn viewport_context() -> Option<ExperienceViewport> {
+    None
+}
+
+#[cfg(not(feature = "core-native"))]
+fn set_viewport_context(viewport: ExperienceViewport) {
+    let mut current = VIEWPORT_CONTEXT
+        .get_or_init(|| Mutex::new(None))
+        .lock()
+        .expect("viewport context lock");
+    if current.as_ref() == Some(&viewport) {
+        return;
+    }
+    log::info!(
+        "android_viewport_context width={} height={} scale_milli={} safe_left={} safe_top={} safe_right={} safe_bottom={}",
+        viewport.width,
+        viewport.height,
+        viewport.scale_milli,
+        viewport.safe_insets.left,
+        viewport.safe_insets.top,
+        viewport.safe_insets.right,
+        viewport.safe_insets.bottom
+    );
+    *current = Some(viewport);
+    drop(current);
+    super::request_host_frame();
 }
 
 fn set_ime_inset(logical_bottom: f32) {
@@ -318,6 +360,65 @@ pub unsafe extern "C" fn Java_dev_gpui_mobile_GpuiActivity_nativeOnImeInset(
     logical_bottom: f32,
 ) {
     set_ime_inset(logical_bottom);
+}
+
+#[cfg(not(feature = "core-native"))]
+#[no_mangle]
+pub unsafe extern "C" fn Java_dev_gpui_mobile_GpuiActivity_nativeOnViewportContext(
+    _env: *mut std::ffi::c_void,
+    _class: *mut std::ffi::c_void,
+    logical_width: f32,
+    logical_height: f32,
+    scale_milli: i32,
+    safe_left: f32,
+    safe_top: f32,
+    safe_right: f32,
+    safe_bottom: f32,
+) {
+    let values = [
+        logical_width,
+        logical_height,
+        safe_left,
+        safe_top,
+        safe_right,
+        safe_bottom,
+    ];
+    if values
+        .iter()
+        .any(|value| !value.is_finite() || *value < 0.0)
+        || logical_width < 1.0
+        || logical_height < 1.0
+        || !(250..=8000).contains(&scale_milli)
+    {
+        log::warn!("android_viewport_context_rejected invalid_metrics=true");
+        return;
+    }
+    let viewport = ExperienceViewport {
+        width: logical_width.round().clamp(1.0, u32::MAX as f32) as u32,
+        height: logical_height.round().clamp(1.0, u32::MAX as f32) as u32,
+        scale_milli: scale_milli as u16,
+        safe_insets: ExperienceInsets {
+            left: safe_left.round().clamp(0.0, u32::MAX as f32) as u32,
+            top: safe_top.round().clamp(0.0, u32::MAX as f32) as u32,
+            right: safe_right.round().clamp(0.0, u32::MAX as f32) as u32,
+            bottom: safe_bottom.round().clamp(0.0, u32::MAX as f32) as u32,
+        },
+    };
+    if viewport
+        .safe_insets
+        .left
+        .saturating_add(viewport.safe_insets.right)
+        >= viewport.width
+        || viewport
+            .safe_insets
+            .top
+            .saturating_add(viewport.safe_insets.bottom)
+            >= viewport.height
+    {
+        log::warn!("android_viewport_context_rejected invalid_safe_insets=true");
+        return;
+    }
+    set_viewport_context(viewport);
 }
 
 #[cfg(not(feature = "core-native"))]

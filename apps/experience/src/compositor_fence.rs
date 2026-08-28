@@ -83,37 +83,63 @@ pub struct CompositorFence {
     next_window_space_request_id: AtomicU64,
 }
 
+/// Keeps the authenticated compositor registration for one independently
+/// presented SOS experience alive. It carries no shell-control methods.
+pub struct NativeApplicationRegistration {
+    _stream: UnixStream,
+}
+
+impl NativeApplicationRegistration {
+    pub fn from_environment() -> Result<Option<Self>> {
+        let Some((socket_path, token)) = compositor_credentials()? else {
+            return Ok(None);
+        };
+        Self::connect(&socket_path, token).map(Some)
+    }
+
+    fn connect(socket_path: &Path, token: String) -> Result<Self> {
+        let mut stream = UnixStream::connect(socket_path).with_context(|| {
+            format!(
+                "connect to SOS compositor control socket {}",
+                socket_path.display()
+            )
+        })?;
+        stream.set_read_timeout(Some(CONTROL_TIMEOUT))?;
+        let mut reader = BufReader::new(stream.try_clone()?);
+        let pid = std::process::id();
+        write_request(
+            &mut stream,
+            &CompositorRequest::RegisterApplication {
+                request_id: 0,
+                token,
+                pid,
+            },
+        )?;
+        match read_event(&mut reader)?.context("compositor closed during app registration")? {
+            CompositorEvent::Registered {
+                request_id: 0,
+                pid: registered_pid,
+            } if registered_pid == pid => {}
+            CompositorEvent::Rejected { error, .. } => {
+                bail!("compositor rejected native application registration: {error}")
+            }
+            event => bail!("unexpected compositor app registration event: {event:?}"),
+        }
+        stream.set_read_timeout(None)?;
+        eprintln!(
+            "sos_compositor_application_registered pid={pid} control_socket={}",
+            socket_path.display()
+        );
+        Ok(Self { _stream: stream })
+    }
+}
+
 impl CompositorFence {
     pub fn from_environment() -> Result<Option<Self>> {
-        let socket = env::var_os(CONTROL_SOCKET_ENV);
-        let inline_token = env::var_os(SHELL_TOKEN_ENV);
-        let token_file = env::var_os(SHELL_TOKEN_FILE_ENV);
-        if socket.is_none() {
-            if inline_token.is_some() || token_file.is_some() {
-                bail!(
-                    "{CONTROL_SOCKET_ENV} is required when a compositor shell token is configured"
-                );
-            }
+        let Some((socket_path, token)) = compositor_credentials()? else {
             return Ok(None);
-        }
-        let token = match (inline_token, token_file) {
-            (Some(token), None) => token
-                .into_string()
-                .map_err(|_| anyhow::anyhow!("{SHELL_TOKEN_ENV} is not valid UTF-8"))?,
-            (None, Some(path)) => read_shell_token_file(Path::new(&path)).with_context(|| {
-                format!(
-                    "read compositor shell credential from {}",
-                    Path::new(&path).display()
-                )
-            })?,
-            (Some(_), Some(_)) => {
-                bail!("use exactly one of {SHELL_TOKEN_ENV} and {SHELL_TOKEN_FILE_ENV}")
-            }
-            (None, None) => bail!(
-                "one of {SHELL_TOKEN_ENV} or {SHELL_TOKEN_FILE_ENV} is required when {CONTROL_SOCKET_ENV} is set"
-            ),
         };
-        Self::connect(Path::new(&socket.unwrap()), token).map(Some)
+        Self::connect(&socket_path, token).map(Some)
     }
 
     fn connect(socket_path: &Path, token: String) -> Result<Self> {
@@ -255,6 +281,39 @@ impl CompositorFence {
             })
             .context("compositor fence thread is unavailable")
     }
+}
+
+fn compositor_credentials() -> Result<Option<(std::path::PathBuf, String)>> {
+    let socket = env::var_os(CONTROL_SOCKET_ENV);
+    let inline_token = env::var_os(SHELL_TOKEN_ENV);
+    let token_file = env::var_os(SHELL_TOKEN_FILE_ENV);
+    let Some(socket) = socket else {
+        if inline_token.is_some() || token_file.is_some() {
+            bail!("{CONTROL_SOCKET_ENV} is required when a compositor token is configured");
+        }
+        return Ok(None);
+    };
+    let token = match (inline_token, token_file) {
+        (Some(token), None) => token
+            .into_string()
+            .map_err(|_| anyhow::anyhow!("{SHELL_TOKEN_ENV} is not valid UTF-8"))?,
+        (None, Some(path)) => read_shell_token_file(Path::new(&path)).with_context(|| {
+            format!(
+                "read compositor credential from {}",
+                Path::new(&path).display()
+            )
+        })?,
+        (Some(_), Some(_)) => {
+            bail!("use exactly one of {SHELL_TOKEN_ENV} and {SHELL_TOKEN_FILE_ENV}")
+        }
+        (None, None) => bail!(
+            "one of {SHELL_TOKEN_ENV} or {SHELL_TOKEN_FILE_ENV} is required when {CONTROL_SOCKET_ENV} is set"
+        ),
+    };
+    if !valid_shell_token(&token) {
+        bail!("invalid compositor token");
+    }
+    Ok(Some((socket.into(), token)))
 }
 
 fn run_io(
@@ -861,6 +920,34 @@ mod tests {
                 layout: WindowLayoutMode::Tiling,
             })
             .unwrap();
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn native_application_registration_uses_a_distinct_control_role() {
+        let directory = tempfile::tempdir().unwrap();
+        let socket = directory.path().join("native-control.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let CompositorRequest::RegisterApplication {
+                request_id,
+                pid,
+                token,
+            } = read_request_for_test(&mut reader)
+            else {
+                panic!("expected native application registration")
+            };
+            assert_eq!(token, "native-secret");
+            write_event_for_test(
+                &mut stream,
+                &CompositorEvent::Registered { request_id, pid },
+            );
+        });
+        let registration =
+            NativeApplicationRegistration::connect(&socket, "native-secret".into()).unwrap();
+        drop(registration);
         server.join().unwrap();
     }
 

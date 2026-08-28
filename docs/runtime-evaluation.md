@@ -93,7 +93,7 @@ rare permanent-host updates, not the conversational experience loop.
 - Retain the prior accepted source and state envelope for immediate rollback.
 
 Luau's strict annotations help authoring but are not a runtime security
-boundary. Workstation/CI tooling now prepends the canonical API v3 type prelude
+boundary. Workstation and CI tooling now prepend the canonical API v4 type prelude
 and runs the official Luau analyzer pinned at tag `0.728`, commit
 `ddcea05e1cc6f534e5eaac33325690c12f1ed274`. Every checked-in experience passes
 that analyzer. Local and resident-agent validation then render the default plus

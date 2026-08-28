@@ -9,6 +9,9 @@ use std::{
     time::{Duration, Instant},
 };
 
+#[cfg(target_os = "android")]
+use std::ffi::CString;
+
 use gpui_mobile::android::{AndroidKeyEvent, AndroidPlatform, TouchPoint};
 
 const EV_SYN: u16 = 0x00;
@@ -30,6 +33,22 @@ const ANDROID_KEYCODE_VOLUME_DOWN: i32 = 25;
 const ANDROID_KEYCODE_POWER: i32 = 26;
 const MAX_TOUCH_SLOTS: usize = 10;
 const RECOVERY_CHORD_HOLD: Duration = Duration::from_secs(2);
+const AUTOMATION_DEVICE: &str = "sos_core_automation_touch";
+
+#[derive(Clone, Copy)]
+enum TouchOrigin {
+    Physical,
+    Automation,
+}
+
+impl TouchOrigin {
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Physical => "physical",
+            Self::Automation => "automation",
+        }
+    }
+}
 
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
@@ -77,8 +96,22 @@ pub fn start(platform: Arc<AndroidPlatform>) -> Result<(), String> {
     let touch_platform = Arc::clone(&platform);
     thread::Builder::new()
         .name("sos-core-touch".into())
-        .spawn(move || run_touch(touch_platform, touch))
+        .spawn(move || {
+            run_touch(
+                touch_platform,
+                touch,
+                "sec_touchscreen",
+                TouchOrigin::Physical,
+            )
+        })
         .map_err(|error| format!("Core touchscreen thread failed to start: {error}"))?;
+    if is_automation_build(android_property("ro.build.type").as_deref()) {
+        let automation_platform = Arc::clone(&platform);
+        thread::Builder::new()
+            .name("sos-core-input-automation".into())
+            .spawn(move || run_automation_touch(automation_platform))
+            .map_err(|error| format!("Core automation input thread failed to start: {error}"))?;
+    }
     thread::Builder::new()
         .name("sos-core-keys".into())
         .spawn(move || run_keys(platform, volume, power))
@@ -86,18 +119,52 @@ pub fn start(platform: Arc<AndroidPlatform>) -> Result<(), String> {
     Ok(())
 }
 
-fn run_touch(platform: Arc<AndroidPlatform>, mut input: File) {
-    log::info!("core_input_ready device=sec_touchscreen mode=exclusive protocol=mt-slot+btn_touch");
+fn is_automation_build(build_type: Option<&str>) -> bool {
+    matches!(build_type, Some("userdebug") | Some("eng"))
+}
+
+fn run_touch(platform: Arc<AndroidPlatform>, mut input: File, device: &str, origin: TouchOrigin) {
+    log::info!(
+        "core_input_ready device={device} mode=exclusive protocol=mt-slot+btn_touch origin={}",
+        origin.label()
+    );
     let mut slots = [TouchSlot::default(); MAX_TOUCH_SLOTS];
     let mut current_slot = 0usize;
     loop {
         let Some(event) = read_event(&mut input) else {
-            log::error!("core_input_stopped device=sec_touchscreen");
+            log::error!(
+                "core_input_stopped device={device} origin={}",
+                origin.label()
+            );
             return;
         };
         if apply_touch_event(&mut slots, &mut current_slot, event) {
-            flush_touch_frame(&platform, &mut slots);
+            flush_touch_frame(&platform, &mut slots, origin);
         }
+    }
+}
+
+fn run_automation_touch(platform: Arc<AndroidPlatform>) {
+    loop {
+        let Some(input) = open_named_input(AUTOMATION_DEVICE) else {
+            thread::sleep(Duration::from_millis(100));
+            continue;
+        };
+        if let Err(error) = grab_input(&input, AUTOMATION_DEVICE) {
+            log::warn!("core_input_automation_unavailable stage=grab error={error}");
+            thread::sleep(Duration::from_millis(250));
+            continue;
+        }
+        log::info!(
+            "core_input_automation_reader_ready device=sos_core_automation_touch origin=automation"
+        );
+        run_touch(
+            Arc::clone(&platform),
+            input,
+            AUTOMATION_DEVICE,
+            TouchOrigin::Automation,
+        );
+        thread::sleep(Duration::from_millis(100));
     }
 }
 
@@ -152,7 +219,11 @@ fn apply_touch_event(
     }
 }
 
-fn flush_touch_frame(platform: &Arc<AndroidPlatform>, slots: &mut [TouchSlot; MAX_TOUCH_SLOTS]) {
+fn flush_touch_frame(
+    platform: &Arc<AndroidPlatform>,
+    slots: &mut [TouchSlot; MAX_TOUCH_SLOTS],
+    origin: TouchOrigin,
+) {
     let pointer_count = slots.iter().filter(|slot| slot.tracking_id >= 0).count();
     for slot in slots.iter_mut().filter(|slot| slot.dirty) {
         let action = if slot.down_pending {
@@ -175,11 +246,12 @@ fn flush_touch_frame(platform: &Arc<AndroidPlatform>, slots: &mut [TouchSlot; MA
         };
         if matches!(action, 0 | 1) {
             log::info!(
-                "core_input_touch action={} id={} x={:.0} y={:.0}",
+                "core_input_touch action={} id={} x={:.0} y={:.0} origin={}",
                 if action == 0 { "down" } else { "up" },
                 point.id,
                 point.x,
-                point.y
+                point.y,
+                origin.label(),
             );
         }
         dispatch_touch(platform, point);
@@ -361,6 +433,30 @@ fn input_name(fd: i32) -> Option<String> {
         .map(str::to_owned)
 }
 
+#[cfg(target_os = "android")]
+fn android_property(name: &str) -> Option<String> {
+    const PROP_VALUE_MAX: usize = 92;
+    unsafe extern "C" {
+        fn __system_property_get(
+            name: *const libc::c_char,
+            value: *mut libc::c_char,
+        ) -> libc::c_int;
+    }
+    let name = CString::new(name).ok()?;
+    let mut value = [0 as libc::c_char; PROP_VALUE_MAX];
+    let length = unsafe { __system_property_get(name.as_ptr(), value.as_mut_ptr()) };
+    (length > 0).then(|| {
+        unsafe { CStr::from_ptr(value.as_ptr()) }
+            .to_string_lossy()
+            .into_owned()
+    })
+}
+
+#[cfg(not(target_os = "android"))]
+fn android_property(_name: &str) -> Option<String> {
+    None
+}
+
 fn read_event(input: &mut File) -> Option<InputEvent> {
     let mut event = InputEvent::default();
     let bytes = unsafe {
@@ -406,6 +502,14 @@ const fn iow(kind: u8, number: u8, size: usize) -> libc::c_int {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn automation_reader_is_restricted_to_acceptance_builds() {
+        assert!(is_automation_build(Some("userdebug")));
+        assert!(is_automation_build(Some("eng")));
+        assert!(!is_automation_build(Some("user")));
+        assert!(!is_automation_build(None));
+    }
 
     fn event(kind: u16, code: u16, value: i32) -> InputEvent {
         InputEvent {

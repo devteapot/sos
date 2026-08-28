@@ -1,0 +1,368 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+gate_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+cd "$gate_root"
+for gate_command in cargo jq python3 sed weston Xvfb; do
+  command -v "$gate_command" >/dev/null 2>&1 || {
+    printf 'error: required command not found: %s\n' "$gate_command" >&2
+    exit 1
+  }
+done
+
+gate_run_dir="$(mktemp -d /tmp/sos-composition-nested.XXXXXX)"
+gate_runtime_dir="$gate_run_dir/runtime"
+gate_revision_root="$gate_run_dir/revisions"
+gate_control_socket="$gate_runtime_dir/compositor-control.sock"
+gate_accessibility_socket="$gate_runtime_dir/accessibility.sock"
+gate_provider_socket="$gate_runtime_dir/provider-state.sock"
+gate_authority_file="$gate_run_dir/authority.json"
+gate_token="sos-composition-$BASHPID-$RANDOM"
+gate_appearance_token="sos-appearance-$BASHPID-$RANDOM"
+gate_appearance_capability_file="$gate_run_dir/appearance-write.capability"
+gate_evidence_dir="${SOS_COMPOSITION_GATE_EVIDENCE_DIR:-}"
+mkdir "$gate_runtime_dir"
+chmod 700 "$gate_runtime_dir"
+gate_xvfb_pid=""
+gate_weston_pid=""
+gate_compositor_pid=""
+gate_provider_pid=""
+gate_supervisor_pid=""
+
+accessibility_call() {
+  python3 - "$gate_accessibility_socket" "$1" <<'PY'
+import socket
+import sys
+
+client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+client.connect(sys.argv[1])
+client.sendall(sys.argv[2].encode() + b"\n")
+response = bytearray()
+while not response.endswith(b"\n"):
+    chunk = client.recv(65536)
+    if not chunk:
+        break
+    response.extend(chunk)
+sys.stdout.write(response.decode())
+PY
+}
+
+service_call() {
+  python3 - "$gate_provider_socket" "$1" <<'PY'
+import socket
+import sys
+
+client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+client.connect(sys.argv[1])
+client.sendall(sys.argv[2].encode() + b"\n")
+response = bytearray()
+while not response.endswith(b"\n"):
+    chunk = client.recv(65536)
+    if not chunk:
+        break
+    response.extend(chunk)
+sys.stdout.write(response.decode())
+PY
+}
+
+preserve_evidence() {
+  [[ -n "$gate_evidence_dir" ]] || return 0
+  [[ "$gate_evidence_dir" == /* ]] || {
+    printf 'error: SOS_COMPOSITION_GATE_EVIDENCE_DIR must be absolute\n' >&2
+    return 1
+  }
+  [[ ! -e "$gate_evidence_dir" ]] || {
+    printf 'error: evidence directory already exists: %s\n' "$gate_evidence_dir" >&2
+    return 1
+  }
+  mkdir -p "$gate_evidence_dir"
+  for gate_file in \
+    compositor.log compositor.out provider.log session.log weston.log xvfb.log \
+    install.json status-before.json activation.json status-after.json \
+    status-recovered.json accessibility-before.json accessibility-after.json \
+    appearance-response.json; do
+    if [[ -f "$gate_run_dir/$gate_file" ]]; then
+      cp -- "$gate_run_dir/$gate_file" "$gate_evidence_dir/$gate_file"
+    fi
+  done
+  if [[ -f "$gate_authority_file" ]]; then
+    cp -- "$gate_authority_file" "$gate_evidence_dir/authority.json"
+  fi
+  if [[ -d "$gate_revision_root/graphs/snapshots" ]]; then
+    mkdir "$gate_evidence_dir/graphs"
+    cp -- "$gate_revision_root"/graphs/snapshots/*.json "$gate_evidence_dir/graphs/"
+  fi
+}
+
+cleanup_composition_gate() {
+  local gate_status="$?"
+  local evidence_status=0
+  trap - EXIT INT TERM
+  set +e
+  if [[ -n "$gate_supervisor_pid" ]] && kill -0 "$gate_supervisor_pid" 2>/dev/null; then
+    target/debug/sos-revision-supervisor shutdown --root "$gate_revision_root" \
+      >/dev/null 2>&1
+    wait "$gate_supervisor_pid" 2>/dev/null
+  fi
+  if [[ -n "$gate_provider_pid" ]] && kill -0 "$gate_provider_pid" 2>/dev/null; then
+    service_call '{"protocol_version":2,"method":"shutdown","request_id":90}' \
+      >/dev/null 2>&1
+    wait "$gate_provider_pid" 2>/dev/null
+  fi
+  for gate_pid in "$gate_compositor_pid" "$gate_weston_pid" "$gate_xvfb_pid"; do
+    if [[ -n "$gate_pid" ]] && kill -0 "$gate_pid" 2>/dev/null; then
+      kill -TERM "$gate_pid" 2>/dev/null
+      wait "$gate_pid" 2>/dev/null
+    fi
+  done
+  preserve_evidence || evidence_status="$?"
+  if [[ "$gate_run_dir" == /tmp/sos-composition-nested.* && -d "$gate_run_dir" ]]; then
+    chmod -R u+w "$gate_run_dir" 2>/dev/null
+    rm -r -- "$gate_run_dir"
+  fi
+  if [[ "$gate_status" -eq 0 && "$evidence_status" -ne 0 ]]; then
+    gate_status="$evidence_status"
+  fi
+  exit "$gate_status"
+}
+trap cleanup_composition_gate EXIT INT TERM
+
+report_composition_failure() {
+  local gate_status="$?"
+  local gate_line="$1"
+  set +e
+  printf 'error: composition gate failed at line %s (status %s)\n' \
+    "$gate_line" "$gate_status" >&2
+  for gate_log in session.log compositor.log provider.log weston.log; do
+    if [[ -f "$gate_run_dir/$gate_log" ]]; then
+      printf '%s:\n' "$gate_log" >&2
+      tail -n 160 "$gate_run_dir/$gate_log" >&2
+    fi
+  done
+  exit "$gate_status"
+}
+trap 'report_composition_failure "$LINENO"' ERR
+
+cargo build --locked \
+  -p sos-compositor --bin sos-compositor \
+  -p sos-experience --features linux-host --bin sos-experience-host \
+  -p revision-supervisor --bin sos-revision-supervisor \
+  -p provider-state-service --bin sos-provider-state-service
+
+Xvfb -displayfd 1 -screen 0 1280x800x24 \
+  >"$gate_run_dir/display" 2>"$gate_run_dir/xvfb.log" &
+gate_xvfb_pid=$!
+for _ in {1..200}; do
+  [[ -s "$gate_run_dir/display" ]] && break
+  kill -0 "$gate_xvfb_pid" 2>/dev/null
+  sleep 0.01
+done
+gate_display=":$(tr -d '\r\n' <"$gate_run_dir/display")"
+
+DISPLAY="$gate_display" XDG_RUNTIME_DIR="$gate_runtime_dir" \
+  weston --backend=x11-backend.so --socket=wayland-outer \
+  --width=1280 --height=800 --idle-time=0 \
+  >"$gate_run_dir/weston.log" 2>&1 &
+gate_weston_pid=$!
+for _ in {1..500}; do
+  [[ -S "$gate_runtime_dir/wayland-outer" ]] && break
+  kill -0 "$gate_weston_pid" 2>/dev/null
+  sleep 0.01
+done
+[[ -S "$gate_runtime_dir/wayland-outer" ]]
+
+DISPLAY="$gate_display" \
+XDG_RUNTIME_DIR="$gate_runtime_dir" \
+WAYLAND_DISPLAY=wayland-outer \
+LIBGL_ALWAYS_SOFTWARE=1 \
+RUST_LOG=sos_compositor=info \
+  target/debug/sos-compositor \
+    --socket wayland-sos \
+    --control-socket "$gate_control_socket" \
+    --shell-token "$gate_token" \
+    >"$gate_run_dir/compositor.out" 2>"$gate_run_dir/compositor.log" &
+gate_compositor_pid=$!
+for _ in {1..1000}; do
+  if [[ -S "$gate_runtime_dir/wayland-sos" && -S "$gate_control_socket" ]]; then
+    break
+  fi
+  kill -0 "$gate_compositor_pid" 2>/dev/null
+  sleep 0.01
+done
+[[ -S "$gate_runtime_dir/wayland-sos" && -S "$gate_control_socket" ]]
+
+gate_install="$(target/debug/sos-revision-supervisor install-composition-demo \
+  --root "$gate_revision_root")"
+printf '%s\n' "$gate_install" >"$gate_run_dir/install.json"
+gate_graph_id="$(jq -r '.dashboard_graph' <<<"$gate_install")"
+[[ "$gate_graph_id" =~ ^[0-9a-f]{64}$ ]]
+printf '%s\n' "$gate_appearance_token" >"$gate_appearance_capability_file"
+chmod 600 "$gate_appearance_capability_file"
+
+target/debug/sos-provider-state-service \
+  --socket "$gate_provider_socket" \
+  --state-file "$gate_authority_file" \
+  --appearance-capability-file "$gate_appearance_capability_file" \
+  >"$gate_run_dir/provider.log" 2>&1 &
+gate_provider_pid=$!
+for _ in {1..500}; do
+  [[ -S "$gate_provider_socket" ]] && break
+  kill -0 "$gate_provider_pid" 2>/dev/null
+  sleep 0.01
+done
+[[ -S "$gate_provider_socket" ]]
+
+DISPLAY="$gate_display" \
+XDG_RUNTIME_DIR="$gate_runtime_dir" \
+WAYLAND_DISPLAY=wayland-sos \
+LIBGL_ALWAYS_SOFTWARE=1 \
+SOS_COMPOSITOR_CONTROL="$gate_control_socket" \
+SOS_COMPOSITOR_TOKEN="$gate_token" \
+SOS_ACCESSIBILITY_SOCKET="$gate_accessibility_socket" \
+  target/debug/sos-revision-supervisor serve \
+    --root "$gate_revision_root" \
+    --root-experience sos.example.dashboard \
+    --host-executable "$gate_root/target/debug/sos-experience-host" \
+    --timeout-ms 30000 \
+    --host-arg --service-socket \
+    --host-arg "$gate_provider_socket" \
+    --host-arg --windowed \
+    >"$gate_run_dir/session.log" 2>&1 &
+gate_supervisor_pid=$!
+for _ in {1..3000}; do
+  if [[ -S "$gate_revision_root/run/supervisor.sock" ]] \
+    && target/debug/sos-revision-supervisor daemon-status \
+      --root "$gate_revision_root" >"$gate_run_dir/status-before.json" 2>/dev/null; then
+    break
+  fi
+  kill -0 "$gate_supervisor_pid" 2>/dev/null
+  sleep 0.01
+done
+jq -e --arg graph "$gate_graph_id" \
+  '.ok and .active_graph == $graph and (.host_pid | type == "number")' \
+  "$gate_run_dir/status-before.json" >/dev/null
+gate_pid_before="$(jq -r '.host_pid' "$gate_run_dir/status-before.json")"
+
+for _ in {1..1000}; do
+  if [[ -S "$gate_accessibility_socket" ]] \
+    && accessibility_call '{"method":"snapshot"}' \
+      >"$gate_run_dir/accessibility-before.json" 2>/dev/null \
+    && jq -e '.ok' "$gate_run_dir/accessibility-before.json" >/dev/null; then
+    break
+  fi
+  kill -0 "$gate_supervisor_pid" 2>/dev/null
+  sleep 0.01
+done
+jq -e '
+  [.snapshot.nodes[].id] as $ids
+  | any($ids[]; endswith("::heading"))
+    and any($ids[]; endswith("::agenda-open"))
+    and any($ids[]; endswith("::media-toggle"))
+' "$gate_run_dir/accessibility-before.json" >/dev/null
+gate_agenda_action="$(jq -r \
+  '.snapshot.nodes[] | select(.id | endswith("::agenda-open")) | .id' \
+  "$gate_run_dir/accessibility-before.json")"
+[[ -n "$gate_agenda_action" ]]
+accessibility_call "{\"method\":\"action\",\"kind\":\"activate\",\"target\":\"$gate_agenda_action\"}" \
+  | jq -e '.ok' >/dev/null
+for _ in {1..1000}; do
+  if [[ "$(jq -r '.experiences["sos.example.agenda"].state.selected // empty' \
+      "$gate_authority_file")" == "Design review" \
+    && "$(jq -r '.experiences["sos.example.dashboard"].state.opened // empty' \
+      "$gate_authority_file")" == "Design review" ]]; then
+    break
+  fi
+  kill -0 "$gate_supervisor_pid" 2>/dev/null
+  sleep 0.01
+done
+[[ "$(jq -r '.experiences["sos.example.agenda"].state.selected // empty' \
+  "$gate_authority_file")" == "Design review" ]]
+[[ "$(jq -r '.experiences["sos.example.dashboard"].state.opened // empty' \
+  "$gate_authority_file")" == "Design review" ]]
+
+service_call "{\"protocol_version\":2,\"method\":\"update_appearance\",\"request_id\":10,\"expected_generation\":0,\"capability\":\"$gate_appearance_token\",\"profile\":{\"abi_version\":1,\"generation\":1,\"scheme\":\"light\",\"contrast\":\"high\",\"text_scale_milli\":1250,\"reduce_motion\":true,\"colors\":{\"background\":\"#ffffffff\"},\"spacing\":{},\"radii\":{},\"typography\":{}}}" \
+  >"$gate_run_dir/appearance-response.json"
+jq -e '.ok and .payload.result == "appearance_updated" and .payload.value.generation == 1' \
+  "$gate_run_dir/appearance-response.json" >/dev/null
+for _ in {1..1000}; do
+  if grep -q 'sos_appearance_event generation=1' "$gate_run_dir/session.log"; then
+    break
+  fi
+  kill -0 "$gate_supervisor_pid" 2>/dev/null
+  sleep 0.01
+done
+grep -q 'sos_appearance_event generation=1' "$gate_run_dir/session.log"
+accessibility_call '{"method":"snapshot"}' >"$gate_run_dir/accessibility-after.json"
+jq -e '
+  any(.snapshot.nodes[];
+    (.id | endswith("::agenda-title")) and (.label | contains("appearance 1")))
+' "$gate_run_dir/accessibility-after.json" >/dev/null
+
+target/debug/sos-revision-supervisor activate-graph \
+  --root "$gate_revision_root" --graph "$gate_graph_id" \
+  >"$gate_run_dir/activation.json"
+jq -e --arg graph "$gate_graph_id" \
+  '.ok and .active_graph == $graph and (.event | contains("graph_activated"))' \
+  "$gate_run_dir/activation.json" >/dev/null
+target/debug/sos-revision-supervisor daemon-status \
+  --root "$gate_revision_root" >"$gate_run_dir/status-after.json"
+gate_pid_after="$(jq -r '.host_pid' "$gate_run_dir/status-after.json")"
+[[ "$gate_pid_before" == "$gate_pid_after" ]]
+
+kill -KILL "$gate_pid_after"
+gate_restarted_pid=""
+for _ in {1..2000}; do
+  if target/debug/sos-revision-supervisor daemon-status \
+      --root "$gate_revision_root" >"$gate_run_dir/status-recovered.json" 2>/dev/null; then
+    gate_restarted_pid="$(jq -r '.host_pid // empty' "$gate_run_dir/status-recovered.json")"
+    if [[ -n "$gate_restarted_pid" && "$gate_restarted_pid" != "$gate_pid_after" ]]; then
+      break
+    fi
+  fi
+  kill -0 "$gate_supervisor_pid" 2>/dev/null
+  sleep 0.01
+done
+[[ -n "$gate_restarted_pid" && "$gate_restarted_pid" != "$gate_pid_after" ]]
+jq -e --arg graph "$gate_graph_id" '.ok and .active_graph == $graph' \
+  "$gate_run_dir/status-recovered.json" >/dev/null
+for _ in {1..1000}; do
+  if [[ -S "$gate_accessibility_socket" ]] \
+    && accessibility_call '{"method":"snapshot"}' 2>/dev/null \
+      | jq -e 'any(.snapshot.nodes[].id; . == "root::heading")' >/dev/null; then
+    break
+  fi
+  sleep 0.01
+done
+accessibility_call '{"method":"snapshot"}' \
+  | jq -e 'any(.snapshot.nodes[].id; . == "root::heading")' >/dev/null
+
+[[ "$(grep -c "sos_revision_frame revision_id=$gate_graph_id evidence=nested_backend_submit" \
+  "$gate_run_dir/session.log")" -eq 3 ]]
+if grep -q 'evidence=gpui_next_frame' "$gate_run_dir/session.log"; then
+  printf 'error: graph host fell back to GPUI next-frame evidence\n' >&2
+  exit 1
+fi
+grep -q 'sos_graph_action_committed' "$gate_run_dir/session.log"
+grep -q 'GraphHostRestarted' "$gate_run_dir/session.log"
+grep -q "authenticated SOS shell control connection pid=$gate_pid_before" \
+  "$gate_run_dir/compositor.log"
+grep -q "authenticated SOS shell control connection pid=$gate_restarted_pid" \
+  "$gate_run_dir/compositor.log"
+
+target/debug/sos-revision-supervisor shutdown --root "$gate_revision_root" >/dev/null
+wait "$gate_supervisor_pid"
+gate_supervisor_pid=""
+service_call '{"protocol_version":2,"method":"shutdown","request_id":91}' >/dev/null
+wait "$gate_provider_pid"
+gate_provider_pid=""
+kill -TERM "$gate_compositor_pid" "$gate_weston_pid" "$gate_xvfb_pid"
+wait "$gate_compositor_pid" 2>/dev/null || true
+wait "$gate_weston_pid" 2>/dev/null || true
+wait "$gate_xvfb_pid" 2>/dev/null || true
+gate_compositor_pid=""
+gate_weston_pid=""
+gate_xvfb_pid=""
+
+printf 'linux_composition_nested_passed graph_id=%s activation_pid=%s restarted_pid=%s evidence=nested_backend_submit appearance_generation=1 child_event=agenda.open\n' \
+  "$gate_graph_id" "$gate_pid_after" "$gate_restarted_pid"

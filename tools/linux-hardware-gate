@@ -12,6 +12,8 @@ hardware_gate_development_metadata=/usr/share/doc/sos/development-deployment.env
 hardware_gate_development_manifest=/usr/share/doc/sos/development-deployment-manifest.tsv
 hardware_gate_session_entry=/usr/share/wayland-sessions/sos.desktop
 hardware_gate_state_home="${XDG_STATE_HOME:-$HOME/.local/state}"
+hardware_gate_awake_unit=sos-linux-hardware-gate-awake.service
+hardware_gate_collect_cleanup_unit=""
 
 hardware_gate_fail() {
   printf 'error: %s\n' "$*" >&2
@@ -31,6 +33,72 @@ hardware_gate_usage() {
 
 hardware_gate_require_command() {
   command -v "$1" >/dev/null 2>&1 || hardware_gate_fail "required command not found: $1"
+}
+
+hardware_gate_start_awake_inhibitor() {
+  local evidence_dir="$1" inhibitor_list="" attempt inhibitor_registered=false
+  if sudo systemctl is-active --quiet "$hardware_gate_awake_unit"; then
+    hardware_gate_fail "another prepared Linux hardware gate already owns $hardware_gate_awake_unit"
+  fi
+  sudo systemd-run --quiet \
+    --unit="$hardware_gate_awake_unit" \
+    --property=CollectMode=inactive-or-failed \
+    /usr/bin/systemd-inhibit \
+      --what=idle:sleep:handle-lid-switch \
+      --who='SOS Linux hardware gate' \
+      --why='Prepared physical acceptance campaign' \
+      --mode=block \
+      /usr/bin/sleep infinity
+  for ((attempt = 1; attempt <= 20; attempt++)); do
+    if ! sudo systemctl is-active --quiet "$hardware_gate_awake_unit"; then
+      hardware_gate_fail "Linux hardware gate awake inhibitor exited during startup"
+    fi
+    inhibitor_list="$(COLUMNS=1000 systemd-inhibit --list --no-pager --no-legend)"
+    if grep -F 'SOS Linux hardware gate' <<<"$inhibitor_list" \
+      | grep -F 'sleep:idle:handle-lid-switch' \
+      | grep -F 'Prepared physical acceptance campaign' \
+      | grep -F 'block' >/dev/null; then
+      inhibitor_registered=true
+      break
+    fi
+    sleep 0.05
+  done
+  if [[ "$inhibitor_registered" != true ]]; then
+    sudo systemctl stop "$hardware_gate_awake_unit"
+    hardware_gate_fail "logind did not register the Linux hardware gate awake inhibitor"
+  fi
+  printf '%s\n' "$inhibitor_list" >"$evidence_dir/environment/gate-inhibitor-prepared.txt"
+}
+
+hardware_gate_collect_cleanup() {
+  if [[ -n "$hardware_gate_collect_cleanup_unit" ]] \
+    && sudo systemctl is-active --quiet "$hardware_gate_collect_cleanup_unit"; then
+    sudo systemctl stop "$hardware_gate_collect_cleanup_unit"
+  fi
+}
+
+hardware_gate_stop_awake_inhibitor() {
+  local evidence_dir="$1" unit="$2" inhibitor_list attempt
+  [[ "$unit" == "$hardware_gate_awake_unit" ]] || \
+    hardware_gate_fail "recorded Linux hardware gate awake unit is invalid: $unit"
+  sudo systemctl is-active --quiet "$unit" || \
+    hardware_gate_fail "prepared Linux hardware gate awake inhibitor is not active"
+  inhibitor_list="$(COLUMNS=1000 systemd-inhibit --list --no-pager --no-legend)"
+  grep -F 'SOS Linux hardware gate' <<<"$inhibitor_list" \
+    | grep -F 'sleep:idle:handle-lid-switch' \
+    | grep -F 'Prepared physical acceptance campaign' \
+    | grep -F 'block' >"$evidence_dir/gate-inhibitor-before-release.txt" || \
+    hardware_gate_fail "prepared Linux hardware gate awake inhibitor is not registered"
+  sudo systemctl stop "$unit"
+  for ((attempt = 1; attempt <= 20; attempt++)); do
+    if ! sudo systemctl is-active --quiet "$unit"; then
+      printf 'unit=%s\nstate=inactive\n' "$unit" \
+        >"$evidence_dir/gate-inhibitor-release.txt"
+      return 0
+    fi
+    sleep 0.05
+  done
+  hardware_gate_fail "Linux hardware gate awake inhibitor did not stop"
 }
 
 hardware_gate_metadata_value() {
@@ -102,6 +170,38 @@ hardware_gate_capture_optional() {
   local status=$?
   set -e
   printf '%s\n' "$status" >"$output.status"
+}
+
+hardware_gate_validate_output_config() {
+  local path="$1"
+  jq -e '
+    type == "object"
+    and ((keys - ["mode", "rotation", "scale", "layout", "input_outputs"]) | length == 0)
+    and (.mode == null or (.mode | type == "string" and test("^[1-9][0-9]*x[1-9][0-9]*$")))
+    and (.rotation == null or (.rotation == 0 or .rotation == 90 or .rotation == 180 or .rotation == 270))
+    and (.scale == null or (.scale | type == "number" and . >= 1 and . <= 4))
+    and (.layout == null or .layout == "mirror" or .layout == "extend")
+    and (
+      .input_outputs == null
+      or (
+        .input_outputs
+        | type == "object"
+          and length <= 32
+          and all(
+            to_entries[];
+            (.key
+              | utf8bytelength >= 1
+                and utf8bytelength <= 128
+                and (test("[[:cntrl:]]") | not))
+            and (.value
+              | type == "string"
+                and utf8bytelength >= 1
+                and utf8bytelength <= 128
+                and (test("[[:cntrl:]]") | not))
+          )
+      )
+    )
+  ' "$path" >/dev/null
 }
 
 hardware_gate_sysroot_path() {
@@ -226,7 +326,12 @@ hardware_gate_verify_installed_files() {
     [[ -n "$path" && -n "$expected_bytes" && -n "$expected_sha" ]] || \
       hardware_gate_fail "malformed installed artifact manifest"
     case "$path" in
-      /usr/local/libexec/sos/*|/usr/local/libexec/sos-agent/*|/usr/share/wayland-sessions/sos.desktop|/usr/share/sos/*) ;;
+      /usr/local/libexec/sos/*|\
+      /usr/local/libexec/sos-agent/*|\
+      /usr/local/lib/systemd/user/sos-session.target|\
+      /usr/local/lib/systemd/user/sos-session-shutdown.target|\
+      /usr/share/wayland-sessions/sos.desktop|\
+      /usr/share/sos/*) ;;
       *) hardware_gate_fail "unsafe installed artifact path: $path" ;;
     esac
     [[ -f "$path" ]] || hardware_gate_fail "installed artifact is missing: $path"
@@ -248,7 +353,12 @@ hardware_gate_snapshot_development_files() {
     [[ -n "$path" && -n "$expected_bytes" && -n "$expected_sha" ]] || \
       hardware_gate_fail "malformed baked artifact manifest"
     case "$path" in
-      /usr/local/libexec/sos/*|/usr/local/libexec/sos-agent/*|/usr/share/wayland-sessions/sos.desktop|/usr/share/sos/*) ;;
+      /usr/local/libexec/sos/*|\
+      /usr/local/libexec/sos-agent/*|\
+      /usr/local/lib/systemd/user/sos-session.target|\
+      /usr/local/lib/systemd/user/sos-session-shutdown.target|\
+      /usr/share/wayland-sessions/sos.desktop|\
+      /usr/share/sos/*) ;;
       *) hardware_gate_fail "unsafe baked artifact path: $path" ;;
     esac
     [[ -f "$path" ]] || hardware_gate_fail "development artifact is missing: $path"
@@ -275,7 +385,8 @@ hardware_gate_verify_development_deployment() {
   [[ -r "$hardware_gate_development_metadata" \
     && -r "$hardware_gate_development_manifest" ]] || \
     hardware_gate_fail "development deployment metadata and manifest must be present together"
-  local source_revision source_dirty path expected_bytes expected_sha count=0
+  local source_revision source_dirty
+  local path expected_bytes expected_sha count=0
   source_revision="$(hardware_gate_metadata_value "$hardware_gate_development_metadata" source_revision)"
   source_dirty="$(hardware_gate_metadata_value "$hardware_gate_development_metadata" source_dirty)"
   [[ "$source_revision" =~ ^[0-9a-f]{40}$ && "$source_dirty" =~ ^(true|false)$ ]] || \
@@ -290,11 +401,18 @@ hardware_gate_verify_development_deployment() {
       /usr/local/libexec/sos/sos-agent-authoring|\
       /usr/local/libexec/sos/sos-linux-provider-probe|\
       /usr/local/libexec/sos/sos-login-session|\
+      /usr/local/libexec/sos/sos-agent-login|\
+      /usr/local/libexec/sos-agent/dist/agent-runner.cjs|\
       /usr/local/lib/systemd/user/sos-session.target|\
       /usr/local/lib/systemd/user/sos-session-shutdown.target|\
       /usr/local/libexec/sos/linux-hardware-gate|\
       /usr/share/sos/experiences/default.luau|\
-      /usr/share/doc/sos/experience-api.md) ;;
+      /usr/share/sos/experiences/default.package.json|\
+      /usr/share/sos/experiences/modules/stock-theme.luau|\
+      /usr/share/doc/sos/experience-api.md|\
+      /usr/share/doc/sos/sos-agent.md|\
+      /usr/share/doc/sos/linux-stable-host.md|\
+      /etc/xdg/monitors.xml) ;;
       *) hardware_gate_fail "unsafe development deployment path: $path" ;;
     esac
     [[ "$expected_bytes" =~ ^[1-9][0-9]*$ && "$expected_sha" =~ ^[0-9a-f]{64}$ ]] || \
@@ -334,7 +452,7 @@ hardware_gate_capture_drm() {
 hardware_gate_prepare() {
   hardware_gate_parse_dir_options "$@"
   for command in cut journalctl jq libinput lscpu lspci loginctl python3 readlink realpath \
-    sed sha256sum stat sudo systemctl systemd-detect-virt tr uname; do
+    sed sha256sum stat sudo systemctl systemd-detect-virt systemd-inhibit systemd-run tr uname; do
     hardware_gate_require_command "$command"
   done
   [[ "$(id -u)" -ne 0 ]] || hardware_gate_fail "run the physical gate as the desktop user, not root"
@@ -401,8 +519,8 @@ hardware_gate_prepare() {
   if [[ "$installed_mode" == offline ]]; then
     local fake_source
     fake_source="$(sed -n 's/^SOS_AGENT_FAKE_SOURCE=//p' "$agent_config" | tail -n 1)"
-    [[ "$fake_source" == /usr/share/sos/experiences/daily-flow.luau && -r "$fake_source" ]] || \
-      hardware_gate_fail "physical gate requires the installed deterministic offline source"
+    [[ "$fake_source" == /usr/share/sos/experiences/default.luau && -r "$fake_source" ]] || \
+      hardware_gate_fail "physical gate requires the installed Stock offline source"
   else
     [[ -s "$hardware_gate_state_home/sos/agent/auth.json" ]] || \
       hardware_gate_fail "live selectable-session credentials are missing"
@@ -459,13 +577,8 @@ hardware_gate_prepare() {
     && -O "$hardware_gate_state_home/sos/output.json" \
     && -r "$hardware_gate_state_home/sos/output.json" ]] || \
     hardware_gate_fail "selectable-session output configuration is missing"
-  jq -e '
-    type == "object"
-    and ((keys - ["mode", "rotation", "scale"]) | length == 0)
-    and (.mode == null or (.mode | type == "string" and test("^[1-9][0-9]*x[1-9][0-9]*$")))
-    and (.rotation == null or (.rotation == 0 or .rotation == 90 or .rotation == 180 or .rotation == 270))
-    and (.scale == null or (.scale | type == "number" and . >= 1 and . <= 4))
-  ' "$hardware_gate_state_home/sos/output.json" >/dev/null || \
+  hardware_gate_validate_output_config \
+    "$hardware_gate_state_home/sos/output.json" || \
     hardware_gate_fail "selectable-session output configuration is invalid"
   cp -- "$hardware_gate_state_home/sos/output.json" "$evidence_dir/environment/output.json"
 
@@ -525,6 +638,7 @@ hardware_gate_prepare() {
     "campaign_class=$campaign_class" \
     "not_installed_product=$not_installed_product" \
     'promotion_eligible=false' \
+    "gate_inhibitor_unit=$hardware_gate_awake_unit" \
     "user_uid=$(id -u)" \
     "state_home=$hardware_gate_state_home" \
     "product_name=$product" \
@@ -551,6 +665,7 @@ hardware_gate_prepare() {
       'Collect on this same boot and copy the evidence directory off before reboot.' \
       >>"$evidence_dir/instructions.txt"
   fi
+  hardware_gate_start_awake_inhibitor "$evidence_dir"
   touch "$evidence_dir/prepared"
   printf 'linux_hardware_gate_prepared evidence_dir=%s revision=%s product=%s agent_mode=%s boot_kind=%s\n' \
     "$evidence_dir" "$source_revision" "$product" "$installed_mode" "$boot_kind"
@@ -581,8 +696,8 @@ hardware_gate_audit_dir() {
   local evidence_dir="$1"
   local journal="$evidence_dir/journal-user.txt"
   [[ -f "$evidence_dir/campaign.env" && -f "$evidence_dir/collection.env" \
-    && -f "$journal" ]] || \
-    hardware_gate_fail "campaign, collection, or collected session journal is missing"
+    && -f "$journal" && -f "$evidence_dir/environment/libinput.txt" ]] || \
+    hardware_gate_fail "campaign, collection, input inventory, or collected session journal is missing"
   hardware_gate_audit_failed=false
   local agent_mode current_revision authority_revision presentation_count presentation_revisions
   local boot_kind campaign_class prepared_boot_id collected_boot_id
@@ -624,8 +739,49 @@ hardware_gate_audit_dir() {
     'observed native compositor input input_class="pointer_button"' "$journal"
   hardware_gate_criterion_pattern touchscreen_input \
     'observed native compositor input input_class="touch"' "$journal"
+  local input_inventory unexpected_input_devices unexpected_input_count
+  input_inventory="$(sed -n 's/^Device:[[:space:]]*//p' \
+    "$evidence_dir/environment/libinput.txt")"
+  unexpected_input_devices="$({
+    sed -n 's/.*libinput device added .*device_name="\([^"]*\)".*/\1/p' "$journal" \
+      | LC_ALL=C sort -u \
+      | while IFS= read -r device_name; do
+          if ! grep -Fxq -- "$device_name" <<<"$input_inventory"; then
+            printf '%s\n' "$device_name"
+          fi
+        done
+  })"
+  unexpected_input_count="$(sed '/^$/d' <<<"$unexpected_input_devices" | wc -l)"
+  if [[ -n "$input_inventory" && "$unexpected_input_count" -eq 0 ]]; then
+    printf 'criterion=input_device_inventory result=PASS\n'
+  else
+    printf 'criterion=input_device_inventory result=FAIL unexpected_devices=%s\n' \
+      "$unexpected_input_count"
+    hardware_gate_audit_failed=true
+  fi
   hardware_gate_criterion_pattern clean_logout \
     'linux_login_session_stopped reason=user_logout' "$journal"
+
+  local inhibitor_prepared="$evidence_dir/environment/gate-inhibitor-prepared.txt"
+  local inhibitor_before_release="$evidence_dir/gate-inhibitor-before-release.txt"
+  local inhibitor_release="$evidence_dir/gate-inhibitor-release.txt"
+  if [[ -f "$inhibitor_prepared" && -f "$inhibitor_before_release" \
+    && -f "$inhibitor_release" ]] \
+    && grep -F 'SOS Linux hardware gate' "$inhibitor_prepared" \
+      | grep -F 'sleep:idle:handle-lid-switch' \
+      | grep -F 'Prepared physical acceptance campaign' \
+      | grep -F 'block' >/dev/null \
+    && grep -F 'SOS Linux hardware gate' "$inhibitor_before_release" \
+      | grep -F 'sleep:idle:handle-lid-switch' \
+      | grep -F 'Prepared physical acceptance campaign' \
+      | grep -F 'block' >/dev/null \
+    && grep -Fx "unit=$hardware_gate_awake_unit" "$inhibitor_release" >/dev/null \
+    && grep -Fx 'state=inactive' "$inhibitor_release" >/dev/null; then
+    printf 'criterion=gate_awake_inhibitor result=PASS\n'
+  else
+    printf 'criterion=gate_awake_inhibitor result=FAIL\n'
+    hardware_gate_audit_failed=true
+  fi
 
   presentation_count="$(grep -c 'presented armed shell revision.*evidence="drm_page_flip"' "$journal" || true)"
   presentation_revisions="$(
@@ -641,17 +797,26 @@ hardware_gate_audit_dir() {
     hardware_gate_audit_failed=true
   fi
 
-  local host_launches
-  host_launches="$(grep -c 'linux_system_session_component component=host pid=' "$journal" || true)"
-  if [[ "$host_launches" -eq 1 ]] && ! grep -q 'HostRestarted' "$journal"; then
-    printf 'criterion=stable_host_lifecycle result=PASS host_launches=1\n'
+  local shell_host_pids application_host_pids
+  shell_host_pids="$({
+    sed -n 's/.*authenticated SOS compositor control connection pid=\([0-9][0-9]*\) role=Shell.*/\1/p' \
+      "$journal"
+  } | sort -u | sed '/^$/d' | wc -l)"
+  application_host_pids="$({
+    sed -n 's/.*authenticated SOS compositor control connection pid=\([0-9][0-9]*\) role=NativeApplication.*/\1/p' \
+      "$journal"
+  } | sort -u | sed '/^$/d' | wc -l)"
+  if [[ "$shell_host_pids" -eq 1 ]]; then
+    printf 'criterion=stable_host_lifecycle result=PASS shell_host_pids=1 application_host_pids=%s\n' \
+      "$application_host_pids"
   else
-    printf 'criterion=stable_host_lifecycle result=FAIL host_launches=%s\n' "$host_launches"
+    printf 'criterion=stable_host_lifecycle result=FAIL shell_host_pids=%s application_host_pids=%s\n' \
+      "$shell_host_pids" "$application_host_pids"
     hardware_gate_audit_failed=true
   fi
 
-  current_revision="$(tr -d '\n' <"$evidence_dir/current-revision.txt")"
-  authority_revision="$(tr -d '\n' <"$evidence_dir/authority-revision.txt")"
+  current_revision="$(tr -d '\n' <"$evidence_dir/stock-registry-revision.txt")"
+  authority_revision="$(tr -d '\n' <"$evidence_dir/stock-authority-revision.txt")"
   if [[ -n "$current_revision" && "$current_revision" == "$authority_revision" ]]; then
     printf 'criterion=durable_authority result=PASS revision_id=%s\n' "$current_revision"
   else
@@ -701,7 +866,8 @@ hardware_gate_generate_manifest() {
     after="$(stat -c '%s:%Y' "$path")"
     [[ "$before" == "$after" ]] || hardware_gate_fail "evidence changed while hashing: $relative"
     printf '%s\t%s\t%s\n' "$relative" "$bytes" "$digest" >>"$temporary"
-  done < <(find "$evidence_dir" -type f ! -name '.evidence-manifest.tsv.*' -print0 | sort -z)
+  done < <(find "$evidence_dir" -type f ! -name '.evidence-manifest.tsv.*' -print0 \
+    | LC_ALL=C sort -z)
   [[ -s "$temporary" ]] || hardware_gate_fail "evidence directory contains no finalized files"
   mv -- "$temporary" "$manifest"
 }
@@ -714,7 +880,7 @@ hardware_gate_verify_manifest_dir() {
   diff -u \
     <(cut -f 1 "$manifest") \
     <(find "$evidence_dir" -type f ! -name evidence-manifest.tsv \
-      ! -name '.evidence-manifest.tsv.*' -printf '%P\n' | sort) >/dev/null || \
+      ! -name '.evidence-manifest.tsv.*' -printf '%P\n' | LC_ALL=C sort) >/dev/null || \
     hardware_gate_fail "evidence manifest paths are missing, extra, or unsorted"
   while IFS=$'\t' read -r path bytes digest; do
     [[ -n "$path" && "$path" != /* && "$path" != *'..'* ]] || \
@@ -737,12 +903,14 @@ hardware_gate_collect() {
   hardware_gate_parse_dir_options "$@"
   [[ -z "$hardware_gate_expected_product" ]] || \
     hardware_gate_fail "--expect-product is accepted only by prepare"
-  for command in cut diff find journalctl jq loginctl python3 realpath sed sha256sum sort stat sudo systemctl tr; do
+  for command in cut diff find journalctl jq loginctl python3 realpath sed sha256sum sort stat \
+    sudo systemctl systemd-inhibit tr; do
     hardware_gate_require_command "$command"
   done
   [[ "${XDG_CURRENT_DESKTOP:-}" != SOS ]] || \
     hardware_gate_fail "return to the fallback desktop before collecting evidence"
   local evidence_dir cursor user_uid state_home started_ns finished_ns duration_ns
+  local gate_inhibitor_unit
   local prepared_boot_kind current_boot_kind prepared_boot_id current_boot_id
   evidence_dir="$(hardware_gate_resolve_existing_dir "$hardware_gate_requested_dir")"
   [[ -f "$evidence_dir/prepared" ]] || hardware_gate_fail "campaign was not prepared"
@@ -762,6 +930,13 @@ hardware_gate_collect() {
     [[ "$current_boot_kind" == development-live ]] || \
       hardware_gate_fail "development-live evidence must be collected on the same live overlay boot"
   fi
+  gate_inhibitor_unit="$(hardware_gate_metadata_value "$evidence_dir/campaign.env" gate_inhibitor_unit)"
+  [[ "$gate_inhibitor_unit" == "$hardware_gate_awake_unit" ]] || \
+    hardware_gate_fail "campaign has no valid Linux hardware gate awake inhibitor"
+  sudo systemctl is-active --quiet "$gate_inhibitor_unit" || \
+    hardware_gate_fail "prepared Linux hardware gate awake inhibitor is not active"
+  hardware_gate_collect_cleanup_unit="$gate_inhibitor_unit"
+  trap hardware_gate_collect_cleanup EXIT
 
   # The redirects intentionally run as the evidence owner; only journal access needs sudo.
   # shellcheck disable=SC2024
@@ -775,13 +950,13 @@ hardware_gate_collect() {
   systemctl status display-manager --no-pager >"$evidence_dir/display-manager-after.txt" 2>&1 || true
 
   local revision_root="$state_home/sos/revisions"
-  /usr/local/libexec/sos/sos-revision-supervisor status --root "$revision_root" \
-    >"$evidence_dir/current-revision.txt"
+  /usr/local/libexec/sos/sos-revision-supervisor experience-status \
+    --root "$revision_root" \
+    --experience sos.stock.shell >"$evidence_dir/stock-registry-revision.txt"
   [[ -r "$state_home/sos/provider/authority.json" ]] || \
     hardware_gate_fail "durable provider authority is missing"
-  # Pin to AuthorityData.current.revision_id; drafts and events also contain revision_id.
-  jq -er '.current.revision_id // empty | select(length > 0)' \
-    "$state_home/sos/provider/authority.json" >"$evidence_dir/authority-revision.txt"
+  jq -er '.experiences["sos.stock.shell"].revision_id // empty | select(length > 0)' \
+    "$state_home/sos/provider/authority.json" >"$evidence_dir/stock-authority-revision.txt"
   cp -- "$state_home/sos/provider/authority.json" "$evidence_dir/authority.json"
 
   started_ns="$(hardware_gate_metadata_value "$evidence_dir/campaign.env" started_monotonic_ns)"
@@ -793,6 +968,10 @@ hardware_gate_collect() {
     "boot_id=$current_boot_id" \
     "finished_monotonic_ns=$finished_ns" \
     "duration_ns=$duration_ns" >"$evidence_dir/collection.env"
+
+  hardware_gate_stop_awake_inhibitor "$evidence_dir" "$gate_inhibitor_unit"
+  hardware_gate_collect_cleanup_unit=""
+  trap - EXIT
 
   local audit_status=0
   set +e
@@ -806,6 +985,10 @@ hardware_gate_collect() {
   printf 'measured_wall_time_ns=%s evidence_dir=%s\n' "$duration_ns" "$evidence_dir"
   return "$audit_status"
 }
+
+if [[ "${BASH_SOURCE[0]}" != "$0" ]]; then
+  return 0
+fi
 
 [[ "$#" -ge 1 ]] || {
   hardware_gate_usage >&2

@@ -1,11 +1,16 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
+use experience_package::{
+    AppearanceProfile, BoundaryGrant, DependencyAlias, ExperienceId, ExportId,
+};
 use serde::{Deserialize, Serialize};
 
-pub const PROTOCOL_VERSION: u32 = 1;
+pub const LEGACY_PROTOCOL_VERSION: u32 = 1;
+pub const PROTOCOL_VERSION: u32 = 2;
 pub const MAX_STATE_BYTES: usize = 1024 * 1024;
 pub const MAX_ACTIONS: usize = 64;
 pub const MAX_EVENTS_PER_REQUEST: usize = 1_000;
+pub const MAX_GRAPH_PROMOTIONS: usize = experience_package::MAX_GRAPH_INSTANCES;
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 pub struct StateResource {
@@ -29,6 +34,46 @@ impl Default for StateResource {
     }
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+pub struct ExperienceStateResource {
+    pub experience_id: ExperienceId,
+    #[serde(flatten)]
+    pub resource: StateResource,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct AppearanceResource {
+    #[serde(flatten)]
+    pub profile: AppearanceProfile,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct GrantDecisionResource {
+    pub generation: u64,
+    pub reviewed: bool,
+    pub experience_id: ExperienceId,
+    #[serde(default)]
+    pub provider_capabilities: BTreeSet<String>,
+    #[serde(default)]
+    pub data_flows: BTreeMap<DependencyAlias, DataFlowGrant>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct DataFlowGrant {
+    pub experience_id: ExperienceId,
+    pub export_id: ExportId,
+    #[serde(flatten)]
+    pub grant: BoundaryGrant,
+}
+
+impl Default for AppearanceResource {
+    fn default() -> Self {
+        Self {
+            profile: AppearanceProfile::default(),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 pub struct NotesResource {
     pub attachments: BTreeMap<String, String>,
@@ -38,6 +83,17 @@ pub struct NotesResource {
 #[serde(tag = "resource", rename_all = "snake_case")]
 pub enum ResourceQuery {
     ExperienceState,
+    ExperienceStateFor {
+        experience_id: ExperienceId,
+    },
+    ExperienceStateAt {
+        experience_id: ExperienceId,
+        revision_id: String,
+    },
+    GrantDecisionFor {
+        experience_id: ExperienceId,
+    },
+    Appearance,
     Notes,
 }
 
@@ -45,6 +101,10 @@ pub enum ResourceQuery {
 #[serde(tag = "resource", content = "value", rename_all = "snake_case")]
 pub enum ResourceValue {
     ExperienceState(StateResource),
+    ExperienceStateFor(ExperienceStateResource),
+    ExperienceStateAt(ExperienceStateResource),
+    GrantDecision(GrantDecisionResource),
+    Appearance(AppearanceResource),
     Notes(NotesResource),
 }
 
@@ -84,6 +144,50 @@ pub struct PromotionDraft {
     pub actions: Vec<ProviderAction>,
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+pub struct ExperiencePromotionDraft {
+    pub experience_id: ExperienceId,
+    #[serde(flatten)]
+    pub draft: PromotionDraft,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+pub struct GraphExperiencePromotion {
+    pub experience_id: ExperienceId,
+    pub expected_revision: u64,
+    pub revision_id: String,
+    pub schema_version: u64,
+    pub source_sha256: String,
+    pub state: serde_json::Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub migration: Option<MigrationProof>,
+    #[serde(default)]
+    pub actions: Vec<ProviderAction>,
+}
+
+impl GraphExperiencePromotion {
+    pub fn as_promotion(&self, transaction_id: &str) -> PromotionDraft {
+        PromotionDraft {
+            transaction_id: transaction_id.into(),
+            expected_revision: self.expected_revision,
+            revision_id: self.revision_id.clone(),
+            schema_version: self.schema_version,
+            source_sha256: self.source_sha256.clone(),
+            state: self.state.clone(),
+            migration: self.migration.clone(),
+            actions: self.actions.clone(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+pub struct GraphPromotionDraft {
+    pub transaction_id: String,
+    #[serde(default)]
+    pub activate: bool,
+    pub promotions: Vec<GraphExperiencePromotion>,
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum TransactionStatus {
@@ -101,12 +205,31 @@ pub struct EffectReceipt {
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 pub struct TransactionRecord {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub experience_id: Option<ExperienceId>,
     pub draft: PromotionDraft,
     pub status: TransactionStatus,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub committed_revision: Option<u64>,
     #[serde(default)]
     pub effects: Vec<EffectReceipt>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct GraphEffectReceipt {
+    pub experience_id: ExperienceId,
+    pub effect_id: String,
+    pub action: ProviderAction,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+pub struct GraphTransactionRecord {
+    pub draft: GraphPromotionDraft,
+    pub status: TransactionStatus,
+    #[serde(default)]
+    pub committed_revisions: BTreeMap<ExperienceId, u64>,
+    #[serde(default)]
+    pub effects: Vec<GraphEffectReceipt>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -140,6 +263,26 @@ pub enum ServiceEventKind {
     TransactionAborted {
         transaction_id: String,
     },
+    GraphTransactionStaged {
+        transaction_id: String,
+        experience_count: usize,
+    },
+    GraphRevisionsCommitted {
+        transaction_id: String,
+        revisions: BTreeMap<ExperienceId, u64>,
+    },
+    GraphActionApplied {
+        transaction_id: String,
+        experience_id: ExperienceId,
+        effect_id: String,
+        action: ProviderAction,
+    },
+    GraphTransactionCompleted {
+        transaction_id: String,
+    },
+    GraphTransactionAborted {
+        transaction_id: String,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -163,6 +306,26 @@ pub enum ServiceRequest {
         request_id: u64,
         draft: PromotionDraft,
     },
+    StageExperiencePromotion {
+        request_id: u64,
+        draft: ExperiencePromotionDraft,
+    },
+    StageGraphPromotion {
+        request_id: u64,
+        draft: GraphPromotionDraft,
+    },
+    UpdateAppearance {
+        request_id: u64,
+        expected_generation: u64,
+        capability: String,
+        profile: AppearanceProfile,
+    },
+    UpdateGrantDecision {
+        request_id: u64,
+        expected_generation: u64,
+        capability: String,
+        decision: GrantDecisionResource,
+    },
     Promote {
         request_id: u64,
         transaction_id: String,
@@ -172,6 +335,18 @@ pub enum ServiceRequest {
         transaction_id: String,
     },
     GetTransaction {
+        request_id: u64,
+        transaction_id: String,
+    },
+    PromoteGraph {
+        request_id: u64,
+        transaction_id: String,
+    },
+    AbortGraph {
+        request_id: u64,
+        transaction_id: String,
+    },
+    GetGraphTransaction {
         request_id: u64,
         transaction_id: String,
     },
@@ -194,9 +369,16 @@ impl ServiceRequest {
         match self {
             Self::GetResource { request_id, .. }
             | Self::StagePromotion { request_id, .. }
+            | Self::StageExperiencePromotion { request_id, .. }
+            | Self::StageGraphPromotion { request_id, .. }
+            | Self::UpdateAppearance { request_id, .. }
+            | Self::UpdateGrantDecision { request_id, .. }
             | Self::Promote { request_id, .. }
             | Self::Abort { request_id, .. }
             | Self::GetTransaction { request_id, .. }
+            | Self::PromoteGraph { request_id, .. }
+            | Self::AbortGraph { request_id, .. }
+            | Self::GetGraphTransaction { request_id, .. }
             | Self::ListEvents { request_id, .. }
             | Self::ConfigureFault { request_id, .. }
             | Self::Shutdown { request_id } => *request_id,
@@ -225,6 +407,9 @@ impl ServiceRequestEnvelope {
 pub enum ResponsePayload {
     Resource { value: ResourceValue },
     Transaction { record: TransactionRecord },
+    GraphTransaction { record: GraphTransactionRecord },
+    AppearanceUpdated { value: AppearanceResource },
+    GrantDecisionUpdated { value: GrantDecisionResource },
     Events { events: Vec<ServiceEvent> },
     FaultConfigured,
     Shutdown,
@@ -234,6 +419,7 @@ pub enum ResponsePayload {
 #[serde(tag = "code", rename_all = "snake_case")]
 pub enum ServiceError {
     InvalidRequest { message: String },
+    Denied { message: String },
     Conflict { message: String },
     NotFound { message: String },
     InvalidMigration { message: String },

@@ -43,6 +43,27 @@ boot has irreversibly changed the Knox warranty bit to `1`.
 
 ## Connected-device evidence
 
+### Durable host USB access
+
+The phone changes USB identity across Android/Download (`04e8:685d`), stock
+MTP/ADB (`04e8:6860`), and Recovery sideload (`18d1:d001`). Desktop-seat
+`uaccess` alone does not grant a remote acceptance session access after each
+reenumeration. Install the repository's exact-product rule once, selecting a
+group that contains the device owner; on this Fedora workstation that group is
+`wheel`:
+
+```sh
+sudo ./tools/a33xctl install-host-usb-rules --group wheel
+```
+
+The command validates the group, installs
+`/etc/udev/rules.d/70-sos-a33x-usb.rules` as root-owned mode 0644, reloads the
+rules, retriggers current USB devices, and waits for udev to settle. The three
+device nodes become root/group mode 0660 and retain `uaccess` for local-seat
+use. It does not authorize an ADB key, reboot the phone, enter a boot mode, or
+write a partition. Confirm membership with `id` and reconnect once if a
+pre-existing process still holds an older node.
+
 The non-destructive 2026-08-15 probe used the already-authorized ADB connection. It
 did not reboot, unlock, wipe, root, enter Download Mode, or write a partition.
 Developer Options was opened for UI inspection and the phone was returned to
@@ -490,8 +511,8 @@ The combined follow-up adds one resident Android experience agent without
 changing the authority boundary. Its deterministic fake and OpenAI provider
 both produce a complete bounded Luau proposal, which must still compile,
 render, validate, stage, visibly present, and commit through the same on-device
-revision transaction proven above. The fake alternates Daily Flow and
-Timeflow, and both now retain the SOS network and agent surfaces.
+revision transaction proven above. The fake alternates Stock and Timeflow,
+and both retain the SOS network and agent controls.
 
 Credential setup is a trusted Android password dialog, not a Luau field. The
 API key is AES-GCM encrypted with a non-exportable Android Keystore alias; only
@@ -611,7 +632,7 @@ an independent HOME-process restart.
 
 The first native-Pi OTA was 1,277,021,382 bytes, SHA-256
 `a515008d154bf1d0e2599d45bd3fb5c7b08781bb8bb602af7bdc56150edbf974`.
-Its deterministic Pi path activated updated Daily Flow revision
+Its deterministic Pi path activated the legacy alternate revision
 `3839f95c7dc6e44efad083bbd06cd41bf3efe57dedf70044b3d0ac9dd6d10c14`.
 The owner then completed Codex device authorization, and a prompt submitted
 through the phone's Luau composer ran real Pi and visibly replaced HOME with a

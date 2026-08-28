@@ -9,6 +9,7 @@ publish = false
 anyhow = "1"
 compositor-control-protocol.workspace = true
 experience-ir.workspace = true
+experience-package.workspace = true
 nix = { version = "0.31", features = ["fs", "signal", "socket", "user"] }
 provider-state-service.workspace = true
 providers-fake.workspace = true

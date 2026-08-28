@@ -5,8 +5,125 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ctl="$repo_root/tools/a33xctl"
 mock_adb="$repo_root/tests/fixtures/a33xctl-mock-adb"
+mock_nc="$repo_root/tests/fixtures/a33xctl-mock-nc"
 test_root="$(mktemp -d /tmp/sos-a33xctl-host-test.XXXXXX)"
 trap 'rm -rf -- "$test_root"' EXIT
+
+adb_manifest="$repo_root/aosp/device/sos/a33x/frameworkbridge/AndroidManifest.xml"
+adb_receiver="$repo_root/aosp/device/sos/a33x/frameworkbridge/src/dev/sos/frameworkbridge/SosAdbConsentReceiver.java"
+adb_home_manifest="$repo_root/apps/experience/android/gradle/app/src/main/AndroidManifest.xml"
+adb_activity="$repo_root/apps/experience/android/gradle/app/src/main/java/dev/gpui/mobile/SosAdbConfirmationActivity.java"
+adb_overlay="$repo_root/aosp/device/sos/a33x/overlays/compat1/framework/res/values/config.xml"
+adb_permissions="$repo_root/aosp/device/sos/a33x/permissions/privapp-permissions-sos.xml"
+activity_policy="$repo_root/aosp/patches/a33x-lineage-23.0/0004-frameworks-base-enforce-sos-core-install-policy.patch"
+usb_rules="$repo_root/tools/a33x/70-sos-a33x-usb.rules.in"
+mobile_source="$repo_root/experiences/mobile.luau"
+mobile_package="$repo_root/experiences/mobile.package.json"
+mobile_theme="$repo_root/experiences/modules/mobile-theme.luau"
+android_authority_rc="$repo_root/aosp/device/sos/a33x/sos-authority.rc"
+android_authority_main="$repo_root/crates/android-system-authority/src/main.rs"
+android_agent="$repo_root/apps/experience/android/gradle/app/src/main/java/dev/gpui/mobile/GpuiAgent.java"
+core_input_automation="$repo_root/aosp/device/sos/a33x/core/input_automation.cpp"
+core_input_product="$repo_root/aosp/device/sos/a33x/lineage_sos_core1_a33x.mk"
+core_input_rc="$repo_root/aosp/device/sos/a33x/core/sos-core-input-automation.rc"
+grep -F 'android:name="dev.sos.permission.REPORT_ADB_CONSENT"' "$adb_manifest" >/dev/null
+grep -F 'android:protectionLevel="signature"' "$adb_manifest" >/dev/null
+grep -F 'android:name=".SosAdbConsentReceiver"' "$adb_manifest" >/dev/null
+grep -F 'android:permission="dev.sos.permission.REPORT_ADB_CONSENT"' \
+  "$adb_manifest" >/dev/null
+grep -F '<uses-permission android:name="android.permission.INTERNET" />' \
+  "$adb_manifest" >/dev/null
+grep -F 'android:name="dev.gpui.mobile.SosAdbConfirmationActivity"' \
+  "$adb_home_manifest" >/dev/null
+grep -F 'android:permission="android.permission.MANAGE_DEBUGGING"' \
+  "$adb_home_manifest" >/dev/null
+grep -F 'android:name="dev.sos.permission.REPORT_ADB_CONSENT"' \
+  "$adb_home_manifest" >/dev/null
+grep -F 'android:name="android.permission.HIDE_OVERLAY_WINDOWS"' \
+  "$adb_home_manifest" >/dev/null
+grep -F '<permission name="android.permission.MANAGE_DEBUGGING" />' \
+  "$adb_permissions" >/dev/null
+[[ "$(grep -Fc 'dev.sos.experience/dev.gpui.mobile.SosAdbConfirmationActivity' \
+  "$adb_overlay")" == 2 ]]
+grep -F '!"dev.sos.experience".equals(activityInfo.packageName)' "$activity_policy" >/dev/null
+! grep -F 'dev.sos.frameworkbridge.SosAdbConfirmationActivity' "$activity_policy" >/dev/null
+for marker in \
+  'setHideOverlayWindows(true)' \
+  'users.isAdminUser()' \
+  'users.isUserUnlocked()' \
+  'sendBroadcast(result)' \
+  '"Allow once"' \
+  '"Always allow this computer"' \
+  '"Deny connection"'; do
+  grep -F "$marker" "$adb_activity" >/dev/null
+done
+for marker in \
+  'IAdbManager' \
+  'allowDebugging(DECISION_ALWAYS_ALLOW.equals(decision), key)' \
+  'adbManager().denyDebugging()' \
+  'framework_adb_consent action='; do
+  grep -F "$marker" "$adb_receiver" >/dev/null
+done
+for identity in '04e8.*685d' '04e8.*6860' '18d1.*d001'; do
+  grep -E "$identity" "$usb_rules" >/dev/null
+done
+[[ "$(grep -Fc 'MODE:="0660"' "$usb_rules")" == 3 ]]
+[[ "$(grep -Fc 'GROUP:="@SOS_USB_GROUP@"' "$usb_rules")" == 3 ]]
+jq -e '.format_version == 4 and .experience_id == "sos.stock.mobile" and .role == "shell"' \
+  "$mobile_package" >/dev/null
+for marker in stock-mobile-root mobile-top-bar mobile-bottom-navigation mobile-app-launcher; do
+  grep -F "$marker" "$mobile_source" >/dev/null
+done
+! grep -F 'kind = "window_space"' "$mobile_source" >/dev/null
+grep -F 'touch = {' "$mobile_theme" >/dev/null
+grep -F -- '--bootstrap-source /system_ext/etc/sos/mobile.luau' \
+  "$android_authority_rc" >/dev/null
+grep -F -- '--bootstrap-asset mobile.theme luau' "$android_authority_rc" >/dev/null
+grep -F '__android_log_write(ANDROID_LOG_ERROR' "$android_authority_main" >/dev/null
+grep -F 'install reference composition failed: {error}' \
+  "$android_authority_main" >/dev/null
+grep -F 'SOCKET_REUSE_STEP' "$android_authority_main" >/dev/null
+grep -F 'SOCKET_LISTEN_STEP' "$android_authority_main" >/dev/null
+grep -F 'private static final String PROVIDER_FAKE = "fake";' "$android_agent" >/dev/null
+grep -F 'private static final String RUNNER_PROVIDER_FAUX = "faux";' "$android_agent" >/dev/null
+grep -F '? RUNNER_PROVIDER_FAUX : provider)' "$android_agent" >/dev/null
+grep -F 'SosCompatChromeService.this, "apps")' \
+  "$repo_root/apps/experience/android/gradle/app/src/main/java/dev/gpui/mobile/SosCompatChromeService.java" \
+  >/dev/null
+grep -F 'SosCompatChromeService.this, "controls")' \
+  "$repo_root/apps/experience/android/gradle/app/src/main/java/dev/gpui/mobile/SosCompatChromeService.java" \
+  >/dev/null
+grep -F 'compat_chrome_visibility=hidden owner=stock-mobile' \
+  "$repo_root/apps/experience/android/gradle/app/src/main/java/dev/gpui/mobile/SosCompatChromeService.java" \
+  >/dev/null
+grep -F 'if (chrome != null && !experienceOwnerVisible)' \
+  "$repo_root/apps/experience/android/gradle/app/src/main/java/dev/gpui/mobile/SosCompatChromeService.java" \
+  >/dev/null
+grep -F 'owner_visibility=guarded' \
+  "$repo_root/apps/experience/android/gradle/app/src/main/java/dev/gpui/mobile/SosCompatChromeService.java" \
+  >/dev/null
+grep -F 'log_android_graph_status_transitions(&graph.snapshot, &snapshot);' \
+  "$repo_root/apps/experience/src/android.rs" >/dev/null
+grep -F '.arg("--jitless")' \
+  "$repo_root/apps/experience/src/android/agent.rs" >/dev/null
+for marker in \
+  'sos_core_automation_touch' \
+  'core_input_automation_tap sequence=' \
+  'credentials.uid != kShellUid && credentials.uid != 0' \
+  'x >= kWidth || y < 0 || y >= kHeight'; do
+  grep -F "$marker" "$core_input_automation" >/dev/null
+done
+grep -F 'PRODUCT_PACKAGES_DEBUG +=' "$core_input_product" >/dev/null
+grep -F 'property:ro.build.type=userdebug' "$core_input_rc" >/dev/null
+grep -F 'property:ro.build.type=eng' "$core_input_rc" >/dev/null
+grep -F 'origin={}' "$repo_root/apps/experience/src/android/core_input.rs" >/dev/null
+grep -F 'android_property("ro.build.type")' \
+  "$repo_root/apps/experience/src/android/core_input.rs" >/dev/null
+grep -F 'sos://mobile/navigate/' "$repo_root/apps/experience/src/android.rs" >/dev/null
+! grep -F 'SosCompatWorkspaceActivity' \
+  "$repo_root/apps/experience/android/gradle/app/src/main/AndroidManifest.xml" >/dev/null
+! grep -F 'SosAttentionActivity' \
+  "$repo_root/apps/experience/android/gradle/app/src/main/AndroidManifest.xml" >/dev/null
 
 A33XCTL_ADB="$mock_adb" "$ctl" inspect-core1-readiness \
   --serial MOCKSERIAL \
@@ -14,9 +131,139 @@ A33XCTL_ADB="$mock_adb" "$ctl" inspect-core1-readiness \
   >"$test_root/readiness.out"
 grep -Fx 'core1_readiness=PASS' "$test_root/readiness.out" >/dev/null
 grep -Fx 'native_lifecycle=PASS' "$test_root/readiness.out" >/dev/null
+A33XCTL_ADB="$mock_adb" "$ctl" core-input-status --serial MOCKSERIAL \
+  >"$test_root/core-input-status.out"
+grep -Fx 'core_input_automation=PASS' "$test_root/core-input-status.out" >/dev/null
+A33XCTL_ADB="$mock_adb" "$ctl" core-input-tap --serial MOCKSERIAL --x 540 --y 1200 \
+  >"$test_root/core-input-tap.out"
+grep -Fx 'action=tap' "$test_root/core-input-tap.out" >/dev/null
+if A33XCTL_MOCK_BUILD_TYPE=user A33XCTL_ADB="$mock_adb" \
+  "$ctl" core-input-status --serial MOCKSERIAL >/dev/null 2>&1; then
+  printf 'user-build Core automation unexpectedly passed\n' >&2
+  exit 1
+fi
+if A33XCTL_ADB="$mock_adb" "$ctl" core-input-tap \
+  --serial MOCKSERIAL --x 1080 --y 1200 >/dev/null 2>&1; then
+  printf 'out-of-bounds Core automation tap unexpectedly passed\n' >&2
+  exit 1
+fi
 if A33XCTL_ADB="$mock_adb" "$ctl" inspect-core1-readiness \
   --serial MOCKSERIAL --expected-revision sos.core1.wrong >/dev/null 2>&1; then
   printf 'wrong Core 1 revision unexpectedly passed\n' >&2
+  exit 1
+fi
+
+authority_recovery_state="$test_root/authority-recovered"
+A33XCTL_ADB="$mock_adb" \
+  A33XCTL_NC="$mock_nc" \
+  A33XCTL_MOCK_AUTHORITY_RECOVERY=1 \
+  A33XCTL_MOCK_AUTHORITY_RECOVERY_STATE="$authority_recovery_state" \
+  "$ctl" restart-v4-authority \
+    --serial MOCKSERIAL \
+    --expected-revision sos.compat1.test.revision \
+    >"$test_root/authority-recovery.out"
+grep -Fx 'v4_authority_recovery=PASS' "$test_root/authority-recovery.out" >/dev/null
+grep -Fx 'build_type=userdebug' "$test_root/authority-recovery.out" >/dev/null
+grep -Fx 'authority_pid_before=300' "$test_root/authority-recovery.out" >/dev/null
+grep -Fx 'authority_pid_after=400' "$test_root/authority-recovery.out" >/dev/null
+grep -Fx 'profile=compat' "$test_root/authority-recovery.out" >/dev/null
+grep -Fx 'host_process=dev.sos.experience' "$test_root/authority-recovery.out" >/dev/null
+grep -Fx 'host_pids=200' "$test_root/authority-recovery.out" >/dev/null
+rm -f -- "$authority_recovery_state"
+A33XCTL_ADB="$mock_adb" \
+  A33XCTL_NC="$mock_nc" \
+  A33XCTL_MOCK_AUTHORITY_RECOVERY=1 \
+  A33XCTL_MOCK_AUTHORITY_RECOVERY_STATE="$authority_recovery_state" \
+  A33XCTL_MOCK_PROFILE=core \
+  "$ctl" restart-v4-authority \
+    --serial MOCKSERIAL \
+    --expected-revision sos.core1.test.revision \
+    >"$test_root/core-authority-recovery.out"
+grep -Fx 'v4_authority_recovery=PASS' "$test_root/core-authority-recovery.out" >/dev/null
+grep -Fx 'profile=core' "$test_root/core-authority-recovery.out" >/dev/null
+grep -Fx 'host_process=sos-core-host' "$test_root/core-authority-recovery.out" >/dev/null
+grep -Fx 'host_pids=500 501' "$test_root/core-authority-recovery.out" >/dev/null
+rm -f -- "$authority_recovery_state"
+if A33XCTL_ADB="$mock_adb" \
+  A33XCTL_NC="$mock_nc" \
+  A33XCTL_MOCK_AUTHORITY_RECOVERY=1 \
+  A33XCTL_MOCK_AUTHORITY_RECOVERY_STATE="$authority_recovery_state" \
+  A33XCTL_MOCK_BUILD_TYPE=user \
+  "$ctl" restart-v4-authority \
+    --serial MOCKSERIAL \
+    --expected-revision sos.compat1.test.revision >/dev/null 2>&1; then
+  printf 'user authority recovery unexpectedly passed\n' >&2
+  exit 1
+fi
+
+printf 'compat artifact\n' >"$test_root/compat.ota.zip"
+printf 'core artifact\n' >"$test_root/core.ota.zip"
+failed_campaign="$test_root/failed-capture-campaign"
+if A33XCTL_ADB="$mock_adb" A33XCTL_NC=false \
+  "$ctl" capture-v4-composition-stage \
+    --product compat1 \
+    --serial MOCKSERIAL \
+    --expected-revision sos.compat1.test.revision \
+    --artifact "$test_root/compat.ota.zip" \
+    --root "$failed_campaign" \
+    --stage stock >/dev/null 2>&1; then
+  printf 'failed composition capture unexpectedly passed\n' >&2
+  exit 1
+fi
+[[ -f "$failed_campaign/campaign.json" ]]
+[[ ! -e "$failed_campaign/stages/stock" ]]
+[[ -z "$(find "$failed_campaign/stages" -mindepth 1 -print -quit)" ]]
+for product in compat1 core1; do
+  revision="sos.$product.test.revision"
+  artifact="$test_root/${product%1}.ota.zip"
+  campaign="$test_root/$product-campaign"
+  mode_args=()
+  if [[ "$product" == core1 ]]; then
+    mode_args=(--input-mode automation)
+  fi
+  for stage in stock dashboard appearance child-failure child-timeout recovered \
+    ime-accessibility host-restart authority-restart authored rollback; do
+    A33XCTL_ADB="$mock_adb" A33XCTL_NC="$mock_nc" \
+      "$ctl" capture-v4-composition-stage \
+      --product "$product" \
+      --serial MOCKSERIAL \
+      --expected-revision "$revision" \
+      --artifact "$artifact" \
+      --root "$campaign" \
+      --stage "$stage" \
+      "${mode_args[@]}" \
+      >"$test_root/$product-$stage.out"
+  done
+  "$ctl" audit-v4-composition-campaign --root "$campaign" \
+    >"$test_root/$product-audit.out"
+  grep -Fx 'v4_composition_campaign=PASS' "$test_root/$product-audit.out" >/dev/null
+  if [[ "$product" == core1 ]]; then
+    jq -e '.input_mode == "automation"' "$campaign/campaign.json" >/dev/null
+    grep -Fx 'input_mode=automation' "$campaign/verdict.txt" >/dev/null
+    grep -F 'experience_action request_id=6 action=open_first target=i-agenda::agenda-open' \
+      "$campaign/stages/rollback/logcat.txt" >/dev/null
+    ! grep -F 'android_reference_graph_event_dispatched' \
+      "$campaign/stages/rollback/logcat.txt" >/dev/null
+  fi
+  "$ctl" evidence-manifest-verify --root "$campaign" \
+    --manifest "$campaign/manifest.tsv" >/dev/null
+done
+
+cp -a "$test_root/compat1-campaign" "$test_root/bad-pid-campaign"
+sed -i 's/^authority_pid=400$/authority_pid=300/' \
+  "$test_root/bad-pid-campaign/stages/authority-restart/pids.env"
+if "$ctl" audit-v4-composition-campaign \
+  --root "$test_root/bad-pid-campaign" >/dev/null 2>&1; then
+  printf 'non-isolated authority recovery unexpectedly passed\n' >&2
+  exit 1
+fi
+
+cp -a "$test_root/core1-campaign" "$test_root/unproven-core-recovery-campaign"
+sed -i '/fixed_recovery_action action=retry/d' \
+  "$test_root/unproven-core-recovery-campaign/stages/host-restart/logcat.txt"
+if "$ctl" audit-v4-composition-campaign \
+  --root "$test_root/unproven-core-recovery-campaign" >/dev/null 2>&1; then
+  printf 'unproven intentional Core crash unexpectedly passed\n' >&2
   exit 1
 fi
 

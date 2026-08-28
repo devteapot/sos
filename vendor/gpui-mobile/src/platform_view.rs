@@ -25,15 +25,19 @@
 //! ## Usage
 //!
 //! ```rust,no_run
-//! use gpui_mobile::platform_view::{PlatformViewRegistry, PlatformViewParams};
+//! use gpui_mobile::platform_view::{
+//!     PlatformViewFactory, PlatformViewParams, PlatformViewRegistry,
+//! };
 //!
+//! # fn create_video_player(factory: Box<dyn PlatformViewFactory>) {
 //! // Register a factory (typically in package init)
-//! PlatformViewRegistry::global().register("video_player", Box::new(MyVideoFactory));
+//! PlatformViewRegistry::global().register("video_player", factory);
 //!
 //! // Create a view
 //! let handle = PlatformViewRegistry::global()
 //!     .create_view("video_player", PlatformViewParams::default())
 //!     .unwrap();
+//! # }
 //! ```
 
 use std::collections::HashMap;

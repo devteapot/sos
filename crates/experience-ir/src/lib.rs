@@ -3,7 +3,7 @@ use std::collections::HashSet;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-pub const EXPERIENCE_API_VERSION: u32 = 3;
+pub use experience_package::{AppearanceProfile, ContainerAppearance, EXPERIENCE_API_VERSION};
 pub const MAX_SCENE_DEPTH: usize = 32;
 pub const MAX_SCENE_NODES: usize = 2_048;
 pub const MAX_CHILDREN: usize = 256;
@@ -25,6 +25,7 @@ pub const SYSTEM_PROVIDER_ABI_VERSION: u32 = 1;
 pub const SHELL_MODEL_ABI_VERSION: u32 = 1;
 pub const MAX_SHELL_OUTPUTS: usize = 16;
 pub const MAX_SHELL_WINDOWS: usize = 64;
+pub const MAX_EXPERIENCE_MOUNTS: usize = 16;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct ExperienceModel {
@@ -52,6 +53,10 @@ pub struct ExperienceModel {
     /// into revision code.
     #[serde(default)]
     pub shell: ShellModel,
+    /// Authority-owned accessibility preferences and semantic design tokens.
+    /// Revision-local code decides how to turn these values into Scene nodes.
+    #[serde(default)]
+    pub appearance: AppearanceProfile,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
@@ -63,8 +68,18 @@ pub struct ShellModel {
     pub outputs: Vec<ShellOutput>,
     #[serde(default)]
     pub windows: Vec<ShellWindow>,
+    /// Registry-selected top-level experiences. Only a registry-authorized
+    /// shell receives this catalog; ordinary experiences receive an empty list.
+    #[serde(default)]
+    pub experiences: Vec<ShellExperience>,
     #[serde(default)]
     pub capabilities: Vec<ShellCapability>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ShellExperience {
+    pub experience_id: String,
+    pub title: String,
 }
 
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -474,6 +489,71 @@ pub struct SceneEvent {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct ExperienceInsets {
+    pub left: u32,
+    pub top: u32,
+    pub right: u32,
+    pub bottom: u32,
+}
+
+impl Default for ExperienceInsets {
+    fn default() -> Self {
+        Self {
+            left: 0,
+            top: 0,
+            right: 0,
+            bottom: 0,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct ExperienceViewport {
+    pub width: u32,
+    pub height: u32,
+    pub scale_milli: u16,
+    #[serde(default)]
+    pub safe_insets: ExperienceInsets,
+}
+
+impl Default for ExperienceViewport {
+    fn default() -> Self {
+        Self {
+            width: 1024,
+            height: 768,
+            scale_milli: 1000,
+            safe_insets: ExperienceInsets::default(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+pub struct ExperienceContext {
+    pub export_id: String,
+    #[serde(default)]
+    pub viewport: ExperienceViewport,
+    #[serde(default)]
+    pub properties: serde_json::Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub container_appearance: Option<serde_json::Value>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct ExperienceEvent {
+    pub dependency: String,
+    pub event: String,
+    #[serde(default)]
+    pub payload: serde_json::Value,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct ExperienceOutputEvent {
+    pub event: String,
+    #[serde(default)]
+    pub payload: serde_json::Value,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct ProviderEffect {
     pub provider: String,
     pub action: String,
@@ -569,12 +649,12 @@ pub struct ProviderResponse {
     pub error: Option<String>,
 }
 
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 pub struct Scene {
     pub root: SceneNode,
 }
 
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 pub struct SceneNode {
     pub id: Option<String>,
     pub layout: Layout,
@@ -586,7 +666,7 @@ pub struct SceneNode {
     pub children: Vec<SceneNode>,
 }
 
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 pub struct Layout {
     pub flow: Flow,
     pub wrap: bool,
@@ -611,7 +691,7 @@ pub struct Layout {
 /// A bounded retained program evaluated by the host layout engine. Fractions
 /// are relative to the containing block, so responsive layout does not call
 /// back into Luau during frame construction.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq)]
 pub struct LayoutProgram {
     pub measure_width: Option<f32>,
     pub measure_height: Option<f32>,
@@ -619,13 +699,14 @@ pub struct LayoutProgram {
     pub arrange_y: Option<f32>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq)]
 pub struct LayoutPosition {
     pub x: f32,
     pub y: f32,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
 pub enum Flow {
     #[default]
     Overlay,
@@ -633,12 +714,15 @@ pub enum Flow {
     Row,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "kind", content = "value", rename_all = "snake_case")]
 pub enum Content {
     Text(TextContent),
     TextSession(TextSession),
     Image(ImageContent),
     ProviderSurface(ProviderSurfaceContent),
+    /// Host-owned boundary to a declared export of another experience.
+    ExperienceMount(ExperienceMountContent),
     /// A compositor-owned application surface region placed by the shell.
     /// The host reports the final logical bounds to the compositor; no native
     /// surface identity or authority crosses into the revision.
@@ -646,20 +730,16 @@ pub enum Content {
     /// A single trusted shell overlay rendered into a separate transparent
     /// host surface. The compositor validates its requested output bounds.
     ShellOverlay(ShellOverlayContent),
-    /// Source-defined application content rendered into its own native
-    /// toplevel. The compositor manages this surface in the same window space
-    /// as compatible desktop applications.
-    ApplicationSurface(ApplicationSurfaceContent),
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct TextContent {
     pub value: String,
     pub size: f32,
     pub color: u32,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct TextSession {
     pub state_key: String,
     pub value: String,
@@ -668,24 +748,31 @@ pub struct TextSession {
     pub autofocus: bool,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct ImageContent {
     pub asset: String,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct ProviderSurfaceContent {
     pub surface: String,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct ExperienceMountContent {
+    pub dependency: String,
+    pub properties: serde_json::Value,
+    pub container_appearance: Option<ContainerAppearance>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct WindowSpaceContent {
     pub layout: WindowLayoutMode,
     pub gap: f32,
     pub fallback: String,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq)]
 pub struct ShellOverlayContent {
     /// Legacy absolute surface origin. Used directly when neither `anchor`
     /// nor declarative `placement` is present.
@@ -703,21 +790,22 @@ pub struct ShellOverlayContent {
     pub anchor: Option<ShellOverlayAnchor>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq)]
 pub struct ShellOverlayPlacement {
     pub horizontal: EdgePlacement,
     pub vertical: EdgePlacement,
     pub margin: f32,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
 pub enum EdgePlacement {
     Start,
     Center,
     End,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq)]
 pub struct ShellOverlayAnchor {
     pub x: f32,
     pub y: f32,
@@ -726,12 +814,8 @@ pub struct ShellOverlayAnchor {
     pub above: bool,
 }
 
-#[derive(Clone, Debug, PartialEq)]
-pub struct ApplicationSurfaceContent {
-    pub title: String,
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
 pub enum WindowLayoutMode {
     #[default]
     Floating,
@@ -739,7 +823,8 @@ pub enum WindowLayoutMode {
     Scrolling,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
 pub enum PaintOp {
     FillBounds {
         color: u32,
@@ -784,7 +869,7 @@ pub enum PaintOp {
     },
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct GlyphRun {
     pub text: String,
     pub color: u32,
@@ -793,7 +878,7 @@ pub struct GlyphRun {
     pub italic: bool,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq)]
 pub struct ClipRect {
     pub x: f32,
     pub y: f32,
@@ -801,7 +886,7 @@ pub struct ClipRect {
     pub height: f32,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq)]
 pub struct Transform2D {
     pub translate_x: f32,
     pub translate_y: f32,
@@ -822,13 +907,13 @@ impl Default for Transform2D {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq)]
 pub struct PaintPoint {
     pub x: f32,
     pub y: f32,
 }
 
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 pub struct Interaction {
     pub tap_action: Option<String>,
     pub hover_action: Option<String>,
@@ -845,7 +930,8 @@ pub struct Interaction {
     pub hit_regions: Vec<HitRegion>,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
 pub enum PointerCapture {
     #[default]
     None,
@@ -853,7 +939,7 @@ pub enum PointerCapture {
     Surface,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct HitRegion {
     pub id: String,
     pub x: f32,
@@ -869,20 +955,21 @@ pub struct HitRegion {
     pub swipe_action: Option<String>,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct Animation {
     pub kind: AnimationKind,
     pub duration_ms: u64,
     pub repeat: bool,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
 pub enum AnimationKind {
     Pulse,
     FadeIn,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct Semantics {
     pub role: SemanticRole,
     pub label: String,
@@ -890,7 +977,8 @@ pub struct Semantics {
     pub hint: Option<String>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
 pub enum SemanticRole {
     Button,
     Image,
@@ -900,14 +988,16 @@ pub enum SemanticRole {
     ScrollArea,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
 pub enum Align {
     Start,
     Center,
     End,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
 pub enum Justify {
     Start,
     Center,
@@ -955,12 +1045,12 @@ pub enum ValidationError {
     MissingShellOverlayId,
     #[error("scene contains more than one shell overlay")]
     DuplicateShellOverlay,
-    #[error("application surface requires a stable id")]
-    MissingApplicationSurfaceId,
-    #[error("scene contains more than one application surface")]
-    DuplicateApplicationSurface,
-    #[error("application surface title must contain 1 through 256 bytes")]
-    InvalidApplicationSurfaceTitle,
+    #[error("experience mount requires a stable id")]
+    MissingExperienceMountId,
+    #[error("scene contains more than {MAX_EXPERIENCE_MOUNTS} experience mounts")]
+    TooManyExperienceMounts,
+    #[error("experience mount dependency or properties are invalid")]
+    InvalidExperienceMount,
 }
 
 #[derive(Debug, Error, PartialEq)]
@@ -993,7 +1083,7 @@ pub fn validate_scene_detailed(scene: &Scene) -> Result<usize, ValidationFailure
         ids: &mut HashSet<String>,
         window_spaces: &mut usize,
         shell_overlays: &mut usize,
-        application_surfaces: &mut usize,
+        experience_mounts: &mut usize,
     ) -> Result<(), ValidationFailure> {
         macro_rules! reject {
             ($error:expr) => {
@@ -1038,6 +1128,25 @@ pub fn validate_scene_detailed(scene: &Scene) -> Result<usize, ValidationFailure
                     }) =>
             {
                 reject!(ValidationError::InvalidDimension("provider surface id"));
+            }
+            Some(Content::ExperienceMount(mount)) => {
+                if node.id.is_none() {
+                    reject!(ValidationError::MissingExperienceMountId);
+                }
+                *experience_mounts += 1;
+                if *experience_mounts > MAX_EXPERIENCE_MOUNTS {
+                    reject!(ValidationError::TooManyExperienceMounts);
+                }
+                if !valid_identifier(&mount.dependency, 64)
+                    || serde_json::to_vec(&mount.properties)
+                        .map_or(true, |bytes| bytes.len() > MAX_EFFECT_PAYLOAD_BYTES)
+                    || mount
+                        .container_appearance
+                        .as_ref()
+                        .is_some_and(|appearance| appearance.validate().is_err())
+                {
+                    reject!(ValidationError::InvalidExperienceMount);
+                }
             }
             Some(Content::WindowSpace(space)) => {
                 if node.id.is_none() {
@@ -1085,18 +1194,6 @@ pub fn validate_scene_detailed(scene: &Scene) -> Result<usize, ValidationFailure
                         || anchor.height > overlay.height
                 }) {
                     reject!(ValidationError::InvalidDimension("shell overlay anchor"));
-                }
-            }
-            Some(Content::ApplicationSurface(application)) => {
-                if node.id.is_none() {
-                    reject!(ValidationError::MissingApplicationSurfaceId);
-                }
-                *application_surfaces += 1;
-                if *application_surfaces > 1 {
-                    reject!(ValidationError::DuplicateApplicationSurface);
-                }
-                if application.title.is_empty() || application.title.len() > 256 {
-                    reject!(ValidationError::InvalidApplicationSurfaceTitle);
                 }
             }
             _ => {}
@@ -1173,7 +1270,7 @@ pub fn validate_scene_detailed(scene: &Scene) -> Result<usize, ValidationFailure
                 ids,
                 window_spaces,
                 shell_overlays,
-                application_surfaces,
+                experience_mounts,
             )?;
         }
         if let Some(animation) = &node.animation {
@@ -1229,7 +1326,7 @@ pub fn validate_scene_detailed(scene: &Scene) -> Result<usize, ValidationFailure
     let mut count = 0;
     let mut window_spaces = 0;
     let mut shell_overlays = 0;
-    let mut application_surfaces = 0;
+    let mut experience_mounts = 0;
     visit(
         &scene.root,
         scene
@@ -1243,9 +1340,21 @@ pub fn validate_scene_detailed(scene: &Scene) -> Result<usize, ValidationFailure
         &mut HashSet::new(),
         &mut window_spaces,
         &mut shell_overlays,
-        &mut application_surfaces,
+        &mut experience_mounts,
     )?;
     Ok(count)
+}
+
+fn valid_identifier(value: &str, max_bytes: usize) -> bool {
+    !value.is_empty()
+        && value.len() <= max_bytes
+        && value
+            .bytes()
+            .next()
+            .is_some_and(|byte| byte.is_ascii_lowercase())
+        && value.bytes().all(|byte| {
+            byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'.' | b'_' | b'-')
+        })
 }
 
 fn validate_paint(
@@ -1511,7 +1620,7 @@ mod tests {
     }
 
     #[test]
-    fn shell_overlay_and_application_surface_are_single_keyed_primitives() {
+    fn shell_overlay_is_a_single_keyed_primitive() {
         let overlay = || SceneNode {
             id: Some("agent-overlay".into()),
             content: Some(Content::ShellOverlay(ShellOverlayContent {
@@ -1528,21 +1637,14 @@ mod tests {
             },
             ..Default::default()
         };
-        let application = || SceneNode {
-            id: Some("notes".into()),
-            content: Some(Content::ApplicationSurface(ApplicationSurfaceContent {
-                title: "Notes".into(),
-            })),
-            ..Default::default()
-        };
         assert_eq!(
             validate_scene(&Scene {
                 root: SceneNode {
-                    children: vec![overlay(), application()],
+                    children: vec![overlay()],
                     ..Default::default()
                 }
             }),
-            Ok(3)
+            Ok(2)
         );
 
         let second_overlay = SceneNode {
@@ -1557,20 +1659,6 @@ mod tests {
                 }
             }),
             Err(ValidationError::DuplicateShellOverlay)
-        );
-
-        let second_application = SceneNode {
-            id: Some("calendar".into()),
-            ..application()
-        };
-        assert_eq!(
-            validate_scene(&Scene {
-                root: SceneNode {
-                    children: vec![application(), second_application],
-                    ..Default::default()
-                }
-            }),
-            Err(ValidationError::DuplicateApplicationSurface)
         );
     }
 

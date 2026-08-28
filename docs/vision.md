@@ -98,20 +98,46 @@ experience revision
 ├── source
 ├── assets and optional shaders
 ├── provider bindings
+├── published exports and resolved experience dependencies
 ├── persistent-state schema and migrations
 ├── build/runtime metadata
 ├── originating user request and agent rationale
 ├── screenshots, logs, and acceptance telemetry
-└── parent revision for diff, rollback, and branching
+└── exact derivation parents for diff, rollback, branching, and remix
 ```
 
 The user must be able to pin a space, modify it conversationally, inspect which
 providers supply it, compare versions, undo changes, disable adaptation, and
 export its implementation without exporting private provider data.
 
+## Derivation and live composition
+
+SOS distinguishes derivation from live composition. A fork or remix reads one
+or more exact revisions and produces a new, self-contained experience. A live
+composition mounts a declared export from one experience inside another while
+each keeps separate code, state, provider grants, activation, and failure
+lifecycle. Opening independent windows is coexistence, and revision-local
+modules are code reuse.
+
+The parent of a live composition owns layout space and passes only declared,
+bounded values. A host-owned mount clips and composites the child, routes input
+and accessibility, validates typed child events, and keeps the child scene and
+state outside the parent VM. Deeply integrated cross-provider behavior should
+normally become a remix. Independently useful behavior and state should remain
+behind a live mount.
+
+The versioned identity, authority, appearance, update, authoring, and
+acceptance rules are defined in
+[`experience-composition.md`](experience-composition.md). Package and
+Experience API v4 implement them in the shared runtime and the Linux and
+Android hosts. Non-v4 packages are rejected before runtime preparation. The
+complete live-composition campaign has passed on both platforms; fresh rebuilt
+artifacts remain to be accepted after the final reader removal.
+
 ## One experience language, not a permanent IR ceiling
 
-The current GPUI host interprets Luau into the bounded Scene ABI v3. Scene
+The current GPUI host interprets Experience API v4 Luau into bounded retained
+scene nodes. Scene
 nodes have orthogonal layout, content, paint, interaction, animation, and
 semantics facets instead of a catalog-defining node `type`. This is the base of
 the long-lived execution path, not the full thesis; each facet must continue to
@@ -249,7 +275,7 @@ synthetic data:
    action.
 
 The third request was the decisive one. The original `UiNode` catalog could not
-express it. Scene ABI v3 lets generated paint operations and hit regions
+express it. The retained scene ABI lets generated paint operations and hit regions
 coexist on an ordinary retained node. The first trial required an operator
 layout correction; a later curated single-shot agent output completed the
 interaction untouched through the low-level Luau capability API and closed the

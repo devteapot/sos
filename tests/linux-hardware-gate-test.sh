@@ -12,19 +12,31 @@ test_cleanup() {
 }
 trap test_cleanup EXIT
 
+grep -F '/usr/local/libexec/sos-agent/dist/agent-runner.cjs|\' "$test_gate" >/dev/null
+test_snapshot_body="$(sed -n \
+  '/^hardware_gate_snapshot_development_files()/,/^}/p' "$test_gate")"
+grep -F '/usr/local/lib/systemd/user/sos-session.target|\' \
+  <<<"$test_snapshot_body" >/dev/null
+grep -F '/usr/local/lib/systemd/user/sos-session-shutdown.target|\' \
+  <<<"$test_snapshot_body" >/dev/null
+if grep -F '/usr/local/lib/systemd/user/*' <<<"$test_snapshot_body" >/dev/null; then
+  printf 'error: hardware gate accepts arbitrary user systemd units\n' >&2
+  exit 1
+fi
+
 test_home="$test_root/home"
 test_state="$test_root/state"
 mkdir -p "$test_home" "$test_state"
 HOME="$test_home" \
 XDG_STATE_HOME="$test_state" \
 SOS_AGENT_MAIN="$test_root/agent-runner.cjs" \
-SOS_AGENT_FAKE_SOURCE="$test_repo_root/experiences/daily-flow.luau" \
+SOS_AGENT_FAKE_SOURCE="$test_repo_root/experiences/default.luau" \
   "$test_login" --offline >"$test_root/offline-login.txt"
 test_config="$test_state/sos/agent/config.env"
 [[ "$(stat -c %a "$test_config")" == 600 ]]
 grep -Fx 'SOS_AGENT_PROVIDER=openai-codex' "$test_config" >/dev/null
 grep -Fx 'SOS_AGENT_MODEL=faux' "$test_config" >/dev/null
-grep -Fx "SOS_AGENT_FAKE_SOURCE=$test_repo_root/experiences/daily-flow.luau" \
+grep -Fx "SOS_AGENT_FAKE_SOURCE=$test_repo_root/experiences/default.luau" \
   "$test_config" >/dev/null
 HOME="$test_home" \
 XDG_STATE_HOME="$test_state" \
@@ -32,8 +44,46 @@ SOS_AGENT_MAIN="$test_root/agent-runner.cjs" \
   "$test_login" --if-needed >"$test_root/offline-ready.txt"
 grep -F 'sos_agent_login_ready provider=faux' "$test_root/offline-ready.txt" >/dev/null
 
+test_gate_bin="$test_root/gate-bin"
+test_gate_evidence="$test_root/gate-inhibitor-evidence"
+test_gate_state="$test_root/gate-inhibitor-state.txt"
+mkdir -p "$test_gate_bin" "$test_gate_evidence/environment"
+for test_binary in sudo systemctl systemd-inhibit systemd-run sleep; do
+  ln -s "$test_repo_root/tests/fixtures/linux-login-component-mock.py" \
+    "$test_gate_bin/$test_binary"
+done
+(
+  export PATH="$test_gate_bin:$PATH"
+  export SOS_TEST_GATE_INHIBITOR_STATE="$test_gate_state"
+  export SOS_TEST_GATE_SYSTEMD_RUN_ARGS_FILE="$test_root/gate-systemd-run-arguments.txt"
+  # shellcheck source=../tools/linux-hardware-gate
+  source "$test_gate"
+  hardware_gate_start_awake_inhibitor "$test_gate_evidence"
+  grep -Fx active "$test_gate_state" >/dev/null
+  hardware_gate_collect_cleanup_unit="$hardware_gate_awake_unit"
+  hardware_gate_collect_cleanup
+  grep -Fx inactive "$test_gate_state" >/dev/null
+  hardware_gate_start_awake_inhibitor "$test_gate_evidence"
+  hardware_gate_stop_awake_inhibitor "$test_gate_evidence" "$hardware_gate_awake_unit"
+)
+grep -Fx -- '--unit=sos-linux-hardware-gate-awake.service' \
+  "$test_root/gate-systemd-run-arguments.txt" >/dev/null
+grep -Fx -- '--property=CollectMode=inactive-or-failed' \
+  "$test_root/gate-systemd-run-arguments.txt" >/dev/null
+grep -Fx -- '/usr/bin/systemd-inhibit' \
+  "$test_root/gate-systemd-run-arguments.txt" >/dev/null
+grep -Fx -- '--what=idle:sleep:handle-lid-switch' \
+  "$test_root/gate-systemd-run-arguments.txt" >/dev/null
+grep -Fx -- '--mode=block' "$test_root/gate-systemd-run-arguments.txt" >/dev/null
+grep -Fx -- '/usr/bin/sleep' "$test_root/gate-systemd-run-arguments.txt" >/dev/null
+grep -F 'SOS Linux hardware gate' \
+  "$test_gate_evidence/environment/gate-inhibitor-prepared.txt" >/dev/null
+grep -F 'sleep:idle:handle-lid-switch' \
+  "$test_gate_evidence/gate-inhibitor-before-release.txt" >/dev/null
+grep -Fx 'state=inactive' "$test_gate_evidence/gate-inhibitor-release.txt" >/dev/null
+
 test_evidence="$test_root/evidence"
-mkdir "$test_evidence"
+mkdir -p "$test_evidence/environment"
 test_boot_id=12345678-1234-1234-1234-123456789abc
 test_other_boot_id=87654321-4321-4321-4321-cba987654321
 printf '%s\n' \
@@ -50,6 +100,10 @@ printf '%s\n' \
   'sos_login_agent_mode mode=offline' \
   'sos_login_agent_started pid=44 socket=/run/user/1000/sos/agent.sock' \
   'linux_system_session_component component=host pid=55 uid=1000' \
+  'authenticated SOS compositor control connection pid=55 role=Shell' \
+  'linux_system_session_component component=host pid=77 uid=1000' \
+  'authenticated SOS compositor control connection pid=77 role=NativeApplication' \
+  'GraphHostRestarted { graph_id: dashboard, failed_host_pid: 66, host_pid: 77 }' \
   'observed native compositor input input_class="keyboard"' \
   'observed native compositor input input_class="relative_pointer"' \
   'observed native compositor input input_class="pointer_button"' \
@@ -57,12 +111,32 @@ printf '%s\n' \
   'presented armed shell revision revision_id="1111" evidence="drm_page_flip"' \
   'presented armed shell revision revision_id="2222" evidence="drm_page_flip"' \
   'linux_login_session_stopped reason=user_logout' >"$test_evidence/journal-user.txt"
+printf '%s\n' \
+  'Device:                  Integrated Keyboard' \
+  'Capabilities:            keyboard' \
+  'Device:                  Integrated Touchpad' \
+  'Capabilities:            pointer gesture' \
+  'Device:                  Integrated Touchscreen' \
+  'Capabilities:            touch' >"$test_evidence/environment/libinput.txt"
 : >"$test_evidence/journal-kernel.txt"
-printf '2222\n' >"$test_evidence/current-revision.txt"
-printf '2222\n' >"$test_evidence/authority-revision.txt"
+printf '2222\n' >"$test_evidence/stock-registry-revision.txt"
+printf '2222\n' >"$test_evidence/stock-authority-revision.txt"
+printf '{}\n' >"$test_evidence/authority.json"
 printf 'active\n' >"$test_evidence/display-manager-active.txt"
+printf '%s\n' \
+  'SOS Linux hardware gate 0 root 123 systemd-inhibit sleep:idle:handle-lid-switch Prepared physical acceptance campaign block' \
+  >"$test_evidence/environment/gate-inhibitor-prepared.txt"
+cp -- "$test_evidence/environment/gate-inhibitor-prepared.txt" \
+  "$test_evidence/gate-inhibitor-before-release.txt"
+printf '%s\n' \
+  'unit=sos-linux-hardware-gate-awake.service' \
+  'state=inactive' >"$test_evidence/gate-inhibitor-release.txt"
 "$test_gate" audit --evidence-dir "$test_evidence" >"$test_root/pass-audit.txt"
 grep -Fx "criterion=same_boot result=PASS boot_id=$test_boot_id" \
+  "$test_root/pass-audit.txt" >/dev/null
+grep -Fx 'criterion=gate_awake_inhibitor result=PASS' \
+  "$test_root/pass-audit.txt" >/dev/null
+grep -Fx 'criterion=stable_host_lifecycle result=PASS shell_host_pids=1 application_host_pids=1' \
   "$test_root/pass-audit.txt" >/dev/null
 grep -Fx \
   'linux_hardware_gate_result=PASS evidence=drm_page_flip physical_input=keyboard,touchpad,touchscreen' \
@@ -83,6 +157,29 @@ grep -Fx 'criterion=touchscreen_input result=FAIL' "$test_root/fail-audit.txt" >
 printf '%s\n' \
   'observed native compositor input input_class="touch"' >>"$test_evidence/journal-user.txt"
 
+rm -- "$test_evidence/gate-inhibitor-release.txt"
+if "$test_gate" audit --evidence-dir "$test_evidence" >"$test_root/inhibitor-fail-audit.txt"; then
+  printf 'error: audit accepted evidence without awake-inhibitor release proof\n' >&2
+  exit 1
+fi
+grep -Fx 'criterion=gate_awake_inhibitor result=FAIL' \
+  "$test_root/inhibitor-fail-audit.txt" >/dev/null
+printf '%s\n' \
+  'unit=sos-linux-hardware-gate-awake.service' \
+  'state=inactive' >"$test_evidence/gate-inhibitor-release.txt"
+
+printf '%s\n' \
+  'libinput device added device_id="event99" device_name="Synthetic Gate Touch"' \
+  >>"$test_evidence/journal-user.txt"
+if "$test_gate" audit --evidence-dir "$test_evidence" \
+  >"$test_root/unexpected-input-device-audit.txt"; then
+  printf 'error: audit accepted an input device absent from the preparation inventory\n' >&2
+  exit 1
+fi
+grep -Fx 'criterion=input_device_inventory result=FAIL unexpected_devices=1' \
+  "$test_root/unexpected-input-device-audit.txt" >/dev/null
+sed -i '/Synthetic Gate Touch/d' "$test_evidence/journal-user.txt"
+
 printf 'boot_id=%s\n' "$test_other_boot_id" >"$test_evidence/collection.env"
 if "$test_gate" audit --evidence-dir "$test_evidence" >"$test_root/cross-boot-audit.txt"; then
   printf 'error: audit accepted evidence collected after a different kernel boot\n' >&2
@@ -93,11 +190,14 @@ grep -Fx \
   "$test_root/cross-boot-audit.txt" >/dev/null
 printf 'boot_id=%s\n' "$test_boot_id" >"$test_evidence/collection.env"
 
-"$test_gate" finalize-manifest --evidence-dir "$test_evidence"
-"$test_gate" verify-manifest --evidence-dir "$test_evidence" \
+LC_ALL=en_US.UTF-8 \
+  "$test_gate" finalize-manifest --evidence-dir "$test_evidence"
+cut -f 1 "$test_evidence/evidence-manifest.tsv" | LC_ALL=C sort -c
+LC_ALL=C.UTF-8 \
+  "$test_gate" verify-manifest --evidence-dir "$test_evidence" \
   >"$test_root/manifest-pass.txt"
 grep -F 'evidence_manifest_verified=PASS' "$test_root/manifest-pass.txt" >/dev/null
-printf 'tampered\n' >>"$test_evidence/current-revision.txt"
+printf 'tampered\n' >>"$test_evidence/stock-registry-revision.txt"
 if "$test_gate" verify-manifest --evidence-dir "$test_evidence" \
   >"$test_root/manifest-fail.txt" 2>&1; then
   printf 'error: manifest verification accepted tampered evidence\n' >&2
@@ -105,7 +205,7 @@ if "$test_gate" verify-manifest --evidence-dir "$test_evidence" \
 fi
 grep -F 'manifested evidence size changed' "$test_root/manifest-fail.txt" >/dev/null
 
-printf '2222\n' >"$test_evidence/current-revision.txt"
+printf '2222\n' >"$test_evidence/stock-registry-revision.txt"
 printf '%s\n' \
   'agent_mode=offline' \
   'boot_kind=development-live' \
@@ -224,5 +324,14 @@ grep -F 'image-identity.env' "$test_gate" >/dev/null
 grep -F 'payload_sha256' "$test_gate" >/dev/null
 grep -F 'boot_id=' "$test_gate" >/dev/null
 grep -F '/usr/local/libexec/sos/linux-hardware-gate collect' "$test_gate" >/dev/null
+for test_development_path in \
+  /usr/local/libexec/sos/sos-agent-login \
+  /usr/share/sos/experiences/default.package.json \
+  /usr/share/sos/experiences/modules/stock-theme.luau \
+  /usr/share/doc/sos/sos-agent.md \
+  /usr/share/doc/sos/linux-stable-host.md \
+  /etc/xdg/monitors.xml; do
+  grep -F "$test_development_path" "$test_gate" >/dev/null
+done
 
 printf 'linux_hardware_gate_host_tests=PASS\n'

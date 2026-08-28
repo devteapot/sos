@@ -1,172 +1,78 @@
-use std::{fs, path::PathBuf, thread, time::Duration};
+use std::{path::PathBuf, thread, time::Duration};
 
 use provider_state_service::ServiceClient;
-use revision_supervisor::{ActivationJournal, JournalPhase, RevisionInput, RevisionStore};
-use service_protocol::{
-    PromotionDraft, ResourceQuery, ResourceValue, ResponsePayload, ServiceRequest,
-    TransactionStatus,
+use revision_supervisor::{
+    ExperienceRegistry, GraphResolver, GraphStore, RevisionInput, RevisionPackageInput,
+    RevisionStore,
 };
-use sos_linux_session::{
-    bootstrap_authority, shutdown_authority, stage_revision, BootstrapOutcome,
-};
+use service_protocol::{ResourceQuery, ResourceValue, ResponsePayload, ServiceRequest};
+use sos_linux_session::{bootstrap_graph_authority, shutdown_authority, GraphBootstrapOutcome};
 
 #[test]
-fn bootstraps_current_and_stages_the_next_verified_revision() {
+fn fresh_v4_graph_bootstraps_authority_without_a_singleton_pointer() {
     let temporary = tempfile::tempdir().unwrap();
     let root = temporary.path().join("revisions");
     let socket = temporary.path().join("provider.sock");
     let authority_file = temporary.path().join("authority.json");
     let store = RevisionStore::open(&root).unwrap();
-    let initial = store
-        .install(RevisionInput {
-            source: b"return { api_version = 3 }".to_vec(),
-            state: serde_json::json!({"count": 0}),
-            schema_version: 1,
-            experience_api_version: 3,
-            assets: Vec::new(),
+    let package: experience_package::PackageMetadata =
+        serde_json::from_str(include_str!("../../../experiences/default.package.json")).unwrap();
+    let revision = store
+        .install_package(RevisionPackageInput {
+            revision: RevisionInput {
+                source: b"return { api_version = 4, exports = { main = {} } }".to_vec(),
+                state: serde_json::json!({"fresh": true}),
+                schema_version: 1,
+                experience_api_version: 4,
+                assets: Vec::new(),
+            },
+            package,
         })
         .unwrap();
-    store.set_current(&initial.manifest.revision_id).unwrap();
-    let candidate = store
-        .install(RevisionInput {
-            source: b"return { api_version = 3, revision = 2 }".to_vec(),
-            state: serde_json::json!({"count": 1}),
-            schema_version: 2,
-            experience_api_version: 3,
-            assets: Vec::new(),
-        })
+    let stock = experience_package::ExperienceId::parse("sos.stock.shell").unwrap();
+    let registry = ExperienceRegistry::open(store.clone()).unwrap();
+    registry
+        .create(
+            &stock,
+            experience_package::ExperienceRole::Shell,
+            &revision.manifest.revision_id,
+        )
         .unwrap();
-    let mut service = start_service(socket.clone(), authority_file.clone());
+    let graph = GraphResolver::new(store.clone())
+        .resolve(
+            &revision.manifest.revision_id,
+            &experience_package::ExportId::parse("main").unwrap(),
+        )
+        .unwrap();
+    let graphs = GraphStore::open(&root).unwrap();
+    let graph_id = graphs.install(&graph).unwrap();
+    graphs.set_current(&stock, &graph_id).unwrap();
 
-    let outcome = bootstrap_authority(&root, &socket, Duration::from_secs(2)).unwrap();
+    let service = start_service(socket.clone(), authority_file);
     assert!(matches!(
-        outcome,
-        BootstrapOutcome::Initialized { revision_id, .. }
-            if revision_id == initial.manifest.revision_id
+        bootstrap_graph_authority(&root, &stock, &socket, Duration::from_secs(2)).unwrap(),
+        GraphBootstrapOutcome::Initialized {
+            graph_id: initialized,
+            experience_count: 1,
+            ..
+        } if initialized == graph_id
     ));
-    assert!(matches!(
-        bootstrap_authority(&root, &socket, Duration::from_secs(2)).unwrap(),
-        BootstrapOutcome::AlreadyBound { revision_id }
-            if revision_id == initial.manifest.revision_id
-    ));
-
     let client = ServiceClient::new(&socket, Duration::from_secs(2));
     let state = client
         .call(&ServiceRequest::GetResource {
-            request_id: 8,
-            query: ResourceQuery::ExperienceState,
-        })
-        .unwrap();
-    let state = match state.payload {
-        Some(ResponsePayload::Resource {
-            value: ResourceValue::ExperienceState(state),
-        }) => state,
-        _ => panic!("state response omitted the experience state"),
-    };
-    let interaction = "same-revision-interaction".to_owned();
-    client
-        .call(&ServiceRequest::StagePromotion {
-            request_id: 9,
-            draft: PromotionDraft {
-                transaction_id: interaction.clone(),
-                expected_revision: state.revision,
-                revision_id: state.revision_id,
-                schema_version: state.schema_version,
-                source_sha256: state.source_sha256,
-                state: serde_json::json!({"count": 7}),
-                migration: None,
-                actions: Vec::new(),
+            request_id: 31,
+            query: ResourceQuery::ExperienceStateFor {
+                experience_id: stock,
             },
-        })
-        .unwrap();
-    client
-        .call(&ServiceRequest::Promote {
-            request_id: 10,
-            transaction_id: interaction,
-        })
-        .unwrap();
-    shutdown_authority(&socket, Duration::from_secs(2)).unwrap();
-    service.join().unwrap().unwrap();
-    service = start_service(socket.clone(), authority_file);
-    assert!(matches!(
-        bootstrap_authority(&root, &socket, Duration::from_secs(2)).unwrap(),
-        BootstrapOutcome::AlreadyBound { revision_id }
-            if revision_id == initial.manifest.revision_id
-    ));
-
-    let transaction_id = stage_revision(
-        &root,
-        &candidate.manifest.revision_id,
-        &socket,
-        Duration::from_secs(2),
-    )
-    .unwrap();
-    let transaction = client
-        .call(&ServiceRequest::GetTransaction {
-            request_id: 11,
-            transaction_id: transaction_id.clone(),
-        })
-        .unwrap();
-    let record = match transaction.payload {
-        Some(ResponsePayload::Transaction { record }) => record,
-        _ => panic!("transaction response omitted the record"),
-    };
-    assert_eq!(record.draft.revision_id, candidate.manifest.revision_id);
-    assert_eq!(record.draft.expected_revision, 2);
-    assert_eq!(record.draft.schema_version, 2);
-    assert!(record.draft.migration.is_some());
-    assert!(record.draft.actions.is_empty());
-
-    let state = client
-        .call(&ServiceRequest::GetResource {
-            request_id: 12,
-            query: ResourceQuery::ExperienceState,
         })
         .unwrap();
     assert!(matches!(
         state.payload,
         Some(ResponsePayload::Resource {
-            value: ResourceValue::ExperienceState(state),
-        }) if state.revision_id == initial.manifest.revision_id
+            value: ResourceValue::ExperienceStateFor(state),
+        }) if state.resource.revision_id == revision.manifest.revision_id
+            && state.resource.state == serde_json::json!({"fresh": true})
     ));
-
-    let promoted = client
-        .call(&ServiceRequest::Promote {
-            request_id: 13,
-            transaction_id,
-        })
-        .unwrap();
-    assert!(matches!(
-        promoted.payload,
-        Some(ResponsePayload::Transaction { record })
-            if record.status == TransactionStatus::Committed
-    ));
-    let mismatch = bootstrap_authority(&root, &socket, Duration::from_secs(2)).unwrap_err();
-    assert!(mismatch
-        .to_string()
-        .contains("provider authority is already initialized"));
-
-    fs::write(
-        root.join("activation-journal.json"),
-        serde_json::to_vec(&ActivationJournal {
-            format_version: 1,
-            transaction_id: "recovery-transaction".into(),
-            previous_revision: initial.manifest.revision_id.clone(),
-            candidate_revision: candidate.manifest.revision_id.clone(),
-            phase: JournalPhase::ServiceCommitted,
-        })
-        .unwrap(),
-    )
-    .unwrap();
-    assert!(matches!(
-        bootstrap_authority(&root, &socket, Duration::from_secs(2)).unwrap(),
-        BootstrapOutcome::RecoveryRequired {
-            pointer_revision,
-            authority_revision,
-        } if pointer_revision == initial.manifest.revision_id
-            && authority_revision == candidate.manifest.revision_id
-    ));
-
     shutdown_authority(&socket, Duration::from_secs(2)).unwrap();
     service.join().unwrap().unwrap();
 }

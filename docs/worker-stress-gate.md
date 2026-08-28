@@ -67,16 +67,16 @@ The production Android log proved thread separation:
 runtime_worker_ready ui_thread=ThreadId(2) worker_thread=ThreadId(11) initialize_us=6642
 ```
 
-A normal `experiences/timeflow.luau` load in the installed app measured:
+A normal load of the now-retired secondary prototype measured:
 
 ```text
 source_to_visible_us=29349 queue_us=253 compile_us=1202 render_us=779 worker_total_us=1983
 ```
 
-The reproducible stress command alternates the accepted experience with the
-embedded alternative. It submits the next candidate only after the prior
-candidate's GPUI post-render callback and always restores the original source
-on the final iteration:
+The legacy reproducible stress command now alternates two complete Stock
+revisions. It submits the next candidate only after the prior candidate's GPUI
+post-render callback and always restores the original source on the final
+iteration. It is intentionally unavailable while a v4 graph is active:
 
 ```sh
 ./tools/sosctl stress 1000

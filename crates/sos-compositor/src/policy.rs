@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+
 use anyhow::{bail, Result};
 use compositor_control_protocol::{
     ShellOverlayConfiguration, WindowLayoutMode, WindowSpaceConfiguration, WindowSpaceGeometry,
@@ -41,6 +43,7 @@ pub struct QueuedRevision {
 #[derive(Debug, Default)]
 pub struct SurfacePolicy {
     shell_pid: Option<u32>,
+    native_application_pids: BTreeSet<u32>,
     shell_mapped: bool,
     shell_overlay_mapped: bool,
     compatibility_mapped: usize,
@@ -73,9 +76,24 @@ impl SurfacePolicy {
         }
     }
 
+    pub fn register_native_application(&mut self, pid: u32) -> Result<()> {
+        if pid == 0 || self.shell_pid == Some(pid) {
+            bail!("native application PID is invalid or owns the shell");
+        }
+        self.native_application_pids.insert(pid);
+        Ok(())
+    }
+
+    pub fn unregister_client(&mut self, pid: u32) {
+        self.unregister_shell(pid);
+        self.native_application_pids.remove(&pid);
+    }
+
     pub fn classify(&self, pid: u32) -> ClientRole {
         if self.shell_pid == Some(pid) {
             ClientRole::Shell
+        } else if self.native_application_pids.contains(&pid) {
+            ClientRole::NativeApplication
         } else {
             ClientRole::Compatibility
         }
@@ -129,8 +147,8 @@ impl SurfacePolicy {
             bail!("another shell presentation is already armed");
         }
         self.validate_revision(&revision_id)?;
-        if self.quiesced_revision.as_deref() != Some(&revision_id) {
-            bail!("input is not quiesced for the armed revision");
+        if self.quiesced_revision.is_none() {
+            bail!("input is not quiesced for the armed presentation");
         }
         let after_commit_sequence = self.shell_commit_sequence;
         self.pending = Some(ArmedPresentation {
@@ -238,7 +256,6 @@ impl SurfacePolicy {
             .pending
             .take()
             .expect("pending presentation was checked");
-        self.quiesced_revision = None;
         debug_assert_eq!(pending.revision_id, queued.revision_id);
         Some(queued)
     }
@@ -538,7 +555,18 @@ mod tests {
     }
 
     #[test]
-    fn input_stays_quiesced_until_an_armed_commit_is_submitted() {
+    fn authenticated_application_pid_is_native_without_receiving_shell_authority() {
+        let mut policy = SurfacePolicy::default();
+        policy.register_shell(41).unwrap();
+        policy.register_native_application(42).unwrap();
+        assert_eq!(policy.classify(42), ClientRole::NativeApplication);
+        assert!(policy.arm(42, 1, REVISION.into()).is_err());
+        policy.unregister_client(42);
+        assert_eq!(policy.classify(42), ClientRole::Compatibility);
+    }
+
+    #[test]
+    fn presented_input_stays_quiesced_until_explicit_finalize() {
         let mut policy = SurfacePolicy::default();
         policy.register_shell(41).unwrap();
         policy.quiesce_input(41, REVISION.into()).unwrap();
@@ -552,6 +580,8 @@ mod tests {
         assert_eq!(presented.revision_id, REVISION);
         assert_eq!(presented.commit_sequence, 1);
         assert_eq!(presented.submit_sequence, 3);
+        assert!(policy.input_quiesced());
+        assert!(policy.resume_input(41, REVISION).unwrap());
         assert!(!policy.input_quiesced());
     }
 
@@ -573,6 +603,27 @@ mod tests {
         assert!(policy.input_quiesced());
 
         assert_eq!(policy.record_presented(queued).unwrap().request_id, 7);
+        assert!(policy.input_quiesced());
+        assert!(policy.resume_input(41, REVISION).unwrap());
+        assert!(!policy.input_quiesced());
+    }
+
+    #[test]
+    fn rollback_presentation_reuses_the_quiesced_candidate_epoch() {
+        let mut policy = SurfacePolicy::default();
+        let restored = "b".repeat(64);
+        policy.register_shell(41).unwrap();
+        policy.quiesce_input(41, REVISION.into()).unwrap();
+        policy.arm(41, 7, REVISION.into()).unwrap();
+        policy.record_shell_commit();
+        assert!(policy.record_successful_submit(true).is_some());
+
+        policy.arm(41, 8, restored.clone()).unwrap();
+        policy.record_shell_commit();
+        let presented = policy.record_successful_submit(true).unwrap();
+        assert_eq!(presented.revision_id, restored);
+        assert!(policy.input_quiesced());
+        assert!(policy.resume_input(41, REVISION).unwrap());
         assert!(!policy.input_quiesced());
     }
 

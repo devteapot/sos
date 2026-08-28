@@ -1,8 +1,11 @@
+use std::collections::{BTreeMap, BTreeSet};
+
 use provider_state_service::{state_sha256, Authority, AuthorityError};
 use serde_json::json;
 use service_protocol::{
-    FaultPoint, MigrationProof, NotesAction, PromotionDraft, ProviderAction, ServiceError,
-    ServiceEventKind, TransactionStatus,
+    DataFlowGrant, ExperiencePromotionDraft, FaultPoint, GrantDecisionResource,
+    GraphExperiencePromotion, GraphPromotionDraft, MigrationProof, NotesAction, PromotionDraft,
+    ProviderAction, ServiceError, ServiceEventKind, TransactionStatus,
 };
 use tempfile::TempDir;
 
@@ -36,6 +39,31 @@ fn injected(error: AuthorityError, expected: FaultPoint) {
         error,
         AuthorityError::Service(ServiceError::InjectedFault { point }) if point == expected
     ));
+}
+
+fn graph_draft(transaction_id: &str) -> GraphPromotionDraft {
+    GraphPromotionDraft {
+        transaction_id: transaction_id.into(),
+        activate: false,
+        promotions: [
+            ("dashboard", 'd', json!({"selected": "agenda"})),
+            ("agenda", 'a', json!({"open": true})),
+        ]
+        .into_iter()
+        .map(
+            |(experience_id, revision, state)| GraphExperiencePromotion {
+                experience_id: experience_package::ExperienceId::parse(experience_id).unwrap(),
+                expected_revision: 0,
+                revision_id: revision.to_string().repeat(64),
+                schema_version: 1,
+                source_sha256: revision.to_ascii_uppercase().to_string().repeat(64),
+                state,
+                migration: None,
+                actions: vec![],
+            },
+        )
+        .collect(),
+    }
 }
 
 #[test]
@@ -264,4 +292,213 @@ fn event_limit_is_bounded() {
     authority.promote("tx-events").unwrap();
     assert_eq!(authority.events(0, 1).len(), 1);
     assert!(authority.events(10_000, 100).is_empty());
+}
+
+#[test]
+fn graph_promotion_commits_all_experience_states_in_one_durable_transition() {
+    let directory = TempDir::new().unwrap();
+    let mut authority = open(&directory);
+    let draft = graph_draft("graph-1");
+    let staged = authority.stage_graph(draft.clone()).unwrap();
+    assert_eq!(staged.status, TransactionStatus::Staged);
+    assert_eq!(authority.stage_graph(draft).unwrap(), staged);
+    assert_eq!(authority.current_for("dashboard").revision, 0);
+    assert_eq!(authority.current_for("agenda").revision, 0);
+
+    let committed = authority.promote_graph("graph-1").unwrap();
+    assert_eq!(committed.status, TransactionStatus::Committed);
+    assert_eq!(committed.committed_revisions.len(), 2);
+    assert_eq!(
+        authority.current_for("dashboard").state["selected"],
+        "agenda"
+    );
+    assert_eq!(authority.current_for("agenda").state["open"], true);
+
+    let reopened = open(&directory);
+    assert_eq!(reopened.current_for("dashboard").revision, 1);
+    assert_eq!(reopened.current_for("agenda").revision, 1);
+}
+
+#[test]
+fn graph_promotion_recovers_all_nodes_after_a_committing_fault() {
+    let directory = TempDir::new().unwrap();
+    {
+        let mut authority = open(&directory);
+        authority.stage_graph(graph_draft("graph-recover")).unwrap();
+        authority.configure_fault(Some(FaultPoint::DuringPromotion));
+        injected(
+            authority.promote_graph("graph-recover").unwrap_err(),
+            FaultPoint::DuringPromotion,
+        );
+        assert_eq!(
+            authority.graph_transaction("graph-recover").unwrap().status,
+            TransactionStatus::Committing
+        );
+        assert_eq!(authority.current_for("dashboard").revision, 1);
+        assert_eq!(authority.current_for("agenda").revision, 1);
+    }
+    let recovered = open(&directory);
+    assert_eq!(
+        recovered.graph_transaction("graph-recover").unwrap().status,
+        TransactionStatus::Committed
+    );
+    assert_eq!(recovered.current_for("dashboard").revision, 1);
+    assert_eq!(recovered.current_for("agenda").revision, 1);
+}
+
+#[test]
+fn experience_state_and_appearance_are_independent_resources() {
+    let directory = TempDir::new().unwrap();
+    let mut authority = open(&directory);
+    let experience_id = experience_package::ExperienceId::parse("agenda").unwrap();
+    authority
+        .stage_experience(ExperiencePromotionDraft {
+            experience_id: experience_id.clone(),
+            draft: draft("agenda-state", 0, 1, json!({"filter": "today"})),
+        })
+        .unwrap();
+    authority.promote("agenda-state").unwrap();
+    let mut appearance = authority.appearance().profile;
+    appearance.generation = 1;
+    appearance.colors.insert(
+        experience_package::TokenId::parse("accent").unwrap(),
+        "#00ffffff".into(),
+    );
+    assert!(authority
+        .update_appearance(0, "ungranted", appearance.clone())
+        .is_err());
+    authority
+        .configure_appearance_writer("appearance-test-capability")
+        .unwrap();
+    authority
+        .update_appearance(0, "appearance-test-capability", appearance.clone())
+        .unwrap();
+
+    assert_eq!(
+        authority.current_for(experience_id.as_str()).state["filter"],
+        "today"
+    );
+    assert_eq!(authority.appearance().profile, appearance);
+    assert_eq!(authority.current().revision, 0);
+    drop(authority);
+    assert_eq!(open(&directory).appearance().profile, appearance);
+}
+
+#[test]
+fn stable_experience_grants_are_capability_protected_versioned_and_persistent() {
+    let directory = TempDir::new().unwrap();
+    let mut authority = open(&directory);
+    let decision = GrantDecisionResource {
+        generation: 1,
+        reviewed: true,
+        experience_id: experience_package::ExperienceId::parse("dashboard").unwrap(),
+        provider_capabilities: BTreeSet::from(["notes_read".into()]),
+        data_flows: BTreeMap::from([(
+            experience_package::DependencyAlias::parse("agenda").unwrap(),
+            DataFlowGrant {
+                experience_id: experience_package::ExperienceId::parse("agenda").unwrap(),
+                export_id: experience_package::ExportId::parse("summary").unwrap(),
+                grant: experience_package::BoundaryGrant {
+                    properties: BTreeSet::from(["title".into()]),
+                    events: BTreeSet::new(),
+                },
+            },
+        )]),
+    };
+    assert!(authority
+        .update_grant_decision(0, "ungranted", decision.clone())
+        .is_err());
+    authority.configure_grant_writer("review-secret").unwrap();
+    authority
+        .update_grant_decision(0, "review-secret", decision.clone())
+        .unwrap();
+    assert_eq!(
+        authority.grant_decision_for("dashboard"),
+        Some(decision.clone())
+    );
+    assert!(authority
+        .update_grant_decision(0, "review-secret", decision.clone())
+        .is_err());
+    let expanded = GrantDecisionResource {
+        generation: 2,
+        provider_capabilities: BTreeSet::from(["notes_read".into(), "notes_write".into()]),
+        ..decision.clone()
+    };
+    authority
+        .update_grant_decision(1, "review-secret", expanded.clone())
+        .unwrap();
+    drop(authority);
+    assert_eq!(
+        open(&directory).grant_decision_for("dashboard"),
+        Some(expanded)
+    );
+}
+
+#[test]
+fn locked_revision_state_survives_a_newer_current_revision_and_restart() {
+    let directory = TempDir::new().unwrap();
+    let experience_id = experience_package::ExperienceId::parse("agenda").unwrap();
+    let first_revision = "a".repeat(64);
+    let second_revision = "c".repeat(64);
+    {
+        let mut authority = open(&directory);
+        let mut first = draft("agenda-first", 0, 1, json!({"selected": "first"}));
+        first.revision_id = first_revision.clone();
+        authority
+            .stage_experience(ExperiencePromotionDraft {
+                experience_id: experience_id.clone(),
+                draft: first,
+            })
+            .unwrap();
+        authority.promote("agenda-first").unwrap();
+
+        let mut second = draft("agenda-second", 1, 1, json!({"selected": "second"}));
+        second.revision_id = second_revision.clone();
+        authority
+            .stage_experience(ExperiencePromotionDraft {
+                experience_id: experience_id.clone(),
+                draft: second,
+            })
+            .unwrap();
+        authority.promote("agenda-second").unwrap();
+
+        authority
+            .stage_graph(GraphPromotionDraft {
+                transaction_id: "locked-graph-action".into(),
+                activate: false,
+                promotions: vec![GraphExperiencePromotion {
+                    experience_id: experience_id.clone(),
+                    expected_revision: 1,
+                    revision_id: first_revision.clone(),
+                    schema_version: 1,
+                    source_sha256: "b".repeat(64),
+                    state: json!({"selected": "locked"}),
+                    migration: None,
+                    actions: vec![],
+                }],
+            })
+            .unwrap();
+        authority.promote_graph("locked-graph-action").unwrap();
+        assert_eq!(
+            authority
+                .current_at(experience_id.as_str(), &first_revision)
+                .state["selected"],
+            "locked"
+        );
+        assert_eq!(
+            authority.current_for(experience_id.as_str()).revision_id,
+            second_revision
+        );
+    }
+    let recovered = open(&directory);
+    assert_eq!(
+        recovered
+            .current_at(experience_id.as_str(), &first_revision)
+            .state["selected"],
+        "locked"
+    );
+    assert_eq!(
+        recovered.current_for(experience_id.as_str()).revision_id,
+        second_revision
+    );
 }
