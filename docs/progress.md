@@ -15900,3 +15900,78 @@ install it once, and start a fresh ordered campaign. Require successful
 phone-native authoring, a distinct committed Stock Mobile v4 revision, and
 real-control rollback to the original v4 revision before removing the v3 read
 compatibility path.
+
+## 2026-08-28: Accept Android Compat v4 composition, Mobile authoring, and rollback
+
+**Goal / install evidence:** Close the complete Android Compat physical gate
+for graph composition and phone-native Stock Mobile authoring. The live device
+boundary reverified the sealed 1,067,691,022-byte OTA with SHA-256
+`d24e9629f848c58e362ec05843d197775e0846b4c086f62ad5b462f572b646ac`
+and its seven-file offline manifest. Automatic sideload Recovery became ready
+in 29.34 seconds. The only OTA transfer completed in 85.48 seconds with
+`Total xfer: 1.00x`, and exact-product readiness took 112.82 seconds. The live
+identity was `sos.compat1.70236932142d.26b3686ac23e`; SELinux was Enforcing,
+authority PID 946 and HOME PID 1458 were live, the framework bridge held its
+INTERNET grant, and PermissionMonitor reported traffic mask 12 for appId 1000.
+Post-ready health found no relevant SOS fatal, crash, or SELinux denial. The
+130,195-byte Stock Mobile screenshot at
+`.cache/evidence/android-v4-7023693-physical/compat1/install/stock-post-install.png`
+has SHA-256
+`ed4fb4835a6aab784ee5a5394a19e4d91564c37960a7bde2d312cd5b5d4885b8`.
+
+**Composition / containment / recovery:** The artifact-bound campaign under
+`.cache/evidence/android-v4-7023693-physical/compat1/composition/` captured all
+eleven ordered stages. Dashboard ran as three independent Instances. Agenda
+and Dashboard preserved separately keyed `Design review` state and a fresh
+parent ping. A physical Theme touch advanced appearance from generation 8 to
+9 without revision churn. The Agenda update exception and execution-budget
+timeout each failed only the child with `root_ready=true`, and each produced an
+explicit recovery. A physical mounted-input touch focused the namespaced
+Agenda text session and an outside touch resolved inactive blur. Android
+published the composed semantic tree and all host controls.
+
+HOME-only recovery changed PID 1458 to 3069 in 306 ms while authority PID 946
+remained exact. Authority-only recovery then changed PID 946 to 3242 while
+HOME PID 3069 remained exact and the replacement served a valid audit
+snapshot. The restored graph retained appearance generation 9 and durable
+child and parent state.
+
+**Phone-native authoring / rollback:** A real Return to Stock touch dismissed
+Dashboard. Stock Mobile again published prompt bounds `[12,748][991,911]`,
+wholly above the provider row beginning at y=978; a touch inside those bounds
+focused the exact namespaced `mobile-agent-prompt`. Samsung keyboard touches
+entered the non-empty prompt `Blue`, and the IME action submitted it. The
+bridge started `provider=fake model=faux`; the child returned
+`prompt_complete` after 726 ms, the trusted context/validate/submit sequence
+completed, and graph
+`198f12c5b613f1fcfaf23286f0b56447972023c86a419f5c90625790bb19ad65`
+committed through `authority=system-graph`.
+
+The authored Stock Mobile revision was
+`f9bfec4e0b217ba63fb356e4bdf9a7d2063b44bd4b1b5108a94500b3da451944`
+with source SHA-256
+`290886afce4211b5216d16c472531b03f156c7ce73de3ea5b7aa31dc706b5de1`;
+no external experience was presented. A real ellipsis → Controls → Rollback
+touch then restored original v4 revision
+`43c52a6c45ee843ad1535ec81dd4833f8d8853911780a9e0d22239c3d7717edb`
+and kept `presented_experience=null`. The 130,494-byte authored screenshot and
+130,133-byte rollback screenshot have SHA-256
+`549db3e203901d66c62048e81eded432b414b99dc2e7c227d3d82d489b5786d0`
+and
+`20491de76c92eca40fad2a83c1291a80f20681a03b57d6fde96ee08e2bb0edc7`.
+
+**Verdict / evidence / next gate:** The campaign auditor passed in 2.60
+seconds with 4,996 KiB peak RSS. It counted appearance generation 9, two
+contained failures, two recoveries, correct host and authority PID isolation,
+exact authored/rollback revisions, and 210.53 seconds of ordered campaign
+time. The finalized 4,372,058-byte log has SHA-256
+`5316fe3121a7aef98fb2a651f0663eec6525bf8b680727b026ca62466ae773d8`.
+The independently verified 134-file manifest is 13,686 bytes with SHA-256
+`2821b92d9890d0e176235a687f33218ec8f7102abc181ab29a62faa3c3217873`.
+
+Accept the Android Compat v4 composition, isolation, recovery, Stock Mobile
+authoring, and v4-to-v4 rollback gate. The package inspector still exposes
+`ro.sos.legacy_revision_read=3`; the next implementation gate is to remove the
+bounded v3 read/activation/protocol path, rebuild no-v3 Compat and Core
+candidates, and repeat their physical acceptance campaigns. This Compat PASS
+does not complete the separate native Core physical gate.
