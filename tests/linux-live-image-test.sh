@@ -26,7 +26,9 @@ trap test_cleanup EXIT
 bash -n "$test_image"
 bash -n "$test_deploy"
 bash -n "$test_install"
-python3 - "$test_repo_root/packaging/xdg/framework12-pikvm-monitors.xml" <<'PY'
+python3 - \
+  "$test_repo_root/packaging/xdg/framework12-pikvm-monitors.xml" \
+  "$test_repo_root/packaging/fontconfig/60-sos-geist.conf" <<'PY'
 import sys
 import xml.etree.ElementTree as ET
 
@@ -42,6 +44,21 @@ assert [monitor.findtext("./monitorspec/connector") for monitor in monitors] == 
 ]
 assert all(monitor.findtext("./mode/width") == "1920" for monitor in monitors)
 assert all(monitor.findtext("./mode/height") == "1080" for monitor in monitors)
+
+fontconfig = ET.parse(sys.argv[2]).getroot()
+prepend_rules = {}
+for match in fontconfig.findall("./match"):
+    test = match.find("./test")
+    edit = match.find("./edit")
+    assert test is not None and edit is not None
+    assert test.attrib == {"name": "family", "qual": "any", "compare": "eq"}
+    assert edit.attrib == {"name": "family", "mode": "prepend", "binding": "strong"}
+    prepend_rules[test.findtext("./string")] = edit.findtext("./string")
+assert prepend_rules == {
+    "system-ui": "Geist",
+    "sans-serif": "Geist",
+    "monospace": "Geist Mono",
+}
 PY
 "$test_deploy" components >"$test_root/deploy-components.txt"
 for test_component in \

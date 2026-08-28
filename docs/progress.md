@@ -16920,3 +16920,68 @@ top-bar fit, `Super+Space` while an application is focused, search autofocus,
 multi-window tiling, child navigation, HUD hover/drag/click behavior, light and
 dark propagation, and agent submission. A later ISO build must verify the
 pinned fonts in the final squashfs and manifest before release acceptance.
+
+## 2026-08-28: Sync the composed Stock Shell to Framework development-live
+
+**Goal / exact environment:** Install the composed Stock Shell, workspace,
+launcher shortcut, HUD, appearance propagation, and Geist type on the mutable
+Framework Laptop 12 development image without rebuilding its ISO. The target
+was `liveuser@192.168.1.135`, boot ID
+`4233c8d6-e2a5-4b73-a2d5-233c594a9327`, `LiveOS_rootfs`, Fedora 44 with kernel
+`6.19.10-300.fc44.x86_64`, and base image revision
+`7c414374e450733c6541e1e88a70dbe94c15c1bc`. GDM was active, SOS had no live
+process, and no internal NVMe partition was mounted before or after the sync.
+
+**Changed code and target:** `tools/linux-live-deploy` installed all 22 current
+runtime components and checked-in assets from clean revision
+`b6056a298f1d9317a8a58016cd3367a5c69779ac`. The target then received the four
+pinned Geist 1.7.2 variable TTFs, OFL license, and SOS fontconfig file directly
+in the live overlay. Fedora's generic-family ordering exposed a packaging bug:
+plain `<alias><prefer>` entries loaded but left Noto first. The fontconfig file
+now adds strong pattern-level prepend rules for `system-ui`, `sans-serif`, and
+`monospace`. `tests/linux-live-image-test.sh` parses and pins those three rules.
+
+**Evidence and measurements:** Deployment
+`20260828T114937Z-b6056a298f1d-2143790` returned
+`linux_development_live_deployed=PASS` in 37,936,219,756 ns. Its evidence is in
+`artifacts/linux-live-deploy/20260828T114937Z-b6056a298f1d-2143790/`.
+`development-deployment.env` is 279 bytes with SHA-256
+`a887fedbba62c5bffcc7f9c079a6363e69eca1971402b4de213084cb26b3a999`;
+the 22-entry, 2,529-byte manifest has SHA-256
+`2d2911e044dee6237e9d2d731e730dcb6ae1b4f114bc1ee907a1ec314b3ff9b0`
+and binds 37,708,197 payload bytes; `deployment-result.env` is 376 bytes with
+SHA-256 `3e5efd2672c9f7544b12f1844a59b95e1d221635d6da529dc464c53fd4311f5b`.
+An independent target readback recalculated and accepted all 22 manifest
+entries.
+
+The deployed Geist regular, italic, mono regular, and mono italic files are
+169,056, 174,584, 171,200, and 181,908 bytes with respective SHA-256 values
+`cdcc4815cbf5f9882fa74e48f8ab410a0495781a58ff7316570f664e7e987753`,
+`c5db6397dae7993afb72e397277c5a5308ba32de010eb19ec2b8b73f5e9d3ec4`,
+`0e1af3f507a1c8dfbb03d13ffad585834cd45ed7ccb78c756c7ce7873d180d30`,
+and `e5800990ff5069667f4ff0a5dc582b260597e0adc022a887d9d103fc4cdd2cf2`.
+The 4,383-byte OFL has SHA-256
+`c683bfbcc7e087f5d37a54ef628f10387c451a83ddc459b151403a164ac46c90`.
+The corrected 1,131-byte fontconfig file has SHA-256
+`3454b026c4b7913a8fbf3570760e469945f127d26b233e85b06d09fec4e5f4ee`.
+After `fc-cache`, target `fc-match` resolved `system-ui` and `sans-serif` to
+Geist and `monospace` to Geist Mono. The focused live-image host test passed in
+4.20 seconds with 715,484 KiB peak RSS. No model ran, so model cost was zero.
+
+**Failures and decision:** The previous address `192.168.1.132` returned no
+route; trusted-key discovery found the same live target at `.135`. The first
+full transfer stopped at sudo authentication before any root install. Cleanup
+removed its remote staging directory, retained deployment
+`20260828T081459Z-f9085e5fcd26-2021282`, and left SOS stopped. The successful
+retry installed and hashed the complete component set. The first font readback
+then returned Noto Sans and Noto Sans Mono for generic families even though the
+Geist files and config were present. Inspection of the target's ordered
+fontconfig rules identified `60-latin.conf` as the earlier preference. Direct
+strong prepends fixed the earliest broken layer, and the second readback passed.
+
+**Remaining risk / next gate:** The Framework is synced but remains at GDM; no
+visual or interaction acceptance is claimed. The next SOS login must prove the
+packaged graph upgrade, Geist rendering, top-bar fit, global `Super+Space`,
+tiling, child navigation, and HUD behavior on the panel. The mutable overlay
+remains `promotion_eligible=false`, and a future ISO must still carry and audit
+the corrected fontconfig bytes.
