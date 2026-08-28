@@ -2331,12 +2331,16 @@ impl ExperienceHost {
             .map(|graph| graph.graph_id.clone())
             .ok_or_else(|| "No v4 graph is active".to_owned())?;
         let expected_generation = self.model.appearance.generation;
-        let mut profile = self.model.appearance.clone();
-        profile.generation = expected_generation.saturating_add(1);
-        profile.scheme = match profile.scheme {
+        let current = self.model.appearance.clone();
+        let scheme = match current.scheme {
             experience_package::ColorScheme::Light => experience_package::ColorScheme::Dark,
             experience_package::ColorScheme::Dark => experience_package::ColorScheme::Light,
         };
+        let mut profile = service_protocol::stock_appearance_profile(scheme);
+        profile.generation = expected_generation.saturating_add(1);
+        profile.contrast = current.contrast;
+        profile.text_scale_milli = current.text_scale_milli;
+        profile.reduce_motion = current.reduce_motion;
         let appearance = revision_client::set_experience_appearance(
             graph_id.clone(),
             expected_generation,

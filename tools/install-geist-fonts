@@ -1,0 +1,129 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+geist_repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+geist_version=1.7.2
+geist_archive_sha256=7fc800d2ac6b92844895196e5041aca55d814c15db70c44f79b3b83ab82b04e2
+geist_archive_url="https://github.com/vercel/geist-font/releases/download/v${geist_version}/geist-font-v${geist_version}.zip"
+
+geist_fail() {
+  printf 'error: %s\n' "$*" >&2
+  exit 1
+}
+
+geist_usage() {
+  printf '%s\n' \
+    'usage:' \
+    '  tools/install-geist-fonts user' \
+    '  tools/install-geist-fonts system' \
+    '  tools/install-geist-fonts --destdir ROOT'
+}
+
+for geist_command in curl fc-cache install mktemp sha256sum unzip; do
+  command -v "$geist_command" >/dev/null 2>&1 || \
+    geist_fail "required command not found: $geist_command"
+done
+
+geist_mode="${1:-user}"
+geist_destination_root=""
+geist_privileged=false
+case "$geist_mode" in
+  user)
+    [[ "$#" -le 1 ]] || geist_fail "user accepts no options"
+    geist_font_dir="${XDG_DATA_HOME:-$HOME/.local/share}/fonts/sos"
+    geist_fontconfig_dir="${XDG_CONFIG_HOME:-$HOME/.config}/fontconfig/conf.d"
+    ;;
+  system)
+    [[ "$#" -eq 1 ]] || geist_fail "system accepts no options"
+    geist_font_dir=/usr/share/fonts/sos
+    geist_fontconfig_dir=/etc/fonts/conf.d
+    geist_privileged=true
+    ;;
+  --destdir)
+    [[ "$#" -eq 2 ]] || geist_fail "--destdir requires one root"
+    geist_destination_root="$(realpath -m -- "$2")"
+    [[ "$geist_destination_root" == /* && "$geist_destination_root" != / ]] || \
+      geist_fail "--destdir must be an absolute root other than /"
+    geist_font_dir="$geist_destination_root/usr/share/fonts/sos"
+    geist_fontconfig_dir="$geist_destination_root/etc/fonts/conf.d"
+    if [[ ! -w "$geist_destination_root" \
+      || ( -e "$geist_destination_root/usr" && ! -w "$geist_destination_root/usr" ) \
+      || ( -e "$geist_destination_root/etc" && ! -w "$geist_destination_root/etc" ) ]]; then
+      geist_privileged=true
+    fi
+    ;;
+  -h|--help)
+    geist_usage
+    exit 0
+    ;;
+  *)
+    geist_usage >&2
+    exit 1
+    ;;
+esac
+if [[ "$geist_privileged" == true ]]; then
+  command -v sudo >/dev/null 2>&1 || geist_fail "required command not found: sudo"
+  geist_install=(sudo install)
+else
+  geist_install=(install)
+fi
+
+geist_cache_dir="${XDG_CACHE_HOME:-$HOME/.cache}/sos/fonts/geist-v${geist_version}"
+geist_archive="$geist_cache_dir/geist-font-v${geist_version}.zip"
+install -d -m 0755 "$geist_cache_dir"
+if [[ -f "$geist_archive" ]] \
+  && [[ "$(sha256sum "$geist_archive" | cut -d ' ' -f 1)" != "$geist_archive_sha256" ]]; then
+  geist_fail "cached Geist archive checksum does not match the pinned release"
+fi
+if [[ ! -f "$geist_archive" ]]; then
+  geist_download="$(mktemp "$geist_cache_dir/.geist-download.XXXXXX")"
+  trap 'rm -f -- "${geist_download:-}"' EXIT
+  curl --fail --location --silent --show-error "$geist_archive_url" --output "$geist_download"
+  [[ "$(sha256sum "$geist_download" | cut -d ' ' -f 1)" == "$geist_archive_sha256" ]] || \
+    geist_fail "downloaded Geist archive checksum does not match the pinned release"
+  mv -- "$geist_download" "$geist_archive"
+  trap - EXIT
+fi
+
+geist_stage="$(mktemp -d "${TMPDIR:-/tmp}/sos-geist.XXXXXX")"
+geist_cleanup() {
+  rm -r -- "$geist_stage"
+}
+trap geist_cleanup EXIT
+unzip -q "$geist_archive" -d "$geist_stage"
+geist_source_root="$geist_stage/geist-font"
+for geist_source in \
+  "$geist_source_root/Geist/variable/Geist[wght].ttf" \
+  "$geist_source_root/Geist/variable/Geist-Italic[wght].ttf" \
+  "$geist_source_root/GeistMono/variable/GeistMono[wght].ttf" \
+  "$geist_source_root/GeistMono/variable/GeistMono-Italic[wght].ttf" \
+  "$geist_source_root/OFL.txt"; do
+  [[ -f "$geist_source" ]] || geist_fail "pinned archive is missing ${geist_source#"$geist_source_root/"}"
+done
+
+"${geist_install[@]}" -d -m 0755 "$geist_font_dir" "$geist_fontconfig_dir"
+"${geist_install[@]}" -m 0644 "$geist_source_root/Geist/variable/Geist[wght].ttf" \
+  "$geist_font_dir/Geist-Variable.ttf"
+"${geist_install[@]}" -m 0644 "$geist_source_root/Geist/variable/Geist-Italic[wght].ttf" \
+  "$geist_font_dir/Geist-Italic-Variable.ttf"
+"${geist_install[@]}" -m 0644 "$geist_source_root/GeistMono/variable/GeistMono[wght].ttf" \
+  "$geist_font_dir/GeistMono-Variable.ttf"
+"${geist_install[@]}" -m 0644 "$geist_source_root/GeistMono/variable/GeistMono-Italic[wght].ttf" \
+  "$geist_font_dir/GeistMono-Italic-Variable.ttf"
+"${geist_install[@]}" -m 0644 "$geist_source_root/OFL.txt" "$geist_font_dir/OFL.txt"
+"${geist_install[@]}" -m 0644 "$geist_repo_root/packaging/fontconfig/60-sos-geist.conf" \
+  "$geist_fontconfig_dir/60-sos-geist.conf"
+
+if [[ "$geist_mode" == user ]]; then
+  fc-cache -f "$geist_font_dir" >/dev/null
+  printf 'geist_fonts_installed scope=user version=%s directory=%s archive_sha256=%s\n' \
+    "$geist_version" "$geist_font_dir" "$geist_archive_sha256"
+elif [[ "$geist_mode" == system ]]; then
+  sudo fc-cache -f "$geist_font_dir" >/dev/null
+  printf 'geist_fonts_installed scope=system version=%s directory=%s archive_sha256=%s\n' \
+    "$geist_version" "$geist_font_dir" "$geist_archive_sha256"
+else
+  printf 'geist_fonts_installed scope=rootfs version=%s root=%s archive_sha256=%s\n' \
+    "$geist_version" "$geist_destination_root" "$geist_archive_sha256"
+fi

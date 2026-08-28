@@ -14,8 +14,8 @@ use std::{
 use anyhow::{bail, Context as _, Result};
 use compositor_control_protocol::{
     read_shell_token_file, valid_shell_token, CompositorEvent, CompositorRequest,
-    PresentationEvidence, ShellOverlayConfiguration, ShellStateSnapshot, WindowControlAction,
-    WindowSpaceConfiguration, MAX_CONTROL_LINE_BYTES,
+    PresentationEvidence, ShellOverlayConfiguration, ShellShortcut, ShellStateSnapshot,
+    WindowControlAction, WindowSpaceConfiguration, MAX_CONTROL_LINE_BYTES,
 };
 
 const CONTROL_SOCKET_ENV: &str = "SOS_COMPOSITOR_CONTROL";
@@ -39,6 +39,7 @@ pub enum FenceEvent {
     ShellOverlayMoved(ShellOverlayConfiguration),
     ShellOverlayActivated,
     ShellOverlayHoverChanged(bool),
+    ShellShortcutActivated(ShellShortcut),
     ShellStateChanged(ShellStateSnapshot),
     WindowSpaceRejected(String),
     ShellOverlayRejected(String),
@@ -489,6 +490,9 @@ fn run_io(
             Ok(Some(CompositorEvent::ShellOverlayHoverChanged { hovered, .. })) => {
                 events.send_blocking(FenceEvent::ShellOverlayHoverChanged(hovered))?
             }
+            Ok(Some(CompositorEvent::ShellShortcutActivated { shortcut, .. })) => {
+                events.send_blocking(FenceEvent::ShellShortcutActivated(shortcut))?
+            }
             Ok(Some(CompositorEvent::ShellStateChanged { state, .. })) => {
                 events.send_blocking(FenceEvent::ShellStateChanged(state))?
             }
@@ -543,6 +547,9 @@ fn wait_for_ack(
                 .map_err(|error| error.to_string())?,
             CompositorEvent::ShellOverlayHoverChanged { hovered, .. } => events
                 .send_blocking(FenceEvent::ShellOverlayHoverChanged(hovered))
+                .map_err(|error| error.to_string())?,
+            CompositorEvent::ShellShortcutActivated { shortcut, .. } => events
+                .send_blocking(FenceEvent::ShellShortcutActivated(shortcut))
                 .map_err(|error| error.to_string())?,
             CompositorEvent::ShellStateChanged { state, .. } => events
                 .send_blocking(FenceEvent::ShellStateChanged(state))
@@ -603,6 +610,9 @@ fn wait_for_window_space_ack(
                 .map_err(|error| WindowSpaceAckError::Fatal(error.to_string()))?,
             CompositorEvent::ShellOverlayHoverChanged { hovered, .. } => events
                 .send_blocking(FenceEvent::ShellOverlayHoverChanged(hovered))
+                .map_err(|error| WindowSpaceAckError::Fatal(error.to_string()))?,
+            CompositorEvent::ShellShortcutActivated { shortcut, .. } => events
+                .send_blocking(FenceEvent::ShellShortcutActivated(shortcut))
                 .map_err(|error| WindowSpaceAckError::Fatal(error.to_string()))?,
             CompositorEvent::ShellStateChanged { state, .. } => events
                 .send_blocking(FenceEvent::ShellStateChanged(state))
@@ -665,6 +675,9 @@ fn wait_for_shell_overlay_ack(
             CompositorEvent::ShellOverlayHoverChanged { hovered, .. } => events
                 .send_blocking(FenceEvent::ShellOverlayHoverChanged(hovered))
                 .map_err(|error| WindowSpaceAckError::Fatal(error.to_string()))?,
+            CompositorEvent::ShellShortcutActivated { shortcut, .. } => events
+                .send_blocking(FenceEvent::ShellShortcutActivated(shortcut))
+                .map_err(|error| WindowSpaceAckError::Fatal(error.to_string()))?,
             CompositorEvent::ShellStateChanged { state, .. } => events
                 .send_blocking(FenceEvent::ShellStateChanged(state))
                 .map_err(|error| WindowSpaceAckError::Fatal(error.to_string()))?,
@@ -704,6 +717,9 @@ fn wait_for_window_control_ack(
             CompositorEvent::ShellStateChanged { state, .. } => events
                 .send_blocking(FenceEvent::ShellStateChanged(state))
                 .map_err(|error| WindowSpaceAckError::Fatal(error.to_string()))?,
+            CompositorEvent::ShellShortcutActivated { shortcut, .. } => events
+                .send_blocking(FenceEvent::ShellShortcutActivated(shortcut))
+                .map_err(|error| WindowSpaceAckError::Fatal(error.to_string()))?,
             CompositorEvent::WindowControlled {
                 request_id: received,
                 window_id,
@@ -740,6 +756,7 @@ fn event_revision(event: &CompositorEvent) -> Option<&str> {
         | CompositorEvent::ShellOverlayMoved { .. }
         | CompositorEvent::ShellOverlayActivated { .. }
         | CompositorEvent::ShellOverlayHoverChanged { .. }
+        | CompositorEvent::ShellShortcutActivated { .. }
         | CompositorEvent::ShellStateChanged { .. }
         | CompositorEvent::WindowControlled { .. }
         | CompositorEvent::Rejected { .. } => None,

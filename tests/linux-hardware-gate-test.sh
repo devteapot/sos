@@ -327,6 +327,8 @@ grep -F '/usr/local/libexec/sos/linux-hardware-gate collect' "$test_gate" >/dev/
 for test_development_path in \
   /usr/local/libexec/sos/sos-agent-login \
   /usr/share/sos/experiences/default.package.json \
+  /usr/share/sos/experiences/stock-workspace.luau \
+  /usr/share/sos/experiences/stock-workspace.package.json \
   /usr/share/sos/experiences/modules/stock-theme.luau \
   /usr/share/doc/sos/sos-agent.md \
   /usr/share/doc/sos/linux-stable-host.md \

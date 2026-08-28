@@ -103,6 +103,7 @@ fn run() -> Result<()> {
                 "--authority-file",
                 "--shell-token-file",
                 "--trusted-stock-revision",
+                "--trusted-stock-workspace-revision",
                 "--agent-socket",
                 "--compositor",
                 "--provider",
@@ -155,6 +156,9 @@ fn run() -> Result<()> {
                 authority_file: PathBuf::from(options.required("--authority-file")?),
                 shell_token_file: PathBuf::from(options.required("--shell-token-file")?),
                 trusted_stock_revision: options.required("--trusted-stock-revision")?.into(),
+                trusted_stock_workspace_revision: options
+                    .optional("--trusted-stock-workspace-revision")
+                    .map(str::to_owned),
                 agent_socket: PathBuf::from(options.required("--agent-socket")?),
                 compositor_executable: PathBuf::from(options.required("--compositor")?),
                 provider_executable: PathBuf::from(options.required("--provider")?),
@@ -246,5 +250,5 @@ impl Options {
 }
 
 fn usage() -> &'static str {
-    "usage:\n  sos-linux-session bootstrap-graph --root DIR --experience ID --service-socket PATH [--timeout-ms N]\n  sos-linux-session shutdown --service-socket PATH [--timeout-ms N]\n  sos-linux-session review-grants --root DIR --revision ID --service-socket PATH --capability-file FILE [--timeout-ms N]\n  sos-linux-session review-graph-grants --root DIR --experience ID --revision ID --service-socket PATH --capability-file FILE [--timeout-ms N]\n  sos-linux-session run --root DIR --runtime-dir DIR --authority-file FILE --shell-token-file FILE --trusted-stock-revision ID --agent-socket PATH --compositor FILE --provider FILE --supervisor FILE --host FILE --compositor-user USER --provider-user USER --supervisor-user USER --host-user USER [--timeout-ms N]\n  sos-linux-session run-user --root DIR --runtime-dir DIR --authority-file FILE --shell-token-file FILE --trusted-stock-revision ID --agent-socket PATH --compositor FILE --provider FILE --supervisor FILE --host FILE [--timeout-ms N]"
+    "usage:\n  sos-linux-session bootstrap-graph --root DIR --experience ID --service-socket PATH [--timeout-ms N]\n  sos-linux-session shutdown --service-socket PATH [--timeout-ms N]\n  sos-linux-session review-grants --root DIR --revision ID --service-socket PATH --capability-file FILE [--timeout-ms N]\n  sos-linux-session review-graph-grants --root DIR --experience ID --revision ID --service-socket PATH --capability-file FILE [--timeout-ms N]\n  sos-linux-session run --root DIR --runtime-dir DIR --authority-file FILE --shell-token-file FILE --trusted-stock-revision ID [--trusted-stock-workspace-revision ID] --agent-socket PATH --compositor FILE --provider FILE --supervisor FILE --host FILE --compositor-user USER --provider-user USER --supervisor-user USER --host-user USER [--timeout-ms N]\n  sos-linux-session run-user --root DIR --runtime-dir DIR --authority-file FILE --shell-token-file FILE --trusted-stock-revision ID [--trusted-stock-workspace-revision ID] --agent-socket PATH --compositor FILE --provider FILE --supervisor FILE --host FILE [--timeout-ms N]"
 }

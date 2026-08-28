@@ -1,7 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use experience_package::{
-    AppearanceProfile, BoundaryGrant, DependencyAlias, ExperienceId, ExportId,
+    AppearanceProfile, BoundaryGrant, ColorScheme, Contrast, DependencyAlias, ExperienceId,
+    ExportId, TokenId, TypographyToken, APPEARANCE_ABI_VERSION,
 };
 use serde::{Deserialize, Serialize};
 
@@ -69,9 +70,118 @@ pub struct DataFlowGrant {
 impl Default for AppearanceResource {
     fn default() -> Self {
         Self {
-            profile: AppearanceProfile::default(),
+            profile: stock_appearance_profile(ColorScheme::Dark),
         }
     }
+}
+
+/// The semantic appearance installed by both platform authorities before a
+/// user-authored appearance exists. Experiences still own their style rules;
+/// this resource only gives every graph instance the same bounded tokens.
+pub fn stock_appearance_profile(scheme: ColorScheme) -> AppearanceProfile {
+    fn token(value: &str) -> TokenId {
+        TokenId::parse(value).expect("stock appearance tokens are fixed and valid")
+    }
+
+    let (canvas, primary, secondary, panel, border, text, muted, accent_subtle, danger_subtle) =
+        match scheme {
+            ColorScheme::Dark => (
+                "#000000ff",
+                "#0a0a0aff",
+                "#111111ff",
+                "#1b1b1bff",
+                "#2a2a2aff",
+                "#edededff",
+                "#8b8b8bff",
+                "#181818ff",
+                "#2a0f12ff",
+            ),
+            ColorScheme::Light => (
+                "#ffffffff",
+                "#fafafaff",
+                "#f4f4f5ff",
+                "#e4e4e7ff",
+                "#d4d4d8ff",
+                "#09090bff",
+                "#71717aff",
+                "#f4f4f5ff",
+                "#fff1f2ff",
+            ),
+        };
+    let colors = BTreeMap::from([
+        (token("surface.canvas"), canvas.into()),
+        (token("surface.primary"), primary.into()),
+        (token("surface.secondary"), secondary.into()),
+        (token("surface.panel"), panel.into()),
+        (token("border.subtle"), border.into()),
+        (token("text.primary"), text.into()),
+        (token("text.muted"), muted.into()),
+        (token("accent.primary"), text.into()),
+        (token("accent.subtle"), accent_subtle.into()),
+        (token("status.warning"), "#f5a524ff".into()),
+        (token("status.danger"), "#ef4444ff".into()),
+        (token("status.danger_subtle"), danger_subtle.into()),
+        // Reference experiences written before the semantic surface names use
+        // this generic token. Keep it aligned with the stock canvas.
+        (token("background"), canvas.into()),
+    ]);
+    let spacing = BTreeMap::from([
+        (token("space.xs"), 4),
+        (token("space.sm"), 8),
+        (token("space.md"), 12),
+        (token("space.lg"), 16),
+        (token("space.xl"), 24),
+    ]);
+    let radii = BTreeMap::from([
+        (token("radius.control"), 6),
+        (token("radius.card"), 8),
+        (token("radius.panel"), 10),
+    ]);
+    let typography = BTreeMap::from([
+        (
+            token("type.label"),
+            TypographyToken {
+                family: "Geist".into(),
+                size_milli_points: 10_000,
+                weight: 500,
+                line_height_milli: 1_200,
+            },
+        ),
+        (
+            token("type.body"),
+            TypographyToken {
+                family: "Geist".into(),
+                size_milli_points: 13_000,
+                weight: 400,
+                line_height_milli: 1_400,
+            },
+        ),
+        (
+            token("type.title"),
+            TypographyToken {
+                family: "Geist".into(),
+                size_milli_points: 24_000,
+                weight: 500,
+                line_height_milli: 1_150,
+            },
+        ),
+    ]);
+    let profile = AppearanceProfile {
+        abi_version: APPEARANCE_ABI_VERSION,
+        generation: 0,
+        scheme,
+        contrast: Contrast::High,
+        text_scale_milli: 1_000,
+        reduce_motion: false,
+        colors,
+        spacing,
+        radii,
+        typography,
+    };
+    profile
+        .validate()
+        .expect("stock appearance profile must satisfy the wire contract");
+    profile
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
@@ -457,5 +567,42 @@ impl ServiceResponse {
             payload: None,
             error: Some(error),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn color<'a>(profile: &'a AppearanceProfile, name: &str) -> &'a str {
+        let token = TokenId::parse(name).unwrap();
+        profile.colors.get(&token).unwrap()
+    }
+
+    #[test]
+    fn default_appearance_is_the_high_contrast_dark_stock_profile() {
+        let profile = AppearanceResource::default().profile;
+        assert_eq!(profile.scheme, ColorScheme::Dark);
+        assert_eq!(profile.contrast, Contrast::High);
+        assert_eq!(color(&profile, "surface.canvas"), "#000000ff");
+        assert_eq!(color(&profile, "text.primary"), "#edededff");
+        assert_eq!(profile.typography.len(), 3);
+        assert!(profile
+            .typography
+            .values()
+            .all(|typography| typography.family == "Geist"));
+        profile.validate().unwrap();
+    }
+
+    #[test]
+    fn light_stock_profile_changes_semantic_surfaces_without_changing_type() {
+        let profile = stock_appearance_profile(ColorScheme::Light);
+        assert_eq!(color(&profile, "surface.canvas"), "#ffffffff");
+        assert_eq!(color(&profile, "text.primary"), "#09090bff");
+        assert!(profile
+            .typography
+            .values()
+            .all(|typography| typography.family == "Geist"));
+        profile.validate().unwrap();
     }
 }

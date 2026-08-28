@@ -1148,7 +1148,17 @@ linux_run() {
   build_linux_session
   mkdir -p "$LINUX_REVISION_ROOT"
 
-  local current_revision current_graph
+  local current_revision current_graph workspace_revision
+  workspace_revision="$($LINUX_SUPERVISOR install-package \
+    --root "$LINUX_REVISION_ROOT" \
+    --source "$SOS_ROOT/experiences/stock-workspace.luau" \
+    --state "$SOS_ROOT/tests/fixtures/empty-state.json" \
+    --schema 1 \
+    --package "$SOS_ROOT/experiences/stock-workspace.package.json" \
+    --asset "stock.theme:luau:$SOS_ROOT/experiences/modules/stock-theme.luau")"
+  grep -Eq "\"revision_id\"[[:space:]]*:[[:space:]]*\"$workspace_revision\"" \
+    "$SOS_ROOT/experiences/default.package.json" || \
+    fail "stock workspace revision does not match the shell dependency binding"
   current_revision="$($LINUX_SUPERVISOR experience-status \
     --root "$LINUX_REVISION_ROOT" \
     --experience sos.stock.shell)"
@@ -1211,6 +1221,11 @@ linux_run() {
     --revision "$current_revision" \
     --service-socket "$LINUX_PROVIDER_SOCKET" \
     --capability-file "$LINUX_GRANT_CAPABILITY_FILE"
+  "$LINUX_SESSION" review-grants \
+    --root "$LINUX_REVISION_ROOT" \
+    --revision "$workspace_revision" \
+    --service-socket "$LINUX_PROVIDER_SOCKET" \
+    --capability-file "$LINUX_GRANT_CAPABILITY_FILE" >/dev/null
 
   info "starting permanent Linux graph host at revision $current_revision"
   local arguments=(
@@ -1269,7 +1284,17 @@ linux_script() {
   [[ -S "$LINUX_PROVIDER_SOCKET" ]] || \
     fail "provider/state authority is not running; restart ./tools/sosctl linux-run"
 
-  local revision_id
+  local revision_id workspace_revision
+  workspace_revision="$($LINUX_SUPERVISOR install-package \
+    --root "$LINUX_REVISION_ROOT" \
+    --source "$SOS_ROOT/experiences/stock-workspace.luau" \
+    --state "$SOS_ROOT/tests/fixtures/empty-state.json" \
+    --schema 1 \
+    --package "$SOS_ROOT/experiences/stock-workspace.package.json" \
+    --asset "stock.theme:luau:$SOS_ROOT/experiences/modules/stock-theme.luau")"
+  grep -Eq "\"revision_id\"[[:space:]]*:[[:space:]]*\"$workspace_revision\"" \
+    "$SOS_ROOT/experiences/default.package.json" || \
+    fail "stock workspace revision does not match the shell dependency binding"
   revision_id="$($LINUX_SUPERVISOR install-package \
     --root "$LINUX_REVISION_ROOT" \
     --source "$source_file" \

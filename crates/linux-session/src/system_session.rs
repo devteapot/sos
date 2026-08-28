@@ -18,7 +18,7 @@ use std::{
 
 use anyhow::{bail, Context as _, Result};
 use compositor_control_protocol::read_shell_token_file;
-use experience_package::ExperienceId;
+use experience_package::{ExperienceId, RevisionId};
 use nix::{
     sys::signal::{kill, Signal},
     sys::socket::{getsockopt, sockopt::PeerCredentials},
@@ -27,7 +27,10 @@ use nix::{
 use revision_supervisor::{GraphStore, RevisionStore, STOCK_SHELL_EXPERIENCE_ID};
 use signal_hook::consts::{SIGHUP, SIGINT, SIGTERM};
 
-use crate::{bootstrap_graph_authority, review_trusted_graph_grants, shutdown_authority};
+use crate::{
+    bootstrap_graph_authority, review_revision_grants, review_trusted_graph_grants,
+    shutdown_authority,
+};
 
 const POLL_INTERVAL: Duration = Duration::from_millis(20);
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
@@ -83,6 +86,7 @@ pub struct SystemSessionOptions {
     pub authority_file: PathBuf,
     pub shell_token_file: PathBuf,
     pub trusted_stock_revision: String,
+    pub trusted_stock_workspace_revision: Option<String>,
     pub agent_socket: PathBuf,
     pub compositor_executable: PathBuf,
     pub provider_executable: PathBuf,
@@ -502,6 +506,44 @@ fn start_and_monitor(
         options.startup_timeout,
     )?;
     println!("linux_system_session_grants experience_id={stock_experience_id} reviewed={reviewed}");
+    if let Some(workspace_revision) = &options.trusted_stock_workspace_revision {
+        let workspace_revision = RevisionId::parse(workspace_revision.clone())?;
+        let store = RevisionStore::open(&options.revision_root)?;
+        let graphs = GraphStore::open(&options.revision_root)?;
+        let (_, active_graph) = graphs
+            .current(&stock_experience_id)?
+            .context("trusted Stock graph is not active")?;
+        let root = active_graph
+            .nodes
+            .get(&active_graph.root)
+            .context("trusted Stock graph root is missing")?;
+        if root.revision_id.as_str() != options.trusted_stock_revision {
+            bail!("active Stock graph does not match the trusted root revision");
+        }
+        let root_package = store.verify(root.revision_id.as_str())?.package;
+        if !root_package
+            .dependencies
+            .values()
+            .any(|binding| binding.revision_id == workspace_revision)
+            || !active_graph
+                .nodes
+                .values()
+                .any(|node| node.revision_id == workspace_revision)
+        {
+            bail!("trusted Stock workspace is not an exact dependency of the active root");
+        }
+        let workspace_decision = review_revision_grants(
+            &options.revision_root,
+            workspace_revision.as_str(),
+            &provider_socket,
+            capability,
+            options.startup_timeout,
+        )?;
+        println!(
+            "linux_system_session_grants experience_id={} reviewed=true",
+            workspace_decision.experience_id
+        );
+    }
 
     processes.host_launcher = Some(HostLauncher::start(
         &host_launcher_socket,

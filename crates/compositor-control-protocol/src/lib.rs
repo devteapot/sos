@@ -92,6 +92,14 @@ pub enum WindowControlAction {
     Close,
 }
 
+/// Global chords resolved by the compositor and handed to the authenticated
+/// Shell without exposing raw keyboard events to revision code.
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ShellShortcut {
+    Launcher,
+}
+
 pub fn valid_shell_token(token: &str) -> bool {
     !token.is_empty()
         && token.len() <= MAX_SHELL_TOKEN_BYTES
@@ -250,6 +258,12 @@ pub enum CompositorEvent {
         request_id: u64,
         hovered: bool,
     },
+    /// Unsolicited global shell shortcut. The compositor consumes the chord so
+    /// the currently focused application cannot receive a partial key press.
+    ShellShortcutActivated {
+        request_id: u64,
+        shortcut: ShellShortcut,
+    },
     /// Unsolicited bounded observation update. Native handles, process ids,
     /// application ids, and connector names are deliberately absent.
     ShellStateChanged {
@@ -286,6 +300,7 @@ impl CompositorEvent {
             | Self::ShellOverlayMoved { request_id, .. }
             | Self::ShellOverlayActivated { request_id }
             | Self::ShellOverlayHoverChanged { request_id, .. }
+            | Self::ShellShortcutActivated { request_id, .. }
             | Self::ShellStateChanged { request_id, .. }
             | Self::WindowControlled { request_id, .. }
             | Self::Presented { request_id, .. }
@@ -402,6 +417,20 @@ mod tests {
             serde_json::from_str::<CompositorEvent>(&serde_json::to_string(&configured).unwrap())
                 .unwrap(),
             configured
+        );
+
+        let shortcut = CompositorEvent::ShellShortcutActivated {
+            request_id: 0,
+            shortcut: ShellShortcut::Launcher,
+        };
+        assert_eq!(
+            serde_json::to_string(&shortcut).unwrap(),
+            r#"{"event":"shell_shortcut_activated","request_id":0,"shortcut":"launcher"}"#
+        );
+        assert_eq!(
+            serde_json::from_str::<CompositorEvent>(&serde_json::to_string(&shortcut).unwrap())
+                .unwrap(),
+            shortcut
         );
 
         let control = CompositorRequest::ControlWindow {

@@ -198,11 +198,17 @@ sudo install -o root -g root -m 0644 \
   "$vm_guest_root/experiences/default.package.json" \
   /usr/share/sos/experiences/default.package.json
 sudo install -o root -g root -m 0644 \
+  "$vm_guest_root/experiences/stock-workspace.luau" \
+  /usr/share/sos/experiences/stock-workspace.luau
+sudo install -o root -g root -m 0644 \
+  "$vm_guest_root/experiences/stock-workspace.package.json" \
+  /usr/share/sos/experiences/stock-workspace.package.json
+sudo install -o root -g root -m 0644 \
   "$vm_guest_root/experiences/modules/stock-theme.luau" \
   /usr/share/sos/experiences/modules/stock-theme.luau
 sudo cp /usr/share/sos/experiences/default.luau \
   /usr/share/sos/experiences/stock-agent-variant.luau
-sudo sed -i '0,/Make Stock Base yours/s//Shape Stock Base around your day/' \
+sudo sed -i '0,/Experiences, Linux applications, and open windows/s//Open experiences, Linux applications, and windows/' \
   /usr/share/sos/experiences/stock-agent-variant.luau
 sudo install -o root -g root -m 0644 \
   "$vm_guest_root/packaging/systemd/sos-session.service" \
@@ -238,9 +244,25 @@ sudo install -o sos-supervisor -g sos-ipc -m 0640 \
 sudo install -o sos-supervisor -g sos-ipc -m 0640 \
   "$vm_guest_root/experiences/default.package.json" /var/lib/sos/staging/default.package.json
 sudo install -o sos-supervisor -g sos-ipc -m 0640 \
+  "$vm_guest_root/experiences/stock-workspace.luau" \
+  /var/lib/sos/staging/stock-workspace.luau
+sudo install -o sos-supervisor -g sos-ipc -m 0640 \
+  "$vm_guest_root/experiences/stock-workspace.package.json" \
+  /var/lib/sos/staging/stock-workspace.package.json
+sudo install -o sos-supervisor -g sos-ipc -m 0640 \
   "$vm_guest_root/experiences/modules/stock-theme.luau" /var/lib/sos/staging/stock-theme.luau
 sudo install -o sos-supervisor -g sos-ipc -m 0640 \
   "$vm_guest_root/tests/fixtures/empty-state.json" /var/lib/sos/staging/empty-state.json
+vm_workspace_revision="$(sudo -u sos-supervisor "$vm_bin_dir/sos-revision-supervisor" install-package \
+  --root /var/lib/sos/revisions \
+  --source /var/lib/sos/staging/stock-workspace.luau \
+  --state /var/lib/sos/staging/empty-state.json \
+  --schema 1 \
+  --package /var/lib/sos/staging/stock-workspace.package.json \
+  --asset stock.theme:luau:/var/lib/sos/staging/stock-theme.luau)"
+sudo -u sos-supervisor grep -Eq \
+  "\"revision_id\"[[:space:]]*:[[:space:]]*\"$vm_workspace_revision\"" \
+  /var/lib/sos/staging/default.package.json
 vm_revision="$(sudo -u sos-supervisor "$vm_bin_dir/sos-revision-supervisor" install-package \
   --root /var/lib/sos/revisions \
   --source /var/lib/sos/staging/default.luau \
@@ -248,15 +270,15 @@ vm_revision="$(sudo -u sos-supervisor "$vm_bin_dir/sos-revision-supervisor" inst
   --schema 1 \
   --package /var/lib/sos/staging/default.package.json \
   --asset stock.theme:luau:/var/lib/sos/staging/stock-theme.luau)"
-sudo -u sos-supervisor "$vm_bin_dir/sos-revision-supervisor" bootstrap \
-  --root /var/lib/sos/revisions \
-  --revision "$vm_revision" >/dev/null
 sudo -u sos-supervisor "$vm_bin_dir/sos-revision-supervisor" bootstrap-graph \
   --root /var/lib/sos/revisions \
   --experience sos.stock.shell \
   --revision "$vm_revision" >/dev/null
-sudo sh -c 'printf "SOS_TRUSTED_STOCK_REVISION=%s\n" "$1" > /var/lib/sos/trusted-revisions.env' \
-  sh "$vm_revision"
+sudo sh -c 'printf "%s\n" \
+  "SOS_TRUSTED_STOCK_REVISION=$1" \
+  "SOS_TRUSTED_STOCK_WORKSPACE_REVISION=$2" \
+  > /var/lib/sos/trusted-revisions.env' \
+  sh "$vm_revision" "$vm_workspace_revision"
 sudo chown root:root /var/lib/sos/trusted-revisions.env
 sudo chmod 0644 /var/lib/sos/trusted-revisions.env
 sudo systemctl daemon-reload

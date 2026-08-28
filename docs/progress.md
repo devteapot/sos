@@ -16827,3 +16827,96 @@ and the composition plan's cross-platform functional and physical acceptance
 are closed. This mutable development-live run cannot promote a Linux release.
 An installed or immutable release campaign, panel latency, suspend, GPU
 recovery, thermals, and power remain separate product gates.
+
+## 2026-08-28: Compose and restyle the opinionated Stock Shell
+
+**Goal:** Replace the monolithic Linux Stock surface with an opinionated,
+composable black and white shell: minimal top bar, keyboard launcher, tiling by
+default, compact agent HUD, propagated semantic appearance, and Geist system
+fonts. Keep the workspace replaceable through the shipped Experience API v4
+contract instead of absorbing every product function into the Shell root.
+
+**Changed:** `sos.stock.shell` now owns only trusted shell integration and
+mounts the new ordinary `sos.stock.workspace` package. Their locked boundary
+passes optional `active_workspace` state down and typed `navigate` events up.
+The root renders a 41-pixel top bar, centered launcher, tiling/floating/
+scrolling selection, and draggable hover-expanded agent HUD without a
+reserving rail. The compositor consumes exact `Super+Space` presses and sends
+a closed launcher event to the authenticated Shell. The child retains the
+eight provider-backed workspaces in its own VM, state, package, and grant.
+
+The authority default is now a high-contrast semantic dark profile with a
+complete light counterpart. Both composed revisions resolve surface, border,
+type, spacing, and radius tokens. Linux native background, text-field border,
+and status paint also resolve the active profile. Android theme toggling now
+rebuilds the complete Stock palette while preserving accessibility settings.
+The selectable login session installs packaged graph bytes on every start and
+advances to a new packaged root only when the active registry revision still
+equals the prior trusted Stock revision. A customized current root is left
+untouched. The focused login test covers the clean packaged-upgrade branch.
+
+Geist 1.7.2 is pinned to the official release archive, 8,207,303 bytes with
+SHA-256 `7fc800d2ac6b92844895196e5041aca55d814c15db70c44f79b3b83ab82b04e2`.
+The new installer verified and placed Geist and Geist Mono for the current user
+under `/home/carlid/.local/share/fonts/sos`; `fc-match` resolved both families.
+The regular variable TTF is 169,056 bytes with SHA-256
+`cdcc4815cbf5f9882fa74e48f8ab410a0495781a58ff7316570f664e7e987753`;
+Geist Mono is 171,200 bytes with SHA-256
+`0e1af3f507a1c8dfbb03d13ffad585834cd45ed7ccb78c756c7ce7873d180d30`.
+A disposable rootfs run staged all four variable TTFs, the 4,383-byte OFL
+license, and fontconfig aliases. The normal Linux installer and future live
+image build use the same checksum-pinned path. No ISO was rebuilt.
+
+**Evidence:** Both sources passed the pinned Luau analyzer and every declared
+scene: four Shell scenarios and eight workspace scenarios, with 36 nodes in the
+default Shell, 88 in the launcher, and 77 in the default workspace. A
+disposable supervisor store installed workspace revision
+`3ef47b0f10d4f969717f1907a0471fe7c4364a1824b41b0156af71e4ea3ac228`,
+installed Shell revision
+`5ebbfce1084ed0e47b4e669d3a4bebebbf663d1fca7c1b57dfeaaf56ee36423b`,
+and independently bootstrapped and resolved graph
+`cea8b95ef819963b8befeaf9c17c3ed49ff6572d5c768c9f3078ab09c16963c2`.
+
+The protocol, appearance, and compositor library suite passed 34 tests in 1.55
+seconds with 584,540 KiB peak RSS. Experience package, revision supervisor, and
+Luau runtime passed 70 tests in 9.09 seconds with 596,792 KiB peak RSS. Linux
+session and authoring passed 17 tests in 1.44 seconds with 528,960 KiB peak RSS.
+The Linux GPUI host compiled in 16.34 seconds
+with 809,532 KiB peak RSS, then its 43-test library suite passed in 1.59 seconds
+with 2,719,880 KiB peak RSS. A final combined Rust regression across the
+service protocol, compositor protocol, compositor, Linux session, and Linux
+experience host passed in 19.77 seconds with 2,951,900 KiB peak RSS.
+Selectable-login host tests passed in 1.18 seconds, live-image and deployment
+host tests in 4.22 seconds, and hardware-gate host policy tests in 0.97 seconds.
+The faux resident-agent flow retained the locked mount, activated replacement revision
+`599c3abc9db4e704d4ab08c086d3e165b12da88a24321f04afd47e3d07e43041`,
+and passed in 3.96 seconds with 748,732 KiB peak RSS.
+
+**Failures and rejected approaches:** The first hand-calculated child contract
+digest preserved source choice-array order, so graph resolution correctly
+rejected it as changed. Hashing the supervisor's canonical package established
+the exact digest
+`6fb4b882b831cac409867e1e2457b133de9871858f3ee1e232ae8077c5073e00`.
+The first compositor test build failed after 16.75 seconds because the new test
+module omitted its private helper imports; the corrected suite passed. The
+first composed agent activation was denied because only the trusted root had a
+grant decision. Implicitly trusting mounted children was rejected. The session
+now reviews only the exact workspace revision named by the active trusted root,
+and the standalone development path reviews that same revision explicitly.
+Old e2e setup still invoked removed singleton bootstrap commands, and its faux
+Shell candidate omitted the required mount. Removing the obsolete bootstrap
+steps and making the fixture contract-preserving produced the passing run.
+
+**Decision:** Adopt the two-package Stock graph, monochrome semantic profile,
+Geist system type, global launcher chord, default tiling, and compact agent HUD
+as the Linux Stock implementation. Keep the child grant independent and exact;
+root trust is not transitive composition trust.
+
+**Open risks / next gate:** This entry is host-only implementation evidence.
+The prior Framework campaign covered the old reserving-rail shell and cannot
+accept this visual redesign. Rebuild or development-deploy the complete new
+component set, then run a fresh Linux visual and input gate for font loading,
+top-bar fit, `Super+Space` while an application is focused, search autofocus,
+multi-window tiling, child navigation, HUD hover/drag/click behavior, light and
+dark propagation, and agent submission. A later ISO build must verify the
+pinned fonts in the final squashfs and manifest before release acceptance.

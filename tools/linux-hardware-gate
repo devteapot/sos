@@ -408,6 +408,8 @@ hardware_gate_verify_development_deployment() {
       /usr/local/libexec/sos/linux-hardware-gate|\
       /usr/share/sos/experiences/default.luau|\
       /usr/share/sos/experiences/default.package.json|\
+      /usr/share/sos/experiences/stock-workspace.luau|\
+      /usr/share/sos/experiences/stock-workspace.package.json|\
       /usr/share/sos/experiences/modules/stock-theme.luau|\
       /usr/share/doc/sos/experience-api.md|\
       /usr/share/doc/sos/sos-agent.md|\
