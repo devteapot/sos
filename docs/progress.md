@@ -16116,3 +16116,84 @@ The independently verified 141-file rejection manifest at
 Commit the stale-worker containment fix, seal one replacement Compat OTA, and
 repeat the entire physical campaign from Stock before accepting the no-v3
 product or starting Core.
+
+## 2026-08-28: Accept the v4-only Android Compat replacement
+
+**Goal / artifact:** Close the no-v3 Compat gate with the stale graph-result
+containment fix. Clean source `7c973a4bce2c4e457486b9da0a5f37f2f8814999`
+built product `sos.compat1.7c973a4bce2c.5ef843a208f6` in 238.25 seconds
+with 2,978,500 KiB peak RSS. The complete inspector passed in 20.24 seconds
+and again from the evidence seal in 19.83 seconds. It verified ZIP integrity,
+the whole-package signature, VINTF, PIT ceilings, the AVB chain, v4-only
+metadata, the authority and agent payloads, host-owned controls, and the
+phone-native Stock Mobile contract. The exact 1,067,546,493-byte OTA at
+`.cache/evidence/android-v4-7c973a4/compat1/lineage-23.0-20260828-UNOFFICIAL-sos_compat_a33x-7c973a4.zip`
+has SHA-256
+`a5fadf1123d9ff3e39f489ee4c4c865797a5b59c5a8a112749d093c19f3e80c5`.
+Its 41,717,949-byte `SosShell.apk` has SHA-256
+`ba1909d810b5048d16b73150502edcaa329ddf8cd5c19b13706954836c273cc4`.
+The independent complete ZIP test passed in 4.83 seconds. The verified
+seven-file offline manifest is 609 bytes with SHA-256
+`6119b640159493761e46f0f9d8f183f39e93aea674a84d663b530062273997ed`.
+
+**Install / regression evidence:** The SM-A336B entered automatic sideload
+Recovery in 24.98 seconds. The only OTA transfer completed in 83.67 seconds
+with `Total xfer: 1.00x`. Exact-product runtime readiness completed in 102.51
+seconds, including 38 seconds after the Android transport returned. The live
+system reported Experience API and revision format 4, Enforcing SELinux,
+Stock Mobile HOME PID 1491, and authority PID 940.
+
+Immediately after Dashboard replaced Stock, the queued Stock refresh result
+arrived in the same ordering that had aborted the rejected candidate. This
+time the host logged `android_stale_graph_result_ignored` for inactive runtime
+generation 1 while generation 2 stayed current. Dashboard then frame-confirmed
+as a three-Instance graph; HOME and authority PIDs remained live and no SOS
+fatal or ANR occurred. This is direct physical evidence for the containment
+regression, not only a host test.
+
+**Composition / recovery / authoring:** The accepted artifact-bound campaign
+at `.cache/evidence/android-v4-7c973a4-physical/compat1/composition/` captured
+all eleven ordered stages. It proved independent Experience state and grants,
+typed child events, parent liveness, appearance propagation from generation
+11 to 12 without revision churn, and containment plus recovery for both the
+Agenda exception and execution-budget timeout. Physical touches exercised the
+namespaced mounted IME focus and outside blur, and Android received the
+composed accessibility tree and host controls.
+
+HOME-only recovery changed PID 3606 to 5153 in 1.47 seconds while authority
+PID 3795 remained exact. Authority-only recovery then changed PID 3795 to
+5337 in 0.45 seconds without changing HOME. Durable graph, state, and
+appearance data survived both boundaries. Offline fake/faux authoring staged
+and authority-committed Stock Mobile revision
+`f9bfec4e0b217ba63fb356e4bdf9a7d2063b44bd4b1b5108a94500b3da451944`
+in 1.39 seconds. The host-owned rollback completed in 0.20 seconds and
+restored original v4 revision
+`43c52a6c45ee843ad1535ec81dd4833f8d8853911780a9e0d22239c3d7717edb`;
+no external top-level Experience remained presented.
+
+**Rejected capture attempts:** The first capture on this healthy installation
+was rejected because a physical coordinate hit the adjacent failure control
+and the final log lacked the required `open_first` dispatch. It remains at
+`.cache/evidence/android-v4-7c973a4-physical/compat1/composition-rejected-open-first/`.
+No reinstall occurred. During the replacement capture, an immediate prompt
+tap raced the provider-selection rerender. The bounded authoring wait expired
+after 120.00 seconds; logs proved that no submit, candidate, or commit had
+occurred. That capture is retained as
+`stages/authored-rejected-no-submit`. Waiting for the provider transition and
+then requiring a visible IME made the single retry deterministic. No external
+effect was resubmitted ambiguously.
+
+**Verdict / evidence / next gate:** The strict campaign audit passed in 2.55
+seconds with 4,492 KiB peak RSS. It counted appearance generation 12, two
+contained failures, two recoveries, and 375.37 seconds of ordered campaign
+time. After every redirected log and timing file was closed, the independently
+regenerated and verified 148-file manifest was 15,267 bytes with SHA-256
+`ca360ff142602d9befb3a87ebcccdc1c28570695de4fd4f22f47ef2d4b930d89`.
+The finalized 3,365,582-byte rollback log has SHA-256
+`d6c1a611360b4dad7589aa2211ba5ea294ee3365e5f89aaef3f86bb7f71f08e0`.
+
+Accept the Android Compat product as v4-only and accept the stale-result fix
+on physical hardware. This does not close Android parity: build and seal the
+matching native Core candidate, install it once, and pass the separate Core
+composition, native input/keyboard, recovery, authoring, and rollback
+campaign before declaring the Android milestones complete.
