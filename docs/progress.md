@@ -16221,3 +16221,80 @@ fixture pass; the latter completed in 8.11 seconds. The fixed complete Core
 inspector then passed every boundary in 17.31 seconds with 47,244 KiB peak
 RSS. Seal this exact artifact, verify the seal independently, and only then
 start the native Core physical campaign.
+
+## 2026-08-28: Reject the first Core authoring attempt and remove Pi JIT authority
+
+**Goal / installed artifact:** Continue Android v4 parity on the native Core
+product and run the same ordered composition, recovery, authoring, and rollback
+campaign accepted on Compat. The sealed candidate was built from
+`1553d8d66d9679599e81648753642be6e81b8465`, identified itself as
+`sos.core1.1553d8d66d96.77ecf0025864`, and is the 1,022,777,330-byte OTA at
+`.cache/evidence/android-v4-1553d8d/core1/lineage-23.0-20260828-UNOFFICIAL-sos_core1_a33x-1553d8d.zip`
+with SHA-256
+`2ee65a3b1f84860b5174702c578cc2c3f9a2e301c1a86f786f8ccd9002fb8042`.
+The evidence-copy inspector passed in 17.20 seconds with 46,900 KiB peak RSS,
+and its independent ZIP test passed in 4.73 seconds. The seven-file offline
+manifest is 709 bytes with SHA-256
+`179ff12f983ecf63f6e709c1b5105de73472becd5e3de7f72ba10056a7671698`.
+
+The phone entered automatic Recovery in 22.26 seconds. Its single sideload
+completed in 79.29 seconds with `Total xfer: 1.00x`; exact native readiness
+followed in 52.62 seconds after transport. The live SM-A336B reported the exact
+revision, Experience API and package format 4, `ro.zygote=no_zygote`, Enforcing
+SELinux, the Core surface, supervisor/child PIDs 924/936, authority PID 945,
+and platform PID 946. No Android Activity or APK host was used.
+
+**Composition / recovery evidence before rejection:** Physical touch opened
+the phone-native Apps launcher and presented Dashboard as three independently
+ready graph instances. Agenda's `open_first` child event updated both child and
+parent durable state, and the parent liveness counter advanced. Appearance
+changed from generation 12 to 20 without revision churn. The Agenda update
+exception was contained and recovered in approximately 37 ms; its infinite
+handler hit `experience exceeded its time budget` and recovered in
+approximately 23 ms. Dashboard remained interactive, and the mounted Agenda
+input produced namespaced Core keyboard `visible=true` and `visible=false`
+transitions. The recovered snapshot retained `Design review`, 24 parent pings,
+independent state and grants, and a healthy complete graph.
+
+The original startup marker aged out of Android's finite log buffer before the
+Dashboard checkpoint. The first capture therefore failed closed even though
+the processes and SurfaceFlinger layer were live. A deliberate supervisor
+fault/retry created a fresh lifecycle epoch without changing authority or
+durable state; child 936 became 25903 and readiness passed. The explicit host
+recovery stage later kept supervisor 924 and authority 945 while changing the
+child from 25903 to 27264, then restored Dashboard and appearance 20. The
+authority recovery helper initially rejected Core before mutation because it
+was hard-coded to `dev.sos.experience`. It now selects the host by
+`ro.sos.profile`, requires Core's normalized supervisor/child pair to remain
+exact, and has separate Compat and Core regression cases. The corrected
+physical probe changed authority 945 to 27639 while host PIDs 924/27264 stayed
+fixed; graph, appearance, and durable state survived.
+
+**Rejected authoring attempt / cause:** Physical Core input selected the
+deterministic Offline provider, entered `make stock mobile lighter`, and
+submitted once. The host committed `agent_submit`, started the shared Pi runner
+as `/system_ext/bin/sos-node`, and received no response. Enforcing SELinux
+denied both a nonessential `/proc/meminfo` read and, critically, `execmem` in
+the inherited `sos_core_host` domain. V8 aborted with SIGTRAP in
+`v8::base::OS::SetPermissions` before the runner protocol began; the UI
+correctly surfaced `common Pi runner returned no response`. No candidate was
+staged or activated, so no retry or rollback was attempted on this artifact.
+
+The finalized rejection evidence is under
+`.cache/evidence/android-v4-1553d8d-physical/core1/authoring-rejected-execmem/`.
+Its independently verified 422-byte manifest has SHA-256
+`a722283e02e3c08d82211ff287b6f6569702bee3409018a5ef5ace21b6dd9939`;
+the 4,163,682-byte complete log has SHA-256
+`ba20eca7b615116f76e97cd915d115d8369ef9703bb28ece838629c07b2ebf65`,
+and the 139,867-byte error screenshot has SHA-256
+`3a2ccc082fdd945e6ca0b19b040879d3f96b49fe50f5454f2c8c1d3442a91c2b`.
+
+**Decision / verification / next gate:** Reject the `1553d8d` Core campaign.
+Do not grant the broad Core host executable-memory authority. Core now starts
+only the untrusted-input Pi child with V8 `--jitless`, and the artifact
+inspector requires that literal in the shipped runtime. The complete A33x host
+suite passed in 8.3 seconds; Core-native ARM64 compilation passed in 3.3
+seconds after `cargo fmt --all -- --check`, with only existing dead-code
+warnings. Build and inspect a replacement Core OTA from the exact fix, install
+it once, rerun the entire ordered physical campaign from Stock, and require
+offline authoring plus v4 rollback before accepting Android Core parity.

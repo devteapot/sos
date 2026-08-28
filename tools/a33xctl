@@ -1578,6 +1578,8 @@ inspect_core_stage() {
   strings "$host_runtime" | grep -F \
     '/system_ext/etc/sos-agent/agent-runner.cjs' >/dev/null || \
     fail "SOS $stage GPUI runtime omitted the shared Pi runner boundary"
+  strings "$host_runtime" | grep -Fx -- '--jitless' >/dev/null || \
+    fail "SOS $stage GPUI runtime does not disable Pi runner executable memory"
   check_core_runtime_model_contract "$host_runtime"
   for agent_marker in \
     'android_agent_effect_dispatch action=' \
@@ -1861,19 +1863,31 @@ validate_device_identity() {
 restart_v4_authority() {
   [[ "$#" -eq 4 && "$1" == --serial && "$3" == --expected-revision ]] || \
     fail "usage: ./tools/a33xctl restart-v4-authority --serial SERIAL --expected-revision REVISION"
-  local serial="$2" expected_revision="$4" revision build_type
+  local serial="$2" expected_revision="$4" revision build_type profile host_process
   local old_authority new_authority old_host new_host service recovery_snapshot audit_ready=0
   validate_device_identity "$serial" "$expected_revision"
   revision="$(device_property "$serial" ro.build.version.incremental)"
   build_type="$(device_property "$serial" ro.build.type)"
+  profile="$(device_property "$serial" ro.sos.profile)"
   [[ "$revision" == "$expected_revision" ]] || \
     fail "authority recovery revision mismatch: expected $expected_revision, found $revision"
   [[ "$build_type" == userdebug || "$build_type" == eng ]] || \
     fail "authority recovery probe is available only on a userdebug or eng physical gate product"
+  case "$profile" in
+    compat) host_process=dev.sos.experience ;;
+    core) host_process=sos-core-host ;;
+    *) fail "authority recovery does not support SOS profile: $profile" ;;
+  esac
   old_authority="$(adb_readonly "$serial" shell pidof sos-authority 2>/dev/null | tr -d '\r\n' || true)"
-  old_host="$(adb_readonly "$serial" shell pidof dev.sos.experience 2>/dev/null | tr -d '\r\n' || true)"
+  old_host="$(adb_readonly "$serial" shell pidof "$host_process" 2>/dev/null | \
+    tr -d '\r' | tr ' ' '\n' | sed '/^$/d' | sort -n | paste -sd ' ' - || true)"
   [[ "$old_authority" =~ ^[0-9]+$ ]] || fail "SOS authority is not live before recovery"
-  [[ "$old_host" =~ ^[0-9]+$ ]] || fail "SOS HOME is not live before authority recovery"
+  if [[ "$profile" == compat ]]; then
+    [[ "$old_host" =~ ^[0-9]+$ ]] || fail "SOS HOME is not live before authority recovery"
+  else
+    [[ "$old_host" =~ ^[0-9]+\ [0-9]+$ ]] || \
+      fail "Core supervisor and child are not both live before authority recovery"
+  fi
 
   adb_readonly "$serial" shell setprop sys.sos.authority_recovery_probe 1
   recovery_snapshot="$(mktemp /tmp/sos-authority-recovery-audit.XXXXXX)"
@@ -1897,15 +1911,16 @@ restart_v4_authority() {
     fail "init did not recover an audit-ready authority after the bounded probe"
   fi
   rm -f -- "$recovery_snapshot"
-  new_host="$(adb_readonly "$serial" shell pidof dev.sos.experience 2>/dev/null | tr -d '\r\n' || true)"
+  new_host="$(adb_readonly "$serial" shell pidof "$host_process" 2>/dev/null | \
+    tr -d '\r' | tr ' ' '\n' | sed '/^$/d' | sort -n | paste -sd ' ' - || true)"
   [[ "$new_host" == "$old_host" ]] || \
-    fail "authority recovery replaced the SOS HOME process"
+    fail "authority recovery replaced the SOS host process"
   [[ "$(device_property "$serial" sys.sos.authority_recovery_probe)" == 0 ]] || \
     fail "authority recovery probe did not reset after one use"
-  printf 'v4_authority_recovery=PASS\nserial=%s\nrevision=%s\nbuild_type=%s\n' \
-    "$serial" "$revision" "$build_type"
-  printf 'authority_pid_before=%s\nauthority_pid_after=%s\nhome_pid=%s\n' \
-    "$old_authority" "$new_authority" "$new_host"
+  printf 'v4_authority_recovery=PASS\nserial=%s\nrevision=%s\nbuild_type=%s\nprofile=%s\n' \
+    "$serial" "$revision" "$build_type" "$profile"
+  printf 'authority_pid_before=%s\nauthority_pid_after=%s\nhost_process=%s\nhost_pids=%s\n' \
+    "$old_authority" "$new_authority" "$host_process" "$new_host"
 }
 
 adb_readonly() {

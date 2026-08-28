@@ -630,6 +630,10 @@ fn run_core_pi(
     timeout: Duration,
 ) -> Result<(ExitStatus, Zeroizing<Vec<u8>>), String> {
     let child = Command::new("/system_ext/bin/sos-node")
+        // The runner handles untrusted generated input inside sos_core_host's
+        // enforcing domain. Keep V8 interpreter-only instead of granting the
+        // host executable-memory authority for JIT code.
+        .arg("--jitless")
         .args([
             "/system_ext/etc/sos-agent/agent-runner.cjs",
             "stdio",

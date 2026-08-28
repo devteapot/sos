@@ -101,6 +101,8 @@ grep -F 'owner_visibility=guarded' \
   >/dev/null
 grep -F 'log_android_graph_status_transitions(&graph.snapshot, &snapshot);' \
   "$repo_root/apps/experience/src/android.rs" >/dev/null
+grep -F '.arg("--jitless")' \
+  "$repo_root/apps/experience/src/android/agent.rs" >/dev/null
 grep -F 'sos://mobile/navigate/' "$repo_root/apps/experience/src/android.rs" >/dev/null
 ! grep -F 'SosCompatWorkspaceActivity' \
   "$repo_root/apps/experience/android/gradle/app/src/main/AndroidManifest.xml" >/dev/null
@@ -132,6 +134,23 @@ grep -Fx 'v4_authority_recovery=PASS' "$test_root/authority-recovery.out" >/dev/
 grep -Fx 'build_type=userdebug' "$test_root/authority-recovery.out" >/dev/null
 grep -Fx 'authority_pid_before=300' "$test_root/authority-recovery.out" >/dev/null
 grep -Fx 'authority_pid_after=400' "$test_root/authority-recovery.out" >/dev/null
+grep -Fx 'profile=compat' "$test_root/authority-recovery.out" >/dev/null
+grep -Fx 'host_process=dev.sos.experience' "$test_root/authority-recovery.out" >/dev/null
+grep -Fx 'host_pids=200' "$test_root/authority-recovery.out" >/dev/null
+rm -f -- "$authority_recovery_state"
+A33XCTL_ADB="$mock_adb" \
+  A33XCTL_NC="$mock_nc" \
+  A33XCTL_MOCK_AUTHORITY_RECOVERY=1 \
+  A33XCTL_MOCK_AUTHORITY_RECOVERY_STATE="$authority_recovery_state" \
+  A33XCTL_MOCK_PROFILE=core \
+  "$ctl" restart-v4-authority \
+    --serial MOCKSERIAL \
+    --expected-revision sos.core1.test.revision \
+    >"$test_root/core-authority-recovery.out"
+grep -Fx 'v4_authority_recovery=PASS' "$test_root/core-authority-recovery.out" >/dev/null
+grep -Fx 'profile=core' "$test_root/core-authority-recovery.out" >/dev/null
+grep -Fx 'host_process=sos-core-host' "$test_root/core-authority-recovery.out" >/dev/null
+grep -Fx 'host_pids=500 501' "$test_root/core-authority-recovery.out" >/dev/null
 rm -f -- "$authority_recovery_state"
 if A33XCTL_ADB="$mock_adb" \
   A33XCTL_NC="$mock_nc" \
