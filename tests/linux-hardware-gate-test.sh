@@ -13,6 +13,16 @@ test_cleanup() {
 trap test_cleanup EXIT
 
 grep -F '/usr/local/libexec/sos-agent/dist/agent-runner.cjs|\' "$test_gate" >/dev/null
+test_snapshot_body="$(sed -n \
+  '/^hardware_gate_snapshot_development_files()/,/^}/p' "$test_gate")"
+grep -F '/usr/local/lib/systemd/user/sos-session.target|\' \
+  <<<"$test_snapshot_body" >/dev/null
+grep -F '/usr/local/lib/systemd/user/sos-session-shutdown.target|\' \
+  <<<"$test_snapshot_body" >/dev/null
+if grep -F '/usr/local/lib/systemd/user/*' <<<"$test_snapshot_body" >/dev/null; then
+  printf 'error: hardware gate accepts arbitrary user systemd units\n' >&2
+  exit 1
+fi
 
 test_home="$test_root/home"
 test_state="$test_root/state"

@@ -326,7 +326,12 @@ hardware_gate_verify_installed_files() {
     [[ -n "$path" && -n "$expected_bytes" && -n "$expected_sha" ]] || \
       hardware_gate_fail "malformed installed artifact manifest"
     case "$path" in
-      /usr/local/libexec/sos/*|/usr/local/libexec/sos-agent/*|/usr/share/wayland-sessions/sos.desktop|/usr/share/sos/*) ;;
+      /usr/local/libexec/sos/*|\
+      /usr/local/libexec/sos-agent/*|\
+      /usr/local/lib/systemd/user/sos-session.target|\
+      /usr/local/lib/systemd/user/sos-session-shutdown.target|\
+      /usr/share/wayland-sessions/sos.desktop|\
+      /usr/share/sos/*) ;;
       *) hardware_gate_fail "unsafe installed artifact path: $path" ;;
     esac
     [[ -f "$path" ]] || hardware_gate_fail "installed artifact is missing: $path"
@@ -348,7 +353,12 @@ hardware_gate_snapshot_development_files() {
     [[ -n "$path" && -n "$expected_bytes" && -n "$expected_sha" ]] || \
       hardware_gate_fail "malformed baked artifact manifest"
     case "$path" in
-      /usr/local/libexec/sos/*|/usr/local/libexec/sos-agent/*|/usr/share/wayland-sessions/sos.desktop|/usr/share/sos/*) ;;
+      /usr/local/libexec/sos/*|\
+      /usr/local/libexec/sos-agent/*|\
+      /usr/local/lib/systemd/user/sos-session.target|\
+      /usr/local/lib/systemd/user/sos-session-shutdown.target|\
+      /usr/share/wayland-sessions/sos.desktop|\
+      /usr/share/sos/*) ;;
       *) hardware_gate_fail "unsafe baked artifact path: $path" ;;
     esac
     [[ -f "$path" ]] || hardware_gate_fail "development artifact is missing: $path"

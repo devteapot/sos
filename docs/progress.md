@@ -16624,3 +16624,44 @@ awake inhibitor, and run Dashboard composition, appearance, failure recovery,
 authoring, rollback, DRM presentation, and integrated keyboard, touchpad, and
 touchscreen checks. Finalize and independently verify that campaign before
 calling the entire physical verification program closed.
+
+## 2026-08-28: Reject the first post-cutover Framework preparation
+
+**Goal / environment:** Start the final Linux hardware campaign on the
+Framework Laptop 12 after the user powered it on. PiKVM showed the Fedora 44
+GDM greeter and the attached 3,057,975,296-byte development-live ISO read-only.
+The target acquired `192.168.1.135` on boot
+`4233c8d6-e2a5-4b73-a2d5-233c594a9327`. SSH preflight proved an EROFS live
+base with a writable overlay, no running SOS product process, no installer or
+block writer, and no mount on the internal 931.5 GiB NVMe or its encrypted
+partition.
+
+**Deployment / evidence:** The complete clean source
+`f2d7aae5ecd77d2df28f304734ebe3733b8e4cf3` deployment passed. It built,
+copied, installed, and remotely rehashed the compositor, host, provider,
+supervisor, session owner, authoring broker, provider probe, resident agent,
+Stock package and theme, session units, documentation, display defaults, and
+hardware gate. Deployment took 343.35 seconds with 2,163,548 KiB peak host
+RSS. Its target-side deployment ID is
+`20260828T080744Z-f2d7aae5ecd7-2016837`. The local preflight, deployment log,
+and timing records are under
+`.cache/evidence/linux-v4-only-framework-f2d7aae-20260828/`.
+
+**Failure / fix:** Hardware preparation stopped after 74.91 seconds with
+10,248 KiB peak RSS at `unsafe baked artifact path:
+/usr/local/lib/systemd/user/sos-session.target`. It had not created the awake
+inhibitor or started an SOS session. The install manifest has carried the two
+fixed SOS user-session units since the selectable-session installer added
+them, but the development-live baked-file snapshot still allowed only libexec,
+the Wayland session entry, and Stock paths. The installed-file verifier had the
+same omission. Both validators now admit only the exact
+`sos-session.target` and `sos-session-shutdown.target` paths, not arbitrary
+user units. The focused host test checks both exact entries and rejects a
+wildcard. Bash parsing, the complete Linux hardware-gate host suite, and Git
+whitespace checks pass.
+
+**Decision / next gate:** Reject this preparation. Commit the validator fix,
+redeploy the complete clean component set so one manifest binds every changed
+artifact to the superseding revision, then prepare a new evidence directory on
+the same boot. Only a clean end-to-end physical session may close the Linux
+gate.
