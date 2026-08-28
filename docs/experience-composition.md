@@ -5,10 +5,12 @@ Date: 2026-08-28
 Status: v4-only implementation and cross-platform functional acceptance
 closed. The Debian direct-DRM v4 graph gate passes, fresh post-cutover Android
 Compat and Core artifacts passed the complete SM-A336B composition campaign,
-and the fresh post-cutover Framework PiKVM campaign passed composition,
-containment, appearance, authoring, rollback, recovery, and namespaced input on
-physical DRM. The separately labeled Framework integrated-input gate remains
-open because PiKVM cannot emit an ILIT2901 touchscreen contact.
+and the post-cutover Framework campaigns passed composition, containment,
+appearance, authoring, rollback, recovery, namespaced input, and fresh isolated
+input from the built-in keyboard, PIXA3854 touchpad, and ILIT2901 touchscreen on
+physical DRM. No implementation or composition-acceptance milestone remains
+open. The Framework result is development-live diagnostic evidence, not Linux
+release promotion.
 Package format v4, Experience API v4, the registry and graph resolver, isolated graph runtime, authority-owned
 appearance, graph state and activation transactions, derivation and
 composition authoring, and the Linux and Android host paths are implemented.
@@ -510,7 +512,7 @@ the presence of a commit with a matching title.
 | 9. Fork, remix, and authoring | Closed. Explicit targets, exact parents, derivation provenance, candidate contracts, migration binding, and fresh grants are enforced. | Closed by self-contained remix, exact-parent, replacement, state-migration, provenance, and no-inherited-grant tests. |
 | 10. Tracked dependencies | Closed. The persistent reverse index resolves every affected locked/tracked root into one activation set. | Closed by compatible tracked advance, locked pinning, inactive/presented multi-root, atomic state, rollback, and restart tests. |
 | 11. Android parity | Closed. Android authority and hosts use the shared package, registry, graph, state, appearance, grant, namespace, activation, system-control, and campaign model. | Closed by fresh v4-only Compat and Core SM-A336B campaigns covering composition, input, IME, accessibility, appearance, containment, independent restart, authoring, and rollback. Core input uses the separately labeled automation service. |
-| 12. Stock migration and hardening | Implementation closed. Stock uses semantic appearance tokens and v4 exports; registry launch replaces singleton ownership and `application_surface`; the retired secondary product is absent; optional Linux process isolation works. | Code, offline checks, Android hardening, and fresh exact-source Linux functional hardening are closed. A fresh integrated Framework input interval remains a separately labeled product-acceptance gate. |
+| 12. Stock migration and hardening | Closed. Stock uses semantic appearance tokens and v4 exports; registry launch replaces singleton ownership and `application_surface`; the retired secondary product is absent; optional Linux process isolation works. | Closed by code and offline checks, Android hardening, exact-source Linux functional hardening, and the fresh isolated Framework keyboard, touchpad, and touchscreen interval. |
 
 All built-ins, signed references, resident-agent examples, authoring,
 activation, and rollback are therefore v4. The migration window is closed: a
@@ -652,6 +654,30 @@ functional result is `PASS` with `physical_touch=not_claimed`. The standard
 hardware audit passes every criterion except `touchscreen_input` and therefore
 returns `DIAGNOSTIC_FAIL`. PiKVM is a real USB keyboard and mouse, but it cannot
 substantiate fresh input from the integrated Framework keyboard, PIXA3854
-touchpad, or ILIT2901 touchscreen. No implementation milestone remains open;
-that integrated-input interval, installed Linux promotion, panel latency,
+touchpad, or ILIT2901 touchscreen.
+
+A fresh same-boot interval then isolated the built-in controls before any SOS
+input class had been observed. The target unbound the three exact `usbhid`
+interfaces of the PiKVM composite device while retaining SSH and video. The
+compositor subsequently observed `keyboard` from the Framework keyboard,
+`relative_pointer` and `pointer_button` from the PIXA3854 touchpad, and `touch`
+from `ILIT2901:00 222A:5539`, routed to `eDP-1`. PiKVM HID was rebound only
+after those four records. The resident offline agent then activated Stock
+revision `4912d0cf6a408d87105cfed6f3c4446579053e7add968179a26b70ded0379281`,
+exact rollback restored
+`a3bda563418984849de88d145048eee22ccf65bda5088f06fe23a9de2cb242f7`,
+locked Dashboard presented both mounted children, and the session exited to
+GNOME cleanly. The standard gate passed every criterion with three physical
+DRM presentations, two revisions, one shell host, one application host, and
+durable authority agreement. Its development-live verdict is
+`DIAGNOSTIC_PASS promotion_eligible=false`.
+
+The 42-file standard manifest has SHA-256
+`385f0ecbd6340a1a0f398413531ddc71d24e9bb6aff60494434db010d5eaf62a`.
+The combined gate and PiKVM isolation record is
+`.cache/evidence/linux-v4-only-framework-f9085e5-integrated-final/`, 3,000,688
+bytes with a 114-file, 11,591-byte manifest whose SHA-256 is
+`df1bd6e54f814614af7ccb39783df3995508770375938039f3b26e13b7856591`.
+Both manifests and the standard audit verify independently. This closes the
+last composition-acceptance item. Installed Linux promotion, panel latency,
 suspend, GPU recovery, thermals, and power remain separate product gates.

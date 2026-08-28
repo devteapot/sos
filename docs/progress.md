@@ -16757,3 +16757,73 @@ Framework. PiKVM cannot substantiate an integrated-device claim. A release
 that requires fresh post-cutover Framework keyboard, PIXA3854 touchpad, and
 ILIT2901 touchscreen evidence still needs one separately labeled integrated
 input interval; it must not be inferred from PiKVM USB events.
+
+## 2026-08-28: Close the post-cutover Framework integrated-input gate
+
+**Goal / exact environment:** Close the last composition-acceptance item with
+fresh input from the Framework Laptop 12's built-in controls on the exact
+post-reader-removal deployment. The interval used clean product revision
+`f9085e5fcd26974c88ab002a243a9c708558114d`, deployment
+`20260828T081459Z-f9085e5fcd26-2021282`, and development-live boot
+`4233c8d6-e2a5-4b73-a2d5-233c594a9327`. The known 221-byte mirror mapping
+kept the ILIT2901 digitizer on `eDP-1` and PiKVM on `DP-1`. Preparation acquired
+the root-owned gate inhibitor before GNOME exited. The internal NVMe and both
+partitions stayed unmounted.
+
+**Input isolation and physical evidence:** PiKVM's
+`set_connected?connected=0` endpoint returned success but still reported
+`connected=null`, and the target retained all three PiKVM input nodes. That was
+not accepted as isolation. Instead, the target resolved the exact PiKVM USB
+device `1d6b:0104` and unbound only its `3-4:1.0`, `3-4:1.1`, and `3-4:1.2`
+`usbhid` interfaces. The compositor recorded removal of events 4, 5, and 6,
+with no input class yet observed. The local operator then pressed the built-in
+keyboard, moved and clicked the PIXA3854 touchpad, and tapped the touchscreen.
+The compositor recorded `keyboard` at monotonic 4480.216114,
+`relative_pointer` at 4525.190869, `pointer_button` at 4576.895716, and `touch`
+at 4610.052453. The same touch record names `ILIT2901:00 222A:5539` and routes
+it to `eDP-1`. PiKVM HID was rebound only after all four observations.
+
+**Activation, composition, and recovery:** PiKVM then drove only the remaining
+repeatable steps. The visible Stock composer submitted
+`make this stock shell focused v4`; the offline resident agent changed Stock
+from revision
+`a3bda563418984849de88d145048eee22ccf65bda5088f06fe23a9de2cb242f7`
+to `4912d0cf6a408d87105cfed6f3c4446579053e7add968179a26b70ded0379281`
+in graph `23e80dfc8c34109372297c90a97e9045820e2e3023ccf522a1c8ee0719753871`
+in 57,461,964 ns. Exact graph activation restored the original revision and
+graph in 215,557,782 ns. Dashboard then presented its Agenda and Media mounts;
+the semantics named `Dashboard`, `Today · appearance 1`, the Agenda action, and
+the Media action. `ControlLeft,AltLeft,Backspace` ended SOS cleanly, GDM
+returned, and GNOME logged in on the same boot. Durable authority and the
+supervisor both named the original Stock revision afterward.
+
+GDM reset the selected session when the first login backed out to calibrate the
+non-secret PiKVM typing sentinel, so that login returned to GNOME. No SOS
+runtime or product input occurred in that attempt. The second observed GDM
+selection entered SOS directly and produced the accepted interval.
+
+**Verdict / evidence:** The standard hardware audit passed same-boot recovery,
+physical DRM, session and agent readiness, keyboard, touchpad motion and
+button, touchscreen, prepared device inventory, clean logout, awake-inhibitor
+coverage, transactional activation, stable shell and application hosts,
+durable authority, fallback display manager, process health, and kernel GPU
+health. It counted three presentations, two revisions, one shell host, and one
+application host. Collection measured 1,044,863,100,036 ns and returned
+`DIAGNOSTIC_PASS promotion_eligible=false`, as required for development-live.
+
+The standard 42-file manifest is 4,002 bytes with SHA-256
+`385f0ecbd6340a1a0f398413531ddc71d24e9bb6aff60494434db010d5eaf62a`.
+The combined gate, PiKVM frames, HID isolation, and post-gate audit are under
+`.cache/evidence/linux-v4-only-framework-f9085e5-integrated-final/`, 3,000,688
+bytes. Its independently verified 114-file, 11,591-byte manifest has SHA-256
+`df1bd6e54f814614af7ccb39783df3995508770375938039f3b26e13b7856591`.
+GNOME is active, no SOS process or runtime directory survived logout, and the
+root-owned remote-work inhibitor again blocks idle, sleep, and lid-switch
+suspend.
+
+**Decision / remaining risk:** Accept the fresh post-cutover Framework
+integrated keyboard, touchpad, and touchscreen result. Milestones 0 through 12
+and the composition plan's cross-platform functional and physical acceptance
+are closed. This mutable development-live run cannot promote a Linux release.
+An installed or immutable release campaign, panel latency, suspend, GPU
+recovery, thermals, and power remain separate product gates.
