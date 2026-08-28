@@ -64,6 +64,7 @@ use sha2::{Digest, Sha256};
 use zeroize::Zeroize;
 
 use crate::android_agent_contract::{AgentActivationEvidence, AgentActivationPhase};
+use crate::android_graph_contract::{accepts_runtime_result, next_runtime_generation};
 use crate::android_interaction_contract::semantic_tracker_offset;
 #[cfg(not(feature = "core-native"))]
 use crate::android_interaction_contract::{text_tap_outcome, TextTapOutcome};
@@ -515,6 +516,8 @@ struct ExperienceHost {
     #[cfg(feature = "aosp-system")]
     active_graph: Option<ActiveAndroidGraph>,
     #[cfg(feature = "aosp-system")]
+    graph_runtime_generation: u64,
+    #[cfg(feature = "aosp-system")]
     pending_graph_previous: Option<(u64, GraphRuntimeSnapshot)>,
     #[cfg(feature = "aosp-system")]
     pending_graph_viewport: Option<(u64, ExperienceViewport)>,
@@ -749,7 +752,7 @@ impl ExperienceHost {
                 }
             };
             let results = graph.worker.results();
-            Self::attach_graph_channels(results, cx);
+            Self::attach_graph_channels(1, results, cx);
             (Some(graph), migration_pending.then_some(graph_id))
         };
         let (agent_updates, agent_results) = async_channel::unbounded();
@@ -791,6 +794,8 @@ impl ExperienceHost {
             },
             #[cfg(feature = "aosp-system")]
             active_graph,
+            #[cfg(feature = "aosp-system")]
+            graph_runtime_generation: 1,
             #[cfg(feature = "aosp-system")]
             pending_graph_previous: None,
             #[cfg(feature = "aosp-system")]
@@ -877,19 +882,30 @@ impl ExperienceHost {
 
     #[cfg(feature = "aosp-system")]
     fn attach_graph_channels(
+        runtime_generation: u64,
         results: async_channel::Receiver<GraphWorkerResult>,
         cx: &mut Context<Self>,
     ) {
         cx.spawn(async move |this, cx| {
             while let Ok(result) = results.recv().await {
-                if this
-                    .update(cx, |this, cx| {
+                match this.update(cx, |this, cx| {
+                    if !accepts_runtime_result(
+                        this.graph_runtime_generation,
+                        runtime_generation,
+                    ) {
+                        log::info!(
+                            "android_stale_graph_result_ignored runtime_generation={} active_generation={}",
+                            runtime_generation,
+                            this.graph_runtime_generation
+                        );
+                        return false;
+                    }
                         this.handle_graph_result(result, cx);
                         cx.notify();
-                    })
-                    .is_err()
-                {
-                    break;
+                    true
+                }) {
+                    Ok(true) => {}
+                    Ok(false) | Err(_) => break,
                 }
             }
         })
@@ -1239,7 +1255,15 @@ impl ExperienceHost {
         #[cfg(feature = "aosp-system")]
         if let Some(graph) = self.active_graph.as_ref() {
             for (offset, (node_id, instance)) in graph.snapshot.instances.iter().enumerate() {
-                let revision = &graph.revisions[&instance.revision_id];
+                let Some(revision) = graph.revisions.get(&instance.revision_id) else {
+                    log::error!(
+                        "android_graph_revision_missing node_id={} revision_id={} runtime_generation={}",
+                        node_id,
+                        instance.revision_id,
+                        self.graph_runtime_generation
+                    );
+                    continue;
+                };
                 let model = filter_android_graph_model(
                     &self.model,
                     revision.package.role,
@@ -1375,11 +1399,14 @@ impl ExperienceHost {
                 Ok(graph) => {
                     let results = graph.worker.results();
                     let snapshot = graph.snapshot.clone();
+                    self.graph_runtime_generation =
+                        next_runtime_generation(self.graph_runtime_generation);
+                    let runtime_generation = self.graph_runtime_generation;
                     self.pending_graph_viewport = None;
                     self.active_graph = Some(graph);
                     self.install_graph_snapshot(snapshot);
                     self.status = Some(("Restarted v4 experience graph".into(), true));
-                    Self::attach_graph_channels(results, cx);
+                    Self::attach_graph_channels(runtime_generation, results, cx);
                 }
                 Err(error) => {
                     self.status = Some((format!("Graph restart failed: {error}"), false));
@@ -2148,6 +2175,8 @@ impl ExperienceHost {
         };
         let results = graph.worker.results();
         let snapshot = graph.snapshot.clone();
+        self.graph_runtime_generation = next_runtime_generation(self.graph_runtime_generation);
+        let runtime_generation = self.graph_runtime_generation;
         self.pending_graph_viewport = None;
         self.active_graph = Some(graph);
         self.install_graph_snapshot(snapshot);
@@ -2165,7 +2194,7 @@ impl ExperienceHost {
             graph_id,
             source_sha256(&self.source)
         );
-        Self::attach_graph_channels(results, cx);
+        Self::attach_graph_channels(runtime_generation, results, cx);
     }
 
     #[cfg(feature = "aosp-system")]
@@ -2208,6 +2237,8 @@ impl ExperienceHost {
         };
         let results = graph.worker.results();
         let snapshot = graph.snapshot.clone();
+        self.graph_runtime_generation = next_runtime_generation(self.graph_runtime_generation);
+        let runtime_generation = self.graph_runtime_generation;
         self.pending_graph_viewport = None;
         self.active_graph = Some(graph);
         self.install_graph_snapshot(snapshot);
@@ -2218,7 +2249,7 @@ impl ExperienceHost {
         self.pending_graph_agent_activation = None;
         self.status = Some(("Experience rendered; confirming graph…".into(), true));
         log::info!("android_experience_lifecycle_staged action={lifecycle:?} graph_id={graph_id}");
-        Self::attach_graph_channels(results, cx);
+        Self::attach_graph_channels(runtime_generation, results, cx);
         cx.notify();
         Ok(())
     }
@@ -2394,6 +2425,8 @@ impl ExperienceHost {
         };
         let results = graph.worker.results();
         let snapshot = graph.snapshot.clone();
+        self.graph_runtime_generation = next_runtime_generation(self.graph_runtime_generation);
+        let runtime_generation = self.graph_runtime_generation;
         self.pending_graph_viewport = None;
         self.active_graph = Some(graph);
         self.install_graph_snapshot(snapshot);
@@ -2405,7 +2438,7 @@ impl ExperienceHost {
             "Graph rollback rendered; awaiting presentation…".into(),
             true,
         ));
-        Self::attach_graph_channels(results, cx);
+        Self::attach_graph_channels(runtime_generation, results, cx);
         cx.notify();
     }
 

@@ -5,6 +5,8 @@ mod android;
 #[cfg(any(target_os = "android", test))]
 mod android_agent_contract;
 #[cfg(any(target_os = "android", test))]
+mod android_graph_contract;
+#[cfg(any(target_os = "android", test))]
 mod android_interaction_contract;
 #[cfg(any(
     target_os = "android",

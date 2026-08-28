@@ -16042,3 +16042,77 @@ repeat artifact-bound composition, containment, appearance, recovery,
 phone-native authoring, and rollback acceptance. Then build and run the
 separate native Core campaign before declaring Android milestone parity and
 hardening complete.
+
+## 2026-08-28: Reject the first no-v3 Compat campaign on a stale graph worker result
+
+**Goal / artifact:** Build and physically gate the first v4-only Compat product
+from source `916709e0a425183237d24aa8f6c7fabfd3a903c1`. The clean product build
+completed in 316.79 seconds with 2,977,952 KiB peak RSS and produced identity
+`sos.compat1.916709e0a425.449ede4457a1`. The complete inspector passed in
+20.00 seconds with 47,772 KiB peak RSS and again from the evidence copy in
+19.82 seconds with 48,220 KiB peak RSS. It verified signature, VINTF, PIT and
+AVB limits, the complete boot chain, Android v4 and Stock Mobile contracts,
+the authority, agent runner, framework bridge, system controls, and packaged
+source identities. The 1,067,475,483-byte OTA at
+`.cache/evidence/android-v4-916709e/compat1/lineage-23.0-20260828-UNOFFICIAL-sos_compat_a33x-916709e.zip`
+has SHA-256
+`15fdf27f529c45c4ae87fc6817d9905fcb089e6cf20d1c049fd005364857b11e`.
+Its 41,717,949-byte `SosShell.apk` has SHA-256
+`3d60b20b84aefb394ad8044f578726e38388efd14559825fe8d5fedddacbf3d4`.
+The complete ZIP test passed in 4.60 seconds. The independently verified
+seven-file offline manifest is 643 bytes with SHA-256
+`968ae7ae8238b9bfce5b52c5a5b60a9035c32f62315121edd8420b1712591f98`.
+
+**Install / successful stages:** Automatic sideload Recovery became ready in
+29.54 seconds. The only transfer completed in 81.84 seconds with
+`Total xfer: 1.00x`, and the system transport returned in 88.20 seconds. The
+live product reported exact revision
+`sos.compat1.916709e0a425.449ede4457a1`, Experience API and package format 4,
+Enforcing SELinux, authority PID 936, and HOME PID 1438. The first readiness
+wrapper exited after transport because a transient empty `pidof` was evaluated
+under `set -e`; adopting the already installed operation found the exact HOME
+and authority live and `sys.boot_completed=1` 2.30 seconds later. No second
+Recovery entry or sideload occurred.
+
+The ordered campaign subsequently proved independent Dashboard instances,
+state and grants; appearance generation 9 to 10; update-exception and
+time-budget containment with two recoveries; parent liveness; namespaced
+mounted IME focus and outside blur; and Android accessibility publication.
+HOME-only recovery changed PID 2400 to 3178 in approximately 290 ms while the
+authority stayed at PID 936. Authority-only recovery then changed PID 936 to
+3358 in 0.32 seconds without changing HOME. Standalone `adb input text` did not
+enter the focused native text session and its bounded commit wait expired; the
+visible Samsung keyboard path entered `blue`, after which the deterministic
+fake/faux provider committed graph
+`198f12c5b613f1fcfaf23286f0b56447972023c86a419f5c90625790bb19ad65`.
+A real Stock control then completed v4-to-v4 rollback.
+
+**Rejection / cause:** The campaign auditor rejected the Dashboard checkpoint
+because its complete device log contains a real HOME `SIGABRT` at
+03:26:08. The original HOME successfully staged and frame-confirmed the
+three-Instance Dashboard, then a refresh result queued by the replaced Stock
+worker arrived on its still-attached channel. The handler installed that stale
+Stock snapshot into the new Dashboard runtime record. The next provider refresh
+looked up the Stock revision in Dashboard's revision map at
+`apps/experience/src/android.rs:1242`, panicked on the missing key, and aborted
+PID 1438. Android restarted HOME as PID 2400, which explains why all later
+stages worked but does not make the campaign acceptable.
+
+Every graph worker channel now carries a monotonically advancing runtime
+generation. Results from a replaced worker are logged and detached before they
+can mutate the current graph. Revision/model refresh also handles a violated
+snapshot-to-revision invariant without indexing panic. The new neutral
+regression requires a Dashboard generation to reject Stock results and covers
+generation wrap. That focused test and the AOSP System compile passed; the
+exact ARM64 Compat APK probe passed in 9.89 seconds with 726,916 KiB peak RSS.
+
+**Evidence / decision / next gate:** Reject the `916709e` physical candidate.
+Its finalized 4,819,839-byte rollback log has SHA-256
+`8127cdda15b90c88a3bd17f11e755978ebd7f598cba581c884448ebf633bcff8`.
+The independently verified 141-file rejection manifest at
+`.cache/evidence/android-v4-916709e-physical/compat1/REJECTED-MANIFEST.tsv` is
+15,925 bytes with SHA-256
+`1c0392d3e3ffe8e97009cd20fa74aee2aeb8ba553c46989a734d78547cf04cf5`.
+Commit the stale-worker containment fix, seal one replacement Compat OTA, and
+repeat the entire physical campaign from Stock before accepting the no-v3
+product or starting Core.
