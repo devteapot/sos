@@ -2,10 +2,11 @@
 
 Date: 2026-08-28
 
-Status: v4-only implementation closure and rebuilt-artifact acceptance in
-progress. The Debian direct-DRM v4 graph gate, exact Framework composition
-campaign, and exact Android v4 composition campaign pass on the pre-cutover
-artifacts.
+Status: v4-only implementation closed. The Debian direct-DRM v4 graph gate
+passes, and fresh post-cutover Android Compat and Core artifacts have passed
+the complete SM-A336B composition campaign. The Framework composition
+diagnostic passed before the final reader removal; a fresh exact-source Linux
+physical campaign remains open.
 Package format v4, Experience API v4, the registry and graph resolver, isolated graph runtime, authority-owned
 appearance, graph state and activation transactions, derivation and
 composition authoring, and the Linux and Android host paths are implemented.
@@ -13,9 +14,8 @@ Stock and the reference composition set are v4 packages. The completed rolling
 migrations were followed by removal of the v3 package reader, singleton
 revision pointer, single-revision host protocol, and source-defined application
 toplevel primitive. Tracked updates activate every affected top-level graph
-atomically. Fresh v4-only Compat and Core acceptance remains open. The
-cross-platform wire, deterministic property, complete durable-phase fault, and
-desktop performance gates pass.
+atomically. The cross-platform wire, deterministic property, complete
+durable-phase fault, and desktop performance gates pass.
 
 ## Decision
 
@@ -445,7 +445,10 @@ Dashboard and Agenda Instances, mounts the healthy Agenda child, withholds the
 failed Media child, and requires every resulting ID to remain unique and
 Instance-prefixed. Android has compile, unit, restart-fault, top-level
 presentation, appearance, child-containment, and campaign-auditor evidence for
-the graph path. It does not yet have a physical-device composition verdict.
+the graph path. The fresh v4-only Compat artifact passed with physical touch
+and IME input. The separate no-Zygote Core artifact passed the same campaign
+through its bounded, debug-build-only `uinput` service. That Core result proves
+repeatable functional input routing, not the Samsung panel digitizer.
 
 `tools/a33xctl capture-v4-composition-stage` records the physical campaign in
 this fixed order:
@@ -504,8 +507,8 @@ the presence of a commit with a matching title.
 | 8. Graph activation and recovery | Closed. Graph prepare, present, confirm, discard/finalize, journal, authority promotion, and multi-root pointer movement are durable operations. | Closed by every durable cut-point, presentation rollback, power-loss simulation, multi-root fault, restart, and Framework recovery evidence. |
 | 9. Fork, remix, and authoring | Closed. Explicit targets, exact parents, derivation provenance, candidate contracts, migration binding, and fresh grants are enforced. | Closed by self-contained remix, exact-parent, replacement, state-migration, provenance, and no-inherited-grant tests. |
 | 10. Tracked dependencies | Closed. The persistent reverse index resolves every affected locked/tracked root into one activation set. | Closed by compatible tracked advance, locked pinning, inactive/presented multi-root, atomic state, rollback, and restart tests. |
-| 11. Android parity | Implementation closed. Android authority and hosts use the shared package, registry, graph, state, appearance, grant, namespace, activation, system-control, and physical-campaign model. | The complete SM-A336B composition, input, IME, accessibility, appearance, containment, restart, authoring, and rollback campaign passed before the final reader removal. A fresh v4-only Compat/Core rebuild gate is open. |
-| 12. Stock migration and hardening | Implementation closed. Stock uses semantic appearance tokens and v4 exports; registry launch replaces singleton ownership and `application_surface`; the retired secondary product is absent; optional Linux process isolation works. | Code and offline exit conditions are closed. Fresh rebuilt Linux and Android physical hardening remain product-acceptance gates. |
+| 11. Android parity | Closed. Android authority and hosts use the shared package, registry, graph, state, appearance, grant, namespace, activation, system-control, and campaign model. | Closed by fresh v4-only Compat and Core SM-A336B campaigns covering composition, input, IME, accessibility, appearance, containment, independent restart, authoring, and rollback. Core input uses the separately labeled automation service. |
+| 12. Stock migration and hardening | Implementation closed. Stock uses semantic appearance tokens and v4 exports; registry launch replaces singleton ownership and `application_surface`; the retired secondary product is absent; optional Linux process isolation works. | Code, offline checks, and Android hardening are closed. Fresh exact-source Linux physical hardening remains a product-acceptance gate. |
 
 All built-ins, signed references, resident-agent examples, authoring,
 activation, and rollback are therefore v4. The migration window is closed: a

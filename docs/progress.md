@@ -16575,3 +16575,52 @@ not replace a physical-panel result. Preserve the accepted artifact and evidence
 unchanged, then use the same automation mode for repeatable Core regressions
 while retaining a separately witnessed Samsung digitizer gate for releases that
 claim physical touch behavior.
+
+## 2026-08-28: Reconcile the complete plan after the v4-only Android gates
+
+**Goal / decision:** Audit the original composition milestones against exact
+current source `8d86a8ec1e197cfa2c226cb339bcf8d698c6804d`, including the
+source-level removal of the v3 reader and the later replacement Android
+artifacts. Milestones 0 through 12 meet their implementation and offline exit
+conditions. The fresh v4-only Compat and Core SM-A336B campaigns also close
+Android parity. Core's input verdict remains explicitly bounded to its
+debug-only automation service. Correct the composition report, which still
+said the post-cutover Android rebuilds were open.
+
+**Current-tree evidence:** `cargo test --workspace --locked` passed 254 tests
+with 94 intentional ignores in 7.55 seconds and 1,150,700 KiB peak RSS. The
+TypeScript agent package rebuilt and passed all 19 tests in 2.45 seconds with
+744,456 KiB peak RSS. The complete A33x, Cuttlefish, Linux login, live-image,
+hardware-gate, and PiKVM host set passed in 15.25 seconds with 710,964 KiB peak
+RSS. The optional `linux-host` profile passed 44 tests, including the real
+graph subprocess boundary, in 6.73 seconds with 2,904,096 KiB peak RSS. ARM64
+Compat `aosp-system` and no-Zygote `core-native` checks both passed in 87.35
+seconds with 814,480 KiB peak RSS. A product-source scan found no Experience
+API 3 constant, package-v3 constant, `application_surface`, legacy-revision
+property, Daily Flow, or Timeflow reference. The independently verified
+eleven-file record is
+`.cache/evidence/v4-plan-current-tree-20260828/manifest.tsv`, 961 bytes,
+with SHA-256
+`6a49afd8921e21d46c1c404b358df0be15eda217e2f10ae215a5c896dd1159db`.
+
+**Linux physical state:** The remaining post-cutover Framework campaign could
+not start. The known target address returned `No route to host`. PiKVM exposed
+live 1,920 by 1,080 video capture but only a black frame, reported its power LED
+off, and reported keyboard and mouse transport offline. No ATX, HID, virtual
+media, boot, disk, or installed-state mutation was attempted because that
+telemetry does not prove a safe remote power transition. The 41,109-byte frame
+has SHA-256
+`8be18d70dd2ffbfbb73d3aec970541fec3c4dfb27e1dbc4c86736e6bc108af8b`.
+The independently verified two-file status record is
+`.cache/evidence/linux-v4-only-framework-status-20260828/manifest.tsv`, 185
+bytes, with SHA-256
+`891275be331cf7c2d87da94b93b3d7dd3d9419e80f227c01347ec14b3791d461`.
+
+**Remaining risk / next gate:** No missing architecture milestone or v3
+compatibility path remains. The last project-level acceptance item is a fresh
+exact-source Linux hardware campaign after the reader removal. Power on the
+Framework, deploy one clean revision-matched component set, acquire the gate's
+awake inhibitor, and run Dashboard composition, appearance, failure recovery,
+authoring, rollback, DRM presentation, and integrated keyboard, touchpad, and
+touchscreen checks. Finalize and independently verify that campaign before
+calling the entire physical verification program closed.
