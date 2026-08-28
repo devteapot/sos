@@ -1,6 +1,9 @@
 # Debug-build-only Core input automation. It creates one bounded virtual
 # touchscreen; the production user build does not package this service.
-on post-fs-data && property:ro.sos.profile=core && property:ro.debuggable=1
+on post-fs-data && property:ro.sos.profile=core && property:ro.build.type=userdebug
+    start sos_core_input_automation
+
+on post-fs-data && property:ro.sos.profile=core && property:ro.build.type=eng
     start sos_core_input_automation
 
 service sos_core_input_automation /system_ext/bin/sos-core-input-automation --daemon

@@ -580,7 +580,9 @@ router, mount coordinate translation, focus/IME handling, and Luau event path.
 Every touch record carries `origin=automation` or `origin=physical`, and the
 campaign identity freezes the expected input mode. This makes the composition
 gate repeatable without converting virtual-device evidence into a claim about
-the physical digitizer. Production user images omit the daemon and client.
+the physical digitizer. Package selection, init, and the runtime all bind the
+path to `ro.build.type=userdebug|eng`; hardened Lineage userdebug deliberately
+reports `ro.debuggable=0`. Production user images omit the daemon and client.
 
 `tools/linux-compositor/verify-composition-nested` additionally installed the
 reference packages into a disposable Debian 13 graph store and presented graph

@@ -241,7 +241,9 @@ case "$*" in
   'shell getprop ro.sos.core.stage') printf '1\r\n' ;;
   'shell getprop ro.sos.lifecycle') printf 'active\r\n' ;;
   'shell getprop ro.sos.profile') printf 'core\r\n' ;;
-  'shell getprop ro.debuggable') printf '1\r\n' ;;
+  'shell getprop ro.build.type')
+    printf '%s\r\n' "${A33XCTL_MOCK_BUILD_TYPE:-userdebug}"
+    ;;
   'shell getprop ro.sos.providers') printf 'core-native\r\n' ;;
   'shell getprop ro.sos.ui_owner') printf 'native-sos-no-zygote\r\n' ;;
   'shell getprop ro.zygote') printf 'no_zygote\r\n' ;;

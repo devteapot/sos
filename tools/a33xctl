@@ -1759,10 +1759,12 @@ inspect_core_stage() {
     done
     strings "$core_inputctl" | grep -F 'sos_core_automation_touch' >/dev/null || \
       fail "Core 1 input automation client omitted the exact virtual device identity"
-    grep -Fx \
-      'on post-fs-data && property:ro.sos.profile=core && property:ro.debuggable=1' \
-      "$core_input_automation_rc" >/dev/null || \
-      fail "Core 1 input automation is not gated to debuggable Core builds"
+    for build_type in userdebug eng; do
+      grep -Fx \
+        "on post-fs-data && property:ro.sos.profile=core && property:ro.build.type=$build_type" \
+        "$core_input_automation_rc" >/dev/null || \
+        fail "Core 1 input automation is not gated to $build_type Core builds"
+    done
     grep -Fx \
       '    socket sos_core_input_automation stream 0660 shell shell' \
       "$core_input_automation_rc" >/dev/null || \
@@ -1983,7 +1985,7 @@ adb_readonly() {
 core_input_automation() {
   local action="$1"
   shift
-  local serial x y response
+  local serial x y response build_type
   require_command jq
   case "$action" in
     status)
@@ -2006,7 +2008,8 @@ core_input_automation() {
   validate_device_identity "$serial" core-input-automation
   [[ "$(device_property "$serial" ro.sos.profile)" == core ]] || \
     fail "Core input automation is available only on the Core profile"
-  [[ "$(device_property "$serial" ro.debuggable)" == 1 ]] || \
+  build_type="$(device_property "$serial" ro.build.type)"
+  [[ "$build_type" == userdebug || "$build_type" == eng ]] || \
     fail "Core input automation is available only on userdebug or eng builds"
   [[ "$(device_property "$serial" init.svc.sos_core_input_automation)" == running ]] || \
     fail "Core input automation service is not running"

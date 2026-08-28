@@ -114,8 +114,11 @@ for marker in \
   grep -F "$marker" "$core_input_automation" >/dev/null
 done
 grep -F 'PRODUCT_PACKAGES_DEBUG +=' "$core_input_product" >/dev/null
-grep -F 'property:ro.debuggable=1' "$core_input_rc" >/dev/null
+grep -F 'property:ro.build.type=userdebug' "$core_input_rc" >/dev/null
+grep -F 'property:ro.build.type=eng' "$core_input_rc" >/dev/null
 grep -F 'origin={}' "$repo_root/apps/experience/src/android/core_input.rs" >/dev/null
+grep -F 'android_property("ro.build.type")' \
+  "$repo_root/apps/experience/src/android/core_input.rs" >/dev/null
 grep -F 'sos://mobile/navigate/' "$repo_root/apps/experience/src/android.rs" >/dev/null
 ! grep -F 'SosCompatWorkspaceActivity' \
   "$repo_root/apps/experience/android/gradle/app/src/main/AndroidManifest.xml" >/dev/null
@@ -134,6 +137,11 @@ grep -Fx 'core_input_automation=PASS' "$test_root/core-input-status.out" >/dev/n
 A33XCTL_ADB="$mock_adb" "$ctl" core-input-tap --serial MOCKSERIAL --x 540 --y 1200 \
   >"$test_root/core-input-tap.out"
 grep -Fx 'action=tap' "$test_root/core-input-tap.out" >/dev/null
+if A33XCTL_MOCK_BUILD_TYPE=user A33XCTL_ADB="$mock_adb" \
+  "$ctl" core-input-status --serial MOCKSERIAL >/dev/null 2>&1; then
+  printf 'user-build Core automation unexpectedly passed\n' >&2
+  exit 1
+fi
 if A33XCTL_ADB="$mock_adb" "$ctl" core-input-tap \
   --serial MOCKSERIAL --x 1080 --y 1200 >/dev/null 2>&1; then
   printf 'out-of-bounds Core automation tap unexpectedly passed\n' >&2

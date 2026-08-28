@@ -16356,8 +16356,8 @@ root. The closed protocol exposes only `status` and a single in-bounds `tap X
 Y`; requests are capped at 128 bytes, responses at 1 KiB, and contacts last 24
 ms. There is no arbitrary event, device, file, key, or text command.
 
-The existing Core runtime opens the virtual device only when
-`ro.debuggable=1`, alongside the exclusively owned physical
+The existing Core runtime opens the virtual device only on a userdebug or eng
+build, alongside the exclusively owned physical
 `sec_touchscreen`. Both sources use the same multitouch-slot parser,
 `AndroidPlatform` dispatch, hit testing, Instance-namespaced mount routing,
 focus and native-keyboard behavior, and Luau action path. Touch logs now bind
@@ -16398,3 +16398,33 @@ there is no hardware execution evidence for the new service yet. Seal and
 install the exact artifact once, prove service status and one tap on the phone
 under Enforcing SELinux, then run the eleven-stage Core campaign with
 `input_mode=automation` and the independent physical input probe.
+
+## 2026-08-28: Correct the Core automation build-variant gate
+
+**Goal / installed-artifact evidence:** Install the sealed `8d965f7` Core OTA
+and prove the new bounded input service before beginning the composition
+campaign. Recovery accepted the exact 1,022,809,463-byte artifact with `Total
+xfer: 1.00x` in 79.57 seconds. The phone booted exact revision
+`sos.core1.8d965f723f07.ff313a0fcba0`; host PIDs 921/928, authority PID 938,
+and platform PID 939 were live, and graph refreshes reported zero failed
+instances. The automation service and socket were absent.
+
+**Failure / diagnosis / correction:** Live properties showed the same Lineage
+hardening already encountered by the authority recovery probe:
+`ro.build.type=userdebug` but `ro.debuggable=0`. `PRODUCT_PACKAGES_DEBUG`
+correctly included the binaries while the initial init trigger and runtime
+reader incorrectly used `ro.debuggable=1`, so neither started. This artifact
+is rejected for automated acceptance. Init and the runtime now independently
+require the actual `ro.build.type=userdebug|eng` boundary, as does
+`core-inputctl`; the compiled debug package selection and SELinux
+`userdebug_or_eng` macro still omit the entire boundary from production user
+images. A unit test rejects `user` and missing build types. The complete
+`a33xctl` host suite, including an explicit user-build rejection, passed in
+8.08 seconds with 5,084 KiB peak RSS. ARM64 Core checking passed in 11.91
+seconds with 807,240 KiB peak RSS and only the existing dead-code warnings.
+
+**Decision / remaining risk / next gate:** Keep hardened adbd and do not set
+`ro.debuggable=1`. Build, inspect, seal, and install one replacement from the
+exact correction. Require the daemon, init socket, virtual evdev reader, and a
+single end-to-end UI action under Enforcing SELinux before starting a fresh
+automation-mode composition campaign.

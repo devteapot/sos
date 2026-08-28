@@ -105,7 +105,7 @@ pub fn start(platform: Arc<AndroidPlatform>) -> Result<(), String> {
             )
         })
         .map_err(|error| format!("Core touchscreen thread failed to start: {error}"))?;
-    if android_property("ro.debuggable").as_deref() == Some("1") {
+    if is_automation_build(android_property("ro.build.type").as_deref()) {
         let automation_platform = Arc::clone(&platform);
         thread::Builder::new()
             .name("sos-core-input-automation".into())
@@ -117,6 +117,10 @@ pub fn start(platform: Arc<AndroidPlatform>) -> Result<(), String> {
         .spawn(move || run_keys(platform, volume, power))
         .map_err(|error| format!("Core key thread failed to start: {error}"))?;
     Ok(())
+}
+
+fn is_automation_build(build_type: Option<&str>) -> bool {
+    matches!(build_type, Some("userdebug") | Some("eng"))
 }
 
 fn run_touch(platform: Arc<AndroidPlatform>, mut input: File, device: &str, origin: TouchOrigin) {
@@ -498,6 +502,14 @@ const fn iow(kind: u8, number: u8, size: usize) -> libc::c_int {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn automation_reader_is_restricted_to_acceptance_builds() {
+        assert!(is_automation_build(Some("userdebug")));
+        assert!(is_automation_build(Some("eng")));
+        assert!(!is_automation_build(Some("user")));
+        assert!(!is_automation_build(None));
+    }
 
     fn event(kind: u16, code: u16, value: i32) -> InputEvent {
         InputEvent {
