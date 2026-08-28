@@ -116,7 +116,7 @@ check_android_composition_authority() {
 check_android_stock_mobile() {
   [[ "$#" -eq 3 ]] || \
     fail "usage: check_android_stock_mobile SOURCE PACKAGE THEME"
-  local source="$1" package="$2" theme="$3"
+  local source="$1" package="$2" theme="$3" marker
   jq -e '
     .format_version == 4 and
     .experience_id == "sos.stock.mobile" and

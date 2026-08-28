@@ -16197,3 +16197,27 @@ on physical hardware. This does not close Android parity: build and seal the
 matching native Core candidate, install it once, and pass the separate Core
 composition, native input/keyboard, recovery, authoring, and rollback
 campaign before declaring the Android milestones complete.
+
+## 2026-08-28: Fix the Core artifact inspector marker scope
+
+**Goal / evidence:** Build the matching v4-only native Core candidate and keep
+invalid artifacts off the phone. Clean source
+`1553d8d66d9679599e81648753642be6e81b8465` built product
+`sos.core1.1553d8d66d96.77ecf0025864` in 375.82 seconds with 2,979,104 KiB
+peak RSS. The first complete offline inspection verified ZIP integrity, the
+whole-package signature, VINTF, PIT ceilings, AVB, the native host and runtime,
+the authority and agent payloads, v4-only properties, framework policy, and
+the phone-native Stock Mobile sources, but then falsely reported a missing
+Core UI-removal marker.
+
+The target files contain the expected 51,216-byte AArch64 executable at
+`SYSTEM_EXT/bin/sos-ui-removal-marker`. Shell tracing showed that the nested
+Stock Mobile source check reused the caller's dynamically scoped `marker`
+variable and left it as `experience_present_`. The helper now declares its
+loop variable locally, so source-token validation cannot replace an artifact
+path in its caller. No OTA bytes changed, and no device command or install was
+attempted. Shell syntax, the product-graph check, and the complete A33x host
+fixture pass; the latter completed in 8.11 seconds. The fixed complete Core
+inspector then passed every boundary in 17.31 seconds with 47,244 KiB peak
+RSS. Seal this exact artifact, verify the seal independently, and only then
+start the native Core physical campaign.
