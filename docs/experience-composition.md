@@ -2,11 +2,13 @@
 
 Date: 2026-08-28
 
-Status: v4-only implementation closed. The Debian direct-DRM v4 graph gate
-passes, and fresh post-cutover Android Compat and Core artifacts have passed
-the complete SM-A336B composition campaign. The Framework composition
-diagnostic passed before the final reader removal; a fresh exact-source Linux
-physical campaign remains open.
+Status: v4-only implementation and cross-platform functional acceptance
+closed. The Debian direct-DRM v4 graph gate passes, fresh post-cutover Android
+Compat and Core artifacts passed the complete SM-A336B composition campaign,
+and the fresh post-cutover Framework PiKVM campaign passed composition,
+containment, appearance, authoring, rollback, recovery, and namespaced input on
+physical DRM. The separately labeled Framework integrated-input gate remains
+open because PiKVM cannot emit an ILIT2901 touchscreen contact.
 Package format v4, Experience API v4, the registry and graph resolver, isolated graph runtime, authority-owned
 appearance, graph state and activation transactions, derivation and
 composition authoring, and the Linux and Android host paths are implemented.
@@ -508,7 +510,7 @@ the presence of a commit with a matching title.
 | 9. Fork, remix, and authoring | Closed. Explicit targets, exact parents, derivation provenance, candidate contracts, migration binding, and fresh grants are enforced. | Closed by self-contained remix, exact-parent, replacement, state-migration, provenance, and no-inherited-grant tests. |
 | 10. Tracked dependencies | Closed. The persistent reverse index resolves every affected locked/tracked root into one activation set. | Closed by compatible tracked advance, locked pinning, inactive/presented multi-root, atomic state, rollback, and restart tests. |
 | 11. Android parity | Closed. Android authority and hosts use the shared package, registry, graph, state, appearance, grant, namespace, activation, system-control, and campaign model. | Closed by fresh v4-only Compat and Core SM-A336B campaigns covering composition, input, IME, accessibility, appearance, containment, independent restart, authoring, and rollback. Core input uses the separately labeled automation service. |
-| 12. Stock migration and hardening | Implementation closed. Stock uses semantic appearance tokens and v4 exports; registry launch replaces singleton ownership and `application_surface`; the retired secondary product is absent; optional Linux process isolation works. | Code, offline checks, and Android hardening are closed. Fresh exact-source Linux physical hardening remains a product-acceptance gate. |
+| 12. Stock migration and hardening | Implementation closed. Stock uses semantic appearance tokens and v4 exports; registry launch replaces singleton ownership and `application_surface`; the retired secondary product is absent; optional Linux process isolation works. | Code, offline checks, Android hardening, and fresh exact-source Linux functional hardening are closed. A fresh integrated Framework input interval remains a separately labeled product-acceptance gate. |
 
 All built-ins, signed references, resident-agent examples, authoring,
 activation, and rollback are therefore v4. The migration window is closed: a
@@ -617,46 +619,39 @@ Because the target was Fedora development-live, the verdict is deliberately
 `DIAGNOSTIC_PASS promotion_eligible=false`; it closes the Framework composition
 and integrated-input question but not an installed-product promotion gate.
 
-Compat 1 and Core 1 candidates were built from exact cleanup source
-`884ab4e0036e621f51ba0a3a6c147a5c591da81e`. Both offline inspectors pass the
-v4 product, graph, signature, AVB, ownership, and retired-secondary-absence
-gates. Their sealed OTAs have SHA-256
-`1e438726c96dfbdfa067b43a7ae4662b7e6b91ff56f4f2693d5c95470f0406ec`
-and `0b0ce039e306c42292cd67eb6be19f15ee753f7ab2ff6b4059247210af4f17fb`;
-their deterministic target-files archives have SHA-256
-`e8dc8d7d41ddbfe7d6459cc63d4f7290bc9f6e147914382aca1f504d0261a4f2`
-and `49ba5c7ace4df8bcd22605f2334da0fa34229b7fd227bf1f657b7f8785a1b863`.
-This superseded the earlier Android candidates that still carried the retired
-secondary agent input. Their independently verified 17-file evidence manifest
-has SHA-256
-`a8f056b6d8c77d56b2ed6b4f297802b5b726a3f4200573ab43859114690f7b93`.
-Those cleanup artifacts are themselves now superseded by final candidates
-built from exact source
-`cfe4ebb63eb3b7ffc9bf72c95a25f33152e1314c`, which contains the shared
-Android scene transform, mounted-child IME fixture, host-owned navigation,
-appearance and rollback controls, and the complete evidence campaign. Compat
-build identity `sos.compat1.cfe4ebb63eb3.a6a42402ae5b` produced a
-1,067,699,297-byte OTA with SHA-256
-`3f70274838d07d2aedeeea820b1bab549f628ed9032cc956e31c1a5bb07e1144`
-and a deterministic 2,173,677,658-byte target-files archive with SHA-256
-`dd80b1332c37e3a385551e70da4b829d938ef1a3967dda0bc09582b76f97c631`.
-Core build identity `sos.core1.cfe4ebb63eb3.4d984b84b044` produced a
-1,022,859,688-byte OTA with SHA-256
-`c183cba1d9cbc71d19ef91a960716c6a621b3272bb075ed3c016a498c868c454`
-and a deterministic 2,077,042,185-byte target-files archive with SHA-256
-`95dcb14c5287fc33efb0006431559a81ad107901042cb976bcc5e2e0b29103ae`.
-Both offline inspectors pass and both archives contain Stock and its semantic
-theme while excluding the retired secondary experience. The independently
-verified 22-file evidence manifest is
-`.cache/evidence/android-v4-cfe4ebb/manifest.tsv`, 2,129 bytes, with SHA-256
-`697ae62cc3f66211eebb2e95e97decd4fef34ec4935fe7ede6784c5274939bc8`.
-These are the exact artifacts reserved for the next physical gate, not a
-physical-device verdict.
+The replacement Android campaigns have since closed that stale status. Compat
+artifact `7c973a4bce2c` passed all eleven ordered physical stages, including
+real Samsung touch, mounted IME and accessibility, independently keyed state
+and grants, appearance, both child failures, independent HOME and authority
+restart, authoring, and rollback. Its 148-file composition manifest has
+SHA-256 `ca360ff142602d9befb3a87ebcccdc1c28570695de4fd4f22f47ef2d4b930d89`.
+Native Core artifact `e21d0fc` passed the same v4 composition contract,
+no-Zygote host and authority recovery, native keyboard, accessibility,
+authoring, and rollback. Its repeatable input path is the explicitly labeled
+debug-only automation service, not a physical-touch claim. The independently
+verified 138-file Core manifest has SHA-256
+`1eb6761befa93ee2a4e2670f3b6cbaa71c08c53e77998b5d55eaac7f09b6a3b6`.
 
-The remaining physical composition gate is the Samsung SM-A336B campaign for
-Compat and Core: composition, input, IME, accessibility, appearance, grants,
-child failure, restart, rollback, and exact evidence manifests. The device is
-currently exposed only through Samsung Download Mode without an authorized ADB
-or recovery transport, so no physical mutation has been attempted. Installed
-Linux promotion, panel latency, suspend, GPU recovery, thermals, and power
-evidence remain separate product gates.
+The post-reader-removal Framework campaign then deployed exact clean source
+`f9085e5fcd26974c88ab002a243a9c708558114d`. PiKVM selected the SOS session,
+launched the three-Instance locked Dashboard through Stock, changed authority
+appearance without revision churn, contained an Agenda update exception and
+instruction timeout, restored a killed Dashboard renderer with Stock still
+alive, typed into the namespaced mounted Agenda input, activated a resident-
+agent Stock candidate, rolled back to the exact previous graph, dismissed
+Dashboard, exited cleanly, and selected GNOME. The compositor recorded physical
+DRM page flips plus PiKVM USB keyboard, absolute pointer, relative pointer, and
+button events. The 111-file, 2,141,280-byte evidence bundle is
+`.cache/evidence/linux-v4-only-framework-f9085e5-pikvm-campaign/`; its manifest
+has SHA-256
+`55742ef14c7de7a79fff079af12a7e725bc5796e5010ba368fa04f66fd1a4fea`.
+Independent verification passes.
+
+That Framework bundle intentionally carries two verdicts. The repeatable v4
+functional result is `PASS` with `physical_touch=not_claimed`. The standard
+hardware audit passes every criterion except `touchscreen_input` and therefore
+returns `DIAGNOSTIC_FAIL`. PiKVM is a real USB keyboard and mouse, but it cannot
+substantiate fresh input from the integrated Framework keyboard, PIXA3854
+touchpad, or ILIT2901 touchscreen. No implementation milestone remains open;
+that integrated-input interval, installed Linux promotion, panel latency,
+suspend, GPU recovery, thermals, and power remain separate product gates.

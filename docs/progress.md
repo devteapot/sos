@@ -16665,3 +16665,95 @@ redeploy the complete clean component set so one manifest binds every changed
 artifact to the superseding revision, then prepare a new evidence directory on
 the same boot. Only a clean end-to-end physical session may close the Linux
 gate.
+
+## 2026-08-28: Complete the post-cutover Linux v4 PiKVM campaign
+
+**Goal / exact environment:** Automate the remaining Framework Laptop 12 v4
+composition campaign without asking the local operator to drive GDM or SOS.
+Clean revision `f9085e5fcd26974c88ab002a243a9c708558114d` deployed as
+`20260828T081459Z-f9085e5fcd26-2021282`. The complete component deployment
+took 115.81 seconds with 715,028 KiB peak host RSS. The campaign stayed on
+Fedora development-live boot `4233c8d6-e2a5-4b73-a2d5-233c594a9327`; the
+internal NVMe remained unmounted, and a root-owned block inhibitor covered the
+prepared interval.
+
+**Rejected preparation / corrected environment:** The first successful
+`f9085e5` preparation recorded the live image's initial `{}` `output.json`.
+When PiKVM moved its absolute USB mouse, the direct compositor rejected the
+device as ambiguous across `eDP-1` and `DP-1`; its primary click consequently
+landed at `(0,0)`. This interval is rejected rather than counted as automation
+evidence. The documented 221-byte Framework mapping was installed at mode
+0600 before a new preparation: PiKVM maps to `DP-1`, while the ILIT2901 touch,
+stylus, and mouse device names map to `eDP-1`. Its SHA-256 is
+`2cd3ef8fce5b50565bb0cd042b5892f14945cdc88efb16083a2c83df50fa52ff`.
+The replacement preparation took 20.41 seconds with 9,980 KiB peak RSS. Its
+first Dashboard request was correctly rejected because Media lacked its own
+authority decision. An explicit Media review recorded only `music_read` and
+`music_control`; Dashboard retained its separate Agenda and Media data-flow
+review. The successful retry inherited no Stock or parent grant.
+
+**Automated physical-host result:** Authenticated PiKVM HID selected SOS in
+GDM, entered the login credential without placing it in a command or evidence
+file, and clicked Stock's Dashboard row. The compositor routed the device to
+`DP-1` and delivered the click at `(926.6,293.3)`. Locked graph
+`a3c5a4afb95fd8bdd195f9d64de9d9e39f302cd5faae468fc161c2510a2e4040`
+presented Dashboard, Agenda, and Media as three Instances. Agenda's typed
+`open` event wrote separately keyed Agenda and Dashboard state. Authority
+appearance generation advanced from 0 to 1 in 34,236,755 ns and reached the
+mounted Agenda semantics in 212,060,902 ns without changing any of the three
+revision IDs.
+
+The deliberate Agenda update exception was contained in 105,010,414 ns and
+recovered in 95,190,131 ns. The instruction-budget timeout was contained in
+93,738,635 ns and recovered in 113,309,486 ns. Both kept Dashboard responsive,
+preserved `Design review`, and retained appearance generation 1. Killing
+Dashboard renderer PID 16382 left Stock renderer PID 15321 alive; the
+supervisor replaced application proxy/renderer PIDs `16378/16382` with
+`19491/19495` and restored both mounts and durable state in 205,692,535 ns.
+
+PiKVM then clicked the mounted Agenda input and typed the 17-byte value
+`PiKVM child draft`. The compositor focused the independently presented
+application, the namespaced `agenda-input` emitted each text change, and only
+Agenda acquired a `draft` field. PiKVM also focused Stock's real text session,
+typed `Make the workspace feel calmer`, and submitted it. The resident faux
+agent ran `get_experience_context`, `validate_experience`, and
+`submit_experience`, then frame-confirmed Stock revision
+`4912d0cf6a408d87105cfed6f3c4446579053e7add968179a26b70ded0379281`
+in graph `23e80dfc8c34109372297c90a97e9045820e2e3023ccf522a1c8ee0719753871`
+without replacing permanent host PID 15315. Exact activation of the prior
+Stock graph restored revision
+`a3bda563418984849de88d145048eee22ccf65bda5088f06fe23a9de2cb242f7`
+in 251,053,599 ns. Dashboard then dismissed while Stock remained live.
+
+PiKVM emitted keyboard, absolute-pointer, relative-pointer, and primary-button
+events through its USB composite device, sent the exact
+`ControlLeft,AltLeft,Backspace` shortcut, and selected GNOME at GDM. The
+standard gate passed same-boot DRM recovery, direct composition, session and
+agent readiness, every non-touch input class, prepared inventory, clean
+logout, inhibitor coverage, transactional activation, multi-host lifecycle,
+durable authority, fallback display manager, process-failure checks, and GPU
+fault checks. It failed only `touchscreen_input`, as expected: PiKVM exposes a
+keyboard and mouse, not a Framework digitizer. The bounded functional result
+is therefore `linux_v4_pikvm_automation_result=PASS` with
+`physical_touch=not_claimed`; the standard result remains the honest
+`DIAGNOSTIC_FAIL`, not a promotion verdict.
+
+**Evidence / independent verification:** Collection measured
+1,051,306,314,911 ns from preparation through fallback recovery. The copied
+bundle is
+`.cache/evidence/linux-v4-only-framework-f9085e5-pikvm-campaign/`, 2,141,280
+bytes with a 111-file manifest. The 11,381-byte manifest has SHA-256
+`55742ef14c7de7a79fff079af12a7e725bc5796e5010ba368fa04f66fd1a4fea`.
+Independent local manifest verification passed in 0.25 seconds with 4,076 KiB
+peak RSS. The independent audit reproduced the touchscreen-only rejection in
+0.04 seconds with 3,568 KiB peak RSS. The rejected pointer interval is retained
+under `automation/rejected-preparation-pikvm/` and cannot be mistaken for the
+replacement campaign.
+
+**Decision / remaining gate:** The post-v3-removal Linux product behavior,
+composition, containment, appearance, state, authoring, rollback, DRM,
+recovery, and repeatable remote-input automation are green on the physical
+Framework. PiKVM cannot substantiate an integrated-device claim. A release
+that requires fresh post-cutover Framework keyboard, PIXA3854 touchpad, and
+ILIT2901 touchscreen evidence still needs one separately labeled integrated
+input interval; it must not be inferred from PiKVM USB events.
