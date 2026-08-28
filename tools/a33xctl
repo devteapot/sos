@@ -1578,7 +1578,7 @@ inspect_core_stage() {
   strings "$host_runtime" | grep -F \
     '/system_ext/etc/sos-agent/agent-runner.cjs' >/dev/null || \
     fail "SOS $stage GPUI runtime omitted the shared Pi runner boundary"
-  strings "$host_runtime" | grep -Fx -- '--jitless' >/dev/null || \
+  strings "$host_runtime" | grep -F -- '--jitless' >/dev/null || \
     fail "SOS $stage GPUI runtime does not disable Pi runner executable memory"
   check_core_runtime_model_contract "$host_runtime"
   for agent_marker in \
@@ -2428,14 +2428,29 @@ audit_v4_composition_campaign() {
     "Dashboard did not start as a three-Instance graph"
   require_v4_log_pattern "$final_log" 'android_graph_presented .*confirmed=true' \
     "Dashboard lacks rendered-frame confirmation"
-  for stage in open_first acceptance_update_fail acceptance_timeout; do
+  if [[ "$product" == compat1 ]]; then
+    for stage in open_first acceptance_update_fail acceptance_timeout; do
+      require_v4_log_pattern "$final_log" \
+        "android_reference_graph_event_dispatched experience_id=sos\\.example\\.agenda action=$stage" \
+        "Agenda reference action $stage was not dispatched"
+    done
     require_v4_log_pattern "$final_log" \
-      "android_reference_graph_event_dispatched experience_id=sos\\.example\\.agenda action=$stage" \
-      "Agenda reference action $stage was not dispatched"
-  done
-  require_v4_log_pattern "$final_log" \
-    'android_reference_graph_event_dispatched experience_id=sos\.example\.dashboard action=acceptance_ping' \
-    "parent liveness action was not dispatched"
+      'android_reference_graph_event_dispatched experience_id=sos\.example\.dashboard action=acceptance_ping' \
+      "parent liveness action was not dispatched"
+  else
+    require_v4_log_pattern "$final_log" \
+      'experience_action request_id=[0-9]+ action=open_first target=i-[^ ]+::agenda-open' \
+      "Core Agenda open action did not cross the namespaced mount"
+    require_v4_log_pattern "$final_log" \
+      'experience_action request_id=[0-9]+ action=acceptance_update_fail target=i-[^ ]+::agenda-update-fail' \
+      "Core Agenda update-failure action did not cross the namespaced mount"
+    require_v4_log_pattern "$final_log" \
+      'experience_action request_id=[0-9]+ action=acceptance_timeout target=i-[^ ]+::agenda-timeout' \
+      "Core Agenda timeout action did not cross the namespaced mount"
+    require_v4_log_pattern "$final_log" \
+      'experience_action request_id=[0-9]+ action=acceptance_ping target=i-[^ ]+::dashboard-ping' \
+      "Core parent liveness action did not reach Dashboard"
+  fi
   require_v4_log_pattern "$final_log" \
     'android_graph_instance_failed .*experience_id=sos\.example\.agenda root_ready=true .*reference Agenda update failure' \
     "Agenda update failure was not contained"

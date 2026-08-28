@@ -200,6 +200,12 @@ for product in compat1 core1; do
   "$ctl" audit-v4-composition-campaign --root "$campaign" \
     >"$test_root/$product-audit.out"
   grep -Fx 'v4_composition_campaign=PASS' "$test_root/$product-audit.out" >/dev/null
+  if [[ "$product" == core1 ]]; then
+    grep -F 'experience_action request_id=6 action=open_first target=i-agenda::agenda-open' \
+      "$campaign/stages/rollback/logcat.txt" >/dev/null
+    ! grep -F 'android_reference_graph_event_dispatched' \
+      "$campaign/stages/rollback/logcat.txt" >/dev/null
+  fi
   "$ctl" evidence-manifest-verify --root "$campaign" \
     --manifest "$campaign/manifest.tsv" >/dev/null
 done

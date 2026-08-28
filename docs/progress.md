@@ -16298,3 +16298,40 @@ seconds after `cargo fmt --all -- --check`, with only existing dead-code
 warnings. Build and inspect a replacement Core OTA from the exact fix, install
 it once, rerun the entire ordered physical campaign from Stock, and require
 offline authoring plus v4 rollback before accepting Android Core parity.
+
+## 2026-08-28: Seal the interpreter-only Core replacement
+
+**Goal / artifact:** Replace the rejected Core image with the narrow
+interpreter-only Pi runner fix and prevent acceptance tooling from conflating
+Core's native input path with Compat's deep-link test bridge. Source
+`e44875116d7246b5b7e4a45ce4c2067b25fb24cc` built product
+`sos.core1.e44875116d72.6e41c94c2136` in 231.92 seconds with 2,975,920 KiB
+peak RSS. The sealed 1,022,795,324-byte OTA is
+`.cache/evidence/android-v4-e448751/core1/sealed/lineage-23.0-20260828-UNOFFICIAL-sos_core1_a33x-e448751.zip`
+with SHA-256
+`08fd8c1df598c30e4db4e982b0e57aa6612212becfbac75acd91f2848adf66b1`.
+
+**Inspection and acceptance-tool corrections:** The first complete inspection
+verified package integrity, signature, AVB, target files, v4 identity, native
+host and authority, but its final `--jitless` assertion falsely failed. Raw
+byte inspection found the exact literal at runtime offset 1,516,935; optimized
+Rust constants placed it on the same `strings` line as adjacent arguments.
+The check now requires literal containment instead of an isolated output line.
+The complete corrected inspection passed in 17.31 seconds with 47,152 KiB
+peak RSS, and the independent evidence-copy ZIP test passed in 4.56 seconds
+with 2,948 KiB peak RSS.
+
+The composition audit now distinguishes the two real interaction boundaries.
+Compat continues to require authority-injected
+`android_reference_graph_event_dispatched` markers. Core instead requires the
+native, namespaced `experience_action` records for Agenda open, failure,
+timeout, and Dashboard liveness. The Core fixture contains none of the Compat
+markers, which prevents a false-positive audit. The complete A33x host suite
+passed in 8.20 seconds with 5,048 KiB peak RSS.
+
+**Decision / next gate:** Accept the replacement artifact offline; do not
+weaken Core SELinux or grant executable memory. Install this exact sealed OTA
+on the SM-A336B, verify the exact native revision and lifecycle, and rerun all
+eleven physical composition stages from Stock. Android Core parity remains
+open until offline authoring stages a candidate and host-owned rollback
+restores the original v4 revision.

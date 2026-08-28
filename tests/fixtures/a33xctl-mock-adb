@@ -109,6 +109,18 @@ EOF
   }
 
   mock_logcat() {
+    local open_action update_failure_action timeout_action ping_action
+    if [[ "$mock_product" == compat1 ]]; then
+      open_action='08-27 14:00:06.000 I sos-experience: android_reference_graph_event_dispatched experience_id=sos.example.agenda action=open_first'
+      update_failure_action='08-27 14:00:07.000 I sos-experience: android_reference_graph_event_dispatched experience_id=sos.example.agenda action=acceptance_update_fail'
+      timeout_action='08-27 14:00:10.000 I sos-experience: android_reference_graph_event_dispatched experience_id=sos.example.agenda action=acceptance_timeout'
+      ping_action='08-27 14:00:13.000 I sos-experience: android_reference_graph_event_dispatched experience_id=sos.example.dashboard action=acceptance_ping'
+    else
+      open_action='08-27 14:00:06.000 I sos-experience: experience_action request_id=6 action=open_first target=i-agenda::agenda-open'
+      update_failure_action='08-27 14:00:07.000 I sos-experience: experience_action request_id=7 action=acceptance_update_fail target=i-agenda::agenda-update-fail'
+      timeout_action='08-27 14:00:10.000 I sos-experience: experience_action request_id=10 action=acceptance_timeout target=i-agenda::agenda-timeout'
+      ping_action='08-27 14:00:13.000 I sos-experience: experience_action request_id=13 action=acceptance_ping target=i-dashboard::dashboard-ping'
+    fi
     printf '%s\n' \
       '08-27 14:00:00.000 I sos-core-host: core1_experience_start ce_available=false native_synthetic_password=false de_storage=true' \
       '08-27 14:00:00.100 I sos-experience: SOS experience window is live frame_padding=none' \
@@ -117,14 +129,14 @@ EOF
       '08-27 14:00:03.000 I sos-experience: android_graph_runtime_ready graph_id=graph-dashboard root_experience=sos.example.dashboard instances=3' \
       '08-27 14:00:04.000 I sos-experience: android_graph_runtime_ready graph_id=graph-dashboard root_experience=sos.example.dashboard instances=3' \
       '08-27 14:00:05.000 I sos-experience: android_graph_presented graph_id=graph-dashboard confirmed=true' \
-      '08-27 14:00:06.000 I sos-experience: android_reference_graph_event_dispatched experience_id=sos.example.agenda action=open_first' \
-      '08-27 14:00:07.000 I sos-experience: android_reference_graph_event_dispatched experience_id=sos.example.agenda action=acceptance_update_fail' \
+      "$open_action" \
+      "$update_failure_action" \
       '08-27 14:00:08.000 W sos-experience: android_graph_instance_failed node_id=agenda instance_id=i-agenda experience_id=sos.example.agenda root_ready=true error=reference Agenda update failure' \
       '08-27 14:00:09.000 I sos-experience: android_graph_instance_recovered node_id=agenda instance_id=i-agenda experience_id=sos.example.agenda root_ready=true' \
-      '08-27 14:00:10.000 I sos-experience: android_reference_graph_event_dispatched experience_id=sos.example.agenda action=acceptance_timeout' \
+      "$timeout_action" \
       '08-27 14:00:11.000 W sos-experience: android_graph_instance_failed node_id=agenda instance_id=i-agenda experience_id=sos.example.agenda root_ready=true error=execution deadline exceeded' \
       '08-27 14:00:12.000 I sos-experience: android_graph_instance_recovered node_id=agenda instance_id=i-agenda experience_id=sos.example.agenda root_ready=true' \
-      '08-27 14:00:13.000 I sos-experience: android_reference_graph_event_dispatched experience_id=sos.example.dashboard action=acceptance_ping' \
+      "$ping_action" \
       '08-27 14:00:14.000 I sos-experience: android_appearance_write_committed graph_id=graph-dashboard generation=2 scheme=Dark' \
       '08-27 14:00:15.000 I sos-experience: android_graph_refreshed request_id=8 appearance_generation=2 failed_instances=0' \
       '08-27 14:00:16.000 I sos-experience: android_system_control action=appearance_toggle' \
