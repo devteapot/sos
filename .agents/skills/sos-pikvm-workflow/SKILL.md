@@ -28,13 +28,23 @@ JSON output over handwritten curl loops; use raw API calls only for a gap.
    input; never put a literal secret in `-u`, a URL, a header, or an environment
    assignment shown in a tool call. Delete temporary credential material and
    unset task-specific variables at the terminal boundary.
-4. Read PiKVM video, HID, virtual-media, and ATX state before changing anything.
-   Classify each surface as `verified`, `unverified`, or `unavailable` for this
-   campaign. Do not infer target power from an ATX LED, `acts`, a blank frame,
-   or a successful HTTP response.
-5. Capture a console frame and inspect the image itself. OCR is supporting
+4. Run authenticated `./tools/pikvmctl status` before declaring a control
+   unavailable. An HTTP 401 proves only that the current credential is missing
+   or rejected. Resolve an approved credential source without guessing or
+   exposing it, then classify authentication, video, keyboard, pointer, ATX,
+   and virtual media separately as `verified`, `unverified`, or `unavailable`.
+5. Read PiKVM video, HID, virtual-media, and ATX state before changing anything.
+   Do not infer target power from an ATX LED, `acts`, a blank frame, or a
+   successful HTTP response.
+6. Capture a console frame and inspect the image itself. OCR is supporting
    evidence only; restrict its region and never OCR a field that may contain a
    credential.
+
+Do not hand console work to the user until authenticated status, a fresh frame,
+and relevant HID calibration have ruled out safe remote control. A manual step
+is justified when the local device is the evidence source or a control is
+proven unavailable. State which fact requires it and consolidate dependent
+manual actions into the shortest safe window.
 
 Never mask a required probe or mutation with `|| true`. Preserve its exit
 status and raw response. A transport-success response proves only that PiKVM
@@ -87,11 +97,18 @@ unknown focus state.
 2. In a harmless visible field or console, enter a non-secret sentinel and
    verify every character. Calibrate the exact helper, keyboard layout, and
    boot; success from an earlier boot does not carry forward.
-3. If bulk print or shortcut input loses, duplicates, or redirects input, mark
-   that helper unavailable for the rest of the boot. Use explicit key-down and
-   key-up events, followed by HID reset, or stop.
+3. After the API accepts input, use a bounded frame wait or target-side event to
+   distinguish delayed rendering from lost input. If bulk print or shortcut
+   input then loses, duplicates, or redirects input, mark that helper
+   unavailable for the rest of the boot. Use explicit key-down and key-up
+   events, followed by HID reset, or stop.
 4. Never enter a secret until the non-secret calibration and focus are visibly
    correct. Never use secret text as the transport test.
+
+Record input provenance before acceptance. PiKVM USB keyboard and pointer
+events can prove the functional compositor path, but they cannot prove the
+target's integrated keyboard, touchpad, or touchscreen. Disconnect or unbind
+PiKVM HID during a separately requested integrated-input interval.
 
 ### Reboot and enter firmware
 
@@ -138,6 +155,10 @@ Stop at the earliest failed layer. Do not infer network success from a visible
 desktop, SSH configuration from a baked symlink, or a physical boot from host
 tests. A manual boot-menu selection keeps unattended boot open even when the
 image and runtime checks pass.
+
+When Linux acceptance owns the campaign, its prepared root-owned awake
+inhibitor must cover GDM and remote-control gaps. PiKVM power telemetry or HID
+availability is not a keep-awake mechanism.
 
 ## Finalize evidence
 
