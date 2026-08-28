@@ -3,9 +3,7 @@ use std::collections::HashSet;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-pub use experience_package::{AppearanceProfile, ContainerAppearance};
-
-pub const EXPERIENCE_API_VERSION: u32 = 3;
+pub use experience_package::{AppearanceProfile, ContainerAppearance, EXPERIENCE_API_VERSION};
 pub const MAX_SCENE_DEPTH: usize = 32;
 pub const MAX_SCENE_NODES: usize = 2_048;
 pub const MAX_CHILDREN: usize = 256;
@@ -28,7 +26,6 @@ pub const SHELL_MODEL_ABI_VERSION: u32 = 1;
 pub const MAX_SHELL_OUTPUTS: usize = 16;
 pub const MAX_SHELL_WINDOWS: usize = 64;
 pub const MAX_EXPERIENCE_MOUNTS: usize = 16;
-pub const EXPERIENCE_API_VERSION_V4: u32 = 4;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct ExperienceModel {
@@ -733,10 +730,6 @@ pub enum Content {
     /// A single trusted shell overlay rendered into a separate transparent
     /// host surface. The compositor validates its requested output bounds.
     ShellOverlay(ShellOverlayContent),
-    /// Source-defined application content rendered into its own native
-    /// toplevel. The compositor manages this surface in the same window space
-    /// as compatible desktop applications.
-    ApplicationSurface(ApplicationSurfaceContent),
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -819,11 +812,6 @@ pub struct ShellOverlayAnchor {
     pub width: f32,
     pub height: f32,
     pub above: bool,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
-pub struct ApplicationSurfaceContent {
-    pub title: String,
 }
 
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -1057,12 +1045,6 @@ pub enum ValidationError {
     MissingShellOverlayId,
     #[error("scene contains more than one shell overlay")]
     DuplicateShellOverlay,
-    #[error("application surface requires a stable id")]
-    MissingApplicationSurfaceId,
-    #[error("scene contains more than one application surface")]
-    DuplicateApplicationSurface,
-    #[error("application surface title must contain 1 through 256 bytes")]
-    InvalidApplicationSurfaceTitle,
     #[error("experience mount requires a stable id")]
     MissingExperienceMountId,
     #[error("scene contains more than {MAX_EXPERIENCE_MOUNTS} experience mounts")]
@@ -1101,7 +1083,6 @@ pub fn validate_scene_detailed(scene: &Scene) -> Result<usize, ValidationFailure
         ids: &mut HashSet<String>,
         window_spaces: &mut usize,
         shell_overlays: &mut usize,
-        application_surfaces: &mut usize,
         experience_mounts: &mut usize,
     ) -> Result<(), ValidationFailure> {
         macro_rules! reject {
@@ -1215,18 +1196,6 @@ pub fn validate_scene_detailed(scene: &Scene) -> Result<usize, ValidationFailure
                     reject!(ValidationError::InvalidDimension("shell overlay anchor"));
                 }
             }
-            Some(Content::ApplicationSurface(application)) => {
-                if node.id.is_none() {
-                    reject!(ValidationError::MissingApplicationSurfaceId);
-                }
-                *application_surfaces += 1;
-                if *application_surfaces > 1 {
-                    reject!(ValidationError::DuplicateApplicationSurface);
-                }
-                if application.title.is_empty() || application.title.len() > 256 {
-                    reject!(ValidationError::InvalidApplicationSurfaceTitle);
-                }
-            }
             _ => {}
         }
         if (node.layout.scroll_y
@@ -1301,7 +1270,6 @@ pub fn validate_scene_detailed(scene: &Scene) -> Result<usize, ValidationFailure
                 ids,
                 window_spaces,
                 shell_overlays,
-                application_surfaces,
                 experience_mounts,
             )?;
         }
@@ -1358,7 +1326,6 @@ pub fn validate_scene_detailed(scene: &Scene) -> Result<usize, ValidationFailure
     let mut count = 0;
     let mut window_spaces = 0;
     let mut shell_overlays = 0;
-    let mut application_surfaces = 0;
     let mut experience_mounts = 0;
     visit(
         &scene.root,
@@ -1373,7 +1340,6 @@ pub fn validate_scene_detailed(scene: &Scene) -> Result<usize, ValidationFailure
         &mut HashSet::new(),
         &mut window_spaces,
         &mut shell_overlays,
-        &mut application_surfaces,
         &mut experience_mounts,
     )?;
     Ok(count)
@@ -1654,7 +1620,7 @@ mod tests {
     }
 
     #[test]
-    fn shell_overlay_and_application_surface_are_single_keyed_primitives() {
+    fn shell_overlay_is_a_single_keyed_primitive() {
         let overlay = || SceneNode {
             id: Some("agent-overlay".into()),
             content: Some(Content::ShellOverlay(ShellOverlayContent {
@@ -1671,21 +1637,14 @@ mod tests {
             },
             ..Default::default()
         };
-        let application = || SceneNode {
-            id: Some("notes".into()),
-            content: Some(Content::ApplicationSurface(ApplicationSurfaceContent {
-                title: "Notes".into(),
-            })),
-            ..Default::default()
-        };
         assert_eq!(
             validate_scene(&Scene {
                 root: SceneNode {
-                    children: vec![overlay(), application()],
+                    children: vec![overlay()],
                     ..Default::default()
                 }
             }),
-            Ok(3)
+            Ok(2)
         );
 
         let second_overlay = SceneNode {
@@ -1700,20 +1659,6 @@ mod tests {
                 }
             }),
             Err(ValidationError::DuplicateShellOverlay)
-        );
-
-        let second_application = SceneNode {
-            id: Some("calendar".into()),
-            ..application()
-        };
-        assert_eq!(
-            validate_scene(&Scene {
-                root: SceneNode {
-                    children: vec![application(), second_application],
-                    ..Default::default()
-                }
-            }),
-            Err(ValidationError::DuplicateApplicationSurface)
         );
     }
 

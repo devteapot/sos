@@ -119,8 +119,8 @@ independent Experience ID, state, grants, graph activation, and recovery. An
 `experience_mount` is host-owned composition inside one graph and is bounded
 by the declared dependency contract described in
 [`experience-composition.md`](experience-composition.md). The old
-`application_surface` node remains decodable only for retained API v3 rollback
-revisions; checked-in v4 Stock does not emit it.
+`application_surface` node has been removed; independent top-level lifecycle
+always crosses the registry and graph authority boundary.
 
 SOS-native applications may additionally publish a bounded `status_widgets`
 contribution through the trusted applications provider: an ID, visible

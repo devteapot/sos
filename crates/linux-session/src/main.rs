@@ -5,10 +5,9 @@ use std::{
 
 use anyhow::{bail, Context as _, Result};
 use sos_linux_session::{
-    bootstrap_authority, bootstrap_graph_authority, review_revision_grants,
-    review_trusted_graph_grants, run_host_proxy, run_system_session, shutdown_authority,
-    stage_revision, BootstrapOutcome, GraphBootstrapOutcome, ServiceIdentity, SessionIdentityMode,
-    SystemSessionOptions,
+    bootstrap_graph_authority, review_revision_grants, review_trusted_graph_grants, run_host_proxy,
+    run_system_session, shutdown_authority, GraphBootstrapOutcome, ServiceIdentity,
+    SessionIdentityMode, SystemSessionOptions,
 };
 
 fn main() {
@@ -30,28 +29,6 @@ fn run() -> Result<()> {
             .context("--timeout-ms must be an integer")?,
     );
     match command.as_str() {
-        "bootstrap" => {
-            options.ensure_only(&["--root", "--service-socket", "--timeout-ms"])?;
-            let root = PathBuf::from(options.required("--root")?);
-            let service_socket = PathBuf::from(options.required("--service-socket")?);
-            match bootstrap_authority(&root, &service_socket, timeout)? {
-                BootstrapOutcome::Initialized {
-                    transaction_id,
-                    revision_id,
-                } => println!(
-                    "authority_initialized transaction_id={transaction_id} revision_id={revision_id}"
-                ),
-                BootstrapOutcome::AlreadyBound { revision_id } => {
-                    println!("authority_already_bound revision_id={revision_id}")
-                }
-                BootstrapOutcome::RecoveryRequired {
-                    pointer_revision,
-                    authority_revision,
-                } => println!(
-                    "authority_recovery_required pointer_revision={pointer_revision} authority_revision={authority_revision}"
-                ),
-            }
-        }
         "bootstrap-graph" => {
             options.ensure_only(&["--root", "--experience", "--service-socket", "--timeout-ms"])?;
             let root = PathBuf::from(options.required("--root")?);
@@ -70,16 +47,6 @@ fn run() -> Result<()> {
                     println!("graph_authority_already_bound graph_id={graph_id}")
                 }
             }
-        }
-        "stage" => {
-            options.ensure_only(&["--root", "--revision", "--service-socket", "--timeout-ms"])?;
-            let root = PathBuf::from(options.required("--root")?);
-            let revision_id = options.required("--revision")?;
-            let service_socket = PathBuf::from(options.required("--service-socket")?);
-            println!(
-                "{}",
-                stage_revision(&root, revision_id, &service_socket, timeout)?
-            );
         }
         "shutdown" => {
             options.ensure_only(&["--service-socket", "--timeout-ms"])?;
@@ -279,5 +246,5 @@ impl Options {
 }
 
 fn usage() -> &'static str {
-    "usage:\n  sos-linux-session bootstrap --root DIR --service-socket PATH [--timeout-ms N]\n  sos-linux-session bootstrap-graph --root DIR --experience ID --service-socket PATH [--timeout-ms N]\n  sos-linux-session stage --root DIR --revision ID --service-socket PATH [--timeout-ms N]\n  sos-linux-session shutdown --service-socket PATH [--timeout-ms N]\n  sos-linux-session review-grants --root DIR --revision ID --service-socket PATH --capability-file FILE [--timeout-ms N]\n  sos-linux-session review-graph-grants --root DIR --experience ID --revision ID --service-socket PATH --capability-file FILE [--timeout-ms N]\n  sos-linux-session run --root DIR --runtime-dir DIR --authority-file FILE --shell-token-file FILE --trusted-stock-revision ID --agent-socket PATH --compositor FILE --provider FILE --supervisor FILE --host FILE --compositor-user USER --provider-user USER --supervisor-user USER --host-user USER [--timeout-ms N]\n  sos-linux-session run-user --root DIR --runtime-dir DIR --authority-file FILE --shell-token-file FILE --trusted-stock-revision ID --agent-socket PATH --compositor FILE --provider FILE --supervisor FILE --host FILE [--timeout-ms N]"
+    "usage:\n  sos-linux-session bootstrap-graph --root DIR --experience ID --service-socket PATH [--timeout-ms N]\n  sos-linux-session shutdown --service-socket PATH [--timeout-ms N]\n  sos-linux-session review-grants --root DIR --revision ID --service-socket PATH --capability-file FILE [--timeout-ms N]\n  sos-linux-session review-graph-grants --root DIR --experience ID --revision ID --service-socket PATH --capability-file FILE [--timeout-ms N]\n  sos-linux-session run --root DIR --runtime-dir DIR --authority-file FILE --shell-token-file FILE --trusted-stock-revision ID --agent-socket PATH --compositor FILE --provider FILE --supervisor FILE --host FILE --compositor-user USER --provider-user USER --supervisor-user USER --host-user USER [--timeout-ms N]\n  sos-linux-session run-user --root DIR --runtime-dir DIR --authority-file FILE --shell-token-file FILE --trusted-stock-revision ID --agent-socket PATH --compositor FILE --provider FILE --supervisor FILE --host FILE [--timeout-ms N]"
 }

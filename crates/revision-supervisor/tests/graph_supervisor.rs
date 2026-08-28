@@ -327,7 +327,7 @@ fn seed_authority_graphs(
                 continue;
             }
             let revision = store.verify(node.revision_id.as_str()).unwrap();
-            let package = revision.package.unwrap();
+            let package = revision.package;
             let data_flows: BTreeMap<DependencyAlias, DataFlowGrant> = package
                 .dependencies
                 .iter()
@@ -675,7 +675,7 @@ fn tracked_child_update_activates_the_complete_graph_and_restarts_exactly() {
     let graphs = GraphStore::open(directory.path()).unwrap();
 
     let old_agenda = store.verify(&reference.agenda_revision).unwrap();
-    let agenda_package = old_agenda.package.unwrap();
+    let agenda_package = old_agenda.package;
     let agenda_source =
         fs::read_to_string(old_agenda.directory.join(&old_agenda.manifest.source.path)).unwrap();
     let new_agenda = store
@@ -693,7 +693,7 @@ fn tracked_child_update_activates_the_complete_graph_and_restarts_exactly() {
         .manifest
         .revision_id;
     let old_dashboard = store.verify(&reference.dashboard_revision).unwrap();
-    let mut dashboard_package = old_dashboard.package.unwrap();
+    let mut dashboard_package = old_dashboard.package;
     dashboard_package
         .dependencies
         .get_mut(&DependencyAlias::parse("agenda").unwrap())
@@ -798,7 +798,7 @@ fn locked_child_update_advances_only_the_child_registry_pointer() {
     let graphs = GraphStore::open(directory.path()).unwrap();
     let old_graph = graphs.current(&root).unwrap().unwrap().0;
     let old_agenda = store.verify(&reference.agenda_revision).unwrap();
-    let agenda_package = old_agenda.package.unwrap();
+    let agenda_package = old_agenda.package;
     let agenda_source =
         fs::read_to_string(old_agenda.directory.join(&old_agenda.manifest.source.path)).unwrap();
     let new_agenda = store
@@ -878,7 +878,7 @@ fn install_tracked_roots_named(
 ) -> Vec<(ExperienceId, String)> {
     let dashboard = store.verify(&reference.dashboard_revision).unwrap();
     let source = fs::read(dashboard.directory.join(&dashboard.manifest.source.path)).unwrap();
-    let base = dashboard.package.unwrap();
+    let base = dashboard.package;
     let main = ExportId::parse("main").unwrap();
     let mut installed = Vec::new();
     for suffix in suffixes {
@@ -919,7 +919,7 @@ fn install_tracked_roots_named(
 
 fn install_agenda_update(store: &RevisionStore, revision_id: &str, marker: &str) -> String {
     let agenda = store.verify(revision_id).unwrap();
-    let package = agenda.package.unwrap();
+    let package = agenda.package;
     let source = fs::read(agenda.directory.join(&agenda.manifest.source.path)).unwrap();
     store
         .install_package(RevisionPackageInput {
@@ -1172,7 +1172,7 @@ fn stable_experience_grant_authorizes_a_later_revision_with_the_same_boundary() 
     let current_graph = graphs.current(&root).unwrap().unwrap().1;
     let current_root = &current_graph.nodes[&current_graph.root];
     let current = store.verify(current_root.revision_id.as_str()).unwrap();
-    let package = current.package.unwrap();
+    let package = current.package;
     let source = fs::read(current.directory.join(&current.manifest.source.path)).unwrap();
 
     let socket = directory.path().join("authority-stable-grant.sock");

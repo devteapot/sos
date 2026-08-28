@@ -105,9 +105,6 @@ printf '%s\n' \
   '  "set -euo pipefail;"*)' \
   '    stage="$(cat "$TEST_DEPLOY_STATE")"' \
   '    [[ "$command" == *"sudo install -d -o root -g root -m 0755 '\''/usr/share/sos/experiences/modules'\'';"* ]]' \
-  '    [[ "$command" == *"sudo rm -f -- '\''/usr/share/sos/experiences/daily-flow.luau'\'';"* ]]' \
-  '    [[ "$command" == *"sudo rm -f -- '\''/usr/share/sos/experiences/timeflow.luau'\'';"* ]]' \
-  '    [[ "$command" == *"sudo rm -f -- '\''/usr/share/sos/experiences/timeflow.package.json'\'';"* ]]' \
   '    mkdir -p "$TEST_DEPLOY_REMOTE/usr/local/libexec/sos" "$TEST_DEPLOY_REMOTE/usr/local/libexec/sos-agent/dist" "$TEST_DEPLOY_REMOTE/usr/local/lib/systemd/user" "$TEST_DEPLOY_REMOTE/usr/share/doc/sos" "$TEST_DEPLOY_REMOTE/usr/share/sos/experiences/modules" "$TEST_DEPLOY_REMOTE/etc/xdg"' \
   '    for source in "$stage"/sos-*; do cp -- "$source" "$TEST_DEPLOY_REMOTE/usr/local/libexec/sos/$(basename "$source")"; done' \
   '    [[ ! -f "$stage/linux-hardware-gate" ]] || cp -- "$stage/linux-hardware-gate" "$TEST_DEPLOY_REMOTE/usr/local/libexec/sos/"' \
@@ -182,8 +179,6 @@ done
 [[ -f "$test_deploy_remote/usr/share/sos/experiences/default.luau" ]]
 [[ -f "$test_deploy_remote/usr/share/sos/experiences/default.package.json" ]]
 [[ -f "$test_deploy_remote/usr/share/sos/experiences/modules/stock-theme.luau" ]]
-[[ ! -e "$test_deploy_remote/usr/share/sos/experiences/timeflow.luau" ]]
-[[ ! -e "$test_deploy_remote/usr/share/sos/experiences/timeflow.package.json" ]]
 [[ -f "$test_deploy_remote/usr/share/doc/sos/experience-api.md" ]]
 [[ -f "$test_deploy_remote/usr/share/doc/sos/sos-agent.md" ]]
 [[ -f "$test_deploy_remote/usr/share/doc/sos/linux-stable-host.md" ]]
@@ -199,8 +194,6 @@ test_deployment_metadata="$test_deploy_remote/usr/share/doc/sos/development-depl
 test_deployment_manifest="$test_deploy_remote/usr/share/doc/sos/development-deployment-manifest.tsv"
 grep -Fx 'image_kind=development-live' "$test_deployment_metadata" >/dev/null
 grep -Fx 'promotion_eligible=false' "$test_deployment_metadata" >/dev/null
-grep -Fx 'retired_baked_artifacts=/usr/share/sos/experiences/daily-flow.luau:/usr/share/sos/experiences/timeflow.luau:/usr/share/sos/experiences/timeflow.package.json' \
-  "$test_deployment_metadata" >/dev/null
 [[ "$(wc -l <"$test_deployment_manifest")" -eq 16 ]]
 while IFS=$'\t' read -r test_path test_bytes test_sha; do
   [[ "$(stat -c %s "$test_deploy_remote$test_path")" == "$test_bytes" ]]

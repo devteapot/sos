@@ -9,17 +9,17 @@ use std::{
 };
 
 use experience_ir::{
-    validate_scene_detailed, Align, Animation, AnimationKind, ApplicationSurfaceContent, ClipRect,
-    Content, EdgePlacement, ExperienceContext, ExperienceModel, ExperienceMountContent,
-    ExperienceOutputEvent, ExperienceViewport, Flow, GlyphRun, HitRegion, ImageContent,
-    Interaction, Justify, Layout, LayoutPosition, LayoutProgram, PaintOp, PaintPoint,
-    PointerCapture, ProviderEffect, ProviderSurfaceContent, Scene, SceneEvent, SceneNode,
-    SemanticRole, Semantics, ShellOverlayContent, ShellOverlayPlacement, TextContent, TextSession,
-    Transform2D, WindowLayoutMode, WindowSpaceContent, EXPERIENCE_API_VERSION,
-    EXPERIENCE_API_VERSION_V4, MAX_CHILDREN, MAX_EFFECTS, MAX_EFFECT_PAYLOAD_BYTES, MAX_GLYPH_RUNS,
-    MAX_HIT_REGIONS, MAX_PAINT_DEPTH, MAX_PAINT_OPS, MAX_PAINT_POINTS, MAX_REVISION_ASSETS,
-    MAX_REVISION_ASSET_BYTES, MAX_REVISION_ASSET_TOTAL_BYTES, MAX_SCENE_DEPTH, MAX_SCENE_NODES,
-    MAX_STATE_BYTES, MAX_TEXT_BYTES,
+    validate_scene_detailed, Align, Animation, AnimationKind, ClipRect, Content, EdgePlacement,
+    ExperienceContext, ExperienceModel, ExperienceMountContent, ExperienceOutputEvent,
+    ExperienceViewport, Flow, GlyphRun, HitRegion, ImageContent, Interaction, Justify, Layout,
+    LayoutPosition, LayoutProgram, PaintOp, PaintPoint, PointerCapture, ProviderEffect,
+    ProviderSurfaceContent, Scene, SceneEvent, SceneNode, SemanticRole, Semantics,
+    ShellOverlayContent, ShellOverlayPlacement, TextContent, TextSession, Transform2D,
+    WindowLayoutMode, WindowSpaceContent, EXPERIENCE_API_VERSION, MAX_CHILDREN, MAX_EFFECTS,
+    MAX_EFFECT_PAYLOAD_BYTES, MAX_GLYPH_RUNS, MAX_HIT_REGIONS, MAX_PAINT_DEPTH, MAX_PAINT_OPS,
+    MAX_PAINT_POINTS, MAX_REVISION_ASSETS, MAX_REVISION_ASSET_BYTES,
+    MAX_REVISION_ASSET_TOTAL_BYTES, MAX_SCENE_DEPTH, MAX_SCENE_NODES, MAX_STATE_BYTES,
+    MAX_TEXT_BYTES,
 };
 use mlua::{
     chunk::{ChunkMode, Compiler},
@@ -181,7 +181,9 @@ pub fn load_revision_assets(directory: &Path) -> Result<Vec<RevisionAssetInput>,
     })?;
     let manifest: SidecarManifest = serde_json::from_slice(&manifest)
         .map_err(|error| RuntimeError::Invalid(format!("invalid revision manifest: {error}")))?;
-    if !matches!(manifest.format_version, 3 | 4) || manifest.assets.len() > MAX_REVISION_ASSETS {
+    if manifest.format_version != experience_package::PACKAGE_FORMAT_VERSION
+        || manifest.assets.len() > MAX_REVISION_ASSETS
+    {
         return Err(RuntimeError::Invalid(
             "unsupported revision sidecar manifest".into(),
         ));
@@ -885,21 +887,12 @@ impl LuauRuntime {
             let api_version = result
                 .get::<Option<u32>>("api_version")?
                 .ok_or_else(|| RuntimeError::Invalid("module must export api_version".into()))?;
-            if !matches!(
-                api_version,
-                EXPERIENCE_API_VERSION | EXPERIENCE_API_VERSION_V4
-            ) {
+            if api_version != EXPERIENCE_API_VERSION {
                 return Err(RuntimeError::Invalid(format!(
-                    "experience API {api_version} is unsupported; host supports 3 and 4"
+                    "experience API {api_version} is unsupported; host requires {EXPERIENCE_API_VERSION}"
                 )));
             }
-            if api_version == EXPERIENCE_API_VERSION {
-                let _: Function = result.get("render").map_err(|_| {
-                    RuntimeError::Invalid("module must export render(model, state)".into())
-                })?;
-            } else {
-                validate_export_table(result.get::<Table>("exports")?)?;
-            }
+            validate_export_table(result.get::<Table>("exports")?)?;
             let (assets, asset_paths) =
                 decode_revision_assets(result.get::<Option<Table>>("assets")?)?;
             (
@@ -1082,37 +1075,14 @@ impl LuauRuntime {
         model: &ExperienceModel,
         state: &JsonValue,
     ) -> Result<Scene, RuntimeError> {
-        if self.api_version == EXPERIENCE_API_VERSION_V4 {
-            return self.render_export(
-                "main",
-                model,
-                state,
-                &JsonValue::Object(Default::default()),
-                ExperienceViewport::default(),
-                None,
-            );
-        }
-        let module: Table = self.lua.registry_value(&self.module)?;
-        let render: Function = module.get("render")?;
-        let model = self.lua.to_value(model)?;
-        let state = self.lua.to_value(state)?;
-        let value = run_bounded(&self.deadline, RENDER_BUDGET, || {
-            render.call::<Value>((model, state))
-        })?;
-        let scene = Scene {
-            root: Decoder {
-                nodes: 0,
-                lua: &self.lua,
-                asset_paths: &self.asset_paths,
-                shader_paths: &self.shader_paths,
-            }
-            .node(value, 1, "root")?,
-        };
-        validate_scene_detailed(&scene).map_err(|failure| RuntimeError::InvalidAt {
-            path: failure.path,
-            message: failure.error.to_string(),
-        })?;
-        Ok(scene)
+        self.render_export(
+            "main",
+            model,
+            state,
+            &JsonValue::Object(Default::default()),
+            ExperienceViewport::default(),
+            None,
+        )
     }
 
     pub fn api_version(&self) -> u32 {
@@ -1120,9 +1090,6 @@ impl LuauRuntime {
     }
 
     pub fn export_ids(&self) -> Result<Vec<String>, RuntimeError> {
-        if self.api_version == EXPERIENCE_API_VERSION {
-            return Ok(vec!["main".into()]);
-        }
         let module: Table = self.lua.registry_value(&self.module)?;
         let exports: Table = module.get("exports")?;
         let mut ids = exports
@@ -1143,14 +1110,6 @@ impl LuauRuntime {
         viewport: ExperienceViewport,
         container_appearance: Option<JsonValue>,
     ) -> Result<Scene, RuntimeError> {
-        if self.api_version != EXPERIENCE_API_VERSION_V4 {
-            if export_id != "main" {
-                return Err(RuntimeError::Invalid(format!(
-                    "legacy experience does not export `{export_id}`"
-                )));
-            }
-            return self.render(model, state);
-        }
         validate_export_id(export_id)?;
         if serde_json::to_vec(properties)
             .map_err(|error| RuntimeError::Invalid(error.to_string()))?
@@ -1211,51 +1170,17 @@ impl LuauRuntime {
         state: &JsonValue,
         event: &SceneEvent,
     ) -> Result<UpdateOutcome, RuntimeError> {
-        if self.api_version == EXPERIENCE_API_VERSION_V4 {
-            let event = serde_json::to_value(event)
-                .map_err(|error| RuntimeError::Invalid(error.to_string()))?;
-            return self.update_export_with_effects(
-                "main",
-                model,
-                state,
-                &event,
-                &JsonValue::Object(Default::default()),
-                ExperienceViewport::default(),
-                None,
-            );
-        }
-        let module: Table = self.lua.registry_value(&self.module)?;
-        let update: Option<Function> = module.get("update")?;
-        let Some(update) = update else {
-            return Ok(UpdateOutcome {
-                state: state.clone(),
-                effects: Vec::new(),
-                events: Vec::new(),
-            });
-        };
-        let model = self.lua.to_value(model)?;
-        let state = self.lua.to_value(state)?;
-        let event = self.lua.to_value(event)?;
-        let value = run_bounded(&self.deadline, UPDATE_BUDGET, || {
-            update.call::<Value>((model, state, event))
-        })?;
-        if let Value::Table(table) = &value {
-            let envelope_state = table.get::<Option<Value>>("state")?;
-            if let Some(envelope_state) = envelope_state {
-                let state = self.lua.from_value(envelope_state)?;
-                let effects = decode_effects(table.get::<Option<Table>>("effects")?, &self.lua)?;
-                return Ok(UpdateOutcome {
-                    state,
-                    effects,
-                    events: Vec::new(),
-                });
-            }
-        }
-        Ok(UpdateOutcome {
-            state: self.lua.from_value(value)?,
-            effects: Vec::new(),
-            events: Vec::new(),
-        })
+        let event = serde_json::to_value(event)
+            .map_err(|error| RuntimeError::Invalid(error.to_string()))?;
+        self.update_export_with_effects(
+            "main",
+            model,
+            state,
+            &event,
+            &JsonValue::Object(Default::default()),
+            ExperienceViewport::default(),
+            None,
+        )
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1269,11 +1194,6 @@ impl LuauRuntime {
         viewport: ExperienceViewport,
         container_appearance: Option<JsonValue>,
     ) -> Result<UpdateOutcome, RuntimeError> {
-        if self.api_version != EXPERIENCE_API_VERSION_V4 {
-            let event: SceneEvent = serde_json::from_value(event.clone())
-                .map_err(|error| RuntimeError::Invalid(error.to_string()))?;
-            return self.update_with_effects(model, state, &event);
-        }
         validate_export_id(export_id)?;
         for (name, value) in [("event", event), ("properties", properties)] {
             if serde_json::to_vec(value)
@@ -2088,7 +2008,6 @@ fn decode_content(
         "experience_mount" => &["kind", "dependency", "properties", "container_appearance"],
         "window_space" => &["kind", "layout", "gap", "fallback"],
         "shell_overlay" => &["kind", "x", "y", "width", "height", "placement", "anchor"],
-        "application_surface" => &["kind", "title"],
         _ => &["kind"],
     };
     reject_unknown_keys(&table, allowed)?;
@@ -2209,9 +2128,6 @@ fn decode_content(
                 anchor,
             })
         }
-        "application_surface" => Content::ApplicationSurface(ApplicationSurfaceContent {
-            title: required_bounded_string(&table, "title", 256)?,
-        }),
         other => {
             return Err(RuntimeError::Invalid(format!(
                 "unknown content kind: {other}"
@@ -2616,25 +2532,37 @@ mod tests {
 
     const SCRIPT: &str = r#"
         return {
-            api_version = 3,
-            render = function(model, state)
-                return {
-                    id = "root", layout = { flow = "column", gap = 8 }, children = {
-                        { content = { kind = "text", value = model.weather.summary, size = 16, color = 0xffffff } },
-                        {
-                            id = "toggle",
-                            content = { kind = "text", value = state.on and "on" or "off", size = 16, color = 0xffffff },
-                            interaction = { tap_action = "toggle" },
-                        },
+            api_version = 4,
+            exports = { main = {
+                render = function(model, state)
+                    return {
+                        id = "root", layout = { flow = "column", gap = 8 }, children = {
+                            { content = { kind = "text", value = model.weather.summary, size = 16, color = 0xffffff } },
+                            {
+                                id = "toggle",
+                                content = { kind = "text", value = state.on and "on" or "off", size = 16, color = 0xffffff },
+                                interaction = { tap_action = "toggle" },
+                            },
+                        }
                     }
-                }
-            end,
-            update = function(_, state, event)
-                if event.action == "toggle" then state.on = not state.on end
-                return state
-            end,
+                end,
+                update = function(_, state, event)
+                    if event.action == "toggle" then state.on = not state.on end
+                    return state
+                end,
+            } },
         }
     "#;
+
+    fn v4_main(main_fields: &str) -> String {
+        v4_module("", main_fields)
+    }
+
+    fn v4_module(module_fields: &str, main_fields: &str) -> String {
+        format!(
+            "return {{ api_version = 4, {module_fields} exports = {{ main = {{ {main_fields} }} }} }}"
+        )
+    }
 
     #[test]
     fn renders_and_updates_a_typed_scene() {
@@ -2670,7 +2598,7 @@ mod tests {
         .err()
         .unwrap()
         .to_string();
-        assert!(version_one.contains("host supports 3 and 4"));
+        assert!(version_one.contains("host requires 4"));
     }
 
     #[test]
@@ -2763,10 +2691,8 @@ mod tests {
 
     #[test]
     fn interrupts_an_infinite_render() {
-        let runtime = LuauRuntime::compile(
-            "return { api_version = 3, render = function() while true do end end }",
-        )
-        .unwrap();
+        let runtime =
+            LuauRuntime::compile(&v4_main("render = function() while true do end end")).unwrap();
         let error = runtime
             .render(&providers_fake_for_test(), &json!({}))
             .unwrap_err();
@@ -2775,9 +2701,9 @@ mod tests {
 
     #[test]
     fn rejects_unknown_content() {
-        let runtime = LuauRuntime::compile(
-            "return { api_version = 3, render = function() return { content = { kind = 'native_surface' } } end }",
-        )
+        let runtime = LuauRuntime::compile(&v4_main(
+            "render = function() return { content = { kind = 'native_surface' } } end",
+        ))
         .unwrap();
         assert!(runtime
             .render(&providers_fake_for_test(), &json!({}))
@@ -2788,24 +2714,21 @@ mod tests {
 
     #[test]
     fn decodes_the_bounded_window_space_contract() {
-        let runtime = LuauRuntime::compile(
+        let runtime = LuauRuntime::compile(&v4_main(
             r#"
-                return {
-                    api_version = 3,
-                    render = function()
-                        return {
-                            id = "applications",
-                            content = {
-                                kind = "window_space",
-                                layout = "tiling",
-                                gap = 16,
-                                fallback = "No applications are open",
-                            },
-                        }
-                    end,
-                }
+                render = function()
+                    return {
+                        id = "applications",
+                        content = {
+                            kind = "window_space",
+                            layout = "tiling",
+                            gap = 16,
+                            fallback = "No applications are open",
+                        },
+                    }
+                end
             "#,
-        )
+        ))
         .unwrap();
         let scene = runtime
             .render(&providers_fake_for_test(), &runtime.initial_state())
@@ -2821,38 +2744,31 @@ mod tests {
     }
 
     #[test]
-    fn decodes_shell_overlay_application_surface_and_drag_handle() {
-        let runtime = LuauRuntime::compile(
+    fn decodes_shell_overlay_and_drag_handle() {
+        let runtime = LuauRuntime::compile(&v4_main(
             r#"
-                return {
-                    api_version = 3,
-                    render = function()
-                        return { children = {
-                            {
-                                id = "overlay",
-                                content = {
-                                    kind = "shell_overlay", x = 20, y = 30,
-                                    width = 64, height = 64,
-                                    anchor = {
-                                        x = 20, y = 30, width = 64, height = 64,
-                                        above = true,
-                                    },
+                render = function()
+                    return { children = {
+                        {
+                            id = "overlay",
+                            content = {
+                                kind = "shell_overlay", x = 20, y = 30,
+                                width = 64, height = 64,
+                                anchor = {
+                                    x = 20, y = 30, width = 64, height = 64,
+                                    above = true,
                                 },
-                                interaction = { hover_action = "hover" },
-                                children = {{
-                                    id = "bubble",
-                                    interaction = { tap_action = "open", surface_drag = true },
-                                }},
                             },
-                            {
-                                id = "notes",
-                                content = { kind = "application_surface", title = "Notes" },
-                            },
-                        }}
-                    end,
-                }
+                            interaction = { hover_action = "hover" },
+                            children = {{
+                                id = "bubble",
+                                interaction = { tap_action = "open", surface_drag = true },
+                            }},
+                        },
+                    }}
+                end
             "#,
-        )
+        ))
         .unwrap();
         let scene = runtime
             .render(&providers_fake_for_test(), &runtime.initial_state())
@@ -2865,46 +2781,37 @@ mod tests {
         };
         assert_eq!(overlay_content.anchor.unwrap().x, 20.0);
         assert!(overlay_content.anchor.unwrap().above);
-        assert_eq!(
-            scene.root.children[1].content,
-            Some(Content::ApplicationSurface(ApplicationSurfaceContent {
-                title: "Notes".into(),
-            }))
-        );
     }
 
     #[test]
     fn decodes_bounded_native_primitives_and_semantics() {
-        let runtime = LuauRuntime::compile(
+        let runtime = LuauRuntime::compile(&v4_main(
             r#"
-                return {
-                    api_version = 3,
-                    render = function()
-                        return {
-                            id = "root", layout = { flow = "column" }, children = {
-                                {
-                                    id = "art", content = { kind = "image", asset = "album-orbit" },
-                                    animation = { kind = "pulse", duration_ms = 1200, loop = true },
-                                    semantics = { role = "image", label = "Album art" },
+                render = function()
+                    return {
+                        id = "root", layout = { flow = "column" }, children = {
+                            {
+                                id = "art", content = { kind = "image", asset = "album-orbit" },
+                                animation = { kind = "pulse", duration_ms = 1200, loop = true },
+                                semantics = { role = "image", label = "Album art" },
+                            },
+                            {
+                                id = "draft",
+                                content = {
+                                    kind = "text_session", state_key = "draft",
+                                    value = "Caffè ☕️ – 明日のデザイン", autofocus = true,
+                                    submit_action = "save_note",
                                 },
-                                {
-                                    id = "draft",
-                                    content = {
-                                        kind = "text_session", state_key = "draft",
-                                        value = "Caffè ☕️ – 明日のデザイン", autofocus = true,
-                                        submit_action = "save_note",
-                                    },
-                                    semantics = {
-                                        role = "text_field", label = "Note draft",
-                                        value = "Caffè ☕️ – 明日のデザイン",
-                                    },
+                                semantics = {
+                                    role = "text_field", label = "Note draft",
+                                    value = "Caffè ☕️ – 明日のデザイン",
                                 },
                             },
-                        }
-                    end,
-                }
+                        },
+                    }
+                end
             "#,
-        )
+        ))
         .unwrap();
         let scene = runtime
             .render(&providers_fake_for_test(), &json!({}))
@@ -2924,9 +2831,9 @@ mod tests {
 
     #[test]
     fn rejects_undeclared_image_assets() {
-        let runtime = LuauRuntime::compile(
-            "return { api_version = 3, render = function() return { id = 'x', content = { kind = 'image', asset = 'https://example.com/x.png' } } end }",
-        )
+        let runtime = LuauRuntime::compile(&v4_main(
+            "render = function() return { id = 'x', content = { kind = 'image', asset = 'https://example.com/x.png' } } end",
+        ))
         .unwrap();
         assert!(runtime
             .render(&providers_fake_for_test(), &json!({}))
@@ -2937,42 +2844,41 @@ mod tests {
 
     #[test]
     fn decodes_retained_layout_layers_glyphs_gestures_and_revision_assets() {
-        let runtime = LuauRuntime::compile(
+        let runtime = LuauRuntime::compile(&v4_module(
             r##"
-                return {
-                    api_version = 3,
-                    assets = {
-                        mark = { kind = "svg", data = [[<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="#fff"/></svg>]] },
-                    },
-                    render = function()
-                        return {
-                            id = "surface",
-                            layout = {
-                                width = 320, height = 480, min_width = 280, max_width = 360,
-                                aspect_ratio = 0.6666667, clip_bounds = true, wrap = true,
-                                position = { x = 4, y = 8 },
-                                program = { measure_width = 0.75, arrange_x = 0.125 },
-                            },
-                            paint = {{
-                                kind = "layer", opacity = 0.8,
-                                clip = { x = 0, y = 0, width = 200, height = 100 },
-                                transform = { translate_x = 2, scale_x = 1.1, scale_y = 1.1, rotation_degrees = 3 },
-                                paint = {{ kind = "glyphs", x = 8, y = 12, size = 16, runs = {
-                                    { text = "SOS", color = 0xffffff, weight = 700, italic = true },
-                                } }},
-                            }},
-                            interaction = {
-                                tap_action = "tap", double_tap_action = "zoom",
-                                long_press_action = "pin", swipe_action = "swipe",
-                                pointer_action = "pointer", multi_pointer_action = "pinch",
-                                capture = "surface",
-                            },
-                            children = {{ id = "mark", content = { kind = "image", asset = "mark" } }},
-                        }
-                    end,
-                }
+                assets = {
+                    mark = { kind = "svg", data = [[<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="#fff"/></svg>]] },
+                },
             "##,
-        )
+            r#"
+                render = function()
+                    return {
+                        id = "surface",
+                        layout = {
+                            width = 320, height = 480, min_width = 280, max_width = 360,
+                            aspect_ratio = 0.6666667, clip_bounds = true, wrap = true,
+                            position = { x = 4, y = 8 },
+                            program = { measure_width = 0.75, arrange_x = 0.125 },
+                        },
+                        paint = {{
+                            kind = "layer", opacity = 0.8,
+                            clip = { x = 0, y = 0, width = 200, height = 100 },
+                            transform = { translate_x = 2, scale_x = 1.1, scale_y = 1.1, rotation_degrees = 3 },
+                            paint = {{ kind = "glyphs", x = 8, y = 12, size = 16, runs = {
+                                { text = "SOS", color = 0xffffff, weight = 700, italic = true },
+                            } }},
+                        }},
+                        interaction = {
+                            tap_action = "tap", double_tap_action = "zoom",
+                            long_press_action = "pin", swipe_action = "swipe",
+                            pointer_action = "pointer", multi_pointer_action = "pinch",
+                            capture = "surface",
+                        },
+                        children = {{ id = "mark", content = { kind = "image", asset = "mark" } }},
+                    }
+                end
+            "#,
+        ))
         .unwrap();
         assert_eq!(runtime.assets().len(), 1);
         assert_eq!(runtime.assets()[0].id, "mark");
@@ -2999,16 +2905,17 @@ mod tests {
     #[test]
     fn sidecar_images_fonts_and_shaders_enter_one_runtime_asset_set() {
         let runtime = LuauRuntime::compile_with_assets(
-            r#"return {
-                api_version = 3,
+            &v4_main(
+                r#"
                 render = function()
                     return {
                         id = "hero",
                         content = { kind = "image", asset = "hero" },
                         paint = {{ kind = "shader", asset = "glow", x = 0, y = 0, width = 32, height = 16 }},
                     }
-                end,
-            }"#,
+                end
+            "#,
+            ),
             vec![
                 RevisionAssetInput {
                     id: "hero".into(),
@@ -3058,9 +2965,10 @@ mod tests {
 
     #[test]
     fn rejects_active_content_in_revision_svg_assets() {
-        let error = match LuauRuntime::compile(
-            r#"return { api_version = 3, assets = { bad = { kind = "svg", data = "<svg><script>bad()</script></svg>" } }, render = function() return { id = "root" } end }"#,
-        ) {
+        let error = match LuauRuntime::compile(&v4_module(
+            r#"assets = { bad = { kind = "svg", data = "<svg><script>bad()</script></svg>" } },"#,
+            r#"render = function() return { id = "root" } end"#,
+        )) {
             Ok(_) => panic!("active SVG content should be rejected"),
             Err(error) => error,
         };
@@ -3069,34 +2977,31 @@ mod tests {
 
     #[test]
     fn decodes_paint_geometry_hit_regions_and_pointer_events() {
-        let runtime = LuauRuntime::compile(
+        let runtime = LuauRuntime::compile(&v4_main(
             r#"
-                return {
-                    api_version = 3,
-                    render = function(_, state)
-                        return {
-                            id = "time-space",
-                            layout = { width = 320, height = 480 },
-                            paint = {
-                                { kind = "path", color = 0x77AAFF, width = 4,
-                                  points = {{x = 24, y = 20}, {x = 92, y = 180}, {x = 40, y = 420}} },
-                                { kind = "quad", x = state.x or 40, y = 300,
-                                  width = 100, height = 48, radius = 12, color = 0x223355 },
-                            },
-                            interaction = { hit_regions = {{
-                                    id = "note-1", x = state.x or 40, y = 300, width = 100, height = 48,
-                                    press_action = "note_press", drag_action = "note_drag", drop_action = "note_drop",
-                                }}
-                            },
-                        }
-                    end,
-                    update = function(_, state, event)
-                        if event.action == "note_drag" then state.x = event.x - 50 end
-                        return state
-                    end,
-                }
+                render = function(_, state)
+                    return {
+                        id = "time-space",
+                        layout = { width = 320, height = 480 },
+                        paint = {
+                            { kind = "path", color = 0x77AAFF, width = 4,
+                              points = {{x = 24, y = 20}, {x = 92, y = 180}, {x = 40, y = 420}} },
+                            { kind = "quad", x = state.x or 40, y = 300,
+                              width = 100, height = 48, radius = 12, color = 0x223355 },
+                        },
+                        interaction = { hit_regions = {{
+                                id = "note-1", x = state.x or 40, y = 300, width = 100, height = 48,
+                                press_action = "note_press", drag_action = "note_drag", drop_action = "note_drop",
+                            }}
+                        },
+                    }
+                end,
+                update = function(_, state, event)
+                    if event.action == "note_drag" then state.x = event.x - 50 end
+                    return state
+                end
             "#,
-        )
+        ))
         .unwrap();
         let model = providers_fake_for_test();
         let scene = runtime.render(&model, &json!({})).unwrap();
@@ -3122,24 +3027,21 @@ mod tests {
 
     #[test]
     fn returns_a_bounded_typed_provider_effect() {
-        let runtime = LuauRuntime::compile(
+        let runtime = LuauRuntime::compile(&v4_main(
             r#"
-                return {
-                    api_version = 3,
-                    render = function() return { id = "root" } end,
-                    update = function(_, state)
-                        state.attached = true
-                        return {
-                            state = state,
-                            effects = {{
-                                provider = "notes", action = "attach_to_event",
-                                payload = { note_id = "note-1", event_title = "Design review" },
-                            }},
-                        }
-                    end,
-                }
+                render = function() return { id = "root" } end,
+                update = function(_, state)
+                    state.attached = true
+                    return {
+                        state = state,
+                        effects = {{
+                            provider = "notes", action = "attach_to_event",
+                            payload = { note_id = "note-1", event_title = "Design review" },
+                        }},
+                    }
+                end
             "#,
-        )
+        ))
         .unwrap();
         let outcome = runtime
             .update_with_effects(
@@ -3158,23 +3060,20 @@ mod tests {
 
     #[test]
     fn returns_the_bounded_agent_prompt_capability() {
-        let runtime = LuauRuntime::compile(
+        let runtime = LuauRuntime::compile(&v4_main(
             r#"
-                return {
-                    api_version = 3,
-                    render = function() return { id = "root" } end,
-                    update = function(_, state, event)
-                        return {
-                            state = state,
-                            effects = {{
-                                provider = "agent", action = "prompt",
-                                payload = { prompt = event.value },
-                            }},
-                        }
-                    end,
-                }
+                render = function() return { id = "root" } end,
+                update = function(_, state, event)
+                    return {
+                        state = state,
+                        effects = {{
+                            provider = "agent", action = "prompt",
+                            payload = { prompt = event.value },
+                        }},
+                    }
+                end
             "#,
-        )
+        ))
         .unwrap();
         let outcome = runtime
             .update_with_effects(
@@ -3195,23 +3094,20 @@ mod tests {
 
     #[test]
     fn returns_the_bounded_network_selection_capability() {
-        let runtime = LuauRuntime::compile(
+        let runtime = LuauRuntime::compile(&v4_main(
             r#"
-                return {
-                    api_version = 3,
-                    render = function() return { id = "root" } end,
-                    update = function(_, state)
-                        return {
-                            state = state,
-                            effects = {{
-                                provider = "network", action = "connect",
-                                payload = { ssid = "SOS Lab", security = "personal" },
-                            }},
-                        }
-                    end,
-                }
+                render = function() return { id = "root" } end,
+                update = function(_, state)
+                    return {
+                        state = state,
+                        effects = {{
+                            provider = "network", action = "connect",
+                            payload = { ssid = "SOS Lab", security = "personal" },
+                        }},
+                    }
+                end
             "#,
-        )
+        ))
         .unwrap();
         let outcome = runtime
             .update_with_effects(
@@ -3232,19 +3128,16 @@ mod tests {
 
     #[test]
     fn returns_only_the_bounded_agent_credential_controls() {
-        let runtime = LuauRuntime::compile(
+        let runtime = LuauRuntime::compile(&v4_main(
             r#"
-                return {
-                    api_version = 3,
-                    render = function() return { id = "root" } end,
-                    update = function(_, state, event)
-                        return { state = state, effects = {{
-                            provider = "agent", action = event.action,
-                        }} }
-                    end,
-                }
+                render = function() return { id = "root" } end,
+                update = function(_, state, event)
+                    return { state = state, effects = {{
+                        provider = "agent", action = event.action,
+                    }} }
+                end
             "#,
-        )
+        ))
         .unwrap();
         for action in [
             "configure_openai",
@@ -3270,19 +3163,16 @@ mod tests {
 
     #[test]
     fn runs_an_explicit_bounded_state_schema_migration() {
-        let runtime = LuauRuntime::compile(
+        let runtime = LuauRuntime::compile(&v4_module(
             r#"
-                return {
-                    api_version = 3,
-                    state_version = 2,
-                    migrate = function(from_version, state)
-                        if from_version ~= 1 then error("unexpected source schema") end
-                        return { playing = state.playing, migrated_from = from_version }
-                    end,
-                    render = function() return {} end,
-                }
+                state_version = 2,
+                migrate = function(from_version, state)
+                    if from_version ~= 1 then error("unexpected source schema") end
+                    return { playing = state.playing, migrated_from = from_version }
+                end,
             "#,
-        )
+            "render = function() return {} end",
+        ))
         .unwrap();
         assert_eq!(runtime.state_schema_version().unwrap(), 2);
         assert_eq!(
@@ -3296,9 +3186,10 @@ mod tests {
 
     #[test]
     fn rejects_a_schema_change_without_a_migration() {
-        let runtime = LuauRuntime::compile(
-            r#"return { api_version = 3, state_version = 2, render = function() return {} end }"#,
-        )
+        let runtime = LuauRuntime::compile(&v4_module(
+            "state_version = 2,",
+            "render = function() return {} end",
+        ))
         .unwrap();
         assert!(runtime.migrate_state(1, &json!({})).is_err());
     }
@@ -3310,19 +3201,16 @@ mod tests {
 
     #[test]
     fn standard_io_and_package_loading_are_not_exposed() {
-        let runtime = LuauRuntime::compile(
+        let runtime = LuauRuntime::compile(&v4_main(
             r#"
-                return {
-                    api_version = 3,
-                    render = function()
-                        if io ~= nil or package ~= nil or (os ~= nil and os.execute ~= nil) then
-                            error("privileged library exposed")
-                        end
-                        return {}
-                    end,
-                }
+                render = function()
+                    if io ~= nil or package ~= nil or (os ~= nil and os.execute ~= nil) then
+                        error("privileged library exposed")
+                    end
+                    return {}
+                end
             "#,
-        )
+        ))
         .unwrap();
         runtime
             .render(&providers_fake_for_test(), &json!({}))
@@ -3331,19 +3219,16 @@ mod tests {
 
     #[test]
     fn rejects_a_resource_bomb() {
-        let runtime = LuauRuntime::compile(
+        let runtime = LuauRuntime::compile(&v4_main(
             r#"
-                return {
-                    api_version = 3,
-                    render = function()
-                        local values = {}
-                        while true do
-                            table.insert(values, string.rep("x", 1024 * 1024))
-                        end
-                    end,
-                }
+                render = function()
+                    local values = {}
+                    while true do
+                        table.insert(values, string.rep("x", 1024 * 1024))
+                    end
+                end
             "#,
-        )
+        ))
         .unwrap();
         let error = runtime
             .render(&providers_fake_for_test(), &json!({}))
@@ -3385,7 +3270,7 @@ mod tests {
         worker
             .prepare_candidate(
                 2,
-                "return { api_version = 3, render = function() while true do end end }".into(),
+                v4_main("render = function() while true do end end"),
                 model.clone(),
                 json!({}),
                 1,
@@ -3422,14 +3307,13 @@ mod tests {
     #[test]
     fn worker_prepares_each_candidate_with_its_own_sidecars() {
         fn source(asset: &str) -> String {
-            format!(
-                r#"return {{
-                    api_version = 3,
+            v4_main(&format!(
+                r#"
                     render = function()
                         return {{ id = "root", content = {{ kind = "image", asset = "{asset}" }} }}
-                    end,
-                }}"#
-            )
+                    end
+                "#
+            ))
         }
 
         fn image(id: &str) -> RevisionAssetInput {
@@ -3484,25 +3368,29 @@ mod tests {
     #[test]
     fn revision_local_modules_are_namespaced_cached_and_sandboxed() {
         let runtime = LuauRuntime::compile_with_assets(
-            r#"
-                local theme = require("example.theme")
-                local same_theme = require("example.theme")
-                assert(theme == same_theme)
-                return {
-                    api_version = 3,
-                    render = function()
-                        return {
-                            id = "root",
-                            content = {
-                                kind = "text",
-                                value = theme.label,
-                                size = 14,
-                                color = theme.ink,
-                            },
-                        }
-                    end,
-                }
-            "#,
+            &format!(
+                r#"
+                    local theme = require("example.theme")
+                    local same_theme = require("example.theme")
+                    assert(theme == same_theme)
+                    {}
+                "#,
+                v4_main(
+                    r#"
+                        render = function()
+                            return {
+                                id = "root",
+                                content = {
+                                    kind = "text",
+                                    value = theme.label,
+                                    size = 14,
+                                    color = theme.ink,
+                                },
+                            }
+                        end
+                    "#
+                )
+            ),
             vec![RevisionAssetInput {
                 id: "example.theme".into(),
                 kind: "luau".into(),
@@ -3519,7 +3407,10 @@ mod tests {
         ));
 
         let error = match LuauRuntime::compile_with_assets(
-            "local _ = require('theme'); return { api_version = 3, render = function() return {} end }",
+            &format!(
+                "local _ = require('theme'); {}",
+                v4_main("render = function() return {} end")
+            ),
             vec![RevisionAssetInput {
                 id: "theme".into(),
                 kind: "luau".into(),
@@ -3545,26 +3436,25 @@ mod tests {
 
     #[test]
     fn validation_scenarios_report_every_hidden_branch_with_paths() {
-        let runtime = LuauRuntime::compile(
+        let runtime = LuauRuntime::compile(&v4_module(
             r#"
-                return {
-                    api_version = 3,
-                    validation_scenarios = {
-                        { name = "good", state = { branch = "good" } },
-                        { name = "missing_id", state = { branch = "bad" } },
-                    },
-                    render = function(_, state)
-                        if state.branch == "bad" then
-                            return {
-                                id = "root",
-                                children = {{ interaction = { tap_action = "open" } }},
-                            }
-                        end
-                        return { id = "root" }
-                    end,
-                }
+                validation_scenarios = {
+                    { name = "good", state = { branch = "good" } },
+                    { name = "missing_id", state = { branch = "bad" } },
+                },
             "#,
-        )
+            r#"
+                render = function(_, state)
+                    if state.branch == "bad" then
+                        return {
+                            id = "root",
+                            children = {{ interaction = { tap_action = "open" } }},
+                        }
+                    end
+                    return { id = "root" }
+                end
+            "#,
+        ))
         .unwrap();
         let report = runtime
             .validate_all(&providers_fake_for_test(), &json!({}))
@@ -3585,19 +3475,16 @@ mod tests {
 
     #[test]
     fn decoder_rejects_unknown_keys_at_the_consuming_node() {
-        let runtime = LuauRuntime::compile(
+        let runtime = LuauRuntime::compile(&v4_main(
             r#"
-                return {
-                    api_version = 3,
-                    render = function()
-                        return {
-                            id = "root",
-                            children = {{ id = "card", layout = { widht = 20 } }},
-                        }
-                    end,
-                }
+                render = function()
+                    return {
+                        id = "root",
+                        children = {{ id = "card", layout = { widht = 20 } }},
+                    }
+                end
             "#,
-        )
+        ))
         .unwrap();
         let error = runtime
             .render(&providers_fake_for_test(), &json!({}))
@@ -3605,20 +3492,17 @@ mod tests {
         assert_eq!(error.path(), Some("root.children[0]"));
         assert!(error.message().contains("unknown key `widht`"));
 
-        let runtime = LuauRuntime::compile(
+        let runtime = LuauRuntime::compile(&v4_main(
             r#"
-                return {
-                    api_version = 3,
-                    render = function()
-                        return {
-                            id = "root",
-                            paint = {{ kind = "quad", x = 0, y = 0, width = 10,
-                                height = 10, color = 0, raduis = 2 }},
-                        }
-                    end,
-                }
+                render = function()
+                    return {
+                        id = "root",
+                        paint = {{ kind = "quad", x = 0, y = 0, width = 10,
+                            height = 10, color = 0, raduis = 2 }},
+                    }
+                end
             "#,
-        )
+        ))
         .unwrap();
         let error = runtime
             .render(&providers_fake_for_test(), &json!({}))

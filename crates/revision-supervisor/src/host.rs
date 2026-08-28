@@ -12,7 +12,7 @@ use experience_host_protocol::{
     ExperienceLifecycleOperation, HostEvent, HostRequest, TopLevelExperience,
 };
 
-use crate::{Error, Result, VerifiedRevision};
+use crate::{Error, Result};
 
 #[derive(Clone, Debug)]
 pub struct HostCommand {
@@ -123,18 +123,6 @@ impl ExperienceHost {
         Ok(self.pending_lifecycle.drain(..).collect())
     }
 
-    pub fn boot(&mut self, revision: &VerifiedRevision) -> Result<()> {
-        let request_id = self.request_id();
-        let revision_id = revision.manifest.revision_id.clone();
-        let event = self.call(HostRequest::Boot {
-            request_id,
-            revision_id: revision_id.clone(),
-            revision_path: revision.directory.clone(),
-            experience_api_version: revision.manifest.experience_api_version,
-        })?;
-        expect_presented(event, request_id, &revision_id)
-    }
-
     pub fn boot_graph(
         &mut self,
         graph_id: &str,
@@ -151,25 +139,6 @@ impl ExperienceHost {
             launchable_experiences,
         })?;
         expect_graph_presented(event, request_id, graph_id)
-    }
-
-    pub fn prepare(&mut self, revision: &VerifiedRevision) -> Result<()> {
-        let request_id = self.request_id();
-        let revision_id = revision.manifest.revision_id.clone();
-        let event = self.call(HostRequest::Prepare {
-            request_id,
-            revision_id: revision_id.clone(),
-            revision_path: revision.directory.clone(),
-            experience_api_version: revision.manifest.experience_api_version,
-        })?;
-        match event {
-            HostEvent::Prepared {
-                request_id: received,
-                revision_id: received_revision,
-            } if received == request_id && received_revision == revision_id => Ok(()),
-            HostEvent::Rejected { error, .. } => Err(Error::HostRejected(error)),
-            _ => Err(Error::InvalidHostEvent),
-        }
     }
 
     pub fn prepare_graph(
@@ -193,27 +162,6 @@ impl ExperienceHost {
                 graph_id: received_graph,
             } if received == request_id && received_graph == graph_id => Ok(()),
             HostEvent::GraphRejected { error, .. } => Err(Error::HostRejected(error)),
-            _ => Err(Error::InvalidHostEvent),
-        }
-    }
-
-    pub fn present(&mut self, revision_id: &str) -> Result<()> {
-        let request_id = self.request_id();
-        let event = self.call(HostRequest::Present {
-            request_id,
-            revision_id: revision_id.into(),
-        })?;
-        expect_presented(event, request_id, revision_id)?;
-        let request_id = self.request_id();
-        let event = self.call(HostRequest::Confirm {
-            request_id,
-            revision_id: revision_id.into(),
-        })?;
-        match event {
-            HostEvent::Confirmed {
-                request_id: received,
-                revision_id: received_revision,
-            } if received == request_id && received_revision == revision_id => Ok(()),
             _ => Err(Error::InvalidHostEvent),
         }
     }
@@ -256,22 +204,6 @@ impl ExperienceHost {
         }
     }
 
-    pub fn quiesce_input(&mut self, revision_id: &str) -> Result<()> {
-        let request_id = self.request_id();
-        let event = self.call(HostRequest::QuiesceInput {
-            request_id,
-            revision_id: revision_id.into(),
-        })?;
-        match event {
-            HostEvent::InputQuiesced {
-                request_id: received,
-                revision_id: received_revision,
-            } if received == request_id && received_revision == revision_id => Ok(()),
-            HostEvent::Rejected { error, .. } => Err(Error::HostRejected(error)),
-            _ => Err(Error::InvalidHostEvent),
-        }
-    }
-
     pub fn quiesce_graph_input(&mut self, graph_id: &str) -> Result<()> {
         let request_id = self.request_id();
         let event = self.call(HostRequest::QuiesceGraphInput {
@@ -284,21 +216,6 @@ impl ExperienceHost {
                 graph_id: received_graph,
             } if received == request_id && received_graph == graph_id => Ok(()),
             HostEvent::GraphRejected { error, .. } => Err(Error::HostRejected(error)),
-            _ => Err(Error::InvalidHostEvent),
-        }
-    }
-
-    pub fn discard(&mut self, revision_id: &str) -> Result<()> {
-        let request_id = self.request_id();
-        let event = self.call(HostRequest::Discard {
-            request_id,
-            revision_id: revision_id.into(),
-        })?;
-        match event {
-            HostEvent::Discarded {
-                request_id: received,
-                revision_id: received_revision,
-            } if received == request_id && received_revision == revision_id => Ok(()),
             _ => Err(Error::InvalidHostEvent),
         }
     }
@@ -384,17 +301,6 @@ impl Drop for ExperienceHost {
             self.child.kill().ok();
         }
         self.child.wait().ok();
-    }
-}
-
-fn expect_presented(event: HostEvent, request_id: u64, revision_id: &str) -> Result<()> {
-    match event {
-        HostEvent::Presented {
-            request_id: received,
-            revision_id: received_revision,
-        } if received == request_id && received_revision == revision_id => Ok(()),
-        HostEvent::Rejected { error, .. } => Err(Error::HostRejected(error)),
-        _ => Err(Error::InvalidHostEvent),
     }
 }
 

@@ -100,54 +100,50 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             bootstrap_source.display()
         )
     })?;
-    let mut authority = if let Some(package_path) = bootstrap_package {
-        let package: experience_package::PackageMetadata =
-            serde_json::from_slice(&fs::read(&package_path).map_err(|error| {
-                format!(
-                    "read bootstrap package {} failed: {error}",
-                    package_path.display()
-                )
-            })?)
-            .map_err(|error| {
-                format!(
-                    "decode bootstrap package {} failed: {error}",
-                    package_path.display()
-                )
-            })?;
-        let assets = bootstrap_assets
-            .into_iter()
-            .map(|(id, kind, path)| {
-                Ok(revision_supervisor::RevisionAssetInput {
-                    id,
-                    kind,
-                    bytes: fs::read(&path).map_err(|error| {
-                        io::Error::new(
-                            error.kind(),
-                            format!("read bootstrap asset {} failed: {error}", path.display()),
-                        )
-                    })?,
-                })
+    let package_path = bootstrap_package.ok_or("--bootstrap-package requires a path")?;
+    let package: experience_package::PackageMetadata =
+        serde_json::from_slice(&fs::read(&package_path).map_err(|error| {
+            format!(
+                "read bootstrap package {} failed: {error}",
+                package_path.display()
+            )
+        })?)
+        .map_err(|error| {
+            format!(
+                "decode bootstrap package {} failed: {error}",
+                package_path.display()
+            )
+        })?;
+    let assets = bootstrap_assets
+        .into_iter()
+        .map(|(id, kind, path)| {
+            Ok(revision_supervisor::RevisionAssetInput {
+                id,
+                kind,
+                bytes: fs::read(&path).map_err(|error| {
+                    io::Error::new(
+                        error.kind(),
+                        format!("read bootstrap asset {} failed: {error}", path.display()),
+                    )
+                })?,
             })
-            .collect::<Result<Vec<_>, std::io::Error>>()?;
-        AndroidSystemAuthority::open_v4(
-            root,
-            state_file,
-            revision_supervisor::RevisionPackageInput {
-                revision: revision_supervisor::RevisionInput {
-                    source: bootstrap_source,
-                    state: serde_json::json!({}),
-                    schema_version: 1,
-                    experience_api_version: experience_ir::EXPERIENCE_API_VERSION_V4,
-                    assets,
-                },
-                package,
+        })
+        .collect::<Result<Vec<_>, std::io::Error>>()?;
+    let mut authority = AndroidSystemAuthority::open_v4(
+        root,
+        state_file,
+        revision_supervisor::RevisionPackageInput {
+            revision: revision_supervisor::RevisionInput {
+                source: bootstrap_source,
+                state: serde_json::json!({}),
+                schema_version: 1,
+                experience_api_version: experience_ir::EXPERIENCE_API_VERSION,
+                assets,
             },
-        )
-        .map_err(|error| format!("open v4 authority failed: {error}"))?
-    } else {
-        AndroidSystemAuthority::open(root, state_file, &bootstrap_source)
-            .map_err(|error| format!("open legacy authority failed: {error}"))?
-    };
+            package,
+        },
+    )
+    .map_err(|error| format!("open v4 authority failed: {error}"))?;
     if install_reference_composition {
         authority
             .install_reference_composition()
@@ -363,6 +359,8 @@ mod tests {
     use android_authority_protocol::{request_provider_over_stream, RevisionRequest};
     use android_provider_acceptance::{run_probe, ProbeStatus};
     use experience_ir::{ProviderRequest, ProviderResponse};
+    use experience_package::PackageMetadata;
+    use revision_supervisor::{RevisionInput, RevisionPackageInput};
 
     use super::{
         bind_reusable_tcp, fatal_message, handle_provider, handle_revision, AndroidSystemAuthority,
@@ -407,10 +405,21 @@ mod tests {
 
     fn test_authority() -> (tempfile::TempDir, Arc<Mutex<AndroidSystemAuthority>>) {
         let temporary = tempfile::tempdir().unwrap();
-        let authority = AndroidSystemAuthority::open(
+        let package: PackageMetadata =
+            serde_json::from_str(include_str!("../../../experiences/mobile.package.json")).unwrap();
+        let authority = AndroidSystemAuthority::open_v4(
             temporary.path().join("revisions"),
             temporary.path().join("provider.json"),
-            b"return { api_version = 3 }",
+            RevisionPackageInput {
+                revision: RevisionInput {
+                    source: include_bytes!("../../../experiences/mobile.luau").to_vec(),
+                    state: serde_json::json!({}),
+                    schema_version: 1,
+                    experience_api_version: experience_ir::EXPERIENCE_API_VERSION,
+                    assets: Vec::new(),
+                },
+                package,
+            },
         )
         .unwrap();
         (temporary, Arc::new(Mutex::new(authority)))
@@ -454,7 +463,7 @@ mod tests {
         assert!(response.is_empty());
 
         let (truncated, response) =
-            revision_exchange(&authority, br#"{"action":"current","request_id":2}"#);
+            revision_exchange(&authority, br#"{"action":"current_graph","request_id":2}"#);
         assert_eq!(
             truncated.unwrap_err().kind(),
             std::io::ErrorKind::UnexpectedEof
@@ -468,7 +477,8 @@ mod tests {
         );
         assert!(response.is_empty());
 
-        let mut valid = serde_json::to_vec(&RevisionRequest::Current { request_id: 3 }).unwrap();
+        let mut valid =
+            serde_json::to_vec(&RevisionRequest::CurrentGraph { request_id: 3 }).unwrap();
         valid.push(b'\n');
         let (result, response) = revision_exchange(&authority, &valid);
         result.unwrap();

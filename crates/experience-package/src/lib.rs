@@ -6,6 +6,7 @@ use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 pub const PACKAGE_FORMAT_VERSION: u32 = 4;
+pub const EXPERIENCE_API_VERSION: u32 = 4;
 pub const CONTRACT_VERSION: u32 = 1;
 pub const APPEARANCE_ABI_VERSION: u32 = 1;
 pub const GRAPH_FORMAT_VERSION: u32 = 1;

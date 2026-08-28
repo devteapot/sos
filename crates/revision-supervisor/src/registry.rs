@@ -21,8 +21,6 @@ pub struct ExperienceRecord {
     pub format_version: u32,
     pub experience_id: ExperienceId,
     pub role: ExperienceRole,
-    #[serde(default)]
-    pub accepts_legacy_revisions: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -46,9 +44,7 @@ impl ExperienceRegistry {
         revision_id: &str,
     ) -> Result<ExperienceRecord> {
         let revision = self.store.verify(revision_id)?;
-        let package = revision.package.as_ref().ok_or_else(|| {
-            Error::InvalidRegistry("new experiences require package format v4".into())
-        })?;
+        let package = &revision.package;
         if &package.experience_id != experience_id || package.role != role {
             return Err(Error::InvalidRegistry(
                 "revision package identity or role does not match the registry record".into(),
@@ -59,48 +55,9 @@ impl ExperienceRegistry {
                 format_version: REGISTRY_FORMAT_VERSION,
                 experience_id: experience_id.clone(),
                 role,
-                accepts_legacy_revisions: false,
             },
             revision_id,
         )
-    }
-
-    pub fn migrate_legacy_current(&self) -> Result<Option<ExperienceRecord>> {
-        let stock_id = ExperienceId::parse(STOCK_SHELL_EXPERIENCE_ID)
-            .map_err(|error| Error::InvalidRegistry(error.to_string()))?;
-        self.migrate_legacy_current_as(&stock_id)
-    }
-
-    pub fn migrate_legacy_current_as(
-        &self,
-        stock_id: &ExperienceId,
-    ) -> Result<Option<ExperienceRecord>> {
-        if !is_pinned_stock_experience(stock_id) {
-            return Err(Error::InvalidRegistry(format!(
-                "legacy migration target `{stock_id}` is not a reserved Stock experience"
-            )));
-        }
-        if let Some(record) = self.get(stock_id)? {
-            return Ok(Some(record));
-        }
-        let Some(revision) = self.store.current()? else {
-            return Ok(None);
-        };
-        if revision.package.is_some() {
-            return Err(Error::InvalidRegistry(
-                "legacy current pointer unexpectedly names a v4 package".into(),
-            ));
-        }
-        self.create_record(
-            ExperienceRecord {
-                format_version: REGISTRY_FORMAT_VERSION,
-                experience_id: stock_id.clone(),
-                role: ExperienceRole::Shell,
-                accepts_legacy_revisions: true,
-            },
-            &revision.manifest.revision_id,
-        )
-        .map(Some)
     }
 
     pub fn get(&self, experience_id: &ExperienceId) -> Result<Option<ExperienceRecord>> {
@@ -295,19 +252,14 @@ impl ExperienceRegistry {
         record: &ExperienceRecord,
         revision: &VerifiedRevision,
     ) -> Result<()> {
-        match &revision.package {
-            Some(package)
-                if package.experience_id == record.experience_id && package.role == record.role =>
-            {
-                Ok(())
-            }
-            None if record.accepts_legacy_revisions => Ok(()),
-            Some(_) => Err(Error::InvalidRegistry(
+        if revision.package.experience_id == record.experience_id
+            && revision.package.role == record.role
+        {
+            Ok(())
+        } else {
+            Err(Error::InvalidRegistry(
                 "revision belongs to a different experience or role".into(),
-            )),
-            None => Err(Error::InvalidRegistry(
-                "experience does not accept legacy revisions".into(),
-            )),
+            ))
         }
     }
 
@@ -454,72 +406,6 @@ mod tests {
             media_one
         );
         assert_eq!(registry.list().unwrap().len(), 2);
-    }
-
-    #[test]
-    fn legacy_current_migrates_only_to_the_stock_shell_record() {
-        let directory = TempDir::new().unwrap();
-        let store = RevisionStore::open(directory.path()).unwrap();
-        let legacy = store
-            .install(RevisionInput {
-                source: b"legacy".to_vec(),
-                state: json!({}),
-                schema_version: 1,
-                experience_api_version: 3,
-                assets: vec![],
-            })
-            .unwrap()
-            .manifest
-            .revision_id;
-        store.set_current(&legacy).unwrap();
-        let registry = ExperienceRegistry::open(store).unwrap();
-        let record = registry.migrate_legacy_current().unwrap().unwrap();
-        assert_eq!(record.experience_id.as_str(), STOCK_SHELL_EXPERIENCE_ID);
-        assert!(record.accepts_legacy_revisions);
-        assert_eq!(
-            registry
-                .current(&record.experience_id)
-                .unwrap()
-                .unwrap()
-                .manifest
-                .revision_id,
-            legacy
-        );
-    }
-
-    #[test]
-    fn android_legacy_current_can_migrate_to_the_distinct_stock_mobile_record() {
-        let directory = TempDir::new().unwrap();
-        let store = RevisionStore::open(directory.path()).unwrap();
-        let legacy = store
-            .install(RevisionInput {
-                source: b"legacy-mobile".to_vec(),
-                state: json!({}),
-                schema_version: 1,
-                experience_api_version: 3,
-                assets: vec![],
-            })
-            .unwrap()
-            .manifest
-            .revision_id;
-        store.set_current(&legacy).unwrap();
-        let registry = ExperienceRegistry::open(store).unwrap();
-        let mobile = ExperienceId::parse(STOCK_MOBILE_EXPERIENCE_ID).unwrap();
-        let record = registry
-            .migrate_legacy_current_as(&mobile)
-            .unwrap()
-            .unwrap();
-        assert_eq!(record.experience_id, mobile);
-        assert!(record.accepts_legacy_revisions);
-        assert_eq!(
-            registry
-                .current(&record.experience_id)
-                .unwrap()
-                .unwrap()
-                .manifest
-                .revision_id,
-            legacy
-        );
     }
 
     #[test]

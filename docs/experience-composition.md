@@ -1,23 +1,21 @@
 # Experience derivation and composition
 
-Date: 2026-08-26
+Date: 2026-08-28
 
-Status: implementation closure and physical acceptance in progress. The Debian
-direct-DRM v4 graph gate and an exact Framework development-live composition
-diagnostic pass; installed Linux promotion and Android device acceptance remain
-open.
+Status: v4-only implementation closure and rebuilt-artifact acceptance in
+progress. The Debian direct-DRM v4 graph gate, exact Framework composition
+campaign, and exact Android v4 composition campaign pass on the pre-cutover
+artifacts.
 Package format v4, Experience API v4, the registry and graph resolver, isolated graph runtime, authority-owned
 appearance, graph state and activation transactions, derivation and
 composition authoring, and the Linux and Android host paths are implemented.
-Stock and the reference composition set are v4 packages. Rolling Linux and
-Android migrations import
-legacy Stock state without changing the legacy pointer during the rollback
-window. API v3 is now a legacy activation reader, not the target for checked-in
-experiences or new authoring. Tracked updates activate every affected top-level
-graph atomically. Installed Linux promotion, physical Android composition
-acceptance, and final compatibility removal remain open. The cross-platform
-wire, deterministic property, complete durable-phase fault, and desktop
-performance gates pass.
+Stock and the reference composition set are v4 packages. The completed rolling
+migrations were followed by removal of the v3 package reader, singleton
+revision pointer, single-revision host protocol, and source-defined application
+toplevel primitive. Tracked updates activate every affected top-level graph
+atomically. Fresh v4-only Compat and Core acceptance remains open. The
+cross-platform wire, deterministic property, complete durable-phase fault, and
+desktop performance gates pass.
 
 ## Decision
 
@@ -324,8 +322,8 @@ callback into the shell.
 ## Authoring and activation
 
 The resident authoring surface emits only API v4 packages for active edits,
-derivations, and live compositions. API v3 remains readable only for bounded
-rollback of retained artifacts. None of the authoring flows gives the model
+derivations, and live compositions. Activation and rollback also require v4
+packages and resolved graphs. None of the authoring flows gives the model
 filesystem, registry, activation, or grant-review authority.
 
 The trusted authoring broker must:
@@ -369,9 +367,8 @@ The implementation is split so the contracts do not depend on GPUI or Linux:
   recoverable `retired-experiences` archive. Retired records disappear from the
   launch catalog without deleting revisions or derivation history. The pinned
   neither pinned platform Stock experience can be retired;
-- fresh Linux v4 boot creates only Experience registry and graph pointers and
-  bootstraps authority state per Experience. The singleton pointer exists only
-  when an imported v3 rollback artifact already owns it;
+- Linux boot creates only Experience registry and graph pointers and
+  bootstraps authority state per Experience;
 - the graph resolver rejects missing exports, changed contract digests,
   undeclared grants, shell children, cycles, excessive depth, and excessive VM
   counts, then stores the exact canonical graph snapshot;
@@ -497,24 +494,22 @@ the presence of a commit with a matching title.
 | Milestone | Implementation status | Exit-gate status |
 | --- | --- | --- |
 | 0. Wire model | Closed. `experience-package` owns canonical identities, schemas, contracts, graph limits, and canonical JSON. | Closed by the shared Rust, Linux, Android-authority, and TypeScript fixture plus canonical/oversize rejection and deterministic mutation/property campaigns. |
-| 1. Package format v4 | Closed. Complete package metadata, derivation, contracts, dependencies, hashes, and deterministic revision identity ship in the platform-neutral crate and revision store. | Closed by corruption, digest, signature, legacy-read, sidecar, deterministic identity, and state-migration tests. |
-| 2. Experience registry | Closed. Stable records have independent current/previous pointers; Stock Shell and Stock Mobile are distinct reserved pinned identities; retirement is recoverable. | Closed by independent-history, both platform legacy-import targets, pinned-retirement rejection, restart, and atomic-pointer tests. |
+| 1. Package format v4 | Closed. Complete package metadata, derivation, contracts, dependencies, hashes, and deterministic revision identity ship in the platform-neutral crate and revision store. | Closed by corruption, digest, signature, v4 rejection, sidecar, deterministic identity, and state-migration tests. |
+| 2. Experience registry | Closed. Stable records have independent current/previous pointers; Stock Shell and Stock Mobile are distinct reserved pinned identities; retirement is recoverable. | Closed by independent-history, pinned-retirement rejection, restart, and atomic-pointer tests. |
 | 3. State and appearance authority | Closed. Durable state is Experience-owned; appearance and grants are separately versioned capability resources; graph state promotes as one batch. | Closed by restart, locked-revision state, appearance-without-revision, grant, stale writer, idempotence, and all promotion-fault tests. |
-| 4. Experience API v4 | Closed. Named exports, typed properties/events, viewports, appearance context, and `experience_mount` are the only authoring target. | Closed by export/scenario, schema, viewport, mount, appearance, and v3 rejection/rollback-reader tests. |
+| 4. Experience API v4 | Closed. Named exports, typed properties/events, viewports, appearance context, and `experience_mount` are the only authoring and activation contract. | Closed by export/scenario, schema, viewport, mount, appearance, and non-v4 rejection tests. |
 | 5. Dependency resolver | Closed. Exact aliases, revisions, exports, contract digests, roles, grants, limits, and content-addressed graphs are validated before preparation. | Closed by missing, stale, cyclic, incompatible, unreviewed-flow, depth, and aggregate-instance tests. |
 | 6. Linux runtime graph | Closed. Each Instance owns a VM/runtime record and children render inside host-owned mounts with unavailable fallbacks. | Closed by the reference Dashboard integration, process worker, nested compositor, and exact Framework campaign. |
 | 7. Boundary containment | Closed. Instance namespaces cover scenes, assets, state, semantics, input, text, provider data, focus, clipping, and failures. | Closed by runtime/host/compositor tests and the Framework child-failure, timeout, input, renderer-recovery, and semantic-control campaign. |
 | 8. Graph activation and recovery | Closed. Graph prepare, present, confirm, discard/finalize, journal, authority promotion, and multi-root pointer movement are durable operations. | Closed by every durable cut-point, presentation rollback, power-loss simulation, multi-root fault, restart, and Framework recovery evidence. |
 | 9. Fork, remix, and authoring | Closed. Explicit targets, exact parents, derivation provenance, candidate contracts, migration binding, and fresh grants are enforced. | Closed by self-contained remix, exact-parent, replacement, state-migration, provenance, and no-inherited-grant tests. |
 | 10. Tracked dependencies | Closed. The persistent reverse index resolves every affected locked/tracked root into one activation set. | Closed by compatible tracked advance, locked pinning, inactive/presented multi-root, atomic state, rollback, and restart tests. |
-| 11. Android parity | Implementation closed. Android authority and hosts use the shared package, registry, graph, state, appearance, grant, namespace, activation, system-control, and physical-campaign model. | **Physical gate open.** Compile/offline/restart-fault and campaign-auditor evidence passes, but the SM-A336B composition, input, IME, accessibility, appearance, containment, restart, authoring, and v4 rollback campaign has not run on final rebuilt candidates. |
-| 12. Stock migration and hardening | Implementation closed. Stock uses semantic appearance tokens and v4 exports; registry launch replaces singleton ownership; the retired secondary product is absent; optional Linux process isolation works. | Code and offline exit conditions are closed. Installed Linux promotion and Android physical hardening remain product-acceptance gates, not missing v4 architecture. |
+| 11. Android parity | Implementation closed. Android authority and hosts use the shared package, registry, graph, state, appearance, grant, namespace, activation, system-control, and physical-campaign model. | The complete SM-A336B composition, input, IME, accessibility, appearance, containment, restart, authoring, and rollback campaign passed before the final reader removal. A fresh v4-only Compat/Core rebuild gate is open. |
+| 12. Stock migration and hardening | Implementation closed. Stock uses semantic appearance tokens and v4 exports; registry launch replaces singleton ownership and `application_surface`; the retired secondary product is absent; optional Linux process isolation works. | Code and offline exit conditions are closed. Fresh rebuilt Linux and Android physical hardening remain product-acceptance gates. |
 
-All active built-ins, signed references, resident-agent examples, and new
-authoring are therefore v4. The v3 reader is deliberately retained only for
-the reversible migration window. Removing it before the cleaned Android
-artifacts have physically migrated and rolled back would violate the original
-migration plan rather than complete it.
+All built-ins, signed references, resident-agent examples, authoring,
+activation, and rollback are therefore v4. The migration window is closed: a
+non-v4 revision or a graphless host request fails before runtime preparation.
 
 ## Rejected shortcuts
 

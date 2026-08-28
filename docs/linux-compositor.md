@@ -215,13 +215,13 @@ system, the same host PID across graph activation, exact graph recovery after
 host death, and three `nested_backend_submit` fences. Its raw logs and stores
 can be retained with `SOS_COMPOSITION_EVIDENCE_DIR`.
 
-The host now creates the trusted shell overlay and application auxiliary GPUI
-windows only when the active Scene contains their corresponding content. It
-reconciles those windows after the current GPUI entity update finishes, so a
-revision can add or remove either surface without a reentrant entity update or
-leaving a transparent input surface behind. Set
-`SOS_NESTED_AUXILIARY_ONLY=1` on the broader nested verifier for the focused
-open/close check.
+The host creates the trusted shell-overlay GPUI window only when the active
+Scene contains its corresponding content. It reconciles that window after the
+current GPUI entity update finishes, so a revision can add or remove the
+surface without a reentrant entity update or leaving a transparent input
+surface behind. Set `SOS_NESTED_OVERLAY_ONLY=1` on the broader nested verifier
+for the focused open/close check. Independent application Experiences use
+registry lifecycle and separate host processes.
 
 The gate passes both on the ARM64 Ubuntu 24.04 development host and inside the
 reference Debian 13.6 ARM64 KVM guest. The Debian run activated revision

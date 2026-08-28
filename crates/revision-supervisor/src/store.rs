@@ -2,7 +2,7 @@ use std::{
     collections::HashSet,
     fs::{self, File, OpenOptions},
     io::Write,
-    os::unix::fs::{symlink, PermissionsExt},
+    os::unix::fs::PermissionsExt,
     path::{Component, Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
 };
@@ -11,11 +11,12 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
-use experience_package::{canonical_sha256, PackageMetadata, PACKAGE_FORMAT_VERSION};
+use experience_package::{
+    canonical_sha256, PackageMetadata, EXPERIENCE_API_VERSION, PACKAGE_FORMAT_VERSION,
+};
 
 use crate::{Error, Result};
 
-const LEGACY_FORMAT_VERSION: u32 = 3;
 pub const MAX_REVISION_ASSETS: usize = 64;
 pub const MAX_REVISION_ASSET_BYTES: usize = 4 * 1024 * 1024;
 pub const MAX_REVISION_ASSET_TOTAL_BYTES: usize = 16 * 1024 * 1024;
@@ -65,8 +66,7 @@ pub struct RevisionManifest {
     pub source: FileIdentity,
     pub state: FileIdentity,
     pub assets: Vec<AssetIdentity>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub package: Option<FileIdentity>,
+    pub package: FileIdentity,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -87,7 +87,7 @@ pub struct DurableState {
 pub struct VerifiedRevision {
     pub directory: PathBuf,
     pub manifest: RevisionManifest,
-    pub package: Option<PackageMetadata>,
+    pub package: PackageMetadata,
 }
 
 impl RevisionStore {
@@ -103,10 +103,6 @@ impl RevisionStore {
         &self.root
     }
 
-    pub fn install(&self, input: RevisionInput) -> Result<VerifiedRevision> {
-        self.install_inner(input, None)
-    }
-
     pub fn install_package(&self, input: RevisionPackageInput) -> Result<VerifiedRevision> {
         input
             .package
@@ -117,23 +113,23 @@ impl RevisionStore {
             input.revision.schema_version,
             &input.revision.state,
         )?;
-        self.install_inner(input.revision, Some(input.package))
+        self.install_inner(input.revision, input.package)
     }
 
     fn install_inner(
         &self,
         input: RevisionInput,
-        package: Option<PackageMetadata>,
+        package: PackageMetadata,
     ) -> Result<VerifiedRevision> {
         if input.schema_version == 0 {
             return Err(Error::InvalidRevision(
                 "schema version must be positive".into(),
             ));
         }
-        if input.experience_api_version == 0 {
-            return Err(Error::InvalidRevision(
-                "experience API version must be positive".into(),
-            ));
+        if input.experience_api_version != EXPERIENCE_API_VERSION {
+            return Err(Error::InvalidRevision(format!(
+                "experience API version must be {EXPERIENCE_API_VERSION}"
+            )));
         }
         let source_sha256 = digest(&input.source);
         let assets = prepare_assets(input.assets)?;
@@ -151,18 +147,10 @@ impl RevisionStore {
             .collect::<Vec<_>>();
 
         let package_bytes = package
-            .as_ref()
-            .map(PackageMetadata::canonical_bytes)
-            .transpose()
+            .canonical_bytes()
             .map_err(|error| Error::InvalidRevision(error.to_string()))?;
-        let package_identity = package_bytes
-            .as_ref()
-            .map(|bytes| identity("package.json", bytes));
-        let format_version = if package.is_some() {
-            PACKAGE_FORMAT_VERSION
-        } else {
-            LEGACY_FORMAT_VERSION
-        };
+        let package_identity = identity("package.json", &package_bytes);
+        let format_version = PACKAGE_FORMAT_VERSION;
 
         let revision_id = revision_identity(
             format_version,
@@ -171,7 +159,7 @@ impl RevisionStore {
             &source,
             &state_identity,
             &asset_identities,
-            package_identity.as_ref(),
+            &package_identity,
         );
         let manifest = RevisionManifest {
             format_version,
@@ -198,9 +186,7 @@ impl RevisionStore {
         let result = (|| {
             write_synced(&temporary.join("source.luau"), &input.source, 0o444)?;
             write_synced(&temporary.join("state.json"), &state, 0o444)?;
-            if let Some(package_bytes) = &package_bytes {
-                write_synced(&temporary.join("package.json"), package_bytes, 0o444)?;
-            }
+            write_synced(&temporary.join("package.json"), &package_bytes, 0o444)?;
             if !assets.is_empty() {
                 let assets_directory = temporary.join("assets");
                 fs::create_dir(&assets_directory)?;
@@ -252,12 +238,9 @@ impl RevisionStore {
             }
         }
         let manifest: RevisionManifest = serde_json::from_slice(&manifest_bytes)?;
-        if !matches!(
-            manifest.format_version,
-            LEGACY_FORMAT_VERSION | PACKAGE_FORMAT_VERSION
-        ) || manifest.revision_id != revision_id
-            || (manifest.format_version == LEGACY_FORMAT_VERSION && manifest.package.is_some())
-            || (manifest.format_version == PACKAGE_FORMAT_VERSION && manifest.package.is_none())
+        if manifest.format_version != PACKAGE_FORMAT_VERSION
+            || manifest.experience_api_version != EXPERIENCE_API_VERSION
+            || manifest.revision_id != revision_id
         {
             return Err(Error::InvalidRevision(
                 "manifest format or revision identity mismatch".into(),
@@ -270,14 +253,14 @@ impl RevisionStore {
             &manifest.source,
             &manifest.state,
             &manifest.assets,
-            manifest.package.as_ref(),
+            &manifest.package,
         ) != revision_id
         {
             return Err(Error::InvalidRevision(
                 "content-addressed revision identity mismatch".into(),
             ));
         }
-        if manifest.schema_version == 0 || manifest.experience_api_version == 0 {
+        if manifest.schema_version == 0 {
             return Err(Error::InvalidRevision(
                 "schema and experience API versions must be positive".into(),
             ));
@@ -289,21 +272,15 @@ impl RevisionStore {
             verify_file(&directory, &asset.file)?;
             validate_asset_bytes(&asset.kind, &fs::read(directory.join(&asset.file.path))?)?;
         }
-        let package = match &manifest.package {
-            Some(identity) => {
-                verify_file(&directory, identity)?;
-                if identity.path != "package.json" {
-                    return Err(Error::InvalidRevision(
-                        "package metadata must use package.json".into(),
-                    ));
-                }
-                let bytes = fs::read(directory.join(&identity.path))?;
-                let package = PackageMetadata::from_canonical_bytes(&bytes)
-                    .map_err(|error| Error::InvalidRevision(error.to_string()))?;
-                Some(package)
-            }
-            None => None,
-        };
+        verify_file(&directory, &manifest.package)?;
+        if manifest.package.path != "package.json" {
+            return Err(Error::InvalidRevision(
+                "package metadata must use package.json".into(),
+            ));
+        }
+        let bytes = fs::read(directory.join(&manifest.package.path))?;
+        let package = PackageMetadata::from_canonical_bytes(&bytes)
+            .map_err(|error| Error::InvalidRevision(error.to_string()))?;
         let state: DurableState =
             serde_json::from_slice(&fs::read(directory.join(&manifest.state.path))?)?;
         if state.schema_version != manifest.schema_version
@@ -313,74 +290,12 @@ impl RevisionStore {
                 "source, state, and schema do not describe one revision".into(),
             ));
         }
-        if let Some(package) = &package {
-            validate_state_migration(package, state.schema_version, &state.state)?;
-        }
+        validate_state_migration(&package, state.schema_version, &state.state)?;
         Ok(VerifiedRevision {
             directory,
             manifest,
             package,
         })
-    }
-
-    pub fn current(&self) -> Result<Option<VerifiedRevision>> {
-        let pointer = self.root.join("current");
-        let target = match fs::read_link(&pointer) {
-            Ok(target) => target,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            Err(error) => return Err(error.into()),
-        };
-        let revision_id = target
-            .strip_prefix("revisions")
-            .ok()
-            .and_then(|value| value.to_str())
-            .ok_or_else(|| Error::InvalidPointer(target.clone()))?;
-        self.verify(revision_id).map(Some)
-    }
-
-    pub fn previous(&self) -> Result<Option<VerifiedRevision>> {
-        let pointer = self.root.join("previous");
-        let target = match fs::read_link(&pointer) {
-            Ok(target) => target,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            Err(error) => return Err(error.into()),
-        };
-        let revision_id = target
-            .strip_prefix("revisions")
-            .ok()
-            .and_then(|value| value.to_str())
-            .ok_or_else(|| Error::InvalidPointer(target.clone()))?;
-        let revision_path = self.revision_path(revision_id)?;
-        match fs::symlink_metadata(&revision_path) {
-            Ok(_) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            Err(error) => return Err(error.into()),
-        }
-        self.verify(revision_id).map(Some)
-    }
-
-    pub fn set_current(&self, revision_id: &str) -> Result<()> {
-        self.verify(revision_id)?;
-        let sequence = TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-        if let Ok(current_target) = fs::read_link(self.root.join("current")) {
-            let previous_temporary = self
-                .root
-                .join(format!(".previous-{}-{sequence}", std::process::id()));
-            symlink(current_target, &previous_temporary)?;
-            if let Err(error) = fs::rename(&previous_temporary, self.root.join("previous")) {
-                fs::remove_file(&previous_temporary).ok();
-                return Err(error.into());
-            }
-        }
-        let temporary = self
-            .root
-            .join(format!(".current-{}-{sequence}", std::process::id()));
-        symlink(Path::new("revisions").join(revision_id), &temporary)?;
-        if let Err(error) = fs::rename(&temporary, self.root.join("current")) {
-            fs::remove_file(&temporary).ok();
-            return Err(error.into());
-        }
-        sync_directory(&self.root)
     }
 
     fn revision_path(&self, revision_id: &str) -> Result<PathBuf> {
@@ -519,7 +434,7 @@ fn revision_identity(
     source: &FileIdentity,
     state: &FileIdentity,
     assets: &[AssetIdentity],
-    package: Option<&FileIdentity>,
+    package: &FileIdentity,
 ) -> String {
     let mut revision_digest = Sha256::new();
     revision_digest.update(format_version.to_le_bytes());
@@ -536,11 +451,9 @@ fn revision_identity(
         revision_digest.update(asset.file.size.to_le_bytes());
         revision_digest.update(asset.file.sha256.as_bytes());
     }
-    if let Some(package) = package {
-        revision_digest.update(package.path.as_bytes());
-        revision_digest.update(package.size.to_le_bytes());
-        revision_digest.update(package.sha256.as_bytes());
-    }
+    revision_digest.update(package.path.as_bytes());
+    revision_digest.update(package.size.to_le_bytes());
+    revision_digest.update(package.sha256.as_bytes());
     format!("{:x}", revision_digest.finalize())
 }
 
@@ -790,7 +703,7 @@ fn sync_directory(path: &Path) -> Result<()> {
 
 #[cfg(test)]
 mod signing_tests {
-    use super::{constant_time_equal, hmac_sha256};
+    use super::{constant_time_equal, hmac_sha256, RevisionManifest};
 
     #[test]
     fn detached_manifest_hmac_matches_standard_vector() {
@@ -800,5 +713,19 @@ mod signing_tests {
         );
         assert!(constant_time_equal(b"same", b"same"));
         assert!(!constant_time_equal(b"same", b"diff"));
+    }
+
+    #[test]
+    fn revision_manifest_requires_v4_package_identity() {
+        let manifest = serde_json::json!({
+            "format_version": 4,
+            "revision_id": "a".repeat(64),
+            "schema_version": 1,
+            "experience_api_version": 4,
+            "source": { "path": "source.luau", "size": 1, "sha256": "b".repeat(64) },
+            "state": { "path": "state.json", "size": 1, "sha256": "c".repeat(64) },
+            "assets": [],
+        });
+        assert!(serde_json::from_value::<RevisionManifest>(manifest).is_err());
     }
 }

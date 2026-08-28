@@ -9,7 +9,6 @@ development_deploy_artifacts_dir="${SOS_DEVELOPMENT_DEPLOY_ARTIFACTS_DIR:-$devel
 development_deploy_identity=/usr/share/doc/sos/image-identity.env
 development_deploy_metadata=/usr/share/doc/sos/development-deployment.env
 development_deploy_manifest=/usr/share/doc/sos/development-deployment-manifest.tsv
-development_deploy_retired_baked_artifacts=/usr/share/sos/experiences/daily-flow.luau:/usr/share/sos/experiences/timeflow.luau:/usr/share/sos/experiences/timeflow.package.json
 development_deploy_cleanup_temporary=""
 development_deploy_cleanup_control_socket=""
 development_deploy_cleanup_target=""
@@ -314,8 +313,7 @@ development_deploy_run() {
     "base_image_revision=$base_revision" \
     "deployed_at_utc=$deployed_at" \
     'image_kind=development-live' \
-    'promotion_eligible=false' \
-    "retired_baked_artifacts=$development_deploy_retired_baked_artifacts" >"$metadata"
+    'promotion_eligible=false' >"$metadata"
 
   remote_dir="$(ssh "${ssh_options[@]}" "$target" \
     'umask 077; mktemp -d -p /tmp sos-development-deploy.XXXXXX')"
@@ -325,12 +323,6 @@ development_deploy_run() {
   scp "${ssh_options[@]}" "$staging"/* "$target:$remote_dir/"
 
   local remote_command="set -euo pipefail; trap 'rm -r -- \"$remote_dir\"' EXIT;"
-  local retired_baked_artifact
-  local -a retired_baked_artifact_list=()
-  IFS=: read -r -a retired_baked_artifact_list <<<"$development_deploy_retired_baked_artifacts"
-  for retired_baked_artifact in "${retired_baked_artifact_list[@]}"; do
-    remote_command+=" sudo rm -f -- '$retired_baked_artifact';"
-  done
   local destination_parent
   for component in "${components[@]}"; do
     artifact="$(development_deploy_binary_name "$component")"

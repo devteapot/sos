@@ -23,8 +23,8 @@ use experience_ir::{
     EdgePlacement, ExperienceModel, Flow, HitRegion, Interaction, Justify, PaintOp, Scene,
     SceneEvent, SceneNode, ShellCanvas, ShellCapability, ShellExperience, ShellModel, ShellOutput,
     ShellOverlayContent, ShellWindow, ShellWindowCapability, ShellWindowKind, WindowLayoutMode,
-    WindowSpaceContent, EXPERIENCE_API_VERSION, EXPERIENCE_API_VERSION_V4, MAX_AGENT_MESSAGES,
-    MAX_AGENT_MESSAGE_BYTES, SHELL_MODEL_ABI_VERSION,
+    WindowSpaceContent, EXPERIENCE_API_VERSION, MAX_AGENT_MESSAGES, MAX_AGENT_MESSAGE_BYTES,
+    SHELL_MODEL_ABI_VERSION,
 };
 use experience_package::{
     hex_sha256, ExperienceId, GraphNodeId, InstanceId, PackageMetadata, ResolvedGraph, RevisionId,
@@ -222,21 +222,6 @@ impl LinuxProviderAccess {
         Ok(())
     }
 
-    fn activate(&self, revision_id: &str) {
-        *self
-            .active_revisions
-            .lock()
-            .expect("provider revision lock") = BTreeSet::from([revision_id.into()]);
-        let mut contexts = self
-            .instance_contexts
-            .lock()
-            .expect("provider instance context lock");
-        for context in contexts.values() {
-            context.cancellation.cancel();
-        }
-        contexts.clear();
-    }
-
     fn activate_graph(&self, instances: impl IntoIterator<Item = (InstanceId, String)>) {
         let instances = instances.into_iter().collect::<BTreeMap<_, _>>();
         *self
@@ -329,28 +314,6 @@ struct GraphPrepareResult {
 }
 
 #[derive(Clone, Debug)]
-struct PreparingRevision {
-    prepare_request_id: u64,
-    revision: LoadedRevision,
-    model: ExperienceModel,
-    provider_frames: Vec<ProviderFrame>,
-}
-
-#[derive(Clone, Debug)]
-struct PreparedRevision {
-    prepare_request_id: u64,
-    revision: LoadedRevision,
-    model: ExperienceModel,
-    provider_frames: Vec<ProviderFrame>,
-}
-
-#[derive(Clone, Debug)]
-struct PendingCommit {
-    present_request_id: u64,
-    revision: PreparedRevision,
-}
-
-#[derive(Clone, Debug)]
 struct PendingPresentation {
     request_id: u64,
     revision_id: String,
@@ -359,7 +322,6 @@ struct PendingPresentation {
 
 #[derive(Clone, Debug)]
 enum PresentationCompletion {
-    Revision,
     BootGraph,
     GraphCandidate,
     GraphDiscard { discarded_graph_id: String },
@@ -423,8 +385,7 @@ struct RevisionManifest {
     experience_api_version: u32,
     source: FileIdentity,
     state: FileIdentity,
-    #[serde(default)]
-    package: Option<FileIdentity>,
+    package: FileIdentity,
 }
 
 #[derive(Debug, Deserialize)]
@@ -447,15 +408,6 @@ pub fn run() -> Result<()> {
     let (first_request, reader) = read_first_request()?;
     let (request_id, revision, loaded_graph, presentation_id, launchable_experiences) =
         match first_request {
-            HostRequest::Boot {
-                request_id,
-                revision_id,
-                revision_path,
-                experience_api_version,
-            } => {
-                let revision = load_revision(&revision_id, &revision_path, experience_api_version)?;
-                (request_id, revision, None, revision_id, Vec::new())
-            }
             HostRequest::BootGraph {
                 request_id,
                 graph_id,
@@ -483,7 +435,7 @@ pub fn run() -> Result<()> {
                     launchable_experiences,
                 )
             }
-            _ => bail!("the first host request must be boot or boot_graph"),
+            _ => bail!("the first host request must be boot_graph"),
         };
     let root_is_shell = loaded_graph.as_ref().is_none_or(|graph| {
         let node = &graph.graph.nodes[&graph.graph.root];
@@ -681,7 +633,6 @@ pub fn run() -> Result<()> {
 enum RenderTarget {
     Base,
     Overlay,
-    Application,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -785,63 +736,14 @@ impl Render for ShellOverlayView {
     }
 }
 
-struct ApplicationSurfaceView {
-    host: Entity<LinuxExperienceHost>,
-}
-
-impl ApplicationSurfaceView {
-    fn new(host: Entity<LinuxExperienceHost>, cx: &mut Context<Self>) -> Self {
-        cx.observe(&host, |_, _, cx| cx.notify()).detach();
-        Self { host }
-    }
-}
-
-impl Render for ApplicationSurfaceView {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        assets::install_fonts(window);
-        let host = self.host.clone();
-        let content = host.update(cx, |host, host_cx| {
-            let application = application_surface_node(&host.scene.root).cloned();
-            application.map(|node| {
-                if let Some(Content::ApplicationSurface(application)) = &node.content {
-                    window.set_window_title(&application.title);
-                }
-                host.render_node(
-                    &node,
-                    SharedString::from("application-surface"),
-                    RenderTarget::Application,
-                    host.active_graph
-                        .as_ref()
-                        .map(|graph| graph_owner(&graph.snapshot, &graph.snapshot.root)),
-                    window,
-                    host_cx,
-                )
-            })
-        });
-        div()
-            .id("sos-application-window")
-            .size_full()
-            .when_some(content, |root, content| root.child(content))
-    }
-}
-
 fn sync_auxiliary_windows(host: &Entity<LinuxExperienceHost>, cx: &mut App) -> Result<()> {
-    let (needs_overlay, needs_application) = host.read_with(cx, |host, _| {
-        (
-            shell_overlay_node(&host.scene.root).is_some(),
-            application_surface_node(&host.scene.root).is_some(),
-        )
-    });
+    let needs_overlay =
+        host.read_with(cx, |host, _| shell_overlay_node(&host.scene.root).is_some());
     let windows = cx.windows();
     let overlay_window = windows
         .iter()
         .copied()
         .find(|handle| handle.downcast::<ShellOverlayView>().is_some());
-    let application_window = windows
-        .iter()
-        .copied()
-        .find(|handle| handle.downcast::<ApplicationSurfaceView>().is_some());
-
     match (needs_overlay, overlay_window) {
         (true, None) => {
             let host = host.clone();
@@ -874,30 +776,6 @@ fn sync_auxiliary_windows(host: &Entity<LinuxExperienceHost>, cx: &mut App) -> R
         }
         _ => {}
     }
-
-    match (needs_application, application_window) {
-        (true, None) => {
-            let host = host.clone();
-            let application_bounds = Bounds::centered(None, size(px(900.), px(700.)), cx);
-            cx.open_window(
-                WindowOptions {
-                    window_bounds: Some(WindowBounds::Windowed(application_bounds)),
-                    titlebar: None,
-                    app_id: Some("dev.sos.experience.application".into()),
-                    ..Default::default()
-                },
-                move |_, cx| cx.new(|cx| ApplicationSurfaceView::new(host, cx)),
-            )?;
-            eprintln!("sos_experience_application_surface_opened");
-        }
-        (false, Some(handle)) => {
-            handle
-                .update(cx, |_, window, _| window.remove_window())
-                .context("close obsolete application surface window")?;
-            eprintln!("sos_experience_application_surface_closed");
-        }
-        _ => {}
-    }
     Ok(())
 }
 
@@ -916,11 +794,8 @@ pub(super) struct LinuxExperienceHost {
     last_shell_overlay: Option<ShellOverlayConfiguration>,
     last_shell_overlay_anchor_local: Option<(i32, i32)>,
     pending_shell_overlay_anchor: Option<(i32, i32)>,
-    preparing: Option<PreparingRevision>,
-    prepared: Option<PreparedRevision>,
     preparing_graph: Option<(u64, String)>,
     prepared_graph: Option<PreparedGraph>,
-    pending_commit: Option<PendingCommit>,
     pending_presentation: Option<PendingPresentation>,
     last_presented_revision: Option<String>,
     input_quiesced_revision: Option<String>,
@@ -1040,7 +915,6 @@ impl LinuxExperienceHost {
             || revision.revision_id.clone(),
             |graph| graph.graph_id.clone(),
         );
-        let graph_presentation = active_graph.is_some();
         let boot_quiesced_revision = compositor_fence
             .as_ref()
             .map(|_| presentation_identity.clone());
@@ -1059,19 +933,12 @@ impl LinuxExperienceHost {
             last_shell_overlay: None,
             last_shell_overlay_anchor_local: None,
             pending_shell_overlay_anchor: None,
-            preparing: None,
-            prepared: None,
             preparing_graph: None,
             prepared_graph: None,
-            pending_commit: None,
             pending_presentation: Some(PendingPresentation {
                 request_id: boot_request_id,
                 revision_id: presentation_identity,
-                completion: if graph_presentation {
-                    PresentationCompletion::BootGraph
-                } else {
-                    PresentationCompletion::Revision
-                },
+                completion: PresentationCompletion::BootGraph,
             }),
             last_presented_revision: None,
             input_quiesced_revision: boot_quiesced_revision,
@@ -1476,9 +1343,6 @@ impl LinuxExperienceHost {
     fn request_model_refresh(&mut self, model: ExperienceModel, cx: &mut Context<Self>) {
         if self.provider_refresh.is_some()
             || self.action_in_flight
-            || self.preparing.is_some()
-            || self.prepared.is_some()
-            || self.pending_commit.is_some()
             || self.pending_presentation.is_some()
         {
             self.queued_provider_model = Some(model);
@@ -1718,22 +1582,6 @@ impl LinuxExperienceHost {
                     presented.submit_sequence
                 );
                 match pending.completion {
-                    PresentationCompletion::Revision => {
-                        if let Err(error) = self
-                            .resume_presented_input(presented.request_id, &presented.revision_id)
-                        {
-                            eprintln!(
-                                "sos_compositor_input_resume_failed request_id={} revision_id={} error={error:#}",
-                                presented.request_id, presented.revision_id
-                            );
-                            cx.quit();
-                            return;
-                        }
-                        emit(&HostEvent::Presented {
-                            request_id: presented.request_id,
-                            revision_id: presented.revision_id,
-                        });
-                    }
                     PresentationCompletion::BootGraph => {
                         if let Err(error) = self
                             .resume_presented_input(presented.request_id, &presented.revision_id)
@@ -1865,76 +1713,11 @@ impl LinuxExperienceHost {
 
     fn handle_request(&mut self, request: HostRequest, cx: &mut Context<Self>) {
         match request {
-            HostRequest::Boot {
-                request_id,
-                revision_id,
-                ..
-            } => reject(request_id, revision_id, "host is already booted"),
             HostRequest::BootGraph {
                 request_id,
                 graph_id,
                 ..
             } => reject_graph(request_id, graph_id, "host is already booted"),
-            HostRequest::Prepare {
-                request_id,
-                revision_id,
-                revision_path,
-                experience_api_version,
-            } => {
-                if self.preparing.is_some()
-                    || self.prepared.is_some()
-                    || self.preparing_graph.is_some()
-                    || self.pending_commit.is_some()
-                    || self.pending_presentation.is_some()
-                    || self.action_in_flight
-                {
-                    reject(
-                        request_id,
-                        revision_id,
-                        "another revision operation is active",
-                    );
-                    return;
-                }
-                let revision =
-                    match load_revision(&revision_id, &revision_path, experience_api_version) {
-                        Ok(revision) => revision,
-                        Err(error) => {
-                            reject(request_id, revision_id, error.to_string());
-                            return;
-                        }
-                    };
-                let (mut candidate_model, provider_frames) = match &self.provider_access {
-                    Some(access) => match access.snapshot(&revision.revision_id) {
-                        Ok(snapshot) => (snapshot.model, snapshot.frames),
-                        Err(error) => {
-                            reject(request_id, revision_id, error.to_string());
-                            return;
-                        }
-                    },
-                    None => (self.model.clone(), Vec::new()),
-                };
-                inherit_live_model_channels(&mut candidate_model, &self.model);
-                if let Err(error) = self.worker.prepare_candidate_with_assets(
-                    request_id,
-                    revision.source.clone(),
-                    revision.assets.clone(),
-                    candidate_model.clone(),
-                    revision.state.clone(),
-                    revision.schema_version,
-                    Instant::now(),
-                ) {
-                    reject(request_id, revision_id, error);
-                    return;
-                }
-                self.preparing = Some(PreparingRevision {
-                    prepare_request_id: request_id,
-                    revision,
-                    model: candidate_model,
-                    provider_frames,
-                });
-                self.status = Some(("Preparing Luau revision…".into(), true));
-                cx.notify();
-            }
             HostRequest::PrepareGraph {
                 request_id,
                 graph_id,
@@ -1942,11 +1725,8 @@ impl LinuxExperienceHost {
                 revision_root,
                 launchable_experiences,
             } => {
-                if self.preparing.is_some()
-                    || self.prepared.is_some()
-                    || self.preparing_graph.is_some()
+                if self.preparing_graph.is_some()
                     || self.prepared_graph.is_some()
-                    || self.pending_commit.is_some()
                     || self.pending_presentation.is_some()
                     || self.action_in_flight
                 {
@@ -2005,59 +1785,6 @@ impl LinuxExperienceHost {
                     .expect("graph preparation thread must start");
                 cx.notify();
             }
-            HostRequest::QuiesceInput {
-                request_id,
-                revision_id,
-            } => {
-                if self
-                    .prepared
-                    .as_ref()
-                    .map(|prepared| prepared.revision.revision_id.as_str())
-                    != Some(revision_id.as_str())
-                {
-                    reject(request_id, revision_id, "prepared revision does not match");
-                    return;
-                }
-                if self.input_quiesced_revision.as_deref() == Some(&revision_id) {
-                    emit(&HostEvent::InputQuiesced {
-                        request_id,
-                        revision_id,
-                    });
-                    return;
-                }
-                if self.input_quiesced_revision.is_some() {
-                    reject(
-                        request_id,
-                        revision_id,
-                        "input is quiesced for another revision",
-                    );
-                    return;
-                }
-                if let Some(fence) = &self.compositor_fence {
-                    if let Err(error) = fence.quiesce_input(request_id, &revision_id) {
-                        reject(request_id, revision_id, error.to_string());
-                        return;
-                    }
-                    eprintln!(
-                        "sos_compositor_input_quiesced request_id={request_id} revision_id={revision_id}"
-                    );
-                } else {
-                    eprintln!(
-                        "sos_host_input_quiesced request_id={request_id} revision_id={revision_id} evidence=host_dispatch_only"
-                    );
-                }
-                let dropped_events = self.pending_input_events.len();
-                self.pending_input_events.clear();
-                self.surface_gestures.clear();
-                self.input_quiesced_revision = Some(revision_id.clone());
-                eprintln!(
-                    "sos_input_epoch_closed request_id={request_id} revision_id={revision_id} dropped_events={dropped_events}"
-                );
-                emit(&HostEvent::InputQuiesced {
-                    request_id,
-                    revision_id,
-                });
-            }
             HostRequest::QuiesceGraphInput {
                 request_id,
                 graph_id,
@@ -2090,39 +1817,6 @@ impl LinuxExperienceHost {
                     request_id,
                     graph_id,
                 });
-            }
-            HostRequest::Present {
-                request_id,
-                revision_id,
-            } => {
-                let Some(prepared) = self.prepared.take() else {
-                    reject(request_id, revision_id, "no prepared revision");
-                    return;
-                };
-                if prepared.revision.revision_id != revision_id {
-                    self.prepared = Some(prepared);
-                    reject(request_id, revision_id, "prepared revision does not match");
-                    return;
-                }
-                if self.input_quiesced_revision.as_deref() != Some(&revision_id) {
-                    self.prepared = Some(prepared);
-                    reject(
-                        request_id,
-                        revision_id,
-                        "input is not quiesced for revision",
-                    );
-                    return;
-                }
-                if let Err(error) = self.worker.commit_candidate(prepared.prepare_request_id) {
-                    reject(request_id, revision_id, error);
-                    self.prepared = Some(prepared);
-                    return;
-                }
-                self.pending_commit = Some(PendingCommit {
-                    present_request_id: request_id,
-                    revision: prepared,
-                });
-                self.status = Some(("Committing prepared Luau VM…".into(), true));
             }
             HostRequest::PresentGraph {
                 request_id,
@@ -2172,19 +1866,6 @@ impl LinuxExperienceHost {
                 self.status = Some(("Graph switched; waiting for presented frame".into(), true));
                 cx.notify();
             }
-            HostRequest::Confirm {
-                request_id,
-                revision_id,
-            } => {
-                if self.last_presented_revision.as_deref() == Some(&revision_id) {
-                    emit(&HostEvent::Confirmed {
-                        request_id,
-                        revision_id,
-                    });
-                } else {
-                    reject(request_id, revision_id, "revision has not been presented");
-                }
-            }
             HostRequest::ConfirmGraph {
                 request_id,
                 graph_id,
@@ -2220,45 +1901,6 @@ impl LinuxExperienceHost {
                     request_id,
                     graph_id,
                 });
-            }
-            HostRequest::Discard {
-                request_id,
-                revision_id,
-            } => {
-                let Some(prepared) = self.prepared.take() else {
-                    reject(request_id, revision_id, "no prepared revision");
-                    return;
-                };
-                if prepared.revision.revision_id != revision_id {
-                    self.prepared = Some(prepared);
-                    reject(request_id, revision_id, "prepared revision does not match");
-                    return;
-                }
-                let was_quiesced = self.input_quiesced_revision.as_deref() == Some(&revision_id);
-                if was_quiesced {
-                    if let Some(fence) = &self.compositor_fence {
-                        if let Err(error) = fence.resume_input(request_id, &revision_id) {
-                            self.prepared = Some(prepared);
-                            reject(request_id, revision_id, error.to_string());
-                            return;
-                        }
-                    }
-                    self.input_quiesced_revision = None;
-                }
-                match self.worker.discard_candidate(prepared.prepare_request_id) {
-                    Ok(()) => {
-                        self.status = None;
-                        emit(&HostEvent::Discarded {
-                            request_id,
-                            revision_id,
-                        });
-                    }
-                    Err(error) => {
-                        self.prepared = Some(prepared);
-                        reject(request_id, revision_id, error);
-                    }
-                }
-                cx.notify();
             }
             HostRequest::DiscardGraph {
                 request_id,
@@ -2354,132 +1996,11 @@ impl LinuxExperienceHost {
 
     fn handle_worker_result(&mut self, result: WorkerResult, cx: &mut Context<Self>) {
         match result {
-            WorkerResult::CandidatePrepared {
-                request_id,
-                timings,
-                ..
-            } => {
-                let Some(preparing) = self.preparing.take() else {
-                    let _ = self.worker.discard_candidate(request_id);
-                    return;
-                };
-                if preparing.prepare_request_id != request_id {
-                    self.preparing = Some(preparing);
-                    let _ = self.worker.discard_candidate(request_id);
-                    return;
-                }
-                eprintln!(
-                    "sos_revision_prepared revision_id={} queue_us={} compile_us={} render_us={} worker_total_us={}",
-                    preparing.revision.revision_id,
-                    timings.queue_us,
-                    timings.compile_us,
-                    timings.render_us,
-                    timings.worker_total_us
-                );
-                let revision_id = preparing.revision.revision_id.clone();
-                self.prepared = Some(PreparedRevision {
-                    prepare_request_id: request_id,
-                    revision: preparing.revision,
-                    model: preparing.model,
-                    provider_frames: preparing.provider_frames,
-                });
-                self.status = Some((
-                    "Revision prepared; accepted scene remains active".into(),
-                    true,
-                ));
-                emit(&HostEvent::Prepared {
-                    request_id,
-                    revision_id,
-                });
-            }
-            WorkerResult::CandidateRejected {
-                request_id, error, ..
-            } => {
-                let revision_id = self
-                    .preparing
-                    .take()
-                    .filter(|candidate| candidate.prepare_request_id == request_id)
-                    .map_or_else(
-                        || "unknown".into(),
-                        |candidate| candidate.revision.revision_id,
-                    );
-                self.status = Some((format!("Revision rejected: {error}"), false));
-                reject(request_id, revision_id, error);
-            }
-            WorkerResult::CandidateCommitted {
-                request_id,
-                scene,
-                state,
-                state_schema_version,
-                timings,
-                assets: revision_assets,
-                ..
-            } => {
-                let Some(commit) = self.pending_commit.take() else {
-                    return;
-                };
-                if commit.revision.prepare_request_id != request_id {
-                    self.pending_commit = Some(commit);
-                    return;
-                }
-                let revision_id = commit.revision.revision.revision_id.clone();
-                self.pending_focus_restore = self.active_input_id.clone();
-                if let Some(fence) = &self.compositor_fence {
-                    let after_commit_sequence = match fence
-                        .arm(commit.present_request_id, &revision_id)
-                    {
-                        Ok(sequence) => sequence,
-                        Err(error) => {
-                            eprintln!(
-                                "sos_compositor_arm_failed request_id={} revision_id={} error={error:#}",
-                                commit.present_request_id, revision_id
-                            );
-                            cx.quit();
-                            return;
-                        }
-                    };
-                    eprintln!(
-                        "sos_compositor_armed request_id={} revision_id={} after_commit_sequence={after_commit_sequence}",
-                        commit.present_request_id, revision_id
-                    );
-                }
-                assets::install(&revision_assets);
-                assets::install_provider_frames(&commit.revision.provider_frames);
-                self.scene = scene;
-                self.scene_changed(cx);
-                self.state = state;
-                self.state_schema_version = state_schema_version;
-                self.active_revision_id = revision_id;
-                let mut committed_model = commit.revision.model;
-                // Preparing a candidate and receiving resident-agent, shell, or
-                // appearance updates happen independently. Re-merge these live
-                // host channels at the commit boundary so a revision switch
-                // cannot restore their older prepare-time values.
-                inherit_live_model_channels(&mut committed_model, &self.model);
-                self.model = committed_model;
-                if let Some(access) = &self.provider_access {
-                    access.activate(&self.active_revision_id);
-                }
-                self.active_source_sha256 = commit.revision.revision.source_sha256;
-                self.pending_presentation = Some(PendingPresentation {
-                    request_id: commit.present_request_id,
-                    revision_id: self.active_revision_id.clone(),
-                    completion: PresentationCompletion::Revision,
-                });
-                self.status = Some((
-                    if self.compositor_fence.is_some() {
-                        "Scene switched; waiting for compositor submit…"
-                    } else {
-                        "Scene switched; waiting for GPUI frame…"
-                    }
-                    .into(),
-                    true,
-                ));
-                eprintln!(
-                    "sos_revision_committed revision_id={} worker_total_us={}",
-                    self.active_revision_id, timings.worker_total_us
-                );
-                cx.notify();
+            WorkerResult::CandidatePrepared { request_id, .. }
+            | WorkerResult::CandidateRejected { request_id, .. }
+            | WorkerResult::CandidateCommitted { request_id, .. } => {
+                eprintln!("sos_host_unexpected_standalone_candidate request_id={request_id}");
+                cx.quit();
             }
             WorkerResult::ModelRefreshed {
                 request_id,
@@ -2844,12 +2365,7 @@ impl LinuxExperienceHost {
     }
 
     fn dispatch_event(&mut self, mut event: SceneEvent, cx: &mut Context<Self>) {
-        if self.action_in_flight
-            || self.preparing.is_some()
-            || self.prepared.is_some()
-            || self.pending_commit.is_some()
-            || self.pending_presentation.is_some()
-        {
+        if self.action_in_flight || self.pending_presentation.is_some() {
             return;
         }
         let request_id = self.next_action_request_id;
@@ -2914,19 +2430,12 @@ impl LinuxExperienceHost {
     fn queue_input_event(&mut self, event: SceneEvent, cx: &mut Context<Self>) {
         if self.action_in_flight {
             self.enqueue_pending_event(event);
-        } else if self.preparing.is_none()
-            && self.prepared.is_none()
-            && self.pending_commit.is_none()
-            && self.pending_presentation.is_none()
-        {
+        } else if self.pending_presentation.is_none() {
             self.dispatch_event(event, cx);
         } else {
             eprintln!(
-                "sos_input_event_blocked action={} preparing={} prepared={} pending_commit={} pending_presentation={}",
+                "sos_input_event_blocked action={} pending_presentation={}",
                 event.action,
-                self.preparing.is_some(),
-                self.prepared.is_some(),
-                self.pending_commit.is_some(),
                 self.pending_presentation.is_some()
             );
         }
@@ -3399,12 +2908,7 @@ impl LinuxExperienceHost {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        if target == RenderTarget::Base
-            && matches!(
-                node.content,
-                Some(Content::ShellOverlay(_) | Content::ApplicationSurface(_))
-            )
-        {
+        if target == RenderTarget::Base && matches!(node.content, Some(Content::ShellOverlay(_))) {
             return div().into_any_element();
         }
         let local_id = node.id.clone().unwrap_or_else(|| path.to_string());
@@ -3996,10 +3500,6 @@ impl Render for LinuxExperienceHost {
                         presentation.revision_id
                     );
                     match presentation.completion {
-                        PresentationCompletion::Revision => emit(&HostEvent::Presented {
-                            request_id: presentation.request_id,
-                            revision_id: presentation.revision_id,
-                        }),
                         PresentationCompletion::BootGraph
                         | PresentationCompletion::GraphCandidate => {
                             emit(&HostEvent::GraphPresented {
@@ -4069,13 +3569,6 @@ fn shell_overlay_node(node: &SceneNode) -> Option<&SceneNode> {
         return Some(node);
     }
     node.children.iter().find_map(shell_overlay_node)
-}
-
-fn application_surface_node(node: &SceneNode) -> Option<&SceneNode> {
-    if matches!(node.content, Some(Content::ApplicationSurface(_))) {
-        return Some(node);
-    }
-    node.children.iter().find_map(application_surface_node)
 }
 
 fn merge_input_state_shadow(state: &mut JsonValue, shadow: &HashMap<String, String>) {
@@ -4378,10 +3871,7 @@ fn load_revision(
     directory: &Path,
     requested_api_version: u32,
 ) -> Result<LoadedRevision> {
-    if !matches!(
-        requested_api_version,
-        EXPERIENCE_API_VERSION | EXPERIENCE_API_VERSION_V4
-    ) {
+    if requested_api_version != EXPERIENCE_API_VERSION {
         bail!("unsupported experience API version {requested_api_version}");
     }
     let manifest: RevisionManifest = serde_json::from_slice(
@@ -4391,7 +3881,7 @@ fn load_revision(
     if manifest.revision_id != expected_revision_id {
         bail!("revision manifest identity does not match request");
     }
-    if !matches!(manifest.format_version, 3 | 4) {
+    if manifest.format_version != experience_package::PACKAGE_FORMAT_VERSION {
         bail!(
             "unsupported revision manifest format {}",
             manifest.format_version
@@ -4452,17 +3942,13 @@ fn load_graph(graph_id: &str, graph_path: &Path, revision_root: &Path) -> Result
         let revision = load_revision(
             node.revision_id.as_str(),
             &directory,
-            EXPERIENCE_API_VERSION_V4,
+            EXPERIENCE_API_VERSION,
         )?;
         let manifest: RevisionManifest = serde_json::from_slice(
             &fs::read(directory.join("manifest.json")).context("read graph revision manifest")?,
         )
         .context("decode graph revision manifest")?;
-        let package_identity = manifest
-            .package
-            .as_ref()
-            .context("graph revision lacks package metadata")?;
-        let package_bytes = read_verified_file(&directory, package_identity)?;
+        let package_bytes = read_verified_file(&directory, &manifest.package)?;
         let package = PackageMetadata::from_canonical_bytes(&package_bytes)
             .map_err(|error| anyhow::anyhow!(error.to_string()))?;
         revisions.insert(
@@ -5261,14 +4747,6 @@ fn pointer_event(
     }
 }
 
-fn reject(request_id: u64, revision_id: String, error: impl Into<String>) {
-    emit(&HostEvent::Rejected {
-        request_id,
-        revision_id,
-        error: error.into(),
-    });
-}
-
 fn reject_graph(request_id: u64, graph_id: String, error: impl Into<String>) {
     emit(&HostEvent::GraphRejected {
         request_id,
@@ -5651,7 +5129,7 @@ mod tests {
     }
 
     #[test]
-    fn mouse_fallback_emits_the_v3_single_pointer_shape() {
+    fn mouse_fallback_emits_the_single_pointer_shape() {
         let event = pointer_event(
             "point".into(),
             "surface".into(),
@@ -5671,15 +5149,17 @@ mod tests {
     }
 
     #[test]
-    fn revision_loader_carries_verified_v3_sidecars_into_the_worker_boundary() {
+    fn revision_loader_carries_verified_v4_sidecars_into_the_worker_boundary() {
         let temporary = tempfile::tempdir().unwrap();
         let directory = temporary.path();
         let revision_id = "c".repeat(64);
         let source = br#"return {
-            api_version = 3,
-            render = function()
-                return { id = "root", content = { kind = "image", asset = "hero" } }
-            end,
+            api_version = 4,
+            exports = { main = {
+                render = function()
+                    return { id = "root", content = { kind = "image", asset = "hero" } }
+                end,
+            } },
         }"#;
         let source_sha256 = format!("{:x}", Sha256::digest(source));
         let state = serde_json::to_vec(&serde_json::json!({
@@ -5689,15 +5169,17 @@ mod tests {
         }))
         .unwrap();
         let image = b"\x89PNG\r\n\x1a\nlinux-host-fixture";
+        let package = include_bytes!("../../../experiences/default.package.json");
         fs::create_dir(directory.join("assets")).unwrap();
         fs::write(directory.join("source.luau"), source).unwrap();
         fs::write(directory.join("state.json"), &state).unwrap();
+        fs::write(directory.join("package.json"), package).unwrap();
         fs::write(directory.join("assets/hero.png"), image).unwrap();
         let manifest = serde_json::json!({
-            "format_version": 3,
+            "format_version": 4,
             "revision_id": revision_id,
             "schema_version": 1,
-            "experience_api_version": 3,
+            "experience_api_version": 4,
             "source": {
                 "path": "source.luau",
                 "size": source.len(),
@@ -5707,6 +5189,11 @@ mod tests {
                 "path": "state.json",
                 "size": state.len(),
                 "sha256": format!("{:x}", Sha256::digest(&state)),
+            },
+            "package": {
+                "path": "package.json",
+                "size": package.len(),
+                "sha256": format!("{:x}", Sha256::digest(package)),
             },
             "assets": [{
                 "id": "hero",
@@ -5724,7 +5211,7 @@ mod tests {
         )
         .unwrap();
 
-        let loaded = load_revision(&revision_id, directory, 3).unwrap();
+        let loaded = load_revision(&revision_id, directory, EXPERIENCE_API_VERSION).unwrap();
         assert_eq!(loaded.assets.len(), 1);
         assert_eq!(loaded.assets[0].id, "hero");
         let (worker, ready) = RuntimeWorker::start_with_assets(

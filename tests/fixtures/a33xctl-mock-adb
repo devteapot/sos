@@ -148,7 +148,6 @@ EOF
     'shell getprop ro.build.version.incremental') printf '%s\r\n' "$mock_revision" ;;
     'shell getprop ro.sos.experience_api') printf '4\r\n' ;;
     'shell getprop ro.sos.revision_format') printf '4\r\n' ;;
-    'shell getprop ro.sos.legacy_revision_read') printf '3\r\n' ;;
     'shell getprop ro.sos.profile')
       [[ "$mock_product" == compat1 ]] && printf 'compat\r\n' || printf 'core\r\n'
       ;;

@@ -23,7 +23,6 @@ mkdir -p \
   "$test_state/sos/agent" \
   "$test_state/sos/revisions"
 chmod 0700 "$test_runtime"
-printf '%064d\n' 3 >"$test_state/sos/revisions/mock-experience-sos.timeflow"
 for test_binary in \
   sos-compositor \
   sos-experience-host \
@@ -62,9 +61,6 @@ SOS_PROVIDER_DEVELOPMENT_GRANTS=1 \
 
 grep -Fx 'sos_login_agent_mode mode=offline' "$test_root/offline-session.txt" >/dev/null
 grep -F 'sos_login_agent_started' "$test_root/offline-session.txt" >/dev/null
-grep -Fx 'retired=true experience_id=sos.timeflow' \
-  "$test_root/offline-session.txt" >/dev/null
-[[ ! -e "$test_state/sos/revisions/mock-experience-sos.timeflow" ]]
 [[ "$(stat -c %a "$test_state/sos/output.json")" == 600 ]]
 grep -Fx '{}' "$test_state/sos/output.json" >/dev/null
 [[ "$(stat -c %a "$test_state/sos/appearance-write.capability")" == 600 ]]

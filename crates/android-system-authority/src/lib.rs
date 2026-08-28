@@ -18,7 +18,6 @@ use experience_package::{AppearanceProfile, ExperienceId, ExportId, ResolvedGrap
 use revision_supervisor::{
     DurableState, ExperienceRegistry, GraphResolver, GraphStore, RevisionAssetInput, RevisionInput,
     RevisionPackageInput, RevisionStore, VerifiedRevision, STOCK_MOBILE_EXPERIENCE_ID,
-    STOCK_SHELL_EXPERIENCE_ID,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -32,12 +31,6 @@ mod state_service;
 
 use provider_registry::{SystemAction, SystemProviderRegistry};
 use state_service::StateService;
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-struct ActivationJournal {
-    revision_id: String,
-    state_stage_id: u64,
-}
 
 const COMPOSITION_AUTHORITY_FORMAT_VERSION: u32 = 1;
 const MAX_ANDROID_LAUNCHABLE_EXPERIENCES: usize = 64;
@@ -84,8 +77,7 @@ struct PendingGraphMigration {
 struct GraphActivationJournal {
     experience_id: ExperienceId,
     revision_id: String,
-    graph_id: Option<String>,
-    legacy_fallback: bool,
+    graph_id: String,
     #[serde(default = "default_true")]
     update_pointers: bool,
     target_composition: CompositionAuthorityState,
@@ -105,51 +97,16 @@ pub struct AndroidSystemAuthority {
     staged_effects: HashMap<u64, Vec<SystemAction>>,
     providers: SystemProviderRegistry,
     stock_experience_id: ExperienceId,
-    stock_revision_id: String,
     state_file: PathBuf,
-    journal_file: PathBuf,
     composition_file: PathBuf,
     previous_composition_file: PathBuf,
     graph_activation_journal_file: PathBuf,
     composition: CompositionAuthorityState,
     pending_graph_file: PathBuf,
-    legacy_fallback_file: PathBuf,
     appearance_writer: Option<String>,
-    legacy_authoring_enabled: bool,
 }
 
 impl AndroidSystemAuthority {
-    pub fn open(
-        revision_root: impl Into<PathBuf>,
-        state_file: impl Into<PathBuf>,
-        bootstrap_source: &[u8],
-    ) -> Result<Self, String> {
-        let revision_root = revision_root.into();
-        let state_file = state_file.into();
-        let revisions = RevisionStore::open(&revision_root).map_err(|error| error.to_string())?;
-        // The bootstrap is immutable product content (AVB/OTA signed on the
-        // device) and is pinned independently of the mutable current pointer.
-        let stock = revisions
-            .install(RevisionInput {
-                source: bootstrap_source.to_vec(),
-                state: json!({}),
-                schema_version: 1,
-                experience_api_version: experience_ir::EXPERIENCE_API_VERSION,
-                assets: Vec::new(),
-            })
-            .map_err(|error| error.to_string())?;
-        let current = match revisions.current().map_err(|error| error.to_string())? {
-            Some(current) => current,
-            None => {
-                revisions
-                    .set_current(&stock.manifest.revision_id)
-                    .map_err(|error| error.to_string())?;
-                stock.clone()
-            }
-        };
-        Self::finish_open(revision_root, state_file, revisions, stock, current, true)
-    }
-
     pub fn open_v4(
         revision_root: impl Into<PathBuf>,
         state_file: impl Into<PathBuf>,
@@ -158,28 +115,11 @@ impl AndroidSystemAuthority {
         let revision_root = revision_root.into();
         let state_file = state_file.into();
         let revisions = RevisionStore::open(&revision_root).map_err(|error| error.to_string())?;
-        let previous_singleton = revisions.current().map_err(|error| error.to_string())?;
         let stock = revisions
             .install_package(bootstrap)
             .map_err(|error| error.to_string())?;
-        let current = match previous_singleton.clone() {
-            Some(current) => current,
-            None => {
-                revisions
-                    .set_current(&stock.manifest.revision_id)
-                    .map_err(|error| error.to_string())?;
-                stock.clone()
-            }
-        };
-        let mut authority = Self::finish_open(
-            revision_root,
-            state_file,
-            revisions,
-            stock.clone(),
-            current,
-            false,
-        )?;
-        authority.initialize_v4_stock(&stock, previous_singleton.as_ref())?;
+        let mut authority = Self::finish_open(revision_root, state_file, revisions, stock.clone())?;
+        authority.initialize_v4_stock(&stock)?;
         Ok(authority)
     }
 
@@ -235,10 +175,7 @@ impl AndroidSystemAuthority {
     }
 
     fn seed_product_revision(&mut self, revision: &VerifiedRevision) -> Result<(), String> {
-        let package = revision
-            .package
-            .as_ref()
-            .ok_or_else(|| "product Experience is not a v4 package".to_owned())?;
+        let package = &revision.package;
         if !self.composition.states.contains_key(&package.experience_id) {
             let durable: DurableState = serde_json::from_slice(
                 &fs::read(revision.directory.join(&revision.manifest.state.path))
@@ -290,8 +227,6 @@ impl AndroidSystemAuthority {
         state_file: PathBuf,
         revisions: RevisionStore,
         stock: VerifiedRevision,
-        current: VerifiedRevision,
-        legacy_authoring_enabled: bool,
     ) -> Result<Self, String> {
         let initial = if state_file.exists() {
             serde_json::from_slice::<StateEnvelope>(
@@ -301,12 +236,11 @@ impl AndroidSystemAuthority {
         } else {
             StateEnvelope {
                 revision: 0,
-                schema_version: current.manifest.schema_version,
-                source_sha256: current.manifest.source.sha256.clone(),
+                schema_version: stock.manifest.schema_version,
+                source_sha256: stock.manifest.source.sha256.clone(),
                 state: json!({}),
             }
         };
-        let journal_file = revision_root.join("activation-journal.json");
         let composition_file = state_file.with_extension("composition.json");
         let previous_composition_file = state_file.with_extension("composition.previous.json");
         let graph_activation_journal_file = revision_root.join("graph-activation-journal.json");
@@ -333,14 +267,7 @@ impl AndroidSystemAuthority {
             ExperienceRegistry::open(revisions.clone()).map_err(|error| error.to_string())?;
         let resolver = GraphResolver::new(revisions.clone());
         let graphs = GraphStore::open(&revision_root).map_err(|error| error.to_string())?;
-        let stock_experience_id = stock
-            .package
-            .as_ref()
-            .map_or_else(
-                || ExperienceId::parse(STOCK_SHELL_EXPERIENCE_ID),
-                |package| Ok(package.experience_id.clone()),
-            )
-            .map_err(|error| error.to_string())?;
+        let stock_experience_id = stock.package.experience_id.clone();
         let mut authority = Self {
             revisions,
             registry,
@@ -350,35 +277,22 @@ impl AndroidSystemAuthority {
             staged_effects: HashMap::new(),
             providers: SystemProviderRegistry::android(),
             stock_experience_id,
-            stock_revision_id: stock.manifest.revision_id,
             state_file,
-            journal_file,
             composition_file,
             previous_composition_file,
             graph_activation_journal_file,
             composition,
             pending_graph_file: revision_root.join("pending-v4-graph.json"),
-            legacy_fallback_file: revision_root.join("legacy-v3-fallback"),
             appearance_writer: None,
-            legacy_authoring_enabled,
         };
         authority.persist_state()?;
         authority.persist_composition()?;
-        authority.recover_activation()?;
         authority.recover_graph_activation()?;
-        authority.ensure_consistent()?;
         Ok(authority)
     }
 
-    fn initialize_v4_stock(
-        &mut self,
-        stock: &VerifiedRevision,
-        previous_singleton: Option<&VerifiedRevision>,
-    ) -> Result<(), String> {
-        let package = stock
-            .package
-            .as_ref()
-            .ok_or_else(|| "Android v4 bootstrap lacks package metadata".to_owned())?;
+    fn initialize_v4_stock(&mut self, stock: &VerifiedRevision) -> Result<(), String> {
+        let package = &stock.package;
         let stock_id =
             ExperienceId::parse(STOCK_MOBILE_EXPERIENCE_ID).map_err(|error| error.to_string())?;
         if package.experience_id != stock_id
@@ -393,31 +307,25 @@ impl AndroidSystemAuthority {
             .map_err(|error| error.to_string())?
             .is_none()
         {
-            if previous_singleton.is_some_and(|revision| revision.package.is_none()) {
-                self.registry
-                    .migrate_legacy_current_as(&stock_id)
-                    .map_err(|error| error.to_string())?;
-            } else {
-                self.registry
-                    .create(
-                        &stock_id,
-                        experience_package::ExperienceRole::Shell,
-                        &stock.manifest.revision_id,
-                    )
-                    .map_err(|error| error.to_string())?;
-            }
+            self.registry
+                .create(
+                    &stock_id,
+                    experience_package::ExperienceRole::Shell,
+                    &stock.manifest.revision_id,
+                )
+                .map_err(|error| error.to_string())?;
         }
 
         if !self.composition.states.contains_key(&stock_id) {
-            let legacy = self.state.load();
+            let initial = self.state.load();
             self.composition.states.insert(
                 stock_id.clone(),
                 StateResource {
-                    revision: legacy.revision,
+                    revision: initial.revision,
                     revision_id: stock.manifest.revision_id.clone(),
                     schema_version: stock.manifest.schema_version,
                     source_sha256: stock.manifest.source.sha256.clone(),
-                    state: legacy.state,
+                    state: initial.state,
                 },
             );
         }
@@ -457,42 +365,20 @@ impl AndroidSystemAuthority {
             .current(&stock_id)
             .map_err(|error| error.to_string())?
             .ok_or_else(|| "Stock registry record has no current revision".to_owned())?;
-        if current.package.is_none() {
-            let graph = self
-                .resolver
-                .resolve(
-                    &stock.manifest.revision_id,
-                    &ExportId::parse("main").map_err(|error| error.to_string())?,
-                )
-                .map_err(|error| error.to_string())?;
-            let graph_id = self
-                .graphs
-                .install(&graph)
-                .map_err(|error| error.to_string())?;
-            self.write_pending_graph(&PendingGraphMigration {
-                experience_id: stock_id,
-                revision_id: stock.manifest.revision_id.clone(),
-                graph_id,
-                candidate: false,
-                presentation_only: false,
-                staged_states: BTreeMap::new(),
-            })?;
-        } else {
-            let graph = self
-                .resolver
-                .resolve(
-                    &current.manifest.revision_id,
-                    &ExportId::parse("main").map_err(|error| error.to_string())?,
-                )
-                .map_err(|error| error.to_string())?;
-            let graph_id = self
-                .graphs
-                .install(&graph)
-                .map_err(|error| error.to_string())?;
-            self.graphs
-                .set_current(&stock_id, &graph_id)
-                .map_err(|error| error.to_string())?;
-        }
+        let graph = self
+            .resolver
+            .resolve(
+                &current.manifest.revision_id,
+                &ExportId::parse("main").map_err(|error| error.to_string())?,
+            )
+            .map_err(|error| error.to_string())?;
+        let graph_id = self
+            .graphs
+            .install(&graph)
+            .map_err(|error| error.to_string())?;
+        self.graphs
+            .set_current(&stock_id, &graph_id)
+            .map_err(|error| error.to_string())?;
         self.persist_composition()
     }
 
@@ -528,11 +414,9 @@ impl AndroidSystemAuthority {
         self.revisions
             .verify(&journal.revision_id)
             .map_err(|error| error.to_string())?;
-        if let Some(graph_id) = &journal.graph_id {
-            self.graphs
-                .verify(graph_id)
-                .map_err(|error| error.to_string())?;
-        }
+        self.graphs
+            .verify(&journal.graph_id)
+            .map_err(|error| error.to_string())?;
         let temporary = self.graph_activation_journal_file.with_extension("tmp");
         write_synced_atomic(
             &temporary,
@@ -555,21 +439,9 @@ impl AndroidSystemAuthority {
             self.registry
                 .set_current(&journal.experience_id, &journal.revision_id)
                 .map_err(|error| error.to_string())?;
-            if let Some(graph_id) = &journal.graph_id {
-                self.graphs
-                    .set_current(&journal.experience_id, graph_id)
-                    .map_err(|error| error.to_string())?;
-            }
-        }
-        if journal.legacy_fallback {
-            let temporary = self.legacy_fallback_file.with_extension("tmp");
-            write_synced_atomic(
-                &temporary,
-                &self.legacy_fallback_file,
-                journal.revision_id.as_bytes(),
-            )?;
-        } else {
-            remove_synced(&self.legacy_fallback_file)?;
+            self.graphs
+                .set_current(&journal.experience_id, &journal.graph_id)
+                .map_err(|error| error.to_string())?;
         }
         remove_synced(&self.pending_graph_file)?;
         remove_synced(&self.graph_activation_journal_file)
@@ -585,8 +457,7 @@ impl AndroidSystemAuthority {
             serde_json::from_slice(&bytes).map_err(|error| error.to_string())?;
         println!(
             "android_graph_activation_recovering revision_id={} graph_id={}",
-            journal.revision_id,
-            journal.graph_id.as_deref().unwrap_or("legacy-v3")
+            journal.revision_id, journal.graph_id
         );
         self.complete_graph_activation(journal)
     }
@@ -727,7 +598,6 @@ impl AndroidSystemAuthority {
     pub fn dispatch_revision(&mut self, request: RevisionRequest) -> RevisionResponse {
         let request_id = request.request_id();
         let result = match request {
-            RevisionRequest::Current { .. } => self.current_response(request_id),
             RevisionRequest::CurrentGraph { .. } => self.current_graph_response(request_id),
             RevisionRequest::AuditSnapshot { .. } => Ok(RevisionResponse {
                 request_id,
@@ -823,29 +693,6 @@ impl AndroidSystemAuthority {
                 &capability,
                 profile,
             ),
-            RevisionRequest::Install {
-                source,
-                state,
-                schema_version,
-                experience_api_version,
-                assets,
-                ..
-            } => self.install_response(
-                request_id,
-                source,
-                state,
-                schema_version,
-                experience_api_version,
-                assets,
-            ),
-            RevisionRequest::Activate {
-                revision_id,
-                state_stage_id,
-                ..
-            } => self.activate_response(request_id, &revision_id, state_stage_id),
-            RevisionRequest::FallbackToStock {
-                failed_revision_id, ..
-            } => self.fallback_to_stock_response(request_id, &failed_revision_id),
         };
         result.unwrap_or_else(|error| RevisionResponse {
             request_id,
@@ -853,21 +700,6 @@ impl AndroidSystemAuthority {
             error: Some(error),
             ..RevisionResponse::default()
         })
-    }
-
-    fn current_response(&self, request_id: u64) -> Result<RevisionResponse, String> {
-        let current = self
-            .revisions
-            .current()
-            .map_err(|error| error.to_string())?
-            .ok_or_else(|| "revision authority has no current revision".to_owned())?;
-        revision_response(
-            request_id,
-            &current,
-            Some(self.state.load()),
-            &self.stock_revision_id,
-            false,
-        )
     }
 
     fn active_experience_id(&self) -> Result<ExperienceId, String> {
@@ -879,15 +711,12 @@ impl AndroidSystemAuthority {
     }
 
     fn current_graph_response(&mut self, request_id: u64) -> Result<RevisionResponse, String> {
-        if self.legacy_fallback_file.exists() {
-            return self.current_response(request_id);
-        }
         if let Some(pending) = self.pending_graph()? {
             let graph = self
                 .graphs
                 .verify(&pending.graph_id)
                 .map_err(|error| error.to_string())?;
-            return self.graph_response(request_id, pending.graph_id, graph, true, false);
+            return self.graph_response(request_id, pending.graph_id, graph, true);
         }
         let active_id = self.active_experience_id()?;
         let Some((graph_id, graph)) = self
@@ -895,9 +724,9 @@ impl AndroidSystemAuthority {
             .current(&active_id)
             .map_err(|error| error.to_string())?
         else {
-            return self.current_response(request_id);
+            return Err("Android authority has no active v4 graph".into());
         };
-        self.graph_response(request_id, graph_id, graph, false, false)
+        self.graph_response(request_id, graph_id, graph, false)
     }
 
     fn present_experience_response(
@@ -907,9 +736,6 @@ impl AndroidSystemAuthority {
         experience_id: &ExperienceId,
         dismiss: bool,
     ) -> Result<RevisionResponse, String> {
-        if self.legacy_fallback_file.exists() {
-            return Err("top-level presentation is unavailable during legacy rollback".into());
-        }
         if self.pending_graph()?.is_some() {
             return Err("another Android graph already awaits presentation".into());
         }
@@ -985,7 +811,7 @@ impl AndroidSystemAuthority {
             presentation_only: true,
             staged_states: BTreeMap::new(),
         })?;
-        self.graph_response(request_id, graph_id, graph, true, false)
+        self.graph_response(request_id, graph_id, graph, true)
     }
 
     fn confirm_graph_response(
@@ -1016,8 +842,7 @@ impl AndroidSystemAuthority {
         self.activate_graph_durably(GraphActivationJournal {
             experience_id: pending.experience_id,
             revision_id: pending.revision_id,
-            graph_id: Some(graph_id.to_owned()),
-            legacy_fallback: false,
+            graph_id: graph_id.to_owned(),
             update_pointers: !pending.presentation_only,
             target_composition,
             previous_composition: self.composition.clone(),
@@ -1038,18 +863,7 @@ impl AndroidSystemAuthority {
             if pending.candidate || pending.presentation_only {
                 return self.current_graph_response(request_id);
             }
-            let current = self
-                .registry
-                .current(&pending.experience_id)
-                .map_err(|error| error.to_string())?
-                .ok_or_else(|| "Stock registry lost its legacy rollback revision".to_owned())?;
-            return revision_response(
-                request_id,
-                &current,
-                Some(self.state.load()),
-                &self.stock_revision_id,
-                true,
-            );
+            return Err("bootstrap graph rollback has no confirmed v4 predecessor".into());
         }
 
         let active_id = self.active_experience_id()?;
@@ -1066,45 +880,25 @@ impl AndroidSystemAuthority {
             .previous(&active_id)
             .map_err(|error| error.to_string())?
             .ok_or_else(|| "presented Android Experience has no rollback revision".to_owned())?;
-        if previous_revision.package.is_some() {
-            let (previous_graph_id, previous_graph) = self
-                .graphs
-                .previous(&active_id)
-                .map_err(|error| error.to_string())?
-                .ok_or_else(|| "Android graph store has no rollback graph".to_owned())?;
-            let previous_composition: CompositionAuthorityState = serde_json::from_slice(
-                &fs::read(&self.previous_composition_file)
-                    .map_err(|_| "Android graph rollback state is unavailable".to_owned())?,
-            )
-            .map_err(|error| error.to_string())?;
-            self.activate_graph_durably(GraphActivationJournal {
-                experience_id: active_id,
-                revision_id: previous_revision.manifest.revision_id,
-                graph_id: Some(previous_graph_id.clone()),
-                legacy_fallback: false,
-                update_pointers: true,
-                target_composition: previous_composition,
-                previous_composition: self.composition.clone(),
-            })?;
-            return self.graph_response(request_id, previous_graph_id, previous_graph, false, true);
-        }
-
+        let (previous_graph_id, previous_graph) = self
+            .graphs
+            .previous(&active_id)
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| "Android graph store has no rollback graph".to_owned())?;
+        let previous_composition: CompositionAuthorityState = serde_json::from_slice(
+            &fs::read(&self.previous_composition_file)
+                .map_err(|_| "Android graph rollback state is unavailable".to_owned())?,
+        )
+        .map_err(|error| error.to_string())?;
         self.activate_graph_durably(GraphActivationJournal {
             experience_id: active_id,
-            revision_id: previous_revision.manifest.revision_id.clone(),
-            graph_id: None,
-            legacy_fallback: true,
+            revision_id: previous_revision.manifest.revision_id,
+            graph_id: previous_graph_id.clone(),
             update_pointers: true,
-            target_composition: self.composition.clone(),
+            target_composition: previous_composition,
             previous_composition: self.composition.clone(),
         })?;
-        revision_response(
-            request_id,
-            &previous_revision,
-            Some(self.state.load()),
-            &self.stock_revision_id,
-            true,
-        )
+        self.graph_response(request_id, previous_graph_id, previous_graph, false)
     }
 
     fn stage_graph_revision_response(
@@ -1178,7 +972,7 @@ impl AndroidSystemAuthority {
                     source: source.into_bytes(),
                     state: state.clone(),
                     schema_version,
-                    experience_api_version: experience_ir::EXPERIENCE_API_VERSION_V4,
+                    experience_api_version: experience_ir::EXPERIENCE_API_VERSION,
                     assets: assets
                         .into_iter()
                         .map(|asset| RevisionAssetInput {
@@ -1212,7 +1006,7 @@ impl AndroidSystemAuthority {
                 .revisions
                 .verify(node.revision_id.as_str())
                 .map_err(|error| error.to_string())?;
-            let staged = if node.experience_id == revision.package.as_ref().unwrap().experience_id {
+            let staged = if node.experience_id == revision.package.experience_id {
                 let current = self
                     .composition
                     .states
@@ -1256,7 +1050,7 @@ impl AndroidSystemAuthority {
             presentation_only: false,
             staged_states,
         })?;
-        self.graph_response(request_id, graph_id, graph, true, false)
+        self.graph_response(request_id, graph_id, graph, true)
     }
 
     fn discard_graph_response(
@@ -1275,9 +1069,6 @@ impl AndroidSystemAuthority {
     }
 
     fn graph_for_action(&self, graph_id: &str) -> Result<ResolvedGraph, String> {
-        if self.legacy_fallback_file.exists() {
-            return Err("v4 graph actions are disabled during legacy rollback".into());
-        }
         if let Some(pending) = self.pending_graph()? {
             if pending.graph_id != graph_id {
                 return Err("graph action does not name the pending Android graph".into());
@@ -1421,8 +1212,7 @@ impl AndroidSystemAuthority {
                 .revisions
                 .verify(graph_effect.revision_id.as_str())
                 .map_err(|error| error.to_string())?
-                .package
-                .ok_or_else(|| "graph effect revision has no v4 package".to_owned())?;
+                .package;
             if !package.provider_capabilities.contains(required) {
                 return Err(format!(
                     "revision `{}` did not request provider capability `{required}`",
@@ -1509,8 +1299,7 @@ impl AndroidSystemAuthority {
             .current(writer_experience_id)
             .map_err(|error| error.to_string())?
             .ok_or_else(|| "appearance writer has no current revision".to_owned())?
-            .package
-            .ok_or_else(|| "appearance writer is not a v4 package".to_owned())?;
+            .package;
         let grant = self
             .composition
             .grants
@@ -1570,7 +1359,6 @@ impl AndroidSystemAuthority {
         graph_id: String,
         graph: ResolvedGraph,
         migration_pending: bool,
-        fallback_performed: bool,
     ) -> Result<RevisionResponse, String> {
         self.validate_graph_grants(&graph)?;
         let staged_states = self
@@ -1590,10 +1378,7 @@ impl AndroidSystemAuthority {
                 .revisions
                 .verify(&revision_id)
                 .map_err(|error| error.to_string())?;
-            let mut package = revision
-                .package
-                .clone()
-                .ok_or_else(|| "v4 graph contains a legacy revision".to_owned())?;
+            let mut package = revision.package.clone();
             let record = self
                 .registry
                 .get(&experience_id)
@@ -1651,9 +1436,6 @@ impl AndroidSystemAuthority {
         Ok(RevisionResponse {
             request_id,
             ok: true,
-            stock_revision_id: Some(self.stock_revision_id.clone()),
-            stock_trusted: true,
-            fallback_performed,
             graph: Some(GraphBundle {
                 graph_id,
                 graph,
@@ -1672,10 +1454,7 @@ impl AndroidSystemAuthority {
                 .revisions
                 .verify(node.revision_id.as_str())
                 .map_err(|error| error.to_string())?;
-            let package = revision
-                .package
-                .as_ref()
-                .ok_or_else(|| "v4 graph contains a legacy revision".to_owned())?;
+            let package = &revision.package;
             let record = self
                 .registry
                 .get(&node.experience_id)
@@ -1737,134 +1516,6 @@ impl AndroidSystemAuthority {
         Ok(())
     }
 
-    fn install_response(
-        &self,
-        request_id: u64,
-        source: String,
-        state: serde_json::Value,
-        schema_version: u64,
-        experience_api_version: u32,
-        assets: Vec<RevisionAssetWire>,
-    ) -> Result<RevisionResponse, String> {
-        if !self.legacy_authoring_enabled {
-            return Err(
-                "bare v3 authoring is disabled after the v4 Experience registry is installed"
-                    .into(),
-            );
-        }
-        let revision = self
-            .revisions
-            .install(RevisionInput {
-                source: source.into_bytes(),
-                state,
-                schema_version,
-                experience_api_version,
-                assets: assets
-                    .into_iter()
-                    .map(|asset| RevisionAssetInput {
-                        id: asset.id,
-                        kind: asset.kind,
-                        bytes: asset.bytes,
-                    })
-                    .collect(),
-            })
-            .map_err(|error| error.to_string())?;
-        revision_response(request_id, &revision, None, &self.stock_revision_id, false)
-    }
-
-    fn activate_response(
-        &mut self,
-        request_id: u64,
-        revision_id: &str,
-        state_stage_id: u64,
-    ) -> Result<RevisionResponse, String> {
-        let revision = self
-            .revisions
-            .verify(revision_id)
-            .map_err(|error| error.to_string())?;
-        // Logical conflicts must be rejected before the durable intent is
-        // written. Once the journal exists, every subsequent error is an
-        // integrity boundary that recovery must finish after process restart.
-        let staged = self.state.validate_promotion(state_stage_id)?;
-        if staged.source_sha256 != revision.manifest.source.sha256
-            || staged.schema_version != revision.manifest.schema_version
-        {
-            return Err("staged state does not match the immutable revision".into());
-        }
-        self.write_journal(&ActivationJournal {
-            revision_id: revision_id.into(),
-            state_stage_id,
-        })?;
-        let state = self
-            .promote_state(state_stage_id)
-            .unwrap_or_else(|error| fatal_activation(error));
-        self.revisions
-            .set_current(revision_id)
-            .map_err(|error| error.to_string())
-            .unwrap_or_else(|error| fatal_activation(error));
-        self.remove_journal()
-            .unwrap_or_else(|error| fatal_activation(error));
-        revision_response(
-            request_id,
-            &revision,
-            Some(state),
-            &self.stock_revision_id,
-            false,
-        )
-    }
-
-    fn fallback_to_stock_response(
-        &mut self,
-        request_id: u64,
-        failed_revision_id: &str,
-    ) -> Result<RevisionResponse, String> {
-        let current = self
-            .revisions
-            .current()
-            .map_err(|error| error.to_string())?
-            .ok_or_else(|| "revision authority has no current revision".to_owned())?;
-        if current.manifest.revision_id != failed_revision_id {
-            return Err("fallback request does not name the active revision".into());
-        }
-        if failed_revision_id == self.stock_revision_id {
-            return Err("stock experience failed; fixed Recovery is required".into());
-        }
-        let stock = self
-            .revisions
-            .verify(&self.stock_revision_id)
-            .map_err(|error| error.to_string())?;
-        let stage_id = self.state.stage(
-            self.state.load().revision,
-            stock.manifest.schema_version,
-            json!({}),
-            stock.manifest.source.sha256.clone(),
-        )?;
-        self.write_journal(&ActivationJournal {
-            revision_id: self.stock_revision_id.clone(),
-            state_stage_id: stage_id,
-        })?;
-        let state = self
-            .promote_state(stage_id)
-            .unwrap_or_else(|error| fatal_activation(error));
-        self.revisions
-            .set_current(&self.stock_revision_id)
-            .map_err(|error| error.to_string())
-            .unwrap_or_else(|error| fatal_activation(error));
-        self.remove_journal()
-            .unwrap_or_else(|error| fatal_activation(error));
-        println!(
-            "android_authority_stock_fallback failed_revision={} stock_revision={}",
-            failed_revision_id, self.stock_revision_id
-        );
-        revision_response(
-            request_id,
-            &stock,
-            Some(state),
-            &self.stock_revision_id,
-            true,
-        )
-    }
-
     fn promote_state(&mut self, stage_id: u64) -> Result<StateEnvelope, String> {
         let before_revision = self.state.load().revision;
         let promoted = self.state.promote(stage_id);
@@ -1899,40 +1550,6 @@ impl AndroidSystemAuthority {
             .collect()
     }
 
-    fn recover_activation(&mut self) -> Result<(), String> {
-        let Ok(bytes) = fs::read(&self.journal_file) else {
-            return Ok(());
-        };
-        let journal: ActivationJournal =
-            serde_json::from_slice(&bytes).map_err(|error| error.to_string())?;
-        let revision = self
-            .revisions
-            .verify(&journal.revision_id)
-            .map_err(|error| error.to_string())?;
-        if self.state.load().source_sha256 == revision.manifest.source.sha256 {
-            self.revisions
-                .set_current(&journal.revision_id)
-                .map_err(|error| error.to_string())?;
-            println!(
-                "android_authority_recovered revision_id={} stage_id={}",
-                journal.revision_id, journal.state_stage_id
-            );
-        }
-        self.remove_journal()
-    }
-
-    fn ensure_consistent(&self) -> Result<(), String> {
-        let current = self
-            .revisions
-            .current()
-            .map_err(|error| error.to_string())?
-            .ok_or_else(|| "revision authority has no current revision".to_owned())?;
-        if current.manifest.source.sha256 != self.state.load().source_sha256 {
-            return Err("revision pointer and provider/state authority disagree".into());
-        }
-        Ok(())
-    }
-
     fn persist_state(&self) -> Result<(), String> {
         let parent = self
             .state_file
@@ -1945,23 +1562,6 @@ impl AndroidSystemAuthority {
             &self.state_file,
             &serde_json::to_vec_pretty(&self.state.load()).map_err(|error| error.to_string())?,
         )
-    }
-
-    fn write_journal(&self, journal: &ActivationJournal) -> Result<(), String> {
-        let temporary = self.journal_file.with_extension("tmp");
-        write_synced_atomic(
-            &temporary,
-            &self.journal_file,
-            &serde_json::to_vec_pretty(journal).map_err(|error| error.to_string())?,
-        )
-    }
-
-    fn remove_journal(&self) -> Result<(), String> {
-        match fs::remove_file(&self.journal_file) {
-            Ok(()) => sync_parent(&self.journal_file),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(error) => Err(error.to_string()),
-        }
     }
 }
 
@@ -1976,11 +1576,6 @@ fn provider_grant_for_effect(effect: &ProviderEffect) -> Result<&'static str, St
             "provider `{provider}` is not available through the Android graph authority"
         )),
     }
-}
-
-fn fatal_activation(error: String) -> ! {
-    eprintln!("android_authority_fatal_activation error={error}");
-    std::process::abort()
 }
 
 fn write_synced_atomic(temporary: &Path, destination: &Path, bytes: &[u8]) -> Result<(), String> {
@@ -2029,34 +1624,6 @@ fn revision_assets(revision: &VerifiedRevision) -> Result<Vec<RevisionAssetWire>
         .collect()
 }
 
-fn revision_response(
-    request_id: u64,
-    revision: &VerifiedRevision,
-    state: Option<StateEnvelope>,
-    stock_revision_id: &str,
-    fallback_performed: bool,
-) -> Result<RevisionResponse, String> {
-    let source = fs::read_to_string(revision.directory.join(&revision.manifest.source.path))
-        .map_err(|error| error.to_string())?;
-    let assets = revision_assets(revision)?;
-    Ok(RevisionResponse {
-        request_id,
-        ok: true,
-        revision_id: Some(revision.manifest.revision_id.clone()),
-        source: Some(source),
-        state,
-        assets,
-        stock_revision_id: Some(stock_revision_id.into()),
-        stock_trusted: true,
-        fallback_performed,
-        graph: None,
-        audit_snapshot: None,
-        appearance: None,
-        states: Vec::new(),
-        error: None,
-    })
-}
-
 fn provider_response(request_id: u64, ok: bool) -> ProviderResponse {
     ProviderResponse {
         request_id,
@@ -2078,939 +1645,87 @@ fn provider_failure(request_id: u64, error: &str) -> ProviderResponse {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::{BTreeMap, BTreeSet};
-
     use super::*;
-    use android_authority_protocol::RevisionRequest;
-    use experience_package::{
-        DerivationKind, DerivationRecord, ExperienceContract, ExperienceExport, ExperienceRole,
-        PackageMetadata, ValueSchema, ViewportContract, APPEARANCE_ABI_VERSION, CONTRACT_VERSION,
-        PACKAGE_FORMAT_VERSION,
-    };
+    use experience_package::{ExperienceRole, PackageMetadata, PACKAGE_FORMAT_VERSION};
 
-    fn stock_v4(source: &str) -> RevisionPackageInput {
+    fn stock_mobile(source: &str) -> RevisionPackageInput {
         RevisionPackageInput {
             revision: RevisionInput {
                 source: source.as_bytes().to_vec(),
                 state: json!({}),
                 schema_version: 1,
-                experience_api_version: experience_ir::EXPERIENCE_API_VERSION_V4,
-                assets: vec![],
+                experience_api_version: experience_package::EXPERIENCE_API_VERSION,
+                assets: Vec::new(),
             },
-            package: PackageMetadata {
-                format_version: PACKAGE_FORMAT_VERSION,
-                experience_id: ExperienceId::parse(STOCK_MOBILE_EXPERIENCE_ID).unwrap(),
-                role: ExperienceRole::Shell,
-                provider_capabilities: BTreeSet::from(["appearance_write".into()]),
-                contract: ExperienceContract {
-                    contract_version: CONTRACT_VERSION,
-                    exports: BTreeMap::from([(
-                        ExportId::parse("main").unwrap(),
-                        ExperienceExport {
-                            properties: ValueSchema::empty_record(),
-                            events: BTreeMap::new(),
-                            viewport: ViewportContract {
-                                min_width: 160,
-                                min_height: 96,
-                                max_width: 1920,
-                                max_height: 1080,
-                            },
-                            appearance_abi: APPEARANCE_ABI_VERSION,
-                            accepts_container_appearance: false,
-                        },
-                    )]),
-                },
-                dependencies: BTreeMap::new(),
-                derivation: DerivationRecord {
-                    kind: DerivationKind::Original,
-                    parents: vec![],
-                    request_sha256: None,
-                    rationale: None,
-                },
-                state_migration: None,
-            },
+            package: serde_json::from_str(include_str!("../../../experiences/mobile.package.json"))
+                .unwrap(),
         }
     }
 
+    fn source() -> &'static str {
+        "return { api_version = 4, exports = { main = { render = function() return { id = 'root' } end } } }"
+    }
+
     #[test]
-    fn checked_in_stock_mobile_package_is_valid_and_reserved() {
+    fn checked_in_stock_mobile_package_is_the_reserved_v4_shell() {
         let package: PackageMetadata =
             serde_json::from_str(include_str!("../../../experiences/mobile.package.json")).unwrap();
         package.validate().unwrap();
+        assert_eq!(package.format_version, PACKAGE_FORMAT_VERSION);
         assert_eq!(package.experience_id.as_str(), STOCK_MOBILE_EXPERIENCE_ID);
         assert_eq!(package.role, ExperienceRole::Shell);
-        assert!(package.provider_capabilities.contains("appearance_write"));
+    }
+
+    #[test]
+    fn startup_and_restart_expose_only_the_stock_v4_graph() {
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path().join("revisions");
+        let state = temporary.path().join("provider.json");
+        let mut authority =
+            AndroidSystemAuthority::open_v4(&root, &state, stock_mobile(source())).unwrap();
+        let first = authority.dispatch_revision(RevisionRequest::CurrentGraph { request_id: 1 });
+        assert!(first.ok, "{:?}", first.error);
+        let first = first.graph.unwrap();
+        assert!(!first.migration_pending);
+        assert_eq!(first.revisions.len(), 1);
         assert_eq!(
-            package.contract.exports[&ExportId::parse("main").unwrap()]
-                .viewport
-                .min_width,
-            320
+            first.revisions[0].package.experience_id.as_str(),
+            STOCK_MOBILE_EXPERIENCE_ID
         );
-    }
-
-    #[test]
-    fn audit_snapshot_is_read_only_and_contains_authority_owned_resources() {
-        let temporary = tempfile::tempdir().unwrap();
-        let revision_root = temporary.path().join("revisions");
-        let state_file = temporary.path().join("provider-state.json");
-        let source = "return { api_version = 4, exports = { main = { render = function() return { id = 'root' } end } } }";
-        let mut authority =
-            AndroidSystemAuthority::open_v4(&revision_root, &state_file, stock_v4(source)).unwrap();
-        let before = std::fs::read(&state_file).unwrap();
-
-        let response =
-            authority.dispatch_revision(RevisionRequest::AuditSnapshot { request_id: 9100 });
-        assert!(response.ok);
-        assert_eq!(response.request_id, 9100);
-        let snapshot = response.audit_snapshot.unwrap();
-        let stock_id = ExperienceId::parse(STOCK_MOBILE_EXPERIENCE_ID).unwrap();
-        assert_eq!(snapshot.format_version, 1);
-        assert!(snapshot.states.contains_key(&stock_id));
-        assert!(snapshot.grants.contains_key(&stock_id));
-        assert_eq!(std::fs::read(&state_file).unwrap(), before);
-    }
-
-    fn install_and_stage(authority: &mut AndroidSystemAuthority, source: &str) -> (String, u64) {
-        let installed = authority.dispatch_revision(RevisionRequest::Install {
-            request_id: 1,
-            source: source.to_owned(),
-            state: json!({ "candidate": true }),
-            schema_version: 1,
-            experience_api_version: 3,
-            assets: Vec::new(),
-        });
-        assert!(installed.ok);
-        let revision_id = installed.revision_id.unwrap();
-        let source_sha256 = authority
-            .revisions
-            .verify(&revision_id)
-            .unwrap()
-            .manifest
-            .source
-            .sha256;
-        let staged = authority.dispatch_provider(ProviderRequest::StageState {
-            request_id: 2,
-            expected_revision: 0,
-            schema_version: 1,
-            state: json!({ "candidate": true }),
-            source_sha256,
-            effects: Vec::new(),
-        });
-        assert!(staged.ok);
-        (revision_id, staged.stage_id.unwrap())
-    }
-
-    #[test]
-    fn v4_bootstrap_migration_confirms_then_rolls_back_to_untouched_v3() {
-        let temporary = tempfile::tempdir().unwrap();
-        let revision_root = temporary.path().join("revisions");
-        let state_file = temporary.path().join("provider.json");
-        let legacy_source = "return { api_version = 3, legacy = true }";
-        AndroidSystemAuthority::open(&revision_root, &state_file, legacy_source.as_bytes())
-            .unwrap();
-
-        let v4_source = r#"
-            return { api_version = 4, exports = { main = {
-                render = function() return { id = "stock" } end,
-                update = function(_, state) return { state = state } end,
-            } } }
-        "#;
-        let mut authority =
-            AndroidSystemAuthority::open_v4(&revision_root, &state_file, stock_v4(v4_source))
-                .unwrap();
-        let candidate =
-            authority.dispatch_revision(RevisionRequest::CurrentGraph { request_id: 40 });
-        let candidate_graph = candidate.graph.unwrap();
-        assert!(candidate_graph.migration_pending);
-        assert_eq!(candidate_graph.revisions[0].source, v4_source);
-        let graph_id = candidate_graph.graph_id;
-
-        drop(authority);
-        let mut restarted =
-            AndroidSystemAuthority::open_v4(&revision_root, &state_file, stock_v4(v4_source))
-                .unwrap();
-        assert!(
-            restarted
-                .dispatch_revision(RevisionRequest::CurrentGraph { request_id: 41 })
-                .graph
-                .unwrap()
-                .migration_pending
-        );
-        let confirmed = restarted.dispatch_revision(RevisionRequest::ConfirmGraph {
-            request_id: 42,
-            graph_id: graph_id.clone(),
-        });
-        assert!(confirmed.ok, "{:?}", confirmed.error);
-        assert!(!confirmed.graph.unwrap().migration_pending);
-
-        drop(restarted);
-        let mut accepted =
-            AndroidSystemAuthority::open_v4(&revision_root, &state_file, stock_v4(v4_source))
-                .unwrap();
-        let current = accepted.dispatch_revision(RevisionRequest::CurrentGraph { request_id: 43 });
-        assert_eq!(current.graph.as_ref().unwrap().graph_id, graph_id);
-        let rolled_back = accepted.dispatch_revision(RevisionRequest::RollbackGraph {
-            request_id: 44,
-            failed_graph_id: graph_id,
-        });
-        assert!(rolled_back.ok, "{:?}", rolled_back.error);
-        assert!(rolled_back.fallback_performed);
-        assert!(rolled_back.graph.is_none());
-        assert_eq!(rolled_back.source.as_deref(), Some(legacy_source));
-
-        drop(accepted);
-        let mut legacy =
-            AndroidSystemAuthority::open_v4(&revision_root, &state_file, stock_v4(v4_source))
-                .unwrap();
-        let response = legacy.dispatch_revision(RevisionRequest::CurrentGraph { request_id: 45 });
-        assert!(response.graph.is_none());
-        assert_eq!(response.source.as_deref(), Some(legacy_source));
-    }
-
-    #[test]
-    fn v4_graph_state_and_appearance_are_authoritative_across_restart() {
-        let temporary = tempfile::tempdir().unwrap();
-        let revision_root = temporary.path().join("revisions");
-        let state_file = temporary.path().join("provider.json");
-        let source = r#"
-            return { api_version = 4, exports = { main = {
-                render = function() return { id = "stock" } end,
-                update = function(_, state) return { state = state } end,
-            } } }
-        "#;
-        let mut authority =
-            AndroidSystemAuthority::open_v4(&revision_root, &state_file, stock_v4(source)).unwrap();
-        let current = authority.dispatch_revision(RevisionRequest::CurrentGraph { request_id: 50 });
-        let bundle = current.graph.unwrap();
-        let root = bundle.graph.nodes.get(&bundle.graph.root).unwrap();
-        let revision = bundle
-            .revisions
-            .iter()
-            .find(|revision| revision.revision_id == root.revision_id.as_str())
-            .unwrap();
-        let instance_id = experience_package::InstanceId::parse("android-test-instance").unwrap();
-        let committed = authority.dispatch_revision(RevisionRequest::CommitGraphAction {
-            request_id: 51,
-            graph_id: bundle.graph_id.clone(),
-            updates: vec![GraphStateUpdateWire {
-                node_id: bundle.graph.root.clone(),
-                instance_id,
-                experience_id: root.experience_id.clone(),
-                revision_id: root.revision_id.clone(),
-                expected_revision: revision.state.resource.revision,
-                state: json!({"counter": 1}),
-            }],
-            effects: vec![],
-        });
-        assert!(committed.ok, "{:?}", committed.error);
-        assert_eq!(committed.states[0].resource.revision, 1);
-
-        authority
-            .configure_appearance_writer("android-appearance-test")
-            .unwrap();
-        let mut profile = bundle.appearance.profile;
-        profile.generation = 1;
-        profile.reduce_motion = true;
-        let appearance = authority.dispatch_revision(RevisionRequest::UpdateAppearance {
-            request_id: 52,
-            expected_generation: 0,
-            capability: "android-appearance-test".into(),
-            profile,
-        });
-        assert!(appearance.ok, "{:?}", appearance.error);
-
-        drop(authority);
-        let mut restarted =
-            AndroidSystemAuthority::open_v4(&revision_root, &state_file, stock_v4(source)).unwrap();
-        let current = restarted.dispatch_revision(RevisionRequest::CurrentGraph { request_id: 53 });
-        let bundle = current.graph.unwrap();
         assert_eq!(
-            bundle.revisions[0].state.resource.state,
-            json!({"counter": 1})
+            first.revisions[0].package.format_version,
+            PACKAGE_FORMAT_VERSION
         );
-        assert_eq!(bundle.appearance.profile.generation, 1);
-        assert!(bundle.appearance.profile.reduce_motion);
+        drop(authority);
+
+        let mut restarted =
+            AndroidSystemAuthority::open_v4(&root, &state, stock_mobile(source())).unwrap();
+        let second = restarted.dispatch_revision(RevisionRequest::CurrentGraph { request_id: 2 });
+        assert!(second.ok, "{:?}", second.error);
+        assert_eq!(second.graph.unwrap().graph_id, first.graph_id);
     }
 
     #[test]
-    fn signed_reference_experiences_present_confirm_restart_and_dismiss() {
+    fn reference_experiences_are_registry_launchables_without_replacing_stock() {
         let temporary = tempfile::tempdir().unwrap();
-        let revision_root = temporary.path().join("revisions");
-        let state_file = temporary.path().join("provider.json");
-        let source = r#"
-            return { api_version = 4, exports = { main = {
-                render = function() return { id = "stock" } end,
-                update = function(_, state) return { state = state } end,
-            } } }
-        "#;
-        let mut authority =
-            AndroidSystemAuthority::open_v4(&revision_root, &state_file, stock_v4(source)).unwrap();
-        authority.install_reference_composition().unwrap();
-
-        let snapshot = authority.dispatch_provider(ProviderRequest::Snapshot { request_id: 80 });
-        let catalog = snapshot.model.unwrap().shell.experiences;
-        assert_eq!(catalog.len(), 4);
-        assert!(catalog
-            .iter()
-            .any(|entry| entry.experience_id == "sos.example.dashboard"));
-
+        let mut authority = AndroidSystemAuthority::open_v4(
+            temporary.path().join("revisions"),
+            temporary.path().join("provider.json"),
+            stock_mobile(source()),
+        )
+        .unwrap();
         let stock = authority
-            .dispatch_revision(RevisionRequest::CurrentGraph { request_id: 81 })
+            .dispatch_revision(RevisionRequest::CurrentGraph { request_id: 1 })
             .graph
-            .unwrap();
-        assert_eq!(stock.graph.nodes.len(), 1);
-        let dashboard_id = ExperienceId::parse("sos.example.dashboard").unwrap();
-        let presented = authority.dispatch_revision(RevisionRequest::PresentExperience {
-            request_id: 82,
-            expected_graph_id: stock.graph_id.clone(),
-            experience_id: dashboard_id.clone(),
-        });
-        assert!(presented.ok, "{:?}", presented.error);
-        let dashboard = presented.graph.unwrap();
-        assert!(dashboard.migration_pending);
-        assert_eq!(dashboard.graph.nodes.len(), 3);
-
-        drop(authority);
-        let mut restarted =
-            AndroidSystemAuthority::open_v4(&revision_root, &state_file, stock_v4(source)).unwrap();
-        restarted.install_reference_composition().unwrap();
-        let pending = restarted
-            .dispatch_revision(RevisionRequest::CurrentGraph { request_id: 83 })
-            .graph
-            .unwrap();
-        assert_eq!(pending.graph_id, dashboard.graph_id);
-        assert!(pending.migration_pending);
-        let confirmed = restarted.dispatch_revision(RevisionRequest::ConfirmGraph {
-            request_id: 84,
-            graph_id: pending.graph_id.clone(),
-        });
-        assert!(confirmed.ok, "{:?}", confirmed.error);
-        assert_eq!(restarted.active_experience_id().unwrap(), dashboard_id);
-        let stock_id = ExperienceId::parse(STOCK_MOBILE_EXPERIENCE_ID).unwrap();
-        let mut profile = restarted.composition.appearance.profile.clone();
-        profile.generation = 1;
-        profile.scheme = experience_package::ColorScheme::Light;
-        let appearance = restarted.dispatch_revision(RevisionRequest::SetExperienceAppearance {
-            request_id: 85,
-            expected_graph_id: pending.graph_id.clone(),
-            writer_experience_id: stock_id,
-            expected_generation: 0,
-            profile,
-        });
-        assert!(appearance.ok, "{:?}", appearance.error);
-        assert_eq!(appearance.appearance.unwrap().profile.generation, 1);
-
-        let mut denied_profile = restarted.composition.appearance.profile.clone();
-        denied_profile.generation = 2;
-        let denied_appearance =
-            restarted.dispatch_revision(RevisionRequest::SetExperienceAppearance {
-                request_id: 86,
-                expected_graph_id: pending.graph_id.clone(),
-                writer_experience_id: dashboard_id.clone(),
-                expected_generation: 1,
-                profile: denied_profile,
-            });
-        assert!(!denied_appearance.ok);
-        assert!(denied_appearance
-            .error
             .unwrap()
-            .contains("pinned Stock experience"));
-
-        let media_id = ExperienceId::parse("sos.example.media").unwrap();
-        let denied = restarted.dispatch_revision(RevisionRequest::PresentExperience {
-            request_id: 87,
-            expected_graph_id: pending.graph_id.clone(),
-            experience_id: media_id,
-        });
-        assert!(!denied.ok);
-        assert!(denied.error.unwrap().contains("authorized shell"));
-
-        drop(restarted);
-        let mut accepted =
-            AndroidSystemAuthority::open_v4(&revision_root, &state_file, stock_v4(source)).unwrap();
-        accepted.install_reference_composition().unwrap();
-        let current = accepted
-            .dispatch_revision(RevisionRequest::CurrentGraph { request_id: 88 })
-            .graph
-            .unwrap();
-        assert_eq!(current.graph_id, pending.graph_id);
-        assert!(!current.migration_pending);
-        assert_eq!(current.appearance.profile.generation, 1);
-        let dismissed = accepted.dispatch_revision(RevisionRequest::DismissExperience {
-            request_id: 89,
-            expected_graph_id: current.graph_id,
-            experience_id: dashboard_id,
-        });
-        assert!(dismissed.ok, "{:?}", dismissed.error);
-        let stock_again = dismissed.graph.unwrap();
-        assert!(stock_again.migration_pending);
-        assert_eq!(stock_again.graph_id, stock.graph_id);
-        let confirmed = accepted.dispatch_revision(RevisionRequest::ConfirmGraph {
-            request_id: 90,
-            graph_id: stock_again.graph_id,
-        });
-        assert!(confirmed.ok, "{:?}", confirmed.error);
-        assert_eq!(
-            accepted.active_experience_id().unwrap().as_str(),
-            STOCK_MOBILE_EXPERIENCE_ID
-        );
-    }
-
-    #[test]
-    fn stock_mobile_migration_coexists_with_an_older_android_stock_shell_record() {
-        let temporary = tempfile::tempdir().unwrap();
-        let revision_root = temporary.path().join("revisions");
-        let state_file = temporary.path().join("provider.json");
-        let legacy_source = "return { api_version = 3, legacy = true }";
-        drop(
-            AndroidSystemAuthority::open(&revision_root, &state_file, legacy_source.as_bytes())
-                .unwrap(),
-        );
-        let revisions = RevisionStore::open(&revision_root).unwrap();
-        let registry = ExperienceRegistry::open(revisions).unwrap();
-        let old_shell = registry.migrate_legacy_current().unwrap().unwrap();
-        assert_eq!(old_shell.experience_id.as_str(), STOCK_SHELL_EXPERIENCE_ID);
-
-        let source = r#"
-            return { api_version = 4, exports = { main = {
-                render = function() return { id = "mobile" } end,
-                update = function(_, state) return { state = state } end,
-            } } }
-        "#;
-        let mut authority =
-            AndroidSystemAuthority::open_v4(&revision_root, &state_file, stock_v4(source)).unwrap();
-        let pending = authority
-            .dispatch_revision(RevisionRequest::CurrentGraph { request_id: 301 })
-            .graph
-            .unwrap();
-        assert!(pending.migration_pending);
-        let confirmed = authority.dispatch_revision(RevisionRequest::ConfirmGraph {
-            request_id: 302,
-            graph_id: pending.graph_id,
-        });
-        assert!(confirmed.ok, "{:?}", confirmed.error);
-        assert_eq!(
-            authority.active_experience_id().unwrap().as_str(),
-            STOCK_MOBILE_EXPERIENCE_ID
-        );
-        assert!(authority
-            .registry
-            .get(&ExperienceId::parse(STOCK_SHELL_EXPERIENCE_ID).unwrap())
-            .unwrap()
-            .is_some());
-        assert!(authority
-            .registry
-            .get(&ExperienceId::parse(STOCK_MOBILE_EXPERIENCE_ID).unwrap())
-            .unwrap()
-            .is_some());
-        assert!(authority
-            .composition
-            .states
-            .contains_key(&ExperienceId::parse(STOCK_MOBILE_EXPERIENCE_ID).unwrap()));
-    }
-
-    #[test]
-    fn v4_authoring_stages_presents_discards_and_rolls_back_whole_graphs() {
-        let temporary = tempfile::tempdir().unwrap();
-        let revision_root = temporary.path().join("revisions");
-        let state_file = temporary.path().join("provider.json");
-        let original = r#"
-            return { api_version = 4, exports = { main = {
-                render = function() return { id = "original" } end,
-                update = function(_, state) return { state = state } end,
-            } } }
-        "#;
-        let candidate = r#"
-            return { api_version = 4, exports = { main = {
-                render = function() return { id = "candidate" } end,
-                update = function(_, state) return { state = state } end,
-            } } }
-        "#;
-        let mut authority =
-            AndroidSystemAuthority::open_v4(&revision_root, &state_file, stock_v4(original))
-                .unwrap();
-        let bare_v3 = authority.dispatch_revision(RevisionRequest::Install {
-            request_id: 59,
-            source: "return { api_version = 3 }".into(),
-            state: json!({}),
-            schema_version: 1,
-            experience_api_version: experience_ir::EXPERIENCE_API_VERSION,
-            assets: vec![],
-        });
-        assert!(!bare_v3.ok);
-        assert!(bare_v3
-            .error
-            .unwrap()
-            .contains("bare v3 authoring is disabled"));
-        let current = authority.dispatch_revision(RevisionRequest::CurrentGraph { request_id: 60 });
-        let current_bundle = current.graph.unwrap();
-        let original_graph_id = current_bundle.graph_id.clone();
-        let original_revision_id = current_bundle.graph.nodes[&current_bundle.graph.root]
-            .revision_id
-            .clone();
-        let original_state = current_bundle.revisions[0].state.resource.clone();
-        let mut package = current_bundle.revisions[0].package.clone();
-        package.state_migration = Some(experience_package::StateMigrationRecord {
-            source: experience_package::StateMigrationSource::ExperienceRevision {
-                experience_id: package.experience_id.clone(),
-                revision_id: original_revision_id.clone(),
-                schema_version: original_state.schema_version,
-                state_sha256: experience_package::canonical_sha256(&original_state.state).unwrap(),
-            },
-            target_schema_version: 1,
-            result_state_sha256: experience_package::canonical_sha256(&json!({"edited": true}))
-                .unwrap(),
-        });
-
-        let staged = authority.dispatch_revision(RevisionRequest::StageGraphRevision {
-            request_id: 61,
-            expected_graph_id: original_graph_id.clone(),
-            package: package.clone(),
-            source: candidate.into(),
-            state: json!({"edited": true}),
-            schema_version: 1,
-            assets: vec![],
-        });
-        assert!(staged.ok, "{:?}", staged.error);
-        let staged_bundle = staged.graph.unwrap();
-        assert!(staged_bundle.migration_pending);
-        assert_ne!(staged_bundle.graph_id, original_graph_id);
-        assert_eq!(
-            staged_bundle.revisions[0].state.resource.state,
-            json!({"edited": true})
-        );
-        assert_eq!(
-            authority
-                .registry
-                .current(&ExperienceId::parse(STOCK_MOBILE_EXPERIENCE_ID).unwrap())
-                .unwrap()
-                .unwrap()
-                .manifest
-                .revision_id,
-            original_revision_id.as_str()
-        );
-
-        let discarded = authority.dispatch_revision(RevisionRequest::DiscardGraph {
-            request_id: 62,
-            graph_id: staged_bundle.graph_id,
-        });
-        assert_eq!(discarded.graph.unwrap().graph_id, original_graph_id);
-
-        let staged = authority.dispatch_revision(RevisionRequest::StageGraphRevision {
-            request_id: 63,
-            expected_graph_id: original_graph_id.clone(),
-            package,
-            source: candidate.into(),
-            state: json!({"edited": true}),
-            schema_version: 1,
-            assets: vec![],
-        });
-        let candidate_graph_id = staged.graph.unwrap().graph_id;
-        let confirmed = authority.dispatch_revision(RevisionRequest::ConfirmGraph {
-            request_id: 64,
-            graph_id: candidate_graph_id.clone(),
-        });
-        assert_eq!(
-            confirmed.graph.as_ref().unwrap().graph_id,
-            candidate_graph_id
-        );
-        assert_eq!(
-            confirmed.graph.as_ref().unwrap().revisions[0]
-                .state
-                .resource
-                .state,
-            json!({"edited": true})
-        );
-
-        let rolled_back = authority.dispatch_revision(RevisionRequest::RollbackGraph {
-            request_id: 65,
-            failed_graph_id: candidate_graph_id,
-        });
-        assert!(rolled_back.fallback_performed);
-        assert_eq!(
-            rolled_back.graph.as_ref().unwrap().graph_id,
-            original_graph_id
-        );
-        assert_eq!(
-            rolled_back.graph.unwrap().revisions[0].state.resource.state,
-            json!({})
-        );
-    }
-
-    #[test]
-    fn v4_graph_activation_recovers_every_durable_phase() {
-        let original = r#"
-            return { api_version = 4, exports = { main = {
-                render = function() return { id = "original" } end,
-                update = function(_, state) return { state = state } end,
-            } } }
-        "#;
-        let candidate = r#"
-            return { api_version = 4, exports = { main = {
-                render = function() return { id = "candidate" } end,
-                update = function(_, state) return { state = state } end,
-            } } }
-        "#;
-
-        for completed_phase in 0..=5 {
-            let temporary = tempfile::tempdir().unwrap();
-            let revision_root = temporary.path().join("revisions");
-            let state_file = temporary.path().join("provider.json");
-            let mut authority =
-                AndroidSystemAuthority::open_v4(&revision_root, &state_file, stock_v4(original))
-                    .unwrap();
-            let current = authority
-                .dispatch_revision(RevisionRequest::CurrentGraph { request_id: 70 })
-                .graph
-                .unwrap();
-            let original_graph_id = current.graph_id.clone();
-            let root = &current.graph.nodes[&current.graph.root];
-            let original_revision_id = root.revision_id.clone();
-            let original_state = current.revisions[0].state.resource.clone();
-            let mut package = current.revisions[0].package.clone();
-            package.state_migration = Some(experience_package::StateMigrationRecord {
-                source: experience_package::StateMigrationSource::ExperienceRevision {
-                    experience_id: package.experience_id.clone(),
-                    revision_id: original_revision_id.clone(),
-                    schema_version: original_state.schema_version,
-                    state_sha256: experience_package::canonical_sha256(&original_state.state)
-                        .unwrap(),
-                },
-                target_schema_version: 1,
-                result_state_sha256: experience_package::canonical_sha256(
-                    &json!({"phase": completed_phase}),
-                )
-                .unwrap(),
-            });
-            let staged = authority.dispatch_revision(RevisionRequest::StageGraphRevision {
-                request_id: 71,
-                expected_graph_id: original_graph_id.clone(),
-                package,
-                source: candidate.into(),
-                state: json!({"phase": completed_phase}),
-                schema_version: 1,
-                assets: vec![],
-            });
-            assert!(staged.ok, "phase {completed_phase}: {:?}", staged.error);
-            let candidate_graph_id = staged.graph.unwrap().graph_id;
-            let pending = authority.pending_graph().unwrap().unwrap();
-            let mut target_composition = authority.composition.clone();
-            for (experience_id, state) in pending.staged_states {
-                target_composition.states.insert(experience_id, state);
-            }
-            let journal = GraphActivationJournal {
-                experience_id: pending.experience_id.clone(),
-                revision_id: pending.revision_id.clone(),
-                graph_id: Some(candidate_graph_id.clone()),
-                legacy_fallback: false,
-                update_pointers: true,
-                target_composition: target_composition.clone(),
-                previous_composition: authority.composition.clone(),
-            };
-            write_synced_atomic(
-                &authority
-                    .graph_activation_journal_file
-                    .with_extension("tmp"),
-                &authority.graph_activation_journal_file,
-                &serde_json::to_vec_pretty(&journal).unwrap(),
-            )
-            .unwrap();
-            if completed_phase >= 1 {
-                write_synced_atomic(
-                    &authority.previous_composition_file.with_extension("tmp"),
-                    &authority.previous_composition_file,
-                    &serde_json::to_vec_pretty(&journal.previous_composition).unwrap(),
-                )
-                .unwrap();
-            }
-            if completed_phase >= 2 {
-                authority
-                    .replace_composition(target_composition.clone())
-                    .unwrap();
-            }
-            if completed_phase >= 3 {
-                authority
-                    .registry
-                    .set_current(&pending.experience_id, &pending.revision_id)
-                    .unwrap();
-            }
-            if completed_phase >= 4 {
-                authority
-                    .graphs
-                    .set_current(&pending.experience_id, &candidate_graph_id)
-                    .unwrap();
-            }
-            if completed_phase >= 5 {
-                remove_synced(&authority.pending_graph_file).unwrap();
-            }
-            drop(authority);
-
-            let mut recovered =
-                AndroidSystemAuthority::open_v4(&revision_root, &state_file, stock_v4(original))
-                    .unwrap();
-            let active =
-                recovered.dispatch_revision(RevisionRequest::CurrentGraph { request_id: 72 });
-            assert!(active.ok, "phase {completed_phase}: {:?}", active.error);
-            let active = active.graph.unwrap();
-            assert_eq!(
-                active.graph_id, candidate_graph_id,
-                "phase {completed_phase}"
-            );
-            assert_eq!(
-                active.revisions[0].state.resource.state,
-                json!({"phase": completed_phase}),
-                "phase {completed_phase}"
-            );
-            assert!(!recovered.graph_activation_journal_file.exists());
-            assert!(!recovered.pending_graph_file.exists());
-
-            let rollback = recovered.dispatch_revision(RevisionRequest::RollbackGraph {
-                request_id: 73,
-                failed_graph_id: candidate_graph_id,
-            });
-            assert!(rollback.ok, "phase {completed_phase}: {:?}", rollback.error);
-            assert_eq!(
-                rollback.graph.unwrap().graph_id,
-                original_graph_id,
-                "phase {completed_phase}"
-            );
-        }
-    }
-
-    #[test]
-    fn presentation_activation_commits_state_and_revision_together() {
-        let temporary = tempfile::tempdir().unwrap();
-        let mut authority = AndroidSystemAuthority::open(
-            temporary.path().join("revisions"),
-            temporary.path().join("provider.json"),
-            b"return { api_version = 3, revision = 1 }",
-        )
-        .unwrap();
-        let source = "return { api_version = 3, revision = 2 }".to_owned();
-        let (revision_id, stage_id) = install_and_stage(&mut authority, &source);
-        let activated = authority.dispatch_revision(RevisionRequest::Activate {
-            request_id: 3,
-            revision_id,
-            state_stage_id: stage_id,
-        });
-        assert!(activated.ok, "{:?}", activated.error);
-        assert_eq!(activated.state.unwrap().revision, 1);
-        assert_eq!(authority.state.load().state, json!({ "candidate": true }));
-    }
-
-    #[test]
-    fn provider_snapshot_is_live_system_abi_not_seeded_home_content() {
-        let temporary = tempfile::tempdir().unwrap();
-        let mut authority = AndroidSystemAuthority::open(
-            temporary.path().join("revisions"),
-            temporary.path().join("provider.json"),
-            b"return { api_version = 3 }",
-        )
-        .unwrap();
-        let response = authority.dispatch_provider(ProviderRequest::Snapshot { request_id: 9 });
-        let model = response.model.unwrap();
-        assert_eq!(
-            model.providers.abi_version,
-            experience_ir::SYSTEM_PROVIDER_ABI_VERSION
-        );
-        assert_eq!(model.greeting, "SOS");
-        assert!(model.calendar.is_empty());
-        assert!(model.notes.is_empty());
-        assert_ne!(model.date, "Saturday, 8 August");
-        assert_ne!(model.music.artist, "Tycho");
-        assert!(!model.system.timezone.is_empty());
-    }
-
-    #[test]
-    fn restart_recovers_state_first_activation_gap() {
-        let temporary = tempfile::tempdir().unwrap();
-        let revision_root = temporary.path().join("revisions");
-        let state_file = temporary.path().join("provider.json");
-        let bootstrap = b"return { api_version = 3, revision = 1 }";
-        let revision_id = {
-            let mut authority =
-                AndroidSystemAuthority::open(&revision_root, &state_file, bootstrap).unwrap();
-            let (revision_id, stage_id) =
-                install_and_stage(&mut authority, "return { api_version = 3, revision = 2 }");
-            authority
-                .write_journal(&ActivationJournal {
-                    revision_id: revision_id.clone(),
-                    state_stage_id: stage_id,
-                })
-                .unwrap();
-            authority.promote_state(stage_id).unwrap();
-            revision_id
-        };
-
-        let recovered =
-            AndroidSystemAuthority::open(&revision_root, &state_file, bootstrap).unwrap();
-        assert_eq!(
-            recovered
-                .revisions
-                .current()
-                .unwrap()
-                .unwrap()
-                .manifest
-                .revision_id,
-            revision_id
-        );
-        assert_eq!(recovered.state.load().state, json!({ "candidate": true }));
-        assert!(!revision_root.join("activation-journal.json").exists());
-    }
-
-    #[test]
-    fn activation_rejects_state_for_another_source() {
-        let temporary = tempfile::tempdir().unwrap();
-        let mut authority = AndroidSystemAuthority::open(
-            temporary.path().join("revisions"),
-            temporary.path().join("provider.json"),
-            b"return { api_version = 3, revision = 1 }",
-        )
-        .unwrap();
-        let installed = authority.dispatch_revision(RevisionRequest::Install {
-            request_id: 1,
-            source: "return { api_version = 3, revision = 2 }".into(),
-            state: json!({}),
-            schema_version: 1,
-            experience_api_version: 3,
-            assets: Vec::new(),
-        });
-        let staged = authority.dispatch_provider(ProviderRequest::StageState {
-            request_id: 2,
-            expected_revision: 0,
-            schema_version: 1,
-            state: json!({}),
-            source_sha256: "0".repeat(64),
-            effects: Vec::new(),
-        });
-        let activated = authority.dispatch_revision(RevisionRequest::Activate {
-            request_id: 3,
-            revision_id: installed.revision_id.unwrap(),
-            state_stage_id: staged.stage_id.unwrap(),
-        });
-        assert!(!activated.ok);
-        assert_eq!(authority.state.load().revision, 0);
-    }
-
-    #[test]
-    fn stale_stage_is_rejected_before_journal_and_next_activation_succeeds() {
-        let temporary = tempfile::tempdir().unwrap();
-        let revision_root = temporary.path().join("revisions");
-        let mut authority = AndroidSystemAuthority::open(
-            &revision_root,
-            temporary.path().join("provider.json"),
-            b"return { api_version = 3, revision = 1 }",
-        )
-        .unwrap();
-        let stale_source = "return { api_version = 3, revision = 2 }";
-        let (stale_revision_id, stale_stage_id) = install_and_stage(&mut authority, stale_source);
-
-        let stock_sha256 = authority
-            .revisions
-            .current()
-            .unwrap()
-            .unwrap()
-            .manifest
-            .source
-            .sha256;
-        let competing_stage = authority
-            .state
-            .stage(0, 1, json!({ "focus": false }), stock_sha256)
-            .unwrap();
-        authority.promote_state(competing_stage).unwrap();
-
-        let rejected = authority.dispatch_revision(RevisionRequest::Activate {
-            request_id: 3,
-            revision_id: stale_revision_id,
-            state_stage_id: stale_stage_id,
-        });
-        assert!(!rejected.ok);
-        assert_eq!(rejected.error.as_deref(), Some("staged state is stale"));
-        assert!(!revision_root.join("activation-journal.json").exists());
-
-        let source = "return { api_version = 3, revision = 3 }";
-        let installed = authority.dispatch_revision(RevisionRequest::Install {
-            request_id: 4,
-            source: source.into(),
-            state: json!({ "candidate": "retry" }),
-            schema_version: 1,
-            experience_api_version: 3,
-            assets: Vec::new(),
-        });
-        assert!(installed.ok);
-        let revision_id = installed.revision_id.unwrap();
-        let source_sha256 = authority
-            .revisions
-            .verify(&revision_id)
-            .unwrap()
-            .manifest
-            .source
-            .sha256;
-        let staged = authority.dispatch_provider(ProviderRequest::StageState {
-            request_id: 5,
-            expected_revision: 1,
-            schema_version: 1,
-            state: json!({ "candidate": "retry" }),
-            source_sha256,
-            effects: Vec::new(),
-        });
-        assert!(staged.ok);
-        let activated = authority.dispatch_revision(RevisionRequest::Activate {
-            request_id: 6,
-            revision_id,
-            state_stage_id: staged.stage_id.unwrap(),
-        });
-        assert!(activated.ok, "{:?}", activated.error);
-        assert_eq!(activated.state.unwrap().revision, 2);
-    }
-
-    #[test]
-    fn rejected_generated_revision_falls_back_to_pinned_stock() {
-        let temporary = tempfile::tempdir().unwrap();
-        let bootstrap = b"return { api_version = 3, stock = true }";
-        let mut authority = AndroidSystemAuthority::open(
-            temporary.path().join("revisions"),
-            temporary.path().join("provider.json"),
-            bootstrap,
-        )
-        .unwrap();
-        let stock_revision_id = authority.stock_revision_id.clone();
-        let (generated_revision_id, stage_id) = install_and_stage(
-            &mut authority,
-            "return { api_version = 3, generated = true }",
-        );
-        assert!(
-            authority
-                .dispatch_revision(RevisionRequest::Activate {
-                    request_id: 3,
-                    revision_id: generated_revision_id.clone(),
-                    state_stage_id: stage_id,
-                })
-                .ok
-        );
-
-        let fallback = authority.dispatch_revision(RevisionRequest::FallbackToStock {
-            request_id: 4,
-            failed_revision_id: generated_revision_id,
-        });
-        assert!(fallback.ok, "{:?}", fallback.error);
-        assert!(fallback.fallback_performed);
-        assert!(fallback.stock_trusted);
-        assert_eq!(
-            fallback.revision_id.as_deref(),
-            Some(stock_revision_id.as_str())
-        );
-        assert_eq!(
-            fallback.source.as_deref(),
-            Some(std::str::from_utf8(bootstrap).unwrap())
-        );
-        assert_eq!(fallback.state.unwrap().state, json!({}));
-
-        let second = authority.dispatch_revision(RevisionRequest::FallbackToStock {
-            request_id: 5,
-            failed_revision_id: stock_revision_id,
-        });
-        assert!(!second.ok);
-        assert!(second.error.unwrap().contains("fixed Recovery"));
+            .graph_id;
+        authority.install_reference_composition().unwrap();
+        let snapshot = authority.dispatch_provider(ProviderRequest::Snapshot { request_id: 2 });
+        let launchables = snapshot.model.unwrap().shell.experiences;
+        assert!(launchables
+            .iter()
+            .any(|experience| experience.experience_id == "sos.example.dashboard"));
+        let current = authority.dispatch_revision(RevisionRequest::CurrentGraph { request_id: 3 });
+        assert_eq!(current.graph.unwrap().graph_id, stock);
     }
 }

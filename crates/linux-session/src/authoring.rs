@@ -406,7 +406,7 @@ fn handle(options: &AuthoringBrokerOptions, request: AuthoringRequest) -> Result
                     source: candidate.source,
                     state: candidate.state,
                     schema_version: candidate.schema_version,
-                    experience_api_version: experience_ir::EXPERIENCE_API_VERSION_V4,
+                    experience_api_version: experience_ir::EXPERIENCE_API_VERSION,
                     assets: candidate.assets,
                 },
                 package: candidate.package,
@@ -530,7 +530,7 @@ fn handle(options: &AuthoringBrokerOptions, request: AuthoringRequest) -> Result
                     source: candidate.source,
                     state: candidate.state,
                     schema_version: candidate.schema_version,
-                    experience_api_version: experience_ir::EXPERIENCE_API_VERSION_V4,
+                    experience_api_version: experience_ir::EXPERIENCE_API_VERSION,
                     assets: candidate.assets,
                 },
                 package: candidate.package,
@@ -543,13 +543,13 @@ fn handle(options: &AuthoringBrokerOptions, request: AuthoringRequest) -> Result
                 replace_existing,
             )?;
             ReverseDependencyIndex::open(store.root()).rebuild(&store, &registry)?;
-            let graph_id = if revision.package.as_ref().is_some_and(|package| {
-                package
-                    .contract
-                    .exports
-                    .keys()
-                    .any(|export| export.as_str() == "main")
-            }) {
+            let graph_id = if revision
+                .package
+                .contract
+                .exports
+                .keys()
+                .any(|export| export.as_str() == "main")
+            {
                 let main =
                     ExportId::parse("main").map_err(|error| anyhow::anyhow!(error.to_string()))?;
                 let graph = GraphResolver::new(store.clone())
@@ -640,7 +640,7 @@ fn handle(options: &AuthoringBrokerOptions, request: AuthoringRequest) -> Result
                     source: candidate.source,
                     state: candidate.state,
                     schema_version: candidate.schema_version,
-                    experience_api_version: experience_ir::EXPERIENCE_API_VERSION_V4,
+                    experience_api_version: experience_ir::EXPERIENCE_API_VERSION,
                     assets: candidate.assets,
                 },
                 package: candidate.package,
@@ -742,10 +742,7 @@ fn inspect_dependencies(
     let mut contexts = Vec::new();
     for dependency in dependencies {
         let revision = store.verify(dependency.revision_id.as_str())?;
-        let package = revision
-            .package
-            .as_ref()
-            .context("composition dependencies must use package format v4")?;
+        let package = &revision.package;
         if package.experience_id != dependency.experience_id {
             bail!("composition dependency revision belongs to a different experience");
         }
@@ -860,7 +857,7 @@ fn evaluate_v4_package_candidate(
         .collect();
     let runtime = LuauRuntime::compile_with_assets(&source, runtime_assets)
         .map_err(|error| anyhow::anyhow!("compile API v4 experience: {error}"))?;
-    if runtime.api_version() != experience_ir::EXPERIENCE_API_VERSION_V4 {
+    if runtime.api_version() != experience_ir::EXPERIENCE_API_VERSION {
         bail!("package experiences must use experience API v4");
     }
     let implemented = runtime
@@ -971,7 +968,7 @@ fn validate_composition_mounts(
             bail!("dependency `{alias}` must have exactly one mount in the main export");
         }
         let child = store.verify(binding.revision_id.as_str())?;
-        let child_package = child.package.context("mounted child package is missing")?;
+        let child_package = child.package;
         let export = &child_package.contract.exports[&binding.export_id];
         let experience_package::ValueSchema::Record { fields } = &export.properties else {
             bail!("dependency `{alias}` must expose a closed record property schema");
@@ -1199,10 +1196,7 @@ fn resolve_authoring_state(
                 );
             }
             let revision = store.verify(revision_id.as_str())?;
-            let package = revision
-                .package
-                .as_ref()
-                .context("state migration sources must use package format v4")?;
+            let package = &revision.package;
             if package.experience_id != experience_id {
                 bail!("state migration source revision belongs to a different experience");
             }
@@ -1244,10 +1238,7 @@ fn validate_parent_selection(store: &RevisionStore, parents: &[AuthoringParent])
             bail!("derivation parent selection contains a duplicate");
         }
         let revision = store.verify(parent.revision_id.as_str())?;
-        let package = revision
-            .package
-            .as_ref()
-            .context("derivation parents must use package format v4")?;
+        let package = &revision.package;
         if package.experience_id != parent.experience_id {
             bail!("derivation parent revision belongs to a different experience");
         }
@@ -1297,9 +1288,9 @@ fn active_authoring_experience(store: &RevisionStore) -> Result<ActiveAuthoringE
     let experience_id = ExperienceId::parse(STOCK_SHELL_EXPERIENCE_ID)
         .map_err(|error| anyhow::anyhow!(error.to_string()))?;
     let graphs = GraphStore::open(store.root())?;
-    let (graph_id, graph) = graphs.current(&experience_id)?.context(
-        "the active Stock experience has not migrated to a v4 graph; legacy v3 authoring is disabled",
-    )?;
+    let (graph_id, graph) = graphs
+        .current(&experience_id)?
+        .context("the active Stock experience has no v4 graph")?;
     let root = graph
         .nodes
         .get(&graph.root)
@@ -1308,10 +1299,7 @@ fn active_authoring_experience(store: &RevisionStore) -> Result<ActiveAuthoringE
         bail!("the active Stock graph root has the wrong experience identity");
     }
     let revision = store.verify(root.revision_id.as_str())?;
-    let package = revision
-        .package
-        .clone()
-        .context("the active authoring target is not a v4 package")?;
+    let package = revision.package.clone();
     let registry = ExperienceRegistry::open(store.clone())?;
     let registry_revision = registry
         .current(&experience_id)?
@@ -1382,7 +1370,7 @@ fn evaluate_candidate(
         .collect();
     let runtime = LuauRuntime::compile_with_assets(&source, runtime_assets)
         .map_err(|error| anyhow::anyhow!("compile candidate experience: {error}"))?;
-    if runtime.api_version() != experience_ir::EXPERIENCE_API_VERSION_V4 {
+    if runtime.api_version() != experience_ir::EXPERIENCE_API_VERSION {
         bail!("new authoring submissions must use experience API v4");
     }
     let implemented = runtime
@@ -1642,7 +1630,7 @@ mod tests {
                     source: source.as_bytes().to_vec(),
                     state: json!({}),
                     schema_version: 1,
-                    experience_api_version: experience_ir::EXPERIENCE_API_VERSION_V4,
+                    experience_api_version: experience_ir::EXPERIENCE_API_VERSION,
                     assets: vec![RevisionAssetInput {
                         id: "stock.theme".into(),
                         kind: "luau".into(),
@@ -1834,7 +1822,7 @@ mod tests {
             Vec::new(),
             "Combine agenda and media".into(),
             "The result needs one information architecture.".into(),
-            remix.package.unwrap().contract,
+            remix.package.contract,
             include_str!("../../../experiences/composition/agenda-media-remix.luau").into(),
             None,
             None,
@@ -1859,7 +1847,7 @@ mod tests {
         let store = RevisionStore::open(temporary.path()).unwrap();
         let reference = revision_supervisor::install_reference_composition(&store).unwrap();
         let dashboard = store.verify(&reference.dashboard_revision).unwrap();
-        let package = dashboard.package.unwrap();
+        let package = dashboard.package;
         let dependencies = package
             .dependencies
             .iter()
@@ -1906,7 +1894,7 @@ mod tests {
         assert_eq!(current_before, reference.dashboard_revision);
 
         let dashboard = store.verify(&reference.dashboard_revision).unwrap();
-        let package = dashboard.package.unwrap();
+        let package = dashboard.package;
         let dependencies = package
             .dependencies
             .iter()
@@ -1940,7 +1928,7 @@ mod tests {
                     source: candidate.source,
                     state: candidate.state,
                     schema_version: candidate.schema_version,
-                    experience_api_version: experience_ir::EXPERIENCE_API_VERSION_V4,
+                    experience_api_version: experience_ir::EXPERIENCE_API_VERSION,
                     assets: candidate.assets,
                 },
                 package: candidate.package,

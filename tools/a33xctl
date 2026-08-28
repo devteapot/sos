@@ -1332,7 +1332,6 @@ inspect_compat_profile() {
   grep -Fx "ro.sos.ui_owner=$expected_owner" "$properties"
   grep -Fx 'ro.sos.revision_format=4' "$properties"
   grep -Fx 'ro.sos.experience_api=4' "$properties"
-  grep -Fx 'ro.sos.legacy_revision_read=3' "$properties"
   grep -Fx \
     'user=_app isPrivApp=true seinfo=platform name=dev.sos.experience domain=priv_app type=privapp_data_file levelFrom=all' \
     "$seapp_contexts"
@@ -1470,7 +1469,6 @@ inspect_core() {
   check_android_composition_authority "$authority" "$authority_init_rc"
   grep -Fx 'ro.sos.revision_format=4' "$properties"
   grep -Fx 'ro.sos.experience_api=4' "$properties"
-  grep -Fx 'ro.sos.legacy_revision_read=3' "$properties"
   grep -E '^ro\.system_ext\.build\.version\.incremental=sos\.shadow\.[0-9a-f]{12}\.[0-9a-f]{12}$' \
     "$properties" || fail "SOS Core build does not carry a content-derived fingerprint"
   grep -Fx \
@@ -1648,7 +1646,6 @@ inspect_core_stage() {
   grep -Fx 'ro.sos.disable_user_apk_install=true' "$properties"
   grep -Fx 'ro.sos.revision_format=4' "$properties"
   grep -Fx 'ro.sos.experience_api=4' "$properties"
-  grep -Fx 'ro.sos.legacy_revision_read=3' "$properties"
   unzip -p "$target_files/SYSTEM/framework/services.jar" 'classes*.dex' | strings | \
     grep -F 'SOS Core product policy prevents user APK installation' >/dev/null || \
     fail "SOS $stage framework does not enforce the Core APK-install policy"
@@ -2070,7 +2067,6 @@ write_v4_stage_properties() {
     ro.build.version.incremental \
     ro.sos.experience_api \
     ro.sos.revision_format \
-    ro.sos.legacy_revision_read \
     ro.sos.profile \
     ro.sos.ui_owner \
     ro.sos.core.stage \
@@ -2256,8 +2252,6 @@ audit_v4_stage_common() {
     fail "v4 composition stage $stage does not report Experience API v4"
   [[ "$(v4_stage_property "$stage_root/properties.env" ro.sos.revision_format)" == 4 ]] || \
     fail "v4 composition stage $stage does not report package format v4"
-  [[ "$(v4_stage_property "$stage_root/properties.env" ro.sos.legacy_revision_read)" == 3 ]] || \
-    fail "v4 composition stage $stage changed the bounded rollback reader"
   grep -Fx 'selinux=Enforcing' "$stage_root/security.env" >/dev/null || \
     fail "v4 composition stage $stage is not SELinux Enforcing"
   png_magic="$(head -c 8 "$stage_root/screen.png" | od -An -tx1 | tr -d ' \n')"

@@ -548,10 +548,7 @@ mod tests {
 
         for source in [&first, &second] {
             let runtime = super::compile_built_in(source).unwrap();
-            assert_eq!(
-                runtime.api_version(),
-                experience_ir::EXPERIENCE_API_VERSION_V4
-            );
+            assert_eq!(runtime.api_version(), experience_ir::EXPERIENCE_API_VERSION);
             assert_eq!(runtime.export_ids().unwrap(), vec!["main"]);
             let mut state = runtime.initial_state();
             state["active_workspace"] = serde_json::json!("agent");
@@ -571,10 +568,7 @@ mod tests {
 
         for source in [&first, &second] {
             let runtime = super::compile_built_in(source).unwrap();
-            assert_eq!(
-                runtime.api_version(),
-                experience_ir::EXPERIENCE_API_VERSION_V4
-            );
+            assert_eq!(runtime.api_version(), experience_ir::EXPERIENCE_API_VERSION);
             assert_eq!(runtime.export_ids().unwrap(), vec!["main"]);
             let scene = runtime
                 .render(

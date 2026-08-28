@@ -420,7 +420,7 @@ fn validate_candidate(source: &str, model: &ExperienceModel) -> Result<(), Strin
     .map_err(|_| {
         "The agent candidate did not compile. [validation/invalid_candidate]".to_owned()
     })?;
-    if runtime.api_version() != experience_ir::EXPERIENCE_API_VERSION_V4 {
+    if runtime.api_version() != experience_ir::EXPERIENCE_API_VERSION {
         return Err(
             "The agent candidate must use Experience API v4. [validation/invalid_candidate]".into(),
         );

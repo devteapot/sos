@@ -46,7 +46,7 @@ fn runtime_inputs(
                     model: model.clone(),
                     state: durable.state,
                     state_schema_version: durable.schema_version,
-                    package: revision.package.unwrap(),
+                    package: revision.package,
                 },
             )
         })
@@ -74,7 +74,7 @@ fn install_dashboard_candidate(
                 experience_api_version: 4,
                 assets: vec![],
             },
-            package: parent.package.unwrap(),
+            package: parent.package,
         })
         .unwrap()
         .manifest

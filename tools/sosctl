@@ -1172,14 +1172,6 @@ linux_run() {
       --revision "$current_revision" >/dev/null
   fi
 
-  if [[ "$($LINUX_SUPERVISOR experience-status \
-      --root "$LINUX_REVISION_ROOT" \
-      --experience sos.timeflow)" != "none" ]]; then
-    "$LINUX_SUPERVISOR" retire-experience \
-      --root "$LINUX_REVISION_ROOT" \
-      --experience sos.timeflow >/dev/null
-  fi
-
   local capability_file capability_temporary
   for capability_file in \
     "$LINUX_APPEARANCE_CAPABILITY_FILE" \

@@ -295,9 +295,7 @@ impl ExperienceGraphSupervisor {
         revision_id: &str,
     ) -> Result<PreparedGraphActivation> {
         let candidate = self.revisions.verify(revision_id)?;
-        let candidate_package = candidate.package.as_ref().ok_or_else(|| {
-            Error::InvalidGraph("tracked updates require a v4 package revision".into())
-        })?;
+        let candidate_package = &candidate.package;
         let record = self.registry.get(experience_id)?.ok_or_else(|| {
             Error::InvalidGraph(format!("unknown tracked experience `{experience_id}`"))
         })?;
@@ -972,9 +970,7 @@ impl ExperienceGraphSupervisor {
         revision_id: &str,
     ) -> Result<()> {
         let candidate = self.revisions.verify(revision_id)?;
-        let candidate_package = candidate.package.as_ref().ok_or_else(|| {
-            Error::InvalidGraph("experience updates require a v4 package revision".into())
-        })?;
+        let candidate_package = &candidate.package;
         let record = self
             .registry
             .get(experience_id)?
@@ -1018,9 +1014,7 @@ impl ExperienceGraphSupervisor {
         }
         for node in graph.nodes.values() {
             let revision = self.revisions.verify(node.revision_id.as_str())?;
-            let package = revision.package.as_ref().ok_or_else(|| {
-                Error::InvalidGraph("v4 graph node is missing package metadata".into())
-            })?;
+            let package = &revision.package;
             let data_flows = package
                 .dependencies
                 .iter()
@@ -1528,16 +1522,10 @@ impl ExperienceGraphSupervisor {
             })?;
             for revision_id in [&update.previous_revision, &update.candidate_revision] {
                 let revision = self.revisions.verify(revision_id)?;
-                if let Some(package) = revision.package {
-                    if package.experience_id != update.experience_id || package.role != record.role
-                    {
-                        return Err(Error::InvalidGraph(
-                            "graph activation journal registry binding mismatch".into(),
-                        ));
-                    }
-                } else if !record.accepts_legacy_revisions {
+                let package = revision.package;
+                if package.experience_id != update.experience_id || package.role != record.role {
                     return Err(Error::InvalidGraph(
-                        "graph activation journal names an unauthorized legacy revision".into(),
+                        "graph activation journal registry binding mismatch".into(),
                     ));
                 }
             }

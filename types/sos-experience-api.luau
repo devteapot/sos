@@ -1,5 +1,4 @@
--- SOS Experience API v4 Luau type prelude. Retained v3 revisions use the same
--- scene value types only through the bounded rollback reader.
+-- SOS Experience API v4 Luau type prelude.
 -- This file is prepended by `sosctl typecheck`; the embedded VM erases the
 -- matching annotations and the Rust decoder remains the authority boundary.
 
@@ -258,9 +257,8 @@ type ShellOverlayContent = {
     placement: ShellOverlayPlacement?,
     anchor: ShellOverlayAnchor?,
 }
-type ApplicationSurfaceContent = { kind: "application_surface", title: string }
 type Content = TextContent | TextSessionContent | ImageContent | ProviderSurfaceContent
-    | ExperienceMountContent | WindowSpaceContent | ShellOverlayContent | ApplicationSurfaceContent
+    | ExperienceMountContent | WindowSpaceContent | ShellOverlayContent
 
 type PaintPoint = { x: number, y: number }
 type GlyphRun = {

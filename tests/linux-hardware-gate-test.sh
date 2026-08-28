@@ -314,8 +314,6 @@ grep -F 'image-identity.env' "$test_gate" >/dev/null
 grep -F 'payload_sha256' "$test_gate" >/dev/null
 grep -F 'boot_id=' "$test_gate" >/dev/null
 grep -F '/usr/local/libexec/sos/linux-hardware-gate collect' "$test_gate" >/dev/null
-grep -F 'retired_baked_artifacts' "$test_gate" >/dev/null
-grep -F '/usr/share/sos/experiences/daily-flow.luau' "$test_gate" >/dev/null
 for test_development_path in \
   /usr/local/libexec/sos/sos-agent-login \
   /usr/share/sos/experiences/default.package.json \

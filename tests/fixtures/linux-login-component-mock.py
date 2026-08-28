@@ -69,18 +69,12 @@ if name == "sos-revision-supervisor":
         with open(marker(name), "w", encoding="utf-8") as stored:
             stored.write(value + "\n")
 
-    if len(sys.argv) >= 2 and sys.argv[1] == "status":
-        print(read_marker("current") or "none")
-        raise SystemExit(0)
     if len(sys.argv) >= 2 and sys.argv[1] == "graph-status":
         experience = option("--experience")
         print(read_marker("graph-" + experience) or "none")
         raise SystemExit(0)
     if len(sys.argv) >= 2 and sys.argv[1] == "install-package":
         print("2" * 64)
-        raise SystemExit(0)
-    if len(sys.argv) >= 2 and sys.argv[1] == "bootstrap":
-        write_marker("current", option("--revision"))
         raise SystemExit(0)
     if len(sys.argv) >= 2 and sys.argv[1] == "bootstrap-graph":
         experience = option("--experience")
@@ -97,12 +91,6 @@ if name == "sos-revision-supervisor":
         except FileNotFoundError:
             pass
         print("retired=true experience_id=" + experience)
-        raise SystemExit(0)
-    if len(sys.argv) >= 2 and sys.argv[1] == "migrate-stock-v4":
-        revision = "2" * 64
-        write_marker("graph-sos.stock.shell", "a" * 64)
-        write_marker("experience-sos.stock.shell", revision)
-        print("experience_id=sos.stock.shell revision_id=" + revision)
         raise SystemExit(0)
     raise SystemExit("unsupported revision-supervisor mock command")
 

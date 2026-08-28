@@ -25,5 +25,4 @@ SYSTEM_EXT_PRIVATE_SEPOLICY_DIRS += \
 PRODUCT_SYSTEM_EXT_PROPERTIES += \
     ro.sos.authority=on-device \
     ro.sos.experience_api=4 \
-    ro.sos.revision_format=4 \
-    ro.sos.legacy_revision_read=3
+    ro.sos.revision_format=4

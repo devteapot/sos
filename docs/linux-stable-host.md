@@ -6,17 +6,18 @@ SOS now has both a real Linux presentation host and a minimal trusted Wayland
 compositor. The host can remain an ordinary client for desktop development, or
 the Debian reference VM can boot directly into a systemd/PAM session where SOS
 owns tty1, seat0, DRM/KMS, libinput, surface policy, and presentation evidence.
-Both paths preserve the same generated experience, permanent-host lifecycle,
+Both paths preserve the same generated experience, stable-host lifecycle,
 and local provider/state boundary.
 
 ## Current process and presentation boundary
 
 ```text
-revision supervisor
-    | newline JSON: boot / prepare / present / confirm / discard / shutdown
+experience graph supervisor
+    | newline JSON: boot_graph / prepare_graph / present_graph /
+    |               confirm_graph / discard_graph / shutdown
     v
-permanent sos-experience-host process
-    | Luau -> validated Scene ABI v3 -> retained GPUI elements
+stable sos-experience-host process
+    | one Luau VM per graph Instance -> validated retained scene -> GPUI
     v
 one GPUI Wayland surface
     v
@@ -24,14 +25,13 @@ existing Wayland compositor
 ```
 
 `linux-run` also owns a sibling provider/state authority. The Linux-only
-`sos-linux-session` helper verifies the revision store, bootstraps an empty
-authority from the committed pointer, and stages each candidate before asking
-the coordinated supervisor to activate it. The same authority socket is passed
-to the supervisor and permanent host; either top-level service exiting tears
-down the developer session. A non-empty mismatch remains fatal unless the
-durable activation journal binds the pointer as its previous revision and the
-authority as its candidate; that one crash boundary is handed to the existing
-coordinator recovery path instead of being mistaken for corruption.
+`sos-linux-session` helper verifies the revision and graph stores, bootstraps
+authority state for every Experience in the committed graph, and asks the
+graph supervisor to activate candidates transactionally. The same authority
+socket is passed to the supervisor and host; either top-level service exiting
+tears down the developer session. Recovery reconciles the graph activation
+journal, registry and graph pointers, and the authority's batched state
+promotion as one boundary.
 
 `experience-host-protocol` owns the transport ABI shared by the supervisor and
 host. Host stdout is reserved for newline-delimited protocol events; all GPUI,
@@ -39,15 +39,16 @@ runtime, timing, and recovery diagnostics go to stderr. A candidate is compiled
 and rendered in a fresh Luau VM while the accepted scene remains active. The
 installed session sets `SOS_GRAPH_RUNTIME_ISOLATION=process`, which moves v4
 graph VMs behind a bounded subprocess protocol. Set it to `thread` only for a
-deliberate compatibility fallback. On
-`present`, the worker commits that prepared VM and the same GPUI entity renders
-the new scene. In an ordinary Wayland session, a GPUI next-frame callback emits
-`presented`. Under `sos-compositor`, the host instead arms the scene handoff and
+deliberate deployment fallback. On `present_graph`, the workers commit those
+prepared VMs and the same GPUI entity renders the new composed scene. In an
+ordinary Wayland session, a GPUI next-frame callback emits presentation
+evidence. Under `sos-compositor`, the host instead arms the scene handoff and
 waits for the compositor to observe its later shell commit in a successful
-nested backend submit. A later `confirm` request proves that the event loop is
-still responsive before the supervisor advances `current`.
+nested backend submit. A later `confirm_graph` request proves that the event
+loop is still responsive before the supervisor advances registry and graph
+pointers.
 
-The Linux adapter consumes Scene ABI v3: orthogonal layout/content/paint/
+The Linux adapter consumes Experience API v4 scenes: orthogonal layout/content/paint/
 interaction/animation facets, bounded containing-block layout programs, nested
 clips/transforms/layers, host-shaped glyph runs, revision images/fonts, and tap,
 double-tap, long-press, swipe, drag, drop, and single-pointer events all render
@@ -56,8 +57,8 @@ retained paint/gesture surface. A small shared hook lets Android register each
 surface with its raw NDK multi-pointer router without making that router part of
 the Linux client.
 
-The host validates manifest format 3, file sizes, SHA-256 values, source/state
-binding, schema, and API version 3 again before activation. It separately loads
+The host validates manifest format 4, file sizes, SHA-256 values, source/state
+binding, package contract, schema, and API version 4 again before activation. It separately loads
 and re-verifies the candidate revision's content-addressed image/font/shader
 sidecars, then supplies only that set to the candidate's fresh VM. A candidate
 therefore cannot inherit assets from the boot or accepted revision. Wayland

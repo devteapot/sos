@@ -45,9 +45,7 @@ impl ReverseDependencyIndex {
             let Some(revision) = registry.current(&record.experience_id)? else {
                 continue;
             };
-            let Some(package) = revision.package else {
-                continue;
-            };
+            let package = revision.package;
             for binding in package.dependencies.values() {
                 if binding.policy == DependencyPolicy::Tracked {
                     data.dependents
@@ -173,7 +171,7 @@ mod tests {
         let registry = ExperienceRegistry::open(store.clone()).unwrap();
         let dashboard = store.verify(&reference.dashboard_revision).unwrap();
         let source = fs::read(dashboard.directory.join(&dashboard.manifest.source.path)).unwrap();
-        let mut package = dashboard.package.unwrap();
+        let mut package = dashboard.package;
         package
             .dependencies
             .get_mut(&DependencyAlias::parse("agenda").unwrap())

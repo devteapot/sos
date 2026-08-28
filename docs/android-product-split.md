@@ -36,7 +36,7 @@ the documents. The detailed package, boot, credential, and recovery contracts ar
 
 Both inherit the same Samsung a33x device/vendor graph, init, SELinux, Binder,
 SurfaceFlinger, Hardware Composer, audio services, Keystore, Gatekeeper, vendor
-HALs, on-device SOS authority, and revision format 3. The split does not fork
+HALs, on-device SOS authority, and revision format 4. The split does not fork
 hardware enablement or experience artifacts.
 
 Both Compat stages package the platform-signed `SosShell` NativeActivity. Its

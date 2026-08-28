@@ -9,9 +9,8 @@ The prototype deliberately broke the original `UiNode` catalog. API version 4
 uses orthogonal scene facets so an agent can combine layout, content, paint,
 interaction, animation, and semantics on the same retained node, and adds
 named exports, export context, declared child events, and host-owned live
-mounts. There is no compatibility decoder for the catalog ABI or Scene ABI v2.
-API v3 is read only for bounded rollback of retained revisions; it is not a
-valid target for new authoring.
+mounts. There is no compatibility decoder for the catalog ABI, Scene ABI v2,
+or Experience API v3.
 
 ## Module contract
 
@@ -71,8 +70,8 @@ empty list removes them. Local validation accepts repeatable module arguments:
 ## Experience composition status
 
 Package format v4 and Experience API v4 implement named exports and live
-mounts. Every newly authored revision has a package contract. API v3 remains
-only as the legacy activation reader and must not emit `experience_mount`.
+mounts. Every authored, activated, or rolled-back revision has a package
+contract and resolves to an exact graph.
 
 An API v4 module returns an exact export table:
 
@@ -507,9 +506,6 @@ content = {
     },
 }
 
--- API v3 rollback compatibility only; v4 uses a registry-presented ordinary
--- Experience for an independent top-level.
-content = { kind = "application_surface", title = "Legacy SOS Home" }
 ```
 
 `text_session` is a host-owned editing session and requires a stable node ID.
@@ -517,7 +513,7 @@ content = { kind = "application_surface", title = "Legacy SOS Home" }
 inline SVG assets. The runtime validates them, rejects scripts,
 external references, doctypes/entities, and foreign objects, hashes their
 bytes, and exposes only a content-addressed host path after candidate commit.
-Supervisor manifest format 3 additionally packages `svg`, `png`, `jpeg`,
+Supervisor manifest format 4 additionally packages `svg`, `png`, `jpeg`,
 `webp`, `font`, and validated WGSL `shader` sidecars with stable IDs and
 individual byte-length/SHA-256 identities. The runtime re-verifies them and
 admits them to the same candidate asset set; images enter the host asset source
@@ -596,17 +592,13 @@ surface origin. Luau can persist that anchor or change the source-defined
 layout, but cannot address or reposition another surface. Android renders an
 unavailable placeholder.
 
-`application_surface` is a bounded API v3 rollback compatibility primitive. It
-moves one subtree from a retained legacy shell revision into a normal GPUI/XDG
-toplevel, but does not create an Experience identity or isolation boundary.
-New v4 packages cannot rely on it for application lifecycle. Stock instead
-receives the registry's bounded ordinary-role catalog in
+Stock receives the registry's bounded ordinary-role catalog in
 `model.shell.experiences` and emits `shell.present_experience` with a stable
 Experience ID. The supervisor boots that Experience's exact current graph in
 an independent host process, and the host authenticates only the
 `NativeApplication` compositor role. `shell.dismiss_experience` terminates the
-independent host; an ordinary Experience may dismiss only itself. Android
-retains the legacy unavailable placeholder until the v3 reader is removed.
+independent host; an ordinary Experience may dismiss only itself. There is no
+source-defined native-toplevel primitive.
 
 ### Paint and interaction
 
@@ -662,7 +654,7 @@ Paint and hit testing are facets of any node, not a `canvas` escape-hatch type:
 Coordinates are node-local logical pixels. Paths are filled when `width` is
 omitted and stroked otherwise. Layers recursively compose bounded paint with a
 rectangular clip, affine transform, and opacity; GPUI shapes glyph runs in the
-host rather than in Luau. Compatibility gesture events carry `action`,
+host rather than in Luau. Gesture events carry `action`,
 `target`, coordinates, deltas, velocities, and `phase = "start" | "update" |
 "end"`. `pointer_action` exposes the Android pointer stream before GPUI maps it
 to mouse/scroll: `phase = "down" | "move" | "up" | "cancel"` plus
@@ -675,12 +667,10 @@ meaning while the host owns bounded routing and capture lifetime.
 `hover_action` emits only when hover state changes and supplies
 `event.focused`. `surface_drag` is a structural Linux integration flag rather
 than a general-purpose drag callback: on a node rendered inside
-`shell_overlay`, it transfers the pointer gesture to the compositor. It is
-also accepted on the source chrome inside `application_surface`, where it asks
-the compositor to move that native application in Floating mode. The handler
-is attached to the declared node rather than an implicit full-size wrapper, so
-nearby inputs are not converted into move gestures. It is ignored as a
-surface-management authority elsewhere.
+`shell_overlay`, it transfers the pointer gesture to the compositor. The
+handler is attached to the declared node rather than an implicit full-size
+wrapper, so nearby inputs are not converted into move gestures. It is ignored
+as a surface-management authority elsewhere.
 
 For the SM-A336B audit, keep a low-level paint node's complete initial draggable
 region at local `y <= 400`. This is a measured viewport constraint, not a
@@ -737,8 +727,7 @@ does not use this Compat-only outside-tap policy.
 Before presentation the host enforces, among other checks:
 
 - exact module `api_version = 4` and agreement with its immutable v4 package
-  contract; `api_version = 3` is accepted only when activating a retained
-  legacy rollback revision;
+  contract;
 - 2,048 scene nodes per instance, 8,192 aggregate graph scene nodes, depth 32,
   and 256 children per node;
 - 4,096 recursively counted paint operations, depth 16, 8,192 path points,
@@ -747,9 +736,7 @@ Before presentation the host enforces, among other checks:
   and effect payloads;
 - unique IDs and stable IDs for interactive, animated, semantic, and
   text-session nodes;
-- at most one keyed `window_space` and `shell_overlay` in Shell-role v4 scenes,
-  plus at most one bounded `application_surface` only on the v3 compatibility
-  reader;
+- at most one keyed `window_space` and `shell_overlay` in Shell-role scenes;
 - a 16 MiB VM limit and fixed render/update time budgets;
 - at most 64 revision assets, 4 MiB each and 16 MiB total, with checks repeated
   by the supervisor and runtime.

@@ -115,9 +115,7 @@ impl GraphResolver {
             )));
         }
         let revision = self.revisions.verify(revision_id.as_str())?;
-        let package = revision.package.ok_or_else(|| {
-            Error::InvalidGraph(format!("revision {revision_id} has no v4 package metadata"))
-        })?;
+        let package = revision.package;
         if !package.contract.exports.contains_key(&export_id) {
             return Err(Error::InvalidGraph(format!(
                 "revision {revision_id} does not export `{export_id}`"
@@ -157,9 +155,7 @@ impl GraphResolver {
             let resolved_revision_id = RevisionId::parse(resolved_revision_id)
                 .map_err(|error| Error::InvalidGraph(error.to_string()))?;
             let child_revision = self.revisions.verify(resolved_revision_id.as_str())?;
-            let child_package = child_revision.package.as_ref().ok_or_else(|| {
-                Error::InvalidGraph(format!("dependency `{alias}` names a legacy revision"))
-            })?;
+            let child_package = &child_revision.package;
             if child_package.role == experience_package::ExperienceRole::Shell {
                 return Err(Error::InvalidGraph(format!(
                     "dependency `{alias}` cannot mount a shell experience"

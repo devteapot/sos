@@ -374,7 +374,7 @@ mod tests {
                     model: model.clone(),
                     state: durable.state,
                     state_schema_version: durable.schema_version,
-                    package: revision.package.unwrap(),
+                    package: revision.package,
                 });
         }
         let mut runtime = GraphRuntime::start(graph, inputs).unwrap();
@@ -502,7 +502,7 @@ mod tests {
         );
 
         let remix = store.verify(&installed.remix_revision).unwrap();
-        let package = remix.package.unwrap();
+        let package = remix.package;
         assert!(package.dependencies.is_empty());
         assert_eq!(package.derivation.kind, DerivationKind::Remix);
         assert_eq!(package.derivation.parents.len(), 2);

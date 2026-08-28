@@ -708,7 +708,7 @@ impl GraphRuntime {
                 )));
             }
             let runtime = LuauRuntime::compile_with_assets(&input.source, input.sidecars.clone())?;
-            if runtime.api_version() != experience_ir::EXPERIENCE_API_VERSION_V4 {
+            if runtime.api_version() != experience_ir::EXPERIENCE_API_VERSION {
                 return Err(RuntimeError::Invalid(format!(
                     "graph node `{node_id}` must use experience API v4"
                 )));
@@ -1073,11 +1073,7 @@ impl GraphRuntime {
             )
         }
         .and_then(|scene| {
-            validate_scene_authority(
-                &scene,
-                self.instances[node_id].package.role,
-                graph_node.parent.is_some(),
-            )?;
+            validate_scene_authority(&scene, self.instances[node_id].package.role)?;
             Ok(scene)
         });
         let (candidate_scene, failure) = match candidate_scene {
@@ -1180,7 +1176,7 @@ impl GraphRuntime {
         };
         match scene {
             Ok(mut scene) => {
-                validate_scene_authority(&scene, self.instances[node_id].package.role, !root)?;
+                validate_scene_authority(&scene, self.instances[node_id].package.role)?;
                 namespace_instance_scene(&mut scene.root, &self.instances[node_id].instance_id);
                 let instance = self
                     .instances
@@ -1469,12 +1465,10 @@ impl GraphRuntime {
 fn validate_scene_authority(
     scene: &Scene,
     role: experience_package::ExperienceRole,
-    mounted: bool,
 ) -> Result<(), RuntimeError> {
     fn visit(
         node: &SceneNode,
         role: experience_package::ExperienceRole,
-        mounted: bool,
     ) -> Result<(), RuntimeError> {
         match &node.content {
             Some(Content::WindowSpace(_) | Content::ShellOverlay(_))
@@ -1484,19 +1478,14 @@ fn validate_scene_authority(
                     "ordinary experience emitted shell-only content".into(),
                 ));
             }
-            Some(Content::ApplicationSurface(_)) => {
-                return Err(RuntimeError::Invalid(
-                    "v4 experience emitted the v3-only application_surface primitive".into(),
-                ));
-            }
             _ => {}
         }
         for child in &node.children {
-            visit(child, role, mounted)?;
+            visit(child, role)?;
         }
         Ok(())
     }
-    visit(&scene.root, role, mounted)
+    visit(&scene.root, role)
 }
 
 fn new_instance_id(graph_id: &str, node_id: &GraphNodeId) -> Result<InstanceId, RuntimeError> {
@@ -2030,7 +2019,7 @@ mod tests {
     }
 
     #[test]
-    fn scene_authority_rejects_shell_content_and_v3_application_surfaces() {
+    fn scene_authority_reserves_shell_content_for_shell_roles() {
         let shell_content = Scene {
             root: SceneNode {
                 content: Some(Content::WindowSpace(experience_ir::WindowSpaceContent {
@@ -2042,33 +2031,12 @@ mod tests {
             },
         };
         assert!(
-            validate_scene_authority(&shell_content, ExperienceRole::Ordinary, false)
+            validate_scene_authority(&shell_content, ExperienceRole::Ordinary)
                 .unwrap_err()
                 .to_string()
                 .contains("shell-only")
         );
-        validate_scene_authority(&shell_content, ExperienceRole::Shell, false).unwrap();
-
-        let application = Scene {
-            root: SceneNode {
-                content: Some(Content::ApplicationSurface(
-                    experience_ir::ApplicationSurfaceContent {
-                        title: "Demo".into(),
-                    },
-                )),
-                ..Default::default()
-            },
-        };
-        for (role, mounted) in [
-            (ExperienceRole::Ordinary, false),
-            (ExperienceRole::Ordinary, true),
-            (ExperienceRole::Shell, false),
-        ] {
-            assert!(validate_scene_authority(&application, role, mounted)
-                .unwrap_err()
-                .to_string()
-                .contains("v3-only application_surface"));
-        }
+        validate_scene_authority(&shell_content, ExperienceRole::Shell).unwrap();
     }
 
     #[test]

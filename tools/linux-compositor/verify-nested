@@ -324,23 +324,20 @@ gate_suppressed_events="$(
 )"
 [[ -n "$gate_suppressed_events" ]]
 
-if [[ "${SOS_NESTED_AUXILIARY_ONLY:-0}" == 1 ]]; then
+if [[ "${SOS_NESTED_OVERLAY_ONLY:-0}" == 1 ]]; then
   for _ in {1..500}; do
-    if grep -q 'sos_experience_overlay_closed' "$gate_run_dir/session.log" && \
-      grep -q 'sos_experience_application_surface_closed' "$gate_run_dir/session.log"; then
+    if grep -q 'sos_experience_overlay_closed' "$gate_run_dir/session.log"; then
       break
     fi
     kill -0 "$gate_session_pid" 2>/dev/null
     sleep 0.01
   done
   grep -q 'sos_experience_overlay_opened' "$gate_run_dir/session.log"
-  grep -q 'sos_experience_application_surface_opened' "$gate_run_dir/session.log"
   grep -q 'sos_experience_overlay_closed' "$gate_run_dir/session.log"
-  grep -q 'sos_experience_application_surface_closed' "$gate_run_dir/session.log"
   ! grep -qE "already being updated|panicked at|SIGSEGV" "$gate_run_dir/session.log"
   kill -0 "$gate_session_pid" 2>/dev/null
   printf '%s\n' \
-    "linux_auxiliary_windows_nested_passed host_pid=$gate_pid_before suppressed_events=$gate_suppressed_events"
+    "linux_overlay_window_nested_passed host_pid=$gate_pid_before suppressed_events=$gate_suppressed_events"
   exit 0
 fi
 

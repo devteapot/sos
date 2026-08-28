@@ -3,9 +3,7 @@ use std::{
     io::{BufRead, BufReader, Read, Write},
 };
 
-use experience_ir::{
-    ProviderEffect, ProviderRequest, ProviderResponse, StateEnvelope, MAX_STATE_BYTES,
-};
+use experience_ir::{ProviderEffect, ProviderRequest, ProviderResponse, MAX_STATE_BYTES};
 use experience_package::{
     AppearanceProfile, ExperienceId, GraphNodeId, InstanceId, PackageMetadata, ResolvedGraph,
     RevisionId,
@@ -133,9 +131,6 @@ pub struct GraphEffectWire {
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(tag = "action", rename_all = "snake_case")]
 pub enum RevisionRequest {
-    Current {
-        request_id: u64,
-    },
     CurrentGraph {
         request_id: u64,
     },
@@ -195,33 +190,12 @@ pub enum RevisionRequest {
         capability: String,
         profile: AppearanceProfile,
     },
-    Install {
-        request_id: u64,
-        source: String,
-        state: serde_json::Value,
-        schema_version: u64,
-        experience_api_version: u32,
-        assets: Vec<RevisionAssetWire>,
-    },
-    Activate {
-        request_id: u64,
-        revision_id: String,
-        state_stage_id: u64,
-    },
-    /// Restore the authority-pinned stock experience after the active
-    /// generated revision fails validation during host startup. The failed id
-    /// prevents a stale host from rolling back a newer activation.
-    FallbackToStock {
-        request_id: u64,
-        failed_revision_id: String,
-    },
 }
 
 impl RevisionRequest {
     pub fn request_id(&self) -> u64 {
         match self {
-            Self::Current { request_id }
-            | Self::CurrentGraph { request_id }
+            Self::CurrentGraph { request_id }
             | Self::AuditSnapshot { request_id }
             | Self::PresentExperience { request_id, .. }
             | Self::DismissExperience { request_id, .. }
@@ -232,10 +206,7 @@ impl RevisionRequest {
             | Self::CommitGraphAction { request_id, .. }
             | Self::CurrentAppearance { request_id }
             | Self::SetExperienceAppearance { request_id, .. }
-            | Self::UpdateAppearance { request_id, .. }
-            | Self::Install { request_id, .. }
-            | Self::Activate { request_id, .. }
-            | Self::FallbackToStock { request_id, .. } => *request_id,
+            | Self::UpdateAppearance { request_id, .. } => *request_id,
         }
     }
 }
@@ -266,16 +237,6 @@ pub fn read_revision_request<R: Read>(reader: &mut R) -> std::io::Result<Revisio
 pub struct RevisionResponse {
     pub request_id: u64,
     pub ok: bool,
-    pub revision_id: Option<String>,
-    pub source: Option<String>,
-    pub state: Option<StateEnvelope>,
-    pub assets: Vec<RevisionAssetWire>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub stock_revision_id: Option<String>,
-    #[serde(default)]
-    pub stock_trusted: bool,
-    #[serde(default)]
-    pub fallback_performed: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub graph: Option<GraphBundle>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -410,7 +371,8 @@ mod tests {
         let empty = read_revision_request(&mut &b""[..]).unwrap_err();
         assert_eq!(empty.kind(), std::io::ErrorKind::UnexpectedEof);
         let truncated =
-            read_revision_request(&mut &br#"{"action":"current","request_id":4}"#[..]).unwrap_err();
+            read_revision_request(&mut &br#"{"action":"current_graph","request_id":4}"#[..])
+                .unwrap_err();
         assert_eq!(truncated.kind(), std::io::ErrorKind::UnexpectedEof);
     }
 
@@ -422,7 +384,7 @@ mod tests {
             server.shutdown(Shutdown::Write).unwrap();
         });
         let error =
-            request_revision_over_stream(client, RevisionRequest::Current { request_id: 17 })
+            request_revision_over_stream(client, RevisionRequest::CurrentGraph { request_id: 17 })
                 .unwrap_err();
         worker.join().unwrap();
         error
@@ -448,5 +410,13 @@ mod tests {
             serde_json::json!({"action": "audit_snapshot", "request_id": 91})
         );
         assert_eq!(request.request_id(), 91);
+    }
+
+    #[test]
+    fn graph_protocol_rejects_retired_single_revision_actions() {
+        for action in ["current", "install", "activate", "fallback_to_stock"] {
+            let wire = format!(r#"{{"action":"{action}","request_id":1}}"#);
+            assert!(serde_json::from_str::<RevisionRequest>(&wire).is_err());
+        }
     }
 }

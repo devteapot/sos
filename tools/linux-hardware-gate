@@ -13,7 +13,6 @@ hardware_gate_development_manifest=/usr/share/doc/sos/development-deployment-man
 hardware_gate_session_entry=/usr/share/wayland-sessions/sos.desktop
 hardware_gate_state_home="${XDG_STATE_HOME:-$HOME/.local/state}"
 hardware_gate_awake_unit=sos-linux-hardware-gate-awake.service
-hardware_gate_retired_baked_artifacts=/usr/share/sos/experiences/daily-flow.luau:/usr/share/sos/experiences/timeflow.luau:/usr/share/sos/experiences/timeflow.package.json
 hardware_gate_collect_cleanup_unit=""
 
 hardware_gate_fail() {
@@ -105,11 +104,6 @@ hardware_gate_stop_awake_inhibitor() {
 hardware_gate_metadata_value() {
   local file="$1" key="$2"
   sed -n "s/^${key}=//p" "$file" | tail -n 1
-}
-
-hardware_gate_colon_list_contains() {
-  local values="$1" expected="$2"
-  [[ ":$values:" == *":$expected:"* ]]
 }
 
 hardware_gate_monotonic_ns() {
@@ -349,9 +343,6 @@ hardware_gate_verify_installed_files() {
 
 hardware_gate_snapshot_development_files() {
   local output="$1" path expected_bytes expected_sha actual_bytes actual_sha count=0 status
-  local retired_baked_artifacts
-  retired_baked_artifacts="$(hardware_gate_metadata_value \
-    "$hardware_gate_development_metadata" retired_baked_artifacts)"
   : >"$output"
   while IFS=$'\t' read -r path expected_bytes expected_sha; do
     [[ -n "$path" && -n "$expected_bytes" && -n "$expected_sha" ]] || \
@@ -360,15 +351,7 @@ hardware_gate_snapshot_development_files() {
       /usr/local/libexec/sos/*|/usr/local/libexec/sos-agent/*|/usr/share/wayland-sessions/sos.desktop|/usr/share/sos/*) ;;
       *) hardware_gate_fail "unsafe baked artifact path: $path" ;;
     esac
-    if [[ ! -f "$path" ]]; then
-      if hardware_gate_colon_list_contains "$retired_baked_artifacts" "$path"; then
-        printf '%s\t0\t-\tretired\t%s\t%s\n' \
-          "$path" "$expected_bytes" "$expected_sha" >>"$output"
-        count=$((count + 1))
-        continue
-      fi
-      hardware_gate_fail "development artifact is missing: $path"
-    fi
+    [[ -f "$path" ]] || hardware_gate_fail "development artifact is missing: $path"
     actual_bytes="$(stat -c %s "$path")"
     actual_sha="$(sha256sum "$path" | cut -d ' ' -f 1)"
     status=modified
@@ -392,16 +375,12 @@ hardware_gate_verify_development_deployment() {
   [[ -r "$hardware_gate_development_metadata" \
     && -r "$hardware_gate_development_manifest" ]] || \
     hardware_gate_fail "development deployment metadata and manifest must be present together"
-  local source_revision source_dirty retired_baked_artifacts
+  local source_revision source_dirty
   local path expected_bytes expected_sha count=0
   source_revision="$(hardware_gate_metadata_value "$hardware_gate_development_metadata" source_revision)"
   source_dirty="$(hardware_gate_metadata_value "$hardware_gate_development_metadata" source_dirty)"
-  retired_baked_artifacts="$(hardware_gate_metadata_value \
-    "$hardware_gate_development_metadata" retired_baked_artifacts)"
   [[ "$source_revision" =~ ^[0-9a-f]{40}$ && "$source_dirty" =~ ^(true|false)$ ]] || \
     hardware_gate_fail "development deployment source identity is invalid"
-  [[ "$retired_baked_artifacts" == "$hardware_gate_retired_baked_artifacts" ]] || \
-    hardware_gate_fail "development deployment retired-artifact identities are invalid"
   while IFS=$'\t' read -r path expected_bytes expected_sha; do
     case "$path" in
       /usr/local/libexec/sos/sos-compositor|\

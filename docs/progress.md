@@ -15975,3 +15975,60 @@ authoring, and v4-to-v4 rollback gate. The package inspector still exposes
 bounded v3 read/activation/protocol path, rebuild no-v3 Compat and Core
 candidates, and repeat their physical acceptance campaigns. This Compat PASS
 does not complete the separate native Core physical gate.
+
+## 2026-08-28: Complete the source-level v4-only cutover
+
+**Goal / implementation:** Remove the bounded Experience API v3 read,
+activation, and host-protocol paths after the accepted v4-to-v4 Android
+rollback campaign. Starting from source revision
+`9e59fbb39c949bc4a48a5203c47e1c081e18be81`, package format v4 now requires a
+complete package identity and Experience API 4 at the Rust type boundary;
+manifests without `package.json`, non-v4 packages, legacy singleton stores,
+and retired single-revision authority or host actions fail closed. Linux and
+Android boot only resolved graphs. Luau exposes only explicit v4 exports, and
+the compatibility-only `application_surface` scene primitive is removed now
+that registry-owned top-level launching is present.
+
+The registry, graph resolver, state/appearance authority, authoring path, and
+Stock Shell packages retain stable Experience IDs and exact revision binding.
+Android continues to use its separate phone-native Stock Mobile shell. Live
+Linux product and test paths no longer contain Daily Flow/Timeflow retirement
+or artifact handling. Android product properties, inspectors, and host
+fixtures no longer advertise `ro.sos.legacy_revision_read=3`. Historical
+evidence remains unchanged, as do unrelated durable provider-state migration
+versions and Wayland's externally defined `text-input-v3` protocol.
+
+**Verification:** `cargo test --workspace` passed every enabled unit,
+integration, protocol-fixture, property, and documentation test in 7.54
+seconds. The explicit AOSP System, Core native, Linux host, and Android
+authority compile matrix passed in 1.27 seconds. `cargo fmt --all -- --check`,
+`git diff --check`, shell syntax checks, and `tests/aospctl-host-test.sh` all
+passed. The Linux login, live-image, and hardware-gate host fixtures passed in
+5.56 seconds; the complete A33x host fixture passed in 8.07 seconds.
+Module-aware `sosctl validate` accepted both checked-in v4 Stock Shell packages
+in 2.89 seconds: desktop exercised 10 scenarios with 121 maximum scene nodes,
+and Mobile exercised four scenarios with 73 maximum scene nodes. A live-source
+search across crates, apps, experiences, packaging, tools, types, tests, and
+AOSP product definitions found no Experience API 3 constant,
+`application_surface`, legacy-revision property, Daily Flow, or Timeflow
+reference.
+
+**Failures / rejected approaches:** The first complete workspace run exposed
+one stale Linux test-only `graph_mode=false` assertion. Removing that obsolete
+mode from the implementation and fixture made the complete rerun pass. Direct
+standalone typechecking of the desktop entry source remains unsuitable because
+that command does not resolve revision-local `require` modules and also
+reports a pre-existing narrowing diagnostic; the package-aware validator
+typechecks the theme module and validates the complete rendered package.
+Workspace clippy with warnings denied also stops on pre-existing precision,
+derivable-implementation, and scene-visitor argument-count lints, so it is not
+used as the cutover gate; the complete build and test matrix is green.
+
+**Decision / remaining risk / next gate:** Accept the source-level cutover as
+v4-only. No shipped reader, authoring path, activation path, or host protocol
+can execute an Experience API v3 revision. This is not yet a physical product
+PASS: build and seal a fresh no-v3 Compat OTA, install it on the SM-A336B, and
+repeat artifact-bound composition, containment, appearance, recovery,
+phone-native authoring, and rollback acceptance. Then build and run the
+separate native Core campaign before declaring Android milestone parity and
+hardening complete.

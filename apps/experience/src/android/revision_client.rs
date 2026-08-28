@@ -18,18 +18,26 @@ use android_authority_protocol::{
     RevisionRequest, RevisionResponse,
 };
 use experience_package::{AppearanceProfile, ExperienceId, PackageMetadata};
-use runtime_luau::{RevisionAsset, RevisionAssetInput};
+use runtime_luau::RevisionAssetInput;
 use serde_json::Value as JsonValue;
 use service_protocol::{AppearanceResource, ExperienceStateResource};
 
 static NEXT_REQUEST_ID: AtomicU64 = AtomicU64::new(1);
 
-pub(super) fn current_with_retry() -> Result<RevisionResponse, String> {
-    current_request_with_retry(false)
-}
-
 pub(super) fn current_graph_with_retry() -> Result<RevisionResponse, String> {
-    current_request_with_retry(true)
+    let mut last_error = String::new();
+    for _ in 0..100 {
+        match request(RevisionRequest::CurrentGraph {
+            request_id: allocate_request_id(),
+        }) {
+            Ok(response) => return Ok(response),
+            Err(error) => last_error = error,
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
+    Err(format!(
+        "on-device revision authority was unavailable for 5 seconds: {last_error}"
+    ))
 }
 
 pub(super) fn present_experience(
@@ -52,26 +60,6 @@ pub(super) fn dismiss_experience(
         expected_graph_id,
         experience_id,
     })
-}
-
-fn current_request_with_retry(graph: bool) -> Result<RevisionResponse, String> {
-    let mut last_error = String::new();
-    for _ in 0..100 {
-        let request_id = allocate_request_id();
-        let current = if graph {
-            RevisionRequest::CurrentGraph { request_id }
-        } else {
-            RevisionRequest::Current { request_id }
-        };
-        match request(current) {
-            Ok(response) => return Ok(response),
-            Err(error) => last_error = error,
-        }
-        thread::sleep(Duration::from_millis(50));
-    }
-    Err(format!(
-        "on-device revision authority was unavailable for 5 seconds: {last_error}"
-    ))
 }
 
 pub(super) fn confirm_graph(graph_id: String) -> Result<RevisionResponse, String> {
@@ -152,50 +140,6 @@ pub(super) fn set_experience_appearance(
     })?
     .appearance
     .ok_or_else(|| "appearance write response omitted its resource".into())
-}
-
-pub(super) fn install(
-    source: String,
-    state: JsonValue,
-    schema_version: u64,
-    assets: &[RevisionAsset],
-) -> Result<String, String> {
-    let response = request(RevisionRequest::Install {
-        request_id: allocate_request_id(),
-        source,
-        state,
-        schema_version,
-        experience_api_version: experience_ir::EXPERIENCE_API_VERSION,
-        assets: assets
-            .iter()
-            .map(|asset| RevisionAssetWire {
-                id: asset.id.clone(),
-                kind: asset.kind.clone(),
-                bytes: asset.bytes.clone(),
-            })
-            .collect(),
-    })?;
-    response
-        .revision_id
-        .ok_or_else(|| "revision install response omitted its id".to_owned())
-}
-
-pub(super) fn activate(
-    revision_id: String,
-    state_stage_id: u64,
-) -> Result<RevisionResponse, String> {
-    request(RevisionRequest::Activate {
-        request_id: allocate_request_id(),
-        revision_id,
-        state_stage_id,
-    })
-}
-
-pub(super) fn fallback_to_stock(failed_revision_id: String) -> Result<RevisionResponse, String> {
-    request(RevisionRequest::FallbackToStock {
-        request_id: allocate_request_id(),
-        failed_revision_id,
-    })
 }
 
 pub(super) fn inputs(assets: Vec<RevisionAssetWire>) -> Vec<RevisionAssetInput> {

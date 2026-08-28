@@ -595,18 +595,14 @@ impl ExperienceHost {
         let authority_current = revision_client::current_graph_with_retry()
             .unwrap_or_else(|error| panic!("system revision authority is required: {error}"));
         #[cfg(feature = "aosp-system")]
-        let system_revision_id = authority_current.graph.as_ref().map_or_else(
-            || {
-                authority_current.revision_id.clone().unwrap_or_else(|| {
-                    panic!("system revision authority omitted current revision id")
-                })
-            },
-            |bundle| {
-                bundle.graph.nodes[&bundle.graph.root]
-                    .revision_id
-                    .to_string()
-            },
-        );
+        let authority_graph = authority_current
+            .graph
+            .clone()
+            .unwrap_or_else(|| panic!("system revision authority omitted its v4 graph"));
+        #[cfg(feature = "aosp-system")]
+        let system_revision_id = authority_graph.graph.nodes[&authority_graph.graph.root]
+            .revision_id
+            .to_string();
         let mut model = match provider_client::snapshot() {
             Ok(model) => {
                 #[cfg(feature = "core-native")]
@@ -658,9 +654,7 @@ impl ExperienceHost {
             }
         }
         #[cfg(feature = "aosp-system")]
-        if let Some(bundle) = &authority_current.graph {
-            model.appearance = bundle.appearance.profile.clone();
-        }
+        model.appearance = authority_graph.appearance.profile.clone();
         #[cfg(not(feature = "aosp-system"))]
         let (state, remote_state_revision, state_schema_version, remote_source_sha256) =
             match provider_client::load_state() {
@@ -689,69 +683,40 @@ impl ExperienceHost {
             };
         #[cfg(feature = "aosp-system")]
         let (state, remote_state_revision, state_schema_version) = {
-            if let Some(bundle) = &authority_current.graph {
-                let root = &bundle.graph.nodes[&bundle.graph.root];
-                let revision = bundle
-                    .revisions
-                    .iter()
-                    .find(|revision| revision.revision_id == root.revision_id.as_str())
-                    .unwrap_or_else(|| panic!("system graph omitted its root revision"));
-                (
-                    revision.state.resource.state.clone(),
-                    Some(revision.state.resource.revision),
-                    revision.state.resource.schema_version,
-                )
-            } else {
-                let provider_state = provider_client::load_state().unwrap_or_else(|error| {
-                    panic!("system provider/state authority is required: {error}")
-                });
-                let revision_state = authority_current
-                    .state
-                    .clone()
-                    .unwrap_or_else(|| panic!("system revision authority omitted current state"));
-                if provider_state != revision_state {
-                    panic!("revision and provider/state authority disagree at startup");
-                }
-                (
-                    revision_state.state,
-                    Some(revision_state.revision),
-                    revision_state.schema_version,
-                )
-            }
+            let root = &authority_graph.graph.nodes[&authority_graph.graph.root];
+            let revision = authority_graph
+                .revisions
+                .iter()
+                .find(|revision| revision.revision_id == root.revision_id.as_str())
+                .unwrap_or_else(|| panic!("system graph omitted its root revision"));
+            (
+                revision.state.resource.state.clone(),
+                Some(revision.state.resource.revision),
+                revision.state.resource.schema_version,
+            )
         };
         #[cfg(not(feature = "aosp-system"))]
         let source = recover_committed_source(remote_source_sha256.as_deref());
         #[cfg(feature = "aosp-system")]
-        let source = authority_current.graph.as_ref().map_or_else(
-            || {
-                authority_current
-                    .source
-                    .clone()
-                    .unwrap_or_else(|| panic!("system revision authority omitted current source"))
-            },
-            |bundle| {
-                let root = &bundle.graph.nodes[&bundle.graph.root];
-                bundle
-                    .revisions
-                    .iter()
-                    .find(|revision| revision.revision_id == root.revision_id.as_str())
-                    .map(|revision| revision.source.clone())
-                    .unwrap_or_else(|| panic!("system graph omitted root source"))
-            },
-        );
+        let source = {
+            let root = &authority_graph.graph.nodes[&authority_graph.graph.root];
+            authority_graph
+                .revisions
+                .iter()
+                .find(|revision| revision.revision_id == root.revision_id.as_str())
+                .map(|revision| revision.source.clone())
+                .unwrap_or_else(|| panic!("system graph omitted root source"))
+        };
         #[cfg(feature = "aosp-system")]
-        let revision_assets = authority_current.graph.as_ref().map_or_else(
-            || revision_client::inputs(authority_current.assets.clone()),
-            |bundle| {
-                let root = &bundle.graph.nodes[&bundle.graph.root];
-                bundle
-                    .revisions
-                    .iter()
-                    .find(|revision| revision.revision_id == root.revision_id.as_str())
-                    .map(|revision| revision_client::inputs(revision.assets.clone()))
-                    .unwrap_or_default()
-            },
-        );
+        let revision_assets = {
+            let root = &authority_graph.graph.nodes[&authority_graph.graph.root];
+            authority_graph
+                .revisions
+                .iter()
+                .find(|revision| revision.revision_id == root.revision_id.as_str())
+                .map(|revision| revision_client::inputs(revision.assets.clone()))
+                .unwrap_or_default()
+        };
         #[cfg(not(feature = "aosp-system"))]
         let (worker, ready) = RuntimeWorker::spawn(
             source.clone(),
@@ -760,26 +725,13 @@ impl ExperienceHost {
             state_schema_version,
         )
         .expect("runtime worker thread must start");
-        #[cfg(feature = "aosp-system")]
-        let legacy_spawned = authority_current.graph.is_none().then(|| {
-            RuntimeWorker::spawn_with_assets(
-                source.clone(),
-                model.clone(),
-                state.clone(),
-                state_schema_version,
-                revision_assets.clone(),
-            )
-            .expect("runtime worker thread must start")
-        });
         #[cfg(not(feature = "aosp-system"))]
         let results = worker.results();
         #[cfg(feature = "aosp-system")]
-        let (worker, ready, active_graph, pending_graph_confirmation) = if let Some(bundle) =
-            authority_current.graph.clone()
-        {
-            let migration_pending = bundle.migration_pending;
-            let graph_id = bundle.graph_id.clone();
-            let graph = match start_android_graph_runtime(bundle, &model) {
+        let (worker, ready, active_graph, pending_graph_confirmation) = {
+            let migration_pending = authority_graph.migration_pending;
+            let graph_id = authority_graph.graph_id.clone();
+            let graph = match start_android_graph_runtime(authority_graph, &model) {
                 Ok(graph) => graph,
                 Err(error) => {
                     let rollback = revision_client::rollback_graph(graph_id.clone());
@@ -798,19 +750,12 @@ impl ExperienceHost {
                 Some(graph),
                 migration_pending.then_some(graph_id),
             )
-        } else {
-            let (worker, ready) = legacy_spawned.expect("legacy runtime must be present");
-            (Some(worker), Some(ready), None, None)
         };
         #[cfg(feature = "aosp-system")]
         let results = worker.as_ref().map(RuntimeWorker::results);
         let (agent_updates, agent_results) = async_channel::unbounded();
         #[cfg(not(feature = "aosp-system"))]
         Self::attach_worker_channels(ready, results, cx);
-        #[cfg(feature = "aosp-system")]
-        if let (Some(ready), Some(results)) = (ready, results) {
-            Self::attach_worker_channels(ready, results, cx);
-        }
         #[cfg(feature = "aosp-system")]
         Self::attach_provider_poll(cx);
         #[cfg(not(feature = "aosp-system"))]
@@ -900,6 +845,7 @@ impl ExperienceHost {
         }
     }
 
+    #[cfg(not(feature = "aosp-system"))]
     fn attach_worker_channels(
         ready: async_channel::Receiver<Result<WorkerReady, String>>,
         results: async_channel::Receiver<WorkerResult>,
@@ -1323,6 +1269,7 @@ impl ExperienceHost {
         }
     }
 
+    #[cfg(not(feature = "aosp-system"))]
     fn handle_worker_ready(&mut self, result: Result<WorkerReady, String>, cx: &mut Context<Self>) {
         #[cfg(feature = "aosp-system")]
         let _ = &cx;
@@ -1355,18 +1302,9 @@ impl ExperienceHost {
             Err(error) if self.source.trim() != MOBILE_EXPERIENCE.trim() => {
                 #[cfg(feature = "aosp-system")]
                 {
-                    let fallback =
-                        revision_client::fallback_to_stock(self.system_revision_id.clone());
-                    match fallback {
-                        Ok(response) => log::error!(
-                            "system revision rejected at startup: {error}; stock_fallback={} stock_revision={}",
-                            response.fallback_performed,
-                            response.stock_revision_id.as_deref().unwrap_or("unknown")
-                        ),
-                        Err(fallback_error) => log::error!(
-                            "system revision rejected at startup: {error}; stock fallback failed: {fallback_error}"
-                        ),
-                    }
+                    log::error!(
+                        "system graph runtime rejected at startup: {error}; fixed Recovery is required"
+                    );
                     std::process::abort();
                 }
                 #[cfg(not(feature = "aosp-system"))]
@@ -1422,7 +1360,7 @@ impl ExperienceHost {
             return;
         }
         #[cfg(feature = "aosp-system")]
-        if self.active_graph.is_some() {
+        {
             let response = match revision_client::current_graph_with_retry() {
                 Ok(response) => response,
                 Err(error) => {
@@ -1431,10 +1369,7 @@ impl ExperienceHost {
                 }
             };
             let Some(bundle) = response.graph else {
-                self.status = Some((
-                    "Graph restart resolved to the legacy recovery artifact".into(),
-                    false,
-                ));
+                self.status = Some(("Graph restart response omitted its v4 graph".into(), false));
                 return;
             };
             match start_android_graph_runtime(bundle, &self.model) {
@@ -1460,14 +1395,7 @@ impl ExperienceHost {
             self.state.clone(),
             self.state_schema_version,
         );
-        #[cfg(feature = "aosp-system")]
-        let spawned = RuntimeWorker::spawn_with_assets(
-            self.source.clone(),
-            self.model.clone(),
-            self.state.clone(),
-            self.state_schema_version,
-            self.revision_assets.clone(),
-        );
+        #[cfg(not(feature = "aosp-system"))]
         match spawned {
             Ok((worker, ready)) => {
                 let results = worker.results();
@@ -2038,7 +1966,7 @@ impl ExperienceHost {
         if let Err(error) = self
             .worker
             .as_ref()
-            .expect("legacy worker")
+            .expect("standalone worker")
             .prepare_candidate(
                 request_id,
                 candidate_source,
@@ -2092,7 +2020,7 @@ impl ExperienceHost {
                 return;
             }
         };
-        if runtime.api_version() != experience_ir::EXPERIENCE_API_VERSION_V4 {
+        if runtime.api_version() != experience_ir::EXPERIENCE_API_VERSION {
             self.reject_v4_candidate("New authoring submissions must use Experience API v4".into());
             return;
         }
@@ -2437,15 +2365,8 @@ impl ExperienceHost {
             }
         };
         let Some(bundle) = response.graph else {
-            self.status = Some((
-                "Rollback selected the retained v3 recovery artifact; relaunching is required"
-                    .into(),
-                false,
-            ));
-            log::warn!(
-                "android_graph_rollback_selected_legacy failed_graph_id={}",
-                failed_graph_id
-            );
+            self.status = Some(("Graph rollback response omitted its v4 graph".into(), false));
+            log::error!("android_graph_rollback_omitted_graph failed_graph_id={failed_graph_id}");
             return;
         };
         let graph_id = bundle.graph_id.clone();
@@ -2567,7 +2488,7 @@ impl ExperienceHost {
         if let Err(error) = self
             .worker
             .as_ref()
-            .expect("legacy worker")
+            .expect("standalone worker")
             .prepare_candidate(
                 request_id,
                 source,
@@ -2582,6 +2503,7 @@ impl ExperienceHost {
         }
     }
 
+    #[cfg(not(feature = "aosp-system"))]
     fn handle_worker_result(&mut self, result: WorkerResult, cx: &mut Context<Self>) {
         match result {
             WorkerResult::CandidatePrepared {
@@ -2597,7 +2519,7 @@ impl ExperienceHost {
                     let _ = self
                         .worker
                         .as_ref()
-                        .expect("legacy worker")
+                        .expect("standalone worker")
                         .discard_candidate(request_id);
                     return;
                 };
@@ -2621,7 +2543,7 @@ impl ExperienceHost {
                         let _ = self
                             .worker
                             .as_ref()
-                            .expect("legacy worker")
+                            .expect("standalone worker")
                             .discard_candidate(request_id);
                         self.candidates.remove(&request_id);
                         self.pending_agent_activations.remove(&request_id);
@@ -2644,93 +2566,12 @@ impl ExperienceHost {
                         let _ = self
                             .worker
                             .as_ref()
-                            .expect("legacy worker")
+                            .expect("standalone worker")
                             .discard_candidate(request_id);
                         self.candidates.remove(&request_id);
                         self.pending_agent_activations.remove(&request_id);
                         self.status =
                             Some((format!("Could not persist staged revision: {error}"), false));
-                        return;
-                    }
-                    #[cfg(feature = "aosp-system")]
-                    {
-                        self.status =
-                            Some(("Candidate validated; staging system revision…".into(), true));
-                        let revision_id = match revision_client::install(
-                            source.clone(),
-                            envelope.state.clone(),
-                            state_schema_version,
-                            &assets,
-                        ) {
-                            Ok(revision_id) => revision_id,
-                            Err(error) => {
-                                let _ = fs::remove_file(file_path(CANDIDATE_STATE_FILE));
-                                let _ = self
-                                    .worker
-                                    .as_ref()
-                                    .expect("legacy worker")
-                                    .discard_candidate(request_id);
-                                self.candidates.remove(&request_id);
-                                self.pending_agent_activations.remove(&request_id);
-                                self.status =
-                                    Some((format!("Could not install revision: {error}"), false));
-                                return;
-                            }
-                        };
-                        let stage_id = match provider_client::stage_state(
-                            expected_revision,
-                            state_schema_version,
-                            &envelope.state,
-                            &hash,
-                            &[],
-                        ) {
-                            Ok(stage_id) => stage_id,
-                            Err(error) => {
-                                let _ = fs::remove_file(file_path(CANDIDATE_STATE_FILE));
-                                let _ = self
-                                    .worker
-                                    .as_ref()
-                                    .expect("legacy worker")
-                                    .discard_candidate(request_id);
-                                self.candidates.remove(&request_id);
-                                self.pending_agent_activations.remove(&request_id);
-                                self.status =
-                                    Some((format!("Could not stage revision: {error}"), false));
-                                return;
-                            }
-                        };
-                        if self.advance_agent_activation(request_id, AgentActivationPhase::Staged) {
-                            log::info!(
-                                "android_agent_activation_stage_ack request_id={request_id} revision={} state_stage_id={stage_id} phase=staged authority_committed=false",
-                                revision_id
-                            );
-                        }
-                        self.pending_authority_activations.insert(
-                            request_id,
-                            PendingAuthorityActivation {
-                                revision_id,
-                                state_stage_id: stage_id,
-                                previous_source: self.source.clone(),
-                            },
-                        );
-                        self.status = Some((
-                            "Candidate staged; activating scene before system commit…".into(),
-                            true,
-                        ));
-                        if let Err(error) = self
-                            .worker
-                            .as_ref()
-                            .expect("legacy worker")
-                            .commit_candidate(request_id)
-                        {
-                            self.candidates.remove(&request_id);
-                            self.pending_authority_activations.remove(&request_id);
-                            self.pending_agent_activations.remove(&request_id);
-                            let _ = provider_client::abort_state(stage_id);
-                            let _ = fs::remove_file(file_path(CANDIDATE_STATE_FILE));
-                            self.status =
-                                Some((format!("Candidate could not activate: {error}"), false));
-                        }
                         return;
                     }
                     #[cfg(not(feature = "aosp-system"))]
@@ -2752,7 +2593,7 @@ impl ExperienceHost {
                                 let _ = self
                                     .worker
                                     .as_ref()
-                                    .expect("legacy worker")
+                                    .expect("standalone worker")
                                     .discard_candidate(request_id);
                                 self.candidates.remove(&request_id);
                                 self.pending_agent_activations.remove(&request_id);
@@ -2779,7 +2620,7 @@ impl ExperienceHost {
                                 let _ = self
                                     .worker
                                     .as_ref()
-                                    .expect("legacy worker")
+                                    .expect("standalone worker")
                                     .discard_candidate(request_id);
                                 self.candidates.remove(&request_id);
                                 self.pending_agent_activations.remove(&request_id);
@@ -2806,7 +2647,7 @@ impl ExperienceHost {
                         if let Err(error) = self
                             .worker
                             .as_ref()
-                            .expect("legacy worker")
+                            .expect("standalone worker")
                             .commit_candidate(request_id)
                         {
                             self.candidates.remove(&request_id);
@@ -2827,7 +2668,7 @@ impl ExperienceHost {
                 if let Err(error) = self
                     .worker
                     .as_ref()
-                    .expect("legacy worker")
+                    .expect("standalone worker")
                     .commit_candidate(request_id)
                 {
                     self.candidates.remove(&request_id);
@@ -3254,134 +3095,22 @@ impl ExperienceHost {
         }
     }
 
+    #[cfg(not(feature = "aosp-system"))]
     fn frame_presented(&mut self, mut frame: PendingFrame, cx: &mut Context<Self>) {
         let visible_us = micros(frame.timings.submitted_at.elapsed());
         let frame_callback_us = micros(frame.callback_scheduled_at.elapsed());
         let post_worker_us = visible_us.saturating_sub(frame.timings.worker_total_us);
         match frame.purpose {
             CandidatePurpose::Regular => {
-                #[cfg(feature = "aosp-system")]
-                {
-                    let activation = frame.authority_activation.take().unwrap_or_else(|| {
-                        log::error!(
-                            "system candidate reached presentation without activation metadata"
-                        );
-                        std::process::abort();
-                    });
-                    let activated = match revision_client::activate(
-                        activation.revision_id.clone(),
-                        activation.state_stage_id,
-                    ) {
-                        Ok(activated) => activated,
-                        Err(error) => {
-                            log::warn!(
-                                "system_revision_activation_request_failed revision={} stage_id={} error={error}; reconciling authority",
-                                activation.revision_id,
-                                activation.state_stage_id
-                            );
-                            let current = revision_client::current_with_retry().unwrap_or_else(
-                                |reconcile_error| {
-                                    log::error!(
-                                        "system_revision_activation_reconcile_failed revision={} activation_error={error} reconcile_error={reconcile_error}",
-                                        activation.revision_id
-                                    );
-                                    std::process::abort();
-                                },
-                            );
-                            match current.revision_id.as_deref() {
-                                Some(revision_id) if revision_id == activation.revision_id => {
-                                    log::warn!(
-                                        "system_revision_activation_response_recovered revision={} stage_id={} activation_error={error}",
-                                        activation.revision_id,
-                                        activation.state_stage_id
-                                    );
-                                    current
-                                }
-                                Some(revision_id) if revision_id == self.system_revision_id => {
-                                    if let Err(recovery_error) = self.restore_authority_revision(
-                                        current,
-                                        activation.state_stage_id,
-                                        error,
-                                        cx,
-                                    ) {
-                                        log::error!(
-                                            "system_revision_activation_restore_failed revision={} error={recovery_error}",
-                                            activation.revision_id
-                                        );
-                                        std::process::abort();
-                                    }
-                                    return;
-                                }
-                                observed => {
-                                    log::error!(
-                                        "system_revision_activation_reconcile_mismatch expected_candidate={} expected_previous={} observed={}",
-                                        activation.revision_id,
-                                        self.system_revision_id,
-                                        observed.unwrap_or("none")
-                                    );
-                                    std::process::abort();
-                                }
-                            }
-                        }
-                    };
-                    if activated.revision_id.as_deref() != Some(&activation.revision_id)
-                        || activated.source.as_deref() != Some(self.source.as_str())
-                    {
-                        log::error!(
-                            "system_revision_activation_mismatch expected_revision={}",
-                            activation.revision_id
-                        );
-                        std::process::abort();
-                    }
-                    let envelope = activated.state.unwrap_or_else(|| {
-                        log::error!("system revision activation omitted committed state");
-                        std::process::abort();
-                    });
-                    if let Err(error) = write_file(PREVIOUS_FILE, &activation.previous_source) {
-                        log::warn!("previous_source_cache_write_failed error={error}");
-                    }
-                    if let Err(error) = write_file(ACTIVE_FILE, &self.source) {
-                        log::warn!("active_source_cache_write_failed error={error}");
-                    }
-                    self.remote_state_revision = Some(envelope.revision);
-                    self.state_schema_version = envelope.schema_version;
-                    self.state = envelope.state;
-                    self.system_revision_id = activation.revision_id.clone();
-                    self.revision_activation_pending = false;
-                    let _ = fs::remove_file(file_path(CANDIDATE_FILE));
-                    let _ = fs::remove_file(file_path(CANDIDATE_STATE_FILE));
+                let _ = frame.authority_activation.take();
+                if let Some(mut evidence) = frame.agent_activation.take() {
+                    evidence
+                        .advance(AgentActivationPhase::Committed)
+                        .expect("agent activation commit requires staged host evidence");
                     log::info!(
-                        "android_authority_revision_activated revision={} state_revision={} source_sha256={}",
-                        activation.revision_id,
-                        envelope.revision,
-                        envelope.source_sha256
-                    );
-                    if let Some(mut evidence) = frame.agent_activation.take() {
-                        evidence
-                            .advance(AgentActivationPhase::Committed)
-                            .expect("agent activation commit requires staged authority evidence");
-                        log::info!(
-                            "android_agent_activation_commit request_id={} revision={} state_revision={} source_sha256={} phase=committed authority=system",
-                            evidence.request_id(),
-                            activation.revision_id,
-                            envelope.revision,
-                            envelope.source_sha256
-                        );
-                    }
-                    self.dispatch_pending_input_event(cx);
-                }
-                #[cfg(not(feature = "aosp-system"))]
-                {
-                    let _ = frame.authority_activation.take();
-                    if let Some(mut evidence) = frame.agent_activation.take() {
-                        evidence
-                            .advance(AgentActivationPhase::Committed)
-                            .expect("agent activation commit requires staged host evidence");
-                        log::info!(
                             "android_agent_activation_commit request_id={} phase=committed authority=host-presented",
                             evidence.request_id()
                         );
-                    }
                 }
                 self.status = Some((
                     format!("Luau revision visible in {} ms", visible_us / 1_000),
@@ -3493,70 +3222,6 @@ impl ExperienceHost {
                 std::process::abort();
             }
         }
-    }
-
-    #[cfg(feature = "aosp-system")]
-    fn restore_authority_revision(
-        &mut self,
-        current: android_authority_protocol::RevisionResponse,
-        stale_stage_id: u64,
-        activation_error: String,
-        cx: &mut Context<Self>,
-    ) -> Result<(), String> {
-        let revision_id = current
-            .revision_id
-            .ok_or_else(|| "authority reconciliation omitted the current revision id".to_owned())?;
-        let source = current
-            .source
-            .ok_or_else(|| "authority reconciliation omitted the current source".to_owned())?;
-        let envelope = current
-            .state
-            .ok_or_else(|| "authority reconciliation omitted the current state".to_owned())?;
-        if envelope.source_sha256 != source_sha256(&source) {
-            return Err("authority reconciliation returned inconsistent source and state".into());
-        }
-        let revision_assets = revision_client::inputs(current.assets);
-        let (worker, ready) = RuntimeWorker::spawn_with_assets(
-            source.clone(),
-            self.model.clone(),
-            envelope.state.clone(),
-            envelope.schema_version,
-            revision_assets.clone(),
-        )
-        .map_err(|error| format!("last known-good worker could not start: {error}"))?;
-        let results = worker.results();
-        self.worker = Some(worker);
-        Self::attach_worker_channels(ready, results, cx);
-        self.scene = loading_scene();
-        self.source = source;
-        self.state = envelope.state;
-        self.remote_state_revision = Some(envelope.revision);
-        self.state_schema_version = envelope.schema_version;
-        self.system_revision_id = revision_id.clone();
-        self.revision_assets = revision_assets;
-        self.pending_focus_restore = None;
-        let discarded_events = self.pending_input_events.len();
-        self.pending_input_events.clear();
-        let _ = fs::remove_file(file_path(CANDIDATE_FILE));
-        let _ = fs::remove_file(file_path(CANDIDATE_STATE_FILE));
-        if let Err(error) = provider_client::abort_state(stale_stage_id) {
-            log::warn!(
-                "system_revision_activation_stage_abort_failed stage_id={stale_stage_id} error={error}"
-            );
-        }
-        self.revision_recovery_status = Some(format!(
-            "Submit was not activated; restored the last known-good experience ({activation_error})"
-        ));
-        self.status = Some(("Restoring the last known-good experience…".into(), false));
-        self.accessibility_dirty = true;
-        log::warn!(
-            "system_revision_activation_restoring revision={} state_revision={} discarded_events={} activation_error={activation_error}",
-            revision_id,
-            envelope.revision,
-            discarded_events
-        );
-        cx.notify();
-        Ok(())
     }
 
     fn complete_stress(&mut self) {
@@ -3770,16 +3435,6 @@ impl ExperienceHost {
                     } else {
                         space.fallback.clone()
                     }),
-            );
-        }
-        if matches!(&node.content, Some(Content::ApplicationSurface(_))) {
-            element = element.child(
-                div()
-                    .size_full()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .child("Application surfaces are unavailable on this host"),
             );
         }
         #[cfg(feature = "aosp-system")]
@@ -4598,6 +4253,7 @@ impl Render for ExperienceHost {
         if native_input::software_keyboard_visible() {
             root = root.child(native_input::software_keyboard_overlay());
         }
+        #[cfg(not(feature = "aosp-system"))]
         if let Some(mut frame) = pending_frame.take() {
             frame.commit_to_render_us =
                 micros(render_started_at.duration_since(frame.committed_at));

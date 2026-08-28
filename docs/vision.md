@@ -130,12 +130,14 @@ The versioned identity, authority, appearance, update, authoring, and
 acceptance rules are defined in
 [`experience-composition.md`](experience-composition.md). Package and
 Experience API v4 implement them in the shared runtime and the Linux and
-Android hosts. API v3 remains only as a bounded rollback reader. Physical
-live-composition acceptance remains open on both platforms.
+Android hosts. Non-v4 packages are rejected before runtime preparation. The
+complete live-composition campaign has passed on both platforms; fresh rebuilt
+artifacts remain to be accepted after the final reader removal.
 
 ## One experience language, not a permanent IR ceiling
 
-The current GPUI host interprets Luau into the bounded Scene ABI v3. Scene
+The current GPUI host interprets Experience API v4 Luau into bounded retained
+scene nodes. Scene
 nodes have orthogonal layout, content, paint, interaction, animation, and
 semantics facets instead of a catalog-defining node `type`. This is the base of
 the long-lived execution path, not the full thesis; each facet must continue to
@@ -273,7 +275,7 @@ synthetic data:
    action.
 
 The third request was the decisive one. The original `UiNode` catalog could not
-express it. Scene ABI v3 lets generated paint operations and hit regions
+express it. The retained scene ABI lets generated paint operations and hit regions
 coexist on an ordinary retained node. The first trial required an operator
 layout correction; a later curated single-shot agent output completed the
 interaction untouched through the low-level Luau capability API and closed the
