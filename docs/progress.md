@@ -16024,6 +16024,16 @@ Workspace clippy with warnings denied also stops on pre-existing precision,
 derivable-implementation, and scene-visitor argument-count lints, so it is not
 used as the cutover gate; the complete build and test matrix is green.
 
+The first exact ARM64 Compat packaging attempt stopped before ROM assembly
+after 12.98 seconds with 815,188 KiB peak RSS. The target build exposed one
+expression-level `cfg` rejected by the Android Rust toolchain and one untyped
+`None` left after removal of the standalone worker. No OTA was created and the
+device was not contacted. The system-graph initialization now uses a scoped
+statement, contains no placeholder standalone worker values, and gates
+standalone-only imports and frame timing. The exact ARM64 Compat APK build then
+passed in 9.47 seconds with 730,280 KiB peak RSS; this was a compile probe, not
+a sealed or installable acceptance artifact.
+
 **Decision / remaining risk / next gate:** Accept the source-level cutover as
 v4-only. No shipped reader, authoring path, activation path, or host protocol
 can execute an Experience API v3 revision. This is not yet a physical product

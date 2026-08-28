@@ -50,12 +50,14 @@ use gpui_mobile::android::AndroidPlatform;
 use gpui_mobile::android::{jni, SharedPlatform};
 #[cfg(not(feature = "core-native"))]
 use gpui_mobile::packages::deeplink;
-use runtime_luau::{CandidateTimings, RuntimeWorker, WorkerReady, WorkerResult};
+use runtime_luau::{CandidateTimings, RuntimeWorker};
 #[cfg(feature = "aosp-system")]
 use runtime_luau::{
     GraphRevisionInput, GraphRuntimeSnapshot, GraphRuntimeWorker, GraphWorkerResult,
     RuntimeInstanceStatus,
 };
+#[cfg(not(feature = "aosp-system"))]
+use runtime_luau::{WorkerReady, WorkerResult};
 use serde_json::{json, Value as JsonValue};
 use sha2::{Digest, Sha256};
 #[cfg(feature = "core-native")]
@@ -66,11 +68,13 @@ use crate::android_interaction_contract::semantic_tracker_offset;
 #[cfg(not(feature = "core-native"))]
 use crate::android_interaction_contract::{text_tap_outcome, TextTapOutcome};
 use crate::assets::{self, SosAssets, ALBUM_ASSET};
+use crate::deterministic_mobile_agent_candidate;
 #[cfg(feature = "aosp-system")]
 use crate::graph_scene::composed_graph_scene;
 use crate::pointer_input;
 use crate::scene_surface;
-use crate::{deterministic_mobile_agent_candidate, MOBILE_EXPERIENCE};
+#[cfg(not(feature = "aosp-system"))]
+use crate::MOBILE_EXPERIENCE;
 use native_input::NativeTextInput;
 
 static FILES_DIR: OnceLock<PathBuf> = OnceLock::new();
@@ -654,7 +658,9 @@ impl ExperienceHost {
             }
         }
         #[cfg(feature = "aosp-system")]
-        model.appearance = authority_graph.appearance.profile.clone();
+        {
+            model.appearance = authority_graph.appearance.profile.clone();
+        }
         #[cfg(not(feature = "aosp-system"))]
         let (state, remote_state_revision, state_schema_version, remote_source_sha256) =
             match provider_client::load_state() {
@@ -728,7 +734,7 @@ impl ExperienceHost {
         #[cfg(not(feature = "aosp-system"))]
         let results = worker.results();
         #[cfg(feature = "aosp-system")]
-        let (worker, ready, active_graph, pending_graph_confirmation) = {
+        let (active_graph, pending_graph_confirmation) = {
             let migration_pending = authority_graph.migration_pending;
             let graph_id = authority_graph.graph_id.clone();
             let graph = match start_android_graph_runtime(authority_graph, &model) {
@@ -744,15 +750,8 @@ impl ExperienceHost {
             };
             let results = graph.worker.results();
             Self::attach_graph_channels(results, cx);
-            (
-                None,
-                None,
-                Some(graph),
-                migration_pending.then_some(graph_id),
-            )
+            (Some(graph), migration_pending.then_some(graph_id))
         };
-        #[cfg(feature = "aosp-system")]
-        let results = worker.as_ref().map(RuntimeWorker::results);
         let (agent_updates, agent_results) = async_channel::unbounded();
         #[cfg(not(feature = "aosp-system"))]
         Self::attach_worker_channels(ready, results, cx);
@@ -783,7 +782,7 @@ impl ExperienceHost {
             worker: {
                 #[cfg(feature = "aosp-system")]
                 {
-                    worker
+                    None
                 }
                 #[cfg(not(feature = "aosp-system"))]
                 {
@@ -4138,7 +4137,9 @@ impl Render for ExperienceHost {
         {
             self.dispatch_pending_input_event(cx);
         }
+        #[cfg(not(feature = "aosp-system"))]
         let mut pending_frame = self.pending_frame.take();
+        #[cfg(not(feature = "aosp-system"))]
         let render_started_at = Instant::now();
 
         pointer_input::begin_frame();
