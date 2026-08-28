@@ -16489,3 +16489,89 @@ seconds with 5,100 KiB peak RSS. Build and inspect one superseding Core OTA,
 install it once, and restart the eleven-stage automation campaign from Stock.
 The final gate still requires clean authoring, exact v4 rollback, no relevant
 enforcing AVC, and an independently verified evidence manifest.
+
+## 2026-08-28: Accept the complete automated Core v4 composition campaign
+
+**Goal / exact artifact:** Rebuild from the narrow aggregate-memory policy,
+install exactly once, and close Core's eleven-stage v4 composition, recovery,
+authoring, and rollback gate through the bounded no-Zygote input service.
+Source `e21d0fcb4e314d78b36f21af9b8987a9f6aa2017` built product
+`sos.core1.e21d0fcb4e31.41406fcf892b` in 233.21 seconds with 2,978,732 KiB
+peak RSS. Complete inspection passed in 18.14 seconds with 47,036 KiB peak
+RSS, including package signature, AVB, product graph, v4 identity, no-Zygote
+ownership, debug-only automation packaging, and the compiled read-only
+`sos_core_host` to `proc_meminfo` rule.
+
+The sealed 1,022,816,032-byte OTA is
+`.cache/evidence/android-v4-e21d0fc/core1/sealed/lineage-23.0-20260828-UNOFFICIAL-sos_core1_a33x-e21d0fc.zip`
+with SHA-256
+`c05d2a1e64616c69d33eba07dc5f718c7f8dad0e6651950e2bddcf39e9d85ff0`.
+Its independently verified nine-file, 893-byte offline manifest has SHA-256
+`f900212175af97eb6fb75f0b966b88ac42e4f4a8254dd003d3c12e4b01d36038`.
+The evidence-copy inspector and complete ZIP test took 18.00 and 4.46 seconds
+respectively.
+
+**Install / readiness:** The automatic Recovery endpoint appeared in 29.55
+seconds. One and only one sideload completed in 77.73 seconds with `Total xfer:
+1.00x`; no wipe or manual Recovery action occurred. Transport returned in
+66.64 seconds. Exact readiness then passed in 0.41 seconds with Enforcing
+SELinux, `ro.zygote=no_zygote`, supervisor/child PIDs 922/934, authority PID
+943, platform PID 945, and no relevant crash or enforcing AVC. The automation
+status response named only `sos_core_automation_touch` with origin `uinput`.
+
+**Composition / containment / input:** Stock launched Dashboard as three
+independently ready Instances. Agenda's namespaced `open_first` action crossed
+the mount and retained `Design review` in both child and parent state.
+Authority appearance advanced from generation 21 to 22 without changing any
+Experience revision. The Agenda update exception and Luau time-budget
+violation each failed only that child and each recovered, while a subsequent
+Dashboard ping proved parent liveness. Core's native keyboard focused the
+namespaced mounted input, received four automation taps through the rendered
+keys, committed durable draft `test`, and closed through its own hide key.
+Accessibility publication remained nonempty throughout.
+
+**Independent recovery / authoring / rollback:** The bounded host fault and
+retry completed in 1.30 seconds: supervisor 922 and authority 943 stayed fixed,
+child 934 became 2228, and the same complete Dashboard graph returned.
+Authority-only recovery took 0.50 seconds and changed only PID 943 to 2393.
+Appearance 22, the Agenda draft and selection, and Dashboard state survived
+both. The Offline agent accepted injected prompt `remix`, ran Node with
+`--jitless`, validated, staged, presented, and authority-committed graph
+`198f12c5b613f1fcfaf23286f0b56447972023c86a419f5c90625790bb19ad65`
+without the former proc denial. Stock revision changed from
+`43c52a6c45ee843ad1535ec81dd4833f8d8853911780a9e0d22239c3d7717edb`
+to `f9bfec4e0b217ba63fb356e4bdf9a7d2063b44bd4b1b5108a94500b3da451944`.
+The host-owned Controls surface then rolled back to the exact original revision
+while authority 2393 and host PIDs 922/2228 remained fixed.
+
+**Audit failure and correction:** The first complete audit rejected the
+required Core host-restart evidence because its common crash scan classified
+the intentionally injected `Fatal signal 6` and `native_gpui_failed signal=6`
+as an unexpected crash. This was a harness contradiction, not a device failure.
+The auditor now excludes exactly one such pair only in Core's cumulative
+host-restart and later logs, and only when the same ordered log proves one
+supervisor injection, `SI_USER` from UID 1000, fixed recovery with ready keys,
+one retry, and a subsequent three-Instance Dashboard runtime. Missing any
+fence or observing any additional crash still fails. The Core fixture now
+contains the intentional crash chain, and a negative fixture removes the retry
+fence and must fail. The complete host suite passes in 8.71 seconds with 5,188
+KiB peak RSS.
+
+**Verdict / evidence:** `audit-v4-composition-campaign` passed in 2.54 seconds
+with 5,092 KiB peak RSS. The verdict records exact product revision, appearance
+22, two contained failures, two recoveries, 274.89 seconds of campaign elapsed
+time, and `input_mode=automation`. The final 138-file manifest at
+`.cache/evidence/android-v4-e21d0fc-physical/core1/composition/manifest.tsv`
+has SHA-256
+`1eb6761befa93ee2a4e2670f3b6cbaa71c08c53e77998b5d55eaac7f09b6a3b6`
+and independently verifies. Accept automated Core v4 composition and
+authoring/rollback on this exact artifact. Keep the separately labeled
+physical Samsung digitizer result as the hardware-input claim; this campaign
+claims repeatable functional input automation, not physical touch.
+
+**Remaining risk / next gate:** The service intentionally proves only bounded
+debug-build input automation; it is absent from production user builds and does
+not replace a physical-panel result. Preserve the accepted artifact and evidence
+unchanged, then use the same automation mode for repeatable Core regressions
+while retaining a separately witnessed Samsung digitizer gate for releases that
+claim physical touch behavior.

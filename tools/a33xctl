@@ -2362,7 +2362,7 @@ require_v4_log_pattern() {
 audit_v4_stage_common() {
   [[ "$#" -eq 5 ]] || fail "internal usage: audit_v4_stage_common ROOT STAGE PRODUCT SERIAL REVISION"
   local evidence_root="$1" stage="$2" product="$3" serial="$4" expected_revision="$5"
-  local stage_root="$evidence_root/stages/$stage" png_magic
+  local stage_root="$evidence_root/stages/$stage" png_magic relevant_crashes
   for required in properties.env security.env processes.txt surfaces.txt logcat.txt \
     composition.json screen.png meminfo.txt runtime-memory.txt pids.env stage.env; do
     [[ -s "$stage_root/$required" ]] || fail "v4 composition stage $stage lacks $required"
@@ -2389,8 +2389,25 @@ audit_v4_stage_common() {
     fail "v4 composition stage $stage screenshot is not PNG"
   grep -F 'sos-authority' "$stage_root/processes.txt" >/dev/null || \
     fail "v4 composition stage $stage lacks the authority process"
-  if grep -Eiq '(Fatal signal.*sos|ANR in dev\.sos|native_gpui_failed|android_authority_fatal|system_revision_activation_failed)' \
-    "$stage_root/logcat.txt"; then
+  relevant_crashes="$(grep -Ei \
+    '(Fatal signal.*sos|ANR in dev\.sos|native_gpui_failed|android_authority_fatal|system_revision_activation_failed)' \
+    "$stage_root/logcat.txt" || true)"
+  if [[ "$product" == core1 && \
+    "$stage" =~ ^(host-restart|authority-restart|authored|rollback)$ ]] && \
+    awk '
+      /native_fault_injected child=[0-9]+ signal=6/ { fault += 1 }
+      /Fatal signal 6 \(SIGABRT\), code 0 \(SI_USER from pid [0-9]+, uid 1000\).*pid [0-9]+ \(sos-core-host\)$/ { fatal += 1 }
+      /native_gpui_failed signal=6$/ { failed += 1 }
+      /fixed_recovery_ready child_status=6 .*keys=ready$/ { ready += 1 }
+      /fixed_recovery_action action=retry$/ { retry += 1 }
+      retry > 0 && /android_graph_runtime_ready .*root_experience=sos\.example\.dashboard instances=3$/ { restored += 1 }
+      END { exit !(fault == 1 && fatal == 1 && failed == 1 && ready == 1 && retry == 1 && restored >= 1) }
+    ' "$stage_root/logcat.txt"; then
+    relevant_crashes="$(grep -Ev \
+      'Fatal signal 6 \(SIGABRT\), code 0 \(SI_USER from pid [0-9]+, uid 1000\).*pid [0-9]+ \(sos-core-host\)$|native_gpui_failed signal=6$' \
+      <<<"$relevant_crashes" || true)"
+  fi
+  if [[ -n "$relevant_crashes" ]]; then
     fail "v4 composition stage $stage contains a relevant crash or ANR"
   fi
   if [[ "$product" == compat1 ]]; then

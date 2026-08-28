@@ -160,6 +160,18 @@ EOF
       printf '%s\n' \
         '08-27 14:00:32.000 I sos-core-input: core_input_automation_tap sequence=7 x=120 y=400 peer_uid=2000 origin=uinput'
     fi
+    if [[ "$mock_product" == core1 && \
+      "$mock_stage" =~ ^(host-restart|authority-restart|authored|rollback)$ ]]; then
+      printf '%s\n' \
+        '08-27 14:00:33.000 W SosCoreHost: native_fault_injected child=501 signal=6' \
+        '08-27 14:00:33.010 F libc: Fatal signal 6 (SIGABRT), code 0 (SI_USER from pid 500, uid 1000) in tid 501 (sos-core-host), pid 501 (sos-core-host)' \
+        '08-27 14:00:33.020 E SosCoreHost: native_gpui_failed signal=6' \
+        '08-27 14:00:33.030 W SosCoreHost: fixed_recovery_ready child_status=6 volume_up=retry volume_down=android keys=ready' \
+        '08-27 14:00:33.040 W SosCoreHost: fixed_recovery_action action=retry' \
+        '08-27 14:00:33.045 I sos-core-host: core1_experience_start ce_available=false native_synthetic_password=false de_storage=true' \
+        '08-27 14:00:33.046 I sos-experience: SOS experience window is live frame_padding=none' \
+        '08-27 14:00:33.050 I sos-experience: android_graph_runtime_ready graph_id=graph-dashboard root_experience=sos.example.dashboard instances=3'
+    fi
   }
 
   case "$*" in

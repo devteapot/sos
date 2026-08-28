@@ -258,6 +258,15 @@ if "$ctl" audit-v4-composition-campaign \
   exit 1
 fi
 
+cp -a "$test_root/core1-campaign" "$test_root/unproven-core-recovery-campaign"
+sed -i '/fixed_recovery_action action=retry/d' \
+  "$test_root/unproven-core-recovery-campaign/stages/host-restart/logcat.txt"
+if "$ctl" audit-v4-composition-campaign \
+  --root "$test_root/unproven-core-recovery-campaign" >/dev/null 2>&1; then
+  printf 'unproven intentional Core crash unexpectedly passed\n' >&2
+  exit 1
+fi
+
 mkdir "$test_root/evidence"
 printf 'bravo\n' >"$test_root/evidence/b.txt"
 printf 'alpha\n' >"$test_root/evidence/a.txt"
