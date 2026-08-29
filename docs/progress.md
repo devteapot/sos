@@ -16985,3 +16985,64 @@ packaged graph upgrade, Geist rendering, top-bar fit, global `Super+Space`,
 tiling, child navigation, and HUD behavior on the panel. The mutable overlay
 remains `promotion_eligible=false`, and a future ISO must still carry and audit
 the corrected fontconfig bytes.
+
+## 2026-08-29: Keep customized Stock graphs bootable after workspace trust review
+
+**Goal / exact failure:** Repair the Framework development-live login loop
+reported after the composed Stock deployment. On boot ID
+`4233c8d6-e2a5-4b73-a2d5-233c594a9327`, GDM authenticated `liveuser`, the SOS
+compositor initialized both DRM outputs and presented recovery frames, and the
+provider bound active graph
+`45214f22d54f193fc3f653a619234a6e40888095afc348535bd6f68869d7635b`.
+The session then logged `linux_session_failed error=active Stock graph does not
+match the trusted root revision` and returned to GDM after 2.857 seconds. This
+was a product startup failure, not an authentication, DRM, or provider failure.
+
+**Cause and changed code:** The active graph intentionally retained agent-edited
+root `c61db41e2bbc70f83b3803aa4b4193e5673fc4ed57154616b08b1320581ab814`,
+derived from packaged root
+`5ebbfce1084ed0e47b4e669d3a4bebebbf663d1fca7c1b57dfeaaf56ee36423b`.
+Both packages lock the exact shipped workspace revision
+`3ef47b0f10d4f969717f1907a0471fe7c4364a1824b41b0156af71e4ea3ac228`.
+The new session code incorrectly required the active root to equal the packaged
+trusted root before it would review that workspace. `system_session.rs` now
+performs automatic packaged-workspace review only when the packaged root is
+active. For a customized root it logs
+`reason=customized_active_root` and leaves the graph's existing grant decisions
+in force. It still rejects a missing or mismatched child when the packaged root
+is active, so the fix does not make root trust transitive.
+
+**Focused evidence and failures:** A new regression installs the exact composed
+Stock graph, proves the packaged root selects the trusted workspace, activates
+a source-customized root with the same locked child, and proves automatic
+packaged review skips that custom root without an error. The first test build
+failed in 0.70 seconds because the fixture passed stored revision strings where
+its closure expected parsed `RevisionId` values. Correcting the fixture produced
+18 passing Linux-session library, binary, authority-binding, and wire-fixture
+tests in 1.14 seconds with 531,072 KiB peak RSS. The selectable-login host test
+also passed.
+
+**Deployment evidence:** Complete development deployment
+`20260829T104516Z-276ff6c380cd-2274103` installed the fix in 35,532,272,433 ns
+from revision `276ff6c380cd40488256655331153d938cc56336` with the focused fix
+still dirty. Evidence is under
+`artifacts/linux-live-deploy/20260829T104516Z-276ff6c380cd-2274103/`.
+The 278-byte metadata file has SHA-256
+`d8d7a19681860418b27c35123f94cae2cfcdd3587931e962789a245e5f487e82`;
+the 22-entry, 2,529-byte manifest binds 37,708,293 bytes and has SHA-256
+`9afa0d183eb3f7eceaa352f304ced6c44fd5c854bf84e04b08562b662b230b0a`;
+the 376-byte result has SHA-256
+`d2a2d96715aec326dd98347e23ca52fb1850fabf4241fe27827848f5e7d64df4`.
+An independent target readback verified every manifest entry. The deployed
+session binary has SHA-256
+`fab3ba8724f3df6f1f16bf6d7c13abd0812a830f13d8e15d061b859dd8406c0a`.
+After deployment, SOS had no process, GDM was active, the custom root remained
+registered, and the internal NVMe had zero mounts. No model ran, so model cost
+was zero.
+
+**Decision / open check:** Preserve customized active roots and restrict native
+auto-review to the exact packaged root and child. A 55-second journal observer
+received no new login event after deployment, so this entry does not infer a
+physical result. One fresh SOS login on the Framework must still show the new
+`customized_active_root` skip record, start the experience host, and remain in
+the shell before the incident is closed or screenshots are collected.
