@@ -440,9 +440,16 @@ live_image_ssh_public_key_fingerprint() {
 
 live_image_validate_sshd_include_order() {
   local sshd_config="$1" first_directive
-  [[ -f "$sshd_config" && ! -L "$sshd_config" && -r "$sshd_config" ]] || \
-    live_image_fail "development rootfs is missing a readable sshd_config"
-  first_directive="$(awk '
+  local -a reader=(awk)
+  if [[ -r "$sshd_config" ]]; then
+    [[ -f "$sshd_config" && ! -L "$sshd_config" ]] || \
+      live_image_fail "development rootfs is missing a regular sshd_config"
+  else
+    sudo test -f "$sshd_config" && ! sudo test -L "$sshd_config" || \
+      live_image_fail "development rootfs is missing a regular sshd_config"
+    reader=(sudo awk)
+  fi
+  first_directive="$("${reader[@]}" '
     /^[[:space:]]*($|#)/ { next }
     { $1=$1; print; exit }
   ' "$sshd_config")"

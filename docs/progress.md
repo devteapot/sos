@@ -17046,3 +17046,39 @@ received no new login event after deployment, so this entry does not infer a
 physical result. One fresh SOS login on the Framework must still show the new
 `customized_active_root` skip record, start the experience host, and remain in
 the shell before the incident is closed or screenshots are collected.
+
+## 2026-09-04: Accept root-only OpenSSH configuration in the rootless live-image bake
+
+**Goal / environment:** Bake the recovered Stock shell and Geist configuration
+into a persistent Framework development-live ISO after a reboot discarded the
+mutable deployment. The attempt used clean source
+`d96b6f371acaf73efeb3b84b9de116c301b85a5c`, the checksum-pinned Fedora 44
+Workstation Live 44-1.7 source, and rootless builder image
+`sha256:a6f612443e8f3c002d50040e5fce1f5690c0d7d6e1c0776c603bc8190553a2c4`.
+
+**Failure and cause:** The first bake extracted the EROFS payload, installed the
+current packages, compiled the Linux runtime, built the agent bundle, installed
+Geist 1.7.2, and staged the offline session. It then stopped before rootfs
+validation and before producing an ISO with `development rootfs is missing a
+readable sshd_config`. A target readback showed that Fedora's
+`/etc/ssh/sshd_config` is a regular root-owned mode-0600 file. The rootless
+builder had treated the invoking user's lack of read permission as an absent
+file even though its existing privileged validation path could inspect it. No
+PiKVM media, boot state, firmware setting, or internal NVMe state changed.
+
+**Changed code and evidence:** `tools/linux-live-image` now requires a regular,
+non-symlink `sshd_config` and uses privileged `test` and `awk` only when the
+ordinary builder cannot read it. The fixture locks the file, records the
+privileged checks, and proves `check-rootfs` accepts the Fedora permission
+boundary without weakening the regular-file or include-order requirements.
+`bash -n tools/linux-live-image tests/linux-live-image-test.sh`,
+`./tests/linux-live-image-test.sh`, and `git diff --check` passed. The measured
+host test reported `linux_live_image_host_tests=PASS` in 4.31 seconds with
+716,120 KiB peak RSS. No model provider ran, so model cost was zero.
+
+**Decision / remaining gate:** Keep Fedora's restrictive OpenSSH file mode and
+fix the rootless reader rather than normalizing the image to a more permissive
+mode. A new clean bake, local ISO identity and media verification, PiKVM-side
+digest, read-only attachment, observed one-time boot, live-overlay audit, and
+fresh SOS login are still required. The current physical shell recovery remains
+a same-boot diagnostic result, not a release or promotion gate.

@@ -786,6 +786,19 @@ grep -Fx 'ssh_authorized_key_fingerprint=none' \
 grep -Fx 'password_authentication=true' \
   "$test_password_rootfs/usr/share/doc/sos/development-access.env" >/dev/null
 [[ ! -e "$test_password_rootfs/usr/share/sos/development-authorized-key" ]]
+# Fedora ships sshd_config as a root-readable-only file. Simulate that
+# boundary and require the rootless builder to validate it through sudo.
+test_sshd_config="$test_password_rootfs/etc/ssh/sshd_config"
+test_sshd_sudo_log="$test_root/sshd-sudo.log"
+chmod 000 "$test_sshd_config"
+PATH="$test_root/bin:$PATH" \
+  TEST_SUDO_UNLOCK_DIR="$test_sshd_config" \
+  TEST_SUDO_LOG="$test_sshd_sudo_log" \
+  "$test_image" check-rootfs --root "$test_password_rootfs" \
+  >"$test_root/check-root-only-sshd-config.txt"
+chmod 0644 "$test_sshd_config"
+grep -Fx "test -f $test_sshd_config" "$test_sshd_sudo_log" >/dev/null
+grep -F "awk " "$test_sshd_sudo_log" >/dev/null
 PATH="$test_root/bin:$PATH" \
   "$test_image" check-rootfs --root "$test_password_rootfs" \
   >"$test_root/check-password-rootfs.txt"
