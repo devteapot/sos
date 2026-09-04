@@ -4,27 +4,38 @@ local function render(_model: ExperienceModel, state: ExperienceState): SceneNod
     local children: {SceneNode} = {
         {
             id = "heading",
-            content = { kind = "text", value = "A calmer Stock workspace", size = 28, color = 0x17211B },
+            content = { kind = "text", value = "A calmer Stock shell", size = 28, color = 0xEDEDED },
             semantics = { role = "header", label = "A calmer Stock workspace" },
+        },
+        {
+            id = "stock-workspace-mount",
+            layout = { grow = true },
+            content = {
+                kind = "experience_mount",
+                dependency = "workspace",
+                properties = { active_workspace = state.active_workspace or "home" },
+            },
         },
     }
     if state.active_workspace == "agent" or state.shell_panel == "agent" then
-        table.insert(children, {
+        local draft = type(state.agent_draft) == "string" and state.agent_draft or ""
+        local composer: SceneNode = {
             id = "agent-composer",
             content = {
                 kind = "text_session",
                 state_key = "agent_draft",
-                value = state.agent_draft or "",
-                placeholder = "Change this experience…",
+                value = draft,
+                placeholder = "Change this experience...",
                 submit_action = "agent_submit",
             },
             semantics = { role = "text_field", label = "Ask SOS to change this experience" },
-        })
+        }
+        table.insert(children, composer)
     end
     return {
         id = "calm-stock",
         layout = { flow = "column", gap = 16, padding = 24 },
-        paint = {{ kind = "fill_bounds", color = 0xF3F1E8 }},
+        paint = {{ kind = "fill_bounds", color = 0x000000 }},
         children = children,
     }
 end

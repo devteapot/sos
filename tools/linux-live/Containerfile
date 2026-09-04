@@ -10,6 +10,7 @@ RUN dnf -q -y install --setopt=install_weak_deps=False \
         cargo \
         clang \
         cmake \
+        curl \
         diffutils \
         erofs-utils \
         findutils \
@@ -52,6 +53,7 @@ RUN dnf -q -y install --setopt=install_weak_deps=False \
         sudo \
         systemd-devel \
         util-linux \
+        unzip \
         vulkan-loader-devel \
         wayland-devel \
         xorriso \

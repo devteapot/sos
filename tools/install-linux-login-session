@@ -91,6 +91,14 @@ if [[ "$sos_install_action" == uninstall ]]; then
   sudo rm -f -- /usr/share/wayland-sessions/sos.desktop
   sudo rm -f -- /usr/local/lib/systemd/user/sos-session.target
   sudo rm -f -- /usr/local/lib/systemd/user/sos-session-shutdown.target
+  sudo rm -f -- \
+    /etc/fonts/conf.d/60-sos-geist.conf \
+    /usr/share/fonts/sos/Geist-Variable.ttf \
+    /usr/share/fonts/sos/Geist-Italic-Variable.ttf \
+    /usr/share/fonts/sos/GeistMono-Variable.ttf \
+    /usr/share/fonts/sos/GeistMono-Italic-Variable.ttf \
+    /usr/share/fonts/sos/OFL.txt
+  sudo rmdir --ignore-fail-on-non-empty /usr/share/fonts/sos
   for sos_install_owned_dir in \
     /usr/local/libexec/sos \
     /usr/local/libexec/sos-agent \
@@ -207,11 +215,22 @@ sudo install -o root -g root -m 0644 \
 sudo install -o root -g root -m 0644 \
   experiences/default.package.json \
   "$(sos_install_target /usr/share/sos/experiences/default.package.json)"
+sudo install -o root -g root -m 0644 \
+  experiences/stock-workspace.luau \
+  "$(sos_install_target /usr/share/sos/experiences/stock-workspace.luau)"
+sudo install -o root -g root -m 0644 \
+  experiences/stock-workspace.package.json \
+  "$(sos_install_target /usr/share/sos/experiences/stock-workspace.package.json)"
 sudo install -d -o root -g root -m 0755 \
   "$(sos_install_target /usr/share/sos/experiences/modules)"
 sudo install -o root -g root -m 0644 \
   experiences/modules/stock-theme.luau \
   "$(sos_install_target /usr/share/sos/experiences/modules/stock-theme.luau)"
+if [[ -n "$sos_install_destdir" ]]; then
+  tools/install-geist-fonts --destdir "$sos_install_destdir"
+else
+  tools/install-geist-fonts system
+fi
 sudo install -o root -g root -m 0644 \
   docs/experience-api.md "$(sos_install_target /usr/share/doc/sos/experience-api.md)"
 sudo install -o root -g root -m 0644 \
@@ -248,7 +267,15 @@ sos_install_artifacts=(
   /usr/local/lib/systemd/user/sos-session-shutdown.target
   /usr/share/sos/experiences/default.luau
   /usr/share/sos/experiences/default.package.json
+  /usr/share/sos/experiences/stock-workspace.luau
+  /usr/share/sos/experiences/stock-workspace.package.json
   /usr/share/sos/experiences/modules/stock-theme.luau
+  /usr/share/fonts/sos/Geist-Variable.ttf
+  /usr/share/fonts/sos/Geist-Italic-Variable.ttf
+  /usr/share/fonts/sos/GeistMono-Variable.ttf
+  /usr/share/fonts/sos/GeistMono-Italic-Variable.ttf
+  /usr/share/fonts/sos/OFL.txt
+  /etc/fonts/conf.d/60-sos-geist.conf
 )
 for sos_install_artifact in "${sos_install_artifacts[@]}"; do
   sos_install_artifact_target="$(sos_install_target "$sos_install_artifact")"

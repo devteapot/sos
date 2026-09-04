@@ -18,7 +18,7 @@ use std::{
 
 use anyhow::{bail, Context as _, Result};
 use compositor_control_protocol::read_shell_token_file;
-use experience_package::ExperienceId;
+use experience_package::{ExperienceId, RevisionId};
 use nix::{
     sys::signal::{kill, Signal},
     sys::socket::{getsockopt, sockopt::PeerCredentials},
@@ -27,7 +27,10 @@ use nix::{
 use revision_supervisor::{GraphStore, RevisionStore, STOCK_SHELL_EXPERIENCE_ID};
 use signal_hook::consts::{SIGHUP, SIGINT, SIGTERM};
 
-use crate::{bootstrap_graph_authority, review_trusted_graph_grants, shutdown_authority};
+use crate::{
+    bootstrap_graph_authority, review_revision_grants, review_trusted_graph_grants,
+    shutdown_authority,
+};
 
 const POLL_INTERVAL: Duration = Duration::from_millis(20);
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
@@ -83,6 +86,7 @@ pub struct SystemSessionOptions {
     pub authority_file: PathBuf,
     pub shell_token_file: PathBuf,
     pub trusted_stock_revision: String,
+    pub trusted_stock_workspace_revision: Option<String>,
     pub agent_socket: PathBuf,
     pub compositor_executable: PathBuf,
     pub provider_executable: PathBuf,
@@ -502,6 +506,31 @@ fn start_and_monitor(
         options.startup_timeout,
     )?;
     println!("linux_system_session_grants experience_id={stock_experience_id} reviewed={reviewed}");
+    if let Some(workspace_revision) = &options.trusted_stock_workspace_revision {
+        match trusted_workspace_for_active_packaged_root(
+            &options.revision_root,
+            &stock_experience_id,
+            options.trusted_stock_revision.as_str(),
+            workspace_revision,
+        )? {
+            Some(workspace_revision) => {
+                let workspace_decision = review_revision_grants(
+                    &options.revision_root,
+                    workspace_revision.as_str(),
+                    &provider_socket,
+                    capability,
+                    options.startup_timeout,
+                )?;
+                println!(
+                    "linux_system_session_grants experience_id={} reviewed=true",
+                    workspace_decision.experience_id
+                );
+            }
+            None => println!(
+                "linux_system_session_grants experience_id=sos.stock.workspace reviewed=false reason=customized_active_root"
+            ),
+        }
+    }
 
     processes.host_launcher = Some(HostLauncher::start(
         &host_launcher_socket,
@@ -653,6 +682,40 @@ fn start_and_monitor(
         }
         thread::sleep(POLL_INTERVAL);
     }
+}
+
+fn trusted_workspace_for_active_packaged_root(
+    revision_root: &Path,
+    stock_experience_id: &ExperienceId,
+    trusted_root_revision: &str,
+    trusted_workspace_revision: &str,
+) -> Result<Option<RevisionId>> {
+    let workspace_revision = RevisionId::parse(trusted_workspace_revision.to_owned())?;
+    let store = RevisionStore::open(revision_root)?;
+    let graphs = GraphStore::open(revision_root)?;
+    let (_, active_graph) = graphs
+        .current(stock_experience_id)?
+        .context("trusted Stock graph is not active")?;
+    let root = active_graph
+        .nodes
+        .get(&active_graph.root)
+        .context("trusted Stock graph root is missing")?;
+    if root.revision_id.as_str() != trusted_root_revision {
+        return Ok(None);
+    }
+    let root_package = store.verify(root.revision_id.as_str())?.package;
+    if !root_package
+        .dependencies
+        .values()
+        .any(|binding| binding.revision_id == workspace_revision)
+        || !active_graph
+            .nodes
+            .values()
+            .any(|node| node.revision_id == workspace_revision)
+    {
+        bail!("trusted Stock workspace is not an exact dependency of the active root");
+    }
+    Ok(Some(workspace_revision))
 }
 
 fn take_session_exit_request(socket: &UnixDatagram) -> Result<bool> {
@@ -1484,6 +1547,108 @@ mod tests {
         )
         .unwrap_err();
         assert!(error.to_string().contains("must all use the current UID"));
+    }
+
+    #[test]
+    fn packaged_workspace_auto_review_skips_a_customized_active_root() {
+        let temporary = tempfile::tempdir().unwrap();
+        let store = RevisionStore::open(temporary.path()).unwrap();
+        let workspace_package: experience_package::PackageMetadata = serde_json::from_str(
+            include_str!("../../../experiences/stock-workspace.package.json"),
+        )
+        .unwrap();
+        let workspace = store
+            .install_package(revision_supervisor::RevisionPackageInput {
+                revision: revision_supervisor::RevisionInput {
+                    source: include_bytes!("../../../experiences/stock-workspace.luau").to_vec(),
+                    state: serde_json::json!({}),
+                    schema_version: 1,
+                    experience_api_version: 4,
+                    assets: vec![revision_supervisor::RevisionAssetInput {
+                        id: "stock.theme".into(),
+                        kind: "luau".into(),
+                        bytes: include_bytes!("../../../experiences/modules/stock-theme.luau")
+                            .to_vec(),
+                    }],
+                },
+                package: workspace_package,
+            })
+            .unwrap()
+            .manifest
+            .revision_id;
+        let shell_package = || {
+            serde_json::from_str::<experience_package::PackageMetadata>(include_str!(
+                "../../../experiences/default.package.json"
+            ))
+            .unwrap()
+        };
+        let install_shell = |source: Vec<u8>| {
+            store
+                .install_package(revision_supervisor::RevisionPackageInput {
+                    revision: revision_supervisor::RevisionInput {
+                        source,
+                        state: serde_json::json!({}),
+                        schema_version: 1,
+                        experience_api_version: 4,
+                        assets: vec![revision_supervisor::RevisionAssetInput {
+                            id: "stock.theme".into(),
+                            kind: "luau".into(),
+                            bytes: include_bytes!("../../../experiences/modules/stock-theme.luau")
+                                .to_vec(),
+                        }],
+                    },
+                    package: shell_package(),
+                })
+                .unwrap()
+                .manifest
+                .revision_id
+        };
+        let trusted_root =
+            install_shell(include_bytes!("../../../experiences/default.luau").to_vec());
+        let stock = ExperienceId::parse(STOCK_SHELL_EXPERIENCE_ID).unwrap();
+        let graphs = GraphStore::open(store.root()).unwrap();
+        let resolve_and_activate = |revision: &str| {
+            let graph = revision_supervisor::GraphResolver::new(store.clone())
+                .resolve(
+                    revision,
+                    &experience_package::ExportId::parse("main").unwrap(),
+                )
+                .unwrap();
+            let graph_id = graphs.install(&graph).unwrap();
+            graphs.set_current(&stock, &graph_id).unwrap();
+        };
+        resolve_and_activate(&trusted_root);
+
+        assert_eq!(
+            trusted_workspace_for_active_packaged_root(
+                store.root(),
+                &stock,
+                trusted_root.as_str(),
+                workspace.as_str(),
+            )
+            .unwrap(),
+            Some(RevisionId::parse(workspace.clone()).unwrap())
+        );
+
+        let customized_root = install_shell(
+            [
+                include_bytes!("../../../experiences/default.luau").as_slice(),
+                b"\n-- customized root\n",
+            ]
+            .concat(),
+        );
+        resolve_and_activate(&customized_root);
+
+        assert_eq!(
+            trusted_workspace_for_active_packaged_root(
+                store.root(),
+                &stock,
+                trusted_root.as_str(),
+                workspace.as_str(),
+            )
+            .unwrap(),
+            None
+        );
     }
 
     #[test]

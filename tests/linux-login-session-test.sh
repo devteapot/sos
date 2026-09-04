@@ -51,6 +51,8 @@ SOS_INSTALL_ROOT="$test_bin" \
 SOS_AGENT_MAIN="$test_root/agent-runner.cjs" \
 SOS_DEFAULT_EXPERIENCE="$test_repo_root/experiences/default.luau" \
 SOS_DEFAULT_PACKAGE="$test_repo_root/experiences/default.package.json" \
+SOS_STOCK_WORKSPACE="$test_repo_root/experiences/stock-workspace.luau" \
+SOS_STOCK_WORKSPACE_PACKAGE="$test_repo_root/experiences/stock-workspace.package.json" \
 SOS_STOCK_THEME="$test_repo_root/experiences/modules/stock-theme.luau" \
 SOS_TEST_AGENT_ARGS_FILE="$test_root/agent-arguments.txt" \
 SOS_TEST_SESSION_ENV_FILE="$test_root/session-environment.txt" \
@@ -94,6 +96,10 @@ grep -Fx -- '--what=idle:sleep:handle-lid-switch' \
   "$test_root/inhibit-arguments.txt" >/dev/null
 grep -Fx -- '--mode=block' "$test_root/inhibit-arguments.txt" >/dev/null
 grep -Fx -- "$test_bin/sos-linux-session" "$test_root/inhibit-arguments.txt" >/dev/null
+grep -Fx -- '--trusted-stock-workspace-revision' \
+  "$test_root/inhibit-arguments.txt" >/dev/null
+grep -Fx -- '3ef47b0f10d4f969717f1907a0471fe7c4364a1824b41b0156af71e4ea3ac228' \
+  "$test_root/inhibit-arguments.txt" >/dev/null
 [[ "$(stat -c %a "$test_state/sos/provider-grants.json")" == 600 ]]
 grep -F '"application_launch"' "$test_state/sos/provider-grants.json" >/dev/null
 grep -F '"network_control"' "$test_state/sos/provider-grants.json" >/dev/null
@@ -114,12 +120,17 @@ if PATH="$test_bin:$PATH" \
   SOS_AGENT_MAIN="$test_root/agent-runner.cjs" \
   SOS_DEFAULT_EXPERIENCE="$test_repo_root/experiences/default.luau" \
   SOS_DEFAULT_PACKAGE="$test_repo_root/experiences/default.package.json" \
+  SOS_STOCK_WORKSPACE="$test_repo_root/experiences/stock-workspace.luau" \
+  SOS_STOCK_WORKSPACE_PACKAGE="$test_repo_root/experiences/stock-workspace.package.json" \
   SOS_STOCK_THEME="$test_repo_root/experiences/modules/stock-theme.luau" \
+  SOS_TEST_MOCK_PACKAGED_ROOT_REVISION="$(printf '3%.0s' {1..64})" \
   SOS_TEST_AGENT_ARGS_FILE="$test_root/live-agent-arguments.txt" \
     "$test_session" >"$test_root/live-session.txt" 2>&1; then
   printf 'error: live selectable session started without credentials\n' >&2
   exit 1
 fi
+grep -F 'sos_login_session_upgraded api_version=4' "$test_root/live-session.txt" >/dev/null
+grep -Fx "$(printf '3%.0s' {1..64})" "$test_state/sos/trusted-stock-revision" >/dev/null
 grep -F 'resident agent is not authenticated' "$test_root/live-session.txt" >/dev/null
 
 printf 'linux_login_session_host_tests=PASS\n'

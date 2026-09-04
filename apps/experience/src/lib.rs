@@ -51,13 +51,14 @@ mod window_space;
 pub use linux::run as run_linux_host;
 
 pub const DEFAULT_EXPERIENCE: &str = include_str!("../../../experiences/default.luau");
+pub const STOCK_WORKSPACE: &str = include_str!("../../../experiences/stock-workspace.luau");
 pub const MOBILE_EXPERIENCE: &str = include_str!("../../../experiences/mobile.luau");
 pub const STOCK_THEME_MODULE: &str = include_str!("../../../experiences/modules/stock-theme.luau");
 pub const MOBILE_THEME_MODULE: &str =
     include_str!("../../../experiences/modules/mobile-theme.luau");
 
-const STOCK_AGENT_VARIANT_ORIGINAL: &str = "Make Stock Base yours";
-const STOCK_AGENT_VARIANT_ALTERNATE: &str = "Shape Stock Base around your day";
+const STOCK_AGENT_VARIANT_ORIGINAL: &str = "Experiences, Linux applications, and open windows";
+const STOCK_AGENT_VARIANT_ALTERNATE: &str = "Open experiences, Linux applications, and windows";
 
 pub fn deterministic_stock_agent_candidate(current_source: &str) -> String {
     if current_source.contains(STOCK_AGENT_VARIANT_ALTERNATE) {
@@ -239,26 +240,27 @@ mod tests {
             experience_id: "sos.example.dashboard".into(),
             title: "Dashboard".into(),
         }];
-        assert_eq!(runtime.assets().len(), 1);
+        assert_eq!(runtime.assets().len(), 0);
         let stock_scene = runtime
             .render(&stock_model, &runtime.initial_state())
             .unwrap();
-        assert!(contains_id(&stock_scene.root, "workspace-home"));
         assert!(contains_id(&stock_scene.root, "shell-top-bar"));
-        assert!(contains_id(&stock_scene.root, "shell-rail"));
+        assert!(contains_id(&stock_scene.root, "stock-workspace-mount"));
+        assert!(contains_id(&stock_scene.root, "agent-overlay"));
         assert!(contains_action(&stock_scene.root, "toggle_command_center"));
         assert!(contains_action(&stock_scene.root, "toggle_agent_panel"));
-        assert!(contains_id(&stock_scene.root, "shell-app-widget-1"));
-        assert!(contains_action(&stock_scene.root, "shell_app_widget_1"));
         assert_eq!(
             window_space(&stock_scene.root).map(|space| space.layout),
-            Some(experience_ir::WindowLayoutMode::Floating)
+            Some(experience_ir::WindowLayoutMode::Tiling)
         );
-        assert!(contains_wrapping_layout(&stock_scene.root));
-        let home_grid = node_by_id(&stock_scene.root, "home-responsive-grid").unwrap();
+        let workspace_runtime = super::compile_built_in(super::STOCK_WORKSPACE).unwrap();
+        let workspace_scene = workspace_runtime
+            .render(&stock_model, &workspace_runtime.initial_state())
+            .unwrap();
+        assert!(contains_id(&workspace_scene.root, "workspace-home"));
+        assert!(contains_wrapping_layout(&workspace_scene.root));
+        let home_grid = node_by_id(&workspace_scene.root, "home-responsive-grid").unwrap();
         assert!(home_grid.layout.wrap);
-        let content_frame = node_by_id(&stock_scene.root, "stock-workspace-frame").unwrap();
-        assert!(content_frame.layout.scroll_y);
         let command_state = runtime
             .update(
                 &stock_model,
@@ -270,8 +272,9 @@ mod tests {
             )
             .unwrap();
         let command_scene = runtime.render(&stock_model, &command_state).unwrap();
-        assert!(contains_id(&command_scene.root, "shell-command-center"));
+        assert!(contains_id(&command_scene.root, "shell-launcher"));
         assert!(contains_action(&command_scene.root, "experience_present_1"));
+        assert!(contains_wrapping_layout(&command_scene.root));
         for workspace in [
             "home",
             "agenda",
@@ -296,8 +299,7 @@ mod tests {
                     },
                 )
                 .unwrap();
-            let scene = runtime.render(&stock_model, &state).unwrap();
-            assert!(contains_id(&scene.root, &format!("workspace-{workspace}")));
+            assert_eq!(state["active_workspace"], workspace);
         }
         let tiled_state = runtime
             .update(
@@ -324,14 +326,13 @@ mod tests {
                 },
             )
             .unwrap();
-        let system_scene = runtime.render(&stock_model, &system_state).unwrap();
-        assert!(contains_action(&system_scene.root, "audio_volume_up"));
+        assert_eq!(system_state["active_workspace"], "system");
         let agent_state = runtime
             .update(
                 &stock_model,
                 &runtime.initial_state(),
                 &experience_ir::SceneEvent {
-                    action: "navigate_agent".into(),
+                    action: "toggle_agent_panel".into(),
                     ..Default::default()
                 },
             )
@@ -344,7 +345,7 @@ mod tests {
                 &agent_state,
                 &experience_ir::SceneEvent {
                     action: "agent_submit".into(),
-                    target: Some("agent-prompt".into()),
+                    target: Some("panel-agent-prompt".into()),
                     value: Some("Make this calmer".into()),
                     ..Default::default()
                 },
@@ -357,22 +358,12 @@ mod tests {
             agent_outcome.effects[0].payload["prompt"],
             "Make this calmer"
         );
-        let agent_panel_state = runtime
-            .update(
-                &stock_model,
-                &agent_state,
-                &experience_ir::SceneEvent {
-                    action: "toggle_agent_panel".into(),
-                    ..Default::default()
-                },
-            )
-            .unwrap();
-        let agent_panel_scene = runtime.render(&stock_model, &agent_panel_state).unwrap();
-        assert!(contains_id(&agent_panel_scene.root, "shell-rail-agent"));
+        let agent_panel_scene = runtime.render(&stock_model, &agent_state).unwrap();
+        assert!(contains_id(&agent_panel_scene.root, "shell-agent-panel"));
         assert!(contains_id(&agent_panel_scene.root, "panel-agent-prompt"));
         assert!(experience_ir::validate_scene(&agent_panel_scene).is_ok());
-        for source in [super::DEFAULT_EXPERIENCE] {
-            let runtime = super::compile_built_in(source).unwrap();
+        for _source in [super::DEFAULT_EXPERIENCE] {
+            let runtime = super::compile_built_in(super::STOCK_WORKSPACE).unwrap();
             let model = providers_fake::snapshot();
             let state = runtime
                 .update(
@@ -406,10 +397,10 @@ mod tests {
             assert!(!contains_action(&scene.root, "agent_configure_openai"));
             assert!(!contains_action(&scene.root, "agent_configure_openrouter"));
         }
-        let outcome = runtime
+        let outcome = workspace_runtime
             .update_with_effects(
                 &stock_model,
-                &runtime.initial_state(),
+                &workspace_runtime.initial_state(),
                 &experience_ir::SceneEvent {
                     action: "audio_volume_up".into(),
                     ..Default::default()
@@ -437,10 +428,10 @@ mod tests {
             "sos.example.dashboard"
         );
 
-        let note = runtime
+        let note = workspace_runtime
             .update_with_effects(
                 &stock_model,
-                &runtime.initial_state(),
+                &workspace_runtime.initial_state(),
                 &experience_ir::SceneEvent {
                     action: "note_submit".into(),
                     target: Some("note-composer".into()),
@@ -455,7 +446,7 @@ mod tests {
             .as_str()
             .unwrap()
             .starts_with("# Provider architecture"));
-        let note_state = runtime
+        let note_state = workspace_runtime
             .update(
                 &stock_model,
                 &note.state,
@@ -465,7 +456,7 @@ mod tests {
                 },
             )
             .unwrap();
-        let note_scene = runtime.render(&stock_model, &note_state).unwrap();
+        let note_scene = workspace_runtime.render(&stock_model, &note_state).unwrap();
         let note_status = node_by_id(&note_scene.root, "note-composer-status").unwrap();
         assert_eq!(
             note_status.semantics.as_ref().unwrap().role,
@@ -473,13 +464,13 @@ mod tests {
         );
         assert_eq!(
             note_status.semantics.as_ref().unwrap().label,
-            "Saved “Provider architecture”."
+            "Saved 'Provider architecture'."
         );
 
-        let agenda = runtime
+        let agenda = workspace_runtime
             .update_with_effects(
                 &stock_model,
-                &runtime.initial_state(),
+                &workspace_runtime.initial_state(),
                 &experience_ir::SceneEvent {
                     action: "agenda_submit".into(),
                     target: Some("agenda-composer".into()),
@@ -494,17 +485,19 @@ mod tests {
 
         let mut unavailable = providers_fake::snapshot();
         unavailable.providers = Default::default();
-        let unavailable_state = runtime
+        let unavailable_state = workspace_runtime
             .update(
                 &unavailable,
-                &runtime.initial_state(),
+                &workspace_runtime.initial_state(),
                 &experience_ir::SceneEvent {
                     action: "navigate_system".into(),
                     ..Default::default()
                 },
             )
             .unwrap();
-        let unavailable_scene = runtime.render(&unavailable, &unavailable_state).unwrap();
+        let unavailable_scene = workspace_runtime
+            .render(&unavailable, &unavailable_state)
+            .unwrap();
         assert!(contains_id(
             &unavailable_scene.root,
             "system-providers-unavailable"
@@ -553,7 +546,7 @@ mod tests {
             assert_eq!(runtime.api_version(), experience_ir::EXPERIENCE_API_VERSION);
             assert_eq!(runtime.export_ids().unwrap(), vec!["main"]);
             let mut state = runtime.initial_state();
-            state["active_workspace"] = serde_json::json!("agent");
+            state["shell_panel"] = serde_json::json!("agent");
             let scene = runtime.render(&providers_fake::snapshot(), &state).unwrap();
             assert!(scene_contains_agent_composer(&scene.root));
         }

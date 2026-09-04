@@ -4,18 +4,7 @@
   "role": "shell",
   "provider_capabilities": [
     "application_launch",
-    "audio_control",
-    "calendar_read",
-    "calendar_write",
-    "network_control",
-    "notes_read",
-    "notes_write",
-    "music_read",
-    "music_control",
     "system_read",
-    "video_read",
-    "camera_read",
-    "protected_surface",
     "appearance_write"
   ],
   "contract": {
@@ -38,7 +27,23 @@
       }
     }
   },
-  "dependencies": {},
+  "dependencies": {
+    "workspace": {
+      "experience_id": "sos.stock.workspace",
+      "revision_id": "3ef47b0f10d4f969717f1907a0471fe7c4364a1824b41b0156af71e4ea3ac228",
+      "export_id": "main",
+      "contract_digest": "6fb4b882b831cac409867e1e2457b133de9871858f3ee1e232ae8077c5073e00",
+      "policy": "locked",
+      "grant": {
+        "properties": [
+          "active_workspace"
+        ],
+        "events": [
+          "navigate"
+        ]
+      }
+    }
+  },
   "derivation": {
     "kind": "original",
     "parents": []

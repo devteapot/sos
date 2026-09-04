@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import json
 import os
 import signal
 import socket
@@ -74,7 +75,19 @@ if name == "sos-revision-supervisor":
         print(read_marker("graph-" + experience) or "none")
         raise SystemExit(0)
     if len(sys.argv) >= 2 and sys.argv[1] == "install-package":
-        print("2" * 64)
+        if os.path.basename(option("--package")) == "stock-workspace.package.json":
+            revision_id = "3ef47b0f10d4f969717f1907a0471fe7c4364a1824b41b0156af71e4ea3ac228"
+        else:
+            revision_id = os.environ.get("SOS_TEST_MOCK_PACKAGED_ROOT_REVISION", "2" * 64)
+        revision_directory = os.path.join(root, "revisions", revision_id)
+        os.makedirs(revision_directory, exist_ok=True)
+        with open(option("--package"), encoding="utf-8") as package_file:
+            package = json.load(package_file)
+        with open(
+            os.path.join(revision_directory, "package.json"), "w", encoding="utf-8"
+        ) as stored_package:
+            json.dump(package, stored_package, sort_keys=True, separators=(",", ":"))
+        print(revision_id)
         raise SystemExit(0)
     if len(sys.argv) >= 2 and sys.argv[1] == "bootstrap-graph":
         experience = option("--experience")

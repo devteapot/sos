@@ -1620,10 +1620,37 @@ mod tests {
     fn initialized_store() -> (TempDir, RevisionStore) {
         let temporary = TempDir::new().unwrap();
         let store = RevisionStore::open(temporary.path()).unwrap();
+        let workspace_package: PackageMetadata = serde_json::from_str(include_str!(
+            "../../../experiences/stock-workspace.package.json"
+        ))
+        .unwrap();
+        let workspace_revision = store
+            .install_package(RevisionPackageInput {
+                revision: RevisionInput {
+                    source: include_bytes!("../../../experiences/stock-workspace.luau").to_vec(),
+                    state: json!({}),
+                    schema_version: 1,
+                    experience_api_version: experience_ir::EXPERIENCE_API_VERSION,
+                    assets: vec![RevisionAssetInput {
+                        id: "stock.theme".into(),
+                        kind: "luau".into(),
+                        bytes: include_bytes!("../../../experiences/modules/stock-theme.luau")
+                            .to_vec(),
+                    }],
+                },
+                package: workspace_package,
+            })
+            .unwrap();
         let source = include_str!("../../../experiences/default.luau");
         let package: PackageMetadata =
             serde_json::from_str(include_str!("../../../experiences/default.package.json"))
                 .unwrap();
+        assert_eq!(
+            package.dependencies[&DependencyAlias::parse("workspace").unwrap()]
+                .revision_id
+                .as_str(),
+            workspace_revision.manifest.revision_id
+        );
         let revision = store
             .install_package(RevisionPackageInput {
                 revision: RevisionInput {
@@ -1693,7 +1720,7 @@ mod tests {
     fn validates_a_visible_complete_stock_edit_with_its_revision_local_theme() {
         let (_temporary, store) = initialized_store();
         let source = include_str!("../../../experiences/default.luau").replace(
-            "A responsive workspace assembled entirely by this Luau revision.",
+            "Experiences, Linux applications, and open windows",
             "Direct input gate active in this complete Stock revision.",
         );
         assert!(source.contains("agent_submit"));
@@ -1771,7 +1798,17 @@ mod tests {
             return {
                 api_version = 4,
                 exports = { main = { render = function()
-                    return { id = "root", children = { composer } }
+                    return { id = "root", children = {
+                        composer,
+                        {
+                            id = "workspace",
+                            content = {
+                                kind = "experience_mount",
+                                dependency = "workspace",
+                                properties = { active_workspace = "home" },
+                            },
+                        },
+                    } }
                 end } },
             }
         "#;

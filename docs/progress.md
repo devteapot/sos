@@ -16827,3 +16827,340 @@ and the composition plan's cross-platform functional and physical acceptance
 are closed. This mutable development-live run cannot promote a Linux release.
 An installed or immutable release campaign, panel latency, suspend, GPU
 recovery, thermals, and power remain separate product gates.
+
+## 2026-08-28: Compose and restyle the opinionated Stock Shell
+
+**Goal:** Replace the monolithic Linux Stock surface with an opinionated,
+composable black and white shell: minimal top bar, keyboard launcher, tiling by
+default, compact agent HUD, propagated semantic appearance, and Geist system
+fonts. Keep the workspace replaceable through the shipped Experience API v4
+contract instead of absorbing every product function into the Shell root.
+
+**Changed:** `sos.stock.shell` now owns only trusted shell integration and
+mounts the new ordinary `sos.stock.workspace` package. Their locked boundary
+passes optional `active_workspace` state down and typed `navigate` events up.
+The root renders a 41-pixel top bar, centered launcher, tiling/floating/
+scrolling selection, and draggable hover-expanded agent HUD without a
+reserving rail. The compositor consumes exact `Super+Space` presses and sends
+a closed launcher event to the authenticated Shell. The child retains the
+eight provider-backed workspaces in its own VM, state, package, and grant.
+
+The authority default is now a high-contrast semantic dark profile with a
+complete light counterpart. Both composed revisions resolve surface, border,
+type, spacing, and radius tokens. Linux native background, text-field border,
+and status paint also resolve the active profile. Android theme toggling now
+rebuilds the complete Stock palette while preserving accessibility settings.
+The selectable login session installs packaged graph bytes on every start and
+advances to a new packaged root only when the active registry revision still
+equals the prior trusted Stock revision. A customized current root is left
+untouched. The focused login test covers the clean packaged-upgrade branch.
+
+Geist 1.7.2 is pinned to the official release archive, 8,207,303 bytes with
+SHA-256 `7fc800d2ac6b92844895196e5041aca55d814c15db70c44f79b3b83ab82b04e2`.
+The new installer verified and placed Geist and Geist Mono for the current user
+under `/home/carlid/.local/share/fonts/sos`; `fc-match` resolved both families.
+The regular variable TTF is 169,056 bytes with SHA-256
+`cdcc4815cbf5f9882fa74e48f8ab410a0495781a58ff7316570f664e7e987753`;
+Geist Mono is 171,200 bytes with SHA-256
+`0e1af3f507a1c8dfbb03d13ffad585834cd45ed7ccb78c756c7ce7873d180d30`.
+A disposable rootfs run staged all four variable TTFs, the 4,383-byte OFL
+license, and fontconfig aliases. The normal Linux installer and future live
+image build use the same checksum-pinned path. No ISO was rebuilt.
+
+**Evidence:** Both sources passed the pinned Luau analyzer and every declared
+scene: four Shell scenarios and eight workspace scenarios, with 36 nodes in the
+default Shell, 88 in the launcher, and 77 in the default workspace. A
+disposable supervisor store installed workspace revision
+`3ef47b0f10d4f969717f1907a0471fe7c4364a1824b41b0156af71e4ea3ac228`,
+installed Shell revision
+`5ebbfce1084ed0e47b4e669d3a4bebebbf663d1fca7c1b57dfeaaf56ee36423b`,
+and independently bootstrapped and resolved graph
+`cea8b95ef819963b8befeaf9c17c3ed49ff6572d5c768c9f3078ab09c16963c2`.
+
+The protocol, appearance, and compositor library suite passed 34 tests in 1.55
+seconds with 584,540 KiB peak RSS. Experience package, revision supervisor, and
+Luau runtime passed 70 tests in 9.09 seconds with 596,792 KiB peak RSS. Linux
+session and authoring passed 17 tests in 1.44 seconds with 528,960 KiB peak RSS.
+The Linux GPUI host compiled in 16.34 seconds
+with 809,532 KiB peak RSS, then its 43-test library suite passed in 1.59 seconds
+with 2,719,880 KiB peak RSS. A final combined Rust regression across the
+service protocol, compositor protocol, compositor, Linux session, and Linux
+experience host passed in 19.77 seconds with 2,951,900 KiB peak RSS.
+Selectable-login host tests passed in 1.18 seconds, live-image and deployment
+host tests in 4.22 seconds, and hardware-gate host policy tests in 0.97 seconds.
+The faux resident-agent flow retained the locked mount, activated replacement revision
+`599c3abc9db4e704d4ab08c086d3e165b12da88a24321f04afd47e3d07e43041`,
+and passed in 3.96 seconds with 748,732 KiB peak RSS.
+
+**Failures and rejected approaches:** The first hand-calculated child contract
+digest preserved source choice-array order, so graph resolution correctly
+rejected it as changed. Hashing the supervisor's canonical package established
+the exact digest
+`6fb4b882b831cac409867e1e2457b133de9871858f3ee1e232ae8077c5073e00`.
+The first compositor test build failed after 16.75 seconds because the new test
+module omitted its private helper imports; the corrected suite passed. The
+first composed agent activation was denied because only the trusted root had a
+grant decision. Implicitly trusting mounted children was rejected. The session
+now reviews only the exact workspace revision named by the active trusted root,
+and the standalone development path reviews that same revision explicitly.
+Old e2e setup still invoked removed singleton bootstrap commands, and its faux
+Shell candidate omitted the required mount. Removing the obsolete bootstrap
+steps and making the fixture contract-preserving produced the passing run.
+
+**Decision:** Adopt the two-package Stock graph, monochrome semantic profile,
+Geist system type, global launcher chord, default tiling, and compact agent HUD
+as the Linux Stock implementation. Keep the child grant independent and exact;
+root trust is not transitive composition trust.
+
+**Open risks / next gate:** This entry is host-only implementation evidence.
+The prior Framework campaign covered the old reserving-rail shell and cannot
+accept this visual redesign. Rebuild or development-deploy the complete new
+component set, then run a fresh Linux visual and input gate for font loading,
+top-bar fit, `Super+Space` while an application is focused, search autofocus,
+multi-window tiling, child navigation, HUD hover/drag/click behavior, light and
+dark propagation, and agent submission. A later ISO build must verify the
+pinned fonts in the final squashfs and manifest before release acceptance.
+
+## 2026-08-28: Sync the composed Stock Shell to Framework development-live
+
+**Goal / exact environment:** Install the composed Stock Shell, workspace,
+launcher shortcut, HUD, appearance propagation, and Geist type on the mutable
+Framework Laptop 12 development image without rebuilding its ISO. The target
+was `liveuser@192.168.1.135`, boot ID
+`4233c8d6-e2a5-4b73-a2d5-233c594a9327`, `LiveOS_rootfs`, Fedora 44 with kernel
+`6.19.10-300.fc44.x86_64`, and base image revision
+`7c414374e450733c6541e1e88a70dbe94c15c1bc`. GDM was active, SOS had no live
+process, and no internal NVMe partition was mounted before or after the sync.
+
+**Changed code and target:** `tools/linux-live-deploy` installed all 22 current
+runtime components and checked-in assets from clean revision
+`b6056a298f1d9317a8a58016cd3367a5c69779ac`. The target then received the four
+pinned Geist 1.7.2 variable TTFs, OFL license, and SOS fontconfig file directly
+in the live overlay. Fedora's generic-family ordering exposed a packaging bug:
+plain `<alias><prefer>` entries loaded but left Noto first. The fontconfig file
+now adds strong pattern-level prepend rules for `system-ui`, `sans-serif`, and
+`monospace`. `tests/linux-live-image-test.sh` parses and pins those three rules.
+
+**Evidence and measurements:** Deployment
+`20260828T114937Z-b6056a298f1d-2143790` returned
+`linux_development_live_deployed=PASS` in 37,936,219,756 ns. Its evidence is in
+`artifacts/linux-live-deploy/20260828T114937Z-b6056a298f1d-2143790/`.
+`development-deployment.env` is 279 bytes with SHA-256
+`a887fedbba62c5bffcc7f9c079a6363e69eca1971402b4de213084cb26b3a999`;
+the 22-entry, 2,529-byte manifest has SHA-256
+`2d2911e044dee6237e9d2d731e730dcb6ae1b4f114bc1ee907a1ec314b3ff9b0`
+and binds 37,708,197 payload bytes; `deployment-result.env` is 376 bytes with
+SHA-256 `3e5efd2672c9f7544b12f1844a59b95e1d221635d6da529dc464c53fd4311f5b`.
+An independent target readback recalculated and accepted all 22 manifest
+entries.
+
+The deployed Geist regular, italic, mono regular, and mono italic files are
+169,056, 174,584, 171,200, and 181,908 bytes with respective SHA-256 values
+`cdcc4815cbf5f9882fa74e48f8ab410a0495781a58ff7316570f664e7e987753`,
+`c5db6397dae7993afb72e397277c5a5308ba32de010eb19ec2b8b73f5e9d3ec4`,
+`0e1af3f507a1c8dfbb03d13ffad585834cd45ed7ccb78c756c7ce7873d180d30`,
+and `e5800990ff5069667f4ff0a5dc582b260597e0adc022a887d9d103fc4cdd2cf2`.
+The 4,383-byte OFL has SHA-256
+`c683bfbcc7e087f5d37a54ef628f10387c451a83ddc459b151403a164ac46c90`.
+The corrected 1,131-byte fontconfig file has SHA-256
+`3454b026c4b7913a8fbf3570760e469945f127d26b233e85b06d09fec4e5f4ee`.
+After `fc-cache`, target `fc-match` resolved `system-ui` and `sans-serif` to
+Geist and `monospace` to Geist Mono. The focused live-image host test passed in
+4.20 seconds with 715,484 KiB peak RSS. No model ran, so model cost was zero.
+
+**Failures and decision:** The previous address `192.168.1.132` returned no
+route; trusted-key discovery found the same live target at `.135`. The first
+full transfer stopped at sudo authentication before any root install. Cleanup
+removed its remote staging directory, retained deployment
+`20260828T081459Z-f9085e5fcd26-2021282`, and left SOS stopped. The successful
+retry installed and hashed the complete component set. The first font readback
+then returned Noto Sans and Noto Sans Mono for generic families even though the
+Geist files and config were present. Inspection of the target's ordered
+fontconfig rules identified `60-latin.conf` as the earlier preference. Direct
+strong prepends fixed the earliest broken layer, and the second readback passed.
+
+**Remaining risk / next gate:** The Framework is synced but remains at GDM; no
+visual or interaction acceptance is claimed. The next SOS login must prove the
+packaged graph upgrade, Geist rendering, top-bar fit, global `Super+Space`,
+tiling, child navigation, and HUD behavior on the panel. The mutable overlay
+remains `promotion_eligible=false`, and a future ISO must still carry and audit
+the corrected fontconfig bytes.
+
+## 2026-08-29: Keep customized Stock graphs bootable after workspace trust review
+
+**Goal / exact failure:** Repair the Framework development-live login loop
+reported after the composed Stock deployment. On boot ID
+`4233c8d6-e2a5-4b73-a2d5-233c594a9327`, GDM authenticated `liveuser`, the SOS
+compositor initialized both DRM outputs and presented recovery frames, and the
+provider bound active graph
+`45214f22d54f193fc3f653a619234a6e40888095afc348535bd6f68869d7635b`.
+The session then logged `linux_session_failed error=active Stock graph does not
+match the trusted root revision` and returned to GDM after 2.857 seconds. This
+was a product startup failure, not an authentication, DRM, or provider failure.
+
+**Cause and changed code:** The active graph intentionally retained agent-edited
+root `c61db41e2bbc70f83b3803aa4b4193e5673fc4ed57154616b08b1320581ab814`,
+derived from packaged root
+`5ebbfce1084ed0e47b4e669d3a4bebebbf663d1fca7c1b57dfeaaf56ee36423b`.
+Both packages lock the exact shipped workspace revision
+`3ef47b0f10d4f969717f1907a0471fe7c4364a1824b41b0156af71e4ea3ac228`.
+The new session code incorrectly required the active root to equal the packaged
+trusted root before it would review that workspace. `system_session.rs` now
+performs automatic packaged-workspace review only when the packaged root is
+active. For a customized root it logs
+`reason=customized_active_root` and leaves the graph's existing grant decisions
+in force. It still rejects a missing or mismatched child when the packaged root
+is active, so the fix does not make root trust transitive.
+
+**Focused evidence and failures:** A new regression installs the exact composed
+Stock graph, proves the packaged root selects the trusted workspace, activates
+a source-customized root with the same locked child, and proves automatic
+packaged review skips that custom root without an error. The first test build
+failed in 0.70 seconds because the fixture passed stored revision strings where
+its closure expected parsed `RevisionId` values. Correcting the fixture produced
+18 passing Linux-session library, binary, authority-binding, and wire-fixture
+tests in 1.14 seconds with 531,072 KiB peak RSS. The selectable-login host test
+also passed.
+
+**Deployment evidence:** Complete development deployment
+`20260829T104516Z-276ff6c380cd-2274103` installed the fix in 35,532,272,433 ns
+from revision `276ff6c380cd40488256655331153d938cc56336` with the focused fix
+still dirty. Evidence is under
+`artifacts/linux-live-deploy/20260829T104516Z-276ff6c380cd-2274103/`.
+The 278-byte metadata file has SHA-256
+`d8d7a19681860418b27c35123f94cae2cfcdd3587931e962789a245e5f487e82`;
+the 22-entry, 2,529-byte manifest binds 37,708,293 bytes and has SHA-256
+`9afa0d183eb3f7eceaa352f304ced6c44fd5c854bf84e04b08562b662b230b0a`;
+the 376-byte result has SHA-256
+`d2a2d96715aec326dd98347e23ca52fb1850fabf4241fe27827848f5e7d64df4`.
+An independent target readback verified every manifest entry. The deployed
+session binary has SHA-256
+`fab3ba8724f3df6f1f16bf6d7c13abd0812a830f13d8e15d061b859dd8406c0a`.
+After deployment, SOS had no process, GDM was active, the custom root remained
+registered, and the internal NVMe had zero mounts. No model ran, so model cost
+was zero.
+
+**Decision / open check:** Preserve customized active roots and restrict native
+auto-review to the exact packaged root and child. A 55-second journal observer
+received no new login event after deployment, so this entry does not infer a
+physical result. One fresh SOS login on the Framework must still show the new
+`customized_active_root` skip record, start the experience host, and remain in
+the shell before the incident is closed or screenshots are collected.
+
+## 2026-09-04: Accept root-only OpenSSH configuration in the rootless live-image bake
+
+**Goal / environment:** Bake the recovered Stock shell and Geist configuration
+into a persistent Framework development-live ISO after a reboot discarded the
+mutable deployment. The attempt used clean source
+`d96b6f371acaf73efeb3b84b9de116c301b85a5c`, the checksum-pinned Fedora 44
+Workstation Live 44-1.7 source, and rootless builder image
+`sha256:a6f612443e8f3c002d50040e5fce1f5690c0d7d6e1c0776c603bc8190553a2c4`.
+
+**Failure and cause:** The first bake extracted the EROFS payload, installed the
+current packages, compiled the Linux runtime, built the agent bundle, installed
+Geist 1.7.2, and staged the offline session. It then stopped before rootfs
+validation and before producing an ISO with `development rootfs is missing a
+readable sshd_config`. A target readback showed that Fedora's
+`/etc/ssh/sshd_config` is a regular root-owned mode-0600 file. The rootless
+builder had treated the invoking user's lack of read permission as an absent
+file even though its existing privileged validation path could inspect it. No
+PiKVM media, boot state, firmware setting, or internal NVMe state changed.
+
+**Changed code and evidence:** `tools/linux-live-image` now requires a regular,
+non-symlink `sshd_config` and uses privileged `test` and `awk` only when the
+ordinary builder cannot read it. The fixture locks the file, records the
+privileged checks, and proves `check-rootfs` accepts the Fedora permission
+boundary without weakening the regular-file or include-order requirements.
+`bash -n tools/linux-live-image tests/linux-live-image-test.sh`,
+`./tests/linux-live-image-test.sh`, and `git diff --check` passed. The measured
+host test reported `linux_live_image_host_tests=PASS` in 4.31 seconds with
+716,120 KiB peak RSS. No model provider ran, so model cost was zero.
+
+**Decision / remaining gate:** Keep Fedora's restrictive OpenSSH file mode and
+fix the rootless reader rather than normalizing the image to a more permissive
+mode. A new clean bake, local ISO identity and media verification, PiKVM-side
+digest, read-only attachment, observed one-time boot, live-overlay audit, and
+fresh SOS login are still required. The current physical shell recovery remains
+a same-boot diagnostic result, not a release or promotion gate.
+
+## 2026-09-04: Persist and boot the composed Stock shell on Framework
+
+**Goal / artifact:** Replace the reboot-lost mutable deployment with a private
+development-live image containing the composed Stock shell, workspace, Geist
+fonts, SSH development key, and network autoconnect profile. Clean source
+`2ae129a15294ad1029eabc8bf86fa2b1ac8f3e10` produced
+`/home/carlid/dev/sos/artifacts/development-live-2ae129a/sos-development-live-2ae129a15294.iso`,
+3,058,302,976 bytes with SHA-256
+`fd472d277a825b6645b90d60dcd0a794e282b37f487c609f0ddac0fbcb219a68`.
+Its EROFS payload is 2,693,857,280 bytes with SHA-256
+`cf6a58c265f416616715398169ee94726d0114b2c6658d2247faab3e9b0d1744`.
+The rootless bake completed in 1:14:01; its embedded Fedora media check passed,
+and an independent `checkisomd5` passed in 3.38 seconds. The identity class is
+`development-live`, `promotion_eligible=false`; private network credentials are
+embedded for this development target and are not recorded in repository
+evidence.
+
+**PiKVM transfer and boot:** The ISO uploaded once to the PiKVM in 2:19.35.
+PiKVM reported the exact 3,058,302,976 bytes complete, and its own SHA-256 pass
+matched the local digest in 1:00.86. The image was then selected as
+`sos-development-live-2ae129a15294.iso`, CD-ROM and read-only, with
+`complete=true`, `connected=true`, `rw=false`, and `writable=false`. An observed
+one-time firmware selection highlighted that exact PiKVM optical drive; no boot
+order or firmware setting was changed. The Fedora media check passed before the
+live environment reached GDM.
+
+**Fresh-target acceptance:** The new live target appeared at the console-derived
+address `192.168.1.172`, boot ID
+`a1fd2b90-0e53-48eb-995c-50f23d3e966c`. Independent SSH readback found exact
+source `2ae129a15294ad1029eabc8bf86fa2b1ac8f3e10`, clean identity, Geist and Geist
+Mono generic-family resolution, active `sshd`, connected networking,
+`LiveOS_rootfs` overlay root, no mutable-deployment marker, no installer or block
+writer, and no mounted internal NVMe partition. The protected 1 TB WD_BLACK
+NVMe retained its VFAT and LUKS partitions untouched and unmounted.
+
+After explicitly selecting the SOS GDM session, authentication opened Wayland
+session 11 and remained in the shell rather than returning to GDM. The later
+audit found the session active, `sos-session.target=active`, DRM page-flip
+presentation, Experience API v4 initialization, the two-package Stock graph
+authority, the compositor, experience host, supervisor, agent authoring service,
+and offline resident agent all running. `Super+Space` opened the centered
+launcher from PiKVM keyboard input. The physical frame showed the 41-pixel bar,
+tiling workspace, monochrome Stock theme, Geist typography, launcher, and
+floating agent action. A same-source pre-bake frame also records the expanded
+agent HUD.
+
+**Evidence:** The ignored campaign root is
+`artifacts/pikvm/20260904-stock-shell-recovery-d96b6f3/`. Its 139-file,
+13,909-byte `MANIFEST.tsv` has SHA-256
+`04ee5e94d83d12549bdb93d515e14811159fca27131c2b784c16e64990f19460`
+and independently verifies. `fresh-sos-shell-stable.jpg` is 53,215 bytes with
+SHA-256 `314ab3204d6352ed3a7a82587878fa5de932db1375a9d81d813024fa21b70c4e`;
+`fresh-sos-launcher-open.jpg` is 72,243 bytes with SHA-256
+`13534e6b48710bda7a4faa7cb1747f7937e28f7db06eec02eff4c0b406e3377b`;
+and `stock-agent-overlay-pointer.jpg` is 75,348 bytes with SHA-256
+`5aa59e751ba02b72c1dad35059710e9ec9aa0113a4a0e35b8f78b9e1a9c0365d`.
+Target session evidence is in `fresh-sos-login-observer.log` and
+`fresh-sos-session-audit.txt`; final read-only media and restored absolute HID
+state are in `pikvm-status-final.json`.
+
+**Failures and rejected approaches:** The first rootless bake failure is covered
+by the preceding entry and fixed by revision `2ae129a`. A transient Fedora
+openh264 mirror reset recovered within the successful bake and did not change
+the artifact. The first fresh-target audit used the wrong installed identity
+path; the corrected audit reads `/usr/share/doc/sos/image-identity.env` and
+passed. The prior target address was stale after reboot; a narrowly scoped
+console and key-auth check established `.172` without treating another SSH host
+as the Framework. PiKVM absolute pointer coordinates do not map reliably while
+the compositor mirrors 1920x1200 eDP and 1920x1080 DP outputs. Relative HID was
+used only for bounded inspection and restored to absolute mode; integrated
+touchpad behavior is not inferred. ATX remained retired and was not used.
+
+**Decision / remaining risks:** Accept this ISO as the persistent private
+development base and leave it attached read-only. It is not a release or
+promotion artifact. The physical gate closes the reported login bounce and
+reboot-persistence failure. One launcher behavior remains open: subsequent
+`Super+Space` events reached and committed through the compositor, but the open
+launcher did not visibly close. A focused state-transition regression should
+resolve that before full input acceptance. Integrated keyboard/touchpad,
+multi-window tiling, HUD drag/click, light appearance, and agent submission also
+remain for the broader hardware gate.

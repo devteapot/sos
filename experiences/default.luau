@@ -1,79 +1,98 @@
 --!strict
--- SOS Stock Shell. This is a privileged, replaceable Experience API v4 package.
--- Its window-space node is a bounded compositor primitive; every surrounding
--- bar, panel, control, workspace, and policy choice remains ordinary Luau.
--- Credentials, lock, permission, emergency, confirmation, and Recovery remain
--- fixed native surfaces below the revision boundary.
+-- SOS Stock Shell. The root keeps only Shell-role authority and composes its
+-- replaceable workspace through the Experience API v4 mount boundary.
 
--- Visual implementation remains revision-local. The authority supplies only
--- typed semantic appearance values, which are resolved onto these fallbacks.
 local theme = require("stock.theme")
 
 local ink = theme.color.ink
 local muted = theme.color.muted
 local paper = theme.color.paper
-local white = theme.color.white
-local moss = theme.color.moss
-local mint = theme.color.mint
-local amber = theme.color.amber
-local alert = theme.color.alert
-local rose = theme.color.rose
-local sand = theme.color.sand
+local surface = theme.color.white
+local accent = theme.color.moss
+local accent_subtle = theme.color.mint
+local warning = theme.color.amber
+local danger = theme.color.alert
+local danger_subtle = theme.color.rose
+local secondary = theme.color.sand
 local panel = theme.color.panel
+local outline = theme.color.outline
+local space_sm = theme.space.sm
+local space_md = theme.space.md
+local space_lg = theme.space.lg
+local control_radius = theme.radius.control
+local card_radius = theme.radius.card
+local panel_radius = theme.radius.panel
+local label_size = 10
+local body_size = 13
+local title_size = 24
 
 local function appearance_color(appearance: any, token: string, fallback: number): number
     local value = appearance and appearance.colors and appearance.colors[token] or nil
-    if type(value) ~= "string" or not string.match(value, "^#[0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F]$") then
+    if type(value) ~= "string"
+        or not string.match(value, "^#[0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F]$") then
         return fallback
     end
     return tonumber(string.sub(value, 2, 7), 16) or fallback
+end
+
+local function appearance_number(
+    appearance: any,
+    bucket: string,
+    token: string,
+    fallback: number
+): number
+    local values = appearance and appearance[bucket] or nil
+    local value = values and values[token] or nil
+    if type(value) ~= "number" or value < 0 or value > 4096 then return fallback end
+    return value
+end
+
+local function appearance_type_size(appearance: any, token: string, fallback: number): number
+    local role = appearance and appearance.typography and appearance.typography[token] or nil
+    local value = role and role.size_milli_points or nil
+    if type(value) ~= "number" or value < 1000 or value > 512000 then return fallback end
+    return value / 1000
 end
 
 local function apply_appearance(appearance: any)
     ink = appearance_color(appearance, "text.primary", theme.color.ink)
     muted = appearance_color(appearance, "text.muted", theme.color.muted)
     paper = appearance_color(appearance, "surface.canvas", theme.color.paper)
-    white = appearance_color(appearance, "surface.primary", theme.color.white)
-    moss = appearance_color(appearance, "accent.primary", theme.color.moss)
-    mint = appearance_color(appearance, "accent.subtle", theme.color.mint)
-    amber = appearance_color(appearance, "status.warning", theme.color.amber)
-    alert = appearance_color(appearance, "status.danger", theme.color.alert)
-    rose = appearance_color(appearance, "status.danger_subtle", theme.color.rose)
-    sand = appearance_color(appearance, "surface.secondary", theme.color.sand)
+    surface = appearance_color(appearance, "surface.primary", theme.color.white)
+    accent = appearance_color(appearance, "accent.primary", theme.color.moss)
+    accent_subtle = appearance_color(appearance, "accent.subtle", theme.color.mint)
+    warning = appearance_color(appearance, "status.warning", theme.color.amber)
+    danger = appearance_color(appearance, "status.danger", theme.color.alert)
+    danger_subtle = appearance_color(appearance, "status.danger_subtle", theme.color.rose)
+    secondary = appearance_color(appearance, "surface.secondary", theme.color.sand)
     panel = appearance_color(appearance, "surface.panel", theme.color.panel)
+    outline = appearance_color(appearance, "border.subtle", theme.color.outline)
+    space_sm = appearance_number(appearance, "spacing", "space.sm", theme.space.sm)
+    space_md = appearance_number(appearance, "spacing", "space.md", theme.space.md)
+    space_lg = appearance_number(appearance, "spacing", "space.lg", theme.space.lg)
+    control_radius = appearance_number(appearance, "radii", "radius.control", theme.radius.control)
+    card_radius = appearance_number(appearance, "radii", "radius.card", theme.radius.card)
+    panel_radius = appearance_number(appearance, "radii", "radius.panel", theme.radius.panel)
+    label_size = appearance_type_size(appearance, "type.label", 10)
+    body_size = appearance_type_size(appearance, "type.body", 13)
+    title_size = appearance_type_size(appearance, "type.title", 24)
 end
 
-local assets = {
-    stock_mark = {
-        kind = "svg",
-        data = [[<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48"><circle cx="24" cy="24" r="22" fill="#3e6b52"/><circle cx="18" cy="20" r="6" fill="#fefdf8"/><circle cx="31" cy="17" r="4" fill="#dce8d8"/><path d="M12 34c7-9 17-10 25-4" fill="none" stroke="#fefdf8" stroke-width="4" stroke-linecap="round"/></svg>]],
-    },
-}
-
 local workspace_order = {
-    { id = "home", label = "HOME" },
-    { id = "agenda", label = "AGENDA" },
-    { id = "notes", label = "NOTES" },
-    { id = "media", label = "MEDIA" },
-    { id = "attention", label = "ATTENTION" },
-    { id = "system", label = "SYSTEM" },
-    { id = "apps", label = "APPS" },
-    { id = "agent", label = "AGENT" },
+    { id = "home", label = "Home" },
+    { id = "agenda", label = "Agenda" },
+    { id = "notes", label = "Notes" },
+    { id = "media", label = "Media" },
+    { id = "attention", label = "Attention" },
+    { id = "system", label = "System" },
+    { id = "apps", label = "Apps" },
+    { id = "agent", label = "Agent" },
 }
 
--- Candidate validation renders these hidden branches in addition to the
--- default state. Keep this list aligned with state-driven navigation and
--- overlays so a generated revision fails before activation, not on first use.
 local validation_scenarios = {
-    { name = "workspace_agenda", state = { active_workspace = "agenda" } },
-    { name = "workspace_notes", state = { active_workspace = "notes" } },
-    { name = "workspace_media", state = { active_workspace = "media" } },
-    { name = "workspace_attention", state = { active_workspace = "attention" } },
-    { name = "workspace_system", state = { active_workspace = "system" } },
-    { name = "workspace_apps", state = { active_workspace = "apps" } },
-    { name = "workspace_agent", state = { active_workspace = "agent" } },
-    { name = "command_panel", state = { shell_panel = "command" } },
-    { name = "agent_overlay", state = { shell_panel = "agent" } },
+    { name = "launcher", state = { shell_panel = "command" } },
+    { name = "agent_panel", state = { shell_panel = "agent" } },
+    { name = "agent_hud", state = { agent_overlay_hovered = true } },
 }
 
 local function text(value: any, size: number, color: number?, semantics: Semantics?, id: string?): SceneNode
@@ -98,52 +117,56 @@ local function group(
     resolved_layout.flow = flow
     local paint: {PaintOp}? = nil
     local interaction: Interaction? = nil
-    local node_semantics: Semantics? = nil
+    local semantics: Semantics? = nil
     if background ~= nil then
         paint = ({{ kind = "fill_bounds", color = background, radius = radius or 0 }} :: {PaintOp})
     end
     if tap_action ~= nil then
         interaction = ({ tap_action = tap_action } :: Interaction)
-        node_semantics = ({ role = "button", label = tap_label or tap_action } :: Semantics)
+        semantics = ({ role = "button", label = tap_label or tap_action } :: Semantics)
     end
     return {
         id = id,
         layout = resolved_layout,
         paint = paint,
         interaction = interaction,
-        semantics = node_semantics,
+        semantics = semantics,
         children = children,
     }
 end
 
-local function button(label: string, action: string, tone: number?, id: string?, active: boolean?): SceneNode
-    return group("row", { padding = 10, justify = "center", align = "center" }, {
-        text(label, 11, active and white or (tone or moss)),
-    }, active and moss or white, 12, id or action, action, label)
+local function button(
+    label: string,
+    action: string,
+    tone: number?,
+    id: string?,
+    active: boolean?
+): SceneNode
+    return group("row", { padding = 1, justify = "center", align = "center" }, {
+        group("row", { padding = space_sm, justify = "center", align = "center" }, {
+            text(label, label_size, active and paper or (tone or ink)),
+        }, active and accent or surface, math.max(0, control_radius - 1)),
+    }, outline, control_radius, id or action, action, label)
 end
 
-local function card(id: string, children: {SceneNode}, layout: Layout?, background: number?): SceneNode
-    local resolved_layout: Layout = layout or {}
-    resolved_layout.padding = resolved_layout.padding or 16
-    resolved_layout.gap = resolved_layout.gap or 8
-    return group("column", resolved_layout, children, background or white, 18, id)
-end
-
-local function heading(title: string, subtitle: string?, id: string?): SceneNode
-    local children: {SceneNode} = {
-        text(title, 26, ink, { role = "header", label = title }, id),
+local function framed_panel(
+    id: string,
+    layout: Layout,
+    children: {SceneNode},
+    background: number?
+): SceneNode
+    local inner_width = layout.width
+    local inner_height = layout.height
+    local outer: Layout = {
+        width = inner_width, height = inner_height, max_width = layout.max_width,
+        max_height = layout.max_height, padding = 1,
     }
-    if subtitle and subtitle ~= "" then
-        table.insert(children, text(subtitle, 12, muted))
-    end
-    return group("column", { gap = 4 }, children)
-end
-
-local function empty_state(id: string, title: string, detail: string): SceneNode
-    return card(id, {
-        text(title, 15, ink, { role = "status", label = title }, id .. "-status"),
-        text(detail, 12, muted),
-    }, { padding = 18, gap = 4 }, panel)
+    return group("column", outer, {
+        group("column", {
+            grow = true, padding = space_lg, gap = space_md,
+            scroll_y = layout.scroll_y,
+        }, children, background or surface, math.max(0, panel_radius - 1), id .. "-body"),
+    }, outline, panel_radius, id)
 end
 
 local function has_capability(providers: SystemProviders, expected: string): boolean
@@ -151,10 +174,6 @@ local function has_capability(providers: SystemProviders, expected: string): boo
         if capability == expected then return true end
     end
     return false
-end
-
-local function providers_available(providers: SystemProviders): boolean
-    return (providers.abi_version or 0) > 0
 end
 
 local function window_has_capability(window: ShellWindow, expected: string): boolean
@@ -172,762 +191,244 @@ local function active_workspace(state: ExperienceState): string
     return "home"
 end
 
-local function _stock_header(providers: SystemProviders): SceneNode
-    local clock = providers.clock
-    local mark: SceneNode = {
-        id = "stock-mark",
-        layout = { width = 34, height = 34 },
-        content = { kind = "image", asset = "stock_mark" },
-        semantics = { role = "image", label = "SOS Stock Base" },
-    }
-    return group("row", { justify = "between", align = "center", gap = 12 }, {
-        group("row", { align = "center", gap = 10 }, {
-            mark,
-            group("column", { gap = 1 }, {
-                text("SOS", 18, ink, { role = "header", label = "SOS Stock Base" },
-                    "stock-title"),
-                text("A source-editable system experience", 10, muted),
-            }),
-        }),
-        group("column", { align = "end", gap = 1 }, {
-            text(clock.time_label ~= "" and clock.time_label or "--:--", 24, ink,
-                { role = "status", label = "Current time", value = clock.time_label or "" },
-                "stock-time"),
-            text(clock.date_label ~= "" and clock.date_label or "Date unavailable", 10, muted),
-        }),
-    }, nil, 0, "stock-header")
+local function active_title(model: ExperienceModel, state: ExperienceState): string
+    for _, window in ipairs(model.shell.windows) do
+        if window.active then return window.title end
+    end
+    local active = active_workspace(state)
+    for _, workspace in ipairs(workspace_order) do
+        if workspace.id == active then return workspace.label end
+    end
+    return "SOS"
 end
 
-local function workspace_navigation(state: ExperienceState): SceneNode
+local function compact_workspace_navigation(state: ExperienceState): SceneNode
     local active = active_workspace(state)
     local children: {SceneNode} = {}
-    for _, workspace in ipairs(workspace_order) do
-        table.insert(children, button(workspace.label, "navigate_" .. workspace.id, moss,
-            "workspace-nav-" .. workspace.id, active == workspace.id))
+    for index, workspace in ipairs(workspace_order) do
+        local selected = workspace.id == active
+        table.insert(children, group("row", {
+            width = 24, height = 24, justify = "center", align = "center",
+        }, {
+            text(tostring(index), 9, selected and paper or muted),
+        }, selected and accent or paper, control_radius,
+            "top-workspace-" .. workspace.id, "navigate_" .. workspace.id,
+            "Open " .. workspace.label))
     end
-    return group("row", { wrap = true, gap = 7 }, children, nil, 0, "workspace-navigation")
+    return group("row", { gap = 2, align = "center" }, children,
+        nil, 0, "top-workspace-navigation")
 end
 
-local function power_summary(providers: SystemProviders): string
-    local power = providers.power
-    if not providers_available(providers) or power.battery_percent == nil then
-        return "Power unavailable"
-    end
-    local suffix = power.charging == true and " · charging" or ""
-    return tostring(power.battery_percent) .. "%" .. suffix
-end
-
-local function network_summary(providers: SystemProviders): string
-    if not providers_available(providers) then return "Connectivity unavailable" end
-    local connectivity = providers.connectivity
-    if not connectivity.connected then return "Offline" end
-    local state = connectivity.validated and "Online" or "Connected"
-    if connectivity.network_label ~= "" then state = state .. " · " .. connectivity.network_label end
-    return state
-end
-
-local function audio_summary(providers: SystemProviders): string
-    local audio = providers.audio
-    if not providers_available(providers) or audio.volume_percent == nil then
-        return "Audio unavailable"
-    end
-    local suffix = audio.muted == true and " · muted" or ""
-    return tostring(audio.volume_percent) .. "%" .. suffix
-end
-
-local function status_plane(providers: SystemProviders): SceneNode
-    local clock = providers.clock
-    local facts = {
-        { id = "stock-power", label = "POWER", value = power_summary(providers) },
-        { id = "stock-network", label = "NETWORK", value = network_summary(providers) },
-        { id = "stock-audio", label = "AUDIO", value = audio_summary(providers) },
-    }
-    local cards: {SceneNode} = {}
-    for _, fact in ipairs(facts) do
-        table.insert(cards, card(fact.id .. "-card", {
-            text(fact.label, 10, moss),
-            text(fact.value, 13, ink,
-                { role = "status", label = fact.label, value = fact.value }, fact.id),
-        }, { width = 420, padding = 13, gap = 3 }))
-    end
-    return group("column", { gap = 14, padding = 20, program = { measure_width = 1 } }, {
-        group("row", { justify = "between", align = "end", gap = 14 }, {
-            group("column", { gap = 3, grow = true }, {
-                text(clock.time_label ~= "" and "Welcome back" or "Welcome", 13, moss),
-                text("Your day, your tools, your source.", 27, ink),
-            }),
-            text(providers_available(providers) and "LIVE" or "DEGRADED", 10,
-                providers_available(providers) and moss or amber),
-        }),
-        group("row", { wrap = true, gap = 9, program = { measure_width = 1 } }, cards),
-    }, mint, 22, "status-plane")
-end
-
-local function agenda_preview(model: ExperienceModel): SceneNode
-    local events = model.calendar
-    local children: {SceneNode} = {
-        group("row", { justify = "between", align = "center" }, {
-            text("NEXT UP", 11, moss),
-            text(tostring(#events) .. " events", 10, muted),
-        }),
-    }
-    if #events == 0 then
-        table.insert(children, text("No agenda items are available.", 13, muted))
-    else
-        local item = events[1]
-        table.insert(children, text(item.time, 11, amber))
-        table.insert(children, text(item.title, 18, ink))
-        table.insert(children, text(item.detail, 12, muted))
-    end
-    table.insert(children, button("OPEN AGENDA", "navigate_agenda", moss, "home-open-agenda"))
-    return card("home-agenda", children, { width = 760 })
-end
-
-local function notes_preview(model: ExperienceModel): SceneNode
-    local notes = model.notes
-    local children: {SceneNode} = {
-        group("row", { justify = "between", align = "center" }, {
-            text("NOTES & DOCUMENTS", 11, moss),
-            text(tostring(#notes) .. " items", 10, muted),
-        }),
-    }
-    if #notes == 0 then
-        table.insert(children, text("No notes are available yet.", 13, muted))
-    else
-        table.insert(children, text(notes[1].title, 18, ink))
-        table.insert(children, text(notes[1].preview, 12, muted))
-    end
-    table.insert(children, button("OPEN NOTES", "navigate_notes", moss, "home-open-notes"))
-    return card("home-notes", children, { width = 760 })
-end
-
-local function current_media(
+local function shell_top_bar(
     model: ExperienceModel,
+    state: ExperienceState,
     providers: SystemProviders
-): (string?, string?, boolean)
-    local media = providers.audio.media
-    if providers_available(providers) and media.active then
-        return media.title ~= "" and media.title or "Active media", media.artist or "", media.playing
+): SceneNode
+    local right: {SceneNode} = {}
+    if (providers.attention.urgent_count or 0) > 0 then
+        table.insert(right, group("row", { padding = 5, align = "center" }, {
+            text(tostring(providers.attention.urgent_count) .. " URGENT", 9, danger),
+        }, nil, 0, "shell-attention", "navigate_attention", "Open attention"))
     end
-    local legacy = model.music
-    if legacy.title and legacy.title ~= "" then
-        return legacy.title, legacy.artist or "", legacy.playing
-    end
-    return nil, nil, false
+    table.insert(right, group("row", { padding = 5, align = "center" }, {
+        text(providers.connectivity.connected and "ONLINE" or "OFFLINE", 9,
+            providers.connectivity.connected and muted or danger),
+    }, nil, 0, "shell-network", "navigate_system", "Open system controls"))
+    local clock = providers.clock
+    table.insert(right, text(clock.time_label ~= "" and clock.time_label or "--:--", body_size, ink,
+        { role = "status", label = "Current time", value = clock.time_label or "" }, "shell-time"))
+
+    return group("column", { height = 41, padding = 1, program = { measure_width = 1 } }, {
+        group("row", {
+            height = 39, padding = 6, gap = 10, align = "center", justify = "between",
+            program = { measure_width = 1 },
+        }, {
+            group("row", { align = "center", gap = space_sm }, {
+                group("row", { padding = 5, gap = 6, align = "center" }, {
+                    text("/", 14, ink),
+                    text("SOS", 11, ink, { role = "header", label = "SOS shell" }, "shell-title"),
+                    text("SUPER + SPACE", 8, muted),
+                }, paper, control_radius, "launcher-toggle", "toggle_command_center", "Open launcher"),
+                compact_workspace_navigation(state),
+            }),
+            text(active_title(model, state), label_size, muted,
+                { role = "status", label = "Active workspace or window",
+                    value = active_title(model, state) }, "shell-active-title"),
+            group("row", { align = "center", gap = space_sm }, right,
+                nil, 0, "shell-status"),
+        }, paper, 0),
+    }, outline, 0, "shell-top-bar")
 end
 
-local function media_preview(model: ExperienceModel, providers: SystemProviders): SceneNode
-    local title, artist, playing = current_media(model, providers)
-    local children: {SceneNode} = { text("NOW PLAYING", 11, moss) }
-    if title == nil then
-        table.insert(children, text("No media session is available.", 13, muted))
-    else
-        table.insert(children, text(title, 18, ink))
-        table.insert(children, text(artist or "", 12, muted))
-        table.insert(children, text(playing and "Playing" or "Paused", 10, playing and moss or muted))
-    end
-    table.insert(children, button("OPEN MEDIA", "navigate_media", moss, "home-open-media"))
-    return card("home-media", children, { width = 760 })
+local function contains(haystack: string, needle: string): boolean
+    return needle == "" or string.find(string.lower(haystack), needle, 1, true) ~= nil
 end
 
-local function attention_preview(providers: SystemProviders): SceneNode
-    local attention = providers.attention
-    local items = attention.items
-    local children: {SceneNode} = {
-        group("row", { justify = "between", align = "center" }, {
-            text("ATTENTION", 11, moss),
-            text(tostring(attention.urgent_count or 0) .. " urgent", 10,
-                (attention.urgent_count or 0) > 0 and alert or muted),
-        }),
-    }
-    if not providers_available(providers) then
-        table.insert(children, text("Attention provider unavailable.", 13, muted))
-    elseif #items == 0 then
-        table.insert(children, text("Nothing needs your attention.", 13, muted))
-    else
-        table.insert(children, text(items[1].title ~= "" and items[1].title or items[1].kind, 18, ink))
-        table.insert(children, text(items[1].detail or "", 12, muted))
-    end
-    table.insert(children, button("OPEN CENTER", "navigate_attention", moss,
-        "home-open-attention"))
-    return card("home-attention", children, { width = 760 })
+local function launcher_row(
+    id: string,
+    title: string,
+    detail: string,
+    action: string?,
+    action_label: string?
+): SceneNode
+    return group("row", { padding = 1 }, {
+        group("row", {
+            padding = space_md, gap = space_sm, align = "center", justify = "between", grow = true,
+        }, {
+            group("column", { gap = 2, grow = true }, {
+                text(title, body_size, ink),
+                text(detail, 9, muted),
+            }),
+            text(action and "OPEN" or "UNAVAILABLE", 9, action and ink or muted),
+        }, surface, math.max(0, card_radius - 1)),
+    }, outline, card_radius, id, action, action_label)
 end
 
-local function home_workspace(model: ExperienceModel, state: ExperienceState, providers: SystemProviders): SceneNode
-    return group("column", { gap = 16 }, {
-        status_plane(providers),
-        heading("Home", "A responsive workspace assembled entirely by this Luau revision.",
-            "home-heading"),
-        group("row", { wrap = true, gap = 14, program = { measure_width = 1 } }, {
-            agenda_preview(model), notes_preview(model), media_preview(model, providers),
-            attention_preview(providers),
-        }, nil, 0, "home-responsive-grid"),
-        group("row", { wrap = true, gap = 8 }, {
-            button("SYSTEM CONTROLS", "navigate_system", moss, "home-open-system"),
-            button("APPLICATIONS", "navigate_apps", moss, "home-open-apps"),
-            button("CUSTOMIZE WITH AGENT", "navigate_agent", moss, "home-open-agent"),
-        }),
-    }, nil, 0, "workspace-home")
-end
-
-local function agenda_workspace(model: ExperienceModel, state: ExperienceState): SceneNode
+local function launcher(model: ExperienceModel, state: ExperienceState, providers: SystemProviders): SceneNode
+    local query = string.lower(state.launcher_query or "")
     local rows: {SceneNode} = {
-        heading("Agenda", "Calendar content stays behind a provider; the layout stays replaceable.",
-            "agenda-heading"),
+        group("row", { align = "center", justify = "between" }, {
+            group("column", { gap = 2 }, {
+                text("Launcher", title_size, ink,
+                    { role = "header", label = "Application launcher" }, "launcher-title"),
+                text("Experiences, Linux applications, and open windows", label_size, muted),
+            }),
+            button("CLOSE", "close_shell_panel", muted, "launcher-close"),
+        }),
         {
-            id = "agenda-composer",
-            layout = { height = 46, padding = 10 },
+            id = "launcher-search",
+            layout = { height = 44, padding = space_sm },
             content = {
-                kind = "text_session", state_key = "agenda_draft",
-                value = state.agenda_draft or "", placeholder = "09:30 Design review",
-                submit_action = "agenda_submit",
+                kind = "text_session", state_key = "launcher_query",
+                value = state.launcher_query or "", placeholder = "Search",
+                autofocus = true,
             },
-            paint = {{ kind = "fill_bounds", color = white, radius = 14 }},
+            paint = {{ kind = "fill_bounds", color = surface, radius = control_radius }},
             semantics = {
-                role = "text_field", label = "Add an agenda item",
-                value = state.agenda_draft or "", hint = "Enter a time and title, then press enter",
+                role = "text_field", label = "Search launcher",
+                value = state.launcher_query or "", hint = "Type to filter launch targets",
             },
         },
-        text(state.agenda_error or "Use HH:MM followed by a title.", 10,
-            state.agenda_error and alert or muted, nil, "agenda-composer-status"),
+        text("WORKSPACES", 9, muted),
     }
-    local events = model.calendar
-    if #events == 0 then
-        table.insert(rows, empty_state("agenda-empty", "No events yet",
-            "Your calendar is empty or its provider has no readable items."))
-    end
-    for index, event in ipairs(events) do
-        if index > 32 then break end
-        table.insert(rows, card("agenda-event-" .. tostring(index), {
-            group("row", { justify = "between", align = "center", gap = 12 }, {
-                text(event.time, 11, amber),
-                text(index == 1 and "NEXT" or "", 9, moss),
-            }),
-            text(event.title, 17, ink),
-            text(event.detail, 12, muted),
-        }))
-    end
-    return group("column", { gap = 10 }, rows, nil, 0, "workspace-agenda")
-end
-
-local function notes_workspace(model: ExperienceModel, state: ExperienceState): SceneNode
-    local note_status = state.note_status or "The first line becomes the note title."
-    local rows: {SceneNode} = {
-        heading("Notes & documents", "Quick capture backed by the notes provider.", "notes-heading"),
-        {
-            id = "note-composer",
-            layout = { height = 58, padding = 10 },
-            content = {
-                kind = "text_session", state_key = "note_draft", value = state.note_draft or "",
-                placeholder = "Write a quick note…", submit_action = "note_submit",
-            },
-            paint = {{ kind = "fill_bounds", color = white, radius = 14 }},
-            semantics = {
-                role = "text_field", label = "Write a note", value = state.note_draft or "",
-                hint = "Write a note and press enter to save it",
-            },
-        },
-        text(note_status, 10, state.note_error and alert or muted,
-            { role = "status", label = note_status }, "note-composer-status"),
-    }
-    local notes = model.notes
-    if #notes == 0 then
-        table.insert(rows, empty_state("notes-empty", "No notes yet",
-            "Capture a thought above, or connect a notes provider."))
-    end
-    local cards: {SceneNode} = {}
-    for index, note in ipairs(notes) do
-        if index > 32 then break end
-        table.insert(cards, card("note-" .. tostring(index), {
-            text(note.title, 16, ink),
-            text(note.preview, 12, muted),
-        }, { width = 520 }))
-    end
-    if #cards > 0 then
-        table.insert(rows, group("row", {
-            wrap = true, gap = 10, program = { measure_width = 1 },
-        }, cards,
-            nil, 0, "notes-responsive-grid"))
-    end
-    return group("column", { gap = 10 }, rows, nil, 0, "workspace-notes")
-end
-
-local function media_controls(model: ExperienceModel, providers: SystemProviders): {SceneNode}
-    local media = providers.audio.media
-    local canonical = providers_available(providers) and media.active
-    local legacy = model.music.title ~= ""
-    local controls: {SceneNode} = {}
-    if canonical then
-        if has_capability(providers, "media_previous") then
-            table.insert(controls, button("PREVIOUS", "media_previous", moss))
-        end
-        if has_capability(providers, "media_play_pause") then
-            table.insert(controls, button(media.playing and "PAUSE" or "PLAY", "media_play_pause", moss))
-        end
-        if has_capability(providers, "media_next") then
-            table.insert(controls, button("NEXT", "media_next", moss))
-        end
-    elseif legacy then
-        table.insert(controls, button("PREVIOUS", "media_previous", moss))
-        table.insert(controls, button(model.music.playing and "PAUSE" or "PLAY",
-            "media_play_pause", moss))
-        table.insert(controls, button("NEXT", "media_next", moss))
-    end
-    return controls
-end
-
-local function media_workspace(model: ExperienceModel, providers: SystemProviders): SceneNode
-    local title, artist, playing = current_media(model, providers)
-    local children: {SceneNode} = {
-        heading("Media", "MPRIS and platform media sessions stay behind one typed contract.",
-            "media-heading"),
-    }
-    if title == nil then
-        table.insert(children, empty_state("media-unavailable", "No media session",
-            "Start playback in a compatible application to make controls available."))
-    else
-        table.insert(children, card("media-now-playing", {
-            text(playing and "NOW PLAYING" or "PAUSED", 10, playing and moss or muted),
-            text(title, 28, ink),
-            text(artist or "", 14, muted),
-        }, { padding = 24, gap = 5 }, mint))
-        local controls = media_controls(model, providers)
-        if #controls > 0 then
-            table.insert(children, group("row", { wrap = true, gap = 8 }, controls,
-                nil, 0, "media-transport-controls"))
-        else
-            table.insert(children, empty_state("media-controls-unavailable", "Controls unavailable",
-                "The active provider exposes metadata but no transport authority."))
+    local workspace_buttons: {SceneNode} = {}
+    for _, workspace in ipairs(workspace_order) do
+        if contains(workspace.label, query) then
+            table.insert(workspace_buttons, button(workspace.label, "navigate_" .. workspace.id,
+                ink, "launcher-workspace-" .. workspace.id,
+                active_workspace(state) == workspace.id))
         end
     end
-    return group("column", { gap = 12 }, children, nil, 0, "workspace-media")
-end
+    table.insert(rows, group("row", { wrap = true, gap = 5 }, workspace_buttons,
+        nil, 0, "launcher-workspaces"))
 
-local function attention_workspace(providers: SystemProviders): SceneNode
-    local attention = providers.attention
-    local rows: {SceneNode} = {
-        heading("Attention center", "Notifications, alarms, calls, and background work in one place.",
-            "attention-heading"),
-    }
-    local items = attention.items
-    if not providers_available(providers) then
-        table.insert(rows, empty_state("attention-unavailable", "Attention provider unavailable",
-            "This system has not exposed the attention contract."))
-    elseif #items == 0 then
-        table.insert(rows, empty_state("attention-empty", "Nothing needs attention",
-            "New notifications and urgent activity will appear here."))
-    end
-    for index, item in ipairs(items) do
-        if index > 32 then break end
-        local title = item.title ~= "" and item.title or item.kind
-        local can_acknowledge = has_capability(providers, "attention_acknowledge")
-        local children: {SceneNode} = {
-            group("row", { justify = "between", gap = 10 }, {
-                text(item.source, 10, item.urgent and alert or moss),
-                text(item.urgent and "URGENT" or string.upper(item.kind), 10,
-                    item.urgent and alert or muted),
-            }),
-            text(title, 16, ink),
-            text(item.detail or "", 12, muted),
-        }
-        if can_acknowledge then
-            table.insert(children, button("ACKNOWLEDGE", "attention_ack_" .. tostring(index), moss,
-                "attention-acknowledge-" .. tostring(index)))
-        else
-            table.insert(children, text("Acknowledgement unavailable", 10, muted))
-        end
-        table.insert(rows, card("attention-" .. tostring(index), children, nil,
-            item.urgent and rose or white))
-    end
-    return group("column", { gap = 10 }, rows, nil, 0, "workspace-attention")
-end
-
-local function system_workspace(providers: SystemProviders): SceneNode
-    local rows: {SceneNode} = {
-        heading("System controls", "Connectivity, power, audio, and media through provider effects.",
-            "system-heading"),
-    }
-    if not providers_available(providers) then
-        table.insert(rows, empty_state("system-providers-unavailable", "System providers unavailable",
-            "Stock Base remains navigable while system controls are disabled."))
-        return group("column", { gap = 10 }, rows, nil, 0, "workspace-system")
-    end
-
-    local power = providers.power
-    table.insert(rows, card("system-power", {
-        text("POWER", 10, moss),
-        text(power_summary(providers), 20, ink),
-        text(power.thermal_status and "Thermal state · " .. tostring(power.thermal_status)
-            or "Thermal state unavailable", 11, muted),
-        text(power.charging_source ~= "" and "Source · " .. power.charging_source
-            or "Charging source unavailable", 11, muted),
-    }))
-
-    local audio = providers.audio
-    local audio_children: {SceneNode} = {
-        text("AUDIO", 10, moss), text(audio_summary(providers), 20, ink),
-    }
-    local audio_buttons: {SceneNode} = {}
-    if has_capability(providers, "audio_set_volume") then
-        table.insert(audio_buttons, button("VOLUME −", "audio_volume_down", moss))
-        table.insert(audio_buttons, button("VOLUME +", "audio_volume_up", moss))
-    end
-    if has_capability(providers, "audio_set_muted") then
-        table.insert(audio_buttons, button(audio.muted == true and "UNMUTE" or "MUTE",
-            "audio_toggle_mute", moss))
-    end
-    if #audio_buttons > 0 then
-        table.insert(audio_children, group("row", { wrap = true, gap = 7 }, audio_buttons))
-    else
-        table.insert(audio_children, text("Audio controls unavailable", 11, muted))
-    end
-    table.insert(rows, card("system-audio", audio_children))
-
-    local connectivity = providers.connectivity
-    local network_children: {SceneNode} = {
-        text("CONNECTIVITY", 10, moss), text(network_summary(providers), 20, ink),
-    }
-    if connectivity.connected and has_capability(providers, "wifi_disconnect") then
-        table.insert(network_children, button("DISCONNECT WI-FI", "wifi_disconnect", alert))
-    end
-    local networks = connectivity.wifi_networks
-    if #networks == 0 then
-        table.insert(network_children, text(connectivity.wifi_enabled and "No saved networks found"
-            or "Wi-Fi is unavailable", 11, muted))
-    end
-    for index, network in ipairs(networks) do
-        if index > 12 then break end
-        local can_connect = not network.connected and has_capability(providers, "wifi_connect")
-        local suffix = network.connected and "CURRENT" or (network.saved and "SAVED" or "AVAILABLE")
-        table.insert(network_children,
-            group("row", { padding = 12, justify = "between", align = "center", gap = 8 }, {
-                group("column", { gap = 2, grow = true }, {
-                    text(network.label, 14, ink),
-                    text(string.rep("●", math.max(1, math.min(4, network.signal_level or 1))),
-                        9, muted),
-                }),
-                text(can_connect and "CONNECT" or suffix, 10, can_connect and moss or muted),
-            }, panel, 13, "wifi-network-" .. tostring(index),
-                can_connect and "wifi_connect_" .. tostring(index) or nil,
-                can_connect and "Connect to " .. network.label or nil))
-    end
-    table.insert(rows, card("system-connectivity", network_children))
-    return group("column", { gap = 10 }, rows, nil, 0, "workspace-system")
-end
-
-local function apps_workspace(model: ExperienceModel, providers: SystemProviders): SceneNode
-    local rows: {SceneNode} = {
-        heading("Applications", "Only provider-approved, compatible launch targets appear here.",
-            "apps-heading"),
-    }
-    local applications = providers.apps.compatible
+    local target_count = 0
     for index, experience in ipairs(model.shell.experiences or {}) do
         if index > 32 then break end
-        table.insert(rows, group("row", {
-            padding = 12, justify = "between", align = "center", gap = 8,
-        }, {
-            text(experience.title, 15, ink),
-            text("OPEN EXPERIENCE", 10, moss),
-        }, white, 15, "experience-" .. tostring(index),
-            "experience_present_" .. tostring(index),
-            "Open " .. experience.title))
-    end
-    if not providers_available(providers) then
-        table.insert(rows, empty_state("apps-unavailable", "Application provider unavailable",
-            "Launching is disabled, but the rest of Stock Base remains usable."))
-    elseif #applications == 0 then
-        table.insert(rows, empty_state("apps-empty", "No compatible applications",
-            "Eligible applications will appear when the provider discovers them."))
-    end
-    local cards: {SceneNode} = {}
-    for index, application in ipairs(applications) do
-        if index > 48 then break end
-        local can_launch = has_capability(providers, "app_launch")
-        table.insert(cards, group("row", {
-            width = 360, padding = 15, justify = "between", align = "center",
-        }, {
-            text(application.label, 15, ink),
-            text(can_launch and "OPEN" or "UNAVAILABLE", 10, can_launch and moss or muted),
-        }, white, 15, "application-" .. tostring(index),
-            can_launch and "app_launch_" .. tostring(index) or nil,
-            can_launch and "Open " .. application.label or nil))
-    end
-    if #cards > 0 then
-        table.insert(rows, group("row", {
-            wrap = true, gap = 9, program = { measure_width = 1 },
-        }, cards,
-            nil, 0, "application-responsive-grid"))
-    end
-    return group("column", { gap = 10 }, rows, nil, 0, "workspace-apps")
-end
-
-local function has_agent_configuration_action(agent: AgentConversation, action: string): boolean
-    for _, supported in ipairs(agent.configuration_actions) do
-        if supported == action then return true end
-    end
-    return false
-end
-
-local function agent_workspace(model: ExperienceModel, state: ExperienceState, scope: string): SceneNode
-    local function agent_id(id: string): string
-        if scope == "workspace" then return id end
-        return scope .. "-" .. id
-    end
-    local agent = model.agent
-    local children: {SceneNode} = {
-        heading("Agent", "Conversation is part of the revision, while credentials stay native.",
-            agent_id("agent-heading")),
-        group("row", { justify = "between", align = "center" }, {
-            text("CONVERSATION", 11, moss),
-            text(agent.activity ~= "" and agent.activity
-                or (agent.available and "Ready" or "Unavailable"), 10, muted),
-        }),
-    }
-    local messages: {SceneNode} = {}
-    for index, message in ipairs(agent.messages) do
-        if index > 24 then break end
-        table.insert(messages, card(agent_id("agent-message-" .. tostring(index)), {
-            text(message.role == "user" and "YOU" or "SOS", 10, moss),
-            text(message.text, 13, ink),
-        }, { padding = 12, gap = 3 }, message.role == "user" and sand or mint))
-    end
-    if #messages == 0 then
-        table.insert(messages, empty_state(agent_id("agent-empty"), "Make Stock Base yours",
-            "Ask the agent to replace navigation, data composition, visuals, or the whole source."))
-    end
-    table.insert(children, group("column", { gap = 7 }, messages, nil, 0,
-        agent_id("agent-messages")))
-    local draft = state.agent_draft or ""
-    table.insert(children, ({
-        id = agent_id("agent-prompt"),
-        layout = { height = 50, padding = 10 },
-        content = {
-            kind = "text_session", state_key = "agent_draft", value = draft,
-            placeholder = agent.busy and "SOS is working…" or "Change this experience…",
-            submit_action = "agent_submit",
-        },
-        paint = {{ kind = "fill_bounds", color = white, radius = 14 }},
-        semantics = {
-            role = "text_field", label = "Ask SOS to change this experience", value = draft,
-            hint = "Type a request and press enter",
-        },
-    } :: SceneNode))
-    local controls: {SceneNode} = {}
-    local configurations = {
-        { capability = "configure_openai", label = "OPENAI", action = "agent_configure_openai" },
-        { capability = "configure_openrouter", label = "OPENROUTER", action = "agent_configure_openrouter" },
-        { capability = "configure_codex", label = "CODEX", action = "agent_configure_codex" },
-        { capability = "use_fake", label = "OFFLINE", action = "agent_use_fake" },
-        { capability = "clear_credential", label = "CLEAR CREDENTIAL", action = "agent_clear_credential" },
-    }
-    for _, configuration in ipairs(configurations) do
-        if has_agent_configuration_action(agent, configuration.capability) then
-            table.insert(controls, button(configuration.label, configuration.action,
-                configuration.capability == "clear_credential" and alert or moss,
-                agent_id(configuration.action)))
+        if experience.experience_id ~= "sos.stock.workspace" and contains(experience.title, query) then
+            target_count = target_count + 1
+            table.insert(rows, launcher_row("launcher-experience-" .. tostring(index),
+                experience.title, "EXPERIENCE", "experience_present_" .. tostring(index),
+                "Open " .. experience.title))
         end
     end
-    if #controls > 0 then
-        table.insert(children, group("row", { wrap = true, gap = 7 }, controls,
-            nil, 0, agent_id("agent-provider-controls")))
-    else
-        table.insert(children, text("Provider changes are managed before login.", 10, muted))
+    for index, application in ipairs(providers.apps.compatible) do
+        if index > 48 then break end
+        if contains(application.label, query) then
+            target_count = target_count + 1
+            local action = has_capability(providers, "app_launch")
+                and "app_launch_" .. tostring(index) or nil
+            table.insert(rows, launcher_row("launcher-app-" .. tostring(index),
+                application.label, "LINUX APPLICATION", action,
+                action and ("Open " .. application.label) or nil))
+        end
     end
-    if agent.error then table.insert(children, text(agent.error, 11, alert)) end
-    return group("column", { gap = 10 }, children, nil, 0,
-        agent_id("workspace-agent"))
-end
-
-local function render_workspace(model: ExperienceModel, state: ExperienceState, providers: SystemProviders): SceneNode
-    local active = active_workspace(state)
-    if active == "agenda" then return agenda_workspace(model, state) end
-    if active == "notes" then return notes_workspace(model, state) end
-    if active == "media" then return media_workspace(model, providers) end
-    if active == "attention" then return attention_workspace(providers) end
-    if active == "system" then return system_workspace(providers) end
-    if active == "apps" then return apps_workspace(model, providers) end
-    if active == "agent" then return agent_workspace(model, state, "workspace") end
-    return home_workspace(model, state, providers)
-end
-
-local function app_status_widgets(providers: SystemProviders): {SceneNode}
-    local children: {SceneNode} = {}
-    local widgets: {ApplicationStatusWidget} = providers.apps.status_widgets or {}
-    for index, widget in ipairs(widgets) do
-        if index > 4 then break end
-        local label = widget.label or "APP"
-        local value = widget.value or ""
-        table.insert(children, group("row", {
-            padding = 8, gap = 5, align = "center",
-        }, {
-            text(label, 9, moss),
-            text(value, 11, ink),
-        }, panel, 11, "shell-app-widget-" .. tostring(index),
-            widget.application_id and has_capability(providers, "app_launch")
-                and "shell_app_widget_" .. tostring(index) or nil,
-            widget.application_id and ("Open " .. label) or nil))
+    if target_count == 0 then
+        table.insert(rows, text(query == "" and "No launch targets are available."
+            or "No launch target matches your search.", body_size, muted,
+            { role = "status", label = "No launcher results" }, "launcher-empty"))
     end
-    return children
-end
 
-local function shell_top_bar(model: ExperienceModel, state: ExperienceState, providers: SystemProviders): SceneNode
-    local clock = providers.clock
-    local attention = providers.attention
-    local active = string.upper(active_workspace(state))
-    local widgets = app_status_widgets(providers)
-    table.insert(widgets, button(audio_summary(providers),
-        has_capability(providers, "audio_set_muted") and "audio_toggle_mute" or "navigate_system",
-        moss, "shell-audio-control"))
-    table.insert(widgets, button(network_summary(providers), "navigate_system", moss,
-        "shell-network-control"))
-    if (attention.urgent_count or 0) > 0 then
-        table.insert(widgets, button(tostring(attention.urgent_count) .. " URGENT",
-            "navigate_attention", alert, "shell-attention-control"))
-    end
-    table.insert(widgets, group("column", { align = "end", gap = 0 }, {
-        text(clock.time_label ~= "" and clock.time_label or "--:--", 18, ink,
-            { role = "status", label = "Current time", value = clock.time_label or "" },
-            "shell-time"),
-        text(clock.date_label ~= "" and clock.date_label or "Date unavailable", 9, muted),
-    }))
-
-    return group("row", {
-        height = 58, padding = 10, gap = 12, align = "center", justify = "between",
-        program = { measure_width = 1 },
-    }, {
-        group("row", { align = "center", gap = 9 }, {
-            {
-                id = "shell-mark", layout = { width = 34, height = 34 },
-                content = { kind = "image", asset = "stock_mark" },
-                semantics = { role = "image", label = "SOS" },
-            },
-            group("column", { gap = 0 }, {
-                text("SOS", 16, ink, { role = "header", label = "SOS shell" }, "shell-title"),
-                text(active .. " WORKSPACE", 9, moss),
-            }),
-        }),
-        group("row", { align = "center", justify = "end", gap = 7 }, widgets,
-            nil, 0, "shell-status-widgets"),
-    }, white, 0, "shell-top-bar")
-end
-
-local function command_center(
-    model: ExperienceModel,
-    providers: SystemProviders,
-    state: ExperienceState
-): SceneNode
-    local applications = providers.apps.compatible
-    local rows: {SceneNode} = {
-        group("row", { justify = "between", align = "center" }, {
-            text("COMMAND CENTER", 12, moss,
-                { role = "header", label = "Command center" }, "command-center-title"),
-            button("CLOSE", "close_shell_panel", muted, "command-center-close"),
-        }),
-        text("WORKSPACES", 9, muted),
-        workspace_navigation(state),
-        text("WINDOW LAYOUT", 9, muted),
-        group("row", { wrap = true, gap = 6 }, {
-            button("FLOAT", "window_layout_floating", moss, "window-layout-floating",
-                (state.window_layout or "floating") == "floating"),
-            button("TILE", "window_layout_tiling", moss, "window-layout-tiling",
-                state.window_layout == "tiling"),
-            button("SCROLL", "window_layout_scrolling", moss, "window-layout-scrolling",
-                state.window_layout == "scrolling"),
-        }),
-        text("OPEN WINDOWS", 9, muted),
-        text("APPLICATIONS", 9, muted),
-    }
-    if model.shell.abi_version == 0 then
-        table.insert(rows, text("Window observations unavailable", 10, muted))
-    elseif #model.shell.windows == 0 then
-        table.insert(rows, text("No application windows are open", 10, muted))
+    table.insert(rows, text("WINDOWS", 9, muted))
+    if #model.shell.windows == 0 then
+        table.insert(rows, text("No application windows are open.", body_size, muted))
     end
     for index, window in ipairs(model.shell.windows) do
         if index > 32 then break end
-        local controls: {SceneNode} = {}
-        if window_has_capability(window, "focus") then
-            table.insert(controls, button(window.active and "ACTIVE" or "FOCUS",
-                "shell_window_focus_" .. tostring(index), moss,
-                "shell-window-focus-" .. tostring(index), window.active))
+        if contains(window.title, query) then
+            local action = window_has_capability(window, "focus")
+                and "shell_window_focus_" .. tostring(index) or nil
+            table.insert(rows, launcher_row("launcher-window-" .. tostring(index),
+                window.title, string.upper(window.kind), action,
+                action and ("Focus " .. window.title) or nil))
         end
-        if window_has_capability(window, "close") then
-            table.insert(controls, button("CLOSE", "shell_window_close_" .. tostring(index),
-                alert, "shell-window-close-" .. tostring(index)))
-        end
-        table.insert(rows, group("row", {
-            padding = 10, gap = 8, align = "center", justify = "between",
-        }, {
-            group("column", { gap = 2, grow = true }, {
-                text(window.title, 12, ink),
-                text(string.upper(window.kind), 9, muted),
-            }),
-            group("row", { gap = 5 }, controls),
-        }, white, 12, "shell-window-" .. tostring(index)))
     end
-    for index, experience in ipairs(model.shell.experiences or {}) do
-        if index > 32 then break end
-        table.insert(rows, group("row", {
-            padding = 11, justify = "between", align = "center", gap = 8,
-        }, {
-            text(experience.title, 13, ink),
-            text("OPEN EXPERIENCE", 9, moss),
-        }, white, 12, "command-experience-" .. tostring(index),
-            "experience_present_" .. tostring(index),
-            "Open " .. experience.title))
-    end
-    if not providers_available(providers) then
-        table.insert(rows, empty_state("command-apps-unavailable", "Applications unavailable",
-            "The application provider is not connected."))
-    elseif #applications == 0 then
-        table.insert(rows, empty_state("command-apps-empty", "No applications",
-            "Compatible launch targets will appear here."))
-    end
-    for index, application in ipairs(applications) do
-        if index > 24 then break end
-        local can_launch = has_capability(providers, "app_launch")
-        table.insert(rows, group("row", {
-            padding = 11, justify = "between", align = "center", gap = 8,
-        }, {
-            text(application.label, 13, ink),
-            text(can_launch and "OPEN" or "UNAVAILABLE", 9, can_launch and moss or muted),
-        }, white, 12, "command-application-" .. tostring(index),
-            can_launch and "app_launch_" .. tostring(index) or nil,
-            can_launch and "Open " .. application.label or nil))
-    end
-    return group("column", { scroll_y = true, padding = 14, gap = 10, grow = true }, rows,
-        panel, 0, "shell-command-center")
+    table.insert(rows, group("row", { align = "center", justify = "between", gap = space_sm }, {
+        group("row", { gap = 5 }, {
+            button("TILE", "window_layout_tiling", ink, "layout-tiling",
+                (state.window_layout or "tiling") == "tiling"),
+            button("FLOAT", "window_layout_floating", ink, "layout-floating",
+                state.window_layout == "floating"),
+            button("SCROLL", "window_layout_scrolling", ink, "layout-scrolling",
+                state.window_layout == "scrolling"),
+        }),
+        text("SUPER + SPACE TO TOGGLE", 8, muted),
+    }))
+    return framed_panel("shell-launcher", { width = 640, height = 620, scroll_y = true }, rows, paper)
 end
 
-local function shell_rail(model: ExperienceModel, state: ExperienceState, providers: SystemProviders): SceneNode
-    local panel_name = state.shell_panel
-    if panel_name == "command" then
-        return group("column", { width = 390, program = { measure_height = 1 } }, {
-            command_center(model, providers, state),
-        }, panel, 0, "shell-rail-command")
-    elseif panel_name == "agent" then
-        return group("column", {
-            width = 430, padding = 14, gap = 10, program = { measure_height = 1 },
-        }, {
-            group("row", { justify = "between", align = "center" }, {
-                text("AGENT", 12, moss, { role = "header", label = "Agent panel" },
-                    "agent-panel-title"),
-                button("CLOSE", "close_shell_panel", muted, "agent-panel-close"),
-            }),
-            group("column", { scroll_y = true, grow = true }, {
-                agent_workspace(model, state, "panel"),
-            }, nil, 0, "agent-panel-scroll"),
-        }, panel, 0, "shell-rail-agent")
+local function agent_messages(model: ExperienceModel, scope: string, limit: number): SceneNode
+    local messages: {SceneNode} = {}
+    local start = math.max(1, #model.agent.messages - limit + 1)
+    for index = start, #model.agent.messages do
+        local message = model.agent.messages[index]
+        table.insert(messages, group("column", { padding = space_sm, gap = 3 }, {
+            text(message.role == "user" and "YOU" or "SOS", 9, muted),
+            text(message.text, body_size, ink),
+        }, message.role == "user" and secondary or accent_subtle, control_radius,
+            scope .. "-agent-message-" .. tostring(index)))
     end
-    return group("column", {
-        width = 76, padding = 9, gap = 10, align = "center",
-        program = { measure_height = 1 },
-    }, {
-        group("column", { gap = 9, align = "center" }, {
-            button("⌘", "toggle_command_center", moss, "command-center-toggle"),
-            button("HOME", "navigate_home", moss, "shell-home-shortcut"),
-            button("APPS", "navigate_apps", moss, "shell-apps-shortcut"),
+    if #messages == 0 then
+        table.insert(messages, text("Ask SOS to change the system or build an experience.",
+            body_size, muted, { role = "status", label = "Agent ready" },
+            scope .. "-agent-empty"))
+    end
+    return group("column", { gap = space_sm }, messages, nil, 0, scope .. "-agent-messages")
+end
+
+local function agent_input(model: ExperienceModel, state: ExperienceState, scope: string): SceneNode
+    return {
+        id = scope .. "-agent-prompt",
+        layout = { height = 46, padding = space_sm },
+        content = {
+            kind = "text_session", state_key = "agent_draft", value = state.agent_draft or "",
+            placeholder = model.agent.busy and "SOS is working" or "Ask SOS",
+            submit_action = "agent_submit",
+        },
+        paint = {{ kind = "fill_bounds", color = surface, radius = control_radius }},
+        semantics = {
+            role = "text_field", label = "Ask SOS", value = state.agent_draft or "",
+            hint = "Type a request and press enter",
+        },
+    }
+end
+
+local function agent_panel(model: ExperienceModel, state: ExperienceState): SceneNode
+    local rows: {SceneNode} = {
+        group("row", { align = "center", justify = "between" }, {
+            group("column", { gap = 2 }, {
+                text("Agent", title_size, ink,
+                    { role = "header", label = "Agent" }, "agent-panel-title"),
+                text(model.agent.activity ~= "" and model.agent.activity
+                    or (model.agent.available and "Ready" or "Unavailable"), label_size, muted),
+            }),
+            button("CLOSE", "close_shell_panel", muted, "agent-panel-close"),
         }),
-    }, white, 0, "shell-rail")
+        agent_messages(model, "panel", 24),
+        agent_input(model, state, "panel"),
+    }
+    if model.agent.error then table.insert(rows, text(model.agent.error, body_size, danger)) end
+    return framed_panel("shell-agent-panel", { width = 680, height = 650, scroll_y = true }, rows, paper)
 end
 
 local function agent_overlay(model: ExperienceModel, state: ExperienceState): SceneNode
@@ -936,100 +437,129 @@ local function agent_overlay(model: ExperienceModel, state: ExperienceState): Sc
         and type(state.agent_overlay_y) == "number"
     local bubble_x: number = positioned and (state.agent_overlay_x :: number) or 0
     local bubble_y: number = positioned and (state.agent_overlay_y :: number) or 0
-    local above = bubble_y >= 96
-    local width = hovered and 430 or 64
-    local height = hovered and 146 or 64
-    local x = hovered and (bubble_x - (width - 64)) or bubble_x
-    local y = hovered and (above and (bubble_y - (height - 64)) or bubble_y) or bubble_y
+    local bubble_size = 54
+    local hud_width = 560
+    local hud_height = 184
+    local width = hovered and hud_width or bubble_size
+    local height = hovered and (hud_height + bubble_size) or bubble_size
+    local above = bubble_y >= hud_height + 24
+    local x = hovered and (bubble_x - (width - bubble_size)) or bubble_x
+    local y = hovered and (above and (bubble_y - hud_height) or bubble_y) or bubble_y
+
     local bubble = group("row", {
-        width = 64, height = 64, justify = "center", align = "center",
-    }, { text(model.agent.busy and "…" or "✦", 24, white) }, moss, 32,
-        "agent-overlay-bubble", "toggle_agent_panel", "Open the SOS agent")
+        width = bubble_size, height = bubble_size, justify = "center", align = "center",
+    }, { text(model.agent.busy and "..." or "/", 18, paper) }, accent, panel_radius,
+        "agent-overlay-action", "toggle_agent_panel", "Open the SOS agent")
     if bubble.interaction ~= nil then bubble.interaction.surface_drag = true end
-    local composer = group("column", { width = 430, height = 82, padding = 8, gap = 5 }, {
-        text(model.agent.busy and "SOS IS WORKING" or "ASK SOS", 9, moss),
-        {
-            id = "overlay-agent-prompt",
-            layout = { height = 48, padding = 8 },
-            content = {
-                kind = "text_session", state_key = "agent_draft",
-                value = state.agent_draft or "",
-                placeholder = model.agent.busy and "Working…" or "Change this experience…",
-                submit_action = "agent_submit",
-            },
-            paint = {{ kind = "fill_bounds", color = white, radius = 13 }},
-            semantics = {
-                role = "text_field", label = "Ask SOS", value = state.agent_draft or "",
-                hint = "Type a request and press enter",
-            },
-        },
-    }, panel, 16, "agent-overlay-composer")
+
+    local hud = group("column", {
+        width = hud_width, height = hud_height, padding = space_md, gap = space_sm,
+    }, {
+        group("row", { align = "center", justify = "between" }, {
+            text("SOS / HUD", label_size, ink,
+                { role = "header", label = "SOS agent HUD" }, "hud-title"),
+            text(model.agent.busy and "WORKING" or "READY", 9,
+                model.agent.busy and warning or muted),
+        }),
+        agent_messages(model, "hud", 2),
+        agent_input(model, state, "hud"),
+    }, paper, panel_radius, "agent-hud")
+
     local children: {SceneNode}
     if not hovered then
         children = { bubble }
     elseif above then
-        if composer.layout ~= nil then composer.layout.position = { x = 0, y = 0 } end
-        if bubble.layout ~= nil then bubble.layout.position = { x = (width - 64) / 2, y = height - 64 } end
-        children = { composer, bubble }
+        if hud.layout ~= nil then hud.layout.position = { x = 0, y = 0 } end
+        if bubble.layout ~= nil then
+            bubble.layout.position = { x = width - bubble_size, y = hud_height }
+        end
+        children = { hud, bubble }
     else
-        if bubble.layout ~= nil then bubble.layout.position = { x = (width - 64) / 2, y = 0 } end
-        if composer.layout ~= nil then composer.layout.position = { x = 0, y = 64 } end
-        children = { bubble, composer }
+        if bubble.layout ~= nil then bubble.layout.position = { x = width - bubble_size, y = 0 } end
+        if hud.layout ~= nil then hud.layout.position = { x = 0, y = bubble_size } end
+        children = { bubble, hud }
     end
+
     local placement: ShellOverlayPlacement? = nil
     local anchor: ShellOverlayAnchor? = nil
     if positioned then
-        anchor = ({ x = bubble_x, y = bubble_y, width = 64, height = 64, above = above } :: ShellOverlayAnchor)
+        anchor = ({
+            x = bubble_x, y = bubble_y, width = bubble_size, height = bubble_size, above = above,
+        } :: ShellOverlayAnchor)
     else
-        placement = ({ horizontal = "end", vertical = "end", margin = 18 } :: ShellOverlayPlacement)
+        placement = ({ horizontal = "end", vertical = "end", margin = 16 } :: ShellOverlayPlacement)
     end
     return {
         id = "agent-overlay",
         layout = { width = width, height = height, flow = "overlay" },
         content = {
             kind = "shell_overlay", x = x, y = y, width = width, height = height,
-            placement = placement,
-            anchor = anchor,
+            placement = placement, anchor = anchor,
         },
         interaction = { hover_action = "agent_overlay_hover" },
-        semantics = { role = "status", label = "SOS agent overlay" },
+        semantics = { role = "status", label = "SOS agent HUD" },
         children = children,
     }
 end
 
-local function shell_window_space(model: ExperienceModel, state: ExperienceState, providers: SystemProviders): SceneNode
+local function workspace_mount(state: ExperienceState): SceneNode
     return {
-        id = "shell-window-space",
-        layout = { grow = true, min_width = 320, min_height = 240, clip_bounds = true },
+        id = "stock-workspace-mount",
+        layout = { grow = true, clip_bounds = true },
         content = {
-            kind = "window_space", layout = state.window_layout or "floating", gap = 12,
-            fallback = "No application windows are open",
-        },
-        paint = {{ kind = "fill_bounds", color = paper, radius = 0 }},
-        semantics = { role = "scroll_area", label = "Application window space" },
-        children = {
-            group("column", { scroll_y = true, padding = 18, gap = 14, grow = true }, {
-                render_workspace(model, state, providers),
-                group("row", { justify = "between", gap = 12 }, {
-                    text("STOCK SHELL WORKSPACE", 9, muted),
-                    text("SYSTEM PROVIDERS ABI " .. tostring(providers.abi_version or 0), 9, muted),
-                }),
-            }, nil, 0, "stock-workspace-frame"),
+            kind = "experience_mount", dependency = "workspace",
+            properties = { active_workspace = active_workspace(state) },
         },
     }
 end
 
+local function window_space(state: ExperienceState): SceneNode
+    return {
+        id = "shell-window-space",
+        layout = { grow = true, min_width = 320, min_height = 200, clip_bounds = true },
+        content = {
+            kind = "window_space", layout = state.window_layout or "tiling", gap = 8,
+            fallback = "No application windows are open",
+        },
+        paint = {{ kind = "fill_bounds", color = paper, radius = 0 }},
+        semantics = { role = "scroll_area", label = "Application window space" },
+        children = { workspace_mount(state) },
+    }
+end
+
+local function modal_layer(
+    model: ExperienceModel,
+    state: ExperienceState,
+    providers: SystemProviders
+): SceneNode?
+    local content: SceneNode? = nil
+    if state.shell_panel == "command" then
+        content = launcher(model, state, providers)
+    elseif state.shell_panel == "agent" then
+        content = agent_panel(model, state)
+    end
+    if content == nil then return nil end
+    return group("row", {
+        padding = 72, align = "start", justify = "center",
+        program = { measure_width = 1, measure_height = 1, arrange_x = 0, arrange_y = 0 },
+    }, { content }, nil, 0, "shell-modal-layer")
+end
+
 local function render(model: ExperienceModel, state: ExperienceState): SceneNode
     apply_appearance(model.appearance)
-    local providers = model.providers
-    return group("column", { program = { measure_width = 1, measure_height = 1 } }, {
-        shell_top_bar(model, state, providers),
-        group("row", { grow = true, program = { measure_width = 1 } }, {
-            shell_window_space(model, state, providers),
-            shell_rail(model, state, providers),
-        }, nil, 0, "shell-body"),
-        agent_overlay(model, state),
-    }, paper, 0, "stock-experience-root")
+    local base = group("column", {
+        program = { measure_width = 1, measure_height = 1 },
+    }, {
+        shell_top_bar(model, state, model.providers),
+        window_space(state),
+    }, paper, 0, "shell-base")
+    local children: {SceneNode} = { base }
+    local modal = modal_layer(model, state, model.providers)
+    if modal ~= nil then table.insert(children, modal) end
+    table.insert(children, agent_overlay(model, state))
+    return group("overlay", {
+        program = { measure_width = 1, measure_height = 1 }, clip_bounds = true,
+    }, children, paper, 0, "stock-experience-root")
 end
 
 local function provider_effect(
@@ -1041,32 +571,21 @@ local function provider_effect(
     return { state = state, effects = {{ provider = provider, action = action, payload = payload }} }
 end
 
-local function update(
-    model: ExperienceModel,
-    state: ExperienceState,
-    event: SceneEvent
-): ExperienceState | UpdateOutcome
-    local providers = model.providers
-    local audio = providers.audio
-    local connectivity = providers.connectivity
+local function update(model: ExperienceModel, state: ExperienceState, event: any): ExperienceState | UpdateOutcome
     local action = event.action or ""
-
-    if action == "toggle_command_center" then
-        if state.shell_panel == "command" then
-            state.shell_panel = nil
-        else
-            state.shell_panel = "command"
-        end
+    if event.dependency == "workspace" and event.event == "navigate" then
+        state.active_workspace = event.payload.workspace or state.active_workspace
         return state
-    elseif action == "toggle_agent_panel" or action == "shell_overlay_activated" then
-        if state.shell_panel == "agent" then
-            state.shell_panel = nil
-        else
-            state.shell_panel = "agent"
-        end
+    elseif action == "toggle_command_center" or action == "shell_shortcut_launcher" then
+        state.shell_panel = state.shell_panel == "command" and nil or "command"
+        if state.shell_panel ~= "command" then state.launcher_query = "" end
         return state
     elseif action == "close_shell_panel" then
         state.shell_panel = nil
+        state.launcher_query = ""
+        return state
+    elseif action == "toggle_agent_panel" or action == "shell_overlay_activated" then
+        state.shell_panel = state.shell_panel == "agent" and nil or "agent"
         return state
     elseif action == "agent_overlay_hover" then
         state.agent_overlay_hovered = event.focused == true
@@ -1075,15 +594,31 @@ local function update(
         state.agent_overlay_x = event.x or state.agent_overlay_x
         state.agent_overlay_y = event.y or state.agent_overlay_y
         return state
-    elseif action == "window_layout_floating" then
-        state.window_layout = "floating"
-        return state
     elseif action == "window_layout_tiling" then
         state.window_layout = "tiling"
+        state.shell_panel = nil
+        return state
+    elseif action == "window_layout_floating" then
+        state.window_layout = "floating"
+        state.shell_panel = nil
         return state
     elseif action == "window_layout_scrolling" then
         state.window_layout = "scrolling"
+        state.shell_panel = nil
         return state
+    elseif action == "text_changed" and event.target == "launcher-search" then
+        state.launcher_query = event.value or ""
+        return state
+    elseif action == "text_changed"
+        and (event.target == "panel-agent-prompt" or event.target == "hud-agent-prompt") then
+        state.agent_draft = event.value or ""
+        return state
+    elseif action == "agent_submit" and not model.agent.busy then
+        local prompt = event.value or state.agent_draft or ""
+        if prompt ~= "" then
+            state.agent_draft = ""
+            return provider_effect("agent", "prompt", { prompt = prompt }, state)
+        end
     end
 
     local destination = string.match(action, "^navigate_([a-z]+)$")
@@ -1096,129 +631,25 @@ local function update(
             end
         end
     end
-
-    if action == "audio_volume_down" then
-        return provider_effect("audio", "adjust_volume", { delta = -10 }, state)
-    elseif action == "audio_volume_up" then
-        return provider_effect("audio", "adjust_volume", { delta = 10 }, state)
-    elseif action == "audio_toggle_mute" then
-        return provider_effect("audio", "set_muted", { muted = not (audio.muted == true) }, state)
-    elseif action == "media_play_pause" or action == "media_next" or action == "media_previous" then
-        local media = audio.media
-        if providers_available(providers) and media.active then
-            local canonical = action == "media_play_pause" and "play_pause"
-                or (action == "media_next" and "next" or "previous")
-            return provider_effect("media", canonical, nil, state)
-        end
-        local legacy = action == "media_play_pause" and "play-pause"
-            or (action == "media_next" and "next" or "previous")
-        return provider_effect("music", "command", { command = legacy }, state)
-    elseif action == "wifi_disconnect" then
-        return provider_effect("network", "disconnect", nil, state)
-    elseif action == "text_changed"
-        and (event.target == "agent-prompt" or event.target == "panel-agent-prompt"
-            or event.target == "overlay-agent-prompt") then
-        state.agent_draft = event.value or ""
-        return state
-    elseif action == "text_changed" and event.target == "agenda-composer" then
-        state.agenda_draft = event.value or ""
-        state.agenda_error = nil
-        return state
-    elseif action == "text_changed" and event.target == "note-composer" then
-        state.note_draft = event.value or ""
-        state.note_error = nil
-        state.note_status = nil
-        return state
-    elseif action == "agenda_submit" then
-        local draft = event.value or state.agenda_draft or ""
-        local time, title = string.match(draft, "^%s*(%d%d?:%d%d)%s+(.+)%s*$")
-        if not time or not title then
-            state.agenda_error = "Use HH:MM followed by a title."
-            return state
-        end
-        state.agenda_draft = ""
-        state.agenda_error = nil
-        state.agenda_sequence = (state.agenda_sequence or 0) + 1
-        local stamp = tostring(providers.clock.unix_time_ms or 0)
-        return provider_effect("calendar", "append", {
-            name = "stock-event-" .. stamp .. "-" .. tostring(state.agenda_sequence),
-            time = time, title = title, detail = "Created from SOS Stock Base",
-        }, state)
-    elseif action == "note_submit" then
-        local draft = event.value or state.note_draft or ""
-        draft = string.match(draft, "^%s*(.-)%s*$") or ""
-        if draft == "" then
-            state.note_error = true
-            state.note_status = "Write something before saving."
-            return state
-        end
-        local title = string.match(draft, "^([^\n]+)") or "Quick note"
-        if string.len(title) > 64 then title = string.sub(title, 1, 64) end
-        state.note_draft = ""
-        state.note_error = nil
-        state.note_status = "Saved “" .. title .. "”."
-        state.note_sequence = (state.note_sequence or 0) + 1
-        local stamp = tostring(providers.clock.unix_time_ms or 0)
-        return provider_effect("notes", "write", {
-            name = "stock-note-" .. stamp .. "-" .. tostring(state.note_sequence),
-            content = "# " .. title .. "\n\n" .. draft,
-        }, state)
-    elseif action == "agent_submit" and not model.agent.busy then
-        local prompt = event.value or state.agent_draft or ""
-        if prompt ~= "" then
-            state.agent_draft = ""
-            return provider_effect("agent", "prompt", { prompt = prompt }, state)
-        end
-    elseif action == "agent_configure_openai" then
-        return provider_effect("agent", "configure_openai", nil, state)
-    elseif action == "agent_configure_openrouter" then
-        return provider_effect("agent", "configure_openrouter", nil, state)
-    elseif action == "agent_configure_codex" then
-        return provider_effect("agent", "configure_codex", nil, state)
-    elseif action == "agent_use_fake" then
-        return provider_effect("agent", "use_fake", nil, state)
-    elseif action == "agent_clear_credential" then
-        return provider_effect("agent", "clear_credential", nil, state)
-    end
-
-    local network_index = tonumber(string.match(action, "^wifi_connect_(%d+)$"))
-    local network = network_index and connectivity.wifi_networks[network_index] or nil
-    if network then
-        return provider_effect("network", "connect", { network_id = network.id }, state)
-    end
     local app_index = tonumber(string.match(action, "^app_launch_(%d+)$"))
-    local application = app_index and providers.apps.compatible[app_index] or nil
+    local application = app_index and model.providers.apps.compatible[app_index] or nil
     if application then
+        state.shell_panel = nil
         return provider_effect("apps", "launch", { app_id = application.id }, state)
     end
     local experience_index = tonumber(string.match(action, "^experience_present_(%d+)$"))
     local experience = experience_index and model.shell.experiences[experience_index] or nil
-    if experience then
+    if experience and experience.experience_id ~= "sos.stock.workspace" then
+        state.shell_panel = nil
         return provider_effect("shell", "present_experience", {
             experience_id = experience.experience_id,
         }, state)
     end
-    local status_widgets: {ApplicationStatusWidget} = providers.apps.status_widgets or {}
-    local widget_index = tonumber(string.match(action, "^shell_app_widget_(%d+)$"))
-    local widget = widget_index
-        and status_widgets[widget_index] or nil
-    if widget and widget.application_id and has_capability(providers, "app_launch") then
-        return provider_effect("apps", "launch", { app_id = widget.application_id }, state)
-    end
-    local attention_index = tonumber(string.match(action, "^attention_ack_(%d+)$"))
-    local item = attention_index and providers.attention.items[attention_index] or nil
-    if item then
-        return provider_effect("attention", "acknowledge", { attention_id = item.id }, state)
-    end
     local focus_index = tonumber(string.match(action, "^shell_window_focus_(%d+)$"))
-    local focus_window = focus_index and model.shell.windows[focus_index] or nil
-    if focus_window and window_has_capability(focus_window, "focus") then
-        return provider_effect("shell", "focus_window", { window_id = focus_window.id }, state)
-    end
-    local close_index = tonumber(string.match(action, "^shell_window_close_(%d+)$"))
-    local close_window = close_index and model.shell.windows[close_index] or nil
-    if close_window and window_has_capability(close_window, "close") then
-        return provider_effect("shell", "close_window", { window_id = close_window.id }, state)
+    local window = focus_index and model.shell.windows[focus_index] or nil
+    if window and window_has_capability(window, "focus") then
+        state.shell_panel = nil
+        return provider_effect("shell", "focus_window", { window_id = window.id }, state)
     end
     return state
 end
@@ -1226,9 +657,6 @@ end
 return {
     api_version = 4,
     state_version = 1,
-    assets = assets,
     validation_scenarios = validation_scenarios,
-    exports = {
-        main = { render = render, update = update },
-    },
+    exports = { main = { render = render, update = update } },
 }

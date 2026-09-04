@@ -3,6 +3,8 @@
 
 use std::collections::{BTreeMap, HashSet};
 
+use compositor_control_protocol::{CompositorEvent, ShellShortcut};
+
 use smithay::{
     backend::input::{
         AbsolutePositionEvent, Axis, AxisSource, ButtonState, Device as _, Event, InputBackend,
@@ -100,6 +102,26 @@ fn is_session_exit_shortcut(
         && modifiers.ctrl
         && modifiers.alt
         && keysym == Keysym::BackSpace
+}
+
+fn shell_shortcut(
+    state: KeyState,
+    modifiers: &ModifiersState,
+    keysym: Keysym,
+) -> Option<ShellShortcut> {
+    (state == KeyState::Pressed
+        && modifiers.logo
+        && !modifiers.ctrl
+        && !modifiers.alt
+        && !modifiers.shift
+        && keysym == Keysym::space)
+        .then_some(ShellShortcut::Launcher)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum KeyboardCommand {
+    SessionExit,
+    ShellShortcut(ShellShortcut),
 }
 
 #[derive(Default)]
@@ -368,7 +390,7 @@ impl SosCompositor {
                 let key_code = event.key_code();
                 let session_exit_enabled = self.session_exit_enabled;
                 let keyboard = self.seat.get_keyboard().expect("seat has a keyboard");
-                let session_exit = keyboard.input::<bool, _>(
+                let command = keyboard.input::<KeyboardCommand, _>(
                     self,
                     key_code,
                     state,
@@ -381,16 +403,33 @@ impl SosCompositor {
                             modifiers,
                             key.modified_sym(),
                         ) {
-                            FilterResult::Intercept(true)
+                            FilterResult::Intercept(KeyboardCommand::SessionExit)
+                        } else if let Some(shortcut) =
+                            shell_shortcut(state, modifiers, key.modified_sym())
+                        {
+                            FilterResult::Intercept(KeyboardCommand::ShellShortcut(shortcut))
                         } else {
                             FilterResult::Forward
                         }
                     },
                 );
-                if session_exit == Some(true) {
-                    self.suppressed_keyboard_keys.insert(key_code);
-                    self.session_exit_requested = true;
-                    tracing::info!("selectable SOS login session requested logout");
+                match command {
+                    Some(KeyboardCommand::SessionExit) => {
+                        self.suppressed_keyboard_keys.insert(key_code);
+                        self.session_exit_requested = true;
+                        tracing::info!("selectable SOS login session requested logout");
+                    }
+                    Some(KeyboardCommand::ShellShortcut(shortcut)) => {
+                        self.suppressed_keyboard_keys.insert(key_code);
+                        if let Some((_, events)) = &self.shell_events {
+                            let _ = events.send(CompositorEvent::ShellShortcutActivated {
+                                request_id: 0,
+                                shortcut,
+                            });
+                        }
+                        tracing::info!(?shortcut, "activated global shell shortcut");
+                    }
+                    None => {}
                 }
             }
             InputEvent::PointerMotion { event, .. } => {
@@ -914,13 +953,14 @@ impl SosCompositor {
 mod tests {
     use std::collections::BTreeMap;
 
+    use compositor_control_protocol::ShellShortcut;
     use smithay::{
         backend::input::{KeyState, TouchSlot},
         input::keyboard::{Keysym, ModifiersState},
     };
 
     use super::{
-        clamp_to_output_layout, is_session_exit_shortcut, resolve_absolute_output,
+        clamp_to_output_layout, is_session_exit_shortcut, resolve_absolute_output, shell_shortcut,
         AbsoluteOutputRoute, OutputBounds, TouchLifecycle,
     };
 
@@ -1087,5 +1127,37 @@ mod tests {
             },
             Keysym::BackSpace,
         ));
+    }
+
+    #[test]
+    fn launcher_shortcut_requires_unmodified_logo_space_press() {
+        let modifiers = ModifiersState {
+            logo: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            shell_shortcut(KeyState::Pressed, &modifiers, Keysym::space),
+            Some(ShellShortcut::Launcher)
+        );
+        assert_eq!(
+            shell_shortcut(KeyState::Released, &modifiers, Keysym::space),
+            None
+        );
+        assert_eq!(
+            shell_shortcut(
+                KeyState::Pressed,
+                &ModifiersState {
+                    logo: true,
+                    shift: true,
+                    ..Default::default()
+                },
+                Keysym::space,
+            ),
+            None
+        );
+        assert_eq!(
+            shell_shortcut(KeyState::Pressed, &modifiers, Keysym::Return),
+            None
+        );
     }
 }

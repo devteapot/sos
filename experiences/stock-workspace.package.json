@@ -1,0 +1,86 @@
+{
+  "format_version": 4,
+  "experience_id": "sos.stock.workspace",
+  "role": "ordinary",
+  "provider_capabilities": [
+    "application_launch",
+    "audio_control",
+    "calendar_read",
+    "calendar_write",
+    "network_control",
+    "notes_read",
+    "notes_write",
+    "music_read",
+    "music_control",
+    "system_read",
+    "video_read",
+    "camera_read",
+    "protected_surface"
+  ],
+  "contract": {
+    "contract_version": 1,
+    "exports": {
+      "main": {
+        "properties": {
+          "type": "record",
+          "fields": {
+            "active_workspace": {
+              "required": false,
+              "value": {
+                "type": "string",
+                "max_bytes": 16,
+                "choices": [
+                  "home",
+                  "agenda",
+                  "notes",
+                  "media",
+                  "attention",
+                  "system",
+                  "apps",
+                  "agent"
+                ]
+              }
+            }
+          }
+        },
+        "events": {
+          "navigate": {
+            "type": "record",
+            "fields": {
+              "workspace": {
+                "required": true,
+                "value": {
+                  "type": "string",
+                  "max_bytes": 16,
+                  "choices": [
+                    "home",
+                    "agenda",
+                    "notes",
+                    "media",
+                    "attention",
+                    "system",
+                    "apps",
+                    "agent"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "viewport": {
+          "min_width": 320,
+          "min_height": 200,
+          "max_width": 3840,
+          "max_height": 2160
+        },
+        "appearance_abi": 1,
+        "accepts_container_appearance": false
+      }
+    }
+  },
+  "dependencies": {},
+  "derivation": {
+    "kind": "original",
+    "parents": []
+  }
+}

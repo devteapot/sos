@@ -12,7 +12,7 @@ use std::{
 
 use anyhow::{bail, Context as _, Result};
 use compositor_control_protocol::{
-    ShellOverlayConfiguration, ShellStateSnapshot, WindowControlAction,
+    ShellOverlayConfiguration, ShellShortcut, ShellStateSnapshot, WindowControlAction,
     WindowLayoutMode as CompositorWindowLayoutMode, WindowSpaceConfiguration, WindowSpaceGeometry,
 };
 use experience_host_protocol::{
@@ -64,6 +64,17 @@ use crate::window_space;
 
 const MAX_PENDING_INPUT_EVENTS: usize = 64;
 const MAX_PENDING_INPUT_EVENTS_PER_INSTANCE: usize = 16;
+
+fn semantic_color(profile: &AppearanceProfile, token: &str, fallback: u32) -> u32 {
+    profile
+        .colors
+        .iter()
+        .find(|(candidate, _)| candidate.as_str() == token)
+        .and_then(|(_, value)| value.strip_prefix('#'))
+        .filter(|value| value.len() == 8)
+        .and_then(|value| u32::from_str_radix(&value[..6], 16).ok())
+        .unwrap_or(fallback)
+}
 
 #[derive(Clone, Debug)]
 struct Options {
@@ -1677,6 +1688,21 @@ impl LinuxExperienceHost {
                     }
                 }
             }
+            FenceEvent::ShellShortcutActivated(shortcut) => {
+                let action = match shortcut {
+                    ShellShortcut::Launcher => "shell_shortcut_launcher",
+                };
+                let event = SceneEvent {
+                    action: action.into(),
+                    target: Some("stock-experience-root".into()),
+                    ..Default::default()
+                };
+                if self.pending_presentation.is_some() {
+                    self.enqueue_pending_event(event);
+                } else {
+                    self.queue_input_event(event, cx);
+                }
+            }
             FenceEvent::ShellOverlayRejected(error) => {
                 eprintln!("sos_shell_overlay_rejected error={error}");
             }
@@ -3067,7 +3093,11 @@ impl LinuxExperienceHost {
             }
             element = element
                 .border_1()
-                .border_color(rgb(0x98A29B))
+                .border_color(rgb(semantic_color(
+                    &self.model.appearance,
+                    "border.subtle",
+                    0x2A2A2A,
+                )))
                 .p(px(8.))
                 .child(native);
         }
@@ -3469,11 +3499,15 @@ impl Render for LinuxExperienceHost {
             window,
             cx,
         );
+        let canvas_color = semantic_color(&self.model.appearance, "surface.canvas", 0x000000);
+        let status_color = semantic_color(&self.model.appearance, "surface.panel", 0x1B1B1B);
+        let danger_color = semantic_color(&self.model.appearance, "status.danger", 0xEF4444);
+        let text_color = semantic_color(&self.model.appearance, "text.primary", 0xEDEDED);
         let mut root = div()
             .flex()
             .flex_col()
             .size_full()
-            .bg(rgb(0xF3F1E8))
+            .bg(rgb(canvas_color))
             .child(content);
         if let Some((message, accepted)) = &self.status {
             root = root.child(
@@ -3484,8 +3518,12 @@ impl Render for LinuxExperienceHost {
                     .bottom(px(12.))
                     .p(px(10.))
                     .rounded(px(12.))
-                    .bg(rgb(if *accepted { 0x2F684B } else { 0x8C3A36 }))
-                    .text_color(rgb(0xFFFFFF))
+                    .bg(rgb(if *accepted {
+                        status_color
+                    } else {
+                        danger_color
+                    }))
+                    .text_color(rgb(text_color))
                     .text_size(px(12.))
                     .child(SharedString::from(message.clone())),
             );

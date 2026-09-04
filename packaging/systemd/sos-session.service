@@ -40,6 +40,7 @@ ExecStart=/usr/local/libexec/sos/sos-linux-session run \
   --authority-file /var/lib/sos/provider/authority.json \
   --shell-token-file %d/shell-token \
   --trusted-stock-revision ${SOS_TRUSTED_STOCK_REVISION} \
+  --trusted-stock-workspace-revision ${SOS_TRUSTED_STOCK_WORKSPACE_REVISION} \
   --agent-socket /run/sos-agent/agent.sock \
   --compositor /usr/local/libexec/sos/sos-compositor \
   --provider /usr/local/libexec/sos/sos-provider-state-service \

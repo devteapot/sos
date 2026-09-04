@@ -26,7 +26,9 @@ trap test_cleanup EXIT
 bash -n "$test_image"
 bash -n "$test_deploy"
 bash -n "$test_install"
-python3 - "$test_repo_root/packaging/xdg/framework12-pikvm-monitors.xml" <<'PY'
+python3 - \
+  "$test_repo_root/packaging/xdg/framework12-pikvm-monitors.xml" \
+  "$test_repo_root/packaging/fontconfig/60-sos-geist.conf" <<'PY'
 import sys
 import xml.etree.ElementTree as ET
 
@@ -42,12 +44,27 @@ assert [monitor.findtext("./monitorspec/connector") for monitor in monitors] == 
 ]
 assert all(monitor.findtext("./mode/width") == "1920" for monitor in monitors)
 assert all(monitor.findtext("./mode/height") == "1080" for monitor in monitors)
+
+fontconfig = ET.parse(sys.argv[2]).getroot()
+prepend_rules = {}
+for match in fontconfig.findall("./match"):
+    test = match.find("./test")
+    edit = match.find("./edit")
+    assert test is not None and edit is not None
+    assert test.attrib == {"name": "family", "qual": "any", "compare": "eq"}
+    assert edit.attrib == {"name": "family", "mode": "prepend", "binding": "strong"}
+    prepend_rules[test.findtext("./string")] = edit.findtext("./string")
+assert prepend_rules == {
+    "system-ui": "Geist",
+    "sans-serif": "Geist",
+    "monospace": "Geist Mono",
+}
 PY
 "$test_deploy" components >"$test_root/deploy-components.txt"
 for test_component in \
   compositor experience-host provider supervisor session authoring provider-probe \
   login-session agent-login session-target session-shutdown-target hardware-gate \
-  stock-base stock-package stock-theme \
+  stock-base stock-package stock-workspace stock-workspace-package stock-theme \
   api-doc agent-doc stable-host-doc \
   display-defaults; do
   grep -E "^${test_component}[[:space:]]+/" \
@@ -113,6 +130,8 @@ printf '%s\n' \
   '    [[ ! -f "$stage/sos-session-shutdown.target" ]] || cp -- "$stage/sos-session-shutdown.target" "$TEST_DEPLOY_REMOTE/usr/local/lib/systemd/user/"' \
   '    [[ ! -f "$stage/default.luau" ]] || cp -- "$stage/default.luau" "$TEST_DEPLOY_REMOTE/usr/share/sos/experiences/"' \
   '    [[ ! -f "$stage/default.package.json" ]] || cp -- "$stage/default.package.json" "$TEST_DEPLOY_REMOTE/usr/share/sos/experiences/"' \
+  '    [[ ! -f "$stage/stock-workspace.luau" ]] || cp -- "$stage/stock-workspace.luau" "$TEST_DEPLOY_REMOTE/usr/share/sos/experiences/"' \
+  '    [[ ! -f "$stage/stock-workspace.package.json" ]] || cp -- "$stage/stock-workspace.package.json" "$TEST_DEPLOY_REMOTE/usr/share/sos/experiences/"' \
   '    [[ ! -f "$stage/stock-theme.luau" ]] || cp -- "$stage/stock-theme.luau" "$TEST_DEPLOY_REMOTE/usr/share/sos/experiences/modules/"' \
   '    [[ ! -f "$stage/experience-api.md" ]] || cp -- "$stage/experience-api.md" "$TEST_DEPLOY_REMOTE/usr/share/doc/sos/"' \
   '    [[ ! -f "$stage/sos-agent.md" ]] || cp -- "$stage/sos-agent.md" "$TEST_DEPLOY_REMOTE/usr/share/doc/sos/"' \
@@ -163,6 +182,8 @@ SOS_DEVELOPMENT_DEPLOY_ARTIFACTS_DIR="$test_root/deploy-artifacts" \
     --component hardware-gate \
     --component stock-base \
     --component stock-package \
+    --component stock-workspace \
+    --component stock-workspace-package \
     --component stock-theme \
     --component api-doc \
     --component agent-doc \
@@ -178,6 +199,8 @@ for test_binary in \
 done
 [[ -f "$test_deploy_remote/usr/share/sos/experiences/default.luau" ]]
 [[ -f "$test_deploy_remote/usr/share/sos/experiences/default.package.json" ]]
+[[ -f "$test_deploy_remote/usr/share/sos/experiences/stock-workspace.luau" ]]
+[[ -f "$test_deploy_remote/usr/share/sos/experiences/stock-workspace.package.json" ]]
 [[ -f "$test_deploy_remote/usr/share/sos/experiences/modules/stock-theme.luau" ]]
 [[ -f "$test_deploy_remote/usr/share/doc/sos/experience-api.md" ]]
 [[ -f "$test_deploy_remote/usr/share/doc/sos/sos-agent.md" ]]
@@ -194,7 +217,7 @@ test_deployment_metadata="$test_deploy_remote/usr/share/doc/sos/development-depl
 test_deployment_manifest="$test_deploy_remote/usr/share/doc/sos/development-deployment-manifest.tsv"
 grep -Fx 'image_kind=development-live' "$test_deployment_metadata" >/dev/null
 grep -Fx 'promotion_eligible=false' "$test_deployment_metadata" >/dev/null
-[[ "$(wc -l <"$test_deployment_manifest")" -eq 16 ]]
+[[ "$(wc -l <"$test_deployment_manifest")" -eq 18 ]]
 while IFS=$'\t' read -r test_path test_bytes test_sha; do
   [[ "$(stat -c %s "$test_deploy_remote$test_path")" == "$test_bytes" ]]
   [[ "$(sha256sum "$test_deploy_remote$test_path" | cut -d ' ' -f 1)" == "$test_sha" ]]
@@ -558,11 +581,13 @@ mkdir -p \
   "$test_rootfs/usr/share/wayland-sessions" \
   "$test_rootfs/usr/share/sos/experiences" \
   "$test_rootfs/usr/share/sos/experiences/modules" \
+  "$test_rootfs/usr/share/fonts/sos" \
   "$test_rootfs/usr/share/doc/sos" \
   "$test_rootfs/usr/lib/systemd/system" \
   "$test_rootfs/usr/lib/firewalld" \
   "$test_rootfs/etc/skel" \
   "$test_rootfs/etc/gdm" \
+  "$test_rootfs/etc/fonts/conf.d" \
   "$test_rootfs/etc/xdg" \
   "$test_rootfs/etc/ssh" \
   "$test_rootfs/etc/firewalld" \
@@ -574,7 +599,18 @@ mkdir -p \
 : >"$test_rootfs/usr/share/wayland-sessions/sos.desktop"
 : >"$test_rootfs/usr/share/sos/experiences/default.luau"
 : >"$test_rootfs/usr/share/sos/experiences/default.package.json"
+: >"$test_rootfs/usr/share/sos/experiences/stock-workspace.luau"
+: >"$test_rootfs/usr/share/sos/experiences/stock-workspace.package.json"
 : >"$test_rootfs/usr/share/sos/experiences/modules/stock-theme.luau"
+for test_font in \
+  Geist-Variable.ttf \
+  Geist-Italic-Variable.ttf \
+  GeistMono-Variable.ttf \
+  GeistMono-Italic-Variable.ttf \
+  OFL.txt; do
+  : >"$test_rootfs/usr/share/fonts/sos/$test_font"
+done
+: >"$test_rootfs/etc/fonts/conf.d/60-sos-geist.conf"
 cp -- "$test_repo_root/packaging/xdg/framework12-pikvm-monitors.xml" \
   "$test_rootfs/etc/xdg/monitors.xml"
 : >"$test_rootfs/usr/lib/systemd/system/gdm.service"
@@ -750,6 +786,19 @@ grep -Fx 'ssh_authorized_key_fingerprint=none' \
 grep -Fx 'password_authentication=true' \
   "$test_password_rootfs/usr/share/doc/sos/development-access.env" >/dev/null
 [[ ! -e "$test_password_rootfs/usr/share/sos/development-authorized-key" ]]
+# Fedora ships sshd_config as a root-readable-only file. Simulate that
+# boundary and require the rootless builder to validate it through sudo.
+test_sshd_config="$test_password_rootfs/etc/ssh/sshd_config"
+test_sshd_sudo_log="$test_root/sshd-sudo.log"
+chmod 000 "$test_sshd_config"
+PATH="$test_root/bin:$PATH" \
+  TEST_SUDO_UNLOCK_DIR="$test_sshd_config" \
+  TEST_SUDO_LOG="$test_sshd_sudo_log" \
+  "$test_image" check-rootfs --root "$test_password_rootfs" \
+  >"$test_root/check-root-only-sshd-config.txt"
+chmod 0644 "$test_sshd_config"
+grep -Fx "test -f $test_sshd_config" "$test_sshd_sudo_log" >/dev/null
+grep -F "awk " "$test_sshd_sudo_log" >/dev/null
 PATH="$test_root/bin:$PATH" \
   "$test_image" check-rootfs --root "$test_password_rootfs" \
   >"$test_root/check-password-rootfs.txt"

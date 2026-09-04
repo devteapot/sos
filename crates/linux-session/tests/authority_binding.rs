@@ -2,8 +2,8 @@ use std::{path::PathBuf, thread, time::Duration};
 
 use provider_state_service::ServiceClient;
 use revision_supervisor::{
-    ExperienceRegistry, GraphResolver, GraphStore, RevisionInput, RevisionPackageInput,
-    RevisionStore,
+    ExperienceRegistry, GraphResolver, GraphStore, RevisionAssetInput, RevisionInput,
+    RevisionPackageInput, RevisionStore,
 };
 use service_protocol::{ResourceQuery, ResourceValue, ResponsePayload, ServiceRequest};
 use sos_linux_session::{bootstrap_graph_authority, shutdown_authority, GraphBootstrapOutcome};
@@ -15,6 +15,26 @@ fn fresh_v4_graph_bootstraps_authority_without_a_singleton_pointer() {
     let socket = temporary.path().join("provider.sock");
     let authority_file = temporary.path().join("authority.json");
     let store = RevisionStore::open(&root).unwrap();
+    let workspace_package: experience_package::PackageMetadata = serde_json::from_str(
+        include_str!("../../../experiences/stock-workspace.package.json"),
+    )
+    .unwrap();
+    store
+        .install_package(RevisionPackageInput {
+            revision: RevisionInput {
+                source: include_bytes!("../../../experiences/stock-workspace.luau").to_vec(),
+                state: serde_json::json!({}),
+                schema_version: 1,
+                experience_api_version: 4,
+                assets: vec![RevisionAssetInput {
+                    id: "stock.theme".into(),
+                    kind: "luau".into(),
+                    bytes: include_bytes!("../../../experiences/modules/stock-theme.luau").to_vec(),
+                }],
+            },
+            package: workspace_package,
+        })
+        .unwrap();
     let package: experience_package::PackageMetadata =
         serde_json::from_str(include_str!("../../../experiences/default.package.json")).unwrap();
     let revision = store
@@ -53,7 +73,7 @@ fn fresh_v4_graph_bootstraps_authority_without_a_singleton_pointer() {
         bootstrap_graph_authority(&root, &stock, &socket, Duration::from_secs(2)).unwrap(),
         GraphBootstrapOutcome::Initialized {
             graph_id: initialized,
-            experience_count: 1,
+            experience_count: 2,
             ..
         } if initialized == graph_id
     ));
