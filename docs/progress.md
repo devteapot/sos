@@ -17082,3 +17082,85 @@ mode. A new clean bake, local ISO identity and media verification, PiKVM-side
 digest, read-only attachment, observed one-time boot, live-overlay audit, and
 fresh SOS login are still required. The current physical shell recovery remains
 a same-boot diagnostic result, not a release or promotion gate.
+
+## 2026-09-04: Persist and boot the composed Stock shell on Framework
+
+**Goal / artifact:** Replace the reboot-lost mutable deployment with a private
+development-live image containing the composed Stock shell, workspace, Geist
+fonts, SSH development key, and network autoconnect profile. Clean source
+`2ae129a15294ad1029eabc8bf86fa2b1ac8f3e10` produced
+`/home/carlid/dev/sos/artifacts/development-live-2ae129a/sos-development-live-2ae129a15294.iso`,
+3,058,302,976 bytes with SHA-256
+`fd472d277a825b6645b90d60dcd0a794e282b37f487c609f0ddac0fbcb219a68`.
+Its EROFS payload is 2,693,857,280 bytes with SHA-256
+`cf6a58c265f416616715398169ee94726d0114b2c6658d2247faab3e9b0d1744`.
+The rootless bake completed in 1:14:01; its embedded Fedora media check passed,
+and an independent `checkisomd5` passed in 3.38 seconds. The identity class is
+`development-live`, `promotion_eligible=false`; private network credentials are
+embedded for this development target and are not recorded in repository
+evidence.
+
+**PiKVM transfer and boot:** The ISO uploaded once to the PiKVM in 2:19.35.
+PiKVM reported the exact 3,058,302,976 bytes complete, and its own SHA-256 pass
+matched the local digest in 1:00.86. The image was then selected as
+`sos-development-live-2ae129a15294.iso`, CD-ROM and read-only, with
+`complete=true`, `connected=true`, `rw=false`, and `writable=false`. An observed
+one-time firmware selection highlighted that exact PiKVM optical drive; no boot
+order or firmware setting was changed. The Fedora media check passed before the
+live environment reached GDM.
+
+**Fresh-target acceptance:** The new live target appeared at the console-derived
+address `192.168.1.172`, boot ID
+`a1fd2b90-0e53-48eb-995c-50f23d3e966c`. Independent SSH readback found exact
+source `2ae129a15294ad1029eabc8bf86fa2b1ac8f3e10`, clean identity, Geist and Geist
+Mono generic-family resolution, active `sshd`, connected networking,
+`LiveOS_rootfs` overlay root, no mutable-deployment marker, no installer or block
+writer, and no mounted internal NVMe partition. The protected 1 TB WD_BLACK
+NVMe retained its VFAT and LUKS partitions untouched and unmounted.
+
+After explicitly selecting the SOS GDM session, authentication opened Wayland
+session 11 and remained in the shell rather than returning to GDM. The later
+audit found the session active, `sos-session.target=active`, DRM page-flip
+presentation, Experience API v4 initialization, the two-package Stock graph
+authority, the compositor, experience host, supervisor, agent authoring service,
+and offline resident agent all running. `Super+Space` opened the centered
+launcher from PiKVM keyboard input. The physical frame showed the 41-pixel bar,
+tiling workspace, monochrome Stock theme, Geist typography, launcher, and
+floating agent action. A same-source pre-bake frame also records the expanded
+agent HUD.
+
+**Evidence:** The ignored campaign root is
+`artifacts/pikvm/20260904-stock-shell-recovery-d96b6f3/`. Its 139-file,
+13,909-byte `MANIFEST.tsv` has SHA-256
+`04ee5e94d83d12549bdb93d515e14811159fca27131c2b784c16e64990f19460`
+and independently verifies. `fresh-sos-shell-stable.jpg` is 53,215 bytes with
+SHA-256 `314ab3204d6352ed3a7a82587878fa5de932db1375a9d81d813024fa21b70c4e`;
+`fresh-sos-launcher-open.jpg` is 72,243 bytes with SHA-256
+`13534e6b48710bda7a4faa7cb1747f7937e28f7db06eec02eff4c0b406e3377b`;
+and `stock-agent-overlay-pointer.jpg` is 75,348 bytes with SHA-256
+`5aa59e751ba02b72c1dad35059710e9ec9aa0113a4a0e35b8f78b9e1a9c0365d`.
+Target session evidence is in `fresh-sos-login-observer.log` and
+`fresh-sos-session-audit.txt`; final read-only media and restored absolute HID
+state are in `pikvm-status-final.json`.
+
+**Failures and rejected approaches:** The first rootless bake failure is covered
+by the preceding entry and fixed by revision `2ae129a`. A transient Fedora
+openh264 mirror reset recovered within the successful bake and did not change
+the artifact. The first fresh-target audit used the wrong installed identity
+path; the corrected audit reads `/usr/share/doc/sos/image-identity.env` and
+passed. The prior target address was stale after reboot; a narrowly scoped
+console and key-auth check established `.172` without treating another SSH host
+as the Framework. PiKVM absolute pointer coordinates do not map reliably while
+the compositor mirrors 1920x1200 eDP and 1920x1080 DP outputs. Relative HID was
+used only for bounded inspection and restored to absolute mode; integrated
+touchpad behavior is not inferred. ATX remained retired and was not used.
+
+**Decision / remaining risks:** Accept this ISO as the persistent private
+development base and leave it attached read-only. It is not a release or
+promotion artifact. The physical gate closes the reported login bounce and
+reboot-persistence failure. One launcher behavior remains open: subsequent
+`Super+Space` events reached and committed through the compositor, but the open
+launcher did not visibly close. A focused state-transition regression should
+resolve that before full input acceptance. Integrated keyboard/touchpad,
+multi-window tiling, HUD drag/click, light appearance, and agent submission also
+remain for the broader hardware gate.
